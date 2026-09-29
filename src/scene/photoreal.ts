@@ -18,6 +18,9 @@ export interface PhotorealOptions {
   signal?: AbortSignal;
   /** 露出（室内は写真と同じく室内に合わせて明るめに） */
   exposure?: number;
+  /** GPU の負荷を下げた安全モード（再試行用） */
+  safe?: boolean;
+  onStatus?: (msg: string) => void;
 }
 
 interface Saved {
@@ -56,14 +59,72 @@ function restoreMaterials(saved: Saved[]) {
   for (const s of saved) Object.assign(s.mat, s.props);
 }
 
+/** 写真品質レンダリングの失敗理由（真っ黒な画像を保存しないために区別する） */
+export class PhotorealError extends Error {
+  constructor(
+    message: string,
+    readonly reason: 'context-lost' | 'shader' | 'no-samples' | 'black',
+  ) {
+    super(message);
+    this.name = 'PhotorealError';
+  }
+}
+
+/** GPU の処理完了を待つ（WebGL2 のフェンス）。重い処理を一度に積んで GPU がリセットされるのを防ぐ */
+async function gpuWait(gl: WebGL2RenderingContext, isLost: () => boolean, maxMs = 30000) {
+  const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (!sync) return;
+  gl.flush();
+  const t0 = performance.now();
+  try {
+    for (;;) {
+      if (isLost()) return;
+      const r = gl.clientWaitSync(sync, 0, 0);
+      if (r === gl.ALREADY_SIGNALED || r === gl.CONDITION_SATISFIED || r === gl.WAIT_FAILED) return;
+      if (performance.now() - t0 > maxMs) return;
+      await new Promise((res) => setTimeout(res, 4));
+    }
+  } finally {
+    gl.deleteSync(sync);
+  }
+}
+
+/** 画像の平均輝度（0〜255） */
+function meanLuma(src: HTMLCanvasElement): number {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 36;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  const d = ctx.getImageData(0, 0, c.width, c.height).data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+  return sum / (d.length / 4);
+}
+
 export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): Promise<string> {
   const renderer = viewer.renderer;
   const scene = viewer.scene;
   const camera = viewer.camera;
+  const gl = renderer.getContext() as WebGL2RenderingContext;
+  const canvas = renderer.domElement;
   const prevSize = renderer.getSize(new THREE.Vector2());
   const prevPR = renderer.getPixelRatio();
   const prevAspect = camera.aspect;
   viewer.pause(true);
+
+  // GPU のリセット（コンテキストロス）とシェーダーのコンパイル失敗を検知
+  let lost = false;
+  const onLost = () => {
+    lost = true;
+  };
+  canvas.addEventListener('webglcontextlost', onLost);
+  let shaderFailed = false;
+  const prevOnShaderError = renderer.debug.onShaderError;
+  renderer.debug.onShaderError = (glc, program, vs, fs) => {
+    shaderFailed = true;
+    console.error('写真品質レンダリング: シェーダーのコンパイルに失敗しました', glc.getProgramInfoLog(program), glc.getShaderInfoLog(fs));
+  };
 
   renderer.setPixelRatio(1);
   renderer.setSize(opts.width, opts.height, false);
@@ -97,7 +158,10 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   pt.minSamples = 1;
   pt.renderDelay = 0;
   pt.fadeDuration = 0;
-  pt.tiles.set(2, 2);
+  // 1回の描画を小さな区画（タイル）に分け、GPU の負荷を細かく刻む
+  const tileBase = opts.safe ? 240 : 400;
+  const tiles = new THREE.Vector2(Math.max(1, Math.ceil(opts.width / tileBase)), Math.max(1, Math.ceil(opts.height / tileBase)));
+  pt.tiles.copy(tiles);
   pt.renderToCanvas = false;
   pt.multipleImportanceSampling = true;
   (pt as unknown as { dynamicLowRes: boolean }).dynamicLowRes = false;
@@ -115,24 +179,65 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     quad.render(renderer);
   };
 
-  const t0 = performance.now();
-  const limit = opts.timeLimit ?? 180000;
+  const check = () => {
+    if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+    if (lost) throw new PhotorealError('GPU がリセットされました（処理が重すぎた可能性があります）', 'context-lost');
+    if (shaderFailed) throw new PhotorealError('このパソコンの GPU では写真品質の計算プログラムを準備できませんでした', 'shader');
+  };
+
+  const limit = opts.timeLimit ?? 240000;
   try {
-    while (pt.samples < opts.samples) {
-      if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+    // シェーダーの準備（Windows では初回に時間がかかることがある）
+    const tc = performance.now();
+    while (pt.samples === 0) {
+      check();
       pt.renderSample();
-      if (Math.floor(pt.samples) % 4 === 0) {
-        opts.onProgress?.(Math.floor(pt.samples), opts.samples, () => {
+      await gpuWait(gl, () => lost);
+      if (pt.samples > 0) break;
+      opts.onStatus?.('GPU の準備中（初回は1〜2分かかることがあります）');
+      if (performance.now() - tc > 300000) throw new PhotorealError('GPU の準備が終わりませんでした', 'no-samples');
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    const t0 = performance.now();
+    let batch = 1;
+    let lastUi = 0;
+    let lastPreview = t0;
+    while (pt.samples < opts.samples) {
+      check();
+      const tb = performance.now();
+      for (let i = 0; i < batch && pt.samples < opts.samples; i++) pt.renderSample();
+      await gpuWait(gl, () => lost);
+      const perTile = (performance.now() - tb) / batch;
+      // 1回あたり 30〜60ms 程度に収まるよう、まとめて描く枚数とタイルの細かさを調整
+      if (perTile > 150 && Number.isInteger(pt.samples) && pt.tiles.x * pt.tiles.y < 256) {
+        pt.tiles.set(pt.tiles.x * 2, pt.tiles.y * 2);
+      }
+      batch = Math.max(1, Math.min(32, Math.floor(45 / Math.max(1, perTile))));
+      const now = performance.now();
+      if (now - lastUi > 250) {
+        lastUi = now;
+        const wantPreview = now - lastPreview > 6000;
+        if (wantPreview) lastPreview = now;
+        opts.onProgress?.(Math.floor(pt.samples), opts.samples, wantPreview ? () => {
           present(false);
           return renderer.domElement.toDataURL('image/jpeg', 0.7);
-        });
+        } : undefined);
         await new Promise((r) => requestAnimationFrame(() => r(null)));
       }
-      if (performance.now() - t0 > limit) break;
+      if (now - t0 > limit) break;
     }
+    check();
+    if (pt.samples < 1) throw new PhotorealError('計算が進みませんでした', 'no-samples');
     present(true);
-    return finishPhoto(renderer.domElement);
+    await gpuWait(gl, () => lost);
+    check();
+    const luma = meanLuma(canvas);
+    if (luma < (night ? 1.5 : 4)) throw new PhotorealError(`画像が真っ黒になりました（平均輝度 ${luma.toFixed(1)}）`, 'black');
+    return finishPhoto(canvas);
   } finally {
+    canvas.removeEventListener('webglcontextlost', onLost);
+    renderer.debug.onShaderError = prevOnShaderError;
     pt.dispose();
     quad.dispose();
     denoise.dispose();

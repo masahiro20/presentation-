@@ -5,7 +5,7 @@ import type { Step, StepCtx } from '../app';
 import { EXTERIOR_STYLES, INTERIOR_STYLES, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
 import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
-import { renderPhotoreal } from '../../scene/photoreal';
+import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -52,18 +52,36 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     const own = opts.progress ? null : progressModal('提案用パースを写真品質でレンダリング中（光の反射・間接光を計算しています）');
     const pm = opts.progress ?? own!;
     const slot = opts.slot ?? { index: 0, total: 1 };
-    try {
-      url = await renderPhotoreal(v, {
+    const exposure = exposureFor(shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior'), v.design.timeOfDay);
+    const view = v.currentView();
+    const attempt = (safe: boolean) =>
+      renderPhotoreal(v, {
         width: W,
         height: H,
-        samples,
+        samples: safe ? Math.min(samples, 256) : samples,
         signal: pm.signal,
-        exposure: exposureFor(shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior'), v.design.timeOfDay),
-        onProgress: (s, total, preview) =>
-          pm.set((slot.index + s / total) / slot.total, `${shot?.title ?? 'パース'}：${s} / ${total} サンプル`, s % 32 === 0 && preview ? preview() : undefined),
+        exposure,
+        safe,
+        onStatus: (m) => pm.set(slot.index / slot.total, `${shot?.title ?? 'パース'}：${m}`),
+        onProgress: (s, total, preview) => pm.set((slot.index + s / total) / slot.total, `${shot?.title ?? 'パース'}：${s} / ${total} サンプル${safe ? '（負荷を下げて再計算中）' : ''}`, preview?.()),
       });
+    try {
+      try {
+        url = await attempt(false);
+      } catch (e) {
+        // GPU のリセット・真っ黒な結果は、負荷を下げて1回だけ自動でやり直す
+        if (!(e instanceof PhotorealError) || e.reason === 'shader') throw e;
+        console.warn('写真品質レンダリングを安全モードで再試行します:', e.message);
+        if (!(await v.waitForContext())) throw new Error('GPU がリセットされたまま復帰しませんでした。ページを再読み込みしてください');
+        if (shot) v.applyShot(shot);
+        else v.applyView(view);
+        url = await attempt(true);
+      }
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') toast(`レンダリングに失敗しました: ${(e as Error).message}`, 'error');
+      if ((e as Error).name !== 'AbortError') {
+        own?.close();
+        photorealFailed(ctx, e as Error, shot);
+      }
       return null;
     } finally {
       own?.close();
@@ -87,6 +105,35 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
   emit('gallery');
   if (!opts.silent) toast(quality === 'photoreal' ? '提案用パース（写真品質）を保存しました' : '下書きパースを保存しました', 'ok');
   return item;
+}
+
+/** 写真品質で出力できなかったときの案内（真っ黒な画像は保存しない） */
+function photorealFailed(ctx: StepCtx, e: Error, shot: Shot | null) {
+  const gl = ctx.app.viewer.renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '不明';
+  const software = /swiftshader|llvmpipe|software|basic render/i.test(gpu);
+  const body = h(
+    'div',
+    null,
+    h('p', null, `写真品質のレンダリングを完了できませんでした。（${e.message}）`),
+    h('p', { class: 'hint' }, `使用中の GPU: ${gpu}`),
+    h(
+      'ul',
+      { class: 'hint' },
+      software ? h('li', null, 'ブラウザのハードウェアアクセラレーションが無効になっています。Chrome の「設定 → システム → グラフィック アクセラレーションが使用可能な場合は使用する」をオンにして再起動してください。') : null,
+      h('li', null, 'ノートパソコンは電源につなぎ、他のタブ（動画や地図など）を閉じてから再度お試しください。'),
+      h('li', null, '「写真品質の設定」で解像度を下げる（1280×720 など）と成功しやすくなります。'),
+      h('li', null, 'Chrome または Edge の最新版をお使いください。'),
+    ),
+  );
+  modal('写真品質で出力できませんでした', body, [
+    { label: '閉じる' },
+    {
+      label: '確認用の下書きとして保存',
+      onClick: () => void captureShot(ctx, shot, { quality: 'realtime' }),
+    },
+  ]);
 }
 
 /** 現在のカメラが建物の内側か（室内露出の判定） */
@@ -302,7 +349,7 @@ export const designStep: Step = {
           ),
         );
       }
-      side.append(section('見どころカメラ（自動）', list, h('p', { class: 'hint' }, 'ドラッグで回転・右ドラッグで移動・ホイールでズーム。気に入った構図で撮影してください。')));
+      side.append(section('見どころカメラ（自動）', list, h('p', { class: 'hint' }, 'ドラッグで回転、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。気に入った構図で撮影してください。')));
       // 撮影
       const samplesSel = h(
         'select',
@@ -320,6 +367,7 @@ export const designStep: Step = {
             state.render.height = hh;
           },
         },
+        h('option', { value: '1280x720', selected: state.render.width === 1280 }, 'HD（1280×720・軽い）'),
         h('option', { value: '1920x1080', selected: state.render.width === 1920 }, 'フルHD（1920×1080）'),
         h('option', { value: '2560x1440', selected: state.render.width === 2560 }, 'WQHD（2560×1440）'),
         h('option', { value: '3840x2160', selected: state.render.width === 3840 }, '4K（3840×2160・印刷向け）'),

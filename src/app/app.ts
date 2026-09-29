@@ -24,6 +24,7 @@ export class App {
   readonly stage: HTMLElement;
   readonly side: HTMLElement;
   readonly viewerHost: HTMLElement;
+  private navBar: HTMLElement;
   private stepHost: HTMLElement;
   private stepBar: HTMLElement;
   private current: Step | null = null;
@@ -55,6 +56,8 @@ export class App {
       nameInput,
     );
     this.viewerHost = h('div', { id: 'viewer3d', class: 'view' });
+    this.navBar = h('div', { class: 'nav-tools' });
+    this.viewerHost.appendChild(this.navBar);
     this.stepHost = h('div', { class: 'view', style: 'pointer-events:none' });
     this.stage = h('div', { class: 'stage' }, this.viewerHost, this.stepHost);
     this.side = h('aside', { class: 'side' });
@@ -67,8 +70,48 @@ export class App {
   }
 
   get viewer(): Viewer {
-    if (!this._viewer) this._viewer = new Viewer(this.viewerHost, state.design);
+    if (!this._viewer) {
+      this._viewer = new Viewer(this.viewerHost, state.design);
+      this.buildNavBar(this._viewer);
+    }
     return this._viewer;
+  }
+
+  /** 3D 操作ツール（回転／掴んで移動／ズーム） */
+  private buildNavBar(v: Viewer) {
+    const bar = this.navBar;
+    const orbit = h('button', { class: 'nav-btn', title: '回転（ドラッグで建物の周りを回る）', onclick: () => setMode('orbit') }, h('span', { class: 'ic' }, '⟲'), '回転');
+    const pan = h('button', { class: 'nav-btn', title: '移動（画面を掴んで上下左右にずらす）\nスペースキーを押している間も移動になります', onclick: () => setMode('pan') }, h('span', { class: 'ic' }, '✋'), '移動');
+    const setMode = (m: 'orbit' | 'pan') => {
+      v.setNavMode(m);
+      orbit.classList.toggle('on', m === 'orbit');
+      pan.classList.toggle('on', m === 'pan');
+    };
+    setMode('orbit');
+    bar.append(
+      orbit,
+      pan,
+      h('div', { class: 'nav-sep' }),
+      h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
+      h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),
+    );
+    bar.title = '左ドラッグ：回転（移動モードでは移動）／右ドラッグ：移動（移動モードでは回転）／ホイール：カーソルの位置へズーム';
+    // スペースキーを押している間は一時的に「移動」
+    let held: 'orbit' | 'pan' | null = null;
+    const typing = (e: KeyboardEvent) => /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '');
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== 'Space' || typing(e) || this.viewerHost.style.visibility === 'hidden' || !this.current?.uses3d) return;
+      e.preventDefault();
+      if (held == null) {
+        held = v.navMode;
+        setMode('pan');
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code !== 'Space' || held == null) return;
+      setMode(held);
+      held = null;
+    });
   }
 
   /** モデルが更新されていれば 3D を作り直す */

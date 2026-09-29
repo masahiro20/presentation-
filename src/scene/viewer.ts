@@ -79,6 +79,7 @@ export class Viewer {
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
+  contextLost = false;
   userData: Record<string, unknown> = {};
   private shotCache: { state: SceneState; interiors: Map<string, Shot[]> } | null = null;
   onAfterRender?: () => void;
@@ -94,14 +95,33 @@ export class Viewer {
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
+    // GPU がリセットされた後は、GPU 上にしか無い空の環境マップを作り直す
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.updateEnvironment();
+      this.dirty = true;
+    });
+    this.renderer.domElement.addEventListener('webglcontextlost', () => {
+      this.contextLost = true;
+    });
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.maxPolarAngle = Math.PI * 0.495;
+    // ホイールはカーソルの位置に向かってズーム（見たい所へ寄っていける）
+    this.controls.zoomToCursor = true;
+    this.controls.minDistance = 0.2;
     this.controls.addEventListener('change', () => {
       this.dirty = true;
+    });
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', () => {
+      if (this.navMode === 'pan') el.style.cursor = 'grabbing';
+    });
+    window.addEventListener('pointerup', () => {
+      if (this.navMode === 'pan') el.style.cursor = 'grab';
     });
     this.controls.addEventListener('start', () => {
       this.anim = null;
@@ -136,6 +156,51 @@ export class Viewer {
     ro.observe(container);
     this.resize();
     this.loop();
+  }
+
+  navMode: 'orbit' | 'pan' = 'orbit';
+  /** 左ドラッグの操作: 回転（orbit）か、画面を掴んで移動（pan） */
+  setNavMode(mode: 'orbit' | 'pan') {
+    this.navMode = mode;
+    const M = THREE.MOUSE;
+    const T = THREE.TOUCH;
+    if (mode === 'pan') {
+      this.controls.mouseButtons = { LEFT: M.PAN, MIDDLE: M.DOLLY, RIGHT: M.ROTATE };
+      this.controls.touches = { ONE: T.PAN, TWO: T.DOLLY_ROTATE };
+    } else {
+      this.controls.mouseButtons = { LEFT: M.ROTATE, MIDDLE: M.DOLLY, RIGHT: M.PAN };
+      this.controls.touches = { ONE: T.ROTATE, TWO: T.DOLLY_PAN };
+    }
+    this.renderer.domElement.style.cursor = mode === 'pan' ? 'grab' : '';
+  }
+
+  /** ボタンでのズーム（k < 1 で近づく） */
+  zoomBy(k: number) {
+    this.anim = null;
+    if (this.camera.shiftY) {
+      this.camera.shiftY = 0;
+      this.camera.updateProjectionMatrix();
+    }
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    const d = off.length();
+    // 近づきすぎたら注視点ごと前へ進む（室内を歩くように）
+    if (k < 1 && d * k < 0.6) {
+      const step = off.clone().normalize().multiplyScalar(-Math.max(0.4, d * (1 - k)));
+      this.camera.position.add(step);
+      t.add(step);
+    } else {
+      this.camera.position.copy(t).addScaledVector(off, k);
+    }
+    this.controls.update();
+    this.dirty = true;
+  }
+
+  /** GPU のリセットからの復帰を待つ */
+  async waitForContext(timeoutMs = 15000): Promise<boolean> {
+    const t0 = performance.now();
+    while (this.contextLost && performance.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 100));
+    return !this.contextLost;
   }
 
   resize() {

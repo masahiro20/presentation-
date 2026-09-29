@@ -105,7 +105,7 @@ function ease(t: number) {
 export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, site: SiteInfo, shots: Shot[]): CameraProgram {
   const links = buildLinks(model);
   const eye = 1.5;
-  const speed = 0.85; // m/s
+  const speed = 1.05; // m/s
   const rooms = new Map(meta.rooms.map((r) => [r.room.id, r]));
   const segs: Segment[] = [];
   let cur: THREE.Vector3;
@@ -119,7 +119,7 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
   const route: THREE.Vector3[] = [start];
   if (ent) {
     const porch = ent.pos.clone().addScaledVector(ent.outward, 1.6).setY(ent.pos.y + eye);
-    route.push(ent.pos.clone().addScaledVector(ent.outward, 4.5).setY(eye * 0.9 + ent.pos.y * 0.4), porch, ent.pos.clone().setY(ent.pos.y + eye));
+    route.push(ent.pos.clone().addScaledVector(ent.outward, 4.5).setY(eye * 0.9 + ent.pos.y * 0.4), porch);
   }
   segs.push({ kind: 'hold', dur: 2.2, pos: start, look0: meta.bbox.getCenter(new THREE.Vector3()).setY(3.2), look1: (ent?.pos ?? meta.bbox.getCenter(new THREE.Vector3())).clone().setY(2.2), caption: 'ようこそ。まずは外観からご覧ください' });
 
@@ -172,6 +172,12 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
     cur = pts[pts.length - 1];
   };
   moveTo(route.slice(1));
+  if (ent) {
+    // 玄関ドアは閉じているので、暗転で室内へ
+    segs.push({ kind: 'cut', dur: 0.9, caption: 'おじゃまします' });
+    cur = ent.pos.clone().addScaledVector(ent.outward, -1.1).setY(ent.pos.y + eye);
+    segs.push({ kind: 'hold', dur: 0.8, pos: cur.clone(), look0: cur.clone().addScaledVector(ent.outward, -3), look1: cur.clone().addScaledVector(ent.outward, -3) });
+  }
 
   const shownRooms = new Set<string>();
   let lastRoom: string | null = null;
@@ -188,7 +194,7 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
       const p2 = via.point.clone().addScaledVector(d, 0.8).setY(y);
       moveTo([p0, p1, p2]);
     }
-    if (!shownRooms.has(roomId) && isHabitable(ri.room.type)) {
+    if (!shownRooms.has(roomId) && isHabitable(ri.room.type) && ri.room.area >= 5) {
       const vp = viewPoint(roomId);
       moveTo([vp.pos]);
       const lookDir = vp.look.clone().sub(vp.pos).setY(0).normalize();
@@ -212,9 +218,13 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
     const f1y = model.floors[0].elevation * MM + eye;
     moveTo([sc.clone().setY(f1y)]);
     segs.push({ kind: 'cut', dur: 0.8, caption: '2階へ' });
-    cur = sc.clone().setY(f2.elevation * MM + eye);
+    const hallStart = up2.find((r) => r.room.type === 'hall' || r.room.type === 'stairs');
+    cur = (hallStart ? hallStart.center.clone() : sc.clone()).setY(f2.elevation * MM + eye);
+    const firstUp = up2.filter((r) => isHabitable(r.room.type) && r.room.area >= 5).sort((a, b) => b.room.area - a.room.area)[0];
+    const lookFirst = firstUp ? firstUp.center.clone().setY(cur.y - 0.1) : cur.clone().add(new THREE.Vector3(0, -0.1, 2));
+    segs.push({ kind: 'hold', dur: 0.6, pos: cur.clone(), look0: lookFirst, look1: lookFirst });
     const order2 = up2
-      .filter((r) => isHabitable(r.room.type))
+      .filter((r) => isHabitable(r.room.type) && r.room.area >= 5)
       .sort((a, b) => (a.room.name.includes('主') ? -1 : 0) - (b.room.name.includes('主') ? -1 : 0) || b.room.area - a.room.area);
     const hall2 = up2.find((r) => r.room.type === 'hall' || r.room.type === 'stairs');
     for (const r of order2) {
@@ -249,9 +259,18 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
   const captions = timed.filter((s) => s.caption).map((s) => ({ t0: s.t0, t1: Math.max(s.t1, s.t0 + 2.5), text: s.caption! }));
   const lookAhead = (s: (typeof timed)[number], u: number) => {
     const p = s.path!.at(u);
-    const ahead = s.path!.at(Math.min(1, u + 1.2 / Math.max(0.5, s.path!.length)));
-    const dir = ahead.clone().sub(p);
-    if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+    const L = Math.max(0.5, s.path!.length);
+    // 1.5〜4m 先の点の平均方向（急な曲がり角で壁を向かないように）
+    const dir = new THREE.Vector3();
+    for (const d of [1.5, 2.5, 3.5, 4.5]) {
+      const a = s.path!.at(Math.min(1, u + d / L)).sub(p);
+      if (a.lengthSq() > 1e-4) dir.add(a.normalize());
+    }
+    if (dir.lengthSq() < 1e-6) {
+      const back = s.path!.at(Math.max(0, u - 0.5 / L));
+      dir.copy(p).sub(back);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+    }
     dir.y *= 0.3;
     return p.clone().add(dir.normalize().multiplyScalar(3)).setY(p.y - 0.15);
   };

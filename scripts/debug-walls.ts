@@ -1,0 +1,15 @@
+import { readFileSync } from 'node:fs';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { loadPdfVectors } from '../src/parser';
+import { detectScale } from '../src/parser/scale';
+import { pageToMm } from '../src/parser/assemble';
+import { detectWalls } from '../src/parser/walls';
+const file = process.argv[2]; const axisFilter = process.argv[3];
+const pages = await loadPdfVectors(new Uint8Array(readFileSync('samples/' + file)), pdfjs as any, { cMapUrl: 'node_modules/pdfjs-dist/cmaps/' });
+const sc = detectScale(pages);
+const p = pageToMm(pages[0], sc.mmPerPt);
+const det = detectWalls(p.segs, p.arcs);
+console.log('peaks', det.thicknessPeaks, 'heavy', det.heavyThreshold, det.groups.map(g=>g.theta));
+const [gs, os] = (axisFilter ?? '').split(':');
+for (const pc of det.pieces.filter(x => axisFilter ? x.g === +gs && Math.abs(x.o - +os) < 200 : true).sort((a,b)=>a.g-b.g||a.o-b.o||a.t0-b.t0)) console.log('piece', pc.g, pc.o.toFixed(0), pc.d.toFixed(0), pc.t0.toFixed(0), pc.t1.toFixed(0));
+for (const op of det.openings.filter(x => axisFilter ? x.g === +gs && Math.abs(x.o - +os) < 200 : true)) console.log('open', op.g, op.o.toFixed(0), op.kind, op.t0.toFixed(0), op.t1.toFixed(0), op.confidence);

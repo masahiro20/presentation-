@@ -12,6 +12,13 @@
 
 ## 使い方
 
+### Windows でかんたんに起動
+1. [Node.js](https://nodejs.org)（LTS 版）をインストール
+2. [ZIP をダウンロード](https://github.com/masahiro20/presentation-/archive/refs/heads/claude/madori-presentation-tool.zip)して展開（右クリック →「すべて展開」）
+3. 展開したフォルダの `start.bat` をダブルクリック（初回のみ数分かけて準備）→ ブラウザが開きます
+
+### コマンドで起動
+
 ```bash
 npm install
 npm run dev        # http://localhost:5173 を開く

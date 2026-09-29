@@ -1,0 +1,15 @@
+import { chromium } from 'playwright-core';
+const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--ignore-certificate-errors'] });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+await page.goto('http://localhost:5173/?sample=sample_house_A3.pdf#design');
+await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
+await page.getByRole('button', { name: 'LDK' }).first().click();
+await page.waitForTimeout(3000);
+await page.locator('summary', { hasText: '納まりを細かく調整' }).click();
+await page.waitForTimeout(500);
+await page.screenshot({ path: 'test-output/ui-design-hl.png' });
+await page.getByRole('button', { name: '一般的な仕様（比較用）' }).click();
+await page.waitForTimeout(4000);
+await page.locator('#viewer3d canvas').screenshot({ path: 'test-output/std-ldk.png' });
+await browser.close();

@@ -403,9 +403,14 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
         // 天井埋込のカーテンボックス: 天井から床まで落ちる薄手のドレープ（レールは見せない）
         const pocket = inner.clone().setY(ceil - 0.004);
         mb.box('int.shadowGap', pocket, dir, width + 0.7, 0.004, 0.16);
+        // 両脇にまとめたドレープ（ひだを丸い縦の束で表現）
         for (const side of [-1, 1]) {
-          const c = inner.clone().addScaledVector(dir, side * (width / 2 + 0.12));
-          mb.box('f.curtain', c.setY(fl + 0.01), dir, 0.34, ceil - fl - 0.02, 0.08);
+          const folds = 6;
+          for (let k = 0; k < folds; k++) {
+            const u = side * (width / 2 + 0.03 + k * 0.058);
+            const c = inner.clone().addScaledVector(dir, u).addScaledVector(outN, k % 2 ? 0.018 : -0.018);
+            mb.roundedBox('f.curtain', c.setY(fl + 0.012), dir, 0.07, ceil - fl - 0.02, 0.055, 0.026, 2);
+          }
         }
         return;
       }

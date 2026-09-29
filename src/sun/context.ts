@@ -29,9 +29,10 @@ export function textSprite(text: string, opts: { size?: number; color?: string; 
   ctx.fillText(text, c.width / 2, c.height / 2 + size * 0.05);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, toneMapped: false });
+  // 画面上で一定の大きさ（距離で拡大縮小しない）
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, toneMapped: false, sizeAttenuation: false });
   const sp = new THREE.Sprite(mat);
-  const s = opts.scale ?? 1;
+  const s = (opts.scale ?? 1) * 0.032;
   sp.scale.set((c.width / c.height) * s, s, 1);
   sp.renderOrder = 10;
   return sp;
@@ -52,6 +53,7 @@ export class SunContext {
   private neighborsG = new THREE.Group();
   private pathG = new THREE.Group();
   private sunMarker = new THREE.Group();
+  private aerialInfo: { west: number; east: number; south: number; north: number; tex: THREE.Texture } | null = null;
   state: ContextState;
   year = new Date().getFullYear();
 
@@ -101,6 +103,8 @@ export class SunContext {
     mesh.name = 'aerial';
     this.aerial.add(mesh);
     this.state.aerialLoaded = true;
+    this.aerialInfo = { west: img.west, east: img.east, south: img.south, north: img.north, tex };
+    this.buildNeighbors();
     this.applyVisibility();
     return img.attribution;
   }
@@ -150,7 +154,14 @@ export class SunContext {
   buildNeighbors() {
     clearGroup(this.neighborsG);
     const wallMat = new THREE.MeshStandardMaterial({ color: '#e8e6e1', roughness: 0.9 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: '#8d8f93', roughness: 0.8 });
+    // 航空写真があれば屋上に貼る（Google Earth のような見え方）
+    const ai = this.aerialInfo;
+    const roofMat = ai ? new THREE.MeshStandardMaterial({ map: ai.tex, roughness: 0.85 }) : new THREE.MeshStandardMaterial({ color: '#8d8f93', roughness: 0.8 });
+    const st = this.viewer.state!;
+    const c0 = st.meta.bbox.getCenter(new THREE.Vector3());
+    const a0 = (st.model.northAngleDeg * Math.PI) / 180;
+    const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
+    const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
     const manualMat = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
     for (const b of this.state.neighbors) {
       const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
@@ -158,7 +169,23 @@ export class SunContext {
       const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
       const geo = new THREE.ExtrudeGeometry(shape, { depth: b.height, bevelEnabled: false });
       geo.rotateX(-Math.PI / 2);
-      const mesh = new THREE.Mesh(geo, [b.source === 'manual' ? manualMat : wallMat, roofMat]);
+      if (ai) {
+        // 屋根面（上向き）の UV を航空写真の座標に
+        const pos = geo.getAttribute('position');
+        const nor = geo.getAttribute('normal');
+        const uv = geo.getAttribute('uv');
+        const v = new THREE.Vector3();
+        for (let i = 0; i < pos.count; i++) {
+          if (nor.getY(i) < 0.9) continue;
+          v.fromBufferAttribute(pos, i).sub(c0);
+          const e = v.dot(eastV);
+          const n = v.dot(northV);
+          uv.setXY(i, (e - ai.west) / (ai.east - ai.west), (n - ai.south) / (ai.north - ai.south));
+        }
+        uv.needsUpdate = true;
+      }
+      // ExtrudeGeometry のグループ: 0 = 上下面, 1 = 側面
+      const mesh = new THREE.Mesh(geo, [roofMat, b.source === 'manual' ? manualMat : wallMat]);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.userData.neighbor = true;
@@ -208,7 +235,7 @@ export class SunContext {
         const dot = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), new THREE.MeshBasicMaterial({ color: colors[d.id], toneMapped: false }));
         dot.position.copy(p);
         this.pathG.add(dot);
-        if (h % 2 === 0 || d.id === 'winter') {
+        if (d.id === 'winter' ? h % 2 === 0 : h % 3 === 0) {
           const label = textSprite(`${h}時`, { size: 40, color: '#fff', bg: 'rgba(0,0,0,0.45)', scale: 0.9 });
           label.position.copy(p).add(new THREE.Vector3(0, 0.7, 0));
           this.pathG.add(label);

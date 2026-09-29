@@ -144,22 +144,23 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
       for (const f of bld.features) {
         if (f.type !== 3) continue;
         const code = Number(f.props['vt_code'] ?? 0);
-        // 3101 普通建物, 3102 堅ろう建物, 3103 高層建物, 3111.. 等
-        const height = code === 3103 ? 30 : code === 3102 ? 12 : 6.8;
+        // 3101/3111 普通建物, 3102/3112 堅ろう建物, 3103/3113 高層建物
+        const kind = code % 10;
+        const height = kind === 3 ? 30 : kind === 2 ? 12 : 6.8;
         for (const ring of f.rings) {
           if (ring.length < 4) continue;
+          // MVT の外周リングはタイル座標（y 下向き）で時計回り = 面積が正
+          let tileArea = 0;
+          for (let i = 0; i < ring.length; i++) {
+            const [ax, ay] = ring[i];
+            const [bx, by] = ring[(i + 1) % ring.length];
+            tileArea += ax * by - bx * ay;
+          }
+          if (tileArea <= 0) continue; // 穴
           const pts = ring.map(([px, py]) => {
             const ll = tileToLonLat(tx + px / bld.extent, ty + py / bld.extent, z);
             return toLocal(ll.lat, ll.lon, lat, lon);
           });
-          // 外周リングのみ（面積の符号で判定）
-          let area = 0;
-          for (let i = 0; i < pts.length; i++) {
-            const p = pts[i];
-            const q = pts[(i + 1) % pts.length];
-            area += p.e * q.n - q.e * p.n;
-          }
-          if (area < 0) continue; // 穴
           const c = pts.reduce((s, p) => ({ e: s.e + p.e / pts.length, n: s.n + p.n / pts.length }), { e: 0, n: 0 });
           if (Math.hypot(c.e, c.n) > radius) continue;
           out.push({ ring: pts, height, source: 'gsi' });

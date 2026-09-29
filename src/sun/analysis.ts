@@ -352,9 +352,17 @@ export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: num
   const hourMasks = new Map<number, Float32Array>();
   for (let s = 8; s <= 16; s++) hourMasks.set(s, new Float32Array(nx * nz));
   const p = new THREE.Vector3();
+  const footprint = st.meta.outlines.flatMap((o) => o.polys.map((poly) => poly.map((q) => ({ x: q.x, y: q.y }))));
+  const inBuilding = (x: number, z: number) => footprint.some((poly) => pointInPolygon({ x, y: z }, poly));
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
       p.set(x0 + (i + 0.5) * cell, planeHeight, z0 + (j + 0.5) * cell);
+      if (inBuilding(p.x, p.z)) {
+        // 建物内部は日影図の対象外（等時間線が内部に出ないよう最大値に）
+        count[j * nx + i] = 8;
+        for (const m of hourMasks.values()) m[j * nx + i] = 1;
+        continue;
+      }
       let shaded = 0;
       for (let k = 0; k < dirs.length; k++) {
         const d = dirs[k];

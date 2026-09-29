@@ -3,6 +3,7 @@
  * UV はメートル単位（テクスチャ側で repeat = 1/tile）。
  */
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
 type V3 = THREE.Vector3;
 
@@ -171,6 +172,68 @@ export class MeshBuilder {
           bk.uv.push(p.dot(ua), p.dot(va));
         }
       }
+  }
+
+  /** 任意のジオメトリを変換して追加（UV はメートル単位で再計算） */
+  addGeometry(key: string, geo: THREE.BufferGeometry, matrix: THREE.Matrix4, keepUV = false) {
+    const g = (geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(matrix);
+    const pos = g.getAttribute('position');
+    const nor = g.getAttribute('normal');
+    const uvA = g.getAttribute('uv');
+    const bk = this.bucket(key);
+    const p = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      p.fromBufferAttribute(pos, i);
+      n.fromBufferAttribute(nor, i);
+      bk.pos.push(p.x, p.y, p.z);
+      bk.nor.push(n.x, n.y, n.z);
+      if (keepUV && uvA) {
+        bk.uv.push(uvA.getX(i), uvA.getY(i));
+        continue;
+      }
+      // 三平面投影の UV
+      const ax = Math.abs(n.x);
+      const ay = Math.abs(n.y);
+      const az = Math.abs(n.z);
+      if (ay >= ax && ay >= az) bk.uv.push(p.x, p.z);
+      else if (ax >= az) bk.uv.push(p.z, p.y);
+      else bk.uv.push(p.x, p.y);
+    }
+    g.dispose();
+  }
+
+  /** 角の丸い直方体（box と同じ向き・基準: base は底面中心） */
+  roundedBox(key: string, base: V3, dir: V3, len: number, height: number, depth: number, radius: number, segments = 3) {
+    const r = Math.min(radius, len / 2 - 0.001, height / 2 - 0.001, depth / 2 - 0.001);
+    if (r <= 0.002) return this.box(key, base, dir, len, height, depth);
+    const geo = new RoundedBoxGeometry(len, height, depth, segments, r);
+    const u = dir.clone().setY(0).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const n = new THREE.Vector3().crossVectors(u, up).normalize();
+    const m = new THREE.Matrix4().makeBasis(u, up, n);
+    m.setPosition(base.clone().addScaledVector(up, height / 2));
+    this.addGeometry(key, geo, m);
+    geo.dispose();
+  }
+
+  /** 2点間の円柱（幹・枝） */
+  tube(key: string, a: V3, b: V3, r0: number, r1 = r0, seg = 7) {
+    const len = a.distanceTo(b);
+    if (len < 1e-4) return;
+    const geo = new THREE.CylinderGeometry(r1, r0, len, seg, 1, true);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+    const m = new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
+    this.addGeometry(key, geo, m);
+    geo.dispose();
+  }
+
+  /** 葉のカード（アルファ付きテクスチャを貼る両面の板） */
+  card(key: string, c: V3, size: number, rot: THREE.Euler) {
+    const geo = new THREE.PlaneGeometry(size, size);
+    const m = new THREE.Matrix4().compose(c, new THREE.Quaternion().setFromEuler(rot), new THREE.Vector3(1, 1, 1));
+    this.addGeometry(key, geo, m, true);
+    geo.dispose();
   }
 
   isEmpty() {

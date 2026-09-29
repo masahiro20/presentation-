@@ -551,3 +551,42 @@ export function clearMaterialCache() {
   for (const m of matCache.values()) m.dispose();
   matCache.clear();
 }
+
+const leafCache = new Map<string, THREE.Texture>();
+
+/** 葉の集まりを描いたアルファ付きテクスチャ（植栽用） */
+export function leafCardTexture(color: string, color2: string, seed = 3, leafLen = 0.09): THREE.Texture {
+  const key = [color, color2, seed, leafLen].join();
+  const hit = leafCache.get(key);
+  if (hit) return hit;
+  const N = 512;
+  const c = makeCanvas(N) as HTMLCanvasElement;
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, N, N);
+  const rnd = mulberry32(seed);
+  const a = new THREE.Color(color);
+  const b = new THREE.Color(color2);
+  const count = Math.round(260 * (0.09 / leafLen));
+  for (let i = 0; i < count; i++) {
+    // 中心ほど密に
+    const r = Math.sqrt(rnd()) * N * 0.46;
+    const t = rnd() * Math.PI * 2;
+    const x = N / 2 + Math.cos(t) * r;
+    const y = N / 2 + Math.sin(t) * r;
+    const len = N * leafLen * (0.7 + rnd() * 0.6);
+    const col = a.clone().lerp(b, rnd()).multiplyScalar(0.8 + rnd() * 0.4);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rnd() * Math.PI * 2);
+    ctx.fillStyle = `rgb(${Math.min(255, col.r * 255)},${Math.min(255, col.g * 255)},${Math.min(255, col.b * 255)})`;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, len / 2, len / 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  leafCache.set(key, tex);
+  return tex;
+}

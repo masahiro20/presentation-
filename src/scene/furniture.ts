@@ -39,7 +39,12 @@ class Frame {
   box(key: string, u: number, v: number, w: number, d: number, y0: number, h: number) {
     const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v + d / 2);
     c.y = this.origin.y + y0;
-    this.mb.box(key, c, this.along, w, h, d);
+    // 布・寝具・天板は角を丸めて、CG らしい硬い稜線を避ける
+    const soft = key === 'f.fabric' || key === 'f.fabric2' || key === 'f.bedding';
+    const minDim = Math.min(w, d, h);
+    if (soft && minDim > 0.03) this.mb.roundedBox(key, c, this.along, w, h, d, Math.min(0.06, minDim * 0.3), 3);
+    else if ((key === 'f.wood' || key === 'f.counter' || key === 'f.cabinet') && minDim > 0.02) this.mb.roundedBox(key, c, this.along, w, h, d, Math.min(0.006, minDim * 0.25), 1);
+    else this.mb.box(key, c, this.along, w, h, d);
     if (currentOcc && y0 + h > 0.3 && key !== 'f.rug') {
       const ex = Math.abs(this.along.x) * w / 2 + Math.abs(this.inward.x) * d / 2;
       const ez = Math.abs(this.along.z) * w / 2 + Math.abs(this.inward.z) * d / 2;

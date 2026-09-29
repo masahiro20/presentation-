@@ -369,11 +369,6 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     }
   }
   const peaks = thicknessPeaks(hist, binSize, O.minThickness);
-  if (process.env.DEBUG_HIST) {
-    const rows: string[] = [];
-    hist.forEach((v, i) => v > 0 && rows.push(`${O.minThickness + i * binSize}:${Math.round(v)}`));
-    console.log('hist', rows.join(' '));
-  }
   const matchesPeak = (d: number) => peaks.some((p) => Math.abs(d - p) <= Math.max(12, p * 0.1));
 
   // ---- 壁片の確定（近い相手を優先） ----

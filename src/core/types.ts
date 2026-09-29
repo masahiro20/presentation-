@@ -127,11 +127,34 @@ export interface ParseReport {
   timingsMs: Record<string, number>;
 }
 
+/** 図面上の辺（図面の上 = top） */
+export type PlanSide = 'top' | 'right' | 'bottom' | 'left';
+
+export interface RoadInfo {
+  side: PlanSide;
+  /** 道路幅員 (mm) */
+  widthMm?: number;
+  /** 読み取った文字 */
+  label?: string;
+  /** どこから決めたか */
+  source: 'text' | 'compass' | 'manual';
+}
+
+export interface SiteData {
+  roads: RoadInfo[];
+  /** 敷地境界線の位置（図面座標 mm。分かった辺のみ） */
+  bounds: Partial<Record<PlanSide, number>>;
+  /** 敷地面積（図面の表記） */
+  areaM2?: number;
+}
+
 export interface BuildingModel {
   name: string;
   floors: Floor[];
   /** 真北の方向: 図面の上方向から時計回りの角度 (度) */
   northAngleDeg: number;
+  /** 接道・敷地（読み取れた場合） */
+  site?: SiteData;
   report: ParseReport;
 }
 

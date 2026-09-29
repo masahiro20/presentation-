@@ -36,6 +36,8 @@ export interface PlanSvgOptions {
   /** 日照時間などのオーバーレイ（部屋ID → 色） */
   roomTint?: Record<string, string>;
   title?: string;
+  /** 接道の表示（既定: 表示） */
+  showRoad?: boolean;
 }
 
 export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOptions = {}): string {
@@ -153,6 +155,46 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
     const x = minX - 900;
     s += dimLine(ox0, y, ox1, y, `${Math.round(ox1 - ox0)}`, false);
     s += dimLine(x, oy0, x, oy1, `${Math.round(oy1 - oy0)}`, true);
+  }
+  // 接道（1階のみ）: 道路側に帯と幅員を表示
+  if (model.site?.roads.length && model.floors[0] === f && opts.showRoad !== false) {
+    for (const r of model.site.roads) {
+      const bnd = model.site.bounds[r.side];
+      const label = `道路${r.widthMm ? `（幅員${(r.widthMm / 1000).toFixed(1)}m）` : ''}`;
+      const depth = 700;
+      const horiz = r.side === 'top' || r.side === 'bottom';
+      const edge = r.side === 'top' ? minY : r.side === 'bottom' ? maxY : r.side === 'left' ? minX : maxX;
+      const sign = r.side === 'top' || r.side === 'left' ? -1 : 1;
+      // 寸法線・方位記号・図面名と重ならない位置。敷地境界が分かればその位置（6m まで）
+      const gap = Math.min(6000, Math.max(r.side === 'bottom' ? 2100 : 1500, bnd != null ? (bnd - edge) * sign : 0));
+      const p0 = edge + sign * gap;
+      const p1 = p0 + sign * depth;
+      const [a0, a1] = horiz ? [minX - 600, maxX + 600] : [minY - 600, maxY + 600];
+      if (horiz) {
+        s += `<rect x="${a0}" y="${Math.min(p0, p1)}" width="${a1 - a0}" height="${depth}" fill="#e4e2de"/>`;
+        s += `<line x1="${a0}" y1="${p0}" x2="${a1}" y2="${p0}" stroke="#777" stroke-width="14" stroke-dasharray="200 60 30 60"/>`;
+        s += `<text x="${(a0 + a1) / 2}" y="${(p0 + p1) / 2 + 80}" font-size="230" text-anchor="middle" fill="#555">${esc(label)}</text>`;
+      } else {
+        s += `<rect x="${Math.min(p0, p1)}" y="${a0}" width="${depth}" height="${a1 - a0}" fill="#e4e2de"/>`;
+        s += `<line x1="${p0}" y1="${a0}" x2="${p0}" y2="${a1}" stroke="#777" stroke-width="14" stroke-dasharray="200 60 30 60"/>`;
+        const cx = (p0 + p1) / 2;
+        const cy = (a0 + a1) / 2;
+        s += `<text x="${cx}" y="${cy}" font-size="230" text-anchor="middle" fill="#555" transform="rotate(${sign > 0 ? 90 : -90} ${cx} ${cy})" dy="80">${esc(label)}</text>`;
+      }
+      // 表示範囲を広げる
+      const far = Math.max(p0, p1) + 300;
+      const near = Math.min(p0, p1) - 300;
+      if (r.side === 'right') vb.w = Math.max(vb.w, far - vb.x);
+      if (r.side === 'bottom') vb.h = Math.max(vb.h, far - vb.y);
+      if (r.side === 'left' && near < vb.x) {
+        vb.w += vb.x - near;
+        vb.x = near;
+      }
+      if (r.side === 'top' && near < vb.y) {
+        vb.h += vb.y - near;
+        vb.y = near;
+      }
+    }
   }
   // 方位
   s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);

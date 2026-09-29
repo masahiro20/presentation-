@@ -7,7 +7,7 @@
 import type { PageVectors, RawSegment, RawText } from './pdfExtract';
 
 export const PT_TO_MM = 25.4 / 72;
-const STANDARD = [10, 20, 30, 50, 60, 100, 150, 200, 250, 300, 400, 500, 600];
+export const STANDARD = [10, 20, 30, 50, 60, 100, 150, 200, 250, 300, 400, 500, 600];
 
 export interface ScaleResult {
   mmPerPt: number;

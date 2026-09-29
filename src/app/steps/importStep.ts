@@ -3,7 +3,7 @@ import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
 import { floorPlanSvg } from '../../drawings/plan';
-import { ROOM_TYPE_LABEL, type RoomType } from '../../core/types';
+import { ROOM_TYPE_LABEL, type PlanSide, type RoomType } from '../../core/types';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number) {
   const pm = progressModal('平面図を解析しています', false);
@@ -76,6 +76,7 @@ function dropScreen(ctx: StepCtx) {
         h('span', { style: 'font-size:13px;color:#8b9098;align-self:center' }, 'お試し:'),
         h('button', { class: 'btn sm', onclick: () => sample('sample_house_A3.pdf') }, 'サンプル平面図（A3・1階2階）'),
         h('button', { class: 'btn sm', onclick: () => sample('sample_house_pages.pdf') }, 'サンプル平面図（階ごと・方位回転）'),
+        h('button', { class: 'btn sm', onclick: () => sample('sample_house_site.pdf') }, 'サンプル平面図（敷地・道路あり）'),
       ),
       h(
         'div',
@@ -109,6 +110,8 @@ export const importStep: Step = {
             h('li', null, '「S=1/100」などの縮尺表記、または寸法線と寸法値があると縮尺を自動判定します'),
             h('li', null, '室名（LDK・洋室・和室・浴室など）と帖数の文字から部屋の用途を判定します'),
             h('li', null, '方位記号（N）から真北の向きを読み取ります'),
+            h('li', null, '「前面道路」「幅員4.0m」などの文字と敷地境界線から、道路に面する側と敷地の広さを読み取ります'),
+            h('li', null, '「S=1/100」のまま縮小印刷された図面も、帖数表記から実際の縮尺に補正します'),
             h('li', null, 'スキャン画像の PDF は読み取り精度が下がります'),
           ),
         ),
@@ -124,6 +127,91 @@ export const importStep: Step = {
     renderResult(ctx);
   },
 };
+
+const PLAN_SIDE_LABEL: Record<PlanSide, string> = { top: '図面の上', right: '図面の右', bottom: '図面の下', left: '図面の左' };
+
+/** 図面の辺 → 方位（北・南東など） */
+function sideCompass(side: PlanSide, northDeg: number): string {
+  const v = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] }[side];
+  const a = (northDeg * Math.PI) / 180;
+  const n = [Math.sin(a), -Math.cos(a)];
+  const e = [Math.cos(a), Math.sin(a)];
+  const deg = ((Math.atan2(v[0] * e[0] + v[1] * e[1], v[0] * n[0] + v[1] * n[1]) * 180) / Math.PI + 360) % 360;
+  return ['北', '北東', '東', '南東', '南', '南西', '西', '北西'][Math.round(deg / 45) % 8];
+}
+
+/** 接道（道路に面する側）と敷地の確認・修正 */
+function roadSection(model: NonNullable<typeof state.model>, redraw: () => void): HTMLElement {
+  const box = h('div');
+  const render = () => {
+    clear(box);
+    const site = model.site;
+    const roads = site?.roads ?? [];
+    const sides: PlanSide[] = ['top', 'right', 'bottom', 'left'];
+    const detected = roads.filter((r) => r.source !== 'manual');
+    const summary = roads.length
+      ? roads.map((r) => `${sideCompass(r.side, model.northAngleDeg)}側（${PLAN_SIDE_LABEL[r.side]}）${r.widthMm ? `・幅員${(r.widthMm / 1000).toFixed(1)}m` : ''}`).join('／')
+      : '図面に道路の表記が見つかりませんでした。玄関の向きを道路側として扱っています';
+    const src = detected.length ? `図面の「${detected.map((r) => r.label).filter(Boolean).join('」「')}」から読み取り` : roads.length ? '手動で設定' : '';
+    const nb = site ? Object.keys(site.bounds).length : 0;
+    const parts: (HTMLElement | null)[] = [
+      h('div', { style: 'font-size:13px;line-height:1.8' }, h('b', null, '道路：'), summary),
+      src ? h('div', { class: 'hint', style: 'margin:0' }, src) : null,
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '道路に面している側（角地は複数選択）'),
+      h(
+        'div',
+        { class: 'btn-row', style: 'margin-top:0' },
+        sides.map((sd) => {
+          const on = roads.some((r) => r.side === sd);
+          return h(
+            'button',
+            {
+              class: `btn sm ${on ? 'dark' : ''}`,
+              onclick: () => {
+                const s0 = (model.site ??= { roads: [], bounds: {} });
+                if (on) s0.roads = s0.roads.filter((r) => r.side !== sd);
+                else s0.roads.push({ side: sd, source: 'manual', widthMm: s0.roads[0]?.widthMm });
+                emit('model');
+                redraw();
+                render();
+              },
+            },
+            `${sideCompass(sd, model.northAngleDeg)}（${PLAN_SIDE_LABEL[sd].replace('図面の', '')}）`,
+          );
+        }),
+      ),
+      roads.length
+        ? field(
+            '道路幅員 (m)',
+            h('input', {
+              type: 'number',
+              step: 0.5,
+              min: 2,
+              max: 30,
+              value: roads[0].widthMm ? roads[0].widthMm / 1000 : '',
+              placeholder: '例: 4.0',
+              onchange: (e: Event) => {
+                const v = parseFloat((e.target as HTMLInputElement).value);
+                for (const r of roads) r.widthMm = Number.isFinite(v) ? v * 1000 : undefined;
+                emit('model');
+                redraw();
+                render();
+              },
+            }),
+          )
+        : null,
+      h(
+        'div',
+        { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' },
+        `敷地境界線：${nb ? `${nb}辺を図面から読み取り` : '図面から読み取れなかったため標準の余白で作成'}${site?.areaM2 ? `／敷地面積 ${site.areaM2.toFixed(2)}㎡（${(site.areaM2 / 3.30579).toFixed(1)}坪）` : ''}`,
+      ),
+      h('p', { class: 'hint' }, '道路側に駐車スペース・アプローチを配置し、「道路側から見た外観パース」を作成します。'),
+    ];
+    box.append(...parts.filter((x): x is HTMLElement => !!x));
+  };
+  render();
+  return section('接道・敷地', box);
+}
 
 function renderResult(ctx: StepCtx) {
   const model = state.model!;
@@ -210,6 +298,9 @@ function renderResult(ctx: StepCtx) {
       ),
     ),
   );
+
+  // 接道・敷地
+  side.append(roadSection(model, drawPlans));
 
   // 部屋
   const types = Object.keys(ROOM_TYPE_LABEL) as RoomType[];

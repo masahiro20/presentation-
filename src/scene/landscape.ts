@@ -7,6 +7,7 @@ import { MeshBuilder, V } from './meshBuilder';
 import type { BuildingMeta } from './building';
 import type { ExteriorStyle } from '../styles/presets';
 import { mulberry32 } from '../styles/noise';
+import type { PlanSide, RoadInfo, SiteData } from '../core/types';
 
 export interface SiteInfo {
   /** 敷地の範囲（ワールド） */
@@ -19,29 +20,41 @@ export interface SiteInfo {
   parking: { center: THREE.Vector3; along: THREE.Vector3 } | null;
 }
 
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder } {
+const SIDE_WORLD: Record<PlanSide, THREE.Vector3> = { top: V(0, 0, -1), bottom: V(0, 0, 1), left: V(-1, 0, 0), right: V(1, 0, 0) };
+
+/** 主な接道（複数あれば玄関に近い向き → 広い道路） */
+export function primaryRoad(site: SiteData | undefined, entranceOutward?: THREE.Vector3): RoadInfo | null {
+  if (!site?.roads.length) return null;
+  const score = (r: RoadInfo) => (entranceOutward ? SIDE_WORLD[r.side].dot(entranceOutward) * 10 : 0) + (r.widthMm ?? 4000) / 1000 + (r.source === 'manual' ? 100 : 0);
+  return site.roads.slice().sort((a, b) => score(b) - score(a))[0];
+}
+
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder } {
   const mb = new MeshBuilder();
   const trees = new MeshBuilder();
   const b = meta.bbox;
   const ent = meta.entrance;
-  // 道路方向: 玄関の外向き（軸に丸める）
-  let road = ent ? ent.outward.clone() : V(0, 0, 1);
+  // 道路方向: 図面から読み取った接道 → 無ければ玄関の外向き（軸に丸める）
+  const pr = primaryRoad(siteData, ent?.outward);
+  let road = pr ? SIDE_WORLD[pr.side].clone() : ent ? ent.outward.clone() : V(0, 0, 1);
   if (Math.abs(road.x) > Math.abs(road.z)) road = V(Math.sign(road.x), 0, 0);
   else road = V(0, 0, Math.sign(road.z) || 1);
-  const front = 6.0; // 道路側の余白（駐車場）
   const side = 1.6;
   const back = 2.2;
   const min = new THREE.Vector2(b.min.x - side, b.min.z - side);
   const max = new THREE.Vector2(b.max.x + side, b.max.z + side);
-  if (road.x > 0) max.x = b.max.x + front;
-  if (road.x < 0) min.x = b.min.x - front;
-  if (road.z > 0) max.y = b.max.z + front;
-  if (road.z < 0) min.y = b.min.z - front;
-  // 裏側
-  if (road.x > 0) min.x = b.min.x - back;
-  if (road.x < 0) max.x = b.max.x + back;
-  if (road.z > 0) min.y = b.min.z - back;
-  if (road.z < 0) max.y = b.max.z + back;
+  // 図面の敷地境界線（分かった辺のみ。建物からの距離は 0.3〜20m に制限）
+  const bd = siteData?.bounds ?? {};
+  const clampOut = (edge: number, pos: number | undefined, sign: number, def: number) => {
+    if (pos == null) return edge + sign * def;
+    const d = (pos / 1000 - edge) * sign;
+    return edge + sign * Math.max(0.3, Math.min(20, d));
+  };
+  const front = 6.0; // 道路側の余白（駐車場）の既定
+  min.x = clampOut(b.min.x, bd.left, -1, road.x < 0 ? front : road.x > 0 ? back : side);
+  max.x = clampOut(b.max.x, bd.right, 1, road.x > 0 ? front : road.x < 0 ? back : side);
+  min.y = clampOut(b.min.z, bd.top, -1, road.z < 0 ? front : road.z > 0 ? back : side);
+  max.y = clampOut(b.max.z, bd.bottom, 1, road.z > 0 ? front : road.z < 0 ? back : side);
 
   // 敷地（芝・砂利など）: 少し高くして周囲の地面と区別
   const gy = 0.0;
@@ -52,8 +65,8 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle): { mb: 
   const cz = (min.y + max.y) / 2;
   mb.quad('l.far', V(cx - R, -0.02, cz - R), V(cx - R, -0.02, cz + R), V(cx + R, -0.02, cz + R), V(cx + R, -0.02, cz - R), V(1, 0, 0), V(0, 0, 1));
 
-  // 道路（幅 6m）
-  const roadW = 6;
+  // 道路（図面の幅員。不明なら 6m）
+  const roadW = pr?.widthMm ? Math.max(3, Math.min(20, pr.widthMm / 1000)) : 6;
   let roadCenter: THREE.Vector3;
   if (road.x !== 0) {
     const x0 = road.x > 0 ? max.x + 0.2 : min.x - 0.2 - roadW;

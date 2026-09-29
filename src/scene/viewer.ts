@@ -272,7 +272,7 @@ export class Viewer {
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
-    const land = buildLandscape(meta, ext);
+    const land = buildLandscape(meta, ext, model.site);
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));

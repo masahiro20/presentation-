@@ -3,6 +3,7 @@
  * 座標はページ座標 (pt, 左上原点, y 下向き)。
  */
 import type { Vec2 } from '../core/types';
+import { mergeTextFragments } from './textMerge';
 
 export interface RawSegment {
   a: Vec2;
@@ -246,7 +247,7 @@ export async function extractPageVectors(
     texts.push({ str, cx, cy, size, width: w, angle });
   }
 
-  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts };
+  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts) };
 }
 
 export function bezier(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: number): Vec2 {

@@ -196,10 +196,11 @@ class PlanDrawer:
         self.ox, self.oy = origin_pt
         self.page_h = page_h
         self.style = style
+        self.scale = style.get("scale", SCALE)
 
     def pt(self, x_mm, y_mm):
         """実寸(mm, y下向き) → PDF座標(pt, y上向き)"""
-        s = MM2PT / SCALE
+        s = MM2PT / self.scale
         return self.ox + x_mm * s, self.page_h - (self.oy + y_mm * s)
 
     def line(self, x1, y1, x2, y2, w=0.25):
@@ -225,10 +226,24 @@ class PlanDrawer:
         c.drawPath(p, stroke=1 if stroke else 0, fill=1 if fill is not None else 0)
         c.setFillGray(0)
 
-    def text(self, x, y, s, size=7, center=True):
+    def text(self, x, y, s, size=7, center=True, vertical=False):
         c = self.c
         c.setFont(FONT, size)
         X, Y = self.pt(x, y)
+        if vertical:
+            # 縦書き: 1文字ずつ上から下へ
+            n = len(s)
+            for i, ch in enumerate(s):
+                c.drawCentredString(X, Y + (n / 2 - i - 0.5) * size * 1.05 - size * 0.35, ch)
+            return
+        if self.style.get("char_text"):
+            # CAD 風: 1文字ずつ配置
+            w = c.stringWidth(s, FONT, size)
+            x0 = X - w / 2 if center else X
+            for ch in s:
+                c.drawString(x0, Y - size * 0.35 if center else Y, ch)
+                x0 += c.stringWidth(ch, FONT, size)
+            return
         if center:
             c.drawCentredString(X, Y - size * 0.35, s)
         else:
@@ -242,7 +257,7 @@ class PlanDrawer:
         p = c.beginPath()
         # reportlab の arc は bezier で出力される
         X, Y = self.pt(cx, cy)
-        s = MM2PT / SCALE
+        s = MM2PT / self.scale
         # 座標系の y 反転に合わせて角度を反転
         p.arc(X - r * s, Y - r * s, X + r * s, Y + r * s, startAng=-a0, extent=-(a1 - a0))
         c.drawPath(p, stroke=1, fill=0)
@@ -250,7 +265,7 @@ class PlanDrawer:
     def circle(self, cx, cy, r, w=0.25):
         X, Y = self.pt(cx, cy)
         self.c.setLineWidth(w)
-        self.c.circle(X, Y, r * MM2PT / SCALE, stroke=1, fill=0)
+        self.c.circle(X, Y, r * MM2PT / self.scale, stroke=1, fill=0)
 
 
 def draw_floor(c, fl, origin_pt, page_h, style, title=True):
@@ -359,7 +374,9 @@ def draw_floor(c, fl, origin_pt, page_h, style, title=True):
         if name == "階段":
             continue
         area = room_cells(rects) * 0.5
-        if name in ("LDK", "和室", "主寝室", "洋室1", "洋室2", "書斎"):
+        if name == "ホール" and style.get("vertical_hall"):
+            d.text(cx, cy, name, 6.5, vertical=True)
+        elif name in ("LDK", "和室", "主寝室", "洋室1", "洋室2", "書斎"):
             d.text(cx, cy - 180, name, 8)
             d.text(cx, cy + 180, f"{area:.1f}帖", 6.5)
         else:
@@ -374,13 +391,13 @@ def draw_floor(c, fl, origin_pt, page_h, style, title=True):
         d.line(xa, y, xb, y, 0.25)
         for x in (xa, xb):
             d.line(x - 60, y + 60, x + 60, y - 60, 0.35)
-        if lab:
+        if lab and style.get("dims", True):
             d.text((xa + xb) / 2, y - 180, f"{int(round(xb - xa))}", 5.5)
     def vdim(ya, yb, x, lab=True):
         d.line(x, ya, x, yb, 0.25)
         for y in (ya, yb):
             d.line(x - 60, y + 60, x + 60, y - 60, 0.35)
-        if lab:
+        if lab and style.get("dims", True):
             c.saveState()
             X, Y = d.pt(x - 180, (ya + yb) / 2)
             c.translate(X, Y)
@@ -400,7 +417,7 @@ def draw_floor(c, fl, origin_pt, page_h, style, title=True):
         d.line(x * P, -150, x * P, -dim_off - 700, 0.2)
 
     if title:
-        d.text(W / 2, H + 1500, f"{fl}階平面図  S=1/{SCALE}", 10)
+        d.text(W / 2, H + 1500, f"{fl}階平面図  S=1/{style.get('label_scale', SCALE)}", 10)
     return d
 
 
@@ -463,6 +480,33 @@ def main():
         c.setFont(FONT, 9)
         c.drawString(15 * MM2PT, 12 * MM2PT, f"サンプル邸  {fl}階平面図  1:100")
         c.showPage()
+    c.save()
+
+    # 敷地・道路入り、CAD 風の1文字ずつの文字、縦書き、寸法値なし、
+    # 「S=1/100」表記のまま縮小印刷（実際は 1/150）された図面
+    path = os.path.join(HERE, "sample_house_site.pdf")
+    w, h = landscape(A4)
+    c = canvas.Canvas(path, pagesize=(w, h))
+    style = {"weighted": True, "fill": False, "window_faces": False, "grid": False, "char_text": True,
+             "vertical_hall": True, "dims": False, "scale": 150, "label_scale": 100}
+    d = draw_floor(c, 1, (35 * MM2PT, 45 * MM2PT), h, style)
+    draw_floor(c, 2, (200 * MM2PT, 45 * MM2PT), h, style)
+    W1, H1 = 10 * P, 8 * P
+    site = (-2400, -2400, W1 + 5500, H1 + 2600)  # 左, 上, 右(道路境界), 下
+    c.setDash([6, 2, 1, 2])
+    x0, y0, x1, y1 = site
+    for a, b in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+        d.line(a[0], a[1], b[0], b[1], 0.35)
+    c.setDash([])
+    # 道路（東側・幅員6m）
+    d.line(x1 + 6000, y0 - 3000, x1 + 6000, y1 + 3000, 0.35)
+    d.text(x1 + 3000, (y0 + y1) / 2 - 600, "前面道路（公道）", 7)
+    d.text(x1 + 3000, (y0 + y1) / 2 + 600, "幅員6.0m", 6)
+    d.text((x0 + x1) / 2, y1 + 1300, "敷地面積 165.30㎡", 6)
+    draw_north(c, (272 * MM2PT, h - 25 * MM2PT))
+    c.setFont(FONT, 9)
+    c.drawString(15 * MM2PT, 12 * MM2PT, "サンプル邸  平面図  S=1/100 (A3)  ※A4縮小")
+    c.showPage()
     c.save()
 
     with open(os.path.join(HERE, "sample_house_truth.json"), "w") as f:

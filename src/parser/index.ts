@@ -3,7 +3,7 @@
  */
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
-import { detectScale, PT_TO_MM } from './scale';
+import { detectScale, PT_TO_MM, STANDARD } from './scale';
 import { assembleModel, pageToMm } from './assemble';
 
 export interface PdfjsLike {
@@ -14,6 +14,8 @@ export interface PdfjsLike {
 export interface ParseOptions {
   cMapUrl?: string;
   standardFontDataUrl?: string;
+  /** CMap・フォントの取得方法（ブラウザで base64 版に切り替える用） */
+  BinaryDataFactory?: unknown;
   /** 手動で縮尺を指定 (例: 100 → 1/100) */
   scaleDenominator?: number;
   name?: string;
@@ -26,6 +28,7 @@ export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: P
     cMapUrl: opts.cMapUrl,
     cMapPacked: true,
     standardFontDataUrl: opts.standardFontDataUrl,
+    ...(opts.BinaryDataFactory ? { BinaryDataFactory: opts.BinaryDataFactory, useWorkerFetch: false } : {}),
     isEvalSupported: false,
     useSystemFonts: false,
   }).promise;
@@ -63,16 +66,34 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     ratios.sort((a, b) => a - b);
     const med = ratios[Math.floor(ratios.length / 2)];
     const within = ratios.filter((x) => Math.abs(x / med - 1) < 0.12).length;
-    if (Math.abs(med - 1) > 0.25 && within >= ratios.length * 0.6 && sc.source === 'default' && !opts.scaleDenominator) {
+    // 縮尺表記が無い／「S=1/100」のまま縮小印刷された（A3→A4 など）図面は、帖数の方が信頼できる
+    const trustLabels = sc.source === 'default' || sc.source === 'text' || (sc.source === 'dimension' && sc.matches < 5);
+    if (Math.abs(med - 1) > 0.2 && within >= ratios.length * 0.6 && trustLabels && !opts.scaleDenominator) {
       const k = Math.sqrt(med);
-      sc = { ...sc, mmPerPt: sc.mmPerPt * k, denominator: null };
+      const before = sc.source;
+      let den: number | null = (sc.mmPerPt * k) / PT_TO_MM;
+      // 標準の縮尺か、表記の縮尺を用紙サイズ違いで縮小／拡大印刷した値（√2 倍など）に合わせる
+      const cands = [...STANDARD];
+      if (sc.denominator) for (const f of [Math.SQRT2, Math.SQRT1_2, 2, 0.5]) cands.push(sc.denominator * f);
+      const snap = cands.find((c) => Math.abs(c / den! - 1) < 0.025);
+      den = snap ?? null;
+      sc = { ...sc, mmPerPt: snap ? snap * PT_TO_MM : sc.mmPerPt * k, denominator: snap && Number.isInteger(snap) ? snap : null };
       scaleSource = 'area';
-      warnings.push(`縮尺表記が見つからないため、帖数表記から縮尺を推定しました (約1/${Math.round(sc.mmPerPt / PT_TO_MM)})`);
+      const shown = Math.round(sc.mmPerPt / PT_TO_MM);
+      warnings.push(
+        before === 'default'
+          ? `縮尺表記が見つからないため、帖数表記から縮尺を推定しました (約1/${shown})`
+          : `図面の縮尺表記と帖数が合わないため、帖数から縮尺を補正しました（縮小印刷の可能性・約1/${shown}）`,
+      );
       mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
       res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
     } else if (Math.abs(med - 1) > 0.15) {
       warnings.push('図面の帖数と解析した面積に差があります。縮尺をご確認ください');
     }
+  }
+  const allRooms = res.floors.flatMap((f) => f.rooms);
+  if (allRooms.length >= 4 && !allRooms.some((r) => !['室', '収納', '階段'].includes(r.name))) {
+    warnings.push('室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください');
   }
   if (sc.source === 'default' && scaleSource === 'default') warnings.push('縮尺を特定できなかったため 1/100 として解析しました');
 

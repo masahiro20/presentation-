@@ -8,6 +8,7 @@ import { detectWalls, type Arc, type DetectedOpening, type Seg, type WallDetecti
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText } from './labels';
 import { detectStairs } from './stairs';
+import { detectSite, translateSite } from './site';
 
 export interface MmText {
   str: string;
@@ -222,6 +223,9 @@ export interface PlanData {
   walls: WWall[];
   texts: MmText[];
   segs: Seg[];
+  /** 敷地・道路の読み取り用（建物の周囲 30m の文字と線） */
+  siteTexts: MmText[];
+  siteSegs: Seg[];
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -649,6 +653,8 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const inBox = (x: number, y: number, m: number) => x > bbox.minX - m && x < bbox.maxX + m && y > bbox.minY - m && y < bbox.maxY + m;
       const texts = page.texts.filter((t) => inBox(t.x, t.y, margin));
       const segs = page.segs.filter((s) => inBox((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2, margin));
+      const siteTexts = page.texts.filter((t) => inBox(t.x, t.y, 30000));
+      const siteSegs = page.segs.filter((s) => inBox(s.a.x, s.a.y, 30000) || inBox(s.b.x, s.b.y, 30000));
       // 階の見出し
       let floorHint: number | null = null;
       let bestD = Infinity;
@@ -665,7 +671,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       }
       const h = bbox.maxY - bbox.minY;
       if (bestD > h * 0.8 && groups.length > 1) floorHint = null;
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint, walls: g, texts, segs });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint, walls: g, texts, segs, siteTexts, siteSegs });
     }
   }
   return plans;
@@ -763,6 +769,8 @@ export function translatePlan(p: PlanData, d: Vec2) {
   }
   p.texts = p.texts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
   p.segs = p.segs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
+  p.siteTexts = p.siteTexts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
+  p.siteSegs = p.siteSegs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 
@@ -814,14 +822,17 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     f.walls.forEach((w) => thicknesses.add(w.thickness));
     floors.push(f);
   }
+  // 接道・敷地（1階の図面の周囲から）
+  const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];
   if (o1.length) {
     const dx = -Math.min(...o1.map((p) => p.x));
     const dy = -Math.min(...o1.map((p) => p.y));
     for (const f of floors) translateFloor(f, dx, dy);
+    if (site) translateSite(site, dx, dy);
   }
-  return { name, floors, northAngleDeg: north, thicknesses: [...thicknesses].sort((a, b) => a - b) };
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, thicknesses: [...thicknesses].sort((a, b) => a - b) };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

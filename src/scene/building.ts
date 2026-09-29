@@ -8,11 +8,14 @@ import { pointInPolygon } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
 import type { ExteriorStyle } from '../styles/presets';
+import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
 export const MM = 0.001;
 
 export interface BuildOptions {
   exterior: ExteriorStyle;
+  /** 標準仕様（建具・窓・照明の納まり） */
+  spec?: BuilderSpec;
   /** 最上階の外壁の高さ（床から、mm） */
   topWallHeight?: number;
 }
@@ -75,6 +78,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
   const mb = new MeshBuilder();
   const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [] };
   const ext = opts.exterior;
+  const spec = opts.spec ?? BUILDER_SPECS[0];
   const entranceWalls = new Set<string>();
   // 玄関のある壁と、その上階の同じ位置の壁（縦のアクセント帯）
   const entranceRanges: { a: THREE.Vector2; b: THREE.Vector2 }[] = [];
@@ -101,14 +105,18 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
 
     // ---- 壁 ----
     for (const w of f.walls) {
-      const ops = f.openings.filter((o) => o.wallId === w.id).sort((a, b) => a.t0 - b.t0);
+      // 仕様に合わせて開口の高さを調整（フルハイトドア・サッシ上端＝天井）
+      const ops = f.openings
+        .filter((o) => o.wallId === w.id)
+        .map((o) => ({ ...o, ...effectiveOpening(o, f.ceilingHeight, spec) }))
+        .sort((a, b) => a.t0 - b.t0);
       const accentHere =
         !!ext.accent &&
         ((ext.accentRule === 'upper' && f.level >= 2) ||
           (ext.accentRule === 'lower' && f.level === 1) ||
           (ext.accentRule === 'entrance' && w.exterior && isEntranceColumn(w, entranceRanges)));
-      buildWall(mb, f, w, ops, fl, top, accentHere ? 'ext.accent' : 'ext.wall', isTop);
-      for (const o of ops) buildOpening(mb, f, w, o, fl, meta);
+      buildWall(mb, f, w, ops, fl, top, accentHere ? 'ext.accent' : 'ext.wall', isTop, spec);
+      for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec);
     }
 
     // ---- 床 ----
@@ -130,6 +138,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (['balcony', 'porch', 'void'].includes(r.type)) continue;
       emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
     }
+    // ---- 天井の設備（ダウンライト・間接照明） ----
+    buildCeilingDetails(mb, f, fl, spec);
     // ---- 階段 ----
     for (const s of f.stairs) {
       if (!s.goesUp || !upper) continue;
@@ -270,7 +280,7 @@ function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
 }
 
 /** 壁を開口部で分割して生成 */
-function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean) {
+function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean, spec: BuilderSpec) {
   const A = V(w.a.x * MM, 0, w.a.y * MM);
   const B = V(w.b.x * MM, 0, w.b.y * MM);
   const L = A.distanceTo(B);
@@ -297,13 +307,20 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const bottom = w.exterior && f.level === 1 ? fl - 0.1 : fl;
   const wallTop = w.exterior ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior ? 'ext.wallTop' : 'int.wallTop';
-  const jambKey = w.exterior ? 'int.trim' : 'int.trim';
+  // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
+  const jambKey = w.exterior
+    ? spec.windows.interiorReveal === 'plaster'
+      ? 'int.wall'
+      : 'int.trim'
+    : spec.doors.frame === 'casing'
+      ? 'int.trim'
+      : 'int.wall';
   void isTop;
 
   const seg = (s0: number, s1: number, y0: number, y1: number, startCap: string | null, endCap: string | null) => {
     if (s1 - s0 < 0.005 || y1 - y0 < 0.005) return;
     const base = A.clone().addScaledVector(dir, (s0 + s1) / 2).setY(y0);
-    mb.box([kPlus, kMinus, topKey, 'int.wallTop', startCap, endCap], base, dir, s1 - s0, y1 - y0, t);
+    mb.box([kPlus, kMinus, topKey, spec.windows.interiorReveal === 'plaster' ? 'int.wall' : 'int.wallTop', startCap, endCap], base, dir, s1 - s0, y1 - y0, t);
   };
 
   let cursor = 0;
@@ -322,7 +339,7 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : jambKey);
 }
 
-function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number, meta: BuildingMeta) {
+function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number, meta: BuildingMeta, spec: BuilderSpec) {
   const A = V(w.a.x * MM, 0, w.a.y * MM);
   const B = V(w.b.x * MM, 0, w.b.y * MM);
   const dir = new THREE.Vector3().subVectors(B, A).normalize();
@@ -341,7 +358,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   if (o.kind === 'window') {
     // サッシ枠は外壁寄り（半外付け）
     const plane = mid.clone().addScaledVector(outN, t / 2 - 0.05);
-    const fw = 0.035;
+    const fw = 0.03;
     const fd = 0.07;
     const frame = 'ext.frame';
     // 上下枠・縦枠
@@ -376,12 +393,23 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     // 外部の水切り
     mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.04, 0.02, 0.05);
     // 室内の窓台
-    if (o.sill > 0) mb.box('int.trim', mid.clone().addScaledVector(outN, -t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.06, 0.02, 0.06);
+    if (o.sill > 0 && spec.windows.sillBoard) mb.box('int.trim', mid.clone().addScaledVector(outN, -t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.06, 0.02, 0.06);
     // カーテン（居室の掃き出し・腰窓）
     const inRoom = roomAt(f, (mid.x - outN.x * (t / 2 + 0.2)) / MM, (mid.z - outN.z * (t / 2 + 0.2)) / MM);
-    if (inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
-      const cy = fl + Math.min(2.35, (o.sill + o.height) * MM + 0.1);
+    if (spec.curtains !== 'none' && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
+      const ceil = fl + f.ceilingHeight * MM;
       const inner = mid.clone().addScaledVector(outN, -t / 2 - 0.12);
+      if (spec.curtains === 'pocket') {
+        // 天井埋込のカーテンボックス: 天井から床まで落ちる薄手のドレープ（レールは見せない）
+        const pocket = inner.clone().setY(ceil - 0.004);
+        mb.box('int.shadowGap', pocket, dir, width + 0.7, 0.004, 0.16);
+        for (const side of [-1, 1]) {
+          const c = inner.clone().addScaledVector(dir, side * (width / 2 + 0.12));
+          mb.box('f.curtain', c.setY(fl + 0.01), dir, 0.34, ceil - fl - 0.02, 0.08);
+        }
+        return;
+      }
+      const cy = fl + Math.min(2.35, (o.sill + o.height) * MM + 0.1);
       // 両端にまとめたカーテン
       for (const side of [-1, 1]) {
         const c = inner.clone().addScaledVector(dir, side * (width / 2 + 0.05));
@@ -423,10 +451,33 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   // ---- 室内建具 ----
   const trim = 'int.trim';
   const cw = 0.03;
-  // 三方枠
-  mb.box(trim, mid.clone().setY(head), dir, width + cw * 2, cw, t + 0.012);
-  mb.box(trim, mid.clone().addScaledVector(dir, -width / 2 - cw / 2).setY(fl), dir, cw, H + cw, t + 0.012);
-  mb.box(trim, mid.clone().addScaledVector(dir, width / 2 + cw / 2).setY(fl), dir, cw, H + cw, t + 0.012);
+  const doorT = spec.doors.thickness * MM;
+  const topGap = spec.doors.topGap * MM;
+  if (spec.doors.frame === 'casing') {
+    // 一般的な三方枠
+    mb.box(trim, mid.clone().setY(head), dir, width + cw * 2, cw, t + 0.012);
+    mb.box(trim, mid.clone().addScaledVector(dir, -width / 2 - cw / 2).setY(fl), dir, cw, H + cw, t + 0.012);
+    mb.box(trim, mid.clone().addScaledVector(dir, width / 2 + cw / 2).setY(fl), dir, cw, H + cw, t + 0.012);
+  } else if (spec.doors.frame === 'inset') {
+    // インセット枠: 扉と同色の細い枠を壁厚内に
+    const iw = 0.012;
+    mb.box('int.door', mid.clone().addScaledVector(dir, -width / 2 + iw / 2).setY(fl), dir, iw, H, t * 0.6);
+    mb.box('int.door', mid.clone().addScaledVector(dir, width / 2 - iw / 2).setY(fl), dir, iw, H, t * 0.6);
+  }
+  // ステルス枠は枠を見せない（小口は壁と同じ仕上げ）
+  const handle = (base: THREE.Vector3, along: THREE.Vector3, nrm: THREE.Vector3) => {
+    if (spec.doors.handle === 'slim-lever') {
+      // 細身のレバーハンドル（両面）
+      for (const sgn of [1, -1]) {
+        const p = base.clone().addScaledVector(nrm, sgn * (doorT / 2 + 0.028));
+        mb.box('f.handle', p.clone().addScaledVector(along, 0.055), along, 0.13, 0.012, 0.012);
+        mb.box('f.handle', p.clone().addScaledVector(nrm, -sgn * 0.014).addScaledVector(along, 0), along, 0.012, 0.012, 0.028);
+      }
+    } else {
+      mb.box('f.metal', base.clone().addScaledVector(nrm, doorT / 2 + 0.02), along, 0.12, 0.02, 0.02);
+      mb.box('f.metal', base.clone().addScaledVector(nrm, -doorT / 2 - 0.02), along, 0.12, 0.02, 0.02);
+    }
+  };
   if (o.kind === 'door') {
     const hingeS = o.hingeAtStart !== false ? s0 : s1;
     const towards = o.hingeAtStart !== false ? 1 : -1; // ヒンジから戸先方向
@@ -435,22 +486,86 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     // 80度開いた扉
     const ang = (80 * Math.PI) / 180;
     const leafDir = dir.clone().multiplyScalar(towards * Math.cos(ang)).addScaledVector(nW, side * Math.sin(ang)).normalize();
-    const lw = width - 0.01;
-    const c = hinge.clone().addScaledVector(leafDir, lw / 2).setY(fl + 0.01);
-    mb.box('int.door', c, leafDir, lw, H - 0.015, 0.036);
+    const lw = width - 0.008;
+    const c = hinge.clone().addScaledVector(leafDir, lw / 2).setY(fl + 0.008);
+    mb.box('int.door', c, leafDir, lw, H - 0.008 - topGap, doorT);
     meta.doorLeaves.push({ a: hinge.clone().setY(fl), b: hinge.clone().addScaledVector(leafDir, lw).setY(fl) });
-    const knob = hinge.clone().addScaledVector(leafDir, lw - 0.07).setY(fl + 0.95);
+    const knob = hinge.clone().addScaledVector(leafDir, lw - 0.075).setY(fl + 1.0);
     const nLeaf = new THREE.Vector3(-leafDir.z, 0, leafDir.x);
-    mb.box('f.metal', knob.clone().addScaledVector(nLeaf, 0.035), leafDir, 0.12, 0.02, 0.02);
-    mb.box('f.metal', knob.clone().addScaledVector(nLeaf, -0.035), leafDir, 0.12, 0.02, 0.02);
+    handle(knob, leafDir.clone().negate(), nLeaf);
   } else if (o.kind === 'sliding') {
-    // 半分開いた引戸（壁面に沿って）
+    // 半分開いた引戸（壁面に沿って）。フルハイトは上レールを天井に埋め込み見せない
     const face = mid.clone().addScaledVector(nW, t / 2 + 0.025);
     const lw = width * 0.55;
-    const c = face.clone().addScaledVector(dir, -width / 2 + lw / 2 - width * 0.35).setY(fl + 0.01);
-    mb.box('int.door', c, dir, lw, H - 0.015, 0.03);
+    const c = face.clone().addScaledVector(dir, -width / 2 + lw / 2 - width * 0.35).setY(fl + 0.008);
+    mb.box('int.door', c, dir, lw, H - 0.008 - topGap, doorT * 0.9);
     meta.doorLeaves.push({ a: c.clone().addScaledVector(dir, -lw / 2), b: c.clone().addScaledVector(dir, lw / 2) });
-    mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);
+    if (!spec.doors.fullHeight) mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);
+    // 引手（細い縦長の彫り込みを暗い線で表現）
+    mb.box('f.handle', c.clone().addScaledVector(dir, lw / 2 - 0.05).addScaledVector(nW, doorT * 0.45 + 0.001).setY(fl + 0.85), dir, 0.012, 0.35, 0.002);
+  }
+}
+
+/** 天井のダウンライト・間接照明 */
+function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
+  const ceil = fl + f.ceilingHeight * MM;
+  for (const r of f.rooms) {
+    if (['closet', 'storage', 'void', 'balcony', 'porch', 'stairs'].includes(r.type)) continue;
+    const xs = r.polygon.map((p) => p.x * MM);
+    const zs = r.polygon.map((p) => p.y * MM);
+    const x0 = Math.min(...xs);
+    const x1 = Math.max(...xs);
+    const z0 = Math.min(...zs);
+    const z1 = Math.max(...zs);
+    if (spec.lighting === 'downlight') {
+      // 壁から 0.7m 以上離し、約 1.8m 間隔で均等配置
+      const nx = Math.max(1, Math.round((x1 - x0 - 1.4) / 1.8) + 1);
+      const nz = Math.max(1, Math.round((z1 - z0 - 1.4) / 1.8) + 1);
+      for (let i = 0; i < nx; i++)
+        for (let j = 0; j < nz; j++) {
+          const x = nx === 1 ? (x0 + x1) / 2 : x0 + 0.7 + ((x1 - x0 - 1.4) * i) / (nx - 1);
+          const z = nz === 1 ? (z0 + z1) / 2 : z0 + 0.7 + ((z1 - z0 - 1.4) * j) / (nz - 1);
+          if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) continue;
+          mb.cylinder('f.downlightRing', V(x, ceil - 0.004, z), 0.055, 0.003, 20);
+          mb.cylinder('f.downlight', V(x, ceil - 0.006, z), 0.042, 0.003, 20);
+        }
+    } else if (!['bath', 'toilet'].includes(r.type)) {
+      mb.cylinder('f.lampShade', V((x0 + x1) / 2, ceil - 0.08, (z0 + z1) / 2), 0.28, 0.08, 28);
+    }
+    // 間接照明: LDK・リビング・寝室の長い壁の天井際（窓のない壁）
+    if (spec.indirectLighting && ['ldk', 'living', 'bedroom'].includes(r.type)) {
+      let best: { a: THREE.Vector3; b: THREE.Vector3; len: number } | null = null;
+      for (let i = 0; i < r.polygon.length; i++) {
+        const p = r.polygon[i];
+        const q = r.polygon[(i + 1) % r.polygon.length];
+        const len = Math.hypot(q.x - p.x, q.y - p.y) * MM;
+        if (len < 2.4) continue;
+        const hasWin = f.openings.some((o) => {
+          if (o.kind !== 'window') return false;
+          const w = f.walls.find((w) => w.id === o.wallId);
+          if (!w) return false;
+          const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+          const tm = (o.t0 + o.t1) / 2 / L;
+          const c = { x: w.a.x + (w.b.x - w.a.x) * tm, y: w.a.y + (w.b.y - w.a.y) * tm };
+          const dx = q.x - p.x;
+          const dy = q.y - p.y;
+          const t = Math.max(0, Math.min(1, ((c.x - p.x) * dx + (c.y - p.y) * dy) / (dx * dx + dy * dy)));
+          return Math.hypot(p.x + dx * t - c.x, p.y + dy * t - c.y) < 300;
+        });
+        if (hasWin) continue;
+        if (!best || len > best.len) best = { a: V(p.x * MM, 0, p.y * MM), b: V(q.x * MM, 0, q.y * MM), len };
+      }
+      if (best) {
+        const d = best.b.clone().sub(best.a).normalize();
+        const n = new THREE.Vector3(-d.z, 0, d.x);
+        const mid = best.a.clone().add(best.b).multiplyScalar(0.5);
+        // 室内側へ
+        const inside = pointInPolygon({ x: (mid.x + n.x * 0.3) / MM, y: (mid.z + n.z * 0.3) / MM }, r.polygon) ? 1 : -1;
+        const c = mid.clone().addScaledVector(n, inside * 0.16);
+        mb.box('int.shadowGap', c.clone().setY(ceil - 0.005), d, best.len - 0.3, 0.005, 0.14);
+        mb.box('f.cove', c.clone().addScaledVector(n, -inside * 0.03).setY(ceil - 0.012), d, best.len - 0.4, 0.006, 0.03);
+      }
+    }
   }
 }
 
@@ -466,7 +581,7 @@ function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
   const entry = s.entry;
   const runAlongZ = entry === 'n' || entry === 's';
   const tread = 'int.stairs';
-  const riser = 'int.trim';
+  const riser = 'int.stairs';
   const put = (x0: number, z0: number, x1: number, z1: number, yTop: number) => {
     const min = V(Math.min(x0, x1), yTop - rh * 0.9 - 0.04, Math.min(z0, z1));
     const max = V(Math.max(x0, x1), yTop, Math.max(z0, z1));

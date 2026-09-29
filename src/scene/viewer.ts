@@ -18,6 +18,7 @@ import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions } from '../styles/presets';
+import { specById } from '../styles/spec';
 
 /** 建築パース用カメラ: レンズシフトで縦線を垂直に保つ */
 export class ArchCamera extends THREE.PerspectiveCamera {
@@ -196,7 +197,7 @@ export class Viewer {
   setModel(model: BuildingModel) {
     const ext = exteriorById(this.design.exteriorId);
     for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape, this.groups.lights]) clearGroup(g);
-    const { mb, meta } = buildBuilding(model, { exterior: ext });
+    const { mb, meta } = buildBuilding(model, { exterior: ext, spec: specById(this.design.specId) });
     const resolve = (k: string) => this.registry.get(k);
     this.groups.building.add(mb.build(resolve, { name: 'building' }));
     const roof = buildRoofs(model, ext, this.design.roofOverride);
@@ -232,7 +233,7 @@ export class Viewer {
     });
     if (!this.state) return;
     const ext = exteriorById(design.exteriorId);
-    const roofChanged = prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride;
+    const roofChanged = prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.specId !== design.specId;
     if (roofChanged || prev.exteriorId !== design.exteriorId) {
       // 外構・アクセント位置も変わるので建物以外を再構築
       this.setModel(this.state.model);

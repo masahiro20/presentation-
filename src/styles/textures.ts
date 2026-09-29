@@ -7,6 +7,7 @@ import { ValueNoise, mulberry32 } from './noise';
 
 export type Pattern =
   | 'plaster'
+  | 'stucco'
   | 'paint'
   | 'siding'
   | 'lapSiding'
@@ -40,6 +41,10 @@ export interface MatSpec {
   /** テクスチャ1枚が覆う長さ (m) */
   tile?: number;
   normalStrength?: number;
+  /** 板幅・タイル寸法 (m)。フローリングは板幅、タイルは短辺 */
+  size?: number;
+  /** タイルの長辺 (m) */
+  size2?: number;
   /** 発光（照明器具など） */
   emissive?: string;
   emissiveIntensity?: number;
@@ -47,6 +52,7 @@ export interface MatSpec {
 
 const DEFAULT_TILE: Record<Pattern, number> = {
   plaster: 2,
+  stucco: 3,
   paint: 2,
   siding: 1.82,
   lapSiding: 1.8,
@@ -153,6 +159,14 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           set(i, tint(base, k), n2 * 0.5 + n1 * 0.3, baseRough - 0.05 + 0.1 * n2);
           break;
         }
+        case 'stucco': {
+          // 外壁の塗り壁: コテむらのやわらかな陰影（目地なし）
+          const trowel = noise.fbm(x * 0.6 + n1 * 90, y * 1.4, N, 5, 4);
+          const fine = noise.fbm(x * 3, y * 3, N * 3, 48, 2);
+          const k = 0.965 + 0.045 * trowel + 0.02 * fine;
+          set(i, tint(base, k), trowel * 0.6 + fine * 0.4, baseRough - 0.03 + 0.06 * fine);
+          break;
+        }
         case 'paint': {
           const k = 0.97 + 0.04 * n1;
           set(i, tint(base, k), n2 * 0.15, baseRough);
@@ -255,8 +269,8 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'woodFloor': {
-          const pw = 0.15;
-          const pl = 1.2;
+          const pw = spec.size ?? 0.15;
+          const pl = spec.size2 ?? 1.2;
           const colI = Math.floor(mx / pw);
           const off = cellRand(colI, 99) * pl;
           const rowF = (my + off) / pl;
@@ -290,9 +304,10 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
         }
         case 'tileFloor':
         case 'marble': {
-          const ts = spec.pattern === 'marble' ? 0.6 : 0.6;
-          const gx = groove((mx / ts) % 1, 0.006);
-          const gy = groove((my / ts) % 1, 0.006);
+          const ts = spec.size ?? 0.6;
+          const ts2 = spec.size2 ?? ts;
+          const gx = groove((mx / ts) % 1, 0.0025 / ts);
+          const gy = groove((my / ts2) % 1, 0.0025 / ts2);
           const g = gx * gy;
           let c = base;
           let k = 0.95 + 0.06 * n2;
@@ -302,7 +317,8 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
             c = lerp3(base, alt, Math.min(1, vein * 0.8 + w * 0.1));
             k = 0.97 + 0.04 * n2;
           }
-          set(i, g > 0.5 ? tint(c, k) : tint(base, 0.75), g, g > 0.5 ? baseRough : 0.9);
+          // 目地は細く淡く（ノイズになる線を抑える）
+          set(i, g > 0.5 ? tint(c, k) : tint(base, 0.88), 0.6 + 0.4 * g, g > 0.5 ? baseRough : 0.8);
           break;
         }
         case 'tatami': {
@@ -376,8 +392,9 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'fabric': {
-          const wv = 0.5 + 0.25 * Math.sin((mx / 0.004) * Math.PI) + 0.25 * Math.sin((my / 0.004) * Math.PI);
-          set(i, tint(base, 0.95 + 0.04 * wv + 0.05 * n1), wv * 0.4, baseRough);
+          // 織り目は画面上でモアレになりやすいので、ごく弱いむら程度に
+          const slub = noise.fbm(x * 4, y * 0.5, N * 4, 32, 3);
+          set(i, tint(base, 0.97 + 0.03 * slub + 0.03 * n1), slub * 0.3, baseRough);
           break;
         }
         case 'leather': {
@@ -429,7 +446,7 @@ function toTexture(n: number, fill: (d: Uint8ClampedArray) => void, srgb: boolea
 const cache = new Map<string, TextureSet>();
 
 export function textureSet(spec: MatSpec, size = 512): TextureSet {
-  const key = JSON.stringify([spec.pattern, spec.color, spec.color2, spec.roughness, spec.tile, spec.normalStrength, size]);
+  const key = JSON.stringify([spec.pattern, spec.color, spec.color2, spec.roughness, spec.tile, spec.normalStrength, spec.size, spec.size2, size]);
   const hit = cache.get(key);
   if (hit) return hit;
   const b = generatePattern(spec, size);

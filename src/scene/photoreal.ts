@@ -16,6 +16,8 @@ export interface PhotorealOptions {
   bounces?: number;
   onProgress?: (samples: number, total: number, preview?: () => string) => void;
   signal?: AbortSignal;
+  /** 露出（室内は写真と同じく室内に合わせて明るめに） */
+  exposure?: number;
 }
 
 interface Saved {
@@ -84,6 +86,8 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   viewer.hemi.visible = false;
   const sunI = viewer.sun.intensity;
   viewer.sun.intensity = sunI * 1.15;
+  const prevExposure = renderer.toneMappingExposure;
+  if (opts.exposure) renderer.toneMappingExposure = opts.exposure;
   const saved = prepareMaterials(scene);
 
   const pt = new WebGLPathTracer(renderer);
@@ -141,6 +145,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     viewer.groups.lights.visible = lightVis;
     viewer.hemi.visible = hemiVis;
     viewer.sun.intensity = sunI;
+    renderer.toneMappingExposure = prevExposure;
     renderer.setPixelRatio(prevPR);
     renderer.setSize(prevSize.x, prevSize.y, false);
     camera.aspect = prevAspect;

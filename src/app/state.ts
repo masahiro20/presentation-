@@ -32,6 +32,8 @@ export interface ProjectState {
     images: { label: string; url: string }[];
   };
   videos: { title: string; url: string; ext: string }[];
+  /** 提案用パース（写真品質）の設定 */
+  render: { samples: number; width: number; height: number };
 }
 
 export const state: ProjectState = {
@@ -46,6 +48,7 @@ export const state: ProjectState = {
   plans: [],
   sun: { seasons: [], highlights: [], images: [] },
   videos: [],
+  render: { samples: 512, width: 1920, height: 1080 },
 };
 
 type Handler = (payload?: unknown) => void;

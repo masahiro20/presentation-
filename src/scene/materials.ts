@@ -106,6 +106,11 @@ export class MaterialRegistry {
     set('f.fabric', M(F.fabric));
     set('f.fabric2', M(F.fabric2));
     set('f.metal', color(F.metal, 0.35, 0.8));
+    set('f.handle', color('#262626', 0.4, 0.6));
+    set('int.shadowGap', color('#3a3836', 0.95));
+    set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
+    set('f.downlight', color('#fffaf0', 0.2, 0, { emissive: new THREE.Color('#fff1dc'), emissiveIntensity: night ? 14 : 1.2 }));
+    set('f.cove', color('#fff6e8', 0.3, 0, { emissive: new THREE.Color('#ffdcaa'), emissiveIntensity: night ? 18 : 0.6 }));
     set('f.chrome', color('#d9dadc', 0.15, 1));
     set('f.counter', M(F.counter));
     set('f.cabinet', M(F.cabinet));
@@ -114,7 +119,7 @@ export class MaterialRegistry {
     set('f.fridge', color('#e8e8e6', 0.25, 0.3));
     set('f.screen', color('#0c0d0f', 0.12, 0.2));
     set('f.bedding', M({ pattern: 'fabric', color: '#f4f2ee', roughness: 0.95 }));
-    set('f.curtain', M({ pattern: 'fabric', color: '#efe9dd', roughness: 1, tile: 0.3 }));
+    set('f.curtain', M({ pattern: 'fabric', color: '#ebe6de', roughness: 1, tile: 1.2 }));
     set('f.leaf', color('#3f6b2e', 0.7));
     set('f.soil', color('#3a2b20', 1));
     set('f.pot', color('#e6e1d8', 0.6));

@@ -13,7 +13,7 @@ import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/s
 import { ROOM_TYPE_LABEL } from '../../core/types';
 
 /** 足りない素材をすべて自動で作る（一気通貫） */
-export async function autoGenerate(ctx: StepCtx) {
+export async function autoGenerate(ctx: StepCtx, draft = false) {
   const app = ctx.app;
   app.ensureScene();
   const v = app.viewer;
@@ -22,12 +22,21 @@ export async function autoGenerate(ctx: StepCtx) {
   const prevDesign = { ...state.design };
   try {
     // パース
-    if (!state.gallery.some((g) => g.kind === 'exterior') || !state.gallery.some((g) => g.kind === 'interior')) {
-      const shots = currentShots(ctx);
+    // 提案用パース（写真品質）: まだ写真品質のないショットだけ
+    const all = currentShots(ctx);
+    const pick = [
+      ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
+      ...all.filter((s) => s.kind === 'interior').slice(0, 4),
+    ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === (draft ? 'realtime' : 'photoreal')));
+    if (pick.length) {
+      const shots = pick;
+      const sub = {
+        signal: pm.signal,
+        set: (r: number, msg?: string, preview?: string) => pm.set(r * 0.7, msg, preview),
+      };
       for (let i = 0; i < shots.length; i++) {
         if (pm.signal.aborted) return;
-        pm.set((i / shots.length) * 0.45, `パースを作成中: ${shots[i].title}`);
-        await captureShot(ctx, shots[i], 'realtime', 0, true);
+        await captureShot(ctx, shots[i], { quality: draft ? 'realtime' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
         await new Promise((r) => setTimeout(r, 20));
       }
       if (prevDesign.timeOfDay !== state.design.timeOfDay) {
@@ -36,7 +45,7 @@ export async function autoGenerate(ctx: StepCtx) {
       }
     }
     // 図面
-    pm.set(0.5, '立面図・平面図を作成中');
+    pm.set(0.72, '立面図・平面図を作成中');
     await new Promise((r) => setTimeout(r, 20));
     if (!state.elevations.length) {
       state.elevations = (['south', 'east', 'north', 'west'] as ElevationDir[]).map((d) => {
@@ -53,7 +62,7 @@ export async function autoGenerate(ctx: StepCtx) {
       for (let i = 0; i < dates.length; i++) {
         if (pm.signal.aborted) return;
         const d = dates[i];
-        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.55 + ((i + r) / dates.length) * 0.3, `日当たりを解析中（${d.label}）`) });
+        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`) });
         seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
       }
       const order = ['winter', 'spring', 'summer'];
@@ -96,8 +105,15 @@ function slide(cls: string, ...children: (Node | null)[]) {
 
 function pick(kind: GalleryItem['kind']) {
   const list = state.gallery.filter((g) => g.kind === kind);
-  // 写真品質を優先
-  return list.sort((a, b) => (a.quality === b.quality ? 0 : a.quality === 'photoreal' ? -1 : 1));
+  // 写真品質を優先し、同じ構図の下書きは除く
+  const photo = list.filter((g) => g.quality === 'photoreal');
+  const drafts = list.filter((g) => g.quality !== 'photoreal' && !photo.some((p) => p.shotId && p.shotId === g.shotId));
+  return [...photo, ...drafts];
+}
+
+/** 下書き画像には「下書き」の印を付け、提案時に気付けるようにする */
+function draftMark(g: GalleryItem | undefined) {
+  return g && g.quality !== 'photoreal' ? h('div', { style: 'position:absolute;top:2%;right:2%;background:rgba(184,104,58,0.9);color:#fff;font-size:11px;padding:3px 8px;border-radius:4px' }, '下書き（写真品質で書き出してください）') : null;
 }
 
 export function buildDeck(): HTMLElement[] {
@@ -163,10 +179,10 @@ export function buildDeck(): HTMLElement[] {
     );
   }
   // 外観
-  for (const g of exts.slice(0, 5)) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title), g.caption)));
+  for (const g of exts.slice(0, 5)) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title), g.caption), draftMark(g)));
   if (aerial) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: aerial.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, aerial.title), aerial.caption)));
   // 内観
-  for (const g of ints) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title.replace(/内観パース[（(]?/, '').replace(/[）)]$/, '')), g.caption)));
+  for (const g of ints) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title.replace(/内観パース[（(]?/, '').replace(/[）)]$/, '')), g.caption), draftMark(g)));
   // 立面図
   if (state.elevations.length) {
     slides.push(
@@ -346,7 +362,9 @@ export const presentStep: Step = {
     ctx.side.append(
       h('h2', null, 'プレゼン資料'),
       h('p', { class: 'lead' }, 'ここまでに作成したパース・図面・日照検討・動画から、お客様向けのプレゼン資料を自動で組み立てます。足りない素材はボタン一つで自動作成できます。'),
-      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '✨ 足りない素材を自動作成して資料を完成'),
+      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '✨ 足りない素材を自動作成して資料を完成（写真品質）'),
+      h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
+      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, 'まずは下書きで資料の構成を確認（すぐ）'),
       section(
         '表紙の情報',
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),

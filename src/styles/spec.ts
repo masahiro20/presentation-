@@ -88,3 +88,31 @@ export function effectiveOpening(
   if (spec.doors.fullHeight) return { sill: 0, height: ceilingHeight };
   return { sill: o.sill, height: o.height };
 }
+
+/** 案件ごとの細かな調整 */
+export interface SpecPatch {
+  fullHeightDoors?: boolean;
+  windowHeadAtCeiling?: boolean;
+  indirectLighting?: boolean;
+  curtains?: BuilderSpec['curtains'];
+  /** 室内ドアの色（未指定なら内観テイストの色） */
+  doorColor?: string;
+  /** 天井高 (mm)。未指定なら図面・入力値 */
+  ceilingHeight?: number;
+}
+
+export function resolveSpec(id: string | undefined, patch: SpecPatch | undefined): BuilderSpec {
+  const base = specById(id);
+  if (!patch) return base;
+  return {
+    ...base,
+    doors: {
+      ...base.doors,
+      fullHeight: patch.fullHeightDoors ?? base.doors.fullHeight,
+      frame: patch.fullHeightDoors === false && base.doors.frame === 'stealth' ? 'inset' : base.doors.frame,
+    },
+    windows: { ...base.windows, headAtCeiling: patch.windowHeadAtCeiling ?? base.windows.headAtCeiling },
+    indirectLighting: patch.indirectLighting ?? base.indirectLighting,
+    curtains: patch.curtains ?? base.curtains,
+  };
+}

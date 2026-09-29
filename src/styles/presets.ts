@@ -669,6 +669,8 @@ export type TimeOfDay = 'day' | 'evening' | 'night';
 export interface DesignOptions {
   /** 標準仕様（建具・窓・照明の納まり） */
   specId: string;
+  /** 仕様の細かな調整 */
+  specPatch?: import('./spec').SpecPatch;
   exteriorId: string;
   interiorId: string;
   roofOverride?: RoofType;

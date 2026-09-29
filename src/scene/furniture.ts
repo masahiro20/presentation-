@@ -307,8 +307,6 @@ function kitchen(ctx: RoomCtx, fr: Frame, len: number, ceilingY: number) {
   fr.box('f.counter', 0, 0, bw - 0.75, 0.47, 0.9, 0.03);
   // 冷蔵庫
   fr.box('f.fridge', bw / 2 - 0.36, 0, 0.68, 0.7, 0, 1.82);
-  // 吊戸棚
-  fr.box('f.cabinet', -0.3, 0, bw - 1.4, 0.35, 1.5, 0.7);
   // 対面カウンター（シンク・コンロ）
   const cw = Math.min(len - 0.4, 2.55);
   const cv = 0.45 + 0.9;
@@ -321,8 +319,8 @@ function kitchen(ctx: RoomCtx, fr: Frame, len: number, ceilingY: number) {
   fr.cyl('f.chrome', -cw / 2 + 0.6, cv + 0.08, 0.015, 0.89, 0.28);
   // コンロ
   fr.box('f.screen', cw / 2 - 0.5, cv + 0.08, 0.6, 0.5, 0.89, 0.01);
-  // レンジフード
-  fr.box('f.chrome', cw / 2 - 0.5, cv + 0.05, 0.75, 0.5, ceilingY - 0.55, 0.5);
+  // 天井埋込の薄型フード（線を増やさない）
+  fr.box('f.hood', cw / 2 - 0.5, cv + 0.05, 0.9, 0.5, ceilingY - 0.025, 0.025);
   // 小物
   fr.cyl('f.white', 0.1, cv + 0.3, 0.1, 0.89, 0.12);
   fr.sphere('f.leaf', -0.1, cv + 0.35, 1.0, 0.09);

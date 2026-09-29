@@ -32,9 +32,11 @@ if (shotId) {
 }
 if (params.get('pt')) {
   const { renderPhotoreal } = await import('./scene/photoreal');
-  const url = await renderPhotoreal(viewer, { width: +(params.get('w') ?? 480), height: +(params.get('hh') ?? 300), samples: +params.get('pt')!, timeLimit: 600000 });
+  const url = await renderPhotoreal(viewer, { width: +(params.get('w') ?? 480), height: +(params.get('hh') ?? 300), samples: +params.get('pt')!, timeLimit: 3000000, exposure: +(params.get('exp') ?? (params.get('shot')?.startsWith('int') ? 1.9 : 1.0)) });
   viewer.pause(true);
-  document.body.innerHTML = `<img src="${url}" style="width:100vw">`;
+  document.body.innerHTML = `<img id="ptimg" src="${url}" style="width:100vw;display:block">`;
+  await (document.getElementById('ptimg') as HTMLImageElement).decode();
+  (window as any).__ptUrl = url;
 }
 if (params.get('elev')) {
   const { renderElevation } = await import('./drawings/elevation');

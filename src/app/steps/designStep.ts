@@ -3,7 +3,7 @@ import { h, clear, toast, progressModal, section, segmented, modal, download } f
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { EXTERIOR_STYLES, INTERIOR_STYLES, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
-import { BUILDER_SPECS, specById } from '../../styles/spec';
+import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { renderPhotoreal } from '../../scene/photoreal';
 
@@ -162,7 +162,7 @@ export const designStep: Step = {
       const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id }));
       const others = (cards: HTMLElement[], open: boolean) =>
         h('details', { open, style: 'margin-top:8px' }, h('summary', { style: 'font-size:12.5px;color:#8b9098;cursor:pointer' }, 'その他のテイスト（比較用）'), h('div', { class: 'style-grid', style: 'margin-top:8px' }, cards));
-      const spec = specById(state.design.specId);
+      const spec = resolveSpec(state.design.specId, state.design.specPatch);
       side.append(
         section(
           '標準仕様（納まり）',
@@ -172,6 +172,68 @@ export const designStep: Step = {
             (val) => update({ specId: val }),
           ),
           h('p', { class: 'hint' }, spec.description),
+          h(
+            'details',
+            { style: 'margin-top:6px' },
+            h('summary', { style: 'font-size:12.5px;color:#5b6068;cursor:pointer' }, '納まりを細かく調整'),
+            ...(
+              [
+                ['fullHeightDoors', 'フルハイトドア（天井までの扉・上枠なし）', spec.doors.fullHeight],
+                ['windowHeadAtCeiling', 'サッシ上端を天井高にそろえる', spec.windows.headAtCeiling],
+                ['indirectLighting', '天井際の間接照明', spec.indirectLighting],
+              ] as const
+            ).map(([k, label, val]) =>
+              h(
+                'label',
+                { class: 'check' },
+                h('input', { type: 'checkbox', checked: val, onchange: (e: Event) => update({ specPatch: { ...state.design.specPatch, [k]: (e.target as HTMLInputElement).checked } }) }),
+                label,
+              ),
+            ),
+            h('div', { class: 'field-label', style: 'margin-top:6px' }, 'カーテン'),
+            segmented(
+              [
+                { value: 'pocket', label: 'カーテンボックス' },
+                { value: 'rail', label: 'レール' },
+                { value: 'none', label: 'なし' },
+              ],
+              spec.curtains,
+              (val) => update({ specPatch: { ...state.design.specPatch, curtains: val as 'pocket' | 'rail' | 'none' } }),
+            ),
+            h('div', { class: 'field-label', style: 'margin-top:8px' }, '室内ドアの色'),
+            h(
+              'div',
+              { class: 'btn-row' },
+              ...[
+                ['', 'テイスト標準'],
+                ['#f2f0ec', 'ホワイト'],
+                ['#d8d1c6', 'グレージュ'],
+                ['#bfbfbc', 'グレー'],
+                ['wood', '木目'],
+                ['#2e2d2c', 'ブラック'],
+              ].map(([c, label]) =>
+                h(
+                  'button',
+                  {
+                    class: `btn sm ${(state.design.specPatch?.doorColor ?? '') === c ? 'dark' : ''}`,
+                    onclick: () => update({ specPatch: { ...state.design.specPatch, doorColor: c || undefined } }),
+                  },
+                  label,
+                ),
+              ),
+            ),
+            h(
+              'label',
+              { class: 'field' },
+              h('span', { class: 'field-label' }, '天井高 (mm)'),
+              h('input', {
+                type: 'number',
+                step: 50,
+                value: state.design.specPatch?.ceilingHeight ?? v.state!.model.floors[0].ceilingHeight,
+                onchange: (e: Event) => update({ specPatch: { ...state.design.specPatch, ceilingHeight: +(e.target as HTMLInputElement).value } }),
+              }),
+            ),
+          ),
         ),
         section(
           '外観のテイスト',

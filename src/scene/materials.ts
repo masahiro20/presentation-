@@ -12,7 +12,7 @@ export class MaterialRegistry {
   constructor(
     public ext: ExteriorStyle,
     public int: InteriorStyle,
-    public opts: { wallColor?: string; night?: boolean } = {},
+    public opts: { wallColor?: string; doorColor?: string; night?: boolean } = {},
   ) {
     this.rebuild();
   }
@@ -21,7 +21,7 @@ export class MaterialRegistry {
     return this.map.get(key) ?? this.map.get(key.split(':')[0]) ?? this.fallback;
   }
 
-  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; night?: boolean } = {}) {
+  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean } = {}) {
     this.ext = ext;
     this.int = int;
     this.opts = opts;
@@ -95,7 +95,7 @@ export class MaterialRegistry {
     set('int.wetFloor', M(i.wetFloor));
     set('int.entranceFloor', M(i.entranceFloor));
     set('int.tatami', M(TATAMI));
-    set('int.door', M(i.door));
+    set('int.door', M(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : i.door));
     set('int.trim', color(i.trim, 0.5));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
     set('int.slab', color('#b9b5ae', 0.95));
@@ -107,6 +107,7 @@ export class MaterialRegistry {
     set('f.fabric2', M(F.fabric2));
     set('f.metal', color(F.metal, 0.35, 0.8));
     set('f.handle', color('#262626', 0.4, 0.6));
+    set('f.hood', color('#e9e7e3', 0.45, 0.2));
     set('int.shadowGap', color('#3a3836', 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
     set('f.downlight', color('#fffaf0', 0.2, 0, { emissive: new THREE.Color('#fff1dc'), emissiveIntensity: night ? 14 : 1.2 }));

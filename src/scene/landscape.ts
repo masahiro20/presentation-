@@ -112,8 +112,21 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle): { mb: 
     const out = mid.clone().sub(V(cx, 0, cz));
     const isRoadSide = out.normalize().dot(road) > 0.9;
     if (isRoadSide) continue;
+    // 側面のフェンスは建物の正面より奥だけ（道路側は開放的に）
+    const isSide = Math.abs(out.dot(road)) < 0.1;
+    if (isSide) {
+      // 道路方向への射影が「建物正面 - 0.5m」を超える部分を切り詰める
+      const sgn = road.x + road.z;
+      const sFront = frontEdge * sgn - 0.5;
+      for (const p of [a, c]) {
+        const sp = p.dot(road);
+        if (sp > sFront) p.addScaledVector(road, sFront - sp);
+      }
+      mid.copy(a).add(c).multiplyScalar(0.5);
+    }
     const dir = c.clone().sub(a);
     const L = dir.length();
+    if (L < 0.3) continue;
     dir.normalize();
     if (fenceType === 'block' || fenceType === 'wood') {
       mb.box('l.block', mid.clone(), dir, L, 0.4, 0.12);
@@ -153,7 +166,9 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle): { mb: 
   const shrub = (p: THREE.Vector3, s: number) => trees.sphere('l.leafDark', p.setY(s * 0.6), s, 8, 0.7);
   const kind = style.landscape.trees;
   if (ent) {
-    const tp = toWorld(entAlong + 1.6 * -parkSign, depthB - 1.0, 0);
+    // シンボルツリーは駐車場と反対側の敷地の角（構図の額縁になる位置）
+    const cornerAlong = parkSign > 0 ? alongMin + 1.3 : alongMax - 1.3;
+    const tp = toWorld(Math.abs(cornerAlong - entAlong) > 1.8 ? cornerAlong : entAlong - 2.2 * parkSign, depthB - 1.1, 0);
     addTree(tp, 4.2, kind);
     shrub(toWorld(entAlong + 1.0 * -parkSign, depthB - 0.5, 0), 0.35);
     shrub(toWorld(entAlong + 2.2 * -parkSign, depthB - 0.6, 0), 0.4);

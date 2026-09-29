@@ -144,10 +144,15 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   }
   // 寸法（全体）
   if (opts.showDims !== false) {
+    const op = f.outline.flat();
+    const ox0 = op.length ? Math.min(...op.map((p) => p.x)) : minX;
+    const ox1 = op.length ? Math.max(...op.map((p) => p.x)) : maxX;
+    const oy0 = op.length ? Math.min(...op.map((p) => p.y)) : minY;
+    const oy1 = op.length ? Math.max(...op.map((p) => p.y)) : maxY;
     const y = minY - 900;
     const x = minX - 900;
-    s += dimLine(minX, y, maxX, y, `${Math.round(maxX - minX)}`, false);
-    s += dimLine(x, minY, x, maxY, `${Math.round(maxY - minY)}`, true);
+    s += dimLine(ox0, y, ox1, y, `${Math.round(ox1 - ox0)}`, false);
+    s += dimLine(x, oy0, x, oy1, `${Math.round(oy1 - oy0)}`, true);
   }
   // 方位
   s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);

@@ -77,6 +77,7 @@ export class Viewer {
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
+  userData: Record<string, unknown> = {};
   onAfterRender?: () => void;
   private anim: { from: CameraView; to: CameraView; t0: number; dur: number } | null = null;
 
@@ -328,7 +329,7 @@ export class Viewer {
   shots(aspect = 16 / 9): Shot[] {
     if (!this.state) return [];
     const s = this.state;
-    return [...exteriorShots(s.meta, s.site, s.roof, aspect), ...interiorShots(s.model, s.meta, s.occupancy, aspect)];
+    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg), ...interiorShots(s.model, s.meta, s.occupancy, aspect)];
   }
 
   /** ショットを適用（時間帯・パース用の太陽も切り替え） */

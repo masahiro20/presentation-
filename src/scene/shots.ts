@@ -70,7 +70,7 @@ function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vec
   return hi;
 }
 
-export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo, aspect = 16 / 9): Shot[] {
+export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo, aspect = 16 / 9, northAngleDeg = 0): Shot[] {
   const b = meta.bbox;
   const topY = Math.max(roof.maxY, meta.topY) + 0.2;
   const pts: THREE.Vector3[] = [];
@@ -84,7 +84,11 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   // 道路側から、玄関が見える向きに 35° 振る
   const ent = meta.entrance;
   const along = new THREE.Vector3(-road.z, 0, road.x);
-  const entSide = ent ? Math.sign(ent.pos.clone().sub(center).dot(along)) || 1 : 1;
+  // 道路面と一緒に見せる側面は、南向き（日の当たる明るい面）を優先する
+  const na = (northAngleDeg * Math.PI) / 180;
+  const south = new THREE.Vector3(-Math.sin(na), 0, Math.cos(na));
+  const southSide = Math.sign(along.dot(south));
+  const entSide = Math.abs(along.dot(south)) > 0.3 ? southSide : ent ? Math.sign(ent.pos.clone().sub(center).dot(along)) || 1 : 1;
   const mk = (id: string, title: string, caption: string, fromDir: THREE.Vector3, tod: Shot['timeOfDay'] = 'day', sideSign = -1): Shot => {
     const dir = fromDir.clone().negate().normalize(); // カメラの視線方向
     const dist = fitDistance(pts, center, dir, eye, vfov, aspect);

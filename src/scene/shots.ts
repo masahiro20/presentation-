@@ -127,7 +127,10 @@ interface WinInfo {
   weight: number;
 }
 
-export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupancy: Map<string, Footprint[]>, aspect = 16 / 9): Shot[] {
+/** 原点から方向へのレイの到達距離（障害物がなければ far） */
+export type RayFn = (origin: THREE.Vector3, dir: THREE.Vector3, far: number) => number;
+
+export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupancy: Map<string, Footprint[]>, aspect = 16 / 9, ray?: RayFn): Shot[] {
   const shots: Shot[] = [];
   const priority = ['ldk', 'living', 'dining', 'kitchen', 'japanese', 'bedroom', 'kids', 'study', 'entrance', 'bath', 'washroom'];
   const rooms = meta.rooms
@@ -141,57 +144,80 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     const W = R.maxX - R.minX;
     const D = R.maxZ - R.minZ;
     if (W < 1.2 || D < 1.2) continue;
+    // 狭い部屋（収納・書斎コーナーなど）はパース向きでない
+    if (room.area < 5 && room.type !== 'entrance') continue;
     const y0 = ri.floorY;
     const eyeH = room.type === 'japanese' ? 1.15 : room.type === 'bath' ? 1.3 : 1.35;
     const occ = occupancy.get(room.id) ?? [];
     const wins = windowsOf(model, ri.floor.level, room, y0);
-    const cands: THREE.Vector3[] = [];
-    const ins = Math.min(0.45, Math.min(W, D) * 0.2);
-    for (const x of [R.minX + ins, (R.minX + R.maxX) / 2, R.maxX - ins])
-      for (const z of [R.minZ + ins, (R.minZ + R.maxZ) / 2, R.maxZ - ins]) {
-        if (x === (R.minX + R.maxX) / 2 && z === (R.minZ + R.maxZ) / 2) continue;
-        cands.push(new THREE.Vector3(x, y0 + eyeH, z));
-      }
     const center = new THREE.Vector3((R.minX + R.maxX) / 2, y0 + 1.1, (R.minZ + R.maxZ) / 2);
     let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3 } | null = null;
     const vfov = aspect > 1.4 ? 58 : 66;
     const halfH = Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect);
+    // 候補位置: 部屋内の格子点（家具・扉の近くは除外）
+    const cands: THREE.Vector3[] = [];
+    const step = Math.max(0.4, Math.min(W, D) / 6);
+    const ins = Math.min(0.4, Math.min(W, D) * 0.18);
+    for (let x = R.minX + ins; x <= R.maxX - ins + 1e-6; x += step)
+      for (let z = R.minZ + ins; z <= R.maxZ - ins + 1e-6; z += step) {
+        const pos = new THREE.Vector3(x, y0 + eyeH, z);
+        if (occ.some((o) => o.maxY > 0.5 && x > o.minX - 0.3 && x < o.maxX + 0.3 && z > o.minZ - 0.3 && z < o.maxZ + 0.3)) continue;
+        if (meta.doorLeaves.some((d) => Math.abs(d.a.y - y0) < 0.5 && distToSeg2(pos, d.a, d.b) < 0.7)) continue;
+        cands.push(pos);
+      }
+    const diag = Math.hypot(W, D);
     for (const pos of cands) {
-      // 家具と干渉しない
-      const blocked = occ.some((o) => o.maxY > eyeH - 0.25 && pos.x > o.minX - 0.25 && pos.x < o.maxX + 0.25 && pos.z > o.minZ - 0.25 && pos.z < o.maxZ + 0.25);
-      if (blocked) continue;
-      // 注視点: 部屋の反対側（中心を通る）
-      const dir = center.clone().sub(pos).setY(0);
-      const depth = Math.max(0.5, dir.length());
-      dir.normalize();
-      const far = pos.clone().addScaledVector(dir, depth * 2);
-      const target = new THREE.Vector3(far.x, y0 + 1.15, far.z);
-      // 窓の見え方
-      let winScore = 0;
-      for (const w of wins) {
-        const v = w.center.clone().sub(pos).setY(0);
-        const L = v.length();
-        if (L < 0.3) continue;
-        const ang = Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir))));
-        if (ang < halfH * 0.95) winScore += w.weight * (ang > halfH * 0.25 ? 1.2 : 0.8); // 正面逆光より側面が良い
+      for (let k = 0; k < 16; k++) {
+        const yaw = (k / 16) * Math.PI * 2;
+        const dir = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw));
+        let score: number;
+        if (ray) {
+          // 視野内のレイで開放感・近接障害物・外の眺め（窓）を評価
+          let sum = 0;
+          let minC = Infinity;
+          let outside = 0;
+          let centerOut = false;
+          const N = 13;
+          for (let r = 0; r < N; r++) {
+            const a = -halfH * 0.95 + (2 * halfH * 0.95 * r) / (N - 1);
+            const d = dir.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
+            for (const dy of [0, -0.45]) {
+              const o = pos.clone();
+              o.y += dy;
+              const dist = ray(o, d, 9);
+              sum += Math.min(dist, diag);
+              if (Math.abs(a) < halfH * 0.45) minC = Math.min(minC, dist);
+              if (dist > diag + 0.8 && dy === 0) outside++;
+              if (dist > diag + 0.8 && dy === 0 && Math.abs(a) < halfH * 0.2) centerOut = true;
+            }
+          }
+          const mean = sum / (N * 2);
+          const cornerBonus = Math.min(Math.abs(pos.x - center.x) / (W / 2), 1) * Math.min(Math.abs(pos.z - center.z) / (D / 2), 1);
+          // 窓は視野の端に入るのが良い（正面に窓だけが見える逆光の構図は避ける）
+          score = mean * 1.4 + Math.min(outside, 3) * 0.3 + cornerBonus * 1.5 - (minC < 1.6 ? (1.6 - minC) * 6 : 0) - (centerOut ? 2.5 : 0);
+          // 部屋の中心方向を向いているほど良い
+          const toC = center.clone().sub(pos).setY(0);
+          if (toC.lengthSq() > 0.01) score += toC.normalize().dot(dir) * 2.0;
+        } else {
+          const toC = center.clone().sub(pos).setY(0);
+          score = toC.length() * 1.5 + (toC.lengthSq() > 0.01 ? toC.normalize().dot(dir) * 2 : 0);
+          for (const w of wins) {
+            const v = w.center.clone().sub(pos).setY(0);
+            const ang = Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir))));
+            if (ang < halfH * 0.95) score += w.weight;
+          }
+        }
+        if (!best || score > best.score) {
+          const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + 1.15);
+          best = { score, pos, target };
+        }
       }
-      // 視線上の障害物（近すぎる家具）
-      let nearPenalty = 0;
-      for (const o of occ) {
-        if (o.maxY < eyeH - 0.3) continue;
-        const c = new THREE.Vector3((o.minX + o.maxX) / 2, pos.y, (o.minZ + o.maxZ) / 2);
-        const v = c.clone().sub(pos);
-        const dist = v.length();
-        if (dist < 1.4 && v.setY(0).normalize().dot(dir) > 0.7) nearPenalty += 3;
-      }
-      const cornerBonus = Math.abs(pos.x - center.x) > W * 0.2 && Math.abs(pos.z - center.z) > D * 0.2 ? 1.5 : 0;
-      const score = depth * 1.5 + winScore + cornerBonus - nearPenalty;
-      if (!best || score > best.score) best = { score, pos, target };
     }
     if (!best) {
       best = { score: 0, pos: new THREE.Vector3(R.minX + 0.3, y0 + eyeH, R.minZ + 0.3), target: center.clone() };
     }
     const label = room.name || ROOM_TYPE_LABEL[room.type];
+    void best;
     const tatami = room.labeledTatami ?? room.area / 1.62;
     const facing = wins.length ? `窓からたっぷりと光が入る` : '落ち着いた';
     const caption =
@@ -243,4 +269,12 @@ function windowsOf(model: BuildingModel, level: number, room: Room, y0: number):
     out.push({ center: new THREE.Vector3(cx * MM, y0 + (o.sill + o.height / 2) * MM, cy * MM), width, weight: width * (o.height / 1000) });
   }
   return out;
+}
+
+function distToSeg2(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3) {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const l2 = abx * abx + abz * abz || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / l2));
+  return Math.hypot(a.x + abx * t - p.x, a.z + abz * t - p.z);
 }

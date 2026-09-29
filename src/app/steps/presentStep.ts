@@ -166,7 +166,7 @@ export function buildDeck(): HTMLElement[] {
   for (const g of exts.slice(0, 5)) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title), g.caption)));
   if (aerial) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: aerial.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, aerial.title), aerial.caption)));
   // 内観
-  for (const g of ints) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title.replace('内観パース', '')), g.caption)));
+  for (const g of ints) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title.replace(/内観パース[（(]?/, '').replace(/[）)]$/, '')), g.caption)));
   // 立面図
   if (state.elevations.length) {
     slides.push(

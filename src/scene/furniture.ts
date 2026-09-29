@@ -426,17 +426,25 @@ function layoutBedroom(ctx: RoomCtx, big: boolean) {
   const W = R.maxX - R.minX;
   const D = R.maxZ - R.minZ;
   const bw = big ? (Math.min(W, D) > 3.2 ? 1.6 : 1.4) : 1.0;
-  // 窓の少ない壁から順に試す
+  // 窓の少ない壁から順に試す（ナイトテーブル付き → ベッドのみ の順）
   const order = (['n', 's', 'e', 'w'] as Side[]).sort((a, b) => ctx.windows[a] - ctx.windows[b]);
-  for (const s of order) {
-    const { f, len } = sideFrame(ctx, s);
-    const depth = s === 'n' || s === 's' ? D : W;
-    if (depth < 2.5) continue;
-    const need = big ? bw + 1.0 : bw + 0.1;
-    const u = findSpot(ctx, s, need, len, 0);
-    if (u == null) continue;
+  let placed: { s: Side; f: Frame; len: number; u: number; depth: number; withStands: boolean } | null = null;
+  for (const withStands of big ? [true, false] : [false]) {
+    for (const s of order) {
+      const { f, len } = sideFrame(ctx, s);
+      const depth = s === 'n' || s === 's' ? D : W;
+      if (depth < 2.5) continue;
+      const u = findSpot(ctx, s, withStands ? bw + 1.0 : bw + 0.1, len, 0);
+      if (u == null) continue;
+      placed = { s, f, len, u, depth, withStands };
+      break;
+    }
+    if (placed) break;
+  }
+  if (placed) {
+    const { s, f, u, depth } = placed;
     bed(f, u, 0.02, bw);
-    if (big) {
+    if (placed.withStands) {
       nightstand(f, u - bw / 2 - 0.3, 0.02, ctx.lights, ctx.room.id);
       nightstand(f, u + bw / 2 + 0.3, 0.02, ctx.lights, ctx.room.id);
     }

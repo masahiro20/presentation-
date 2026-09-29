@@ -13,6 +13,7 @@ import { buildBuilding, type BuildingMeta } from './building';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { exteriorShots, interiorShots, type Shot } from './shots';
+import { buildOccluder } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
@@ -78,6 +79,7 @@ export class Viewer {
   private envRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
   userData: Record<string, unknown> = {};
+  private shotCache: { state: SceneState; interiors: Map<string, Shot[]> } | null = null;
   onAfterRender?: () => void;
   private anim: { from: CameraView; to: CameraView; t0: number; dur: number } | null = null;
 
@@ -329,7 +331,27 @@ export class Viewer {
   shots(aspect = 16 / 9): Shot[] {
     if (!this.state) return [];
     const s = this.state;
-    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg), ...interiorShots(s.model, s.meta, s.occupancy, aspect)];
+    if (!this.shotCache || this.shotCache.state !== s) {
+      // 家具込みの BVH でレイキャストし、室内の見通しを評価
+      const occ = buildOccluder(this, { buildingOnly: true, furniture: this.groups.furniture.visible });
+      const ray = new THREE.Ray();
+      const fn = (o: THREE.Vector3, d: THREE.Vector3, far: number) => {
+        ray.origin.copy(o);
+        ray.direction.copy(d);
+        const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+        return hit ? Math.min(far, hit.distance) : far;
+      };
+      this.shotCache = { state: s, interiors: new Map() };
+      this.shotCache.interiors.set(aspect.toFixed(2), interiorShots(s.model, s.meta, s.occupancy, aspect, fn));
+      occ.mesh.geometry.dispose();
+    }
+    const key = aspect.toFixed(2);
+    if (!this.shotCache.interiors.has(key)) {
+      // 縦横比が違う場合は最も近いものを流用
+      const first = [...this.shotCache.interiors.values()][0];
+      this.shotCache.interiors.set(key, first);
+    }
+    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg), ...this.shotCache.interiors.get(key)!];
   }
 
   /** ショットを適用（時間帯・パース用の太陽も切り替え） */

@@ -31,6 +31,8 @@ export interface BuildingMeta {
   rooms: RoomInfo[];
   entrance?: { pos: THREE.Vector3; outward: THREE.Vector3; width: number };
   wallTop: number[];
+  /** 開いた扉の位置（カメラの干渉判定用） */
+  doorLeaves: { a: THREE.Vector3; b: THREE.Vector3 }[];
   /** 各階の外形（ワールド） */
   outlines: { level: number; y: number; polys: THREE.Vector2[][] }[];
   topY: number;
@@ -71,7 +73,7 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
 
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
   const mb = new MeshBuilder();
-  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0 };
+  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [] };
   const ext = opts.exterior;
   const entranceWalls = new Set<string>();
   // 玄関のある壁と、その上階の同じ位置の壁（縦のアクセント帯）
@@ -436,6 +438,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const lw = width - 0.01;
     const c = hinge.clone().addScaledVector(leafDir, lw / 2).setY(fl + 0.01);
     mb.box('int.door', c, leafDir, lw, H - 0.015, 0.036);
+    meta.doorLeaves.push({ a: hinge.clone().setY(fl), b: hinge.clone().addScaledVector(leafDir, lw).setY(fl) });
     const knob = hinge.clone().addScaledVector(leafDir, lw - 0.07).setY(fl + 0.95);
     const nLeaf = new THREE.Vector3(-leafDir.z, 0, leafDir.x);
     mb.box('f.metal', knob.clone().addScaledVector(nLeaf, 0.035), leafDir, 0.12, 0.02, 0.02);
@@ -446,6 +449,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const lw = width * 0.55;
     const c = face.clone().addScaledVector(dir, -width / 2 + lw / 2 - width * 0.35).setY(fl + 0.01);
     mb.box('int.door', c, dir, lw, H - 0.015, 0.03);
+    meta.doorLeaves.push({ a: c.clone().addScaledVector(dir, -lw / 2), b: c.clone().addScaledVector(dir, lw / 2) });
     mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);
   }
 }

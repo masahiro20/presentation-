@@ -18,7 +18,7 @@ export interface Occluder {
 }
 
 /** 影を落とす物体を1つの BVH にまとめる */
-export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean } = {}): Occluder {
+export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean } = {}): Occluder {
   const positions: number[] = [];
   const add = (root: THREE.Object3D, filter?: (m: THREE.Mesh) => boolean) => {
     root.updateMatrixWorld(true);
@@ -39,6 +39,7 @@ export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?:
   };
   add(viewer.groups.building);
   add(viewer.groups.roof);
+  if (opts.furniture) add(viewer.groups.furniture);
   if (!opts.buildingOnly) {
     if (opts.context !== false) add(viewer.groups.context, (m) => !!m.userData.neighbor);
     if (opts.trees) add(viewer.groups.landscape, (m) => (m.userData.matKey ?? '').startsWith('l.leaf') || m.userData.matKey === 'l.trunk');

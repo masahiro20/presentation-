@@ -2,6 +2,7 @@
  * 手続き的 HDR 空（正距円筒図法）。リアルタイム用の環境光とパストレーサーの光源を兼ねる。
  */
 import * as THREE from 'three';
+import { ValueNoise } from '../styles/noise';
 
 export interface SkyParams {
   /** 太陽方向（ワールド、単位ベクトル） */
@@ -14,6 +15,8 @@ export interface SkyParams {
   /** 地面の反射色 */
   groundColor?: THREE.Color;
   sunIntensity?: number;
+  /** 雲の量 0..1 */
+  clouds?: number;
 }
 
 function smoothstep(a: number, b: number, x: number) {
@@ -45,6 +48,19 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
   const sunI = p.sunIntensity ?? (p.mode === 'night' ? 0 : 60000 * (0.1 + 0.9 * dayF));
   const sunCos = Math.cos((0.53 * Math.PI) / 180 / 2 * 2.2);
   const dir = new THREE.Vector3();
+  const cloudNoise = new ValueNoise(11);
+  const cloudAmt = p.clouds ?? (p.mode === 'night' ? 0 : 0.35);
+  const fbm = (x: number, y: number) => {
+    let a = 0.5;
+    let v = 0;
+    let f = 1;
+    for (let o = 0; o < 5; o++) {
+      v += a * cloudNoise.noise2(x * f, y * f, 4096);
+      a *= 0.5;
+      f *= 2.03;
+    }
+    return v / 0.97;
+  };
   for (let y = 0; y < H; y++) {
     // three.js の equirectUv: u = atan(z,x)/2π + 0.5, v = asin(y)/π + 0.5（DataTexture は 1 行目が v=0）
     const el = ((y + 0.5) / H - 0.5) * Math.PI;
@@ -66,6 +82,25 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
         r += glowCol.r * gk;
         g += glowCol.g * gk;
         b += glowCol.b * gk;
+        // 雲（地平線に向かって薄く）
+        if (cloudAmt > 0 && dir.y > 0.015) {
+          const k = 1 / (dir.y + 0.08);
+          const cx = dir.x * k * 1.6 + 7.3;
+          const cz = dir.z * k * 1.6 + 3.1;
+          const d = fbm(cx, cz);
+          const cov = Math.max(0, Math.min(1, (d - (0.78 - cloudAmt * 0.5)) * 3.2));
+          if (cov > 0) {
+            const fade = Math.min(1, dir.y * 6);
+            const lit = 0.55 + 0.45 * Math.max(0, cosS) + (p.mode === 'evening' ? 0.2 : 0);
+            const cr = (glowCol.r * 0.35 + 0.8) * lit * (0.35 + 0.65 * dayF);
+            const cg = (glowCol.g * 0.35 + 0.8) * lit * (0.35 + 0.65 * dayF);
+            const cb = (glowCol.b * 0.3 + 0.85) * lit * (0.35 + 0.65 * dayF);
+            const w = cov * fade * 0.9;
+            r = r * (1 - w) + cr * w;
+            g = g * (1 - w) + cg * w;
+            b = b * (1 - w) + cb * w;
+          }
+        }
         if (p.sunDisk && cosS > sunCos && sun.y > -0.02) {
           r += sunI * glowCol.r * 0.9 + sunI * 0.1;
           g += sunI * glowCol.g * 0.9 + sunI * 0.1;

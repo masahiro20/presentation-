@@ -131,8 +131,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       if (performance.now() - t0 > limit) break;
     }
     present(true);
-    const url = renderer.domElement.toDataURL('image/jpeg', 0.95);
-    return url;
+    return finishPhoto(renderer.domElement);
   } finally {
     pt.dispose();
     quad.dispose();
@@ -153,4 +152,38 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     viewer.pause(false);
     viewer.resize();
   }
+}
+
+/** 写真としての仕上げ: ごく弱い周辺減光とトーンカーブ */
+export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; contrast?: number } = {}): string {
+  const w = src.width;
+  const h = src.height;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const k = opts.contrast ?? 0.06;
+  // S字カーブ（中間調を少し締める）
+  const lut = new Uint8ClampedArray(256);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    const s = x + k * Math.sin((x - 0.5) * Math.PI * 2) * -0.5 * Math.sin(x * Math.PI);
+    lut[i] = Math.round(Math.max(0, Math.min(1, s)) * 255);
+  }
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = lut[d[i]];
+    d[i + 1] = lut[d[i + 1]];
+    d[i + 2] = lut[d[i + 2]];
+  }
+  ctx.putImageData(img, 0, 0);
+  const v = opts.vignette ?? 0.14;
+  const g = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.hypot(w, h) * 0.62);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, `rgba(0,0,0,${v})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  return c.toDataURL('image/jpeg', 0.95);
 }

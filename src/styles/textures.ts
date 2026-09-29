@@ -164,7 +164,7 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           const trowel = noise.fbm(x * 0.6 + n1 * 90, y * 1.4, N, 5, 4);
           const fine = noise.fbm(x * 3, y * 3, N * 3, 48, 2);
           const k = 0.965 + 0.045 * trowel + 0.02 * fine;
-          set(i, tint(base, k), trowel * 0.6 + fine * 0.4, baseRough - 0.03 + 0.06 * fine);
+          set(i, tint(base, k), trowel * 0.25 + fine * 0.08, baseRough - 0.03 + 0.06 * fine);
           break;
         }
         case 'paint': {

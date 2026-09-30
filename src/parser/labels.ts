@@ -12,6 +12,7 @@ export function normalizeText(s: string): string {
 
 const RULES: [RegExp, RoomType][] = [
   [/吹抜|吹き抜け|VOID/, 'void'],
+  [/中庭|坪庭|光庭|ライトコート|COURT/, 'balcony'],
   // 収納系は「〇〇クローゼット」「土間収納」など他の語を含むので先に判定
   [/土間収納|シューズ(クローク|クローゼット|イン|ボックス)?|^S\.?I\.?C|^S\.?C\.?L|^S\.?C$|^S\.?B$|玄関収納/, 'storage'],
   [/パントリー|^PAN(TRY)?$|^P\.?T$|食品庫/, 'storage'],

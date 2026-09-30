@@ -133,7 +133,7 @@ export function heavyWidthThreshold(segs: Seg[]): number | null {
   return bestT;
 }
 
-export function findAngleGroups(segs: Seg[]): AngleGroup[] {
+export function findAngleGroups(segs: Seg[], minFrac = 0.02): AngleGroup[] {
   const bins = new Float64Array(360); // 0.5度刻み
   let total = 0;
   for (const s of segs) {
@@ -150,7 +150,7 @@ export function findAngleGroups(segs: Seg[]): AngleGroup[] {
   const used = new Uint8Array(360);
   const order = [...smooth.keys()].sort((a, b) => smooth[b] - smooth[a]);
   for (const i of order) {
-    if (smooth[i] < total * 0.02 || used[i]) continue;
+    if (smooth[i] < total * minFrac || used[i]) continue;
     // 周辺を使用済みに
     for (let k = -4; k <= 4; k++) used[(i + k + 360) % 360] = 1;
     // 重心角度
@@ -264,11 +264,18 @@ function thicknessPeaks(hist: Float64Array, binSize: number, minT: number): numb
   return merged;
 }
 
-export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetectOptions> = {}): WallDetection {
+export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetectOptions> = {}, masks: Vec2[][] = []): WallDetection {
   const O = { ...DEFAULTS, ...opts };
   const segs = allSegs.filter((s) => !s.dashed && segLen(s) >= O.minSegment);
   const heavyT = heavyWidthThreshold(segs);
   const groups = findAngleGroups(segs);
+  // 壁が塗りつぶしで描かれている場合、塗りの輪郭の角度からも壁の向きを拾う（斜めの壁は全体の線に占める割合が小さい）
+  const fillSegs = segs.filter((s) => s.source === 'fill');
+  if (fillSegs.length > 40) {
+    for (const g of findAngleGroups(fillSegs, 0.006)) {
+      if (groups.every((q) => angleDiff(q.theta, g.theta) > (0.8 * Math.PI) / 180)) groups.push(g);
+    }
+  }
 
   // グループごとの線
   const groupLines: Line[][] = groups.map(() => []);
@@ -485,6 +492,33 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     openings.push(op);
   }
 
+  // ---- 白い塗りで抜かれた部分（窓）----
+  // 壁の塗りの上に白い長方形を重ねてガラス部分を表す描き方。壁から除き、窓とする
+  for (const poly of masks) {
+    for (const ax of axes) {
+      const grp = groups[ax.g];
+      const ts = poly.map((q) => q.x * grp.u.x + q.y * grp.u.y);
+      const os = poly.map((q) => q.x * grp.n.x + q.y * grp.n.y);
+      const t0 = Math.min(...ts);
+      const t1 = Math.max(...ts);
+      const o0 = Math.min(...os);
+      const o1 = Math.max(...os);
+      // 壁の帯を厚み方向におおむね覆い、帯からはみ出さない細長い長方形
+      if (o1 - o0 < ax.d * 0.5 || o0 < ax.o - ax.d / 2 - 30 || o1 > ax.o + ax.d / 2 + 30) continue;
+      if (t1 - t0 < 250 || t1 - t0 > 4600) continue;
+      if (!ax.pieces.some((p) => p.t0 < t0 + 10 && p.t1 > t1 - 10)) continue;
+      if (ax.openings.some((o) => o.t0 < t1 && o.t1 > t0)) continue;
+      ax.pieces = ax.pieces.flatMap((p) =>
+        subtractIntervals([p.t0, p.t1], [[t0, t1]])
+          .filter(([a, b]) => b - a >= 20)
+          .map(([a, b]) => ({ ...p, t0: a, t1: b })),
+      );
+      const op: DetectedOpening = { g: ax.g, o: ax.o, d: ax.d, t0, t1, kind: 'window', confidence: 0.75 };
+      ax.openings.push(op);
+      openings.push(op);
+    }
+  }
+
   // 端部が他の壁に接しているか
   const endJoined = (ax: Axis, t: number) => {
     const grp = groups[ax.g];
@@ -512,6 +546,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       const gap = ge - gs;
       if (gap < 250 || gap > 6000) continue;
       const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills);
+      // 住宅の窓は最大でも 4.5m 程度。それより広い隙間は別の図（隣の階の図面・屋根の斜線など）
+      if (op.kind === 'window' && gap > 4600) continue;
       if (op.kind === 'open') {
         // 壁の途中の開口（両端が自由端）の場合のみ開口とみなす。廊下の通り抜けは開口にしない
         if (occ[k].op || occ[k + 1].op) continue;
@@ -740,6 +776,22 @@ function classifyGap(
   const spread = offs.length ? Math.max(...offs) - Math.min(...offs) : 0;
   if (infCover > gap * 0.5 || (bandCover > gap * 0.6 && offs.length >= 2 && spread >= 10)) {
     return { g, o, d, t0: gs, t1: ge, kind: 'window', confidence: infCover > gap * 0.5 ? 0.85 : 0.7 };
+  }
+  // 壁の面の線が開口を横切って続いている（ARCHITREND 等: 塗りの壁の切れ目＋外面・内面の線＝窓）
+  const faceCover = (side: 1 | -1) =>
+    intervalsLength(
+      mergeIntervals(
+        lines
+          .filter((l) => Math.abs((l.o - o) * side - d / 2) <= Math.max(25, d * 0.3))
+          .map((l) => [Math.max(gs, l.t0), Math.min(ge, l.t1)] as [number, number])
+          .filter(([a, b]) => b > a),
+        30,
+      ),
+    );
+  const f1 = faceCover(1);
+  const f2 = faceCover(-1);
+  if ((f1 > gap * 0.7 && f2 > gap * 0.7) || ((f1 > gap * 0.7 || f2 > gap * 0.7) && bandCover > gap * 0.6)) {
+    return { g, o, d, t0: gs, t1: ge, kind: 'window', confidence: 0.65 };
   }
   return { g, o, d, t0: gs, t1: ge, kind: 'open', confidence: 0.5 };
 }

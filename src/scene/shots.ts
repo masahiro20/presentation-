@@ -107,7 +107,7 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   shots.push(mk('ext-night', '夜景パース', '夜の外観。窓からこぼれる灯りが、暮らしのぬくもりを伝えます。', frontDir, 'night'));
   // 鳥瞰
   const aerialDir = frontDir.clone();
-  const dist = fitDistance(pts, center, aerialDir.clone().negate(), eye, 45, aspect) * 0.95;
+  const dist = fitDistance(pts, center, aerialDir.clone().negate(), eye, 45, aspect) * 1.25;
   const pos = center.clone().addScaledVector(aerialDir, dist * 0.85).setY(dist * 0.62);
   shots.push({
     id: 'aerial',

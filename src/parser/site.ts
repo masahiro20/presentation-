@@ -3,7 +3,7 @@
  * 「前面道路」「南側 公道 幅員6.0m」などの文字と、その手前にある敷地境界線から、
  * どの面が道路に面しているか・道路幅・敷地の広さを推定する。
  */
-import type { PlanSide, RoadInfo, SiteData, Vec2 } from '../core/types';
+import type { PlanSide, RoadInfo, SiteData, SiteEdge, Vec2 } from '../core/types';
 import type { BBox } from '../core/geometry';
 import type { Seg } from './walls';
 import { normalizeText } from './labels';
@@ -13,6 +13,7 @@ export interface SiteText {
   x: number;
   y: number;
   size: number;
+  angle?: number;
 }
 
 const ROAD_RE = /(道路|公道|私道|市道|町道|区道|村道|県道|府道|都道|国道|認定道|位置指定道|前面道)/;
@@ -174,17 +175,6 @@ export function detectSite(texts: SiteText[], segs: Seg[], bbox: BBox, northAngl
     if (!lines.length) continue;
     lines.sort((p, q) => q.d - p.d);
     bounds[side] = lines[0].pos;
-    // 道路の向こう側の線から幅員を推定
-    if (!r.widthMm) {
-      const far = parallelLines(segs, side, bbox)
-        .map((l) => ({ ...l, d: outsideDist(side, bbox, l.pos) }))
-        .filter((l) => l.d > r.textDist + 200)
-        .sort((p, q) => p.d - q.d)[0];
-      if (far) {
-        const w = far.d - lines[0].d;
-        if (w >= 1800 && w <= 30000) r.widthMm = Math.round(w / 100) * 100;
-      }
-    }
   }
   // 隣地側: 建物の外側 12m 以内の、破線（1点鎖線）の長い線のうち最も外側
   for (const side of SIDES) {
@@ -196,16 +186,160 @@ export function detectSite(texts: SiteText[], segs: Seg[], bbox: BBox, northAngl
     if (lines.length) bounds[side] = lines[0].pos;
   }
 
-  if (!roads.size && !Object.keys(bounds).length && !areaM2) return null;
+  // 「道路境界線」「隣地境界線」の文字が付いた線（斜めの敷地にも対応）
+  const edges = labeledEdges(texts, segs);
+  let polygon: Vec2[] | undefined;
+  let roadList = [...roads.values()].map(({ textDist: _d, ...r }) => r);
+  if (edges.length) {
+    const c = { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 };
+    const roadEdges = edges.filter((e) => e.kind === 'road');
+    if (roadEdges.length) {
+      // 境界線の文字がある場合は、それを接道の根拠にする（向きは建物中心から見た線の方向）
+      const bySide = new Map<PlanSide, RoadInfo>();
+      for (const e of roadEdges) {
+        const m = { x: (e.a.x + e.b.x) / 2 - c.x, y: (e.a.y + e.b.y) / 2 - c.y };
+        const side = nearestSide(m);
+        const len = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y);
+        const prev = bySide.get(side) as (RoadInfo & { len?: number }) | undefined;
+        if (!prev || len > (prev.len ?? 0)) bySide.set(side, { side, label: '道路境界線', source: 'text', widthMm: roads.get(side)?.widthMm, len } as RoadInfo);
+      }
+      // 幅員の文字（道路側）を引き継ぐ
+      const widths = roadList.filter((r) => r.widthMm);
+      for (const r of bySide.values()) if (!r.widthMm && widths.length === 1) r.widthMm = widths[0].widthMm;
+      roadList = [...bySide.values()].map(({ len: _l, ...r }: RoadInfo & { len?: number }) => r);
+    }
+    polygon = sitePolygon(edges, c);
+    // 辺ごとの位置（斜めの辺は中点）
+    for (const e of edges) {
+      const m = { x: (e.a.x + e.b.x) / 2, y: (e.a.y + e.b.y) / 2 };
+      const side = nearestSide({ x: m.x - c.x, y: m.y - c.y });
+      const v = side === 'left' || side === 'right' ? m.x : m.y;
+      const cur = bounds[side];
+      const further = side === 'left' || side === 'top' ? cur == null || v < cur : cur == null || v > cur;
+      if (cur == null || further) bounds[side] = v;
+    }
+    if (polygon) {
+      bounds.left = Math.min(...polygon.map((q) => q.x));
+      bounds.right = Math.max(...polygon.map((q) => q.x));
+      bounds.top = Math.min(...polygon.map((q) => q.y));
+      bounds.bottom = Math.max(...polygon.map((q) => q.y));
+    }
+  }
+
+  if (!roadList.length && !Object.keys(bounds).length && !areaM2 && !edges.length) return null;
   return {
-    roads: [...roads.values()].map(({ textDist: _d, ...r }) => r),
+    roads: roadList,
+    edges: edges.length ? edges : undefined,
+    polygon,
     bounds,
     areaM2,
   };
 }
 
+/** 境界線の文字に沿った線を探し、同じ直線上の線（1点鎖線の断片）をつないで1本の辺にする */
+export function labeledEdges(texts: SiteText[], segs: Seg[]): SiteEdge[] {
+  const out: SiteEdge[] = [];
+  for (const t of texts) {
+    const s = normalizeText(t.str);
+    const kind = /道路境界/.test(s) ? 'road' : /隣地境界|敷地境界/.test(s) ? 'neighbor' : null;
+    if (!kind) continue;
+    const ang = t.angle ?? 0;
+    const dx = Math.cos(ang);
+    const dy = Math.sin(ang);
+    let best: Seg | null = null;
+    let bestD = Math.max(t.size * 3, 500);
+    for (const sg of segs) {
+      const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+      if (L < 300) continue;
+      const ux = (sg.b.x - sg.a.x) / L;
+      const uy = (sg.b.y - sg.a.y) / L;
+      if (Math.abs(ux * dy - uy * dx) > 0.07) continue;
+      const d = Math.abs((t.x - sg.a.x) * -uy + (t.y - sg.a.y) * ux);
+      const tt = (t.x - sg.a.x) * ux + (t.y - sg.a.y) * uy;
+      if (tt < -3000 || tt > L + 3000) continue;
+      if (d < bestD) {
+        bestD = d;
+        best = sg;
+      }
+    }
+    if (!best) continue;
+    // 同一直線上の線をつなぐ
+    const L0 = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y);
+    const ux = (best.b.x - best.a.x) / L0;
+    const uy = (best.b.y - best.a.y) / L0;
+    const ivs: [number, number][] = [];
+    for (const sg of segs) {
+      const offA = (sg.a.x - best.a.x) * -uy + (sg.a.y - best.a.y) * ux;
+      const offB = (sg.b.x - best.a.x) * -uy + (sg.b.y - best.a.y) * ux;
+      if (Math.abs(offA) > 40 || Math.abs(offB) > 40) continue;
+      const ta = (sg.a.x - best.a.x) * ux + (sg.a.y - best.a.y) * uy;
+      const tb = (sg.b.x - best.a.x) * ux + (sg.b.y - best.a.y) * uy;
+      ivs.push([Math.min(ta, tb), Math.max(ta, tb)]);
+    }
+    ivs.sort((p, q) => p[0] - q[0]);
+    let lo = 0;
+    let hi = L0;
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [a, b] of ivs) {
+        if (b > hi && a <= hi + 1500) {
+          hi = b;
+          grew = true;
+        }
+        if (a < lo && b >= lo - 1500) {
+          lo = a;
+          grew = true;
+        }
+      }
+    }
+    const P = (tt: number) => ({ x: best!.a.x + ux * tt, y: best!.a.y + uy * tt });
+    const e: SiteEdge = { a: P(lo), b: P(hi), kind };
+    // 同じ辺の重複（文字が2つある等）は除く
+    const dup = out.find((o) => {
+      const ol = Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y);
+      const ox = (o.b.x - o.a.x) / ol;
+      const oy = (o.b.y - o.a.y) / ol;
+      const off = Math.abs((e.a.x - o.a.x) * -oy + (e.a.y - o.a.y) * ox);
+      return off < 60 && Math.abs(ox * uy - oy * ux) < 0.02;
+    });
+    if (dup) {
+      if (dup.kind === 'neighbor' && kind === 'road') dup.kind = 'road';
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+/** 境界の辺を建物中心まわりの角度順に並べ、隣り合う辺の交点で敷地の形を作る */
+function sitePolygon(edges: SiteEdge[], c: Vec2): Vec2[] | undefined {
+  if (edges.length < 3) return undefined;
+  const ang = (e: SiteEdge) => Math.atan2((e.a.y + e.b.y) / 2 - c.y, (e.a.x + e.b.x) / 2 - c.x);
+  const es = edges.slice().sort((p, q) => ang(p) - ang(q));
+  const pts: Vec2[] = [];
+  for (let i = 0; i < es.length; i++) {
+    const A = es[i];
+    const B = es[(i + 1) % es.length];
+    const d1 = { x: A.b.x - A.a.x, y: A.b.y - A.a.y };
+    const d2 = { x: B.b.x - B.a.x, y: B.b.y - B.a.y };
+    const den = d1.x * d2.y - d1.y * d2.x;
+    if (Math.abs(den) < 1e-6 * Math.hypot(d1.x, d1.y) * Math.hypot(d2.x, d2.y)) return undefined;
+    const t = ((B.a.x - A.a.x) * d2.y - (B.a.y - A.a.y) * d2.x) / den;
+    const P = { x: A.a.x + d1.x * t, y: A.a.y + d1.y * t };
+    // 交点は両方の辺の端点の近く（辺の欠けを補う程度まで）
+    const near = (e: SiteEdge) => Math.min(Math.hypot(P.x - e.a.x, P.y - e.a.y), Math.hypot(P.x - e.b.x, P.y - e.b.y));
+    if (near(A) > 6000 || near(B) > 6000) return undefined;
+    pts.push(P);
+  }
+  return pts;
+}
+
 /** 敷地データを平行移動 */
 export function translateSite(site: SiteData, dx: number, dy: number) {
+  const tr = (q: Vec2) => ({ x: q.x + dx, y: q.y + dy });
+  if (site.edges) site.edges = site.edges.map((e) => ({ ...e, a: tr(e.a), b: tr(e.b) }));
+  if (site.polygon) site.polygon = site.polygon.map(tr);
   const b = site.bounds;
   if (b.left != null) b.left += dx;
   if (b.right != null) b.right += dx;

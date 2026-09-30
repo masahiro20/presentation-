@@ -58,7 +58,10 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
 
   // 敷地（芝・砂利など）: 少し高くして周囲の地面と区別
   const gy = 0.0;
-  mb.quad('l.ground', V(min.x, gy, min.y), V(min.x, gy, max.y), V(max.x, gy, max.y), V(max.x, gy, min.y), V(1, 0, 0), V(0, 0, 1));
+  // 図面から敷地の形が読めた場合はその形（斜めの境界もそのまま）
+  const poly = siteData?.polygon?.map((q) => V(q.x / 1000, gy, q.y / 1000));
+  if (poly && poly.length >= 3) mb.polygon('l.ground', poly, V(0, 1, 0), V(1, 0, 0), V(0, 0, 1));
+  else mb.quad('l.ground', V(min.x, gy, min.y), V(min.x, gy, max.y), V(max.x, gy, max.y), V(max.x, gy, min.y), V(1, 0, 0), V(0, 0, 1));
   // 周辺の地面（広く）
   const R = 120;
   const cx = (min.x + max.x) / 2;
@@ -68,7 +71,33 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   // 道路（図面の幅員。不明なら 6m）
   const roadW = pr?.widthMm ? Math.max(3, Math.min(20, pr.widthMm / 1000)) : 6;
   let roadCenter: THREE.Vector3;
-  if (road.x !== 0) {
+  const roadEdges = (siteData?.edges ?? []).filter((e) => e.kind === 'road');
+  if (roadEdges.length) {
+    // 「道路境界線」の辺ごとに、その外側へ道路を敷く
+    const sc = V((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
+    let bestDot = -Infinity;
+    roadCenter = V(0, 0, 0);
+    for (const e of roadEdges) {
+      const A = V(e.a.x / 1000, 0, e.a.y / 1000);
+      const B = V(e.b.x / 1000, 0, e.b.y / 1000);
+      const dir = B.clone().sub(A).normalize();
+      let out = V(-dir.z, 0, dir.x);
+      const mid = A.clone().add(B).multiplyScalar(0.5);
+      if (out.dot(mid.clone().sub(sc)) < 0) out = out.negate();
+      const A2 = A.clone().addScaledVector(dir, -12);
+      const B2 = B.clone().addScaledVector(dir, 12);
+      const p = [A2, B2, B2.clone().addScaledVector(out, roadW), A2.clone().addScaledVector(out, roadW)].map((q) => q.setY(0.005));
+      const n = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
+      if (n.y < 0) mb.quad('l.road', p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
+      else mb.quad('l.road', p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
+      mb.box('l.curb', mid.clone().addScaledVector(out, 0.1), dir, A.distanceTo(B) + 0.2, 0.12, 0.2);
+      const d = out.dot(road);
+      if (d > bestDot) {
+        bestDot = d;
+        roadCenter = mid.clone().addScaledVector(out, roadW / 2);
+      }
+    }
+  } else if (road.x !== 0) {
     const x0 = road.x > 0 ? max.x + 0.2 : min.x - 0.2 - roadW;
     mb.quad('l.road', V(x0, 0.005, cz - 60), V(x0, 0.005, cz + 60), V(x0 + roadW, 0.005, cz + 60), V(x0 + roadW, 0.005, cz - 60), V(1, 0, 0), V(0, 0, 1));
     roadCenter = V(x0 + roadW / 2, 0, cz);
@@ -121,12 +150,15 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   // フェンス・生垣（道路側以外の3辺）
   const rnd = mulberry32(42);
   const fenceType = style.landscape.fence;
-  const edges: [THREE.Vector3, THREE.Vector3][] = [
-    [V(min.x, 0, min.y), V(max.x, 0, min.y)],
-    [V(max.x, 0, min.y), V(max.x, 0, max.y)],
-    [V(max.x, 0, max.y), V(min.x, 0, max.y)],
-    [V(min.x, 0, max.y), V(min.x, 0, min.y)],
-  ];
+  const neighborEdges = (siteData?.edges ?? []).filter((e) => e.kind === 'neighbor');
+  const edges: [THREE.Vector3, THREE.Vector3][] = neighborEdges.length
+    ? neighborEdges.map((e) => [V(e.a.x / 1000, 0, e.a.y / 1000), V(e.b.x / 1000, 0, e.b.y / 1000)])
+    : [
+        [V(min.x, 0, min.y), V(max.x, 0, min.y)],
+        [V(max.x, 0, min.y), V(max.x, 0, max.y)],
+        [V(max.x, 0, max.y), V(min.x, 0, max.y)],
+        [V(min.x, 0, max.y), V(min.x, 0, min.y)],
+      ];
   for (const [a, c] of edges) {
     const mid = a.clone().add(c).multiplyScalar(0.5);
     const out = mid.clone().sub(V(cx, 0, cz));

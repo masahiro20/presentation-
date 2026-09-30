@@ -156,8 +156,50 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
     s += dimLine(ox0, y, ox1, y, `${Math.round(ox1 - ox0)}`, false);
     s += dimLine(x, oy0, x, oy1, `${Math.round(oy1 - oy0)}`, true);
   }
+  // 敷地境界線（図面の「道路境界線」「隣地境界線」）: 1階のみ
+  const siteEdges = model.floors[0] === f && opts.showRoad !== false ? model.site?.edges : undefined;
+  if (siteEdges?.length) {
+    const c = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    const w0 = model.site!.roads[0]?.widthMm;
+    const ext = { minX: vb.x, minY: vb.y, maxX: vb.x + vb.w, maxY: vb.y + vb.h };
+    for (const e of siteEdges) {
+      const L = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y);
+      if (L < 1) continue;
+      const u = { x: (e.b.x - e.a.x) / L, y: (e.b.y - e.a.y) / L };
+      let n = { x: -u.y, y: u.x };
+      const m = { x: (e.a.x + e.b.x) / 2, y: (e.a.y + e.b.y) / 2 };
+      if (n.x * (m.x - c.x) + n.y * (m.y - c.y) < 0) n = { x: -n.x, y: -n.y };
+      if (e.kind === 'road') {
+        const D = 900;
+        const q = [e.a, e.b, { x: e.b.x + n.x * D, y: e.b.y + n.y * D }, { x: e.a.x + n.x * D, y: e.a.y + n.y * D }];
+        s += `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#e4e2de"/>`;
+        let deg = (Math.atan2(u.y, u.x) * 180) / Math.PI;
+        if (deg > 90) deg -= 180;
+        if (deg < -90) deg += 180;
+        const tp = { x: m.x + n.x * D * 0.5, y: m.y + n.y * D * 0.5 };
+        if (L > 2500) s += `<text x="${tp.x.toFixed(0)}" y="${tp.y.toFixed(0)}" font-size="230" text-anchor="middle" dy="80" fill="#555" transform="rotate(${deg.toFixed(1)} ${tp.x.toFixed(0)} ${tp.y.toFixed(0)})">${esc(`道路${w0 ? `（幅員${(w0 / 1000).toFixed(1)}m）` : ''}`)}</text>`;
+        for (const p of q) {
+          ext.minX = Math.min(ext.minX, p.x - 300);
+          ext.minY = Math.min(ext.minY, p.y - 300);
+          ext.maxX = Math.max(ext.maxX, p.x + 300);
+          ext.maxY = Math.max(ext.maxY, p.y + 300);
+        }
+      }
+      s += `<line x1="${e.a.x.toFixed(0)}" y1="${e.a.y.toFixed(0)}" x2="${e.b.x.toFixed(0)}" y2="${e.b.y.toFixed(0)}" stroke="${e.kind === 'road' ? '#555' : '#888'}" stroke-width="${e.kind === 'road' ? 24 : 14}" stroke-dasharray="200 60 30 60"/>`;
+      for (const p of [e.a, e.b]) {
+        ext.minX = Math.min(ext.minX, p.x - 300);
+        ext.minY = Math.min(ext.minY, p.y - 300);
+        ext.maxX = Math.max(ext.maxX, p.x + 300);
+        ext.maxY = Math.max(ext.maxY, p.y + 300);
+      }
+    }
+    vb.x = ext.minX;
+    vb.y = ext.minY;
+    vb.w = ext.maxX - ext.minX;
+    vb.h = ext.maxY - ext.minY + 1900;
+  }
   // 接道（1階のみ）: 道路側に帯と幅員を表示
-  if (model.site?.roads.length && model.floors[0] === f && opts.showRoad !== false) {
+  if (!siteEdges?.length && model.site?.roads.length && model.floors[0] === f && opts.showRoad !== false) {
     for (const r of model.site.roads) {
       const bnd = model.site.bounds[r.side];
       const label = `道路${r.widthMm ? `（幅員${(r.widthMm / 1000).toFixed(1)}m）` : ''}`;

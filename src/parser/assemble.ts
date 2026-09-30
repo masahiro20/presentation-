@@ -24,6 +24,8 @@ export interface PageMm {
   arcs: Arc[];
   texts: MmText[];
   fills: { polygon: Vec2[] }[];
+  /** 白い塗り（壁の上に重ねて窓・ガラス部分を抜いている図面がある） */
+  masks: Vec2[][];
 }
 
 export function pageToMm(p: PageVectors, k: number): PageMm {
@@ -37,6 +39,7 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     arcs: p.curves.filter((c) => !c.dashed).map((c) => ({ p0: sc(c.p0), p1: sc(c.p1), p2: sc(c.p2), p3: sc(c.p3) })),
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
+    masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 8).map((f) => f.polygon.map(sc)),
   };
 }
 
@@ -258,19 +261,73 @@ function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boo
   }
 }
 
+const MAIN_PRIORITY: RoomType[] = ['ldk', 'living', 'dining', 'kitchen', 'japanese', 'bedroom', 'kids', 'study', 'entrance', 'washroom', 'bath', 'toilet', 'balcony', 'garage', 'hall', 'stairs', 'closet', 'storage', 'porch', 'void', 'other'];
+
+/** 1つの領域の室名のうち代表となるもの（居室を優先、同格なら大きい文字） */
+function mainName<T extends { type: RoomType; size: number }>(names: T[]): T | undefined {
+  return names.slice().sort((p, q) => MAIN_PRIORITY.indexOf(p.type) - MAIN_PRIORITY.indexOf(q.type) || q.size - p.size)[0];
+}
+
+/** 室名らしい短い語（説明文・寸法・記号は除く） */
+export function looksLikeRoomName(raw: string): boolean {
+  const s = normalizeText(raw);
+  if (s.length < 2 || s.length > 10) return false;
+  if (/[。、，,：:！!？?「」『』]/.test(s)) return false;
+  if (/^[\d.,+\-×XW*＊()（）]+$/.test(s)) return false;
+  if (/\d{3,}/.test(s)) return false;
+  if (/^(UP|DN|FIX|FL|GL|CH|H=|W=|EV|PS|MB|SK|冷|W\d)/.test(s)) return false;
+  // 日本語を含む語、または英字のみの略称
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(s) || /^[A-Z]{2,5}$/.test(s);
+}
+
+/** 同じ直線上に並ぶ壁の間の隙間（最大 maxGap） */
+function collinearGaps(walls: WWall[], maxGap: number): { a: Vec2; b: Vec2; d: number }[] {
+  const out: { a: Vec2; b: Vec2; d: number }[] = [];
+  const byAxis: WWall[][] = [];
+  for (const w of walls) {
+    const ax = byAxis.find((ws) => ws[0].g === w.g && Math.abs(ws[0].o - w.o) < 30);
+    if (ax) ax.push(w);
+    else byAxis.push([w]);
+  }
+  for (const ws of byAxis) {
+    ws.sort((p, q) => p.t0 - q.t0);
+    let end = ws[0].t1;
+    for (let k = 1; k < ws.length; k++) {
+      const w = ws[k];
+      const gap = w.t0 - end;
+      if (gap > 30 && gap <= maxGap) {
+        const P = (t: number) => ({ x: w.u.x * t + w.n.x * w.o, y: w.u.y * t + w.n.y * w.o });
+        out.push({ a: P(end), b: P(w.t0), d: w.d });
+      }
+      end = Math.max(end, w.t1);
+    }
+  }
+  return out;
+}
+
 /** 1つの図面（階）から部屋・外形などを作る */
 export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[]): Floor {
   const walls = plan.walls;
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
   for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
+  // 内外の判定では、同じ直線上の壁と壁の間（窓・出入口。記号が読めなかったものも含む）を塞いでおく。
+  // 角の窓や、記号の描き方が違う窓から部屋が「外」に漏れるのを防ぐ
+  const GAP = 3;
+  const closers = collinearGaps(walls, 4600);
+  for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
+  for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
   grid.floodOutside();
+  for (let i = 0; i < grid.data.length; i++) if (grid.data[i] === GAP) grid.data[i] = FREE;
   const { labels, sizes } = grid.labelComponents();
 
   // ---- 文字の割り当て ----
   interface RoomAcc {
     id: number;
     names: { str: string; type: RoomType; size: number; x: number; y: number }[];
+    /** 辞書に無いが室名らしい文字（「美容院区画」「バックヤード」など） */
+    others: { str: string; size: number; x: number; y: number }[];
+    areas: { tatami: number; x: number; y: number }[];
     tatami?: number;
     stair?: 'up' | 'down';
     textPos?: Vec2;
@@ -295,18 +352,28 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   for (const t of plan.texts) {
     const l = labelAt({ x: t.x, y: t.y });
     if (!l) continue;
-    if (!acc.has(l)) acc.set(l, { id: l, names: [] });
+    if (!acc.has(l)) acc.set(l, { id: l, names: [], others: [], areas: [] });
     const a = acc.get(l)!;
     const area = parseAreaLabel(t.str);
-    if (area?.tatami) a.tatami = area.tatami;
-    else if (area?.m2) a.tatami = area.m2 / 1.62;
+    const tatami = area?.tatami ?? (area?.m2 ? area.m2 / 1.62 : undefined);
+    if (tatami) a.areas.push({ tatami, x: t.x, y: t.y });
     const st = parseStairMark(t.str);
     if (st) a.stair = st;
     const type = classifyRoomName(t.str);
     if (type) a.names.push({ str: t.str, type, size: t.size, x: t.x, y: t.y });
+    else if (!area && !st && looksLikeRoomName(t.str)) a.others.push({ str: t.str.trim(), size: t.size, x: t.x, y: t.y });
+  }
+  // 帖数は、室名に最も近い表記を採用（1つの領域に複数の部屋が入った場合）
+  for (const a of acc.values()) {
+    if (!a.areas.length) continue;
+    const ref = mainName(a.names) ?? a.others[0];
+    const near = ref ? a.areas.slice().sort((p, q) => Math.hypot(p.x - ref.x, p.y - ref.y) - Math.hypot(q.x - ref.x, q.y - ref.y))[0] : a.areas[0];
+    a.tatami = near.tatami;
   }
 
   // ---- 部屋ポリゴン ----
+  /** 中庭など、壁に囲まれていても屋外の領域（外形・屋根から除く） */
+  const courtLabels = new Set<number>();
   const thick = walls.map((w) => w.d).sort((a, b) => a - b);
   const medianD = thick.length ? thick[Math.floor(thick.length / 2)] : 120;
   const k = Math.max(1, Math.round(medianD / 2 / res));
@@ -325,19 +392,20 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     let name = '';
     let type: RoomType = 'other';
     let labelPos: Vec2 | null = null;
-    if (a?.names.length) {
-      // 最も大きい文字を室名に
-      const main = a.names.slice().sort((p, q) => q.size - p.size)[0];
-      const uniq = [...new Set(a.names.map((n) => n.str))];
+    if (!a?.names.length && a?.others.length) {
+      // 辞書に無い室名（店舗区画など）はそのまま名前にする
+      const main = a.others.slice().sort((p, q) => q.size - p.size)[0];
+      name = [...new Set(a.others.map((n) => n.str))].slice(0, 2).join('・');
+      type = 'other';
+      labelPos = { x: main.x, y: main.y };
+    } else if (a?.names.length) {
+      // 複数の室名が1つの領域に入った場合（LDK＋パントリーなど）は主な部屋を代表にする
+      const main = mainName(a.names)!;
+      const uniq = [...new Set([main.str, ...a.names.map((n) => n.str)])];
       name = uniq.join('・');
       type = main.type;
       labelPos = { x: main.x, y: main.y };
-      if (uniq.length > 1) {
-        // 玄関+ホールのように複数の名前 → 大きい方の種別
-        const types = a.names.map((n) => n.type);
-        if (types.includes('ldk')) type = 'ldk';
-        else if (types.includes('living')) type = 'living';
-      }
+      if (type === 'balcony' && /庭|COURT/i.test(main.str)) courtLabels.add(l);
     } else if (a?.stair) {
       name = '階段';
       type = 'stairs';
@@ -375,7 +443,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
 
   // ---- 外形 ----
   const building = new Uint8Array(grid.w * grid.h);
-  for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== OUTSIDE ? 1 : 0;
+  for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== OUTSIDE && !courtLabels.has(labels[i]) ? 1 : 0;
   const extD = walls.length ? Math.max(...walls.map((w) => w.d)) : 150;
   const eroded = erodeMask(building, grid.w, grid.h, Math.max(1, Math.round(extD / 2 / res)));
   const outline = traceMask(eroded, grid, res * 1.5).filter((l) => Math.abs(polygonArea(l)) > 2e6);
@@ -603,9 +671,91 @@ function circumcenter(a: Vec2, b: Vec2, c: Vec2): Vec2 | null {
   };
 }
 
+/**
+ * 方位記号の図形から真北を求める（ARCHITREND などの「円＋星形＋北を指す長い線と片羽の矢」）。
+ * 円の中心を通る長い線のうち、端に矢羽（短い線）が付いている側、または「真北」「N」の文字に近い側を北とする。
+ */
+export function detectCompass(p: PageMm): number | null {
+  const segs = p.segs;
+  // 円周候補の点（短い線分の端点・円弧の点）を格子に登録
+  const cell = 300;
+  const grid = new Map<string, Vec2[]>();
+  const add = (q: Vec2) => {
+    const k = `${Math.floor(q.x / cell)},${Math.floor(q.y / cell)}`;
+    let a = grid.get(k);
+    if (!a) grid.set(k, (a = []));
+    a.push(q);
+  };
+  for (const sg of segs) if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 400) add(sg.a), add(sg.b);
+  for (const a of p.arcs) add(a.p0), add(a.p3), add(bezierMid(a));
+  const around = (c: Vec2, r: number) => {
+    const out: Vec2[] = [];
+    for (let gx = Math.floor((c.x - r) / cell); gx <= Math.floor((c.x + r) / cell); gx++)
+      for (let gy = Math.floor((c.y - r) / cell); gy <= Math.floor((c.y + r) / cell); gy++) for (const q of grid.get(`${gx},${gy}`) ?? []) out.push(q);
+    return out;
+  };
+  const labels = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
+  let best: { deg: number; score: number } | null = null;
+  for (const L of segs) {
+    const len = Math.hypot(L.b.x - L.a.x, L.b.y - L.a.y);
+    if (len < 1500 || len > 15000) continue;
+    const C = { x: (L.a.x + L.b.x) / 2, y: (L.a.y + L.b.y) / 2 };
+    const half = len / 2;
+    const pts = around(C, half * 0.9).map((q) => ({ q, d: Math.hypot(q.x - C.x, q.y - C.y) })).filter((o) => o.d > half * 0.15 && o.d < half * 0.9);
+    if (pts.length < 24) continue;
+    // 半径のヒストグラムの山 = 円
+    const bins = new Map<number, typeof pts>();
+    for (const o of pts) {
+      const k = Math.round(o.d / (half * 0.04));
+      if (!bins.has(k)) bins.set(k, []);
+      bins.get(k)!.push(o);
+    }
+    let ring: typeof pts = [];
+    for (const [k, v] of bins) {
+      const all = v.concat(bins.get(k + 1) ?? []);
+      if (all.length > ring.length) ring = all;
+    }
+    if (ring.length < 20) continue;
+    const sectors = new Set(ring.map((o) => Math.floor(((Math.atan2(o.q.y - C.y, o.q.x - C.x) + Math.PI) / (Math.PI * 2)) * 8) % 8));
+    if (sectors.size < 7) continue;
+    const r = ring.reduce((s0, o) => s0 + o.d, 0) / ring.length;
+    if (half < r * 1.4) continue;
+    // 両端のどちらが北か
+    const ends = [L.a, L.b];
+    const ux = (L.b.x - L.a.x) / len;
+    const uy = (L.b.y - L.a.y) / len;
+    const endScore = ends.map((E) => {
+      let sc = 0;
+      for (const sg of segs) {
+        if (sg === L) continue;
+        const sl = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+        if (sl > r * 1.2) continue;
+        const near = Math.min(Math.hypot(sg.a.x - E.x, sg.a.y - E.y), Math.hypot(sg.b.x - E.x, sg.b.y - E.y));
+        if (near > r * 0.7) continue;
+        const cos = Math.abs(((sg.b.x - sg.a.x) * ux + (sg.b.y - sg.a.y) * uy) / Math.max(1e-6, sl));
+        if (cos < 0.97) sc += 1;
+      }
+      return sc;
+    });
+    // 家具（丸テーブルと椅子など）は端の周りに線が多い。方位記号の矢羽は数本
+    if (Math.max(...endScore) > 6) continue;
+    for (let k = 0; k < 2; k++) for (const t of labels) if (Math.hypot(t.x - ends[k].x, t.y - ends[k].y) < r * 2.5) endScore[k] += 5;
+    if (endScore[0] === endScore[1]) continue;
+    const E = endScore[0] > endScore[1] ? ends[0] : ends[1];
+    const score = Math.max(...endScore) + ring.length / 10;
+    const deg = Math.round((Math.atan2(E.x - C.x, -(E.y - C.y)) * 180) / Math.PI) || 0;
+    if (!best || score > best.score) best = { deg, score };
+  }
+  return best ? best.deg : null;
+}
+
 export function detectNorth(pages: PageMm[]): number | null {
   for (const p of pages) {
-    const ns = p.texts.filter((t) => /^(N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
+    const c = detectCompass(p);
+    if (c != null) return c;
+  }
+  for (const p of pages) {
+    const ns = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
     for (const t of ns) {
       const R = t.size * 5;
       const pts: Vec2[] = [];
@@ -642,7 +792,7 @@ export function detectNorth(pages: PageMm[]): number | null {
 export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
   for (const page of pages) {
-    const det = detectWalls(page.segs, page.arcs);
+    const det = detectWalls(page.segs, page.arcs, {}, page.masks);
     const ww = makeWalls(det);
     joinWalls(ww);
     const groups = clusterPlans(ww);
@@ -655,26 +805,53 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const segs = page.segs.filter((s) => inBox((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2, margin));
       const siteTexts = page.texts.filter((t) => inBox(t.x, t.y, 30000));
       const siteSegs = page.segs.filter((s) => inBox(s.a.x, s.a.y, 30000) || inBox(s.b.x, s.b.y, 30000));
-      // 階の見出し
-      let floorHint: number | null = null;
-      let bestD = Infinity;
-      for (const t of page.texts) {
-        const f = parseFloorTitle(t.str);
-        if (f == null) continue;
-        const dx = Math.max(0, bbox.minX - t.x, t.x - bbox.maxX);
-        const dy = Math.max(0, bbox.minY - t.y, t.y - bbox.maxY);
-        const d = Math.hypot(dx, dy);
-        if (d < bestD) {
-          bestD = d;
-          floorHint = f;
-        }
-      }
-      const h = bbox.maxY - bbox.minY;
-      if (bestD > h * 0.8 && groups.length > 1) floorHint = null;
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint, walls: g, texts, segs, siteTexts, siteSegs });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs });
     }
   }
+  assignFloorTitles(plans, pages);
   return plans;
+}
+
+/**
+ * 「1階平面図」などの見出しを図面に1対1で割り当てる。
+ * 見出しは図面の真下（または真上）に置かれることが多いので、横方向のずれを重く評価する。
+ */
+function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
+  const cands: { plan: PlanData; title: MmText; floor: number; score: number }[] = [];
+  for (const page of pages) {
+    const onPage = plans.filter((p) => p.pageIndex === page.pageIndex);
+    // 見出しとみなす文字: 「1階平面図」、または「1階」の直後（同じ行の右）に「平面図」がある
+    const isTitle = (t: MmText) => {
+      const s0 = normalizeText(t.str);
+      if (/平面|PLAN/.test(s0)) return true;
+      return page.texts.some((q) => q !== t && /^平面/.test(normalizeText(q.str)) && Math.abs(q.y - t.y) < t.size * 0.6 && q.x > t.x && q.x - t.x < t.size * 12);
+    };
+    for (const t of page.texts) {
+      const f = parseFloorTitle(t.str);
+      if (f == null || !isTitle(t)) continue;
+      for (const p of onPage) {
+        const b = p.bbox;
+        const dx = Math.max(0, b.minX - t.x, t.x - b.maxX);
+        const dy = Math.max(0, b.minY - t.y, t.y - b.maxY);
+        const h = b.maxY - b.minY;
+        const w = b.maxX - b.minX;
+        if (onPage.length > 1 && (dy > h * 0.9 || dx > w * 0.6)) continue;
+        cands.push({ plan: p, title: t, floor: f, score: dx * 3 + dy });
+      }
+    }
+  }
+  cands.sort((a, b) => a.score - b.score);
+  const usedPlan = new Set<PlanData>();
+  const usedTitle = new Set<MmText>();
+  const usedFloor = new Set<string>();
+  for (const c of cands) {
+    const fk = `${c.plan.pageIndex}:${c.floor}`;
+    if (usedPlan.has(c.plan) || usedTitle.has(c.title) || usedFloor.has(fk)) continue;
+    c.plan.floorHint = c.floor;
+    usedPlan.add(c.plan);
+    usedTitle.add(c.title);
+    usedFloor.add(fk);
+  }
 }
 
 /** 上階の図面を下階に位置合わせするための平行移動量（壁の重なり・階段位置・外形の包含で評価） */

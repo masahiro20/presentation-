@@ -140,8 +140,18 @@ export interface RoadInfo {
   source: 'text' | 'compass' | 'manual';
 }
 
+export interface SiteEdge {
+  a: Vec2;
+  b: Vec2;
+  kind: 'road' | 'neighbor';
+}
+
 export interface SiteData {
   roads: RoadInfo[];
+  /** 図面の「道路境界線」「隣地境界線」の文字が付いた線（斜めの境界も含む） */
+  edges?: SiteEdge[];
+  /** 敷地の形（境界線がつながって閉じた場合） */
+  polygon?: Vec2[];
   /** 敷地境界線の位置（図面座標 mm。分かった辺のみ） */
   bounds: Partial<Record<PlanSide, number>>;
   /** 敷地面積（図面の表記） */

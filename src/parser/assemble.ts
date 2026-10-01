@@ -26,6 +26,8 @@ export interface PageMm {
   fills: { polygon: Vec2[] }[];
   /** 白い塗り（壁の上に重ねて窓・ガラス部分を抜いている図面がある） */
   masks: Vec2[][];
+  /** 色付きの塗り（壁・柱の塗りつぶしを含む） */
+  colorFills: { poly: Vec2[]; color: string }[];
 }
 
 export function pageToMm(p: PageVectors, k: number): PageMm {
@@ -40,6 +42,9 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
     masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 8).map((f) => f.polygon.map(sc)),
+    colorFills: p.fills
+      .filter((f) => f.polygon.length >= 3 && !/^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.color.toLowerCase() !== '#000000')
+      .map((f) => ({ poly: f.polygon.map(sc), color: f.color.toLowerCase() })),
   };
 }
 
@@ -229,6 +234,10 @@ export interface PlanData {
   /** 敷地・道路の読み取り用（建物の周囲 30m の文字と線） */
   siteTexts: MmText[];
   siteSegs: Seg[];
+  /** 壁の塗りつぶし（曲面・斜めの壁・柱も形のまま部屋の区切りに使う） */
+  wallPolys: Vec2[][];
+  /** 細長い白抜き（窓・ガラス戸の記号）: 部屋の区切りとして使う */
+  sashPolys: Vec2[][];
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -275,9 +284,90 @@ export function looksLikeRoomName(raw: string): boolean {
   if (/[。、，,：:！!？?「」『』]/.test(s)) return false;
   if (/^[\d.,+\-×XW*＊()（）]+$/.test(s)) return false;
   if (/\d{3,}/.test(s)) return false;
-  if (/^(UP|DN|FIX|FL|GL|CH|H=|W=|EV|PS|MB|SK|冷|W\d)/.test(s)) return false;
+  if (/^(UP|DN|FIX|FL|GL|CH|H=|W=|PS|MB|SK|冷|W\d)/.test(s)) return false;
+  if (/境界|道路|隣地|通り芯|芯|^GL|天井|床補強|予定|参考/.test(s)) return false;
   // 日本語を含む語、または英字のみの略称
+  if (/^※/.test(raw.trim())) return false;
   return /[\u3040-\u30ff\u3400-\u9fff]/.test(s) || /^[A-Z]{2,5}$/.test(s);
+}
+
+/**
+ * 吹抜の範囲: 「吹抜」の文字を含み、対角線（×印）が引かれた長方形。
+ * 吹抜は手すり・腰壁の細い線で描かれ壁として拾えないため、×印から範囲を求める。
+ */
+export function voidRectangles(plan: { segs: Seg[]; texts: MmText[] }): BBox[] {
+  const voidTexts = plan.texts.filter((t) => /吹抜|吹き抜け|VOID/i.test(t.str));
+  if (!voidTexts.length) return [];
+  // 斜めの線（文字の部分などで途切れたものは、同じ直線上でつなぐ）
+  const raw = plan.segs.filter((sg) => {
+    const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+    if (L < 30) return false;
+    const a = Math.abs(Math.atan2(sg.b.y - sg.a.y, sg.b.x - sg.a.x)) % (Math.PI / 2);
+    return a > 0.25 && a < Math.PI / 2 - 0.25;
+  });
+  // 長い断片を基準線にして、その直線上（40mm 以内）の断片を 700mm までの隙間でつなぐ
+  const used = new Uint8Array(raw.length);
+  const order = raw.map((_, i) => i).sort((i, j) => Math.hypot(raw[j].b.x - raw[j].a.x, raw[j].b.y - raw[j].a.y) - Math.hypot(raw[i].b.x - raw[i].a.x, raw[i].b.y - raw[i].a.y));
+  const diag: { a: Vec2; b: Vec2 }[] = [];
+  for (const i of order) {
+    if (used[i]) continue;
+    const S = raw[i];
+    const L = Math.hypot(S.b.x - S.a.x, S.b.y - S.a.y);
+    if (L < 250) break;
+    const u = { x: (S.b.x - S.a.x) / L, y: (S.b.y - S.a.y) / L };
+    const off = (q: Vec2) => Math.abs((q.x - S.a.x) * -u.y + (q.y - S.a.y) * u.x);
+    const tt = (q: Vec2) => (q.x - S.a.x) * u.x + (q.y - S.a.y) * u.y;
+    const ivs: [number, number, number][] = [];
+    raw.forEach((q, j) => {
+      if (off(q.a) < 40 && off(q.b) < 40) ivs.push([Math.min(tt(q.a), tt(q.b)), Math.max(tt(q.a), tt(q.b)), j]);
+    });
+    ivs.sort((p, q) => p[0] - q[0]);
+    let lo = 0;
+    let hi = L;
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [a, b] of ivs) {
+        if (b > hi && a <= hi + 700) (hi = b), (grew = true);
+        if (a < lo && b >= lo - 700) (lo = a), (grew = true);
+      }
+    }
+    for (const [a, b, j] of ivs) if (a >= lo - 1 && b <= hi + 1) used[j] = 1;
+    if (hi - lo >= 1500) diag.push({ a: { x: S.a.x + u.x * lo, y: S.a.y + u.y * lo }, b: { x: S.a.x + u.x * hi, y: S.a.y + u.y * hi } });
+  }
+  const out: BBox[] = [];
+  for (let i = 0; i < diag.length; i++) {
+    for (let j = i + 1; j < diag.length; j++) {
+      const A = diag[i];
+      const B = diag[j];
+      const pts = [A.a, A.b, B.a, B.b];
+      const bb = bboxOf(pts);
+      if (bb.maxX - bb.minX < 1200 || bb.maxY - bb.minY < 1200) continue;
+      // 4点がそれぞれ長方形の角にある（＝2本の対角線）
+      const tol = 200;
+      const corners = [
+        { x: bb.minX, y: bb.minY },
+        { x: bb.maxX, y: bb.minY },
+        { x: bb.maxX, y: bb.maxY },
+        { x: bb.minX, y: bb.maxY },
+      ];
+      // 4つの角のうち3つ以上に対角線の端がある（片方の線が家具・階段で途切れていても可）
+      if (corners.filter((c) => pts.some((q) => Math.abs(q.x - c.x) < tol && Math.abs(q.y - c.y) < tol)).length < 3) continue;
+      // 2本は交差している
+      const cr = (p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) => {
+        const d = (p1.x - p0.x) * (q1.y - q0.y) - (p1.y - p0.y) * (q1.x - q0.x);
+        if (Math.abs(d) < 1e-9) return false;
+        const t = ((q0.x - p0.x) * (q1.y - q0.y) - (q0.y - p0.y) * (q1.x - q0.x)) / d;
+        const v = ((q0.x - p0.x) * (p1.y - p0.y) - (q0.y - p0.y) * (p1.x - p0.x)) / d;
+        return t > 0.05 && t < 0.95 && v > 0.05 && v < 0.95;
+      };
+      if (!cr(A.a, A.b, B.a, B.b)) continue;
+      if (!voidTexts.some((t) => t.x > bb.minX && t.x < bb.maxX && t.y > bb.minY && t.y < bb.maxY)) continue;
+      if (out.some((o) => Math.abs(o.minX - bb.minX) < 200 && Math.abs(o.minY - bb.minY) < 200)) continue;
+      out.push(bb);
+    }
+  }
+  return out;
 }
 
 /** 同じ直線上に並ぶ壁の間の隙間（最大 maxGap） */
@@ -310,13 +400,29 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const walls = plan.walls;
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
-  for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
+  // 部屋の区切り: 壁・壁の塗り・窓の白抜き・吹抜（×印の四角）の輪郭
+  const voidRects = voidRectangles(plan);
+  const drawBarriers = () => {
+    for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
+    for (const poly of plan.wallPolys) grid.fillPolygon(poly, WALL);
+    for (const poly of plan.sashPolys) grid.fillPolygon(poly, WALL);
+    for (const r of voidRects) {
+      const c = [
+        { x: r.minX, y: r.minY },
+        { x: r.maxX, y: r.minY },
+        { x: r.maxX, y: r.maxY },
+        { x: r.minX, y: r.maxY },
+      ];
+      for (let i = 0; i < 4; i++) grid.fillThickSegment(c[i], c[(i + 1) % 4], 40, WALL);
+    }
+  };
+  drawBarriers();
   // 内外の判定では、同じ直線上の壁と壁の間（窓・出入口。記号が読めなかったものも含む）を塞いでおく。
   // 角の窓や、記号の描き方が違う窓から部屋が「外」に漏れるのを防ぐ
   const GAP = 3;
   const closers = collinearGaps(walls, 4600);
   for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
-  for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
+  drawBarriers();
   grid.floodOutside();
   for (let i = 0; i < grid.data.length; i++) if (grid.data[i] === GAP) grid.data[i] = FREE;
   const { labels, sizes } = grid.labelComponents();
@@ -439,6 +545,24 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       labeledTatami: a?.tatami,
       stairDir: a?.stair,
     });
+  }
+
+  // ×印の吹抜とほぼ同じ範囲の区画は吹抜（「吹抜」の文字が隣の区画に入っていても）
+  for (const vr of voidRects) {
+    const ra = ((vr.maxX - vr.minX) * (vr.maxY - vr.minY)) / 1e6;
+    const r = rooms.find((rm) => {
+      const c = rm.polygon.reduce((a0, q) => ({ x: a0.x + q.x / rm.polygon.length, y: a0.y + q.y / rm.polygon.length }), { x: 0, y: 0 });
+      return c.x > vr.minX && c.x < vr.maxX && c.y > vr.minY && c.y < vr.maxY && rm.area > ra * 0.6 && rm.area < ra * 1.4;
+    });
+    if (!r) continue;
+    r.name = '吹抜';
+    r.type = 'void';
+    for (const o of rooms) {
+      if (o === r || !/吹抜/.test(o.name)) continue;
+      const rest = o.name.split('・').filter((n) => !/吹抜/.test(n));
+      if (rest.length) o.name = rest.join('・');
+      if (o.type === 'void') o.type = rest.length ? classifyRoomName(rest[0]) ?? 'other' : 'other';
+    }
   }
 
   // ---- 外形 ----
@@ -789,6 +913,23 @@ export function detectNorth(pages: PageMm[]): number | null {
   return null;
 }
 
+/** 壁の塗りの色: その色の塗りの頂点の大半が、検出した壁の上にある色 */
+function wallFillColors(fills: { poly: Vec2[]; color: string }[], walls: WWall[]): Set<string> {
+  const stat = new Map<string, { n: number; on: number; polys: number }>();
+  for (const f of fills) {
+    const st = stat.get(f.color) ?? { n: 0, on: 0, polys: 0 };
+    st.polys++;
+    for (const q of f.poly) {
+      st.n++;
+      if (walls.some((w) => distPointSegment(q, w.a, w.b) <= w.d / 2 + 40)) st.on++;
+    }
+    stat.set(f.color, st);
+  }
+  const out = new Set<string>();
+  for (const [c, st] of stat) if (st.polys >= 5 && st.on / st.n >= 0.6) out.add(c);
+  return out;
+}
+
 export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
   for (const page of pages) {
@@ -796,19 +937,64 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     const ww = makeWalls(det);
     joinWalls(ww);
     const groups = clusterPlans(ww);
+    const wallColors = wallFillColors(page.colorFills, ww);
     if (!groups.length) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
-    for (const g of groups) {
-      const bbox = bboxOf(g.flatMap((w) => [w.a, w.b]));
+    // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
+    const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
+    const pageHasRooms = page.texts.some(isRoomText);
+    const boxes = groups.map((g) => bboxOf(g.flatMap((w) => [w.a, w.b])));
+    const ext = bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]));
+    const inside = (a: BBox, b: BBox) => a.minX >= b.minX - 50 && a.maxX <= b.maxX + 50 && a.minY >= b.minY - 50 && a.maxY <= b.maxY + 50;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      const bbox = boxes[gi];
+      // 他の図を丸ごと囲む（図面枠・敷地の枠など）、ページ全体に広がる枠
+      if (boxes.some((b, j) => j !== gi && inside(b, bbox))) continue;
+      if (bbox.maxX - bbox.minX > (ext.maxX - ext.minX) * 0.8 && bbox.maxY - bbox.minY > (ext.maxY - ext.minY) * 0.8) continue;
+      // 室名・帖数が1つも無い（立面図・表など）
+      const roomTexts = page.texts.filter((t) => t.x > bbox.minX && t.x < bbox.maxX && t.y > bbox.minY && t.y < bbox.maxY && isRoomText(t)).length;
+      if (pageHasRooms && roomTexts === 0) continue;
       const margin = 400;
       const inBox = (x: number, y: number, m: number) => x > bbox.minX - m && x < bbox.maxX + m && y > bbox.minY - m && y < bbox.maxY + m;
       const texts = page.texts.filter((t) => inBox(t.x, t.y, margin));
       const segs = page.segs.filter((s) => inBox((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2, margin));
       const siteTexts = page.texts.filter((t) => inBox(t.x, t.y, 30000));
       const siteSegs = page.segs.filter((s) => inBox(s.a.x, s.a.y, 30000) || inBox(s.b.x, s.b.y, 30000));
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs });
+      const wallPolys = page.colorFills
+        .filter((f) => wallColors.has(f.color) && f.poly.every((q) => inBox(q.x, q.y, margin)))
+        .map((f) => f.poly);
+      const sashPolys = page.masks.filter((poly) => {
+        if (!poly.every((q) => inBox(q.x, q.y, margin))) return false;
+        const b = bboxOf(poly);
+        const w = b.maxX - b.minX;
+        const h = b.maxY - b.minY;
+        const thin = Math.min(w, h);
+        const long = Math.max(w, h);
+        return thin >= 40 && thin <= 220 && long >= 500;
+      });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys });
     }
   }
   assignFloorTitles(plans, pages);
+  // 見出しの無い図が、見出しのある図のすぐ近く（吹抜などで分かれた同じ階の一部）にあればまとめる
+  for (const p of plans.slice()) {
+    if (p.floorHint != null) continue;
+    const near = plans
+      .filter((q) => q !== p && q.pageIndex === p.pageIndex && q.floorHint != null)
+      .map((q) => ({ q, gap: bboxGap(p.bbox, q.bbox) }))
+      .filter((o) => o.gap < 3000)
+      .sort((a, b) => a.gap - b.gap)[0];
+    if (!near) continue;
+    const q = near.q;
+    q.walls.push(...p.walls);
+    const seen = new Set(q.texts);
+    q.texts.push(...p.texts.filter((t) => !seen.has(t)));
+    q.segs.push(...p.segs);
+    q.wallPolys.push(...p.wallPolys);
+    q.sashPolys.push(...p.sashPolys);
+    q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
+    plans.splice(plans.indexOf(p), 1);
+  }
   return plans;
 }
 
@@ -948,6 +1134,8 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.segs = p.segs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
   p.siteTexts = p.siteTexts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
   p.siteSegs = p.siteSegs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
+  p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
+  p.sashPolys = p.sashPolys.map((poly) => poly.map(tr));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 
@@ -994,6 +1182,11 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
   let elev = 500;
   for (const p of sorted) {
     const f = buildFloor(p, levelOf.get(p)!, north, warnings);
+    // 部屋が取れない図（凡例・断面など）は階として扱わない
+    const roomArea = f.rooms.reduce((s0, r) => s0 + r.area, 0);
+    if (f.rooms.length === 0 || roomArea < 4) continue;
+    // 部屋が1〜2つで極端に広い（表・枠を部屋と誤認）
+    if (f.rooms.length <= 2 && roomArea > 100) continue;
     f.elevation = elev;
     elev += f.height;
     f.walls.forEach((w) => thicknesses.add(w.thickness));

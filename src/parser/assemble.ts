@@ -515,6 +515,24 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
   return changed;
 }
 
+/** 面積表（「1階 100.20」「2階 34.15」）を読む。階 → ㎡ */
+export function readAreaTable(pages: PageMm[]): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const p of pages) {
+    for (const t of p.texts) {
+      const m = /^([1-9])階$/.exec(normalizeText(t.str).replace(/\s/g, ''));
+      if (!m) continue;
+      const cands = p.texts
+        .filter((q) => q !== t && Math.abs(q.y - t.y) < t.size * 0.6 && q.x > t.x && q.x - t.x < t.size * 20)
+        .map((q) => ({ q, v: /^(\d{1,3}\.\d{1,2})(㎡|m2|m²)?$/.exec(normalizeText(q.str).replace(/\s/g, '')) }))
+        .filter((o) => o.v)
+        .sort((a, b) => a.q.x - b.q.x);
+      if (cands.length && out[+m[1]] == null) out[+m[1]] = parseFloat(cands[0].v![1]);
+    }
+  }
+  return out;
+}
+
 /** 文字の位置の区画。文字の中心が区切り線の上に乗っている場合は、周囲（±3セル）で最も多い区画 */
 function labelNear(grid: Grid, lb: Int32Array | number[], p: Vec2): number {
   const [cx, cy] = grid.cellOf(p);
@@ -560,7 +578,7 @@ function collinearGaps(walls: WWall[], maxGap: number): { a: Vec2; b: Vec2; d: n
 }
 
 /** 1つの図面（階）から部屋・外形などを作る */
-export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[]): Floor {
+export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[], expectedArea?: number): Floor {
   const walls = plan.walls;
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
@@ -591,7 +609,13 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
   drawBarriers();
   grid.floodOutside();
-  for (let i = 0; i < grid.data.length; i++) if (grid.data[i] === GAP) grid.data[i] = FREE;
+  /** 内外判定のために塞いだ切れ目（ポーチなど、屋外に開いた区画の判定に使う） */
+  const gapMask = new Uint8Array(grid.data.length);
+  for (let i = 0; i < grid.data.length; i++)
+    if (grid.data[i] === GAP) {
+      grid.data[i] = FREE;
+      gapMask[i] = 1;
+    }
   // 室名の入った色塗り（カラー平面図）の輪郭: 内外の判定の後、建物の内側でだけ部屋の区切りにする
   const fillCells: number[] = [];
   if (plan.roomFills.length) {
@@ -850,6 +874,66 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const rest = o.name.split('・').filter((n) => !/吹抜/.test(n));
       if (rest.length) o.name = rest.join('・');
       if (o.type === 'void') o.type = rest.length ? classifyRoomName(rest[0]) ?? 'other' : 'other';
+    }
+  }
+
+  // 面積表との照合: 図面の面積表（「1階 100.20」）より明らかに大きい場合は、室名の無い区画のうち
+  // 外すと面積表に合うもの（ガラス戸に囲まれた中庭、壁に囲まれたポーチ）を屋外とする
+  if (expectedArea && expectedArea > 5) {
+    const extD0 = walls.length ? Math.max(...walls.map((w) => w.d)) : 150;
+    const bm = new Uint8Array(grid.w * grid.h);
+    for (let i = 0; i < bm.length; i++) bm[i] = grid.data[i] !== OUTSIDE && !courtLabels.has(labels[i]) ? 1 : 0;
+    const er = erodeMask(bm, grid.w, grid.h, Math.max(1, Math.round(extD0 / 2 / res)));
+    let cells = 0;
+    for (let i = 0; i < er.length; i++) cells += er[i];
+    const excluded = rooms.filter((r) => r.type === 'void' || r.type === 'garage' || (r.type === 'balcony' && !/庭/.test(r.name))).reduce((s0, r) => s0 + r.area, 0);
+    const A = (cells * res * res) / 1e6 - excluded;
+    const err0 = (A - expectedArea) / expectedArea;
+    if (err0 > 0.04) {
+      const cand = rooms.map((r, idx) => ({ r, idx })).filter(({ r }) => r.name === '室' && r.area >= 1.5).slice(0, 12);
+      let best: { set: number[]; err: number } | null = null;
+      const n = cand.length;
+      for (let mask = 1; mask < 1 << n; mask++) {
+        const set: number[] = [];
+        for (let b = 0; b < n; b++) if (mask & (1 << b)) set.push(b);
+        if (set.length > 3) continue;
+        const sub = set.reduce((s0, b) => s0 + cand[b].r.area, 0);
+        const err = Math.abs(A - sub - expectedArea) / expectedArea;
+        if (!best || err < best.err) best = { set, err };
+      }
+      if (best && best.err < 0.025 && best.err < err0 / 2) {
+        for (const b of best.set) {
+          const { r, idx } = cand[b];
+          const l = labelOfRoom.get(idx);
+          if (l == null) continue;
+          // 内外判定で塞いだ切れ目に接する → 屋外に開いたポーチ、接しない → 中庭
+          let open = false;
+          for (let i = 0; i < labels.length && !open; i++) {
+            if (labels[i] !== l) continue;
+            const x = i % grid.w;
+            for (let d = 1; d <= 4 && !open; d++)
+              for (const j of [x >= d ? i - d : -1, x + d < grid.w ? i + d : -1, i - d * grid.w, i + d * grid.w])
+                if (j >= 0 && j < gapMask.length && gapMask[j]) {
+                  open = true;
+                  break;
+                }
+          }
+          if (level <= 1) {
+            r.name = open ? 'ポーチ' : '中庭';
+            r.type = open ? 'porch' : 'balcony';
+            courtLabels.add(l);
+          } else if (open) {
+            // 2階以上: 屋外に開いた区画はバルコニー・屋根
+            r.name = 'バルコニー';
+            r.type = 'balcony';
+            courtLabels.add(l);
+          } else {
+            // 2階以上: 壁に囲まれた区画は吹抜
+            r.name = '吹抜';
+            r.type = 'void';
+          }
+        }
+      }
     }
   }
 
@@ -1533,11 +1617,12 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     const o = { x: -base.bbox.minX, y: -base.bbox.minY };
     for (const p of sorted) translatePlan(p, o);
   }
+  const areaTable = readAreaTable(pages);
   const floors: Floor[] = [];
   const thicknesses = new Set<number>();
   let elev = 500;
   for (const p of sorted) {
-    const f = buildFloor(p, levelOf.get(p)!, north, warnings);
+    const f = buildFloor(p, levelOf.get(p)!, north, warnings, areaTable[levelOf.get(p)!]);
     // 部屋が取れない図（凡例・断面など）は階として扱わない
     const roomArea = f.rooms.reduce((s0, r) => s0 + r.area, 0);
     if (f.rooms.length === 0 || roomArea < 4) continue;

@@ -2,7 +2,7 @@
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
 import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
-import { bboxGap, bboxOf, distPointSegment, polygonArea, type BBox } from '../core/geometry';
+import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
@@ -238,6 +238,8 @@ export interface PlanData {
   wallPolys: Vec2[][];
   /** 細長い白抜き（窓・ガラス戸の記号）: 部屋の区切りとして使う */
   sashPolys: Vec2[][];
+  /** 室名の入った色塗り（カラー平面図の部屋の塗り）: 輪郭を部屋の区切りに使う */
+  roomFills: Vec2[][];
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -288,6 +290,8 @@ export function cleanRoomName(raw: string): string | null {
   // 説明文: 長い、または助詞・動詞の語尾を含む
   const sentence = /(から|まで|ため|する|して|できる|ように|ません|ます|です|だけ|の空|を|が見|に使|予定|検討|想定|可能)/.test(n);
   if (n.length > 12 || (sentence && n.length > 5)) return /中庭|坪庭/.test(n) ? '中庭' : null;
+  // 設備・家具・寸法・申請などの注記
+  if (/【|】|申請|開口\d|\d(M|MM|ｍ)$|^PS$|^MB$|洗濯機|冷蔵庫|ベンチ|テーブル|カウンター|ドラム|上部|下部|鉄骨|造作|^OPEN$|吊戸|棚$|ガラス/.test(n)) return null;
   return s0;
 }
 
@@ -384,6 +388,133 @@ export function voidRectangles(plan: { segs: Seg[]; texts: MmText[] }): BBox[] {
   return out;
 }
 
+/** 線分が通るセル（太さ1セル） */
+function lineCells(grid: Grid, a: Vec2, b: Vec2): number[] {
+  const [x0, y0] = grid.cellOf(a);
+  const [x1, y1] = grid.cellOf(b);
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+  const out: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const x = Math.round(x0 + ((x1 - x0) * i) / n);
+    const y = Math.round(y0 + ((y1 - y0) * i) / n);
+    if (x < 0 || y < 0 || x >= grid.w || y >= grid.h) continue;
+    out.push(y * grid.w + x);
+    // 斜めの抜けを防ぐため隣も塞ぐ
+    if (x + 1 < grid.w) out.push(y * grid.w + x + 1);
+  }
+  return out;
+}
+
+/**
+ * 室名が2つ以上入った区画を、壁から壁へ渡る線（収納の戸・間仕切り・出入口の線）で分ける。
+ * 線で区切ると室名が別々になる場合だけ採用するので、カウンターなどで部屋を誤って割ることはない。
+ */
+function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
+  const names = plan.texts
+    .map((t) => ({ t, nm: cleanRoomName(t.str) }))
+    .filter((o) => o.nm && classifyRoomName(o.nm) != null)
+    .map((o) => ({ x: o.t.x, y: o.t.y, nm: o.nm!, type: classifyRoomName(o.nm!)! }));
+  if (names.length < 2) return false;
+  let changed = false;
+  for (let iter = 0; iter < 3; iter++) {
+    const { labels } = grid.labelComponents();
+    const byLabel = new Map<number, typeof names>();
+    for (const n of names) {
+      const [cx, cy] = grid.cellOf(n);
+      if (cx < 0 || cy < 0 || cx >= grid.w || cy >= grid.h) continue;
+      const l = labels[cy * grid.w + cx];
+      if (!l) continue;
+      if (!byLabel.has(l)) byLabel.set(l, []);
+      byLabel.get(l)!.push(n);
+    }
+    let any = false;
+    for (const [l, ns] of byLabel) {
+      const distinct = ns.filter((n, i) => ns.findIndex((m) => m.nm === n.nm) === i);
+      if (distinct.length < 2) continue;
+      // 区画の範囲
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < labels.length; i++)
+        if (labels[i] === l) {
+          const x = i % grid.w;
+          const y = (i / grid.w) | 0;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      const p0 = grid.centerOf(minX, minY);
+      const p1 = grid.centerOf(maxX, maxY);
+      const nearWall = (q: Vec2) => {
+        const [x, y] = grid.cellOf(q);
+        for (let dy = -4; dy <= 4; dy++)
+          for (let dx = -4; dx <= 4; dx++) {
+            const v = grid.get(x + dx, y + dy);
+            if (v === WALL) return true;
+          }
+        return false;
+      };
+      const cands = plan.segs.filter((sg) => {
+        const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+        if (L < 350 || L > 5000) return false;
+        const m = { x: (sg.a.x + sg.b.x) / 2, y: (sg.a.y + sg.b.y) / 2 };
+        if (m.x < p0.x || m.x > p1.x || m.y < p0.y || m.y > p1.y) return false;
+        const [mx, my] = grid.cellOf(m);
+        if (labels[my * grid.w + mx] !== l) return false;
+        return nearWall(sg.a) && nearWall(sg.b);
+      });
+      // 室名どうしを分ける線のうち、小さい側が 0.6㎡ 以上で最も短いもの
+      let best: { cells: number[]; L: number } | null = null;
+      const A = distinct[0];
+      for (const B of distinct.slice(1)) {
+        for (const sg of cands) {
+          const cells = lineCells(grid, sg.a, sg.b);
+          const blocked = new Set(cells);
+          const [ax, ay] = grid.cellOf(A);
+          const [bx, by] = grid.cellOf(B);
+          const start = ay * grid.w + ax;
+          const goal = by * grid.w + bx;
+          if (blocked.has(start) || blocked.has(goal)) continue;
+          const seen = new Uint8Array(labels.length);
+          const q = [start];
+          seen[start] = 1;
+          let reached = false;
+          let count = 0;
+          while (q.length) {
+            const i = q.pop()!;
+            count++;
+            if (i === goal) {
+              reached = true;
+              break;
+            }
+            const x = i % grid.w;
+            for (const j of [x > 0 ? i - 1 : -1, x < grid.w - 1 ? i + 1 : -1, i - grid.w, i + grid.w]) {
+              if (j < 0 || j >= labels.length || seen[j] || labels[j] !== l || blocked.has(j)) continue;
+              seen[j] = 1;
+              q.push(j);
+            }
+          }
+          if (reached) continue;
+          const area = (count * grid.res * grid.res) / 1e6;
+          if (area < 0.6) continue;
+          const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+          if (!best || L < best.L) best = { cells, L };
+        }
+        if (best) break;
+      }
+      if (best) {
+        for (const i of best.cells) grid.data[i] = WALL;
+        any = true;
+        changed = true;
+      }
+    }
+    if (!any) break;
+  }
+  return changed;
+}
+
 /** 同じ直線上に並ぶ壁の間の隙間（最大 maxGap） */
 function collinearGaps(walls: WWall[], maxGap: number): { a: Vec2; b: Vec2; d: number }[] {
   const out: { a: Vec2; b: Vec2; d: number }[] = [];
@@ -431,6 +562,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   };
   drawBarriers();
+  // 部屋の区切り: 同じ直線上の壁と壁の間の 2m 以下の切れ目（戸・出入口）も区切る。
+  // 収納の折れ戸・引戸が細い線だけで描かれていても、部屋と収納が分かれる
+  for (const c of collinearGaps(walls, 2000)) grid.fillThickSegment(c.a, c.b, Math.min(c.d, 60), WALL);
   // 内外の判定では、同じ直線上の壁と壁の間（窓・出入口。記号が読めなかったものも含む）を塞いでおく。
   // 角の窓や、記号の描き方が違う窓から部屋が「外」に漏れるのを防ぐ
   const GAP = 3;
@@ -439,6 +573,56 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   drawBarriers();
   grid.floodOutside();
   for (let i = 0; i < grid.data.length; i++) if (grid.data[i] === GAP) grid.data[i] = FREE;
+  // 室名の入った色塗り（カラー平面図）の輪郭: 内外の判定の後、建物の内側でだけ部屋の区切りにする
+  const fillCells: number[] = [];
+  if (plan.roomFills.length) {
+    const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
+    for (const poly of plan.roomFills) for (let i = 0; i < poly.length; i++) tmp.fillThickSegment(poly[i], poly[(i + 1) % poly.length], 30, WALL);
+    for (let i = 0; i < tmp.data.length; i++)
+      if (tmp.data[i] === WALL && grid.data[i] === FREE) {
+        grid.data[i] = WALL;
+        fillCells.push(i);
+      }
+  }
+  // 1つの区画に別々の部屋の室名が入っている場合は、戸・間仕切りの線で分け直す
+  splitMergedRegions(grid, plan);
+  // 色塗りの線で割れて名前の無い断片になった所は、その線を外して隣の部屋に戻す
+  if (fillCells.length) {
+    const named = plan.texts.filter((t) => {
+      const nm = cleanRoomName(t.str);
+      return (nm && (classifyRoomName(nm) != null || looksLikeRoomName(nm))) || parseAreaLabel(t.str) != null || parseStairMark(t.str) != null;
+    });
+    // 隣り合う塗りの境目にできる細い隙間（0.3㎡未満）は区切りの一部として埋める
+    {
+      const { labels: lb, sizes: sz } = grid.labelComponents();
+      const sliverCells = (0.3 * 1e6) / (grid.res * grid.res);
+      const touchesFill = new Set<number>();
+      for (const i of fillCells) {
+        const x = i % grid.w;
+        for (const j of [x > 0 ? i - 1 : -1, x < grid.w - 1 ? i + 1 : -1, i - grid.w, i + grid.w]) if (j >= 0 && j < lb.length && lb[j]) touchesFill.add(lb[j]);
+      }
+      for (let i = 0; i < lb.length; i++) if (lb[i] && sz[lb[i]] < sliverCells && touchesFill.has(lb[i])) grid.data[i] = WALL;
+    }
+    for (let iter = 0; iter < 3; iter++) {
+      const { labels: lb } = grid.labelComponents();
+      const hasName = new Set<number>();
+      for (const t of named) {
+        const [x, y] = grid.cellOf(t);
+        if (x >= 0 && y >= 0 && x < grid.w && y < grid.h && lb[y * grid.w + x]) hasName.add(lb[y * grid.w + x]);
+      }
+      let changedAny = false;
+      for (const i of fillCells) {
+        if (grid.data[i] !== WALL) continue;
+        const x = i % grid.w;
+        const nb = [x > 0 ? i - 1 : -1, x < grid.w - 1 ? i + 1 : -1, i - grid.w, i + grid.w].filter((j) => j >= 0 && j < lb.length);
+        if (nb.some((j) => lb[j] && !hasName.has(lb[j]))) {
+          grid.data[i] = FREE;
+          changedAny = true;
+        }
+      }
+      if (!changedAny) break;
+    }
+  }
   const { labels, sizes } = grid.labelComponents();
 
   // ---- 文字の割り当て ----
@@ -1037,7 +1221,18 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         const long = Math.max(w, h);
         return thin >= 40 && thin <= 220 && long >= 500;
       });
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys });
+      const labelTexts = texts.filter((t) => {
+        const nm = cleanRoomName(t.str);
+        return (nm && classifyRoomName(nm) != null) || parseAreaLabel(t.str) != null || /階段/.test(t.str);
+      });
+      const roomFills = page.colorFills
+        .filter((f) => !wallColors.has(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin)))
+        .map((f) => f.poly)
+        .filter((poly) => {
+          const a = Math.abs(polygonArea(poly)) / 1e6;
+          return a >= 0.6 && a <= 80 && labelTexts.some((t) => pointInPolygon({ x: t.x, y: t.y }, poly));
+        });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills });
     }
   }
   assignFloorTitles(plans, pages);
@@ -1057,6 +1252,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.segs.push(...p.segs);
     q.wallPolys.push(...p.wallPolys);
     q.sashPolys.push(...p.sashPolys);
+    q.roomFills.push(...p.roomFills);
     q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
     plans.splice(plans.indexOf(p), 1);
   }
@@ -1201,6 +1397,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.siteSegs = p.siteSegs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
   p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
   p.sashPolys = p.sashPolys.map((poly) => poly.map(tr));
+  p.roomFills = p.roomFills.map((poly) => poly.map(tr));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 

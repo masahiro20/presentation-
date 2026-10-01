@@ -4,7 +4,7 @@
  */
 import * as THREE from 'three';
 import type { BuildingModel, Floor, Opening, Room, Stair, Wall } from '../core/types';
-import { pointInPolygon } from '../core/geometry';
+import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
 import type { ExteriorStyle } from '../styles/presets';
@@ -128,8 +128,12 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       emitFlat(mb, key, r.polygon, voids, y, true);
     }
     // 構造スラブ（断面表示・光漏れ防止）
+    // 中庭などの穴の部分にはスラブを張らない
+    const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
+    const holeRects = holes.length ? polygonToRects(holes) : [];
     for (const poly of f.outline) {
-      emitSlab(mb, 'int.slab', poly, voids, fl - 0.24, fl - 0.005);
+      if (holes.includes(poly)) continue;
+      emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005);
     }
     // ---- 天井 ----
     const upper = model.floors[model.floors.indexOf(f) + 1];

@@ -36,7 +36,7 @@ const RULES: [RegExp, RoomType][] = [
   [/ホール|廊下|HALL|ろうか|通路/, 'hall'],
   [/階段|STAIRS?/, 'stairs'],
   [/納戸|物入|収納|^S$|^P\.?S$|物置|倉庫|STORAGE|^収$|ロフト|LOFT|小屋裏|グルニエ|^ST$/, 'storage'],
-  [/バルコニー|ベランダ|テラス|ルーフバルコニー|デッキ|BALCONY|屋上|インナーバルコニー/, 'balcony'],
+  [/バルコニー|ベランダ|テラス|ルーフバルコニー|デッキ|BALCONY|屋上|インナーバルコニー|ガーデン|ルーフ|^OPEN$|物干/, 'balcony'],
   [/ポーチ|PORCH/, 'porch'],
   [/ガレージ|車庫|ビルトイン|GARAGE|カーポート/, 'garage'],
 ];

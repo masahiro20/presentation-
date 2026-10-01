@@ -45,6 +45,21 @@ export function polygonCentroid(poly: Vec2[]): Vec2 {
   return { x: cx / (3 * a), y: cy / (3 * a) };
 }
 
+/** 外形（穴あり）の内側か: 点を囲む輪郭の数が奇数なら内側（中庭などの穴に対応） */
+export function insideLoops(p: Vec2, loops: Vec2[][]): boolean {
+  let n = 0;
+  for (const l of loops) if (pointInPolygon(p, l)) n++;
+  return n % 2 === 1;
+}
+
+/** 輪郭が他の輪郭の内側にある（＝穴）か */
+export function isHoleLoop(loop: Vec2[], loops: Vec2[][]): boolean {
+  const p = loop[0];
+  let n = 0;
+  for (const l of loops) if (l !== loop && pointInPolygon(p, l)) n++;
+  return n % 2 === 1;
+}
+
 export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {

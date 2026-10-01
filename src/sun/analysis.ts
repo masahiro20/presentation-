@@ -9,7 +9,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import type { Viewer } from '../scene/viewer';
 import type { BuildingModel, Room } from '../core/types';
 import { isHabitable } from '../core/types';
-import { pointInPolygon } from '../core/geometry';
+import { pointInPolygon, insideLoops } from '../core/geometry';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, trueSolarToLocal } from './solar';
 
 export interface Occluder {
@@ -353,8 +353,8 @@ export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: num
   const hourMasks = new Map<number, Float32Array>();
   for (let s = 8; s <= 16; s++) hourMasks.set(s, new Float32Array(nx * nz));
   const p = new THREE.Vector3();
-  const footprint = st.meta.outlines.flatMap((o) => o.polys.map((poly) => poly.map((q) => ({ x: q.x, y: q.y }))));
-  const inBuilding = (x: number, z: number) => footprint.some((poly) => pointInPolygon({ x, y: z }, poly));
+  const footprints = st.meta.outlines.map((o) => o.polys.map((poly) => poly.map((q) => ({ x: q.x, y: q.y }))));
+  const inBuilding = (x: number, z: number) => footprints.some((loops) => insideLoops({ x, y: z }, loops));
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
       p.set(x0 + (i + 0.5) * cell, planeHeight, z0 + (j + 0.5) * cell);

@@ -6,7 +6,7 @@
  */
 import * as THREE from 'three';
 import type { BuildingModel } from '../core/types';
-import { pointInPolygon } from '../core/geometry';
+import { insideLoops } from '../core/geometry';
 import { maximalRectCoverMask, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
 import { MM, wallTopOf } from './building';
@@ -68,8 +68,8 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
     for (let j = 0; j < nz; j++)
       for (let i = 0; i < nx; i++) {
         const c = { x: (xs[i] + xs[i + 1]) / 2, y: (zs[j] + zs[j + 1]) / 2 };
-        const inThis = polys.some((p) => pointInPolygon(c, p));
-        const inUpper = higher.some((h) => h.outline.some((p) => pointInPolygon(c, p)));
+        const inThis = insideLoops(c, polys);
+        const inUpper = higher.some((h) => insideLoops(c, h.outline));
         mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
         maskUpper[j * nx + i] = inUpper ? 1 : 0;
       }
@@ -96,8 +96,8 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
         const L = Math.hypot(dx, dz) || 1;
         const nxp = -dz / L;
         const nzp = dx / L;
-        const inA = polys.some((p) => pointInPolygon({ x: mx + nxp * 60, y: mz + nzp * 60 }, p));
-        const inB = polys.some((p) => pointInPolygon({ x: mx - nxp * 60, y: mz - nzp * 60 }, p));
+        const inA = insideLoops({ x: mx + nxp * 60, y: mz + nzp * 60 }, polys);
+        const inB = insideLoops({ x: mx - nxp * 60, y: mz - nzp * 60 }, polys);
         return inA !== inB;
       },
     };

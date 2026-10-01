@@ -277,6 +277,20 @@ function mainName<T extends { type: RoomType; size: number }>(names: T[]): T | u
   return names.slice().sort((p, q) => MAIN_PRIORITY.indexOf(p.type) - MAIN_PRIORITY.indexOf(q.type) || q.size - p.size)[0];
 }
 
+/**
+ * 文字を室名として使える形に整える。説明文（「上部寝室から使う」など）は null。
+ * 「※」以降の注記・括弧の帖数は除く。
+ */
+export function cleanRoomName(raw: string): string | null {
+  let s0 = raw.trim().replace(/[※＊*].*$/, '').replace(/[（(][^）)]*[）)]?$/, '').trim();
+  if (!s0) return null;
+  const n = normalizeText(s0);
+  // 説明文: 長い、または助詞・動詞の語尾を含む
+  const sentence = /(から|まで|ため|する|して|できる|ように|ません|ます|です|だけ|の空|を|が見|に使|予定|検討|想定|可能)/.test(n);
+  if (n.length > 12 || (sentence && n.length > 5)) return /中庭|坪庭/.test(n) ? '中庭' : null;
+  return s0;
+}
+
 /** 室名らしい短い語（説明文・寸法・記号は除く） */
 export function looksLikeRoomName(raw: string): boolean {
   const s = normalizeText(raw);
@@ -465,9 +479,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     if (tatami) a.areas.push({ tatami, x: t.x, y: t.y });
     const st = parseStairMark(t.str);
     if (st) a.stair = st;
-    const type = classifyRoomName(t.str);
-    if (type) a.names.push({ str: t.str, type, size: t.size, x: t.x, y: t.y });
-    else if (!area && !st && looksLikeRoomName(t.str)) a.others.push({ str: t.str.trim(), size: t.size, x: t.x, y: t.y });
+    const nm = cleanRoomName(t.str);
+    const type = nm ? classifyRoomName(nm) : null;
+    if (type) a.names.push({ str: nm!, type, size: t.size, x: t.x, y: t.y });
+    else if (nm && !area && !st && looksLikeRoomName(nm)) a.others.push({ str: nm, size: t.size, x: t.x, y: t.y });
   }
   // 帖数は、室名に最も近い表記を採用（1つの領域に複数の部屋が入った場合）
   for (const a of acc.values()) {
@@ -480,6 +495,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // ---- 部屋ポリゴン ----
   /** 中庭など、壁に囲まれていても屋外の領域（外形・屋根から除く） */
   const courtLabels = new Set<number>();
+  const labelOfRoom = new Map<number, number>();
   const thick = walls.map((w) => w.d).sort((a, b) => a - b);
   const medianD = thick.length ? thick[Math.floor(thick.length / 2)] : 120;
   const k = Math.max(1, Math.round(medianD / 2 / res));
@@ -535,6 +551,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         }
       labelPos = grid.centerOf(sx / n, sy / n);
     }
+    labelOfRoom.set(rooms.length, l);
     rooms.push({
       id: `F${level}-R${rooms.length + 1}`,
       name,
@@ -544,6 +561,36 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       labelPos,
       labeledTatami: a?.tatami,
       stairDir: a?.stair,
+    });
+  }
+
+  // 中庭に（ガラス戸などを挟んで）接する、文字の無い小さな区画は中庭の一部
+  if (courtLabels.size) {
+    rooms.forEach((rm, idx) => {
+      if (rm.name !== '室' || rm.area > 20) return;
+      const l = labelOfRoom.get(idx);
+      if (l == null) return;
+      const R = 10;
+      let touches = false;
+      for (let i = 0; i < labels.length && !touches; i++) {
+        if (labels[i] !== l) continue;
+        const x = i % grid.w;
+        const y = (i / grid.w) | 0;
+        for (const [dx, dy] of [[R, 0], [-R, 0], [0, R], [0, -R]]) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= grid.w || yy >= grid.h) continue;
+          if (courtLabels.has(labels[yy * grid.w + xx])) {
+            touches = true;
+            break;
+          }
+        }
+      }
+      if (touches) {
+        rm.name = '中庭';
+        rm.type = 'balcony';
+        courtLabels.add(l);
+      }
     });
   }
 
@@ -700,7 +747,15 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const [x, y] = grid.cellOf(m);
     return grid.get(x, y) === FREE;
   });
+  const stairMarks = plan.texts.filter((t) => parseStairMark(t.str) != null || /階段/.test(t.str));
   for (const c of detectStairs(nonWallSegs, plan.bbox)) {
+    // 「UP・DN・階段」の文字が近くに無いもの（タイル目地・デッキ材など）は階段にしない
+    if (stairMarks.length && !stairMarks.some((t) => t.x > c.minX - 900 && t.x < c.maxX + 900 && t.y > c.minY - 900 && t.y < c.maxY + 900)) continue;
+    {
+      const cc = { x: (c.minX + c.maxX) / 2, y: (c.minY + c.maxY) / 2 };
+      const rr = roomAt(cc);
+      if (rr && (rr.type === 'balcony' || rr.type === 'garage' || rr.type === 'porch')) continue;
+    }
     // 周囲の壁面まで広げる
     const r = { ...c };
     const grow = (dx: number, dy: number) => {
@@ -913,6 +968,16 @@ export function detectNorth(pages: PageMm[]): number | null {
   return null;
 }
 
+/** 細長い帯状の塗り（手すり壁・腰壁・曲面の壁など）: 幅 40〜180mm、長さ 600mm 以上 */
+function isStripFill(poly: Vec2[]): boolean {
+  const area = Math.abs(polygonArea(poly));
+  let per = 0;
+  for (let i = 0; i < poly.length; i++) per += Math.hypot(poly[(i + 1) % poly.length].x - poly[i].x, poly[(i + 1) % poly.length].y - poly[i].y);
+  if (per < 1200) return false;
+  const width = (2 * area) / per;
+  return width >= 40 && width <= 180 && per / 2 >= 600;
+}
+
 /** 壁の塗りの色: その色の塗りの頂点の大半が、検出した壁の上にある色 */
 function wallFillColors(fills: { poly: Vec2[]; color: string }[], walls: WWall[]): Set<string> {
   const stat = new Map<string, { n: number; on: number; polys: number }>();
@@ -961,7 +1026,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const siteTexts = page.texts.filter((t) => inBox(t.x, t.y, 30000));
       const siteSegs = page.segs.filter((s) => inBox(s.a.x, s.a.y, 30000) || inBox(s.b.x, s.b.y, 30000));
       const wallPolys = page.colorFills
-        .filter((f) => wallColors.has(f.color) && f.poly.every((q) => inBox(q.x, q.y, margin)))
+        .filter((f) => f.poly.every((q) => inBox(q.x, q.y, margin)) && (wallColors.has(f.color) || isStripFill(f.poly)))
         .map((f) => f.poly);
       const sashPolys = page.masks.filter((poly) => {
         if (!poly.every((q) => inBox(q.x, q.y, margin))) return false;

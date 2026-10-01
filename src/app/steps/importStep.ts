@@ -229,7 +229,7 @@ function renderResult(ctx: StepCtx) {
   const openings = model.floors.reduce((s, f) => s + f.openings.length, 0);
   const totalArea = model.floors.reduce((s, f) => s + f.rooms.reduce((a, r) => a + r.area, 0), 0);
   const scaleLabel = rep.scaleDenominator ? `1/${rep.scaleDenominator}` : `約1/${Math.round(rep.mmPerPt / 0.3528)}`;
-  const srcLabel: Record<string, string> = { dimension: '寸法線から判定', text: '縮尺表記から判定', area: '帖数から推定', default: '既定値', manual: '手動指定' };
+  const srcLabel: Record<string, string> = { dimension: '寸法線から判定', text: '縮尺表記から判定', area: '帖数から推定', module: '壁の間隔から推定', default: '既定値', manual: '手動指定' };
 
   const side = ctx.side;
   side.append(

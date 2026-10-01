@@ -121,7 +121,7 @@ export interface ParseReport {
   pages: number;
   scaleDenominator: number | null;
   mmPerPt: number;
-  scaleSource: 'dimension' | 'text' | 'area' | 'default' | 'manual';
+  scaleSource: 'dimension' | 'text' | 'area' | 'module' | 'default' | 'manual';
   wallThicknesses: number[];
   warnings: string[];
   timingsMs: Record<string, number>;

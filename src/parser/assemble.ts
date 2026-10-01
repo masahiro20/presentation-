@@ -1556,7 +1556,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     }
     if ((globalThis as any).__DBG_PLANS) ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
     const wallColors = wallFillColors(page.colorFills, ww);
-    if (!groups.length) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
+    if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
     // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
     const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
     const pageHasRooms = page.texts.some(isRoomText);

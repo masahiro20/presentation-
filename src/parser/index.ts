@@ -114,7 +114,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       if (m.confidence > 0.25 && Math.abs(m.factor - 1) > 0.04) {
         const den = Math.round((sc.mmPerPt * m.factor) / PT_TO_MM);
         sc = { ...sc, mmPerPt: sc.mmPerPt * m.factor, denominator: STANDARD.includes(den) ? den : null };
-        scaleSource = 'area';
+        scaleSource = 'module';
         warnings.push(`壁の間隔（910mm モジュール）から縮尺を推定しました（約1/${Math.round(sc.mmPerPt / PT_TO_MM)}）`);
         mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
         res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
@@ -155,6 +155,8 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       warnings.push('図面の帖数と解析した面積に差があります。縮尺をご確認ください');
     }
   }
+  // 画像の線の太さは実際の壁厚と違う（内壁は太線1本など）ので、3D 用に 90〜200mm に収める
+  if (scanned) for (const f of res.floors) for (const w of f.walls) w.thickness = Math.min(200, Math.max(90, w.thickness));
   const allRooms = res.floors.flatMap((f) => f.rooms);
   if (!scanned && allRooms.length >= 4 && !allRooms.some((r) => !['室', '収納', '階段'].includes(r.name))) {
     warnings.push('室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください');
@@ -169,7 +171,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       scaleDenominator: sc.denominator,
       mmPerPt: sc.mmPerPt,
       scaleSource,
-      wallThicknesses: thicknesses,
+      wallThicknesses: scanned ? [...new Set(res.floors.flatMap((f) => f.walls.map((w) => Math.round(w.thickness))))].sort((a, b) => a - b) : thicknesses,
       warnings: [...new Set(warnings)],
       timingsMs: { analyze: Math.round(performance.now() - t0) },
     },

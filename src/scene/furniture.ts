@@ -28,6 +28,28 @@ export interface Footprint {
 }
 let currentOcc: Footprint[] | null = null;
 
+/** 平面図に描く家具の外形（ワールド座標 m。x-z 平面） */
+export interface PlanItem {
+  key: string;
+  shape: 'box' | 'circle';
+  cx: number;
+  cz: number;
+  /** box: 幅（along 方向）・奥行（inward 方向）と向き */
+  w: number;
+  d: number;
+  ax: number;
+  az: number;
+  /** circle: 半径 */
+  r: number;
+  /** 上端の高さ（重ね順に使う） */
+  top: number;
+  roomId: string;
+}
+let currentPlan: PlanItem[] | null = null;
+let currentRoomId = '';
+/** 平面図に描かない部材（照明・小物・水栓など） */
+const PLAN_SKIP = new Set(['f.lamp', 'f.lampShade', 'f.leaf', 'f.chrome', 'f.screen', 'f.hood', 'f.white', 'f.metal']);
+
 class Frame {
   constructor(
     readonly mb: MeshBuilder,
@@ -45,6 +67,9 @@ class Frame {
     if (soft && minDim > 0.03) this.mb.roundedBox(key, c, this.along, w, h, d, Math.min(0.06, minDim * 0.3), 3);
     else if ((key === 'f.wood' || key === 'f.counter' || key === 'f.cabinet') && minDim > 0.02) this.mb.roundedBox(key, c, this.along, w, h, d, Math.min(0.006, minDim * 0.25), 1);
     else this.mb.box(key, c, this.along, w, h, d);
+    if (currentPlan && !PLAN_SKIP.has(key) && w >= 0.12 && d >= 0.12 && y0 < 1.2) {
+      currentPlan.push({ key, shape: 'box', cx: c.x, cz: c.z, w, d, ax: this.along.x, az: this.along.z, r: 0, top: y0 + h, roomId: currentRoomId });
+    }
     if (currentOcc && y0 + h > 0.3 && key !== 'f.rug') {
       const ex = Math.abs(this.along.x) * w / 2 + Math.abs(this.inward.x) * d / 2;
       const ez = Math.abs(this.along.z) * w / 2 + Math.abs(this.inward.z) * d / 2;
@@ -53,6 +78,7 @@ class Frame {
   }
   cyl(key: string, u: number, v: number, r: number, y0: number, h: number, seg = 16) {
     const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v);
+    if (currentPlan && !PLAN_SKIP.has(key) && r >= 0.1 && y0 < 1.2) currentPlan.push({ key, shape: 'circle', cx: c.x, cz: c.z, w: 0, d: 0, ax: 1, az: 0, r, top: y0 + h, roomId: currentRoomId });
     c.y = this.origin.y + y0;
     this.mb.cylinder(key, c, r, h, seg);
   }
@@ -129,6 +155,7 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
       if (R.maxX - R.minX < 0.5 || R.maxZ - R.minZ < 0.5) continue;
       currentOcc = [];
       occupancy.set(room.id, currentOcc);
+      currentRoomId = room.id;
       const ctx: RoomCtx = { mb, R, y: f.elevation * MM, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room };
       collectBlocked(ctx, f, inner);
       const ceilingY = f.ceilingHeight * MM;
@@ -182,6 +209,26 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
 }
 
 let kitchenSides = new Map<string, Side>();
+
+/** 平面図用: 家具の外形を階ごとに（3D と同じ自動配置） */
+export function planFurniture(model: BuildingModel): Map<number, PlanItem[]> {
+  const out = new Map<number, PlanItem[]>();
+  currentPlan = [];
+  try {
+    buildFurniture(model);
+    const roomFloor = new Map<string, number>();
+    for (const f of model.floors) for (const r of f.rooms) roomFloor.set(r.id, f.level);
+    for (const it of currentPlan) {
+      const lv = roomFloor.get(it.roomId);
+      if (lv == null) continue;
+      if (!out.has(lv)) out.set(lv, []);
+      out.get(lv)!.push(it);
+    }
+  } finally {
+    currentPlan = null;
+  }
+  return out;
+}
 
 function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
   const tol = 400; // mm

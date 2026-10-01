@@ -4,6 +4,49 @@
  */
 import type { BuildingModel, Floor, RoomType } from '../core/types';
 import { polygonCentroid } from '../core/geometry';
+import { planFurniture, type PlanItem } from '../scene/furniture';
+
+/** 家具の外形（モデルごとに1回だけ計算） */
+const furnitureCache = new WeakMap<BuildingModel, Map<number, PlanItem[]>>();
+function furnitureOf(model: BuildingModel, level: number): PlanItem[] {
+  let m = furnitureCache.get(model);
+  if (!m) {
+    try {
+      m = planFurniture(model);
+    } catch {
+      m = new Map();
+    }
+    furnitureCache.set(model, m);
+  }
+  return m.get(level) ?? [];
+}
+
+/** 家具を平面図の線で描く（高さの低いものから順に重ねる） */
+function furnitureSvg(items: PlanItem[]): string {
+  let s = '';
+  const sorted = items.slice().sort((a, b) => a.top - b.top);
+  for (const it of sorted) {
+    const rug = it.key === 'f.rug';
+    const fill = rug ? 'none' : it.key === 'f.bedding' || it.key.startsWith('f.fabric') ? '#fdfcfa' : it.key === 'f.counter' || it.key === 'f.cabinet' ? '#f4f1ec' : '#faf8f4';
+    const stroke = rug ? '#bdb5aa' : '#76716a';
+    const dash = rug ? ' stroke-dasharray="60 40"' : '';
+    if (it.shape === 'circle') {
+      s += `<circle cx="${(it.cx * 1000).toFixed(0)}" cy="${(it.cz * 1000).toFixed(0)}" r="${(it.r * 1000).toFixed(0)}" fill="${fill}" stroke="${stroke}" stroke-width="9"${dash}/>`;
+      continue;
+    }
+    const ax = it.ax;
+    const az = it.az;
+    const bx = -az;
+    const bz = ax;
+    const hw = (it.w * 1000) / 2;
+    const hd = (it.d * 1000) / 2;
+    const cx = it.cx * 1000;
+    const cz = it.cz * 1000;
+    const p = (sa: number, sb: number) => `${(cx + ax * hw * sa + bx * hd * sb).toFixed(0)},${(cz + az * hw * sa + bz * hd * sb).toFixed(0)}`;
+    s += `<polygon points="${p(-1, -1)} ${p(1, -1)} ${p(1, 1)} ${p(-1, 1)}" fill="${fill}" stroke="${stroke}" stroke-width="9" stroke-linejoin="round"${dash}/>`;
+  }
+  return s;
+}
 
 const ROOM_COLORS: Partial<Record<RoomType, string>> = {
   ldk: '#f6e7cf',
@@ -29,9 +72,44 @@ const ROOM_COLORS: Partial<Record<RoomType, string>> = {
   other: '#f1efea',
 };
 
+/** 床の仕上げ（素材の表現）: 用途ごと */
+type FloorFinish = 'wood' | 'tatami' | 'tile' | 'stone' | 'deck' | 'concrete' | 'none';
+const FINISH: Partial<Record<RoomType, FloorFinish>> = {
+  ldk: 'wood', living: 'wood', dining: 'wood', kitchen: 'wood', bedroom: 'wood', kids: 'wood', study: 'wood', hall: 'wood',
+  closet: 'wood', storage: 'wood', other: 'wood', stairs: 'wood',
+  japanese: 'tatami',
+  bath: 'tile', washroom: 'tile', toilet: 'tile',
+  entrance: 'stone', porch: 'stone',
+  balcony: 'deck',
+  garage: 'concrete',
+  void: 'none',
+};
+const FINISH_FILL: Record<FloorFinish, string> = {
+  wood: '#f1e8da',
+  tatami: '#e6e7cb',
+  tile: '#eceeef',
+  stone: '#e3e0da',
+  deck: '#e6ddcf',
+  concrete: '#e8e7e4',
+  none: '#ffffff',
+};
+/** 目地・板目のパターン（mm 単位。複数の図を1ページに並べても同じ定義なので ID は共通） */
+const PLAN_DEFS =
+  '<defs>' +
+  '<pattern id="mp-wood-h" patternUnits="userSpaceOnUse" width="1820" height="150"><rect width="1820" height="150" fill="#f1e8da"/><line x1="0" y1="0" x2="1820" y2="0" stroke="#e1d3bf" stroke-width="7"/><line x1="0" y1="0" x2="0" y2="150" stroke="#e6dac8" stroke-width="5"/></pattern>' +
+  '<pattern id="mp-wood-v" patternUnits="userSpaceOnUse" width="150" height="1820"><rect width="150" height="1820" fill="#f1e8da"/><line x1="0" y1="0" x2="0" y2="1820" stroke="#e1d3bf" stroke-width="7"/><line x1="0" y1="0" x2="150" y2="0" stroke="#e6dac8" stroke-width="5"/></pattern>' +
+  '<pattern id="mp-tile" patternUnits="userSpaceOnUse" width="300" height="300"><rect width="300" height="300" fill="#eceeef"/><path d="M0 0H300M0 0V300" stroke="#dcdfe1" stroke-width="6" fill="none"/></pattern>' +
+  '<pattern id="mp-stone" patternUnits="userSpaceOnUse" width="600" height="600"><rect width="600" height="600" fill="#e3e0da"/><path d="M0 0H600M0 0V600" stroke="#d2cec6" stroke-width="7" fill="none"/></pattern>' +
+  '<pattern id="mp-deck" patternUnits="userSpaceOnUse" width="1000" height="120"><rect width="1000" height="120" fill="#e6ddcf"/><line x1="0" y1="0" x2="1000" y2="0" stroke="#d3c6b2" stroke-width="10"/></pattern>' +
+  '</defs>';
+
 export interface PlanSvgOptions {
   showDims?: boolean;
   showFurnitureHint?: boolean;
+  /** 用途別の色分け（既定: 素材の表現） */
+  colorCoded?: boolean;
+  /** 家具（3D と同じ自動配置）を描く（既定: 描く） */
+  showFurniture?: boolean;
   highlightRoomId?: string;
   /** 日照時間などのオーバーレイ（部屋ID → 色） */
   roomTint?: Record<string, string>;
@@ -51,7 +129,12 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   let s = '';
   // 部屋
   for (const r of f.rooms) {
-    const fill = opts.roomTint?.[r.id] ?? ROOM_COLORS[r.type] ?? '#f1efea';
+    const fin = FINISH[r.type] ?? 'wood';
+    const xs0 = r.polygon.map((p) => p.x);
+    const ys0 = r.polygon.map((p) => p.y);
+    const wide = Math.max(...xs0) - Math.min(...xs0) >= Math.max(...ys0) - Math.min(...ys0);
+    const pat = fin === 'wood' ? `url(#mp-wood-${wide ? 'h' : 'v'})` : fin === 'tile' ? 'url(#mp-tile)' : fin === 'stone' ? 'url(#mp-stone)' : fin === 'deck' ? 'url(#mp-deck)' : FINISH_FILL[fin];
+    const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? '#f1efea' : pat);
     const stroke = opts.highlightRoomId === r.id ? '#d9822b' : 'none';
     s += `<polygon points="${r.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="${fill}" stroke="${stroke}" stroke-width="${stroke === 'none' ? 0 : 60}"/>`;
     if (r.type === 'japanese') {
@@ -66,6 +149,8 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
       for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#b9bf96" stroke-width="12"/>`;
     }
   }
+  // 家具
+  if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level));
   // 階段
   for (const st of f.stairs) {
     const n = 10;
@@ -244,7 +329,7 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   s += `<text x="${(minX + maxX) / 2}" y="${maxY + 1300}" font-size="360" text-anchor="middle" fill="#222" font-weight="bold">${esc(title)}</text>`;
   const area = f.rooms.reduce((a, r) => a + r.area, 0);
   s += `<text x="${(minX + maxX) / 2}" y="${maxY + 1700}" font-size="210" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif"><rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${s}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${PLAN_DEFS}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${s}</svg>`;
 }
 
 function cross(ax: number, ay: number, bx: number, by: number) {

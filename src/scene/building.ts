@@ -139,7 +139,13 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     const upper = model.floors[model.floors.indexOf(f) + 1];
     const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
     for (const r of f.rooms) {
-      if (['balcony', 'porch', 'void'].includes(r.type)) continue;
+      if (r.type === 'void') continue;
+      if (r.type === 'balcony' || r.type === 'porch') {
+        // 屋根・上階の下に入るバルコニー・ポーチの天井は軒天（木目など）。中庭は空に開く
+        if (/庭|COURT/i.test(r.name)) continue;
+        emitFlat(mb, 'ext.soffit', r.polygon, [], top - (upper ? 0.25 : 0.02), false);
+        continue;
+      }
       emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
     }
     // ---- 天井の設備（ダウンライト・間接照明） ----
@@ -296,12 +302,25 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   nPlan.x /= nl;
   nPlan.y /= nl;
 
+  // 壁の両側の部屋
+  const sideRoom = (sign: 1 | -1) => {
+    const mid = { x: (w.a.x + w.b.x) / 2 + nPlan.x * sign * (w.thickness / 2 + 80), y: (w.a.y + w.b.y) / 2 + nPlan.y * sign * (w.thickness / 2 + 80) };
+    return roomAt(f, mid.x, mid.y);
+  };
+  const isOutdoor = (r: Room | null) => !!r && (r.type === 'balcony' || r.type === 'porch');
+  const rPlus = sideRoom(1);
+  const rMinus = sideRoom(-1);
+  // バルコニーの外周（両側とも屋外）は手すり壁（腰壁＋笠木）、バルコニーと室内の間は外壁
+  const openPlus = (w.exterior && w.outsideSign === 1) || !rPlus || isOutdoor(rPlus);
+  const openMinus = (w.exterior && w.outsideSign === -1) || !rMinus || isOutdoor(rMinus);
+  const parapet = openPlus && openMinus && (rPlus?.type === 'balcony' || rMinus?.type === 'balcony');
+  const facesOutdoor = isOutdoor(rPlus) || isOutdoor(rMinus);
   // 各面の素材
   const sideKey = (sign: 1 | -1): string => {
     if (w.exterior && w.outsideSign === sign) return extKey;
     // 室内側: 部屋の種類で変える
-    const mid = { x: (w.a.x + w.b.x) / 2 + nPlan.x * sign * (w.thickness / 2 + 80), y: (w.a.y + w.b.y) / 2 + nPlan.y * sign * (w.thickness / 2 + 80) };
-    const r = roomAt(f, mid.x, mid.y);
+    const r = sign === 1 ? rPlus : rMinus;
+    if (isOutdoor(r) || (parapet && !r)) return extKey;
     if (r?.type === 'bath') return 'int.bathWall';
     if (r && (r.type === 'ldk' || r.type === 'living') && !w.exterior && ops.length === 0 && L > 2.2) return 'int.accent';
     return 'int.wall';
@@ -309,8 +328,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const kPlus = sideKey(1);
   const kMinus = sideKey(-1);
   const bottom = w.exterior && f.level === 1 ? fl - 0.1 : fl;
-  const wallTop = w.exterior ? top : fl + f.ceilingHeight * MM;
-  const topKey = w.exterior ? 'ext.wallTop' : 'int.wallTop';
+  const wallTop = parapet ? Math.min(top, fl + 1.1) : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+  const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
   const jambKey = w.exterior
     ? spec.windows.interiorReveal === 'plaster'

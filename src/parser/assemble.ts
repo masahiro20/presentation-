@@ -1852,6 +1852,25 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     f.walls.forEach((w) => thicknesses.add(w.thickness));
     floors.push(f);
   }
+  // 住宅の階段として大きすぎるもの（縞模様の床・デッキ材などを巻き込んだ）は、上下階の同じ位置の階段に合わせる
+  for (const f of floors) {
+    const implausible = (s: Stair) => {
+      const w = s.maxX - s.minX;
+      const h = s.maxY - s.minY;
+      return Math.min(w, h) > 2800 || Math.max(w, h) > 5200;
+    };
+    f.stairs = f.stairs.flatMap((s) => {
+      if (!implausible(s)) return [s];
+      const idx = floors.indexOf(f);
+      const near = [floors[idx - 1], floors[idx + 1]]
+        .filter(Boolean)
+        .flatMap((g) => g!.stairs)
+        .filter((t) => !implausible(t) && t.minX >= s.minX - 300 && t.maxX <= s.maxX + 300 && t.minY >= s.minY - 300 && t.maxY <= s.maxY + 300);
+      if (!near.length) return [];
+      const t = near[0];
+      return [{ ...t, id: s.id, goesUp: s.goesUp }];
+    });
+  }
   // 接道・敷地（1階の図面の周囲から）
   const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
   // 原点を1階外壁芯の左上に揃える

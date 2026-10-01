@@ -4,7 +4,8 @@
 import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
-import { detectWalls, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
+import { detectWalls, heavyWidthThreshold, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
+import { rasterizeSegments, dominantAngles, detectWallsRaster } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText } from './labels';
 import { detectStairs } from './stairs';
@@ -171,7 +172,7 @@ function wallBBox(w: WWall): BBox {
 }
 
 /** 接続関係から壁群をクラスタリングし、図面（階）ごとに分ける */
-function clusterPlans(walls: WWall[]): WWall[][] {
+function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500, windowSegs?: Seg[]): WWall[][] {
   const parent = walls.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const unite = (a: number, b: number) => {
@@ -190,6 +191,47 @@ function clusterPlans(walls: WWall[]): WWall[][] {
       if (near) unite(i, j);
     }
   }
+  // 同じ直線上の壁の間に、窓（サッシ）の細い線が通っている場合はつながっている（全面ガラスの面）
+  if (windowSegs) {
+    for (let i = 0; i < walls.length; i++) {
+      for (let j = 0; j < walls.length; j++) {
+        const A = walls[i];
+        const B = walls[j];
+        if (i === j || find(i) === find(j)) continue;
+        if (Math.abs(A.u.x * B.u.x + A.u.y * B.u.y) < 0.998) continue;
+        // B の両端を A の軸座標で
+        const tb0 = Math.min(B.a.x * A.u.x + B.a.y * A.u.y, B.b.x * A.u.x + B.b.y * A.u.y);
+        const ob = ((B.a.x + B.b.x) / 2) * A.n.x + ((B.a.y + B.b.y) / 2) * A.n.y;
+        const oa = ((A.a.x + A.b.x) / 2) * A.n.x + ((A.a.y + A.b.y) / 2) * A.n.y;
+        const ta1 = Math.max(A.a.x * A.u.x + A.a.y * A.u.y, A.b.x * A.u.x + A.b.y * A.u.y);
+        if (Math.abs(ob - oa) > 80) continue;
+        const gap = tb0 - ta1;
+        if (gap < 300 || gap > 5000) continue;
+        const band = Math.max(A.d, B.d) / 2 + 40;
+        let cov = 0;
+        const iv: [number, number][] = [];
+        for (const sg of windowSegs) {
+          const oa0 = sg.a.x * A.n.x + sg.a.y * A.n.y - oa;
+          const ob0 = sg.b.x * A.n.x + sg.b.y * A.n.y - oa;
+          if (Math.abs(oa0) > band || Math.abs(ob0) > band) continue;
+          const s0 = Math.max(ta1, Math.min(sg.a.x * A.u.x + sg.a.y * A.u.y, sg.b.x * A.u.x + sg.b.y * A.u.y));
+          const s1 = Math.min(tb0, Math.max(sg.a.x * A.u.x + sg.a.y * A.u.y, sg.b.x * A.u.x + sg.b.y * A.u.y));
+          if (s1 > s0) iv.push([s0, s1]);
+        }
+        iv.sort((p, q) => p[0] - q[0]);
+        let cur: [number, number] | null = null;
+        for (const v of iv) {
+          if (cur && v[0] <= cur[1]) cur[1] = Math.max(cur[1], v[1]);
+          else {
+            if (cur) cov += cur[1] - cur[0];
+            cur = [v[0], v[1]];
+          }
+        }
+        if (cur) cov += cur[1] - cur[0];
+        if (cov >= gap * 0.6) unite(i, j);
+      }
+    }
+  }
   const comps = new Map<number, WWall[]>();
   walls.forEach((w, i) => {
     const r = find(i);
@@ -197,7 +239,16 @@ function clusterPlans(walls: WWall[]): WWall[][] {
     comps.get(r)!.push(w);
   });
   const lenOf = (ws: WWall[]) => ws.reduce((s, w) => s + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
-  let groups = [...comps.values()].filter((c) => lenOf(c) >= 2500);
+  let groups = [...comps.values()].filter((c) => lenOf(c) >= minPart);
+  // 図面枠（ページ全体を囲む二重線）は、他の図と bbox が重なってまとめられてしまうので先に除く
+  if (ext) {
+    const W = ext.maxX - ext.minX;
+    const H = ext.maxY - ext.minY;
+    groups = groups.filter((g) => {
+      const b = g.map(wallBBox).reduce((a, c) => ({ minX: Math.min(a.minX, c.minX), minY: Math.min(a.minY, c.minY), maxX: Math.max(a.maxX, c.maxX), maxY: Math.max(a.maxY, c.maxY) }));
+      return !(b.maxX - b.minX > W * 0.8 && b.maxY - b.minY > H * 0.8);
+    });
+  }
   // 近接する成分は同じ図面
   const bb = (ws: WWall[]) => ws.map(wallBBox).reduce((a, b) => ({
     minX: Math.min(a.minX, b.minX),
@@ -210,7 +261,7 @@ function clusterPlans(walls: WWall[]): WWall[][] {
     merged = false;
     outer: for (let i = 0; i < groups.length; i++) {
       for (let j = i + 1; j < groups.length; j++) {
-        if (bboxGap(bb(groups[i]), bb(groups[j])) < 600) {
+        if (bboxGap(bb(groups[i]), bb(groups[j])) < mergeGap) {
           groups[i] = groups[i].concat(groups[j]);
           groups.splice(j, 1);
           merged = true;
@@ -240,6 +291,8 @@ export interface PlanData {
   sashPolys: Vec2[][];
   /** 室名の入った色塗り（カラー平面図の部屋の塗り）: 輪郭を部屋の区切りに使う */
   roomFills: Vec2[][];
+  /** 手描き風の図面（太線を画像にして壁を検出した）: 太線を内外判定の仕切りに使う */
+  sketchLines?: Seg[];
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -515,6 +568,38 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
   return changed;
 }
 
+/** 太線を画像にして壁を検出する（手描き風の図面用） */
+function rasterWallDetection(page: PageMm): WallDetection | null {
+  const segs = page.segs.filter((sg) => !sg.dashed && sg.source === 'stroke');
+  if (segs.length < 200) return null;
+  const hT = heavyWidthThreshold(segs);
+  const heavy = hT == null ? segs : segs.filter((sg) => sg.width >= hT);
+  if (heavy.length < 100) return null;
+  const bb = bboxOf(heavy.flatMap((sg) => [sg.a, sg.b]));
+  const res = 20;
+  // 画像が大きくなりすぎる場合は粗くする
+  const cells = ((bb.maxX - bb.minX) / res) * ((bb.maxY - bb.minY) / res);
+  const r = cells > 6e6 ? res * Math.sqrt(cells / 6e6) : res;
+  const img = rasterizeSegments(heavy, bb, r);
+  const ang = dominantAngles(heavy);
+  if (!ang.length) return null;
+  return detectWallsRaster(img, ang, { closeRadius: Math.max(2, Math.round(80 / r)) });
+}
+
+/** 文字 t と同じ行で、読む向きに続く文字（近い順、最大 maxSizes 文字分の距離）。縦書き・回転した図面にも対応 */
+function followingOnLine(t: MmText, texts: MmText[], maxSizes: number): MmText[] {
+  const u = { x: Math.cos(t.angle), y: Math.sin(t.angle) };
+  return texts
+    .map((q) => {
+      const dx = q.x - t.x;
+      const dy = q.y - t.y;
+      return { q, along: dx * u.x + dy * u.y, perp: Math.abs(-dx * u.y + dy * u.x) };
+    })
+    .filter((o) => o.q !== t && o.perp < t.size * 0.6 && o.along > 0 && o.along < t.size * maxSizes)
+    .sort((a, b) => a.along - b.along)
+    .map((o) => o.q);
+}
+
 /** 面積表（「1階 100.20」「2階 34.15」）を読む。階 → ㎡ */
 export function readAreaTable(pages: PageMm[]): Record<number, number> {
   const out: Record<number, number> = {};
@@ -522,11 +607,9 @@ export function readAreaTable(pages: PageMm[]): Record<number, number> {
     for (const t of p.texts) {
       const m = /^([1-9])階$/.exec(normalizeText(t.str).replace(/\s/g, ''));
       if (!m) continue;
-      const cands = p.texts
-        .filter((q) => q !== t && Math.abs(q.y - t.y) < t.size * 0.6 && q.x > t.x && q.x - t.x < t.size * 20)
+      const cands = followingOnLine(t, p.texts, 20)
         .map((q) => ({ q, v: /^(\d{1,3}\.\d{1,2})(㎡|m2|m²)?$/.exec(normalizeText(q.str).replace(/\s/g, '')) }))
-        .filter((o) => o.v)
-        .sort((a, b) => a.q.x - b.q.x);
+        .filter((o) => o.v);
       if (cands.length && out[+m[1]] == null) out[+m[1]] = parseFloat(cands[0].v![1]);
     }
   }
@@ -553,25 +636,29 @@ function labelNear(grid: Grid, lb: Int32Array | number[], p: Vec2): number {
 }
 
 /** 同じ直線上に並ぶ壁の間の隙間（最大 maxGap） */
-function collinearGaps(walls: WWall[], maxGap: number): { a: Vec2; b: Vec2; d: number }[] {
+function collinearGaps(walls: WWall[], maxGap: number, axisTol = 30): { a: Vec2; b: Vec2; d: number }[] {
   const out: { a: Vec2; b: Vec2; d: number }[] = [];
   const byAxis: WWall[][] = [];
   for (const w of walls) {
-    const ax = byAxis.find((ws) => ws[0].g === w.g && Math.abs(ws[0].o - w.o) < 30);
+    const ax = byAxis.find((ws) => ws[0].g === w.g && Math.abs(ws[0].o - w.o) < axisTol);
     if (ax) ax.push(w);
     else byAxis.push([w]);
   }
   for (const ws of byAxis) {
     ws.sort((p, q) => p.t0 - q.t0);
     let end = ws[0].t1;
+    let endO = ws[0].o;
     for (let k = 1; k < ws.length; k++) {
       const w = ws[k];
       const gap = w.t0 - end;
       if (gap > 30 && gap <= maxGap) {
-        const P = (t: number) => ({ x: w.u.x * t + w.n.x * w.o, y: w.u.y * t + w.n.y * w.o });
-        out.push({ a: P(end), b: P(w.t0), d: w.d });
+        const P = (t: number, o: number) => ({ x: w.u.x * t + w.n.x * o, y: w.u.y * t + w.n.y * o });
+        out.push({ a: P(end, endO), b: P(w.t0, w.o), d: w.d });
       }
-      end = Math.max(end, w.t1);
+      if (w.t1 > end) {
+        end = w.t1;
+        endO = w.o;
+      }
     }
   }
   return out;
@@ -605,8 +692,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 内外の判定では、同じ直線上の壁と壁の間（窓・出入口。記号が読めなかったものも含む）を塞いでおく。
   // 角の窓や、記号の描き方が違う窓から部屋が「外」に漏れるのを防ぐ
   const GAP = 3;
-  const closers = collinearGaps(walls, 4600);
+  // 手描き風の図面は線が揺れているので、同じ直線とみなす幅を広げ、全面ガラスの長い開口も塞ぐ
+  const closers = plan.sketchLines ? collinearGaps(walls, 6500, 90) : collinearGaps(walls, 4600);
   for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
+  // 手描き風の図面: 窓・ガラス戸の線（太線）も内外の判定だけに使う
+  if (plan.sketchLines) for (const sg of plan.sketchLines) grid.fillThickSegment(sg.a, sg.b, 40, GAP);
   drawBarriers();
   grid.floodOutside();
   /** 内外判定のために塞いだ切れ目（ポーチなど、屋外に開いた区画の判定に使う） */
@@ -1346,10 +1436,29 @@ function wallFillColors(fills: { poly: Vec2[]; color: string }[], walls: WWall[]
 export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
   for (const page of pages) {
-    const det = detectWalls(page.segs, page.arcs, {}, page.masks);
-    const ww = makeWalls(det);
+    const pageExt = bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]));
+    let ww = makeWalls(detectWalls(page.segs, page.arcs, {}, page.masks));
     joinWalls(ww);
-    const groups = clusterPlans(ww);
+    let groups = clusterPlans(ww, pageExt);
+    let sketchHeavy: Seg[] | null = null;
+    // 平行線として壁が取れない図面（手描き風の線・揺れのある線）は、太線を画像にして帯として検出する
+    if (!groups.length) {
+      const det2 = rasterWallDetection(page);
+      if (det2) {
+        const w2 = makeWalls(det2);
+        joinWalls(w2);
+        // 窓などで壁が途切れやすいので、近い図はまとめる
+        const g2 = clusterPlans(w2, pageExt, 1200, 600, page.segs.filter((sg) => sg.source === 'stroke'));
+        if (g2.length) {
+          ww = w2;
+          groups = g2;
+          const st = page.segs.filter((sg) => !sg.dashed && sg.source === 'stroke');
+          const hT = heavyWidthThreshold(st);
+          sketchHeavy = hT == null ? st : st.filter((sg) => sg.width >= hT);
+        }
+      }
+    }
+    if ((globalThis as any).__DBG_PLANS) ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
     const wallColors = wallFillColors(page.colorFills, ww);
     if (!groups.length) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
     // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
@@ -1362,6 +1471,8 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const g = groups[gi];
       const bbox = boxes[gi];
       // 他の図を丸ごと囲む（図面枠・敷地の枠など）、ページ全体に広がる枠
+      const dbg = (globalThis as any).__DBG_PLANS;
+      if (dbg) console.log('cluster', gi, g.length, Math.round(bbox.maxX - bbox.minX), Math.round(bbox.maxY - bbox.minY), 'ext', Math.round(ext.maxX - ext.minX), Math.round(ext.maxY - ext.minY), 'contains', boxes.some((b, j) => j !== gi && inside(b, bbox)));
       if (boxes.some((b, j) => j !== gi && inside(b, bbox))) continue;
       if (bbox.maxX - bbox.minX > (ext.maxX - ext.minX) * 0.8 && bbox.maxY - bbox.minY > (ext.maxY - ext.minY) * 0.8) continue;
       // 室名・帖数が1つも無い（立面図・表など）
@@ -1410,7 +1521,8 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         kept.push(c);
         roomFills.push(c.poly);
       }
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills });
+      const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines });
     }
   }
   assignFloorTitles(plans, pages);
@@ -1431,6 +1543,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.wallPolys.push(...p.wallPolys);
     q.sashPolys.push(...p.sashPolys);
     q.roomFills.push(...p.roomFills);
+    if (p.sketchLines) q.sketchLines = [...(q.sketchLines ?? []), ...p.sketchLines];
     q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
     plans.splice(plans.indexOf(p), 1);
   }
@@ -1449,7 +1562,7 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
     const isTitle = (t: MmText) => {
       const s0 = normalizeText(t.str);
       if (/平面|PLAN/.test(s0)) return true;
-      return page.texts.some((q) => q !== t && /^平面/.test(normalizeText(q.str)) && Math.abs(q.y - t.y) < t.size * 0.6 && q.x > t.x && q.x - t.x < t.size * 12);
+      return followingOnLine(t, page.texts, 12).some((q) => /^平面/.test(normalizeText(q.str).replace(/\s/g, '')));
     };
     for (const t of page.texts) {
       const f = parseFloorTitle(t.str);
@@ -1576,6 +1689,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
   p.sashPolys = p.sashPolys.map((poly) => poly.map(tr));
   p.roomFills = p.roomFills.map((poly) => poly.map(tr));
+  if (p.sketchLines) p.sketchLines = p.sketchLines.map((sg) => ({ ...sg, a: tr(sg.a), b: tr(sg.b) }));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 

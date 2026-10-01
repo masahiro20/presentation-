@@ -80,15 +80,19 @@ export interface WallDetection {
   openings: DetectedOpening[];
   thicknessPeaks: number[];
   heavyThreshold: number | null;
+  /** 太線のうち壁の両面として使われた長さの割合（線の太さで壁を選ぶのが妥当かの指標） */
+  heavyPairedFrac: number;
 }
 
 export interface WallDetectOptions {
   minThickness: number;
   maxThickness: number;
   minSegment: number;
+  /** 線の太さを使わない（詳細図など、壁の面が細線で描かれた図面） */
+  ignoreWidth: boolean;
 }
 
-const DEFAULTS: WallDetectOptions = { minThickness: 45, maxThickness: 420, minSegment: 40 };
+const DEFAULTS: WallDetectOptions = { minThickness: 45, maxThickness: 420, minSegment: 40, ignoreWidth: false };
 
 function angleOf(s: Seg): number {
   let th = Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x);
@@ -267,7 +271,7 @@ function thicknessPeaks(hist: Float64Array, binSize: number, minT: number): numb
 export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetectOptions> = {}, masks: Vec2[][] = []): WallDetection {
   const O = { ...DEFAULTS, ...opts };
   const segs = allSegs.filter((s) => !s.dashed && segLen(s) >= O.minSegment);
-  const heavyT = heavyWidthThreshold(segs);
+  const heavyT = O.ignoreWidth ? null : heavyWidthThreshold(segs);
   const groups = findAngleGroups(segs);
   // 壁が塗りつぶしで描かれている場合、塗りの輪郭の角度からも壁の向きを拾う（斜めの壁は全体の線に占める割合が小さい）
   const fillSegs = segs.filter((s) => s.source === 'fill');
@@ -577,7 +581,11 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       op.d = ax.d;
     }
   }
-  return { groups, pieces: finalPieces, openings, thicknessPeaks: peaks, heavyThreshold: heavyT };
+  let heavyLen = 0;
+  for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;
+  const pairedLen = finalPieces.reduce((s0, q) => s0 + 2 * (q.t1 - q.t0), 0);
+  const heavyPairedFrac = heavyT == null || heavyLen <= 0 ? 1 : Math.min(1, pairedLen / heavyLen);
+  return { groups, pieces: finalPieces, openings, thicknessPeaks: peaks, heavyThreshold: heavyT, heavyPairedFrac };
 }
 
 /** 円弧の外接円（中心・半径） */

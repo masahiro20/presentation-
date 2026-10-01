@@ -95,8 +95,25 @@ export async function extractPageVectors(
     dashed: boolean;
     stroke: string;
     fill: string;
+    /** 現在のクリップ（単純な多角形のときだけ保持） */
+    clip: Vec2[] | null;
   }
-  let gs: GState = { ctm: base, lineWidth: 1, dashed: false, stroke: '#000000', fill: '#000000' };
+  let gs: GState = { ctm: base, lineWidth: 1, dashed: false, stroke: '#000000', fill: '#000000', clip: null };
+  let pendingClip = false;
+  /** クリップされた塗り（グラデーションを同心円などで描き部屋の形で切り抜いたもの）は、
+   *  クリップの形を塗りとして1回だけ出力する */
+  const clipEmitted = new Set<Vec2[]>();
+  /** 塗りがクリップ全体を覆う（グラデーション・模様） */
+  const coversClip = (bb: { minX: number; minY: number; maxX: number; maxY: number }) => {
+    const cb = bboxPts(gs.clip!);
+    return bb.minX <= cb.minX + 0.5 && bb.minY <= cb.minY + 0.5 && bb.maxX >= cb.maxX - 0.5 && bb.maxY >= cb.maxY - 0.5;
+  };
+  const emitClipFill = (color: string) => {
+    const c = gs.clip;
+    if (!c || clipEmitted.has(c)) return;
+    clipEmitted.add(c);
+    fills.push({ polygon: c, color });
+  };
   const stack: GState[] = [];
 
   const { fnArray, argsArray } = opList;
@@ -136,6 +153,13 @@ export async function extractPageVectors(
       case OPS.setFillRGBColor:
         gs.fill = typeof args[0] === 'string' ? args[0] : '#000000';
         break;
+      case OPS.clip:
+      case OPS.eoClip:
+        pendingClip = true;
+        break;
+      case OPS.shadingFill:
+        emitClipFill('#shading');
+        break;
       case OPS.constructPath: {
         const paintOp = args[0] as number;
         const data = args[1]?.[0] as Float32Array | number[] | null;
@@ -154,8 +178,29 @@ export async function extractPageVectors(
           paintOp === OPS.eoFillStroke ||
           paintOp === OPS.closeFillStroke ||
           paintOp === OPS.closeEOFillStroke;
-        if (!isStroke && !isFill) break; // クリップ等
         const m = gs.ctm;
+        if (!isStroke && !isFill) {
+          // クリップ: 1つの閉じた直線多角形のときだけ覚える
+          if (pendingClip) {
+            pendingClip = false;
+            const pts: Vec2[] = [];
+            let ok = true;
+            let moves = 0;
+            for (let k = 0; k < data.length && ok; ) {
+              const op = data[k++];
+              if (op === 0 || op === 1) {
+                if (op === 0 && ++moves > 1) ok = false;
+                pts.push(apply(m, data[k], data[k + 1]));
+                k += 2;
+              } else if (op === 4) {
+                /* close */
+              } else ok = false;
+            }
+            gs.clip = ok && pts.length >= 3 && pts.length <= 16 ? pts : null;
+          }
+          break;
+        }
+        pendingClip = false;
         const scaleW = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
         const width = gs.lineWidth * scaleW;
         let k = 0;
@@ -163,7 +208,10 @@ export async function extractPageVectors(
         let start: Vec2 | null = null;
         let poly: Vec2[] = [];
         const flushPoly = () => {
-          if (isFill && poly.length >= 3) fills.push({ polygon: poly, color: gs.fill });
+          if (isFill && poly.length >= 3) {
+            if (!(gs.clip && coversClip(bboxPts(poly)))) fills.push({ polygon: poly, color: gs.fill });
+            else emitClipFill(gs.fill);
+          }
           poly = [];
         };
         const pushSeg = (a: Vec2, b: Vec2) => {
@@ -248,6 +296,20 @@ export async function extractPageVectors(
   }
 
   return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts) };
+}
+
+function bboxPts(pts: Vec2[]) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
 }
 
 export function bezier(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: number): Vec2 {

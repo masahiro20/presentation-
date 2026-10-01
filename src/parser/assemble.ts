@@ -5,7 +5,7 @@ import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, 
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
-import { rasterizeSegments, dominantAngles, detectWallsRaster } from './rasterWalls';
+import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText } from './labels';
 import { detectStairs } from './stairs';
@@ -29,6 +29,8 @@ export interface PageMm {
   masks: Vec2[][];
   /** 色付きの塗り（壁・柱の塗りつぶしを含む） */
   colorFills: { poly: Vec2[]; color: string }[];
+  /** スキャン図面の「太い線（壁）」の画像（mm 座標） */
+  rasterMask?: BinaryImage;
 }
 
 export function pageToMm(p: PageVectors, k: number): PageMm {
@@ -46,6 +48,7 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     colorFills: p.fills
       .filter((f) => f.polygon.length >= 3 && !/^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.color.toLowerCase() !== '#000000')
       .map((f) => ({ poly: f.polygon.map(sc), color: f.color.toLowerCase() })),
+    rasterMask: p.raster ? { data: p.raster.mask, w: p.raster.w, h: p.raster.h, res: k / p.raster.scale, ox: 0, oy: 0 } : undefined,
   };
 }
 
@@ -293,6 +296,10 @@ export interface PlanData {
   roomFills: Vec2[][];
   /** 手描き風の図面（太線を画像にして壁を検出した）: 太線を内外判定の仕切りに使う */
   sketchLines?: Seg[];
+  /** 画像から壁を検出した図面（手描き風・スキャン）: 線の揺れ・途切れを許容する */
+  loose?: boolean;
+  /** スキャン画像の図面 */
+  scan?: boolean;
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -586,6 +593,56 @@ function rasterWallDetection(page: PageMm): WallDetection | null {
   return detectWallsRaster(img, ang, { closeRadius: Math.max(2, Math.round(80 / r)) });
 }
 
+/** 壁の芯の間隔を 910mm モジュール（半間 455mm）に合わせる縮尺の補正係数 */
+export function moduleScaleFromWalls(walls: { a: Vec2; b: Vec2; thickness?: number }[]): { factor: number; confidence: number } {
+  const ax = walls
+    .map((w) => {
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      if (L < 300) return null;
+      let th = Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
+      if (th < 0) th += Math.PI;
+      if (th >= Math.PI) th -= Math.PI;
+      const n = { x: -Math.sin(th), y: Math.cos(th) };
+      return { th, o: ((w.a.x + w.b.x) / 2) * n.x + ((w.a.y + w.b.y) / 2) * n.y, L };
+    })
+    .filter((x): x is { th: number; o: number; L: number } => !!x);
+  const ds: { d: number; w: number }[] = [];
+  for (let i = 0; i < ax.length; i++)
+    for (let j = i + 1; j < ax.length; j++) {
+      const dth = Math.abs(ax[i].th - ax[j].th);
+      if (Math.min(dth, Math.PI - dth) > 0.03) continue;
+      const d = Math.abs(ax[i].o - ax[j].o);
+      if (d < 400 || d > 12000) continue;
+      ds.push({ d, w: Math.min(ax[i].L, ax[j].L) });
+    }
+  if (ds.length < 10) return { factor: 1, confidence: 0 };
+  const W = ds.reduce((s0, q) => s0 + q.w, 0);
+  const fit = (f: number) => ds.reduce((s0, q) => s0 + q.w * Math.cos((2 * Math.PI * q.d * f) / 455), 0) / W;
+  // 910mm の倍数は 1/100 と 1/50 で区別できないので、壁の厚み（実物は 100〜180mm 程度）で絞る
+  const th = walls.map((w) => w.thickness ?? 0).filter((t) => t > 0).sort((a, b) => a - b);
+  // 外壁の厚み（内壁や細い線に引っ張られないよう、厚い側の 75% 点）
+  const medT = th.length ? th[Math.floor(th.length * 0.75)] : 0;
+  const thickPenalty = (f: number) => (medT ? Math.abs(Math.log((medT * f) / 130)) : 0);
+  let best = 1;
+  let bs = -Infinity;
+  let bfit = 0;
+  for (const base of [0.5, 0.6, 2 / 3, Math.SQRT1_2, 0.75, 1, 4 / 3, Math.SQRT2, 1.5, 2]) {
+    // 印刷の伸縮を考えて ±4% の範囲で合わせる
+    for (let f = base * 0.96; f <= base * 1.04; f += base * 0.0025) {
+      const v = fit(f);
+      const sc0 = v - thickPenalty(f) * 1.2;
+      if (sc0 > bs) {
+        bs = sc0;
+        best = f;
+        bfit = v;
+      }
+    }
+  }
+  // 厚みだけで見ても今の縮尺が明らかにおかしい（外壁が 250mm 超・60mm 未満）ときは、模数の一致が弱くても補正する
+  const thickBad = medT > 0 && thickPenalty(1) > 0.6 && thickPenalty(best) < 0.3;
+  return { factor: best, confidence: thickBad ? Math.max(bfit, 0.3) : bfit };
+}
+
 /** 文字 t と同じ行で、読む向きに続く文字（近い順、最大 maxSizes 文字分の距離）。縦書き・回転した図面にも対応 */
 function followingOnLine(t: MmText, texts: MmText[], maxSizes: number): MmText[] {
   const u = { x: Math.cos(t.angle), y: Math.sin(t.angle) };
@@ -693,8 +750,25 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 角の窓や、記号の描き方が違う窓から部屋が「外」に漏れるのを防ぐ
   const GAP = 3;
   // 手描き風の図面は線が揺れているので、同じ直線とみなす幅を広げ、全面ガラスの長い開口も塞ぐ
-  const closers = plan.sketchLines ? collinearGaps(walls, 6500, 90) : collinearGaps(walls, 4600);
+  const closers = plan.loose ? collinearGaps(walls, 6500, 90) : collinearGaps(walls, 4600);
   for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
+  // 画像から読んだ図面: 他の壁につながっていない壁の端どうしが近い（70cm 以内）場合は、内外の判定用に仮につなぐ
+  if (plan.loose) {
+    const ends: { p: Vec2; w: WWall }[] = [];
+    for (const w of walls) {
+      if (!w.joinedA) ends.push({ p: w.a, w });
+      if (!w.joinedB) ends.push({ p: w.b, w });
+    }
+    for (const e of ends) {
+      let best: { p: Vec2; d: number } | null = null;
+      for (const f of ends) {
+        if (f.w === e.w) continue;
+        const d = Math.hypot(f.p.x - e.p.x, f.p.y - e.p.y);
+        if (d <= 700 && (!best || d < best.d)) best = { p: f.p, d };
+      }
+      if (best) grid.fillThickSegment(e.p, best.p, Math.max(60, e.w.d), GAP);
+    }
+  }
   // 手描き風の図面: 窓・ガラス戸の線（太線）も内外の判定だけに使う
   if (plan.sketchLines) for (const sg of plan.sketchLines) grid.fillThickSegment(sg.a, sg.b, 40, GAP);
   drawBarriers();
@@ -1436,11 +1510,32 @@ function wallFillColors(fills: { poly: Vec2[]; color: string }[], walls: WWall[]
 export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
   for (const page of pages) {
-    const pageExt = bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]));
+    const pageExt =
+      page.segs.length >= 50 || !page.rasterMask
+        ? bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]))
+        : { minX: 0, minY: 0, maxX: page.rasterMask.w * page.rasterMask.res, maxY: page.rasterMask.h * page.rasterMask.res };
     let ww = makeWalls(detectWalls(page.segs, page.arcs, {}, page.masks));
     joinWalls(ww);
     let groups = clusterPlans(ww, pageExt);
     let sketchHeavy: Seg[] | null = null;
+    let loose = false;
+    let scan = false;
+    // スキャン図面: 画像の太い線から壁を検出する
+    if (!groups.length && page.rasterMask) {
+      // 細い線は画像の段階で消してあるので、残った帯はすべて壁（最小の厚みは画素数で決める）
+      const det2 = detectWallsRasterAuto(page.rasterMask, { closeRadius: 1, minThickness: page.rasterMask.res * 2.5, maxThickness: 400 });
+      if (det2) {
+        const w2 = makeWalls(det2);
+        joinWalls(w2);
+        const g2 = clusterPlans(w2, pageExt, 1200, 600);
+        if (g2.length) {
+          ww = w2;
+          groups = g2;
+          loose = true;
+          scan = true;
+        }
+      }
+    }
     // 平行線として壁が取れない図面（手描き風の線・揺れのある線）は、太線を画像にして帯として検出する
     if (!groups.length) {
       const det2 = rasterWallDetection(page);
@@ -1452,6 +1547,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         if (g2.length) {
           ww = w2;
           groups = g2;
+          loose = true;
           const st = page.segs.filter((sg) => !sg.dashed && sg.source === 'stroke');
           const hT = heavyWidthThreshold(st);
           sketchHeavy = hT == null ? st : st.filter((sg) => sg.width >= hT);
@@ -1465,7 +1561,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
     const pageHasRooms = page.texts.some(isRoomText);
     const boxes = groups.map((g) => bboxOf(g.flatMap((w) => [w.a, w.b])));
-    const ext = bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]));
+    const ext = pageExt;
     const inside = (a: BBox, b: BBox) => a.minX >= b.minX - 50 && a.maxX <= b.maxX + 50 && a.minY >= b.minY - 50 && a.maxY <= b.maxY + 50;
     for (let gi = 0; gi < groups.length; gi++) {
       const g = groups[gi];
@@ -1522,7 +1618,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         roomFills.push(c.poly);
       }
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan });
     }
   }
   assignFloorTitles(plans, pages);
@@ -1544,6 +1640,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.sashPolys.push(...p.sashPolys);
     q.roomFills.push(...p.roomFills);
     if (p.sketchLines) q.sketchLines = [...(q.sketchLines ?? []), ...p.sketchLines];
+    if (p.loose) q.loose = true;
     q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
     plans.splice(plans.indexOf(p), 1);
   }
@@ -1694,7 +1791,15 @@ export function translatePlan(p: PlanData, d: Vec2) {
 }
 
 export function assembleModel(pages: PageMm[], name: string, warnings: string[]): Omit<BuildingModel, 'report'> & { thicknesses: number[] } {
-  const plans = detectPlans(pages, warnings);
+  let plans = detectPlans(pages, warnings);
+  // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
+  if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
+    const first = Math.min(...plans.map((p) => p.pageIndex));
+    if (plans.some((p) => p.pageIndex !== first)) {
+      plans = plans.filter((p) => p.pageIndex === first);
+      warnings.push(`スキャン図面が複数ページあり階を判別できないため、${first + 1}ページ目の図面だけを解析しました（他のページは別案の可能性があります）`);
+    }
+  }
   // 階の決定
   const hinted = plans.filter((p) => p.floorHint != null);
   const ordered = plans.slice().sort((a, b) => {

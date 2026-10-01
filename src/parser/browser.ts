@@ -14,9 +14,9 @@ export function assetBase() {
  * base64 テキスト版（/pdfjs/b64/…/*.txt）を使う。
  */
 class FallbackBinaryDataFactory {
-  constructor(private readonly opts: { cMapUrl?: string; standardFontDataUrl?: string }) {}
+  constructor(private readonly opts: { cMapUrl?: string; standardFontDataUrl?: string; wasmUrl?: string }) {}
   async fetch({ kind, filename }: { kind: string; filename: string }): Promise<Uint8Array> {
-    const base = kind === 'cMapUrl' ? this.opts.cMapUrl : kind === 'standardFontDataUrl' ? this.opts.standardFontDataUrl : null;
+    const base = kind === 'cMapUrl' ? this.opts.cMapUrl : kind === 'standardFontDataUrl' ? this.opts.standardFontDataUrl : kind === 'wasmUrl' ? this.opts.wasmUrl : null;
     if (!base) throw new Error(`${kind} is not available`);
     try {
       const r = await fetch(base + filename);
@@ -24,7 +24,7 @@ class FallbackBinaryDataFactory {
     } catch {
       // 次の方法で取得
     }
-    const dir = kind === 'cMapUrl' ? 'cmaps' : 'standard_fonts';
+    const dir = kind === 'cMapUrl' ? 'cmaps' : kind === 'wasmUrl' ? 'wasm' : 'standard_fonts';
     const r = await fetch(`${assetBase()}pdfjs/b64/${dir}/${filename}.txt`);
     if (!r.ok) throw new Error(`Unable to load ${filename}`);
     const bin = atob((await r.text()).trim());
@@ -34,12 +34,13 @@ class FallbackBinaryDataFactory {
   }
 }
 
-export async function parsePdfInBrowser(data: Uint8Array, opts: Omit<ParseOptions, 'cMapUrl' | 'standardFontDataUrl' | 'BinaryDataFactory'> = {}) {
+export async function parsePdfInBrowser(data: Uint8Array, opts: Omit<ParseOptions, 'cMapUrl' | 'standardFontDataUrl' | 'wasmUrl' | 'BinaryDataFactory'> = {}) {
   const base = assetBase();
   return parseFloorPlanPdf(data, pdfjs as any, {
     ...opts,
     cMapUrl: `${base}pdfjs/cmaps/`,
     standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
+    wasmUrl: `${base}pdfjs/wasm/`,
     BinaryDataFactory: FallbackBinaryDataFactory,
   });
 }

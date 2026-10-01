@@ -51,6 +51,10 @@ export interface PageVectors {
   curves: RawCurve[];
   fills: RawFill[];
   texts: RawText[];
+  /** 画像の描画回数（スキャン図面の判定用） */
+  imageCount?: number;
+  /** スキャン図面: ページを画像にして作った「太い線（壁）」の2値画像。1画素 = 1/scale pt */
+  raster?: { mask: Uint8Array; w: number; h: number; scale: number };
 }
 
 type Mat = [number, number, number, number, number, number];
@@ -100,6 +104,7 @@ export async function extractPageVectors(
   }
   let gs: GState = { ctm: base, lineWidth: 1, dashed: false, stroke: '#000000', fill: '#000000', clip: null };
   let pendingClip = false;
+  let imageCount = 0;
   /** クリップされた塗り（グラデーションを同心円などで描き部屋の形で切り抜いたもの）は、
    *  クリップの形を塗りとして1回だけ出力する */
   const clipEmitted = new Set<Vec2[]>();
@@ -156,6 +161,12 @@ export async function extractPageVectors(
       case OPS.clip:
       case OPS.eoClip:
         pendingClip = true;
+        break;
+      case OPS.paintImageXObject:
+      case OPS.paintInlineImageXObject:
+      case OPS.paintImageMaskXObject:
+      case OPS.paintImageXObjectRepeat:
+        imageCount++;
         break;
       case OPS.shadingFill:
         emitClipFill('#shading');
@@ -295,7 +306,7 @@ export async function extractPageVectors(
     texts.push({ str, cx, cy, size, width: w, angle });
   }
 
-  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts) };
+  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts), imageCount };
 }
 
 function bboxPts(pts: Vec2[]) {

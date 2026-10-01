@@ -4,16 +4,20 @@
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
-import { assembleModel, pageToMm } from './assemble';
+import { assembleModel, pageToMm, moduleScaleFromWalls } from './assemble';
+export { moduleScaleFromWalls };
+import { thickStrokeMask } from './rasterWalls';
 
 export interface PdfjsLike {
-  getDocument(src: any): { promise: Promise<{ numPages: number; getPage(i: number): Promise<PdfPageLike> }> };
+  getDocument(src: any): { promise: Promise<{ numPages: number; getPage(i: number): Promise<PdfPageLike>; canvasFactory?: any }> };
   OPS: Record<string, number>;
 }
 
 export interface ParseOptions {
   cMapUrl?: string;
   standardFontDataUrl?: string;
+  /** JBIG2・JPEG2000 などの画像デコーダ（スキャン図面用） */
+  wasmUrl?: string;
   /** CMap・フォントの取得方法（ブラウザで base64 版に切り替える用） */
   BinaryDataFactory?: unknown;
   /** 手動で縮尺を指定 (例: 100 → 1/100) */
@@ -28,6 +32,7 @@ export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: P
     cMapUrl: opts.cMapUrl,
     cMapPacked: true,
     standardFontDataUrl: opts.standardFontDataUrl,
+    wasmUrl: opts.wasmUrl,
     ...(opts.BinaryDataFactory ? { BinaryDataFactory: opts.BinaryDataFactory, useWorkerFetch: false } : {}),
     isEvalSupported: false,
     useSystemFonts: false,
@@ -37,9 +42,51 @@ export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: P
   for (let i = 1; i <= n; i++) {
     opts.onProgress?.(`${i}/${n} ページを読み込み中`, (i - 1) / n * 0.5);
     const page = await doc.getPage(i);
-    pages.push(await extractPageVectors(page, pdfjs.OPS, i - 1));
+    const pv = await extractPageVectors(page, pdfjs.OPS, i - 1);
+    // 線がほとんど無く画像だけのページ（スキャン図面）は、画像にして太い線（壁）を取り出す
+    if (pv.segments.length < 50 && (pv.imageCount ?? 0) > 0) {
+      try {
+        opts.onProgress?.(`${i}/${n} ページ: スキャン画像を解析中`, (i - 0.5) / n * 0.5);
+        pv.raster = await renderThickMask(page, doc.canvasFactory, pv.width, pv.height);
+      } catch {
+        // 描画できない環境では線のみで解析
+      }
+    }
+    pages.push(pv);
   }
   return pages;
+}
+
+/** ページを約150dpi（最大 600万画素）で描画し、太い線だけの2値画像にする */
+async function renderThickMask(page: PdfPageLike, factory: any, wPt: number, hPt: number): Promise<PageVectors['raster']> {
+  const scale = Math.min(150 / 72, Math.sqrt(6e6 / (wPt * hPt)));
+  const vp = (page as any).getViewport({ scale });
+  const w = Math.ceil(vp.width);
+  const h = Math.ceil(vp.height);
+  let canvas: any;
+  let ctx: any;
+  if (factory?.create) {
+    const cc = factory.create(w, h);
+    canvas = cc.canvas;
+    ctx = cc.context;
+  } else if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(w, h);
+    ctx = canvas.getContext('2d');
+  } else {
+    canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    ctx = canvas.getContext('2d');
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  await (page as any).render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+  const rgba = ctx.getImageData(0, 0, w, h).data as Uint8ClampedArray;
+  const gray = new Uint8Array(w * h);
+  for (let i = 0; i < gray.length; i++) gray[i] = (rgba[i * 4] * 0.3 + rgba[i * 4 + 1] * 0.59 + rgba[i * 4 + 2] * 0.11) | 0;
+  // 紙で約0.7mm 未満の細い線（寸法線・家具・文字・手書き）を消す
+  const k = Math.max(1, Math.round(2 * (scale / (150 / 72))));
+  return { mask: thickStrokeMask(gray, w, h, k, undefined, k), w, h, scale };
 }
 
 export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}): BuildingModel {
@@ -52,11 +99,28 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     scaleSource = 'manual';
   }
   const segCount = pages.reduce((s, p) => s + p.segments.length, 0);
-  if (segCount < 50) {
+  const scanned = pages.some((p) => p.raster);
+  if (segCount < 50 && !scanned) {
     warnings.push('ベクター線がほとんどありません。スキャン画像のPDFの可能性があります（CAD から出力した PDF を推奨）');
   }
   let mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
   let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
+  if (scanned && res.floors.length) {
+    warnings.push('スキャン画像の図面のため、画像から壁を読み取りました。室名は読み取れないため、下の一覧で部屋名と用途を指定してください');
+    // 文字の読めないスキャン図面は、壁の芯が 910mm モジュールにそろう性質から縮尺を補正する
+    if (sc.source === 'default' && !opts.scaleDenominator) {
+      const walls = res.floors.flatMap((f) => f.walls);
+      const m = moduleScaleFromWalls(walls);
+      if (m.confidence > 0.25 && Math.abs(m.factor - 1) > 0.04) {
+        const den = Math.round((sc.mmPerPt * m.factor) / PT_TO_MM);
+        sc = { ...sc, mmPerPt: sc.mmPerPt * m.factor, denominator: STANDARD.includes(den) ? den : null };
+        scaleSource = 'area';
+        warnings.push(`壁の間隔（910mm モジュール）から縮尺を推定しました（約1/${Math.round(sc.mmPerPt / PT_TO_MM)}）`);
+        mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
+        res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
+      }
+    }
+  }
 
   // 帖数表記による縮尺の検証・補正
   const ratios: number[] = [];
@@ -92,10 +156,10 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     }
   }
   const allRooms = res.floors.flatMap((f) => f.rooms);
-  if (allRooms.length >= 4 && !allRooms.some((r) => !['室', '収納', '階段'].includes(r.name))) {
+  if (!scanned && allRooms.length >= 4 && !allRooms.some((r) => !['室', '収納', '階段'].includes(r.name))) {
     warnings.push('室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください');
   }
-  if (sc.source === 'default' && scaleSource === 'default') warnings.push('縮尺を特定できなかったため 1/100 として解析しました');
+  if (sc.source === 'default' && scaleSource === 'default' && !scanned) warnings.push('縮尺を特定できなかったため 1/100 として解析しました');
 
   const { thicknesses, ...model } = res;
   return {
@@ -106,7 +170,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       mmPerPt: sc.mmPerPt,
       scaleSource,
       wallThicknesses: thicknesses,
-      warnings,
+      warnings: [...new Set(warnings)],
       timingsMs: { analyze: Math.round(performance.now() - t0) },
     },
   };

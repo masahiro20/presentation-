@@ -1152,6 +1152,25 @@ export function detectNorth(pages: PageMm[]): number | null {
   return null;
 }
 
+/**
+ * 部屋の形をした塗り: 頂点が少なく、辺が 45° の倍数の向き。
+ * カラー平面図の床のグラデーション（同心円の塗り）や家具の曲線は除く。
+ */
+function isRoomShaped(poly: Vec2[]): boolean {
+  // ほぼ同じ点の重複を除く
+  const pts = poly.filter((q, i) => i === 0 || Math.hypot(q.x - poly[i - 1].x, q.y - poly[i - 1].y) > 30);
+  if (pts.length < 3 || pts.length > 14) return false;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 30) continue;
+    const deg = (((Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI) % 45 + 45) % 45;
+    if (Math.min(deg, 45 - deg) > 3) return false;
+  }
+  return true;
+}
+
 /** 細長い帯状の塗り（手すり壁・腰壁・曲面の壁など）: 幅 40〜180mm、長さ 600mm 以上 */
 function isStripFill(poly: Vec2[]): boolean {
   const area = Math.abs(polygonArea(poly));
@@ -1230,7 +1249,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         .map((f) => f.poly)
         .filter((poly) => {
           const a = Math.abs(polygonArea(poly)) / 1e6;
-          return a >= 0.6 && a <= 80 && labelTexts.some((t) => pointInPolygon({ x: t.x, y: t.y }, poly));
+          return a >= 0.6 && a <= 80 && isRoomShaped(poly) && labelTexts.some((t) => pointInPolygon({ x: t.x, y: t.y }, poly));
         });
       plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills });
     }

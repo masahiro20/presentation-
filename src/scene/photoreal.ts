@@ -20,6 +20,8 @@ export interface PhotorealOptions {
   exposure?: number;
   /** GPU の負荷を下げた安全モード（再試行用） */
   safe?: boolean;
+  /** GPU に載せるテクスチャ1枚の大きさ（全テクスチャを1つの配列にまとめるため、メモリに直結する） */
+  textureSize?: number;
   onStatus?: (msg: string) => void;
 }
 
@@ -165,6 +167,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   pt.renderToCanvas = false;
   pt.multipleImportanceSampling = true;
   (pt as unknown as { dynamicLowRes: boolean }).dynamicLowRes = false;
+  // テクスチャ配列: 既定 1024×1024×枚数 は内蔵 GPU でメモリ不足になりやすい（74枚で約300MB）
+  const ts = opts.textureSize ?? (opts.safe ? 256 : 512);
+  pt.textureSize.set(ts, ts);
   pt.setScene(scene, camera);
 
   const quad = new FullScreenQuad(new THREE.MeshBasicMaterial({ transparent: false }));

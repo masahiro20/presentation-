@@ -54,33 +54,51 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     const slot = opts.slot ?? { index: 0, total: 1 };
     const exposure = exposureFor(shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior'), v.design.timeOfDay);
     const view = v.currentView();
-    const attempt = (safe: boolean) =>
+    // 1回目: 通常 → 2回目: テクスチャ・区画を小さく → 3回目: 半分の解像度で計算して拡大
+    const stages = [
+      { safe: false, w: W, h: H, note: '' },
+      { safe: true, w: W, h: H, note: '（負荷を下げて再計算中）' },
+      { safe: true, w: Math.round(W / 2), h: Math.round(H / 2), note: '（軽量モードで再計算中）', textureSize: 128 },
+    ];
+    const attempt = (st: (typeof stages)[number]) =>
       renderPhotoreal(v, {
-        width: W,
-        height: H,
-        samples: safe ? Math.min(samples, 256) : samples,
+        width: st.w,
+        height: st.h,
+        samples: st.safe ? Math.min(samples, 256) : samples,
         signal: pm.signal,
         exposure,
-        safe,
-        onStatus: (m) => pm.set(slot.index / slot.total, `${shot?.title ?? 'パース'}：${m}`),
-        onProgress: (s, total, preview) => pm.set((slot.index + s / total) / slot.total, `${shot?.title ?? 'パース'}：${s} / ${total} サンプル${safe ? '（負荷を下げて再計算中）' : ''}`, preview?.()),
+        safe: st.safe,
+        textureSize: st.textureSize,
+        onStatus: (m) => pm.set(slot.index / slot.total, `${shot?.title ?? 'パース'}：${m}${st.note}`),
+        onProgress: (s, total, preview) => pm.set((slot.index + s / total) / slot.total, `${shot?.title ?? 'パース'}：${s} / ${total} サンプル${st.note}`, preview?.()),
       });
     try {
-      try {
-        url = await attempt(false);
-      } catch (e) {
-        // GPU のリセット・真っ黒な結果は、負荷を下げて1回だけ自動でやり直す
-        if (!(e instanceof PhotorealError) || e.reason === 'shader') throw e;
-        console.warn('写真品質レンダリングを安全モードで再試行します:', e.message);
-        if (!(await v.waitForContext())) throw new Error('GPU がリセットされたまま復帰しませんでした。ページを再読み込みしてください');
-        if (shot) v.applyShot(shot);
-        else v.applyView(view);
-        url = await attempt(true);
+      let lastErr: unknown = null;
+      let got: string | null = null;
+      errLog.length = 0;
+      for (const st of stages) {
+        try {
+          got = await attempt(st);
+          if (st.w !== W) got = await upscaleImage(got, W, H);
+          break;
+        } catch (e) {
+          lastErr = e;
+          if ((e as Error).name === 'AbortError') throw e;
+          errLog.push(`${st.w}x${st.h}${st.safe ? ' safe' : ''}: ${(e as Error).message}`);
+          console.warn('写真品質レンダリングに失敗しました。設定を下げて再試行します:', (e as Error).message);
+          if (!(await v.waitForContext())) throw new Error('GPU がリセットされたまま復帰しませんでした。ページを再読み込みしてください');
+          if (shot) v.applyShot(shot);
+          else v.applyView(view);
+        }
       }
+      if (!got) throw lastErr ?? new Error('写真品質のレンダリングに失敗しました');
+      url = got;
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
         own?.close();
-        photorealFailed(ctx, e as Error, shot);
+        lastPhotorealFailure = { e: e as Error, shot };
+        // 一括作成中は1枚ごとに案内を出さず、最後にまとめて出す
+        if (!opts.silent) photorealFailed(ctx, e as Error, shot);
       }
       return null;
     } finally {
@@ -107,8 +125,30 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
   return item;
 }
 
+/** 直近の写真品質レンダリングの失敗内容（問い合わせ用） */
+const errLog: string[] = [];
+export let lastPhotorealFailure: { e: Error; shot: Shot | null } | null = null;
+export function clearPhotorealFailure() {
+  lastPhotorealFailure = null;
+}
+
+/** 画像を拡大（高品質補間） */
+async function upscaleImage(url: string, w: number, h: number): Promise<string> {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(img, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', 0.93);
+}
+
 /** 写真品質で出力できなかったときの案内（真っ黒な画像は保存しない） */
-function photorealFailed(ctx: StepCtx, e: Error, shot: Shot | null) {
+export function photorealFailed(ctx: StepCtx, e: Error, shot: Shot | null) {
   const gl = ctx.app.viewer.renderer.getContext();
   const dbg = gl.getExtension('WEBGL_debug_renderer_info');
   const gpu = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '不明';
@@ -125,6 +165,35 @@ function photorealFailed(ctx: StepCtx, e: Error, shot: Shot | null) {
       h('li', null, 'ノートパソコンは電源につなぎ、他のタブ（動画や地図など）を閉じてから再度お試しください。'),
       h('li', null, '「写真品質の設定」で解像度を下げる（1280×720 など）と成功しやすくなります。'),
       h('li', null, 'Chrome または Edge の最新版をお使いください。'),
+    ),
+  );
+  const caps = ctx.app.viewer.renderer.capabilities;
+  const diag = [
+    `エラー: ${e.message}`,
+    ...errLog.map((x, i) => `試行${i + 1}: ${x}`),
+    `GPU: ${gpu}`,
+    `最大テクスチャ: ${caps.maxTextureSize}`,
+    `ブラウザ: ${navigator.userAgent}`,
+  ].join('\n');
+  const pre = h('textarea', { readonly: true, style: 'width:100%;height:110px;font-size:11px;margin-top:6px' }, diag) as HTMLTextAreaElement;
+  body.append(
+    h('div', { class: 'field-label', style: 'margin-top:10px' }, '原因調査用の情報（このままコピーして送ってください）'),
+    pre,
+    h(
+      'button',
+      {
+        class: 'btn sm',
+        onclick: () => {
+          navigator.clipboard?.writeText(diag).then(
+            () => toast('コピーしました', 'ok'),
+            () => {
+              pre.select();
+              toast('選択しました。Ctrl+C でコピーしてください');
+            },
+          );
+        },
+      },
+      '情報をコピー',
     ),
   );
   modal('写真品質で出力できませんでした', body, [
@@ -381,12 +450,15 @@ export const designStep: Step = {
         const prev = v.currentView();
         const prevDesign = { ...state.design };
         let n = 0;
+        clearPhotorealFailure();
         try {
           for (let i = 0; i < list.length; i++) {
             if (pm.signal.aborted) break;
             pm.set(i / list.length, list[i].title);
             const it = await captureShot(ctx, list[i], { quality, silent: true, progress: pm, slot: { index: i, total: list.length } });
             if (it) n++;
+            // 1枚目から全ての段階で失敗した場合は、残りも同じ結果になるため中断
+            else if (quality === 'photoreal' && n === 0 && lastPhotorealFailure) break;
             await new Promise((r) => setTimeout(r, 30));
           }
         } finally {
@@ -394,7 +466,8 @@ export const designStep: Step = {
           if (prevDesign.timeOfDay !== state.design.timeOfDay) update({ timeOfDay: prevDesign.timeOfDay });
           v.applyView(prev);
           renderGallery();
-          toast(`${n}枚のパースを作成しました`, 'ok');
+          if (n) toast(`${n}枚のパースを作成しました`, 'ok');
+          if (lastPhotorealFailure) photorealFailed(ctx, lastPhotorealFailure.e, lastPhotorealFailure.shot);
         }
       };
       side.append(

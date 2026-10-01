@@ -3,7 +3,7 @@ import { h, clear, toast, progressModal, section, download } from '../dom';
 import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { exteriorById, interiorById } from '../../styles/presets';
-import { captureShot, currentShots } from './designStep';
+import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFailed, currentShots } from './designStep';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
@@ -34,11 +34,16 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
         signal: pm.signal,
         set: (r: number, msg?: string, preview?: string) => pm.set(r * 0.7, msg, preview),
       };
+      clearPhotorealFailure();
+      let ok = 0;
       for (let i = 0; i < shots.length; i++) {
         if (pm.signal.aborted) return;
-        await captureShot(ctx, shots[i], { quality: draft ? 'realtime' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
+        const it = await captureShot(ctx, shots[i], { quality: draft ? 'realtime' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
+        if (it) ok++;
+        else if (!draft && ok === 0 && lastPhotorealFailure) break;
         await new Promise((r) => setTimeout(r, 20));
       }
+      if (lastPhotorealFailure) photorealFailed(ctx, lastPhotorealFailure.e, lastPhotorealFailure.shot);
       if (prevDesign.timeOfDay !== state.design.timeOfDay) {
         state.design = prevDesign;
         v.setDesign(state.design);

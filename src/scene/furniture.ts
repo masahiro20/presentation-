@@ -46,6 +46,17 @@ export interface PlanItem {
   roomId: string;
 }
 let currentPlan: PlanItem[] | null = null;
+
+/** 実物の 3D モデル（Poly Haven・CC0。public/models）を置く位置 */
+export interface ModelPlacement {
+  id: 'potted_plant_02' | 'modern_arm_chair_01';
+  pos: V3;
+  /** Y 軸まわりの回転（ラジアン） */
+  rotY: number;
+  /** 目標の高さ (m)。モデルの大きさから倍率を決める */
+  height: number;
+}
+let currentModels: ModelPlacement[] = [];
 let currentRoomId = '';
 /** 平面図に描かない部材（照明・小物・水栓など） */
 const PLAN_SKIP = new Set(['f.lamp', 'f.lampShade', 'f.leaf', 'f.chrome', 'f.screen', 'f.hood', 'f.white', 'f.metal']);
@@ -136,8 +147,15 @@ function findSpot(ctx: RoomCtx, s: Side, w: number, len: number, prefer = 0): nu
   return null;
 }
 
-export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side> } {
+/** 実物モデルを使える環境か（ブラウザ）。使えない場合は簡易形状で植物を描く */
+let modelsAvailable = typeof document !== 'undefined';
+export function setModelsAvailable(v: boolean) {
+  modelsAvailable = v;
+}
+
+export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[] } {
   const mb = new MeshBuilder();
+  currentModels = [];
   const lights: LightPoint[] = [];
   const occupancy = new Map<string, Footprint[]>();
   kitchenSides = new Map();
@@ -205,7 +223,7 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
     }
   }
   currentOcc = null;
-  return { mb, lights, occupancy, kitchenSide: kitchenSides };
+  return { mb, lights, occupancy, kitchenSide: kitchenSides, models: currentModels };
 }
 
 let kitchenSides = new Map<string, Side>();
@@ -308,6 +326,11 @@ function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
 }
 
 export function plant(fr: Frame, u: number, v: number, scale = 1) {
+  // 実物の観葉植物モデル（読み込めない環境では下の簡易形状）
+  const p = fr.point(u, v, 0);
+  currentModels.push({ id: 'potted_plant_02', pos: p, rotY: Math.sin(u * 12.9898 + v * 4.1) * Math.PI, height: 1.15 * scale });
+  if (currentPlan) currentPlan.push({ key: 'f.pot', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.3 * scale, top: 1, roomId: currentRoomId });
+  if (modelsAvailable) return;
   fr.cyl('f.pot', u, v, 0.17 * scale, 0, 0.35 * scale, 14);
   fr.box('f.soil', u, v - 0.13 * scale, 0.26 * scale, 0.26 * scale, 0.33 * scale, 0.02);
   const rnd = (i: number) => Math.sin(i * 12.9898 + u * 78.233) * 0.5 + 0.5;
@@ -427,6 +450,14 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
     const back = new Frame(ctx.mb, ef.point(tvU, sofaV + 0.9, 0), ef.along.clone().negate(), ef.inward.clone().negate());
     sofa(back, 0, 0, 2.1);
     plant(ef, -elen / 2 + 0.35, 0.35, 1.1);
+    // ラウンジチェア（ソファの横で TV・ソファの方を向く）
+    const chairU = tvU + 1.75;
+    if (Math.abs(chairU) < elen / 2 - 0.5 && isFree(ctx, endSide, chairU - 0.45, chairU + 0.45)) {
+      const cp = ef.point(chairU, Math.max(1.4, sofaV - 0.6), 0);
+      const toward = ef.point(tvU, sofaV * 0.5, 0).sub(cp);
+      currentModels.push({ id: 'modern_arm_chair_01', pos: cp, rotY: Math.atan2(toward.x, toward.z), height: 0.82 });
+      if (currentPlan) currentPlan.push({ key: 'f.fabric', shape: 'box', cx: cp.x, cz: cp.z, w: 0.75, d: 0.8, ax: toward.z / (Math.hypot(toward.x, toward.z) || 1), az: -toward.x / (Math.hypot(toward.x, toward.z) || 1), r: 0, top: 0.8, roomId: currentRoomId });
+    }
     ctx.lights.push({ pos: ef.point(tvU, livDepth / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
     return;
   }

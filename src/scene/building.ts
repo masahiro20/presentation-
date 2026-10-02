@@ -631,14 +631,20 @@ function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
   const entry = s.entry;
   const runAlongZ = entry === 'n' || entry === 's';
   const tread = 'int.stairs';
-  const riser = 'int.stairs';
+  // 蹴込みの無い「ストリップ階段」: 厚さ 40mm の踏板を、両端の細いスチールの受け材で支える（重い箱の積み重ねに見せない）
   const put = (x0: number, z0: number, x1: number, z1: number, yTop: number) => {
-    const min = V(Math.min(x0, x1), yTop - rh * 0.9 - 0.04, Math.min(z0, z1));
+    const min = V(Math.min(x0, x1), yTop - 0.04, Math.min(z0, z1));
     const max = V(Math.max(x0, x1), yTop, Math.max(z0, z1));
-    // 踏板
-    mb.aabb(tread, V(min.x, yTop - 0.035, min.z), max);
-    // 蹴込み
-    mb.aabb(riser, min, V(max.x, yTop - 0.035, max.z));
+    mb.aabb(tread, min, max);
+    // 受け材（踏板の長手方向の両端＝階段の両脇の下に薄い板）
+    const longX = Math.abs(x1 - x0) >= Math.abs(z1 - z0);
+    const plateT = 0.012;
+    const ph = Math.min(0.08, rh * 0.5);
+    if (longX) {
+      for (const x of [min.x + 0.03, max.x - 0.03 - plateT]) mb.aabb('ext.frame', V(x, yTop - 0.04 - ph, min.z + 0.02), V(x + plateT, yTop - 0.04, max.z - 0.02));
+    } else {
+      for (const z of [min.z + 0.03, max.z - 0.03 - plateT]) mb.aabb('ext.frame', V(min.x + 0.02, yTop - 0.04 - ph, z), V(max.x - 0.02, yTop - 0.04, z + plateT));
+    }
   };
   if (s.kind === 'straight') {
     const len = runAlongZ ? d : w;

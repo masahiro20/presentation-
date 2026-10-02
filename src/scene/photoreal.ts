@@ -218,7 +218,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     if (shaderFailed) throw new PhotorealError('このパソコンの GPU では写真品質の計算プログラムを準備できませんでした', 'shader');
   };
 
-  const limit = opts.timeLimit ?? 240000;
+  // 検証用: URL の ?ptlimit=秒 で計算時間の上限を変える（GPU の無い環境での確認用）
+  const urlLimit = typeof location !== 'undefined' ? Number(new URLSearchParams(location.search).get('ptlimit')) : 0;
+  const limit = urlLimit > 0 ? urlLimit * 1000 : (opts.timeLimit ?? 240000);
   try {
     // シェーダーの準備（Windows では初回に時間がかかることがある）
     const tc = performance.now();
@@ -261,6 +263,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       if (now - t0 > limit) break;
     }
     check();
+    console.info(`写真品質レンダリング: ${Math.floor(pt.samples)} サンプル / ${Math.round((performance.now() - t0) / 1000)} 秒`);
     if (pt.samples < 1) throw new PhotorealError('計算が進みませんでした', 'no-samples');
     present(true);
     await gpuWait(gl, () => lost);

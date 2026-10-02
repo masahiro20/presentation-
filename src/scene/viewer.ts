@@ -12,6 +12,7 @@ import type { BuildingModel } from '../core/types';
 import { buildBuilding, type BuildingMeta } from './building';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
+import { placeModels } from './models';
 import { exteriorShots, interiorShots, type Shot } from './shots';
 import { buildOccluder } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
@@ -73,6 +74,8 @@ export class Viewer {
   state: SceneState | null = null;
   design: DesignOptions;
   sunDir = new THREE.Vector3(0.4, 0.7, 0.5).normalize();
+  /** 実物モデルの非同期配置の世代（図面を読み直したら古い配置を捨てる） */
+  private modelGen = 0;
   private gtao: GTAOPass;
   private smaa: SMAAPass;
   private dirty = true;
@@ -279,6 +282,11 @@ export class Viewer {
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
+    // 実物のモデル（観葉植物・ラウンジチェア）は読み込み後に追加
+    const gen = ++this.modelGen;
+    void placeModels(fur.models, this.groups.furniture, () => gen === this.modelGen).then((n) => {
+      if (n) this.dirty = true;
+    });
     const land = buildLandscape(meta, ext, model.site);
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);

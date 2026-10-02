@@ -44,6 +44,22 @@ function pdfjsAssets(): Plugin {
           if (needsB64(d, f)) this.emitFile({ type: 'asset', fileName: `pdfjs/b64/${d}/${f}.txt`, source: readFileSync(p).toString('base64') });
         }
       }
+      // HDRI・3D モデルも、配信できる形式（base64 テキスト・JSON）の写しを同梱する（.hdr・.bin・.gltf を配信しない環境向け）
+      const pub = path.resolve(__dirname, 'public');
+      const hdri = path.join(pub, 'hdri');
+      if (existsSync(hdri))
+        for (const f of readdirSync(hdri))
+          if (f.endsWith('.hdr')) this.emitFile({ type: 'asset', fileName: `hdri/${f}.txt`, source: readFileSync(path.join(hdri, f)).toString('base64') });
+      const models = path.join(pub, 'models');
+      if (existsSync(models))
+        for (const id of readdirSync(models)) {
+          const dir = path.join(models, id);
+          if (!statSync(dir).isDirectory()) continue;
+          for (const f of readdirSync(dir)) {
+            if (f.endsWith('.bin')) this.emitFile({ type: 'asset', fileName: `models/${id}/${f}.txt`, source: readFileSync(path.join(dir, f)).toString('base64') });
+            if (f.endsWith('.gltf')) this.emitFile({ type: 'asset', fileName: `models/${id}/${f}.json`, source: readFileSync(path.join(dir, f)) });
+          }
+        }
     },
   };
 }

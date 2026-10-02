@@ -58,6 +58,16 @@ function hdriUrl(file: string): string {
   return new URL(`hdri/${file}`, base).toString();
 }
 
+/** base64 テキストを取得し、元のバイナリの Blob URL にする */
+export async function b64BlobUrl(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  const bin = atob((await res.text()).trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes]));
+}
+
 export function loadHdri(mode: SkyMode): Promise<Hdri | null> {
   let p = cache.get(mode);
   if (!p) {
@@ -65,7 +75,18 @@ export function loadHdri(mode: SkyMode): Promise<Hdri | null> {
       try {
         const loader = new HDRLoader();
         loader.setDataType(THREE.FloatType);
-        const tex = (await loader.loadAsync(hdriUrl(FILES[mode]))) as THREE.DataTexture;
+        let tex: THREE.DataTexture;
+        try {
+          tex = (await loader.loadAsync(hdriUrl(FILES[mode]))) as THREE.DataTexture;
+        } catch {
+          // .hdr を配信しない公開先: base64 テキストの写しから読み込む
+          const url = await b64BlobUrl(hdriUrl(FILES[mode]) + '.txt');
+          try {
+            tex = (await loader.loadAsync(url)) as THREE.DataTexture;
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        }
         tex.mapping = THREE.EquirectangularReflectionMapping;
         const img = tex.image as { data: Float32Array; width: number; height: number };
         const { data, width: W, height: H } = img;

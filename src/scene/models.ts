@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { ModelPlacement } from './furniture';
+import { b64BlobUrl } from './hdri';
 
 const cache = new Map<string, Promise<THREE.Object3D | null>>();
 
@@ -14,7 +15,25 @@ function loadModel(id: string): Promise<THREE.Object3D | null> {
     p = (async () => {
       try {
         const url = new URL(`models/${id}/${id}.gltf`, document.baseURI).toString();
-        const gltf = await new GLTFLoader().loadAsync(url);
+        let gltf;
+        try {
+          gltf = await new GLTFLoader().loadAsync(url);
+        } catch {
+          // .gltf・.bin を配信しない公開先: JSON と base64 テキストの写しから読み込む
+          const json = await (await fetch(url + '.json')).json();
+          const blobs: string[] = [];
+          for (const b of json.buffers ?? []) {
+            if (typeof b.uri === 'string' && !/^(data|blob):/.test(b.uri)) {
+              b.uri = await b64BlobUrl(new URL(b.uri + '.txt', url).toString());
+              blobs.push(b.uri);
+            }
+          }
+          try {
+            gltf = await new GLTFLoader().parseAsync(JSON.stringify(json), new URL('./', url).toString());
+          } finally {
+            blobs.forEach((u) => URL.revokeObjectURL(u));
+          }
+        }
         const root = gltf.scene;
         root.traverse((o) => {
           const m = o as THREE.Mesh;

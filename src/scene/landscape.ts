@@ -22,20 +22,41 @@ export interface SiteInfo {
 
 const SIDE_WORLD: Record<PlanSide, THREE.Vector3> = { top: V(0, 0, -1), bottom: V(0, 0, 1), left: V(-1, 0, 0), right: V(1, 0, 0) };
 
-/** 主な接道（複数あれば玄関に近い向き → 広い道路） */
-export function primaryRoad(site: SiteData | undefined, entranceOutward?: THREE.Vector3): RoadInfo | null {
+/** 主な接道（複数あれば玄関に近い向き → 駐車場の奥行が取れる側 → 広い道路） */
+export function primaryRoad(site: SiteData | undefined, entranceOutward?: THREE.Vector3, bbox?: THREE.Box3): RoadInfo | null {
   if (!site?.roads.length) return null;
-  const score = (r: RoadInfo) => (entranceOutward ? SIDE_WORLD[r.side].dot(entranceOutward) * 10 : 0) + (r.widthMm ?? 4000) / 1000 + (r.source === 'manual' ? 100 : 0);
+  // 建物から敷地境界までの奥行（m）。駐車場（約5.5m）が取れない側は避ける
+  const depth = (r: RoadInfo): number | null => {
+    const bd = site.bounds?.[r.side];
+    if (bd == null || !bbox) return null;
+    const v = bd / 1000;
+    return r.side === 'top' ? bbox.min.z - v : r.side === 'bottom' ? v - bbox.max.z : r.side === 'left' ? bbox.min.x - v : v - bbox.max.x;
+  };
+  const score = (r: RoadInfo) => {
+    const d = depth(r);
+    const room = d == null ? 0 : d >= 5.5 ? 8 : d >= 3 ? 2 : -8;
+    return (entranceOutward ? SIDE_WORLD[r.side].dot(entranceOutward) * 6 : 0) + room + (r.widthMm ?? 4000) / 1000 + (r.source === 'manual' ? 100 : 0);
+  };
   return site.roads.slice().sort((a, b) => score(b) - score(a))[0];
 }
 
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder } {
+/** 平面図用の外構（ワールド座標 m） */
+export interface LandscapePlan {
+  trees: { x: number; z: number; r: number }[];
+  shrubs: { x: number; z: number; r: number }[];
+  paving: { key: string; pts: THREE.Vector3[] }[];
+  /** 駐車場の車（中心・車の前後方向） */
+  cars: { x: number; z: number; dirX: number; dirZ: number }[];
+}
+
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan } {
   const mb = new MeshBuilder();
   const trees = new MeshBuilder();
+  const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [] };
   const b = meta.bbox;
   const ent = meta.entrance;
   // 道路方向: 図面から読み取った接道 → 無ければ玄関の外向き（軸に丸める）
-  const pr = primaryRoad(siteData, ent?.outward);
+  const pr = primaryRoad(siteData, ent?.outward, b);
   let road = pr ? SIDE_WORLD[pr.side].clone() : ent ? ent.outward.clone() : V(0, 0, 1);
   if (Math.abs(road.x) > Math.abs(road.z)) road = V(Math.sign(road.x), 0, 0);
   else road = V(0, 0, Math.sign(road.z) || 1);
@@ -128,12 +149,22 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   const toWorld = (a: number, d: number, y: number) => (road.x !== 0 ? V(d, y, a) : V(a, y, d));
   const rect = (key: string, a0: number, a1: number, d0: number, d1: number, y: number) => {
     const p = [toWorld(a0, d0, y), toWorld(a1, d0, y), toWorld(a1, d1, y), toWorld(a0, d1, y)];
+    plan.paving.push({ key, pts: p });
     const n = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
     if (n.y < 0) mb.quad(key, p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
     else mb.quad(key, p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
   };
   rect('l.driveway', parkCenterAlong - parkW / 2, parkCenterAlong + parkW / 2, depthA - 0.3, depthB, 0.012);
   const parking = { center: toWorld(parkCenterAlong, (depthA + depthB) / 2, 0), along };
+  // 駐車場の車（奥行が足りるときだけ。道路に向けて前進駐車）
+  if (depthB - depthA > 4.8) {
+    const nCar = parkW >= 5.0 ? 2 : 1;
+    for (let i = 0; i < nCar; i++) {
+      const a = parkCenterAlong + (nCar === 2 ? (i - 0.5) * 2.6 : 0);
+      const c = toWorld(a, (depthA + depthB) / 2, 0);
+      plan.cars.push({ x: c.x, z: c.z, dirX: road.x, dirZ: road.z });
+    }
+  }
 
   // アプローチ（玄関ポーチから道路まで）
   if (ent) {
@@ -141,11 +172,33 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   }
 
   function shrub(p: THREE.Vector3, s: number) {
+    if (!spotOk(p, s * 0.5)) return;
+    plan.shrubs.push({ x: p.x, z: p.z, r: s * 0.75 });
     // 低木: 葉カードの小さな塊
     for (let i = 0; i < 7; i++) {
       const off = V((rnd() - 0.5) * s * 1.4, s * (0.35 + rnd() * 0.5), (rnd() - 0.5) * s * 1.4);
       trees.card('l.leafCardDark', p.clone().setY(0).add(off), s * (1.0 + rnd() * 0.5), new THREE.Euler(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI));
     }
+  }
+  /** 植栽を置ける位置か: 敷地の内側（形が分かれば）、建物・駐車場・アプローチに重ならない */
+  function spotOk(p: THREE.Vector3, r: number): boolean {
+    if (p.x - r < min.x || p.x + r > max.x || p.z - r < min.y || p.z + r > max.y) return false;
+    if (poly && poly.length >= 3) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i];
+        const c = poly[j];
+        if (a.z > p.z !== c.z > p.z && p.x < ((c.x - a.x) * (p.z - a.z)) / (c.z - a.z) + a.x) inside = !inside;
+      }
+      if (!inside) return false;
+    }
+    if (p.x > b.min.x - r - 0.3 && p.x < b.max.x + r + 0.3 && p.z > b.min.z - r - 0.3 && p.z < b.max.z + r + 0.3) return false;
+    for (const pv of plan.paving) {
+      const xs = pv.pts.map((q) => q.x);
+      const zs = pv.pts.map((q) => q.z);
+      if (p.x > Math.min(...xs) - r && p.x < Math.max(...xs) + r && p.z > Math.min(...zs) - r && p.z < Math.max(...zs) + r) return false;
+    }
+    return true;
   }
   // フェンス・生垣（道路側以外の3辺）
   const rnd = mulberry32(42);
@@ -201,7 +254,17 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   }
 
   // 植栽: シンボルツリー（アプローチ脇）と庭木
-  const addTree = (p: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern') => {
+  const addTree = (p0: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern') => {
+    // 敷地の内側で、建物から離れた位置に（だめなら敷地の中心へ寄せて探す。見つからなければ植えない）
+    const r0 = h * 0.22;
+    const siteC = V((min.x + max.x) / 2, 0, (min.y + max.y) / 2);
+    let p: THREE.Vector3 | null = null;
+    for (let k = 0; k <= 6 && !p; k++) {
+      const q = p0.clone().lerp(siteC, k * 0.12);
+      if (spotOk(q, r0)) p = q;
+    }
+    if (!p) return;
+    plan.trees.push({ x: p.x, z: p.z, r: h * (kind === 'modern' ? 0.26 : 0.3) });
     // 株立ち（シマトネリコ・アオダモ風）: 細い幹が数本、軽やかな樹冠
     const stems = kind === 'modern' ? 4 : kind === 'natural' ? 2 : 1;
     const crowns: THREE.Vector3[] = [];
@@ -249,10 +312,30 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   addTree(bpos.clone().addScaledVector(along, (alongMax - alongMin) * 0.35), 3.6, kind);
   addTree(bpos.clone().addScaledVector(along, -(alongMax - alongMin) * 0.38), 3.0, kind);
   for (let i = 0; i < 5; i++) shrub(bpos.clone().addScaledVector(along, (rnd() - 0.5) * (alongMax - alongMin) * 0.8), 0.3 + rnd() * 0.2);
+  // 庭木が足りなければ、敷地の空いている所（建物・舗装から離れた場所）に植える
+  for (let guard = 0; plan.trees.length < 3 && guard < 3; guard++) {
+    let best: { p: THREE.Vector3; score: number } | null = null;
+    for (let x = min.x + 1; x <= max.x - 1; x += 0.5)
+      for (let z = min.y + 1; z <= max.y - 1; z += 0.5) {
+        const p = V(x, 0, z);
+        if (!spotOk(p, 1.0)) continue;
+        // 建物に近すぎず（2m 程度）、既存の木から離れた所
+        const dB = Math.max(b.min.x - x, x - b.max.x, b.min.z - z, z - b.max.z, 0);
+        const dT = Math.min(99, ...plan.trees.map((t) => Math.hypot(t.x - x, t.z - z)));
+        const score = -Math.abs(dB - 2.2) + Math.min(dT, 6) * 0.8;
+        if (!best || score > best.score) best = { p, score };
+      }
+    if (!best) break;
+    const n0 = plan.trees.length;
+    addTree(best.p, 3.4 + rnd() * 0.8, kind);
+    if (plan.trees.length === n0) break;
+    shrub(best.p.clone().add(V(0.9, 0, 0.5)), 0.35);
+  }
 
   return {
     mb,
     trees,
     site: { min, max, roadDir: road, roadCenter, parking },
+    plan,
   };
 }

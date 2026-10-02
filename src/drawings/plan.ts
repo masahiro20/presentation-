@@ -5,6 +5,55 @@
 import type { BuildingModel, Floor, RoomType } from '../core/types';
 import { polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
+import { buildBuilding } from '../scene/building';
+import { buildLandscape, type LandscapePlan } from '../scene/landscape';
+import { EXTERIOR_STYLES } from '../styles/presets';
+
+/** 外構（3D と同じ配置: 駐車場・アプローチ・植栽） */
+const landscapeCache = new WeakMap<BuildingModel, LandscapePlan | null>();
+function landscapeOf(model: BuildingModel): LandscapePlan | null {
+  if (landscapeCache.has(model)) return landscapeCache.get(model)!;
+  let lp: LandscapePlan | null = null;
+  try {
+    const ext = EXTERIOR_STYLES[0];
+    const { meta } = buildBuilding(model, { exterior: ext });
+    lp = buildLandscape(meta, ext, model.site).plan;
+  } catch {
+    lp = null;
+  }
+  landscapeCache.set(model, lp);
+  return lp;
+}
+
+/** 樹木: ゆらぎのある輪郭の樹冠 */
+function treeSvg(x: number, y: number, r: number, seed: number): string {
+  const n = 28;
+  const pts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const k = 1 + 0.07 * Math.sin(a * 7 + seed) + 0.04 * Math.sin(a * 13 + seed * 2.3);
+    pts.push(`${(x + Math.cos(a) * r * k).toFixed(0)},${(y + Math.sin(a) * r * k).toFixed(0)}`);
+  }
+  return (
+    `<polygon points="${pts.join(' ')}" fill="#d3dfc4" fill-opacity="0.82" stroke="#8ea47c" stroke-width="12"/>` +
+    `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${(r * 0.55).toFixed(0)}" fill="none" stroke="#a9bb98" stroke-width="7" stroke-dasharray="50 40"/>` +
+    `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="45" fill="#8ea47c"/>`
+  );
+}
+
+/** 車（平面図の記号） */
+function carSvg(x: number, y: number, dx: number, dy: number): string {
+  const L = 4600;
+  const W = 1760;
+  const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return (
+    `<g transform="translate(${x.toFixed(0)} ${y.toFixed(0)}) rotate(${ang.toFixed(1)})">` +
+    `<rect x="${-L / 2}" y="${-W / 2}" width="${L}" height="${W}" rx="420" fill="#fff" stroke="#9a958e" stroke-width="12"/>` +
+    `<rect x="${-L * 0.18}" y="${-W / 2 + 160}" width="${L * 0.42}" height="${W - 320}" rx="200" fill="none" stroke="#b5b0a8" stroke-width="10"/>` +
+    `<line x1="${L * 0.24}" y1="${-W / 2 + 180}" x2="${L * 0.24}" y2="${W / 2 - 180}" stroke="#b5b0a8" stroke-width="10"/>` +
+    `</g>`
+  );
+}
 
 /** 家具の外形（モデルごとに1回だけ計算） */
 const furnitureCache = new WeakMap<BuildingModel, Map<number, PlanItem[]>>();
@@ -106,6 +155,8 @@ const PLAN_DEFS =
 export interface PlanSvgOptions {
   showDims?: boolean;
   showFurnitureHint?: boolean;
+  /** 外構（駐車場・植栽）を描く（1階のみ。既定: 描く） */
+  showLandscape?: boolean;
   /** 用途別の色分け（既定: 素材の表現） */
   colorCoded?: boolean;
   /** 家具（3D と同じ自動配置）を描く（既定: 描く） */
@@ -127,6 +178,15 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   const pad = 1800;
   const vb = { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 + 900 };
   let s = '';
+  const land = f.level === 1 && opts.showLandscape !== false ? landscapeOf(model) : null;
+  // 外構の舗装（駐車場・アプローチ）と車
+  if (land) {
+    for (const pv of land.paving) {
+      const pts = pv.pts.map((q) => `${(q.x * 1000).toFixed(0)},${(q.z * 1000).toFixed(0)}`).join(' ');
+      s += pv.key === 'l.approach' ? `<polygon points="${pts}" fill="url(#mp-stone)" stroke="#c9c4bc" stroke-width="10"/>` : `<polygon points="${pts}" fill="#ebe9e5" stroke="#cfcbc4" stroke-width="10"/>`;
+    }
+    for (const c of land.cars) s += carSvg(c.x * 1000, c.z * 1000, c.dirX, c.dirZ);
+  }
   // 部屋
   for (const r of f.rooms) {
     const fin = FINISH[r.type] ?? 'wood';
@@ -219,6 +279,11 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
         }
       }
     }
+  }
+  // 植栽
+  if (land) {
+    land.shrubs.forEach((t, i) => (s += `<circle cx="${(t.x * 1000).toFixed(0)}" cy="${(t.z * 1000).toFixed(0)}" r="${(t.r * 1000).toFixed(0)}" fill="#c9d8b8" fill-opacity="0.85" stroke="#93a982" stroke-width="10"/>` + (i < 0 ? '' : '')));
+    land.trees.forEach((t, i) => (s += treeSvg(t.x * 1000, t.z * 1000, t.r * 1000, i * 1.7 + 0.4)));
   }
   // 室名
   for (const r of f.rooms) {

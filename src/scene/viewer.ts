@@ -18,6 +18,8 @@ import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions } from '../styles/presets';
+import { preloadPhotoTextures } from '../styles/photoTextures';
+import { clearMaterialCache } from '../styles/textures';
 import { resolveSpec } from '../styles/spec';
 
 /** 建築パース用カメラ: レンズシフトで縦線を垂直に保つ */
@@ -141,6 +143,11 @@ export class Viewer {
     this.scene.add(this.sun, this.sun.target, this.hemi);
 
     this.registry = new MaterialRegistry(exteriorById(design.exteriorId), interiorById(design.interiorId), { night: design.timeOfDay === 'night' });
+    // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
+    void preloadPhotoTextures().then(() => {
+      clearMaterialCache();
+      this.setDesign({ ...this.design });
+    });
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));

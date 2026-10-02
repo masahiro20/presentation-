@@ -2,7 +2,7 @@
  * マテリアルキー → マテリアル。テイスト変更時はここを差し替えるだけで即座に反映される。
  */
 import * as THREE from 'three';
-import { makeMaterial, leafCardTexture, type MatSpec } from '../styles/textures';
+import { makeMaterial, leafCardTexture, leafSprayTexture, type MatSpec } from '../styles/textures';
 import { TATAMI, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 
 export class MaterialRegistry {
@@ -147,6 +147,7 @@ export class MaterialRegistry {
     const leafMat = (c1: string, c2: string, seed: number) =>
       new THREE.MeshStandardMaterial({ map: leafCardTexture(c1, c2, seed), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.7 });
     set('l.leafCard', leafMat('#5f8a3c', '#9dbb5c', 3));
+    set('l.leafSpray', new THREE.MeshStandardMaterial({ map: leafSprayTexture('#5e8c3a', '#a9c766', 5), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.65 }));
     set('l.leafCardDark', leafMat('#3f6630', '#6f9448', 7));
 
     for (const [k, m] of this.map) {

@@ -265,36 +265,48 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     }
     if (!p) return;
     plan.trees.push({ x: p.x, z: p.z, r: h * (kind === 'modern' ? 0.26 : 0.3) });
-    // 株立ち（シマトネリコ・アオダモ風）: 細い幹が数本、軽やかな樹冠
-    const stems = kind === 'modern' ? 4 : kind === 'natural' ? 2 : 1;
-    const crowns: THREE.Vector3[] = [];
-    for (let i = 0; i < stems; i++) {
-      const a = rnd() * Math.PI * 2;
-      const lean = stems > 1 ? 0.12 + rnd() * 0.12 : 0.03;
-      const top = V(p.x + Math.cos(a) * h * lean, h * (0.62 + rnd() * 0.12), p.z + Math.sin(a) * h * lean);
-      const mid = p.clone().lerp(top, 0.55).add(V((rnd() - 0.5) * 0.12, 0, (rnd() - 0.5) * 0.12));
-      const r0 = (stems > 1 ? 0.035 : 0.07) * (h / 4);
-      trees.tube('l.trunk', p.clone().setY(0), mid, r0, r0 * 0.8);
-      trees.tube('l.trunk', mid, top, r0 * 0.8, r0 * 0.45);
-      // 枝
-      for (let k = 0; k < 3; k++) {
-        const bA = mid.clone().lerp(top, 0.3 + rnd() * 0.6);
-        const ang = rnd() * Math.PI * 2;
-        const bB = bA.clone().add(V(Math.cos(ang) * h * 0.14, h * (0.05 + rnd() * 0.08), Math.sin(ang) * h * 0.14));
-        trees.tube('l.trunk', bA, bB, r0 * 0.35, r0 * 0.15);
-        crowns.push(bB);
-      }
-      crowns.push(top);
-    }
-    // 樹冠: 葉のカードを枝先のまわりに
-    const leafKey = kind === 'japanese' ? 'l.leafCardDark' : 'l.leafCard';
-    const crownR = h * (kind === 'modern' ? 0.2 : 0.24);
-    for (const c of crowns) {
-      const n = kind === 'modern' ? 7 : 9;
+    // 株立ち（アオダモ・ヤマボウシ風）: 幹 → 枝 → 小枝の分岐構造に、枝先だけ葉を付けて軽やかな樹冠にする
+    const leafKey = kind === 'japanese' ? 'l.leafCardDark' : 'l.leafSpray';
+    const up = V(0, 1, 0);
+    const turn = (d: THREE.Vector3, minA: number, maxA: number) => {
+      // d を、ランダムな直交軸まわりに minA〜maxA 回し、少し上向きに寄せる
+      const ax = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.95 ? up : V(1, 0, 0)).normalize();
+      ax.applyAxisAngle(d, rnd() * Math.PI * 2);
+      const out = d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA));
+      return out.lerp(up, 0.15).normalize();
+    };
+    const leaves = (a: THREE.Vector3, b: THREE.Vector3, sz: number) => {
+      const n = 3;
       for (let i = 0; i < n; i++) {
-        const off = V((rnd() - 0.5) * 2, (rnd() - 0.5) * 1.4, (rnd() - 0.5) * 2).multiplyScalar(crownR * 0.6);
-        trees.card(leafKey, c.clone().add(off), crownR * (0.9 + rnd() * 0.6), new THREE.Euler(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI));
+        const q = a.clone().lerp(b, 0.35 + 0.65 * rnd()).add(V((rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.12));
+        trees.card(leafKey, q, sz * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.6, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.6));
       }
+    };
+    const leafSize = Math.max(0.32, h * 0.11);
+    const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
+      const b = a.clone().addScaledVector(dir, len);
+      trees.tube('l.trunk', a, b, r, r * 0.72);
+      if (level >= 3) {
+        leaves(a, b, leafSize);
+        return;
+      }
+      const nChild = level === 0 ? 3 : 2;
+      for (let i = 0; i < nChild; i++) {
+        const t = 0.5 + (0.45 * (i + rnd() * 0.6)) / nChild;
+        grow(a.clone().lerp(b, t), turn(dir, 0.45, 0.85), len * (0.5 + rnd() * 0.15), r * 0.55, level + 1);
+      }
+      // 先端の延長
+      grow(b, turn(dir, 0.05, 0.25), len * (0.55 + rnd() * 0.1), r * 0.7, level + 1);
+      if (level >= 2) leaves(a, b, leafSize * 0.9);
+    };
+    const stems = kind === 'modern' ? 4 : kind === 'natural' ? 3 : 1;
+    for (let i = 0; i < stems; i++) {
+      const az = (i / stems) * Math.PI * 2 + rnd() * 0.8;
+      const lean = stems > 1 ? 0.14 + rnd() * 0.16 : 0.04;
+      const d0 = V(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
+      const base = p.clone().setY(0).add(V(Math.cos(az) * 0.06, 0, Math.sin(az) * 0.06));
+      const r0 = (stems > 1 ? 0.04 : 0.08) * (h / 4);
+      grow(base, d0, h * (0.42 + rnd() * 0.08), r0, 0);
     }
   };
   const kind = style.landscape.trees;

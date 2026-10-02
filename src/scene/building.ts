@@ -375,7 +375,17 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   const sill = fl + o.sill * MM;
   const head = fl + (o.sill + o.height) * MM;
   const H = head - sill;
-  const outSign = w.exterior ? (w.outsideSign ?? 1) : 1;
+  let outSign = w.exterior ? (w.outsideSign ?? 1) : 1;
+  // 外壁の外向きは、外形の内外で確かめる（向きを取り違えるとサッシ・カーテンが外に出る）
+  if (w.exterior && f.outline.length) {
+    const probe = (sg: number) => {
+      const q = mid.clone().addScaledVector(nW, sg * (t / 2 + 0.35));
+      return f.outline.some((l) => pointInPolygon({ x: q.x / MM, y: q.z / MM }, l));
+    };
+    const plusIn = probe(1);
+    const minusIn = probe(-1);
+    if (plusIn !== minusIn) outSign = plusIn ? -1 : 1;
+  }
   const outN = nW.clone().multiplyScalar(outSign);
 
   if (o.kind === 'window') {
@@ -509,10 +519,22 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   if (o.kind === 'door') {
     const hingeS = o.hingeAtStart !== false ? s0 : s1;
     const towards = o.hingeAtStart !== false ? 1 : -1; // ヒンジから戸先方向
-    const side = (o.swingSide ?? 1) as number;
+    // 外壁の扉は室内側へ開く（外へ扉の板が飛び出して見えないように）
+    let side = (w.exterior && w.outsideSign ? -w.outsideSign : (o.swingSide ?? 1)) as number;
+    // 開いた扉の先端が建物の外に出る場合は反対側へ。どちらも出る場合は閉じておく
+    const lw0 = width - 0.008;
+    const tipInside = (sd: number) => {
+      const hg = A.clone().addScaledVector(dir, hingeS).addScaledVector(nW, sd * (t / 2));
+      const ld = dir.clone().multiplyScalar(towards * Math.cos(1.396)).addScaledVector(nW, sd * Math.sin(1.396)).normalize();
+      const tip = hg.addScaledVector(ld, lw0);
+      return f.outline.some((l) => pointInPolygon({ x: tip.x / MM, y: tip.z / MM }, l));
+    };
+    let ang = (80 * Math.PI) / 180;
+    if (!tipInside(side)) {
+      if (!w.exterior && tipInside(-side)) side = -side;
+      else ang = 0;
+    }
     const hinge = A.clone().addScaledVector(dir, hingeS).addScaledVector(nW, side * (t / 2));
-    // 80度開いた扉
-    const ang = (80 * Math.PI) / 180;
     const leafDir = dir.clone().multiplyScalar(towards * Math.cos(ang)).addScaledVector(nW, side * Math.sin(ang)).normalize();
     const lw = width - 0.008;
     const c = hinge.clone().addScaledVector(leafDir, lw / 2).setY(fl + 0.008);

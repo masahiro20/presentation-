@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import { ValueNoise, mulberry32 } from './noise';
+import { photoSet } from './photoTextures';
 
 export type Pattern =
   | 'plaster'
@@ -517,7 +518,26 @@ export function makeMaterial(spec: MatSpec, opts: { side?: THREE.Side; size?: nu
   if (hit) return hit;
   const flat = spec.pattern === 'paint' && !spec.normalStrength;
   let mat: THREE.MeshStandardMaterial;
-  if (flat) {
+  const photo = flat ? null : photoSet(spec);
+  if (photo) {
+    // 実写の素材（テイストの色・粗さに合わせたもの）
+    const tile = photo.tile * (spec.tile ? spec.tile / DEFAULT_TILE[spec.pattern] : 1);
+    const rep = 1 / tile;
+    const cl = (tx: THREE.Texture) => {
+      const c = tx.clone();
+      c.repeat.set(rep, rep);
+      c.needsUpdate = true;
+      return c;
+    };
+    mat = new THREE.MeshStandardMaterial({
+      map: cl(photo.map),
+      normalMap: cl(photo.normalMap),
+      roughnessMap: cl(photo.roughnessMap),
+      roughness: photo.roughnessScale,
+      metalness: spec.metalness ?? 0,
+    });
+    mat.normalScale.set(spec.normalStrength != null ? Math.max(0.3, spec.normalStrength * 2) : 1, spec.normalStrength != null ? Math.max(0.3, spec.normalStrength * 2) : 1);
+  } else if (flat) {
     mat = new THREE.MeshStandardMaterial({ color: spec.color, roughness: spec.roughness ?? 0.85, metalness: spec.metalness ?? 0 });
   } else {
     const t = textureSet(spec, opts.size ?? 512);
@@ -553,6 +573,69 @@ export function clearMaterialCache() {
 }
 
 const leafCache = new Map<string, THREE.Texture>();
+
+/** 小枝に葉が互い違いに付いた「枝先」の板（軽やかな樹冠用。下端中央が枝の付け根） */
+export function leafSprayTexture(color: string, color2: string, seed = 5): THREE.Texture {
+  const key = ['spray', color, color2, seed].join();
+  const hit = leafCache.get(key);
+  if (hit) return hit;
+  const N = 512;
+  const c = makeCanvas(N) as HTMLCanvasElement;
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, N, N);
+  const rnd = mulberry32(seed);
+  const a = new THREE.Color(color);
+  const b = new THREE.Color(color2);
+  const css = (col: THREE.Color) => `rgb(${Math.min(255, col.r * 255) | 0},${Math.min(255, col.g * 255) | 0},${Math.min(255, col.b * 255) | 0})`;
+  // 3本の小枝（扇状）
+  for (let s = 0; s < 3; s++) {
+    const ang = -Math.PI / 2 + (s - 1) * 0.5 + (rnd() - 0.5) * 0.2;
+    const L = N * (0.62 + rnd() * 0.25);
+    const x0 = N / 2;
+    const y0 = N * 0.98;
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    const x1 = x0 + Math.cos(ang) * L;
+    const y1 = y0 + Math.sin(ang) * L;
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    const nLeaf = 9 + Math.floor(rnd() * 4);
+    for (let i = 0; i < nLeaf; i++) {
+      const t = 0.25 + (0.75 * (i + 0.5)) / nLeaf;
+      const px = x0 + Math.cos(ang) * L * t;
+      const py = y0 + Math.sin(ang) * L * t;
+      const side = i % 2 ? 1 : -1;
+      const la = ang + side * (0.7 + rnd() * 0.4);
+      const len = N * (0.1 + rnd() * 0.05) * (0.6 + 0.6 * t);
+      const col = a.clone().lerp(b, rnd()).multiplyScalar(0.8 + rnd() * 0.45);
+      ctx.save();
+      ctx.translate(px + Math.cos(la) * len * 0.45, py + Math.sin(la) * len * 0.45);
+      ctx.rotate(la);
+      ctx.fillStyle = css(col);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, len / 2, len / 4.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    // 先端の葉
+    const col = a.clone().lerp(b, rnd());
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(ang);
+    ctx.fillStyle = css(col);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, N * 0.06, N * 0.025, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  leafCache.set(key, tex);
+  return tex;
+}
 
 /** 葉の集まりを描いたアルファ付きテクスチャ（植栽用） */
 export function leafCardTexture(color: string, color2: string, seed = 3, leafLen = 0.09): THREE.Texture {

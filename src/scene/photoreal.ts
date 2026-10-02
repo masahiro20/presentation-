@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { WebGLPathTracer, DenoiseMaterial } from 'three-gpu-pathtracer';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Viewer } from './viewer';
+import { loadHdri, equirectIrradiance } from './hdri';
 
 export interface PhotorealOptions {
   width: number;
@@ -23,6 +24,8 @@ export interface PhotorealOptions {
   /** GPU に載せるテクスチャ1枚の大きさ（全テクスチャを1つの配列にまとめるため、メモリに直結する） */
   textureSize?: number;
   onStatus?: (msg: string) => void;
+  /** 実写の空（HDRI）を使う（既定: 使う。読み込めなければ手続き的な空） */
+  hdri?: boolean;
 }
 
 interface Saved {
@@ -142,13 +145,38 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   scene.environment = sky;
   scene.background = sky;
   scene.environmentIntensity = night ? 0.4 : 1.0;
+  const prevEnvRot = scene.environmentRotation.clone();
+  const prevBgRot = scene.backgroundRotation.clone();
+  const prevBgI = scene.backgroundIntensity;
+  const sunI0 = viewer.sun.intensity;
+  // 実写の空（HDRI）: 雲・大気・太陽を含む光源と背景。太陽の方位を日照の設定に合わせ、明るさは手続き的な空＋太陽にそろえる
+  let usingHdri = false;
+  if (opts.hdri !== false) {
+    opts.onStatus?.('実写の空を準備中');
+    const hdri = await loadHdri(viewer.design.timeOfDay);
+    if (hdri) {
+      const img = sky.image as { data: Float32Array; width: number; height: number };
+      const sd = viewer.sunDir;
+      const target = night ? 0 : sky.image ? Math.atan2(sd.z, sd.x) : 0;
+      const procE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, sd.y));
+      const k = procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1;
+      scene.environment = hdri.texture;
+      scene.background = hdri.texture;
+      scene.environmentIntensity = k;
+      scene.backgroundIntensity = k;
+      scene.environmentRotation.set(0, hdri.sunAzimuth - target, 0);
+      scene.backgroundRotation.set(0, hdri.sunAzimuth - target, 0);
+      usingHdri = true;
+    }
+  }
   // 昼の補助光（室内の擬似間接光）は不要
   const lightVis = viewer.groups.lights.visible;
   if (!night) viewer.groups.lights.visible = false;
   const hemiVis = viewer.hemi.visible;
   viewer.hemi.visible = false;
   const sunI = viewer.sun.intensity;
-  viewer.sun.intensity = sunI * 1.15;
+  // HDRI の場合は太陽も空の画像に含まれるので、平行光源の太陽は消す
+  viewer.sun.intensity = usingHdri && !night ? 0 : sunI * 1.15;
   const prevExposure = renderer.toneMappingExposure;
   if (opts.exposure) renderer.toneMappingExposure = opts.exposure;
   const saved = prepareMaterials(scene);
@@ -251,6 +279,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     scene.environment = prevEnv;
     scene.background = prevBg;
     scene.environmentIntensity = prevEnvI;
+    scene.backgroundIntensity = prevBgI;
+    scene.environmentRotation.copy(prevEnvRot);
+    scene.backgroundRotation.copy(prevBgRot);
     viewer.groups.lights.visible = lightVis;
     viewer.hemi.visible = hemiVis;
     viewer.sun.intensity = sunI;

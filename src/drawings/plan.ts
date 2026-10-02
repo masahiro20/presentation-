@@ -250,15 +250,30 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
       const p = (t: number, sgn: number) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
       s += `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
     }
-    // 建具
+    // 建具（設計図の表記: 窓 = 枠の2線＋ガラス、開き戸 = 扉と軌跡、引戸 = 2枚の戸を少しずらして）
     for (const o of ops) {
       const a = { x: w.a.x + ux * o.t0, y: w.a.y + uy * o.t0 };
       const b = { x: w.a.x + ux * o.t1, y: w.a.y + uy * o.t1 };
       const len = o.t1 - o.t0;
+      const P = (t: number, off: number) => ({ x: a.x + ux * t + nx * off, y: a.y + uy * t + ny * off });
+      const leaf = (t0: number, t1: number, off: number, th: number) => {
+        const q = [P(t0, off - th / 2), P(t1, off - th / 2), P(t1, off + th / 2), P(t0, off + th / 2)];
+        return `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#333" stroke-width="9"/>`;
+      };
       if (o.kind === 'window') {
-        for (const k of [-0.5, 0, 0.5]) {
-          const off = h * k;
-          s += `<line x1="${a.x + nx * off}" y1="${a.y + ny * off}" x2="${b.x + nx * off}" y2="${b.y + ny * off}" stroke="#4a7fa6" stroke-width="${k === 0 ? 22 : 12}"/>`;
+        // 枠（壁の内外面）とガラス
+        for (const k of [-1, 1]) {
+          const p0 = P(0, h * k);
+          const p1 = P(len, h * k);
+          s += `<line x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" stroke="#333" stroke-width="9"/>`;
+        }
+        const g0 = P(0, 0);
+        const g1 = P(len, 0);
+        s += `<line x1="${g0.x}" y1="${g0.y}" x2="${g1.x}" y2="${g1.y}" stroke="#5f8fb0" stroke-width="16"/>`;
+        for (const t of [0, len]) {
+          const e0 = P(t, -h);
+          const e1 = P(t, h);
+          s += `<line x1="${e0.x}" y1="${e0.y}" x2="${e1.x}" y2="${e1.y}" stroke="#333" stroke-width="9"/>`;
         }
       } else if (o.kind === 'door' || o.kind === 'entrance') {
         const hingeAtStart = o.hingeAtStart !== false;
@@ -266,16 +281,18 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
         const strike = hingeAtStart ? b : a;
         const side = o.swingSide ?? 1;
         const tip = { x: hinge.x + nx * len * side, y: hinge.y + ny * len * side };
-        s += `<line x1="${hinge.x}" y1="${hinge.y}" x2="${tip.x}" y2="${tip.y}" stroke="#555" stroke-width="16"/>`;
+        s += `<line x1="${hinge.x}" y1="${hinge.y}" x2="${tip.x}" y2="${tip.y}" stroke="#333" stroke-width="${o.kind === 'entrance' ? 40 : 30}" stroke-linecap="butt"/>`;
         const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-        s += `<path d="M${tip.x} ${tip.y} A${len} ${len} 0 0 ${sweep} ${strike.x} ${strike.y}" fill="none" stroke="#888" stroke-width="10" stroke-dasharray="40 30"/>`;
+        s += `<path d="M${tip.x} ${tip.y} A${len} ${len} 0 0 ${sweep} ${strike.x} ${strike.y}" fill="none" stroke="#777" stroke-width="7"/>`;
       } else if (o.kind === 'sliding') {
-        for (const [f0, f1, k] of [
-          [0, 0.55, -0.25],
-          [0.45, 1, 0.25],
-        ] as const) {
-          const off = h * k;
-          s += `<line x1="${a.x + ux * len * f0 + nx * off}" y1="${a.y + uy * len * f0 + ny * off}" x2="${a.x + ux * len * f1 + nx * off}" y2="${a.y + uy * len * f1 + ny * off}" stroke="#555" stroke-width="24"/>`;
+        // 引違い（幅 1.2m 以上）は2枚、狭いものは片引きの1枚
+        const th = 32;
+        const off = Math.min(h * 0.55, 30);
+        if (len >= 1200) {
+          s += leaf(0, len * 0.53, -off, th);
+          s += leaf(len * 0.47, len, off, th);
+        } else {
+          s += leaf(0, len, off, th);
         }
       }
     }
@@ -285,26 +302,65 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
     land.shrubs.forEach((t, i) => (s += `<circle cx="${(t.x * 1000).toFixed(0)}" cy="${(t.z * 1000).toFixed(0)}" r="${(t.r * 1000).toFixed(0)}" fill="#c9d8b8" fill-opacity="0.85" stroke="#93a982" stroke-width="10"/>` + (i < 0 ? '' : '')));
     land.trees.forEach((t, i) => (s += treeSvg(t.x * 1000, t.z * 1000, t.r * 1000, i * 1.7 + 0.4)));
   }
-  // 室名
+  // 室名（全角英数字は半角に。部屋に収まる大きさで、家具に重なっても読めるよう白い縁取り）
   for (const r of f.rooms) {
     if (r.type === 'stairs') continue;
+    const name = r.name.normalize('NFKC');
     const c = r.labelPos ?? polygonCentroid(r.polygon);
+    const xs = r.polygon.map((p) => p.x);
+    const ys = r.polygon.map((p) => p.y);
+    const rw = Math.max(...xs) - Math.min(...xs);
+    const rh = Math.max(...ys) - Math.min(...ys);
     const big = r.area > 4;
+    const fs = Math.max(120, Math.min(big ? 230 : 180, (rw * 0.86) / textEm(name), rh * 0.3));
     const tatami = r.labeledTatami ?? r.area / 1.62;
-    s += `<text x="${c.x}" y="${c.y - (big ? 40 : -60)}" font-size="${big ? 280 : 200}" text-anchor="middle" fill="#333" font-weight="600">${esc(r.name)}</text>`;
-    if (big) s += `<text x="${c.x}" y="${c.y + 260}" font-size="190" text-anchor="middle" fill="#777">${tatami.toFixed(1)}帖</text>`;
+    const halo = `stroke="#fff" stroke-width="${Math.round(fs * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
+    s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * 0.06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
+    if (big) s += `<text x="${c.x}" y="${c.y + fs * 0.95}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
   }
-  // 寸法（全体）
+  // 寸法（外壁の通り芯ごとの寸法と全体寸法。道路・敷地境界と重なりにくい側に）
+  let dimsBelow = false;
   if (opts.showDims !== false) {
     const op = f.outline.flat();
-    const ox0 = op.length ? Math.min(...op.map((p) => p.x)) : minX;
-    const ox1 = op.length ? Math.max(...op.map((p) => p.x)) : maxX;
-    const oy0 = op.length ? Math.min(...op.map((p) => p.y)) : minY;
-    const oy1 = op.length ? Math.max(...op.map((p) => p.y)) : maxY;
-    const y = minY - 900;
-    const x = minX - 900;
-    s += dimLine(ox0, y, ox1, y, `${Math.round(ox1 - ox0)}`, false);
-    s += dimLine(x, oy0, x, oy1, `${Math.round(oy1 - oy0)}`, true);
+    const src = op.length ? op : pts;
+    const ox0 = Math.min(...src.map((p) => p.x));
+    const ox1 = Math.max(...src.map((p) => p.x));
+    const oy0 = Math.min(...src.map((p) => p.y));
+    const oy1 = Math.max(...src.map((p) => p.y));
+    const edges = model.floors[0] === f ? model.site?.edges ?? [] : [];
+    // 側ごとの空き（建物の外形から敷地境界・道路までの距離）
+    const clearance = (side: 'top' | 'bottom' | 'left' | 'right') => {
+      let best = Infinity;
+      for (const e of edges)
+        for (let i = 0; i <= 20; i++) {
+          const x = e.a.x + ((e.b.x - e.a.x) * i) / 20;
+          const y = e.a.y + ((e.b.y - e.a.y) * i) / 20;
+          if (side === 'top' && x > ox0 && x < ox1 && y < oy0) best = Math.min(best, oy0 - y);
+          if (side === 'bottom' && x > ox0 && x < ox1 && y > oy1) best = Math.min(best, y - oy1);
+          if (side === 'left' && y > oy0 && y < oy1 && x < ox0) best = Math.min(best, ox0 - x);
+          if (side === 'right' && y > oy0 && y < oy1 && x > ox1) best = Math.min(best, x - ox1);
+        }
+      return best;
+    };
+    const hSide = clearance('top') >= Math.min(1600, clearance('bottom')) ? 'top' : 'bottom';
+    dimsBelow = hSide === 'bottom';
+    const vSide = clearance('left') >= Math.min(1600, clearance('right')) ? 'left' : 'right';
+    const uniq = (v: number[]) => {
+      const out: number[] = [];
+      for (const x of [...v].sort((p, q) => p - q)) if (!out.length || x - out[out.length - 1] > 150) out.push(x);
+      return out;
+    };
+    const xsC = uniq(src.map((p) => p.x));
+    const ysC = uniq(src.map((p) => p.y));
+    const hy = (k: number) => (hSide === 'top' ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500);
+    const vx = (k: number) => (vSide === 'left' ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500);
+    if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), `${Math.round(xsC[i + 1] - xsC[i])}`, false, hSide === 'bottom');
+    s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), `${Math.round(ox1 - ox0)}`, false, hSide === 'bottom');
+    if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], `${Math.round(ysC[i + 1] - ysC[i])}`, true, vSide === 'right');
+    s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, `${Math.round(oy1 - oy0)}`, true, vSide === 'right');
+    // 引出線（外形の角から寸法線まで）
+    for (const x of xsC) s += `<line x1="${x}" y1="${hSide === 'top' ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(1) + (hSide === 'top' ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
+    for (const y of ysC) s += `<line x1="${vSide === 'left' ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(1) + (vSide === 'left' ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
   }
   // 敷地境界線（図面の「道路境界線」「隣地境界線」）: 1階のみ
   const siteEdges = model.floors[0] === f && opts.showRoad !== false ? model.site?.edges : undefined;
@@ -391,9 +447,14 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   // 方位
   s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);
   const title = opts.title ?? `${f.level}階平面図`;
-  s += `<text x="${(minX + maxX) / 2}" y="${maxY + 1300}" font-size="360" text-anchor="middle" fill="#222" font-weight="bold">${esc(title)}</text>`;
+  // 図面名・床面積・スケール（図面の下。寸法線の下側に置かれた場合はその下）
+  const ty = maxY + (dimsBelow ? 2200 : 1500);
+  const tx = (minX + maxX) / 2;
+  s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
   const area = f.rooms.reduce((a, r) => a + r.area, 0);
-  s += `<text x="${(minX + maxX) / 2}" y="${maxY + 1700}" font-size="210" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+  s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+  s += scaleBar(tx - 2500, ty + 620);
+  vb.h = Math.max(vb.h, ty + 1100 - vb.y);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${PLAN_DEFS}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${s}</svg>`;
 }
 
@@ -405,17 +466,35 @@ function esc(s: string) {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 }
 
-function dimLine(x1: number, y1: number, x2: number, y2: number, label: string, vertical: boolean) {
-  let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#666" stroke-width="12"/>`;
+/** 文字幅の目安（全角 = 1、半角 = 0.6） */
+function textEm(t: string): number {
+  let w = 0;
+  for (const ch of t) w += /[\x20-\x7e｡-ﾟ]/.test(ch) ? 0.6 : 1;
+  return Math.max(1, w);
+}
+
+function dimLine(x1: number, y1: number, x2: number, y2: number, label: string, vertical: boolean, flip = false) {
+  let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#555" stroke-width="8"/>`;
   for (const [x, y] of [
     [x1, y1],
     [x2, y2],
   ])
-    s += `<line x1="${x - 70}" y1="${y + 70}" x2="${x + 70}" y2="${y - 70}" stroke="#666" stroke-width="18"/>`;
+    s += `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
+  const L = Math.hypot(x2 - x1, y2 - y1);
+  const fs = Math.min(150, Math.max(80, L / 4.2));
   const cx = (x1 + x2) / 2;
   const cy = (y1 + y2) / 2;
-  if (vertical) s += `<text x="${cx - 110}" y="${cy}" font-size="190" fill="#555" text-anchor="middle" transform="rotate(-90 ${cx - 110} ${cy})">${label}</text>`;
-  else s += `<text x="${cx}" y="${cy - 90}" font-size="190" fill="#555" text-anchor="middle">${label}</text>`;
+  const d = flip ? -70 : 70;
+  if (vertical) s += `<text x="${cx - d}" y="${cy}" font-size="${fs.toFixed(0)}" fill="#444" text-anchor="middle" transform="rotate(-90 ${cx - d} ${cy})" dy="${flip ? fs * 0.75 : 0}">${label}</text>`;
+  else s += `<text x="${cx}" y="${cy - d}" font-size="${fs.toFixed(0)}" fill="#444" text-anchor="middle" dy="${flip ? fs * 0.75 : 0}">${label}</text>`;
+  return s;
+}
+
+/** スケールバー（0〜5m） */
+function scaleBar(x: number, y: number): string {
+  let s = '';
+  for (let i = 0; i < 5; i++) s += `<rect x="${x + i * 1000}" y="${y}" width="1000" height="90" fill="${i % 2 ? '#fff' : '#333'}" stroke="#333" stroke-width="10"/>`;
+  for (const m of [0, 1, 2, 5]) s += `<text x="${x + m * 1000}" y="${y + 260}" font-size="130" text-anchor="middle" fill="#555">${m}${m === 5 ? 'm' : ''}</text>`;
   return s;
 }
 

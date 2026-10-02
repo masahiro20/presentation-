@@ -104,7 +104,29 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     }
 
     // ---- 壁 ----
+    // 図面の柱の印（壁の厚みほどの短い線分）が外壁の外に少し出ていると、外観に細い柱が飛び出して見える → 3D では省く
+    const outlineDist = (p: { x: number; y: number }) => {
+      let d = Infinity;
+      for (const l of f.outline)
+        for (let i = 0; i < l.length; i++) {
+          const a = l[i];
+          const b = l[(i + 1) % l.length];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const L2 = dx * dx + dy * dy || 1;
+          const u = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+          d = Math.min(d, Math.hypot(p.x - a.x - dx * u, p.y - a.y - dy * u));
+        }
+      return d;
+    };
+    const stub = (w: Wall) => {
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      if (L > Math.max(160, w.thickness * 1.6) || !f.outline.length) return false;
+      const m = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
+      return !f.outline.some((l) => pointInPolygon(m, l)) && outlineDist(m) < 200;
+    };
     for (const w of f.walls) {
+      if (stub(w)) continue;
       // 仕様に合わせて開口の高さを調整（フルハイトドア・サッシ上端＝天井）
       const ops = f.openings
         .filter((o) => o.wallId === w.id)
@@ -432,15 +454,23 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     if (spec.curtains !== 'none' && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
       const ceil = fl + f.ceilingHeight * MM;
       const inner = mid.clone().addScaledVector(outN, -t / 2 - 0.12);
+      // 束ねたカーテンが窓の脇の壁の外（建物の角の先）に出る場合は、窓の内側に寄せる
+      const fitsAt = (u: number) => {
+        const q = inner.clone().addScaledVector(dir, u);
+        return f.outline.some((l) => pointInPolygon({ x: q.x / MM, y: q.z / MM }, l)) && !!roomAt(f, q.x / MM, q.z / MM);
+      };
       if (spec.curtains === 'pocket') {
         // 天井埋込のカーテンボックス: 天井から床まで落ちる薄手のドレープ（レールは見せない）
         const pocket = inner.clone().setY(ceil - 0.004);
-        mb.box('int.shadowGap', pocket, dir, width + 0.7, 0.004, 0.16);
+        const pL = fitsAt(-(width / 2 + 0.36)) ? 0.35 : 0;
+        const pR = fitsAt(width / 2 + 0.36) ? 0.35 : 0;
+        mb.box('int.shadowGap', pocket.clone().addScaledVector(dir, (pR - pL) / 2), dir, width + pL + pR, 0.004, 0.16);
         // 両脇にまとめたドレープ（ひだを丸い縦の束で表現）
         for (const side of [-1, 1]) {
           const folds = 6;
+          const outside = fitsAt(side * (width / 2 + 0.03 + (folds - 1) * 0.058 + 0.04));
           for (let k = 0; k < folds; k++) {
-            const u = side * (width / 2 + 0.03 + k * 0.058);
+            const u = outside ? side * (width / 2 + 0.03 + k * 0.058) : side * (width / 2 - 0.04 - k * 0.058);
             const c = inner.clone().addScaledVector(dir, u).addScaledVector(outN, k % 2 ? 0.018 : -0.018);
             mb.roundedBox('f.curtain', c.setY(fl + 0.012), dir, 0.07, ceil - fl - 0.02, 0.055, 0.026, 2);
           }
@@ -450,10 +480,13 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       const cy = fl + Math.min(2.35, (o.sill + o.height) * MM + 0.1);
       // 両端にまとめたカーテン
       for (const side of [-1, 1]) {
-        const c = inner.clone().addScaledVector(dir, side * (width / 2 + 0.05));
+        const c = inner.clone().addScaledVector(dir, fitsAt(side * (width / 2 + 0.2)) ? side * (width / 2 + 0.05) : side * (width / 2 - 0.15));
         mb.box('f.curtain', c.setY(fl + (o.sill > 0 ? o.sill * MM - 0.1 : 0.01)), dir, 0.28, cy - (fl + (o.sill > 0 ? o.sill * MM - 0.1 : 0.01)), 0.1);
       }
-      mb.box('f.metal', inner.clone().setY(cy), dir, width + 0.5, 0.025, 0.025);
+      // レールも建物の外に出ない長さに
+      const extL = fitsAt(-(width / 2 + 0.26)) ? 0.25 : 0;
+      const extR = fitsAt(width / 2 + 0.26) ? 0.25 : 0;
+      mb.box('f.metal', inner.clone().addScaledVector(dir, (extR - extL) / 2).setY(cy), dir, width + extL + extR, 0.025, 0.025);
     }
     return;
   }
@@ -545,9 +578,32 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     handle(knob, leafDir.clone().negate(), nLeaf);
   } else if (o.kind === 'sliding') {
     // 半分開いた引戸（壁面に沿って）。フルハイトは上レールを天井に埋め込み見せない
-    const face = mid.clone().addScaledVector(nW, t / 2 + 0.025);
-    const lw = width * 0.55;
-    const c = face.clone().addScaledVector(dir, -width / 2 + lw / 2 - width * 0.35).setY(fl + 0.008);
+    // 引き込む側: 戸が壁の外（建物の外・壁の端・別の開口）にはみ出さない向きと面を選ぶ。どちらも無理なら閉じた状態
+    let lw = width * 0.55;
+    const Lw = A.distanceTo(B);
+    const others = f.openings.filter((q) => q.wallId === w.id && q.id !== o.id);
+    const sOpts: { sd: number; fc: number }[] = [];
+    for (const sd of [-1, 1]) for (const fc of [1, -1]) sOpts.push({ sd, fc });
+    const fits = ({ sd, fc }: { sd: number; fc: number }) => {
+      // 開口の外に出る範囲（壁芯方向 t）
+      const lo = sd < 0 ? s0 - width * 0.35 : s1 - width * 0.2;
+      const hi = sd < 0 ? s0 + width * 0.2 : s1 + width * 0.35;
+      const out0 = sd < 0 ? lo : s1;
+      const out1 = sd < 0 ? s0 : hi;
+      if (out0 < 0.05 || out1 > Lw - 0.05) return false;
+      if (others.some((q) => q.t1 * MM > out0 - 0.02 && q.t0 * MM < out1 + 0.02)) return false;
+      for (const tt of [lo, hi]) {
+        const p = A.clone().addScaledVector(dir, tt).addScaledVector(nW, fc * (t / 2 + 0.06));
+        if (f.outline.length && !f.outline.some((l) => pointInPolygon({ x: p.x / MM, y: p.z / MM }, l))) return false;
+      }
+      return true;
+    };
+    const pick = sOpts.find(fits);
+    if (!pick) lw = width - 0.01;
+    const face = mid.clone().addScaledVector(nW, (pick?.fc ?? 1) * (t / 2 + 0.025));
+    const c = pick
+      ? face.clone().addScaledVector(dir, pick.sd * (width / 2 - lw / 2 + width * 0.35)).setY(fl + 0.008)
+      : face.clone().setY(fl + 0.008);
     mb.box('int.door', c, dir, lw, H - 0.008 - topGap, doorT * 0.9);
     meta.doorLeaves.push({ a: c.clone().addScaledVector(dir, -lw / 2), b: c.clone().addScaledVector(dir, lw / 2) });
     if (!spec.doors.fullHeight) mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);

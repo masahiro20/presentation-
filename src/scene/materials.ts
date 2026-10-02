@@ -132,7 +132,7 @@ export class MaterialRegistry {
     // 外構
     const L = e.landscape;
     set('l.ground', M(L.ground));
-    set('l.far', M({ pattern: 'grass', color: '#6f8452', color2: '#8a9a66', tile: 12 }));
+    set('l.far', M({ pattern: 'grass', color: '#727d5a', color2: '#8b9470', tile: 12 }));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
     set('l.driveway', M(L.driveway));

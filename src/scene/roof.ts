@@ -148,7 +148,16 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
         // 片流れ: 北側を高く（南面に屋根面を向ける）
         const high: 'n' | 's' | 'e' | 'w' =
           Math.abs(north.y) >= Math.abs(north.x) ? (north.y < 0 ? 'n' : 's') : north.x > 0 ? 'e' : 'w';
-        y = shedRoof(ctx, R, H, high, false);
+        // 最上階は1枚の屋根面にそろえる（四角形ごとに屋根を架けると高さの違う屋根が段々に重なり、まとまりのない外観になる）
+        if (isTop && rects.length > 1) {
+          const g = {
+            minX: Math.min(...rects.map((q) => q.minX)) * MM,
+            maxX: Math.max(...rects.map((q) => q.maxX)) * MM,
+            minZ: Math.min(...rects.map((q) => q.minY)) * MM,
+            maxZ: Math.max(...rects.map((q) => q.maxY)) * MM,
+          };
+          y = shedRoofPlane(ctx, R, H, high, g);
+        } else y = shedRoof(ctx, R, H, high, false);
       }
       info.maxY = Math.max(info.maxY, y);
       if (isTop) info.eaveY = Math.max(info.eaveY, H);
@@ -369,6 +378,79 @@ function shedRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     }
   }
   return yHigh;
+}
+
+/**
+ * 片流れ屋根を、建物全体で共通の1枚の屋根面の一部として架ける。
+ * 隣の四角形と接する辺は軒・けらばを出さず（同じ面で連続する）、外周の辺だけに軒・鼻隠し・壁の立ち上がりを付ける。
+ */
+function shedRoofPlane(
+  ctx: RoofCtx,
+  R: { minX: number; maxX: number; minZ: number; maxZ: number },
+  H: number,
+  high: 'n' | 's' | 'e' | 'w',
+  G: { minX: number; maxX: number; minZ: number; maxZ: number },
+): number {
+  const { slope, eaves: e, verge: g, T } = ctx;
+  const base = H + 0.04 + T;
+  const alongZ = high === 'n' || high === 's';
+  const S = alongZ ? G.maxZ - G.minZ : G.maxX - G.minX;
+  // 局所座標: s = 高い側の壁芯（全体）からの距離、w = 直交方向
+  const hiC = high === 'n' ? G.minZ : high === 's' ? G.maxZ : high === 'w' ? G.minX : G.maxX;
+  const sgn = high === 'n' || high === 'w' ? 1 : -1;
+  const toS = (c: number) => (c - hiC) * sgn;
+  const sA = toS(alongZ ? (sgn > 0 ? R.minZ : R.maxZ) : sgn > 0 ? R.minX : R.maxX);
+  const sB = toS(alongZ ? (sgn > 0 ? R.maxZ : R.minZ) : sgn > 0 ? R.maxX : R.minX);
+  const w0 = alongZ ? R.minX : R.minZ;
+  const w1 = alongZ ? R.maxX : R.maxZ;
+  const W = (sv: number, wv: number, y: number) => {
+    const c = hiC + sv * sgn;
+    return alongZ ? V(wv, y, c) : V(c, y, wv);
+  };
+  const yTop = (sv: number) => base + (S - sv) * slope;
+  const under = (sv: number) => H + 0.04 + (S - sv) * slope;
+  // 辺が外周か（壁芯の線で判定）
+  const edge = (sa: number, wa: number, sb: number, wb: number) => {
+    const a = W(sa, wa, 0);
+    const b = W(sb, wb, 0);
+    return ctx.onBoundary(a.x, a.z, b.x, b.z);
+  };
+  const bW0 = edge(sA, w0, sB, w0);
+  const bLow = edge(sB, w0, sB, w1);
+  const bW1 = edge(sA, w1, sB, w1);
+  const bHi = edge(sA, w0, sA, w1);
+  const oHi = bHi ? e : 0;
+  const oLow = bLow ? e : 0;
+  const oW0 = bW0 ? g : 0;
+  const oW1 = bW1 ? g : 0;
+  const s0 = sA - oHi;
+  const s1 = sB + oLow;
+  const top = [W(s0, w0 - oW0, yTop(s0)), W(s1, w0 - oW0, yTop(s1)), W(s1, w1 + oW1, yTop(s1)), W(s0, w1 + oW1, yTop(s0))];
+  const dh = W(1, 0, 0).sub(W(0, 0, 0));
+  const fasciaEdges = [bW0 ? 0 : -1, bLow ? 1 : -1, bW1 ? 2 : -1, bHi ? 3 : -1].filter((i) => i >= 0);
+  roofPlane(ctx, top, fasciaEdges, V(dh.x, -slope, dh.z));
+  if (bLow) gutter(ctx, top[1], top[2], dh.clone().normalize());
+  const t = ctx.wallT;
+  const wn = alongZ ? V(1, 0, 0) : V(0, 0, 1);
+  // 側面（台形）
+  for (const [wv, b] of [
+    [w0, bW0],
+    [w1, bW1],
+  ] as const) {
+    if (!b) continue;
+    prism(ctx.mb, ctx.gableKey, [W(sA, wv, H - 0.01), W(sB, wv, H - 0.01), W(sB, wv, under(sB) - 0.005), W(sA, wv, under(sA) - 0.005)], wn, t);
+  }
+  // 高い側・低い側の壁の立ち上がり
+  for (const [sv, b] of [
+    [sA, bHi],
+    [sB, bLow],
+  ] as const) {
+    const h = under(sv) - H;
+    if (!b || h < 0.06) continue;
+    const c = W(sv, (w0 + w1) / 2, H - 0.01);
+    ctx.mb.box(ctx.gableKey, c, alongZ ? V(1, 0, 0) : V(0, 0, 1), w1 - w0 + t, h + 0.005, t);
+  }
+  return yTop(s0);
 }
 
 function flatRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number) {

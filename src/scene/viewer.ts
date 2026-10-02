@@ -389,6 +389,18 @@ export class Viewer {
     return makeSkyTexture({ sunDir: this.sunDir, mode: this.design.timeOfDay, sunDisk, width: 1024 });
   }
 
+  /** 検証用: 画面上の点（0〜1）にある面の材料キーと座標 */
+  debugPick(nx: number, ny: number): { key: string; point: number[] } | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(nx * 2 - 1, 1 - ny * 2), this.camera);
+    const hits = rc.intersectObjects([this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape], true);
+    const h = hits.find((x) => (x.object as THREE.Mesh).visible);
+    if (!h) return null;
+    const m = (h.object as THREE.Mesh).material as THREE.Material;
+    const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
+    return { key: m.name || h.object.name, point: h.point.toArray().map((v) => Math.round(v * 1000)), n: n ? n.toArray().map((v) => Math.round(v * 10) / 10) : null } as never;
+  }
+
   /** 室内照明（夜景時は点光源、昼は弱い補助光で室内の暗さを緩和） */
   updateInteriorLights() {
     clearGroup(this.groups.lights);

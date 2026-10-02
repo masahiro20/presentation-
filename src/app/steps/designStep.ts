@@ -52,7 +52,8 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     const own = opts.progress ? null : progressModal('提案用パースを写真品質でレンダリング中（光の反射・間接光を計算しています）');
     const pm = opts.progress ?? own!;
     const slot = opts.slot ?? { index: 0, total: 1 };
-    const exposure = exposureFor(shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior'), v.design.timeOfDay);
+    const kind = shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior');
+    const exposure = exposureFor(kind, v.design.timeOfDay);
     const view = v.currentView();
     // 1回目: 通常 → 2回目: テクスチャ・区画を小さく → 3回目: 半分の解像度で計算して拡大
     const stages = [
@@ -67,6 +68,7 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
         samples: st.safe ? Math.min(samples, 256) : samples,
         signal: pm.signal,
         exposure,
+        interior: kind === 'interior',
         safe: st.safe,
         textureSize: st.textureSize,
         onStatus: (m) => pm.set(slot.index / slot.total, `${shot?.title ?? 'パース'}：${m}${st.note}`),

@@ -7,6 +7,10 @@ import { WebGLPathTracer, DenoiseMaterial } from 'three-gpu-pathtracer';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Viewer } from './viewer';
 import { loadHdri, equirectIrradiance } from './hdri';
+import { buildInteriorPhotoLights } from './interiorLights';
+import { interiorById } from '../styles/presets';
+import { resolveSpec } from '../styles/spec';
+import { kelvinToColor } from './viewer';
 
 export interface PhotorealOptions {
   width: number;
@@ -26,6 +30,8 @@ export interface PhotorealOptions {
   onStatus?: (msg: string) => void;
   /** 実写の空（HDRI）を使う（既定: 使う。読み込めなければ手続き的な空） */
   hdri?: boolean;
+  /** 内観（窓の面光源・照明の点灯・露出の自動調整） */
+  interior?: boolean;
 }
 
 interface Saved {
@@ -94,6 +100,20 @@ async function gpuWait(gl: WebGL2RenderingContext, isLost: () => boolean, maxMs 
   }
 }
 
+/** 画像の輝度の分位点（0〜255） */
+function lumaPercentile(src: HTMLCanvasElement, q: number): number {
+  const c = document.createElement('canvas');
+  c.width = 96;
+  c.height = 54;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(src, 0, 0, c.width, c.height);
+  const d = ctx.getImageData(0, 0, c.width, c.height).data;
+  const v: number[] = [];
+  for (let i = 0; i < d.length; i += 4) v.push(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+  v.sort((a, b) => a - b);
+  return v[Math.min(v.length - 1, Math.floor(v.length * q))];
+}
+
 /** 画像の平均輝度（0〜255） */
 function meanLuma(src: HTMLCanvasElement): number {
   const c = document.createElement('canvas');
@@ -151,6 +171,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   const sunI0 = viewer.sun.intensity;
   // 実写の空（HDRI）: 雲・大気・太陽を含む光源と背景。太陽の方位を日照の設定に合わせ、明るさは手続き的な空＋太陽にそろえる
   let usingHdri = false;
+  let skyE = 0;
   if (opts.hdri !== false) {
     opts.onStatus?.('実写の空を準備中');
     const hdri = await loadHdri(viewer.design.timeOfDay);
@@ -160,6 +181,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       const target = night ? 0 : sky.image ? Math.atan2(sd.z, sd.x) : 0;
       const procE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, sd.y));
       const k = procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1;
+      skyE = procE;
       scene.environment = hdri.texture;
       scene.background = hdri.texture;
       scene.environmentIntensity = k;
@@ -179,6 +201,29 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   viewer.sun.intensity = usingHdri && !night ? 0 : sunI * 1.15;
   const prevExposure = renderer.toneMappingExposure;
   if (opts.exposure) renderer.toneMappingExposure = opts.exposure;
+  const baseExposure = renderer.toneMappingExposure;
+  // 内観: 窓の面光源と照明（夜は既存の点光源の代わりに使う）
+  let extraLights: THREE.Group | null = null;
+  if (opts.interior && viewer.state) {
+    if (!skyE) {
+      const img = sky.image as { data: Float32Array; width: number; height: number };
+      skyE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, viewer.sunDir.y));
+    }
+    // 夜は屋外が暗いので、照明の明るさは昼の空を基準にする
+    const refE = night ? Math.max(skyE, 1e-3) * 1500 : skyE;
+    extraLights = buildInteriorPhotoLights({
+      model: viewer.state.model,
+      spec: resolveSpec(viewer.design.specId, viewer.design.specPatch),
+      lights: viewer.state.lights,
+      camera: camera.position,
+      skyE: refE,
+      lampColor: kelvinToColor(interiorById(viewer.design.interiorId).lightKelvin),
+      mode: viewer.design.timeOfDay,
+    });
+    scene.add(extraLights);
+    scene.updateMatrixWorld(true);
+    if (night) viewer.groups.lights.visible = false;
+  }
   const saved = prepareMaterials(scene);
 
   const pt = new WebGLPathTracer(renderer);
@@ -265,6 +310,24 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     check();
     console.info(`写真品質レンダリング: ${Math.floor(pt.samples)} サンプル / ${Math.round((performance.now() - t0) / 1000)} 秒`);
     if (pt.samples < 1) throw new PhotorealError('計算が進みませんでした', 'no-samples');
+    // 内観は露出を自動で合わせる（窓の外は白く飛ぶのが自然。室内の中間の明るさを基準に）
+    if (opts.interior) {
+      for (let it = 0; it < 5; it++) {
+        present(false);
+        const m = lumaPercentile(canvas, 0.5);
+        const f = Math.max(0.5, Math.min(2.2, Math.pow(118 / Math.max(2, m), 1.3)));
+        renderer.toneMappingExposure = Math.max(baseExposure * 0.1, Math.min(baseExposure * 8, renderer.toneMappingExposure * f));
+        if (Math.abs(f - 1) < 0.04) break;
+      }
+      console.info(`写真品質レンダリング: 露出 ${renderer.toneMappingExposure.toFixed(2)}`);
+    }
+    // サンプル数が少ない（GPU が遅い）ときはノイズ除去を強める
+    const u = (denoise as unknown as { uniforms: Record<string, { value: number }> }).uniforms;
+    if (pt.samples < 64) {
+      const k = Math.min(1, (64 - pt.samples) / 48);
+      u.sigma.value = 2.2 + 1.8 * k;
+      u.threshold.value = 0.08 + 0.1 * k;
+    }
     present(true);
     await gpuWait(gl, () => lost);
     check();
@@ -278,6 +341,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     quad.dispose();
     denoise.dispose();
     restoreMaterials(saved);
+    if (extraLights) scene.remove(extraLights);
     sky.dispose();
     scene.environment = prevEnv;
     scene.background = prevBg;

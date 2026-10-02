@@ -392,8 +392,13 @@ function kitchen(ctx: RoomCtx, fr: Frame, len: number, ceilingY: number) {
   // 天井埋込の薄型フード（線を増やさない）
   fr.box('f.hood', cw / 2 - 0.5, cv + 0.05, 0.9, 0.5, ceilingY - 0.025, 0.025);
   // 小物
-  fr.cyl('f.white', 0.1, cv + 0.3, 0.1, 0.89, 0.12);
-  fr.sphere('f.leaf', -0.1, cv + 0.35, 1.0, 0.09);
+  // 小物は控えめに: 木のトレーと白い器、細い一輪挿し
+  fr.box('f.wood', 0.05, cv + 0.3, 0.42, 0.26, 0.89, 0.018);
+  fr.cyl('f.white', -0.03, cv + 0.3, 0.07, 0.908, 0.09);
+  fr.cyl('f.white', 0.13, cv + 0.3, 0.045, 0.908, 0.13);
+  fr.cyl('f.white', -0.45, cv + 0.32, 0.035, 0.89, 0.22);
+  fr.cyl('f.leaf', -0.45, cv + 0.32, 0.004, 1.11, 0.22, 6);
+  fr.sphere('f.leaf', -0.45, cv + 0.32, 1.35, 0.045, 1.4);
   void ctx;
 }
 

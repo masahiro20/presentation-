@@ -13,6 +13,7 @@ import { buildBuilding, type BuildingMeta } from './building';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
+import { distantTreeBand } from './distant';
 import { exteriorShots, interiorShots, type Shot } from './shots';
 import { buildOccluder } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
@@ -291,6 +292,8 @@ export class Viewer {
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
+    // 遠景の木立（地平線まで何もない地面にしない）
+    this.groups.landscape.add(distantTreeBand((land.site.min.x + land.site.max.x) / 2, (land.site.min.y + land.site.max.y) / 2));
     // ガラスは影を落とさない
     this.root.traverse((o) => {
       const m = o as THREE.Mesh;

@@ -334,7 +334,9 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
         // 建物に近すぎず（2m 程度）、既存の木から離れた所
         const dB = Math.max(b.min.x - x, x - b.max.x, b.min.z - z, z - b.max.z, 0);
         const dT = Math.min(99, ...plan.trees.map((t) => Math.hypot(t.x - x, t.z - z)));
-        const score = -Math.abs(dB - 2.2) + Math.min(dT, 6) * 0.8;
+        // 道路側（建物の正面の前）は外観を隠すので避け、庭側・脇を優先
+        const front = (x - (b.min.x + b.max.x) / 2) * road.x + (z - (b.min.z + b.max.z) / 2) * road.z > (road.x !== 0 ? (b.max.x - b.min.x) / 2 : (b.max.z - b.min.z) / 2);
+        const score = -Math.abs(dB - 2.2) + Math.min(dT, 6) * 0.8 - (front ? 4 : 0);
         if (!best || score > best.score) best = { p, score };
       }
     if (!best) break;

@@ -1983,6 +1983,44 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     roomFills: [],
   };
   const nf = buildFloor(plan, f.level, northAngleDeg, warnings);
+  // 窓・ドアの種類は、修正前（読み取り結果や手で選んだもの）をそのまま引き継ぐ。
+  // 作り直しの自動判定（外壁の引戸→窓、内壁の窓→引戸 など）で、手で選んだ種類が変わらないように
+  const center = (fl: Floor, op: Opening) => {
+    const w = fl.walls.find((x) => x.id === op.wallId);
+    if (!w) return null;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+    const t = (op.t0 + op.t1) / 2;
+    return { p: { x: w.a.x + u.x * t, y: w.a.y + u.y * t }, u };
+  };
+  for (const op of nf.openings) {
+    const c = center(nf, op);
+    if (!c) continue;
+    let best: { src: Opening; d: number; u: Vec2 } | null = null;
+    for (const src of f.openings) {
+      const sc = center(f, src);
+      if (!sc) continue;
+      if (Math.abs(sc.u.x * c.u.y - sc.u.y * c.u.x) > 0.1) continue;
+      const d = Math.hypot(sc.p.x - c.p.x, sc.p.y - c.p.y);
+      if (d < 200 && (!best || d < best.d)) best = { src, d, u: sc.u };
+    }
+    if (!best) continue;
+    const src = best.src;
+    const reversed = best.u.x * c.u.x + best.u.y * c.u.y < 0;
+    const derivedWindow = op.kind === 'window';
+    op.kind = src.kind;
+    if (src.kind === 'window' && !derivedWindow) {
+      op.sill = src.sill || 900;
+      op.height = src.height || 1100;
+      op.windowStyle = src.windowStyle;
+    } else if (src.kind !== 'window') {
+      op.sill = 0;
+      op.height = src.kind === 'entrance' ? Math.max(2200, src.height) : src.height || 2000;
+      op.windowStyle = undefined;
+    }
+    if (src.hingeAtStart != null) op.hingeAtStart = reversed ? !src.hingeAtStart : src.hingeAtStart;
+    if (src.swingSide != null) op.swingSide = (reversed ? -src.swingSide : src.swingSide) as 1 | -1;
+  }
   // 元の図面では壁以外（色の塗り・建具の記号など）で分かれていた部屋は、そのまま分けておく。
   // ただし、手で消した壁の所は分けない（部屋をつなげたい修正なので）
   if (keep?.rooms.length) {

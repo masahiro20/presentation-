@@ -76,6 +76,24 @@ export class SunContext {
     return new THREE.Vector3(c.x, y, c.z).addScaledVector(east, e).addScaledVector(north, n);
   }
 
+  /** ワールド座標 → 建物中心からの東・北 (m) */
+  fromWorld(p: THREE.Vector3): { e: number; n: number } {
+    const st = this.viewer.state!;
+    const c = st.meta.bbox.getCenter(new THREE.Vector3());
+    const a = (st.model.northAngleDeg * Math.PI) / 180;
+    const dx = p.x - c.x;
+    const dz = p.z - c.z;
+    return { e: dx * Math.cos(a) + dz * Math.sin(a), n: dx * Math.sin(a) - dz * Math.cos(a) };
+  }
+
+  /** 画面上の点が航空写真のどこか（航空写真が無ければ null） */
+  pickAerial(ndc: THREE.Vector2): THREE.Vector3 | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.viewer.camera);
+    const hit = rc.intersectObjects(this.aerial.children, true)[0];
+    return hit ? hit.point : null;
+  }
+
   get center() {
     return this.viewer.state!.meta.bbox.getCenter(new THREE.Vector3()).setY(0);
   }

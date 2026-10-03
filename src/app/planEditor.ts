@@ -209,12 +209,48 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   // ---- 部屋の作り直し ----
+  /** 壁・開口の中心点（作り直すと ID が振り直されるので、選択は位置で引き継ぐ） */
+  const centerOf = (f: Floor, s: Sel): Vec2 | null => {
+    if (s?.kind === 'wall') {
+      const w = f.walls.find((x) => x.id === s.id);
+      return w ? { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 } : null;
+    }
+    if (s?.kind === 'opening') {
+      const op = f.openings.find((x) => x.id === s.id);
+      const w = op && f.walls.find((x) => x.id === op.wallId);
+      if (!op || !w) return null;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const t = (op.t0 + op.t1) / 2 / L;
+      return { x: w.a.x + (w.b.x - w.a.x) * t, y: w.a.y + (w.b.y - w.a.y) * t };
+    }
+    return null;
+  };
   const rebuild = () => {
     const wk = W();
     const warnings: string[] = [];
+    const keepSel = sel && sel.kind !== 'label' ? { kind: sel.kind, p: centerOf(wk.floor, sel) } : null;
     try {
       const nf = rebuildFloor(wk.floor, wk.labels, model.northAngleDeg, warnings, { rooms: wk.original, removed: wk.removed });
       wk.floor = nf;
+      if (keepSel?.p) {
+        let best: { s: Sel; d: number } | null = null;
+        if (keepSel.kind === 'wall') {
+          for (const w of nf.walls) {
+            const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+            const t = Math.max(0, Math.min(1, ((keepSel.p.x - w.a.x) * (w.b.x - w.a.x) + (keepSel.p.y - w.a.y) * (w.b.y - w.a.y)) / (L * L)));
+            const d = Math.hypot(w.a.x + (w.b.x - w.a.x) * t - keepSel.p.x, w.a.y + (w.b.y - w.a.y) * t - keepSel.p.y);
+            if (!best || d < best.d) best = { s: { kind: 'wall', id: w.id }, d };
+          }
+        } else {
+          for (const op of nf.openings) {
+            const c = centerOf(nf, { kind: 'opening', id: op.id });
+            if (!c) continue;
+            const d = Math.hypot(c.x - keepSel.p.x, c.y - keepSel.p.y);
+            if (!best || d < best.d) best = { s: { kind: 'opening', id: op.id }, d };
+          }
+        }
+        sel = best && best.d < 300 ? best.s : null;
+      }
     } catch (e) {
       console.error(e);
       toast(`部屋の作り直しに失敗しました: ${(e as Error).message}`, 'error');
@@ -431,6 +467,29 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const { w, t } = hit;
+    // 既存の窓・ドアの上なら、その種類を切り替える（例: 引戸を窓に）
+    const existing = W().floor.openings.find((o) => o.wallId === w.id && t >= o.t0 - 30 && t <= o.t1 + 30);
+    if (existing) {
+      if (existing.kind === kind) {
+        sel = { kind: 'opening', id: existing.id };
+        draw();
+        return;
+      }
+      pushUndo();
+      existing.kind = kind;
+      if (kind === 'window') {
+        existing.sill = 900;
+        existing.height = 1100;
+      } else {
+        existing.sill = 0;
+        existing.height = 2000;
+      }
+      sel = { kind: 'opening', id: existing.id };
+      rebuild();
+      draw();
+      toast(`${OPENING_LABEL[kind]}に変更しました`, 'ok');
+      return;
+    }
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     const width = Math.min(OPENING_DEFAULT[kind], L - 80);
     if (width < 300) {

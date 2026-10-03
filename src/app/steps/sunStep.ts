@@ -38,6 +38,8 @@ function sunDay(): SunDay {
   return { year: ui.year, month: ui.month, day: ui.day, lat, lon, northAngleDeg: state.model!.northAngleDeg };
 }
 
+let cleanupPlace: (() => void) | null = null;
+
 export const sunStep: Step = {
   id: 'sun',
   label: '日照シミュレーション',
@@ -46,6 +48,8 @@ export const sunStep: Step = {
   unmount() {
     cancelAnimationFrame(raf);
     ui.playing = false;
+    cleanupPlace?.();
+    cleanupPlace = null;
   },
   async mount(ctx) {
     const v = ctx.app.viewer;
@@ -256,12 +260,55 @@ export const sunStep: Step = {
       if (sc.state.aerialLoaded) loadAerial();
       apply(true);
     };
+    // 航空写真をクリックして、建物を実際の敷地の位置に置く（住所検索は町・丁目の代表点になることが多いため）
+    let placing = false;
+    const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '📍 航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
+    const canvasEl = v.renderer.domElement;
+    const onPlace = async (e: PointerEvent) => {
+      if (!placing || e.button !== 0) return;
+      const r = canvasEl.getBoundingClientRect();
+      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      const hit = sc.pickAerial(ndc);
+      if (!hit) {
+        toast('航空写真の上をクリックしてください');
+        return;
+      }
+      e.stopPropagation();
+      const d = sc.fromWorld(hit);
+      placing = false;
+      placeBtn.classList.remove('dark');
+      placeBtn.textContent = '📍 航空写真の上で敷地をクリックして位置を合わせる';
+      canvasEl.style.cursor = '';
+      state.site = { ...state.site, offsetE: state.site.offsetE + d.e, offsetN: state.site.offsetN + d.n };
+      showLoc();
+      await reloadContext();
+      v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, R * 4.2, 0.02)), target: c.clone(), fov: 40 });
+      toast('建物の位置を合わせました（細かいずれは下の「北へ2m」などで調整できます）', 'ok');
+    };
+    cleanupPlace?.();
+    canvasEl.addEventListener('pointerdown', onPlace, true);
+    cleanupPlace = () => {
+      canvasEl.removeEventListener('pointerdown', onPlace, true);
+      canvasEl.style.cursor = '';
+    };
+    placeBtn.addEventListener('click', async () => {
+      if (!sc.state.aerialLoaded) {
+        await loadAerial();
+        if (!sc.state.aerialLoaded) return;
+      }
+      placing = !placing;
+      placeBtn.classList.toggle('dark', placing);
+      placeBtn.textContent = placing ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
+      canvasEl.style.cursor = placing ? 'crosshair' : '';
+      if (placing) v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, 160, 0.02)), target: c.clone(), fov: 45 });
+    });
     side.append(
       section(
         '建設地',
         h('div', { style: 'display:flex;gap:6px' }, addr, h('button', { class: 'btn dark', onclick: search }, '検索')),
         results,
         locEl,
+        placeBtn,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（航空写真に合わせてください）'),
         h(
           'div',
@@ -281,7 +328,13 @@ export const sunStep: Step = {
       try {
         attribution.textContent = await sc.loadAerial('photo');
       } catch {
-        toast('航空写真を取得できませんでした（インターネット接続を確認してください）', 'error');
+        toast(
+          /localhost|127\.0\.0\.1/.test(location.hostname)
+            ? '航空写真を取得できませんでした（インターネット接続を確認してください）'
+            : '航空写真を取得できませんでした。公開プレビュー版では外部の地図サーバーへの接続が制限されることがあります。お手元のパソコンで start.bat から起動してお試しください',
+          'error',
+          8000,
+        );
       }
       v.invalidate();
     };

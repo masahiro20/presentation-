@@ -10,7 +10,7 @@ import { analyzeRooms } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
-import { ROOM_TYPE_LABEL } from '../../core/types';
+import { resolveSpec } from '../../styles/spec';
 
 /** 足りない素材をすべて自動で作る（一気通貫） */
 export async function autoGenerate(ctx: StepCtx, draft = false) {
@@ -27,7 +27,7 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     const pick = [
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
       ...all.filter((s) => s.kind === 'interior').slice(0, 4),
-    ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === (draft ? 'realtime' : 'photoreal')));
+    ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === 'photoreal'));
     if (pick.length) {
       const shots = pick;
       const sub = {
@@ -38,7 +38,7 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
       let ok = 0;
       for (let i = 0; i < shots.length; i++) {
         if (pm.signal.aborted) return;
-        const it = await captureShot(ctx, shots[i], { quality: draft ? 'realtime' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
+        const it = await captureShot(ctx, shots[i], { quality: draft ? 'studio' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
         if (it) ok++;
         else if (!draft && ok === 0 && lastPhotorealFailure) break;
         await new Promise((r) => setTimeout(r, 20));
@@ -104,8 +104,8 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
   }
 }
 
-function slide(cls: string, ...children: (Node | null)[]) {
-  return h('div', { class: `slide ${cls}` }, ...children);
+function slide(cls: string, ...children: (Node | null | false | undefined)[]) {
+  return h('div', { class: `slide ${cls}` }, ...(children.filter(Boolean) as Node[]));
 }
 
 function pick(kind: GalleryItem['kind']) {
@@ -116,173 +116,267 @@ function pick(kind: GalleryItem['kind']) {
   return [...photo, ...drafts];
 }
 
-/** 下書き画像には「下書き」の印を付け、提案時に気付けるようにする */
+/** 下書き画像には印を付け、提案時に気付けるようにする */
 function draftMark(g: GalleryItem | undefined) {
-  return g && g.quality !== 'photoreal' ? h('div', { style: 'position:absolute;top:2%;right:2%;background:rgba(184,104,58,0.9);color:#fff;font-size:11px;padding:3px 8px;border-radius:4px' }, '下書き（写真品質で書き出してください）') : null;
+  return g && g.quality !== 'photoreal' ? h('div', { class: 'draft' }, '下書き') : null;
+}
+
+const photo = (g: GalleryItem | undefined) => (g ? h('img', { class: 'photo', src: g.url, alt: g.title }) : null);
+const cleanTitle = (t: string) => t.replace(/^(外観|内観|鳥瞰)[:：]?/, '').replace(/(内観|外観)?パース[（(]?/, '').replace(/[）)]$/, '').trim() || t;
+
+/** 章の見出し（番号・英字・和文） */
+function head(no: number, en: string, ja: string) {
+  return h('div', null, h('div', { class: 'head' }, h('span', { class: 'no' }, String(no).padStart(2, '0')), h('div', null, h('div', { class: 'en latin' }, en), h('h2', { class: 'serif' }, ja))), h('div', { class: 'rule' }));
+}
+
+/** 外観・内観のテイストと間取りから、提案の言葉を組み立てる */
+function conceptCopy(extName: string, intName: string, hasCourt: boolean, hasVoid: boolean, floors: number) {
+  const lead = hasVoid ? '光が降りそそぐ吹抜けと、\n余白を楽しむ住まい。' : hasCourt ? '中庭の光と緑を、\n暮らしの中心に。' : floors >= 2 ? '端正なかたちに、\nやわらかな光を纏う家。' : '水平にひろがる、\n穏やかでのびやかな平屋。';
+  const body = `外観は「${extName}」。素材の表情と深い陰影で、街並みに静かな品格を添えます。室内は「${intName}」を基調に、線を減らした納まりで、ホテルのように落ち着いた空間に仕上げました。`;
+  return { lead, body };
 }
 
 export function buildDeck(): HTMLElement[] {
   const model = state.model!;
   const ext = exteriorById(state.design.exteriorId);
   const int = interiorById(state.design.interiorId);
-  const exts = pick('exterior').filter((g) => !/夕景|夜景/.test(g.title)).concat(pick('exterior').filter((g) => /夕景|夜景/.test(g.title)));
+  const spec = resolveSpec(state.design.specId, state.design.specPatch);
+  const extAll = pick('exterior');
+  const exts = extAll.filter((g) => !/夕景|夜景/.test(g.title)).concat(extAll.filter((g) => /夕景|夜景/.test(g.title)));
   const ints = pick('interior');
   const aerial = pick('aerial')[0];
   const hero = exts[0] ?? aerial ?? ints[0];
   const slides: HTMLElement[] = [];
   const brand = state.company || '';
   const today = new Date();
-  const dateStr = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`;
-  const totalArea = model.floors.reduce((s, f) => s + f.rooms.reduce((a, r) => a + r.area, 0), 0);
-  const ldk = model.floors.flatMap((f) => f.rooms).find((r) => r.type === 'ldk' || r.type === 'living');
+  const dateStr = `${today.getFullYear()}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}`;
+  const rooms = model.floors.flatMap((f) => f.rooms);
+  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !['balcony', 'porch', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0), 0);
+  const ldk = rooms.find((r) => r.type === 'ldk' || r.type === 'living');
+  const tatami = (r: { labeledTatami?: number; area: number }) => (r.labeledTatami ?? r.area / 1.62).toFixed(1);
+  const hasVoid = rooms.some((r) => r.type === 'void');
+  const hasCourt = rooms.some((r) => /中庭/.test(r.name));
+  const copy = conceptCopy(ext.name, int.name, hasCourt, hasVoid, model.floors.length);
+  const lines = (t: string) => t.split('\n').flatMap((x, i) => (i ? [h('br'), x] : [x]));
+
+  // 章立て（素材のあるものだけ）
+  const chapters: { en: string; ja: string }[] = [{ en: 'Concept', ja: 'コンセプト' }];
+  if (exts.length || aerial) chapters.push({ en: 'Exterior', ja: '外観' });
+  if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
+  if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
+  if (state.elevations.length) chapters.push({ en: 'Elevation', ja: '立面' });
+  if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
+  chapters.push({ en: 'Details', ja: '上質を支える納まり' });
+  const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
 
   // 表紙
   slides.push(
     slide(
       'cover',
-      hero ? h('img', { class: 'bg', src: hero.url }) : null,
+      photo(hero),
       h('div', { class: 'shade' }),
-      h('div', { class: 'txt' }, h('div', { class: 'en' }, 'HOUSE PLAN PRESENTATION'), h('h1', null, state.name), h('p', null, `${state.customer}　ご提案資料　${dateStr}`), brand ? h('p', null, brand) : null),
+      h('div', { class: 'corner latin' }, 'Residential Design Proposal'),
+      h('div', { class: 'corner-r latin' }, dateStr),
+      h(
+        'div',
+        { class: 'txt' },
+        h('div', { class: 'latin' }, `Proposal for ${state.customer.replace(/様$/, '')}`),
+        h('h1', { class: 'serif' }, state.name),
+        h('div', { class: 'meta' }, h('span', null, `${state.customer}　ご提案資料`), h('i'), h('span', null, brand || '')),
+      ),
+    ),
+  );
+  // 目次
+  slides.push(
+    slide(
+      'index',
+      h('div', { class: 'left' }, photo(ints[0] ?? exts[1] ?? hero)),
+      h(
+        'div',
+        { class: 'right' },
+        h('div', { class: 'latin', style: 'font-size:1.05cqw;color:var(--ink-3)' }, 'Contents'),
+        h('h2', { class: 'serif', style: 'margin:0.6cqw 0 0;font-size:2.3cqw;letter-spacing:0.14em;font-weight:500' }, '目次'),
+        h('ol', null, ...chapters.map((c, i) => h('li', null, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', { class: 'serif' }, c.ja), h('span', { class: 'e latin' }, c.en)))),
+      ),
     ),
   );
   // コンセプト
   slides.push(
     slide(
-      '',
+      'split wide-photo',
+      h('div', { class: 'ph' }, photo(exts[0] ?? hero), draftMark(exts[0] ?? hero)),
       h(
         'div',
-        { class: 'pad' },
-        h('h2', null, h('small', null, 'CONCEPT'), '暮らしのイメージ'),
+        { class: 'tx' },
+        head(no('Concept'), 'Concept', 'コンセプト'),
+        h('div', { class: 'lead-copy serif' }, ...lines(copy.lead)),
+        h('p', null, copy.body),
         h(
-          'div',
-          { class: 'grow' },
-          h(
-            'div',
-            { class: 'col', style: 'flex:0.9' },
-            h('p', null, h('b', null, `外観：${ext.name}`), h('br'), ext.description),
-            h('p', null, h('b', null, `内観：${int.name}`), h('br'), int.description),
-            h('p', null, `延床面積 約${totalArea.toFixed(1)}㎡（約${(totalArea / 3.30579).toFixed(1)}坪）・${model.floors.length}階建て${ldk ? `・${(ldk.labeledTatami ?? ldk.area / 1.62).toFixed(1)}帖の${ldk.name}` : ''}`),
-            state.sun.highlights[0] ? h('p', null, h('b', null, `☀ ${state.sun.highlights[0].title}`), h('br'), state.sun.highlights[0].body) : null,
-          ),
-          h('div', { class: 'col' }, exts[0] ? h('div', { class: 'fill' }, h('img', { src: exts[0].url })) : null, ints[0] ? h('div', { class: 'fill' }, h('img', { src: ints[0].url })) : null),
+          'dl',
+          { class: 'facts' },
+          h('dt', null, '延床面積'),
+          h('dd', null, `約 ${totalArea.toFixed(1)}㎡（約 ${(totalArea / 3.30579).toFixed(1)}坪）`),
+          h('dt', null, '階数'),
+          h('dd', null, `${model.floors.length}階建て`),
+          ldk ? h('dt', null, ldk.name.normalize('NFKC')) : null,
+          ldk ? h('dd', null, `${tatami(ldk)}帖`) : null,
+          h('dt', null, '外観'),
+          h('dd', null, ext.name),
+          h('dt', null, '内観'),
+          h('dd', null, int.name),
         ),
       ),
     ),
   );
-  // 間取り
-  if (state.plans.length) {
-    slides.push(
-      slide(
-        '',
-        h(
-          'div',
-          { class: 'pad' },
-          h('h2', null, h('small', null, 'FLOOR PLAN'), '間取り'),
-          h('div', { class: 'grow' }, state.plans.map((p) => h('div', { class: 'fill' }, h('div', { class: 'svgbox', html: p.svg })))),
-        ),
-      ),
-    );
-  }
   // 外観
-  for (const g of exts.slice(0, 5)) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title), g.caption), draftMark(g)));
-  if (aerial) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: aerial.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, aerial.title), aerial.caption)));
-  // 内観
-  for (const g of ints) slides.push(slide('', h('div', { class: 'fill', style: 'position:absolute;inset:0' }, h('img', { src: g.url, style: 'border-radius:0' })), h('div', { class: 'cap' }, h('b', null, g.title.replace(/内観パース[（(]?/, '').replace(/[）)]$/, '')), g.caption), draftMark(g)));
-  // 立面図
-  if (state.elevations.length) {
+  if (exts.length || aerial) {
+    const n = no('Exterior');
+    const first = exts[0] ?? aerial!;
     slides.push(
       slide(
-        '',
-        h(
-          'div',
-          { class: 'pad' },
-          h('h2', null, h('small', null, 'ELEVATION'), '立面図'),
-          h(
-            'div',
-            { class: 'grow', style: 'flex-wrap:wrap' },
-            state.elevations.map((e) => h('div', { class: 'fill', style: 'flex:0 0 49%;height:49%' }, h('div', { class: 'svgbox', html: e.svg }))),
-          ),
-        ),
+        'full',
+        photo(first),
+        h('div', { class: 'capbox' }, h('div', { class: 'latin' }, `${String(n).padStart(2, '0')} — Exterior`), h('h3', { class: 'serif' }, cleanTitle(first.title)), h('p', null, first.caption || ext.description)),
+        draftMark(first),
       ),
     );
-  }
-  // 日照
-  if (state.sun.seasons.length || state.sun.images.length) {
-    const winter = state.sun.seasons.find((s) => s.id === 'winter') ?? state.sun.seasons[0];
-    slides.push(
-      slide(
-        '',
-        h(
-          'div',
-          { class: 'pad' },
-          h('h2', null, h('small', null, 'SUNLIGHT'), '日当たりシミュレーション'),
-          h(
-            'div',
-            { class: 'grow' },
-            h('div', { class: 'col', style: 'flex:0.8;overflow:hidden' }, ...state.sun.highlights.slice(0, 3).map((hl) => h('p', null, h('b', null, `☀ ${hl.title}`), h('br'), hl.body))),
-            winter ? h('div', { class: 'col' }, h('div', { class: 'fill' }, h('div', { class: 'svgbox', html: sunTimelineSvg(winter) }))) : null,
-          ),
-        ),
-      ),
-    );
-    if (state.sun.images.length) {
+    const rest = [...exts.slice(1), ...(aerial && first !== aerial ? [aerial] : [])];
+    for (let i = 0; i < rest.length; i += 2) {
+      const set = rest.slice(i, i + 2);
+      if (set.length === 1) {
+        slides.push(slide('full', photo(set[0]), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Exterior'), h('h3', { class: 'serif' }, cleanTitle(set[0].title)), set[0].caption ? h('p', null, set[0].caption) : null), draftMark(set[0])));
+        continue;
+      }
       slides.push(
         slide(
-          '',
-          h(
-            'div',
-            { class: 'pad' },
-            h('h2', null, h('small', null, 'SEASONS'), '季節・時刻による日差しの違い'),
-            h(
-              'div',
-              { class: 'grow', style: 'flex-wrap:wrap' },
-              state.sun.images.slice(0, 4).map((im) => h('div', { class: 'fill', style: 'flex:0 0 49%;height:48%' }, h('img', { src: im.url }), h('div', { class: 'cap', style: 'border-radius:0 0 4px 4px' }, im.label))),
-            ),
-          ),
+          'pair',
+          head(n, 'Exterior', '外観'),
+          h('div', { class: 'row', style: 'grid-template-columns:1fr 1fr' }, ...set.map((g) => h('div', { class: 'cell' }, photo(g), h('div', { class: 'lbl serif' }, cleanTitle(g.title)), draftMark(g)))),
         ),
       );
     }
-    if (state.sun.diagramSvg) {
-      slides.push(slide('', h('div', { class: 'pad' }, h('h2', null, h('small', null, 'SHADOW'), '日影図（冬至）'), h('div', { class: 'grow' }, h('div', { class: 'fill' }, h('div', { class: 'svgbox', html: state.sun.diagramSvg! }))))));
-    }
   }
-  // 部屋の一覧
-  const rows = model.floors.flatMap((f) => f.rooms.filter((r) => r.area > 2).map((r) => [`${f.level}F`, r.name, ROOM_TYPE_LABEL[r.type], `${(r.labeledTatami ?? r.area / 1.62).toFixed(1)}帖`]));
-  slides.push(
-    slide(
-      '',
-      h(
-        'div',
-        { class: 'pad' },
-        h('h2', null, h('small', null, 'ROOMS'), 'お部屋の一覧'),
+  // 内観
+  if (ints.length) {
+    const n = no('Interior');
+    slides.push(
+      slide(
+        'split photo-right',
         h(
           'div',
-          { class: 'grow' },
-          h(
-            'div',
-            { class: 'col', style: 'font-size:clamp(9px,1vw,13px);columns:2;display:block' },
-            ...rows.map((r) => h('div', { style: 'display:flex;gap:8px;border-bottom:1px solid #eee;padding:3px 0;break-inside:avoid' }, h('span', { style: 'color:#b8683a;width:2.5em' }, r[0]), h('span', { style: 'flex:1' }, r[1]), h('span', { style: 'color:#888' }, r[3]))),
-          ),
+          { class: 'tx' },
+          head(n, 'Interior', '内観'),
+          h('div', { class: 'lead-copy serif', style: 'font-size:1.55cqw' }, ...lines('線を減らし、\n素材と光で魅せる空間。')),
+          h('p', null, int.description),
+          h('p', { style: 'font-size:0.95cqw;color:var(--ink-3)' }, cleanTitle(ints[0].title)),
         ),
+        h('div', { class: 'ph' }, photo(ints[0]), draftMark(ints[0])),
       ),
-    ),
-  );
+    );
+    const rest = ints.slice(1);
+    for (let i = 0; i < rest.length; i += 3) {
+      const set = rest.slice(i, i + 3);
+      if (set.length === 1) {
+        slides.push(slide('full', photo(set[0]), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Interior'), h('h3', { class: 'serif' }, cleanTitle(set[0].title)), set[0].caption ? h('p', null, set[0].caption) : null), draftMark(set[0])));
+        continue;
+      }
+      const cols = set.length === 3 ? '1.4fr 1fr 1fr' : '1fr 1fr';
+      slides.push(
+        slide(
+          'pair',
+          head(n, 'Interior', '内観'),
+          h('div', { class: 'row', style: `grid-template-columns:${cols}` }, ...set.map((g) => h('div', { class: 'cell' }, photo(g), h('div', { class: 'lbl serif' }, cleanTitle(g.title)), draftMark(g)))),
+        ),
+      );
+    }
+  }
+  // 間取り
+  if (state.plans.length) {
+    const sched = model.floors.flatMap((f) =>
+      f.rooms.filter((r) => r.area > 2 && !['void', 'stairs'].includes(r.type)).map((r) => h('tr', null, h('td', { class: 'f' }, `${f.level}F`), h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))),
+    );
+    slides.push(
+      slide(
+        'drawing',
+        h(
+          'div',
+          { style: 'min-height:0;overflow:hidden' },
+          head(no('Floor Plan'), 'Floor Plan', '間取り'),
+          h('p', null, `家族の動線と、光の入り方を丁寧に読み解いた ${model.floors.length > 1 ? `${model.floors.length}層` : 'ワンフロア'}の構成です。`),
+          h('table', { class: 'schedule' }, h('tbody', null, ...sched.slice(0, 16))),
+        ),
+        // 資料では敷地全体ではなく建物まわりを大きく見せる
+        h('div', { class: 'sheet', style: `grid-template-columns:repeat(${Math.min(2, model.floors.length)},1fr)` }, ...model.floors.slice(0, 2).map((f) => h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) }))),
+      ),
+    );
+  }
+  // 立面
+  if (state.elevations.length) {
+    slides.push(
+      slide(
+        'drawing',
+        h('div', null, head(no('Elevation'), 'Elevation', '立面'), h('p', null, `${ext.name}の外壁と、深い軒の水平線で、四方どこから見ても整ったプロポーションに。`)),
+        h('div', { class: 'sheet', style: 'grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr' }, ...state.elevations.slice(0, 4).map((e) => h('div', { class: 'svgbox', html: e.svg }))),
+      ),
+    );
+  }
+  // 光と日当たり
+  if (state.sun.seasons.length || state.sun.images.length) {
+    const winter = state.sun.seasons.find((x) => x.id === 'winter') ?? state.sun.seasons[0];
+    slides.push(
+      slide(
+        'sun',
+        h(
+          'div',
+          { style: 'min-height:0;overflow:hidden' },
+          head(no('Sunlight'), 'Sunlight', '光と日当たり'),
+          ...state.sun.highlights.slice(0, 3).map((hl) => h('div', { class: 'hl' }, h('b', { class: 'serif' }, hl.title), h('span', null, hl.body))),
+        ),
+        state.sun.images.length
+          ? h('div', { class: 'sungrid' }, ...state.sun.images.slice(0, 4).map((im) => h('div', { class: 'cell' }, h('img', { class: 'photo', src: im.url }), h('div', { class: 'lbl' }, im.label))))
+          : winter
+            ? h('div', { class: 'svgfit', html: sunTimelineSvg(winter) })
+            : null,
+      ),
+    );
+    if (state.sun.diagramSvg) slides.push(slide('sun', h('div', null, head(no('Sunlight'), 'Shadow Study', '日影図（冬至）'), h('p', null, '冬至の日に、建物がまわりへ落とす影の範囲を時刻ごとに示しています。')), h('div', { class: 'svgfit', html: state.sun.diagramSvg })));
+  }
+  // 上質を支える納まり
+  const items: { k: string; t: string; d: string }[] = [];
+  if (spec.doors.fullHeight) items.push({ k: 'Full-height Door', t: 'フルハイトドア', d: '天井まで届く扉で、上枠や下がり壁のない、すっきりとした開口に。' });
+  if (spec.windows.headAtCeiling) items.push({ k: 'Window Line', t: '天井にそろう窓', d: 'サッシの高さを天井にそろえ、窓まわりの線を消して光を深く導きます。' });
+  if (spec.windows.interiorReveal === 'plaster') items.push({ k: 'Plaster Reveal', t: '塗り回しの窓まわり', d: '額縁を設けず、壁と同じ仕上げで包み込む静かな納まり。' });
+  if (spec.curtains === 'pocket') items.push({ k: 'Curtain Pocket', t: 'カーテンボックス', d: 'レールを天井に納め、布のひだだけが美しく見えるように。' });
+  if (spec.lighting === 'downlight') items.push({ k: 'Lighting', t: 'ダウンライト計画', d: '器具の存在を消し、必要な場所に光だけを置く照明計画。' });
+  if (spec.indirectLighting) items.push({ k: 'Indirect Light', t: '間接照明', d: '天井際をやわらかく照らし、夜の空間に奥行きを生みます。' });
+  if (spec.baseboard === 'recessed') items.push({ k: 'Baseboard', t: '入り巾木', d: '巾木を壁面より奥に納め、床と壁の境目を細い影の線だけに。' });
+  if (items.length) {
+    slides.push(
+      slide(
+        'details',
+        h('div', { style: 'display:flex;flex-direction:column;justify-content:center' }, head(no('Details'), 'Details', '上質を支える納まり'), h('p', null, '仕上げの色だけでなく、見えない部分の納まりが空間の品格を決めます。線を一本ずつ減らし、素材と光が主役になる空間をつくります。')),
+        h('div', { class: 'list' }, ...items.slice(0, 6).map((it) => h('div', { class: 'item' }, h('div', { class: 'k latin' }, it.k), h('h4', { class: 'serif' }, it.t), h('p', null, it.d)))),
+      ),
+    );
+  }
   // 動画
   if (state.videos.length) {
-    slides.push(slide('', h('div', { class: 'pad' }, h('h2', null, h('small', null, 'MOVIE'), state.videos[0].title), h('div', { class: 'grow' }, h('div', { class: 'fill' }, h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }))))));
+    slides.push(slide('full', h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Movie'), h('h3', { class: 'serif' }, state.videos[0].title))));
   }
   // 締め
+  const last = exts.find((g) => /夕景|夜景/.test(g.title)) ?? exts[1] ?? hero;
   slides.push(
     slide(
       'cover',
-      (exts[1] ?? hero) ? h('img', { class: 'bg', src: (exts[1] ?? hero)!.url }) : null,
+      photo(last),
       h('div', { class: 'shade' }),
-      h('div', { class: 'txt' }, h('div', { class: 'en' }, 'THANK YOU'), h('h1', null, '理想の暮らしを、かたちに。'), h('p', null, brand || 'ご清聴ありがとうございました')),
+      h('div', { class: 'txt' }, h('div', { class: 'latin' }, 'Thank you'), h('h1', { class: 'serif', style: 'font-size:3.2cqw' }, '理想の暮らしを、かたちに。'), h('div', { class: 'meta' }, h('span', null, brand || 'ご清聴ありがとうございました'))),
     ),
   );
   slides.forEach((s, i) => {
-    if (!s.classList.contains('cover')) s.appendChild(h('div', { class: 'pageno' }, `${i + 1} / ${slides.length}`));
-    if (!s.classList.contains('cover') && brand) s.appendChild(h('div', { class: 'brandline' }, brand));
+    const dark = s.classList.contains('cover') || s.classList.contains('full');
+    if (!s.classList.contains('cover')) s.appendChild(h('div', { class: `pageno ${dark ? 'light' : ''}` }, `${String(i + 1).padStart(2, '0')} / ${String(slides.length).padStart(2, '0')}`));
+    if (!s.classList.contains('cover') && brand && !s.classList.contains('full')) s.appendChild(h('div', { class: 'brandline' }, brand));
   });
   return slides;
 }
@@ -336,7 +430,7 @@ async function exportHtml(slides: HTMLElement[]) {
     })
     .join('\n');
   const body = slides.map((s) => s.outerHTML).join('\n');
-  const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${state.name}</title><style>${css}\nbody{overflow:auto;background:#2a2d31;padding:24px 0}</style></head><body>${body}</body></html>`;
+  const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${state.name}</title><link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Shippori+Mincho:wght@400;500;600&family=Cormorant+Garamond:wght@300;400;500&display=swap" rel="stylesheet"><style>${css}\nbody{overflow:auto;background:#1b1c1e;padding:24px 0}</style></head><body>${body}</body></html>`;
   const blob = new Blob([html], { type: 'text/html' });
   download(URL.createObjectURL(blob), `${state.name}_プレゼン.html`);
 }
@@ -369,7 +463,7 @@ export const presentStep: Step = {
       h('p', { class: 'lead' }, 'ここまでに作成したパース・図面・日照検討・動画から、お客様向けのプレゼン資料を自動で組み立てます。足りない素材はボタン一つで自動作成できます。'),
       h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '✨ 足りない素材を自動作成して資料を完成（写真品質）'),
       h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
-      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, 'まずは下書きで資料の構成を確認（すぐ）'),
+      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '⚡ 高品質描画ですばやく資料を完成（数十秒）'),
       section(
         '表紙の情報',
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),

@@ -179,35 +179,110 @@ input, select, textarea { font: inherit; }
 .toast.hide { opacity: 0; }
 
 /* プレゼン */
-.deck { position: absolute; inset: 0; overflow-y: auto; background: #2a2d31; padding: 24px 0 60px; }
-.slide { width: min(1100px, 94%); aspect-ratio: 16 / 9; margin: 0 auto 24px; background: #fff; border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); position: relative; overflow: hidden; }
-.slide .pad { position: absolute; inset: 0; padding: 4.2% 5%; display: flex; flex-direction: column; }
-.slide h2 { margin: 0 0 0.6em; font-size: clamp(16px, 2.3vw, 28px); letter-spacing: 0.04em; }
-.slide h2 small { display: block; font-size: 0.5em; color: var(--accent); letter-spacing: 0.2em; font-weight: 600; margin-bottom: 0.3em; }
-.slide p { font-size: clamp(10px, 1.15vw, 15px); line-height: 1.9; color: #444; margin: 0 0 0.6em; }
-.slide .grow { flex: 1; min-height: 0; display: flex; gap: 2%; }
-.slide .grow img { object-fit: cover; border-radius: 4px; width: 100%; height: 100%; }
-.slide .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2%; }
-.slide .fill { flex: 1; min-height: 0; position: relative; }
-.slide .fill > img, .slide .fill > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
-.slide .fill > .svgbox { position: absolute; inset: 0; display: grid; place-items: center; }
-.slide .fill > .svgbox svg { max-width: 100%; max-height: 100%; }
-.slide.cover .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.slide.cover .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.15) 60%, transparent); }
-.slide.cover .txt { position: absolute; left: 6%; bottom: 12%; color: #fff; }
-.slide.cover .txt .en { letter-spacing: 0.35em; font-size: clamp(9px, 1vw, 13px); opacity: 0.85; }
-.slide.cover .txt h1 { font-size: clamp(22px, 4vw, 52px); margin: 0.2em 0; letter-spacing: 0.06em; }
-.slide.cover .txt p { color: #eee; }
-.slide .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.6% 2.4%; background: linear-gradient(transparent, rgba(0,0,0,0.65)); color: #fff; font-size: clamp(10px, 1.1vw, 14px); }
-.slide .cap b { display: block; font-size: 1.25em; }
-.slide .pageno { position: absolute; right: 2%; bottom: 2%; font-size: 11px; color: #aaa; }
-.slide .brandline { position: absolute; left: 5%; bottom: 3%; font-size: 11px; color: #aaa; letter-spacing: 0.1em; }
+.deck { position: absolute; inset: 0; overflow-y: auto; background: #1b1c1e; padding: 24px 0 60px; }
+/* ---- プレゼン資料（建築作品集のような静かで上質な誌面） ---- */
+.slide {
+  --paper: #f5f1ea; --paper2: #ece6dc; --ink: #1c1b19; --ink-2: #57524a; --ink-3: #8f877b; --bronze: #9a7a52; --hair: rgba(28, 27, 25, 0.16);
+  width: min(1100px, 94%); aspect-ratio: 16 / 9; margin: 0 auto 24px; background: var(--paper); color: var(--ink);
+  box-shadow: 0 18px 50px rgba(0,0,0,0.35); position: relative; overflow: hidden; container-type: inline-size;
+  font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif; font-weight: 300;
+}
+.slide .serif { font-family: 'Shippori Mincho', 'Noto Serif JP', 'Hiragino Mincho ProN', 'Yu Mincho', serif; font-weight: 500; }
+.slide .latin { font-family: 'Cormorant Garamond', 'Times New Roman', serif; font-weight: 400; letter-spacing: 0.28em; text-transform: uppercase; }
+.slide .photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.slide .pageno { position: absolute; right: 4.2cqw; bottom: 2.6cqw; font-family: 'Cormorant Garamond', serif; font-size: 1.05cqw; letter-spacing: 0.2em; color: var(--ink-3); }
+.slide .pageno.light { color: rgba(255,255,255,0.75); }
+.slide .brandline { position: absolute; left: 4.2cqw; bottom: 2.6cqw; font-size: 0.9cqw; letter-spacing: 0.18em; color: var(--ink-3); }
+.slide .brandline.light { color: rgba(255,255,255,0.75); }
+.slide .draft { position: absolute; top: 2.4cqw; right: 2.4cqw; background: rgba(154,122,82,0.92); color: #fff; font-size: 0.95cqw; padding: 0.35cqw 0.9cqw; letter-spacing: 0.08em; }
+
+/* 見出し（章番号・英字・和文） */
+.slide .head { display: flex; align-items: baseline; gap: 1.6cqw; }
+.slide .head .no { font-family: 'Cormorant Garamond', serif; font-size: 3.6cqw; line-height: 1; color: var(--bronze); font-weight: 300; }
+.slide .head .en { font-size: 1.05cqw; color: var(--ink-3); }
+.slide .head h2 { margin: 0.5cqw 0 0; font-size: 2.3cqw; letter-spacing: 0.12em; line-height: 1.4; }
+.slide .rule { width: 4cqw; height: 1px; background: var(--bronze); margin: 1.6cqw 0; }
+.slide p { font-size: 1.12cqw; line-height: 2.05; color: var(--ink-2); margin: 0 0 1cqw; letter-spacing: 0.04em; }
+.slide .lead-copy { font-size: 1.75cqw; line-height: 1.9; color: var(--ink); letter-spacing: 0.1em; margin-bottom: 1.6cqw; }
+
+/* 表紙・締め */
+.slide.cover { background: #111; color: #fff; }
+.slide.cover .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.0) 45%, rgba(0,0,0,0.55) 100%), linear-gradient(90deg, rgba(0,0,0,0.35), rgba(0,0,0,0) 55%); }
+.slide.cover .txt { position: absolute; left: 6cqw; bottom: 6.5cqw; right: 40cqw; }
+.slide.cover .txt .latin { font-size: 1.05cqw; opacity: 0.85; }
+.slide.cover .txt h1 { font-size: 4.1cqw; margin: 1.2cqw 0 1.4cqw; letter-spacing: 0.14em; line-height: 1.35; font-weight: 400; }
+.slide.cover .txt .meta { display: flex; gap: 2.4cqw; align-items: center; font-size: 1.1cqw; letter-spacing: 0.16em; color: rgba(255,255,255,0.88); }
+.slide.cover .txt .meta i { width: 3cqw; height: 1px; background: rgba(255,255,255,0.7); display: inline-block; }
+.slide.cover .corner { position: absolute; top: 5cqw; left: 6cqw; font-size: 1cqw; color: rgba(255,255,255,0.85); }
+.slide.cover .corner-r { position: absolute; top: 5cqw; right: 6cqw; font-size: 1cqw; color: rgba(255,255,255,0.85); text-align: right; }
+
+/* 目次 */
+.slide.index { display: grid; grid-template-columns: 38% 1fr; }
+.slide.index .left { position: relative; }
+.slide.index .right { padding: 7cqw 6cqw 6cqw 5cqw; display: flex; flex-direction: column; justify-content: center; }
+.slide.index ol { list-style: none; margin: 2cqw 0 0; padding: 0; counter-reset: c; }
+.slide.index li { display: grid; grid-template-columns: 4.5cqw 1fr auto; align-items: baseline; padding: 1.05cqw 0; border-bottom: 1px solid var(--hair); font-size: 1.35cqw; letter-spacing: 0.12em; }
+.slide.index li .n { font-family: 'Cormorant Garamond', serif; color: var(--bronze); font-size: 1.6cqw; }
+.slide.index li .e { font-size: 0.85cqw; color: var(--ink-3); }
+
+/* 写真＋文章（左右） */
+.slide.split { display: grid; grid-template-columns: 1fr 1fr; }
+.slide.split.wide-photo { grid-template-columns: 1.55fr 1fr; }
+.slide.split.photo-right { grid-template-columns: 1fr 1.55fr; }
+.slide.split .ph { position: relative; overflow: hidden; }
+.slide.split .tx { padding: 6cqw 5cqw 6cqw 5cqw; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.slide .facts { display: grid; grid-template-columns: auto 1fr; gap: 0.7cqw 2cqw; margin-top: 1.4cqw; font-size: 1.05cqw; letter-spacing: 0.08em; }
+.slide .facts dt { color: var(--ink-3); }
+.slide .facts dd { margin: 0; color: var(--ink); }
+
+/* 全面写真＋キャプション */
+.slide.full .capbox { position: absolute; left: 4.2cqw; bottom: 4.2cqw; max-width: 34cqw; background: rgba(245,241,234,0.94); padding: 1.8cqw 2.2cqw; }
+.slide.full .capbox .latin { font-size: 0.85cqw; color: var(--bronze); }
+.slide.full .capbox h3 { margin: 0.5cqw 0 0.5cqw; font-size: 1.6cqw; letter-spacing: 0.12em; font-weight: 500; }
+.slide.full .capbox p { margin: 0; font-size: 0.98cqw; line-height: 1.9; }
+
+/* 写真の組（2〜3枚） */
+.slide.pair { padding: 4.2cqw; display: grid; grid-template-rows: auto 1fr; gap: 2.2cqw; }
+.slide.pair .row { display: grid; gap: 1.6cqw; min-height: 0; }
+.slide.pair .cell { position: relative; overflow: hidden; min-height: 0; }
+.slide.pair .cell .lbl { position: absolute; left: 0; bottom: 0; padding: 0.7cqw 1.1cqw; background: rgba(245,241,234,0.94); font-size: 0.95cqw; letter-spacing: 0.12em; }
+
+/* 図面 */
+.slide.drawing { padding: 4.2cqw 4.2cqw 5.4cqw; display: grid; grid-template-columns: 22cqw 1fr; gap: 3cqw; }
+.slide.drawing .sheet { position: relative; background: #fff; border: 1px solid var(--hair); min-width: 0; min-height: 0; display: grid; gap: 1px; }
+.slide.drawing .sheet .svgbox { position: relative; display: grid; place-items: center; padding: 1.2cqw; min-height: 0; background: #fff; }
+.slide.drawing .sheet .svgbox svg { width: 100%; height: 100%; }
+.slide .schedule { width: 100%; border-collapse: collapse; font-size: 0.95cqw; margin-top: 1.2cqw; letter-spacing: 0.06em; }
+.slide .schedule td { padding: 0.45cqw 0; border-bottom: 1px solid var(--hair); }
+.slide .schedule td.f { color: var(--bronze); font-family: 'Cormorant Garamond', serif; width: 2.6cqw; }
+.slide .schedule td.a { text-align: right; color: var(--ink-3); }
+
+/* 日当たり */
+.slide.sun { padding: 4.2cqw 4.2cqw 5.4cqw; display: grid; grid-template-columns: 30cqw 1fr; gap: 3cqw; }
+.slide .hl { border-top: 1px solid var(--hair); padding-top: 1cqw; margin-top: 1cqw; }
+.slide .hl b { display: block; font-weight: 500; font-size: 1.15cqw; letter-spacing: 0.08em; color: var(--ink); margin-bottom: 0.3cqw; }
+.slide .hl span { font-size: 0.98cqw; line-height: 1.85; color: var(--ink-2); }
+.slide .sungrid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1.2cqw; min-height: 0; }
+.slide .sungrid .cell { position: relative; overflow: hidden; }
+.slide .sungrid .lbl { position: absolute; left: 0; bottom: 0; padding: 0.5cqw 0.9cqw; background: rgba(245,241,234,0.94); font-size: 0.9cqw; letter-spacing: 0.1em; }
+.slide .svgfit { position: relative; min-height: 0; display: grid; place-items: center; background: #fff; border: 1px solid var(--hair); padding: 1cqw; }
+.slide .svgfit svg { max-width: 100%; max-height: 100%; }
+
+/* 仕様 */
+.slide.details { padding: 6cqw 6cqw; display: grid; grid-template-columns: 26cqw 1fr; gap: 5cqw; }
+.slide.details .list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 3.4cqw; align-content: center; }
+.slide.details .item { border-top: 1px solid var(--hair); padding: 1.3cqw 0 1.5cqw; }
+.slide.details .item .k { font-size: 0.85cqw; color: var(--bronze); }
+.slide.details .item h4 { margin: 0.4cqw 0 0.4cqw; font-size: 1.3cqw; font-weight: 500; letter-spacing: 0.1em; }
+.slide.details .item p { margin: 0; font-size: 0.95cqw; line-height: 1.85; }
+
+.slide video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .deck-tools { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; justify-content: center; margin-bottom: 18px; }
 body.presenting .topbar, body.presenting .side { display: none; }
 body.presenting #app { grid-template-rows: 1fr; }
 body.presenting .main { grid-template-columns: 1fr; }
 .present-full { position: fixed; inset: 0; background: #000; z-index: 150; display: grid; place-items: center; }
-.present-full .slide { width: min(100vw, 177.78vh); margin: 0; border-radius: 0; box-shadow: none; }
+.present-full .slide { width: min(100vw, 177.78vh); margin: 0; box-shadow: none; }
 .present-nav { position: fixed; bottom: 14px; right: 18px; z-index: 160; display: flex; gap: 8px; }
 
 @media print {

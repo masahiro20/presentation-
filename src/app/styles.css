@@ -303,3 +303,26 @@ body.presenting .main { grid-template-columns: 1fr; }
   .flow { grid-template-columns: 1fr 1fr; }
   .project-name { display: none; }
 }
+
+/* 間取りの手修正 */
+.edit-callout { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfaf7; }
+.edit-callout b { font-size: 13.5px; }
+.edit-callout p { font-size: 12.5px; color: var(--ink2); line-height: 1.75; margin: 6px 0 10px; }
+.pe-root { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: #f4f2ee; }
+.pe-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: #fff; border-bottom: 1px solid var(--line); }
+.pe-bar select { height: 30px; border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; background: #fff; }
+.pe-tabs, .pe-tools { display: flex; gap: 4px; }
+.pe-tools { padding-left: 8px; border-left: 1px solid var(--line); }
+.pe-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 280px; }
+.pe-canvas { position: relative; min-width: 0; min-height: 0; }
+.pe-svg { width: 100%; height: 100%; display: block; background: #fbfaf8; touch-action: none; user-select: none; }
+.pe-svg .pe-wall, .pe-svg .pe-op, .pe-svg .pe-label { cursor: pointer; }
+.pe-status { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: #b8683a; pointer-events: none; }
+.pe-panel { border-left: 1px solid var(--line); background: #fff; padding: 14px; overflow-y: auto; }
+.pe-panel h3 { margin: 0 0 6px; font-size: 15px; }
+.pe-panel .field { display: block; margin: 8px 0; }
+.pe-panel .field input, .pe-panel .field select { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; }
+.pe-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 16px 0 8px; font-size: 12px; color: var(--ink2); }
+.pe-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.pe-howto { padding-left: 18px; line-height: 1.8; }
+@media (max-width: 900px) { .pe-body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } .pe-panel { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; } }

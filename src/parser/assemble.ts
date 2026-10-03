@@ -1904,3 +1904,112 @@ export function translateFloor(f: Floor, dx: number, dy: number) {
 }
 
 export { normalizeText };
+
+/** 部屋名のラベル（手修正で置く・既存の部屋から引き継ぐ） */
+export interface RoomLabel {
+  name: string;
+  x: number;
+  y: number;
+  /** 用途を手で指定した場合（同じ名前の部屋に引き継ぐ） */
+  type?: RoomType;
+}
+
+/**
+ * 手で修正した壁・開口・部屋名から、その階の部屋・外壁・開口を作り直す。
+ * 図面の読み取りと同じ処理（壁で囲まれた範囲を部屋にする）を、修正後の壁で実行する。
+ */
+export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: number, warnings: string[] = [], keep?: { rooms: Room[]; removed: { a: Vec2; b: Vec2 }[] }): Floor {
+  const groups: { u: Vec2 }[] = [];
+  const groupOf = (u: Vec2) => {
+    let gi = groups.findIndex((g) => Math.abs(g.u.x * u.y - g.u.y * u.x) < 0.02 && g.u.x * u.x + g.u.y * u.y > 0);
+    if (gi < 0) {
+      groups.push({ u });
+      gi = groups.length - 1;
+    }
+    return gi;
+  };
+  const kindOf = (k: Opening['kind']): DetectedOpening['kind'] => (k === 'entrance' ? 'door' : k === 'open' ? 'open' : k);
+  const walls: WWall[] = [];
+  for (const w of f.walls) {
+    let a = w.a;
+    let b = w.b;
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 30) continue;
+    let u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    // 向きをそろえる（同じ直線上の壁を同じ組にするため）
+    const swapped = u.x < -1e-6 || (Math.abs(u.x) <= 1e-6 && u.y < 0);
+    if (swapped) {
+      [a, b] = [b, a];
+      u = { x: -u.x, y: -u.y };
+    }
+    const n = { x: -u.y, y: u.x };
+    const g = groupOf(u);
+    const t0 = a.x * u.x + a.y * u.y;
+    const o = a.x * n.x + a.y * n.y;
+    const openings: DetectedOpening[] = f.openings
+      .filter((op) => op.wallId === w.id)
+      .map((op) => {
+        const s0 = swapped ? L - op.t1 : op.t0;
+        const s1 = swapped ? L - op.t0 : op.t1;
+        return {
+          g,
+          o,
+          d: w.thickness,
+          t0: t0 + s0,
+          t1: t0 + s1,
+          kind: kindOf(op.kind),
+          hingeAtStart: op.hingeAtStart == null ? undefined : swapped ? !op.hingeAtStart : op.hingeAtStart,
+          swingSign: op.swingSide == null ? undefined : ((swapped ? -op.swingSide : op.swingSide) as 1 | -1),
+          confidence: 1,
+        };
+      });
+    walls.push({ a, b, u, n, d: w.thickness, t0, t1: t0 + L, o, g, openings, joinedA: false, joinedB: false });
+  }
+  joinWalls(walls);
+  const xs = walls.flatMap((w) => [w.a.x, w.b.x]);
+  const ys = walls.flatMap((w) => [w.a.y, w.b.y]);
+  const bbox = xs.length ? { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) } : { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+  const plan: PlanData = {
+    pageIndex: 0,
+    bbox,
+    floorHint: f.level,
+    walls,
+    texts: labels.map((l) => ({ str: l.name, x: l.x, y: l.y, size: 250, angle: 0 })),
+    segs: [],
+    siteTexts: [],
+    siteSegs: [],
+    wallPolys: [],
+    sashPolys: [],
+    roomFills: [],
+  };
+  const nf = buildFloor(plan, f.level, northAngleDeg, warnings);
+  // 元の図面では壁以外（色の塗り・建具の記号など）で分かれていた部屋は、そのまま分けておく。
+  // ただし、手で消した壁の所は分けない（部屋をつなげたい修正なので）
+  if (keep?.rooms.length) {
+    const out: Room[] = [];
+    for (const r of nf.rooms) {
+      const inside = keep.rooms.filter((q) => pointInPolygon(q.labelPos, r.polygon));
+      const nearRemoved = keep.removed.some((w) => {
+        const m = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
+        return pointInPolygon(m, r.polygon) || r.polygon.some((p, i) => distPointSegment(m, p, r.polygon[(i + 1) % r.polygon.length]) < 300);
+      });
+      const cover = inside.reduce((a, q) => a + q.area, 0);
+      if (inside.length >= 2 && !nearRemoved && Math.abs(cover - r.area) <= Math.max(0.6, r.area * 0.04)) out.push(...inside);
+      else out.push(r);
+    }
+    nf.rooms = out;
+  }
+  // 部屋名は、その部屋の中に置かれたラベルの名前に（手で付け直した名前・用途を反映）
+  for (const r of nf.rooms) {
+    const l = labels.find((x) => pointInPolygon({ x: x.x, y: x.y }, r.polygon));
+    if (!l) continue;
+    if (l.name !== r.name) {
+      r.name = l.name;
+      const c = classifyRoomName(l.name);
+      if (c) r.type = c;
+    }
+    if (l.type) r.type = l.type;
+    r.labelPos = { x: l.x, y: l.y };
+  }
+  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs };
+}

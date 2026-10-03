@@ -3,6 +3,7 @@ import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
 import { floorPlanSvg } from '../../drawings/plan';
+import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type PlanSide, type RoomType } from '../../core/types';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number) {
@@ -245,6 +246,32 @@ function renderResult(ctx: StepCtx) {
     h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `縮尺 ${scaleLabel}（${srcLabel[rep.scaleSource]}）／延床 約${totalArea.toFixed(1)}㎡（${(totalArea / 3.30579).toFixed(1)}坪）／壁厚 ${rep.wallThicknesses.slice(0, 4).join('・')}mm`),
     ...rep.warnings.map((w) => h('div', { class: 'warn' }, w)),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn primary block', onclick: () => ctx.app.go('design') }, '3D パースを作成する →')),
+    h(
+      'div',
+      { class: 'edit-callout' },
+      h('b', null, '読み取りが違う所は、平面の上で直せます'),
+      h('p', null, '部屋がつながっている・壁が足りない・余分な壁がある・窓やドアが無い・部屋名が違う、といった所を、壁を描く／消す、窓・ドアを置く、部屋名を置くだけで修正できます。'),
+      h(
+        'button',
+        {
+          class: 'btn dark block',
+          onclick: () => {
+            ctx.side.style.pointerEvents = 'none';
+            ctx.side.style.opacity = '0.45';
+            openPlanEditor(ctx.stage, model, (changed) => {
+              ctx.side.style.pointerEvents = '';
+              ctx.side.style.opacity = '';
+              if (changed) {
+                emit('model');
+                toast('間取りの修正を反映しました（3D・パース・日照に反映されます）', 'ok');
+                ctx.app.go('import');
+              }
+            });
+          },
+        },
+        '✏️ 間取りを手で修正する',
+      ),
+    ),
   );
 
   // 方位

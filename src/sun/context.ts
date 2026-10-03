@@ -111,14 +111,32 @@ export class SunContext {
 
   async loadNeighbors(source: 'gsi' | 'osm' = 'gsi') {
     const { lat, lon } = siteLatLon(this.state.site);
-    const list = source === 'gsi' ? await fetchGsiBuildings(lat, lon, 110) : await fetchOsmBuildings(lat, lon, 110);
-    // 自分の敷地に重なる建物（既存の建物など）は除外
-    const site = this.viewer.state!.site;
-    const inSite = (b: NeighborBuilding) =>
-      b.ring.some((p) => {
-        const w = this.toWorld(p.e, p.n);
-        return w.x > site.min.x - 0.5 && w.x < site.max.x + 0.5 && w.z > site.min.y - 0.5 && w.z < site.max.y + 0.5;
-      });
+    // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）
+    const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? fetchGsiBuildings(lat, lon, 110) : fetchOsmBuildings(lat, lon, 110));
+    let list: NeighborBuilding[] = [];
+    let err: Error | null = null;
+    for (const src of source === 'gsi' ? (['gsi', 'osm'] as const) : (['osm', 'gsi'] as const)) {
+      try {
+        list = await fetchFrom(src);
+        if (list.length) break;
+      } catch (e) {
+        err = e as Error;
+      }
+    }
+    if (!list.length && err) throw err;
+    // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
+    const st = this.viewer.state!;
+    const site = st.site;
+    const bb = st.meta.bbox;
+    const inSite = (b: NeighborBuilding) => {
+      const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
+      if (ws.some((w) => w.x > site.min.x - 0.5 && w.x < site.max.x + 0.5 && w.z > site.min.y - 0.5 && w.z < site.max.y + 0.5)) return true;
+      const x0 = Math.min(...ws.map((w) => w.x));
+      const x1 = Math.max(...ws.map((w) => w.x));
+      const z0 = Math.min(...ws.map((w) => w.z));
+      const z1 = Math.max(...ws.map((w) => w.z));
+      return x1 > bb.min.x - 0.8 && x0 < bb.max.x + 0.8 && z1 > bb.min.z - 0.8 && z0 < bb.max.z + 0.8;
+    };
     const manual = this.state.neighbors.filter((b) => b.source === 'manual');
     this.state.neighbors = [...manual, ...list.filter((b) => !inSite(b))];
     this.buildNeighbors();

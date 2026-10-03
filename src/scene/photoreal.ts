@@ -32,6 +32,8 @@ export interface PhotorealOptions {
   hdri?: boolean;
   /** 内観（窓の面光源・照明の点灯・露出の自動調整） */
   interior?: boolean;
+  /** 「ここで仕上げる」: 計算を打ち切り、その時点の画像で仕上げる */
+  finish?: AbortSignal;
 }
 
 interface Saved {
@@ -128,6 +130,8 @@ function meanLuma(src: HTMLCanvasElement): number {
 }
 
 export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): Promise<string> {
+  // 検証用: ?ptfail で失敗させ、代替の高品質描画を確認する
+  if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('ptfail')) throw new PhotorealError('検証用の失敗', 'shader');
   const renderer = viewer.renderer;
   const scene = viewer.scene;
   const camera = viewer.camera;
@@ -306,6 +310,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
         await new Promise((r) => requestAnimationFrame(() => r(null)));
       }
       if (now - t0 > limit) break;
+      if (opts.finish?.aborted && pt.samples >= 1) break;
     }
     check();
     console.info(`写真品質レンダリング: ${Math.floor(pt.samples)} サンプル / ${Math.round((performance.now() - t0) / 1000)} 秒`);

@@ -79,7 +79,27 @@ export class Viewer {
   private modelGen = 0;
   private gtao: GTAOPass;
   private smaa: SMAAPass;
-  private dirty = true;
+  private _dirty = true;
+  /** 場面（形・光・材料）が変わった: 影も描き直す。カメラだけの移動では影は描き直さない（重い） */
+  private get dirty() {
+    return this._dirty;
+  }
+  private set dirty(v: boolean) {
+    this._dirty = v;
+    if (v && this.renderer) this.renderer.shadowMap.needsUpdate = true;
+  }
+  /** 最後にカメラが動いた時刻（操作中は軽い描画にする） */
+  private lastMove = 0;
+  private hqPending = false;
+  private renderMode: 'fast' | 'hq' = 'hq';
+  private fastPR = 1;
+  private keys = new Set<string>();
+  private walkOcc: { state: SceneState; occ: ReturnType<typeof buildOccluder> } | null = null;
+  private lastTick = performance.now();
+  private camMoved() {
+    this._dirty = true;
+    this.lastMove = performance.now();
+  }
   private raf = 0;
   private skyTex: THREE.DataTexture | null = null;
   private pmrem: THREE.PMREMGenerator;
@@ -97,6 +117,8 @@ export class Viewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // 影はカメラを動かしただけでは変わらないので、場面が変わったときだけ描き直す
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -114,13 +136,16 @@ export class Viewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
+    this.controls.dampingFactor = 0.12;
+    this.controls.rotateSpeed = 0.85;
+    this.controls.panSpeed = 1.1;
+    this.controls.zoomSpeed = 1.2;
     this.controls.maxPolarAngle = Math.PI * 0.495;
     // ホイールはカーソルの位置に向かってズーム（見たい所へ寄っていける）
     this.controls.zoomToCursor = true;
     this.controls.minDistance = 0.2;
     this.controls.addEventListener('change', () => {
-      this.dirty = true;
+      this.camMoved();
     });
     const el = this.renderer.domElement;
     el.addEventListener('pointerdown', () => {
@@ -166,6 +191,7 @@ export class Viewer {
     const ro = new ResizeObserver(() => this.resize());
     ro.observe(container);
     this.resize();
+    this.bindKeys();
     this.loop();
   }
 
@@ -204,7 +230,7 @@ export class Viewer {
       this.camera.position.copy(t).addScaledVector(off, k);
     }
     this.controls.update();
-    this.dirty = true;
+    this.camMoved();
   }
 
   /** GPU のリセットからの復帰を待つ */
@@ -241,19 +267,126 @@ export class Viewer {
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
     if (this.paused) return;
+    const now = performance.now();
+    const dt = Math.min(0.25, (now - this.lastTick) / 1000);
+    this.lastTick = now;
     if (this.anim) {
-      const t = Math.min(1, (performance.now() - this.anim.t0) / this.anim.dur);
+      const t = Math.min(1, (now - this.anim.t0) / this.anim.dur);
       const k = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       this.applyView(lerpView(this.anim.from, this.anim.to, k));
       if (t >= 1) this.anim = null;
-      this.dirty = true;
+      this.camMoved();
     }
+    if (this.keys.size) this.walk(dt);
     const moved = this.controls.update();
-    if (moved) this.dirty = true;
-    if (!this.dirty) return;
-    this.dirty = false;
+    if (moved) this.camMoved();
+    // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
+    const moving = now - this.lastMove < 200 && this.quality === 'high';
+    if (moving) {
+      if (!this._dirty) return;
+      this._dirty = false;
+      if (this.renderMode !== 'fast') {
+        this.renderMode = 'fast';
+        this.applyPixelRatio(this.fastPR);
+      }
+      const t0 = performance.now();
+      this.renderer.render(this.scene, this.camera);
+      this.onAfterRender?.();
+      // 描画が重ければ解像度をさらに下げ、軽ければ戻す
+      const ms = performance.now() - t0;
+      if (ms > 28 && this.fastPR > 0.5) {
+        this.fastPR = Math.max(0.5, this.fastPR * 0.85);
+        this.applyPixelRatio(this.fastPR);
+      } else if (ms < 10 && this.fastPR < this.fullPR()) this.fastPR = Math.min(this.fullPR(), this.fastPR * 1.1);
+      this.hqPending = true;
+      return;
+    }
+    if (!this._dirty && !this.hqPending) return;
+    this._dirty = false;
+    this.hqPending = false;
+    if (this.renderMode !== 'hq') {
+      this.renderMode = 'hq';
+      this.applyPixelRatio(this.fullPR());
+    }
     this.renderFrame();
   };
+
+  private fullPR() {
+    return Math.min(window.devicePixelRatio || 1, 2);
+  }
+
+  private applyPixelRatio(pr: number) {
+    if (Math.abs(this.renderer.getPixelRatio() - pr) < 0.01) return;
+    this.renderer.setPixelRatio(pr);
+    this.resize();
+  }
+
+  /** キーボードで歩く: W/S・↑/↓ 前後、A/D・←/→ 左右、Q/E 下/上、Shift で速く */
+  private walk(dt: number) {
+    const f = new THREE.Vector3();
+    this.camera.getWorldDirection(f);
+    f.y = 0;
+    if (f.lengthSq() < 1e-6) f.set(0, 0, -1);
+    f.normalize();
+    const r = new THREE.Vector3(-f.z, 0, f.x);
+    const mv = new THREE.Vector3();
+    const k = this.keys;
+    if (k.has('w') || k.has('arrowup')) mv.add(f);
+    if (k.has('s') || k.has('arrowdown')) mv.sub(f);
+    if (k.has('d') || k.has('arrowright')) mv.add(r);
+    if (k.has('a') || k.has('arrowleft')) mv.sub(r);
+    if (k.has('e')) mv.y += 1;
+    if (k.has('q')) mv.y -= 1;
+    if (mv.lengthSq() === 0) return;
+    // 室内は歩く速さ、外観は建物の大きさに合わせて速く
+    const indoor = this.camera.position.y < 8;
+    const speed = (indoor ? 2.2 : 9) * (k.has('shift') ? 3 : 1);
+    mv.normalize().multiplyScalar(speed * dt);
+    // 壁の通り抜けを防ぐ（壁に沿って滑るように、東西・南北を別々に判定）
+    if (this.state) {
+      if (!this.walkOcc || this.walkOcc.state !== this.state) this.walkOcc = { state: this.state, occ: buildOccluder(this, { buildingOnly: true }) };
+      const ray = new THREE.Ray();
+      const blocked = (d: THREE.Vector3) => {
+        const len = d.length();
+        if (len < 1e-6) return false;
+        for (const dy of [0, -0.9]) {
+          ray.origin.copy(this.camera.position).setY(this.camera.position.y + dy);
+          ray.direction.copy(d).normalize();
+          const hit = this.walkOcc!.occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+          if (hit && hit.distance < len + 0.3) return true;
+        }
+        return false;
+      };
+      const dx = new THREE.Vector3(mv.x, 0, 0);
+      const dz = new THREE.Vector3(0, 0, mv.z);
+      if (blocked(dx)) mv.x = 0;
+      if (blocked(dz)) mv.z = 0;
+      if (mv.lengthSq() === 0) return;
+    }
+    this.anim = null;
+    this.camera.position.add(mv);
+    this.controls.target.add(mv);
+    this.camMoved();
+  }
+
+  /** キー操作の受付（入力欄の操作中は除く） */
+  private bindKeys() {
+    const typing = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    };
+    const WALK = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift']);
+    window.addEventListener('keydown', (e) => {
+      if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!this.container.getClientRects().length || getComputedStyle(this.container).visibility === 'hidden') return;
+      const key = e.key.toLowerCase();
+      if (!WALK.has(key)) return;
+      this.keys.add(key);
+      if (key.startsWith('arrow')) e.preventDefault();
+    });
+    window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
+    window.addEventListener('blur', () => this.keys.clear());
+  }
 
   renderFrame() {
     if (this.quality === 'high') this.composer.render();
@@ -489,7 +622,7 @@ export class Viewer {
       this.camera.lookAt(v.target);
     }
     this.camera.updateProjectionMatrix();
-    this.dirty = true;
+    this.camMoved();
   }
 
   flyTo(v: CameraView, dur = 900) {
@@ -500,7 +633,7 @@ export class Viewer {
       from.target.y += this.camera.shiftY * Math.tan((this.camera.fov * Math.PI) / 360) * 10;
     }
     this.anim = { from, to: v, t0: performance.now(), dur };
-    this.dirty = true;
+    this.camMoved();
   }
 
   /** 断面（模型）表示: 指定階より上と屋根を隠し、天井を消す */

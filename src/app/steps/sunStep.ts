@@ -230,6 +230,8 @@ export const sunStep: Step = {
                   await reloadContext();
                   if (!sc.state.aerialLoaded) await loadAerial();
                   await loadNeighbors('gsi');
+                  // 周辺を読み込んだら、建物と周りが見渡せる広域の視点へ
+                  v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
                 },
               },
               r.title,
@@ -279,7 +281,7 @@ export const sunStep: Step = {
       try {
         attribution.textContent = await sc.loadAerial('photo');
       } catch {
-        toast('航空写真を取得できませんでした', 'error');
+        toast('航空写真を取得できませんでした（インターネット接続を確認してください）', 'error');
       }
       v.invalidate();
     };
@@ -397,6 +399,9 @@ export const sunStep: Step = {
         heatLegend.style.display = 'flex';
         heatMax.textContent = `${max.toFixed(1)}時間`;
         v.invalidate();
+        toast('日照時間マップを作成しました', 'ok');
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') toast(`日照時間マップの作成に失敗しました: ${(e as Error).message}`, 'error');
       } finally {
         pm.close();
       }
@@ -418,7 +423,7 @@ export const sunStep: Step = {
         ], true);
       } catch (e) {
         pm.close();
-        toast('日影図の作成に失敗しました', 'error');
+        toast(`日影図の作成に失敗しました: ${(e as Error).message}`, 'error');
       }
     };
     const captureSeasons = async () => {

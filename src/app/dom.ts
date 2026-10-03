@@ -45,10 +45,16 @@ export interface ProgressHandle {
   set(ratio: number, msg?: string, preview?: string): void;
   close(): void;
   signal: AbortSignal;
+  /** 「ここで仕上げる」が押された（計算を打ち切って今の状態で保存する） */
+  finish: AbortSignal;
 }
 
-export function progressModal(title: string, cancellable = true): ProgressHandle {
+export function progressModal(title: string, cancellable = true, finishLabel?: string): ProgressHandle {
   const ac = new AbortController();
+  const fin = new AbortController();
+  const finBtn = finishLabel
+    ? (h('button', { class: 'btn primary', style: 'display:none', onclick: () => { fin.abort(); finBtn!.textContent = '仕上げています…'; (finBtn as HTMLButtonElement).disabled = true; } }, finishLabel) as HTMLButtonElement)
+    : null;
   const bar = h('div', { class: 'bar-fill' });
   const msg = h('div', { class: 'progress-msg' }, '準備中…');
   const img = h('img', { class: 'progress-preview', style: 'display:none' });
@@ -62,18 +68,21 @@ export function progressModal(title: string, cancellable = true): ProgressHandle
       img,
       h('div', { class: 'bar' }, bar),
       msg,
-      cancellable ? h('button', { class: 'btn ghost', onclick: () => ac.abort() }, '中止') : null,
+      h('div', { class: 'btn-row', style: 'justify-content:center' }, finBtn, cancellable ? h('button', { class: 'btn ghost', onclick: () => ac.abort() }, '中止') : null),
     ),
   );
   document.body.appendChild(box);
   return {
     signal: ac.signal,
+    finish: fin.signal,
     set(r, m, p) {
       bar.style.width = `${Math.round(Math.max(0, Math.min(1, r)) * 100)}%`;
       if (m) msg.textContent = m;
       if (p) {
         img.src = p;
         img.style.display = 'block';
+        // 途中経過の画像が出たら「ここで仕上げる」を出す
+        if (finBtn) finBtn.style.display = '';
       }
     },
     close() {

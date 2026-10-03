@@ -52,13 +52,40 @@ export interface GeocodeResult {
   lon: number;
 }
 
-/** 国土地理院 住所検索 API */
+/** 国土地理院 住所検索 API（見つからなければ番地を省いて再検索し、最後に OpenStreetMap でも探す） */
 export async function geocode(q: string): Promise<GeocodeResult[]> {
-  const url = `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(q)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`住所検索に失敗しました (${res.status})`);
-  const js = (await res.json()) as { geometry: { coordinates: [number, number] }; properties: { title: string } }[];
-  return js.slice(0, 10).map((f) => ({ title: f.properties.title, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }));
+  const query = q.normalize('NFKC').replace(/\s+/g, '').trim();
+  const tries: string[] = [query];
+  // 番地・号・建物名を後ろから外していく（「1丁目2-3」→「1丁目」→ 町名）
+  let t = query;
+  for (let i = 0; i < 4; i++) {
+    const next = t.replace(/[-ー－−の]?[0-9]+(番地?|号)?[^0-9]*$/, '').replace(/[0-9]+丁目$/, (m) => (m === t ? '' : m));
+    if (!next || next === t) break;
+    tries.push(next);
+    t = next;
+  }
+  let netErr: Error | null = null;
+  for (const qq of [...new Set(tries)]) {
+    try {
+      const res = await fetch(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(qq)}`);
+      if (!res.ok) throw new Error(`住所検索サーバーの応答がありません (${res.status})`);
+      const js = (await res.json()) as { geometry: { coordinates: [number, number] }; properties: { title: string } }[];
+      if (js.length) return js.slice(0, 10).map((f) => ({ title: f.properties.title, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }));
+    } catch (e) {
+      netErr = e as Error;
+    }
+  }
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=jp&limit=8&accept-language=ja&q=${encodeURIComponent(query)}`);
+    if (res.ok) {
+      const js = (await res.json()) as { lat: string; lon: string; display_name: string }[];
+      if (js.length) return js.map((r) => ({ title: r.display_name.split(',').reverse().map((x) => x.trim()).filter((x) => x && x !== '日本' && !/^[0-9-]+$/.test(x)).join(''), lat: +r.lat, lon: +r.lon }));
+    }
+  } catch (e) {
+    netErr = netErr ?? (e as Error);
+  }
+  if (netErr) throw new Error(`住所検索サーバーに接続できませんでした（インターネット接続を確認してください）: ${netErr.message}`);
+  return [];
 }
 
 export interface AerialImage {
@@ -103,15 +130,20 @@ export async function fetchAerial(lat: number, lon: number, radius = 200, zoom =
   const layer = kind === 'photo' ? 'seamlessphoto' : 'pale';
   const ext = kind === 'photo' ? 'jpg' : 'png';
   const jobs: Promise<void>[] = [];
+  let ok = 0;
   for (let ty = y0; ty <= y1; ty++)
     for (let tx = x0; tx <= x1; tx++) {
       jobs.push(
         loadImage(`https://cyberjapandata.gsi.go.jp/xyz/${layer}/${zoom}/${tx}/${ty}.${ext}`).then((img) => {
-          if (img) ctx.drawImage(img, (tx - x0) * 256, (ty - y0) * 256);
+          if (img) {
+            ctx.drawImage(img, (tx - x0) * 256, (ty - y0) * 256);
+            ok++;
+          }
         }),
       );
     }
   await Promise.all(jobs);
+  if (!ok) throw new Error('航空写真のタイルを1枚も取得できませんでした');
   const nw = tileToLonLat(x0, y0, zoom);
   const se = tileToLonLat(x1 + 1, y1 + 1, zoom);
   const a = toLocal(nw.lat, nw.lon, lat, lon);
@@ -134,11 +166,23 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
   const t0 = lonLatToTile(lon - radius / mLon, lat + radius / mLat, z);
   const t1 = lonLatToTile(lon + radius / mLon, lat - radius / mLat, z);
   const out: NeighborBuilding[] = [];
+  let tiles = 0;
+  let failed = 0;
   for (let ty = Math.floor(t0.y); ty <= Math.floor(t1.y); ty++)
     for (let tx = Math.floor(t0.x); tx <= Math.floor(t1.x); tx++) {
-      const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
-      if (!res.ok) continue;
-      const layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
+      tiles++;
+      let layers: ReturnType<typeof decodeMvt>;
+      try {
+        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
+        if (!res.ok) {
+          if (res.status !== 404) failed++;
+          continue;
+        }
+        layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
+      } catch {
+        failed++;
+        continue;
+      }
       const bld = layers['BldA'];
       if (!bld) continue;
       for (const f of bld.features) {
@@ -167,6 +211,7 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
         }
       }
     }
+  if (tiles && failed === tiles) throw new Error('国土地理院のサーバーに接続できませんでした');
   return dedupe(out);
 }
 

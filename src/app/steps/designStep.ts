@@ -6,6 +6,7 @@ import { EXTERIOR_STYLES, INTERIOR_STYLES, type DesignOptions, type RoofType, ty
 import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
+import { renderStudio } from '../../scene/studio';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -23,11 +24,12 @@ export function currentShots(ctx: StepCtx): Shot[] {
 }
 
 export interface CaptureOptions {
-  quality: 'realtime' | 'photoreal';
+  /** studio = 高品質描画（実写の空・柔らかい影・2倍描画。数秒で必ず仕上がる） */
+  quality: 'realtime' | 'photoreal' | 'studio';
   samples?: number;
   silent?: boolean;
   /** 一括作成時: 進捗表示を共有 */
-  progress?: { set(r: number, msg?: string, preview?: string): void; signal: AbortSignal };
+  progress?: { set(r: number, msg?: string, preview?: string): void; signal: AbortSignal; finish?: AbortSignal };
   /** 一括作成時の全体に対する位置 */
   slot?: { index: number; total: number };
 }
@@ -48,8 +50,9 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
   const H = quality === 'photoreal' ? state.render.height : 1080;
   const samples = opts.samples ?? state.render.samples;
   let url: string;
+  let studioUsed = false;
   if (quality === 'photoreal') {
-    const own = opts.progress ? null : progressModal('提案用パースを写真品質でレンダリング中（光の反射・間接光を計算しています）');
+    const own = opts.progress ? null : progressModal('提案用パースを写真品質でレンダリング中（光の反射・間接光を計算しています）', true, 'ここで仕上げる');
     const pm = opts.progress ?? own!;
     const slot = opts.slot ?? { index: 0, total: 1 };
     const kind = shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior');
@@ -69,6 +72,7 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
         signal: pm.signal,
         exposure,
         interior: kind === 'interior',
+        finish: pm.finish,
         safe: st.safe,
         textureSize: st.textureSize,
         onStatus: (m) => pm.set(slot.index / slot.total, `${shot?.title ?? 'パース'}：${m}${st.note}`),
@@ -93,7 +97,21 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
           else v.applyView(view);
         }
       }
-      if (!got) throw lastErr ?? new Error('写真品質のレンダリングに失敗しました');
+      if (!got) {
+        // パストレーシングが完了できない環境: 高品質のリアルタイム描画（実写の空・柔らかい影・環境遮蔽・2倍描画）で必ず1枚仕上げる
+        pm.set((slot.index + 0.95) / slot.total, `${shot?.title ?? 'パース'}：高品質描画で仕上げています`);
+        try {
+          if (!(await v.waitForContext())) throw new Error('GPU が復帰しませんでした');
+          if (shot) v.applyShot(shot);
+          else v.applyView(view);
+          got = await renderStudio(v, { width: W, height: H, exposure, interior: kind === 'interior' });
+          studioUsed = true;
+          lastPhotorealFailure = { e: (lastErr as Error) ?? new Error('不明'), shot };
+        } catch (e2) {
+          errLog.push(`高品質描画: ${(e2 as Error).message}`);
+          throw lastErr ?? e2;
+        }
+      }
       url = got;
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -106,6 +124,10 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     } finally {
       own?.close();
     }
+  } else if (quality === 'studio') {
+    const kind = shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior');
+    url = await renderStudio(v, { width: state.render.width, height: state.render.height, exposure: exposureFor(kind, v.design.timeOfDay), interior: kind === 'interior' });
+    studioUsed = true;
   } else {
     url = await v.capture(W, H);
   }
@@ -115,15 +137,25 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     caption: shot?.caption ?? '',
     url,
     kind: shot?.kind ?? 'other',
-    quality,
+    quality: quality === 'realtime' ? 'realtime' : 'photoreal',
     shotId: shot?.id,
   };
   // 同じショットの古い画像は置き換え
-  const idx = state.gallery.findIndex((g) => g.shotId && g.shotId === item.shotId && g.quality === quality);
+  const idx = state.gallery.findIndex((g) => g.shotId && g.shotId === item.shotId && g.quality === item.quality);
   if (idx >= 0) state.gallery.splice(idx, 1, item);
   else state.gallery.push(item);
   emit('gallery');
-  if (!opts.silent) toast(quality === 'photoreal' ? '提案用パース（写真品質）を保存しました' : '下書きパースを保存しました', 'ok');
+  if (!opts.silent)
+    toast(
+      studioUsed
+        ? quality === 'studio'
+          ? '提案用パース（高品質描画）を保存しました'
+          : 'このパソコンでは光の計算（パストレーシング）を完了できなかったため、高品質描画で仕上げて保存しました'
+        : quality === 'photoreal'
+          ? '提案用パース（写真品質）を保存しました'
+          : '下書きパースを保存しました',
+      'ok',
+    );
   return item;
 }
 
@@ -420,7 +452,7 @@ export const designStep: Step = {
           ),
         );
       }
-      side.append(section('見どころカメラ（自動）', list, h('p', { class: 'hint' }, 'ドラッグで回転、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。気に入った構図で撮影してください。')));
+      side.append(section('見どころカメラ（自動）', list, h('p', { class: 'hint' }, 'ドラッグで回転、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。キーボードの W・A・S・D（または矢印キー）で歩いて移動、Q・E で上下、Shift で速く。壁は通り抜けません。')));
       // 撮影
       const samplesSel = h(
         'select',
@@ -447,8 +479,8 @@ export const designStep: Step = {
         const cur = v.currentView();
         return { id: active?.id ?? uid('custom'), kind: active?.kind ?? 'exterior', title: active?.title ?? 'パース', caption: active?.caption ?? '', view: cur, sunDir: null, timeOfDay: state.design.timeOfDay };
       };
-      const batch = async (list: Shot[], quality: 'photoreal' | 'realtime') => {
-        const pm = progressModal(quality === 'photoreal' ? `提案用パースを写真品質で一括作成中（${list.length}枚）` : 'おすすめパースを下書き作成中');
+      const batch = async (list: Shot[], quality: 'photoreal' | 'realtime' | 'studio') => {
+        const pm = progressModal(quality === 'photoreal' ? `提案用パースを写真品質で一括作成中（${list.length}枚）` : quality === 'studio' ? `提案用パースを高品質描画で一括作成中（${list.length}枚）` : 'おすすめパースを下書き作成中');
         const prev = v.currentView();
         const prevDesign = { ...state.design };
         let n = 0;
@@ -475,7 +507,7 @@ export const designStep: Step = {
       side.append(
         section(
           '提案用パースの書き出し',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '操作中の画面は動きを優先したリアルタイム表示です。提案用に保存するパースは、光の反射・間接光・柔らかな影を物理的に計算した写真品質で書き出します。'),
+          h('p', { class: 'hint', style: 'margin-top:0' }, '「写真品質」は光の反射・間接光を物理的に計算します（GPU の性能により数分）。途中で「ここで仕上げる」を押すと、その時点の画像で保存できます。計算できないパソコンでは自動で高品質描画に切り替えます。急ぐときは「高品質描画」（数秒）をお使いください。'),
           h(
             'button',
             {
@@ -500,8 +532,19 @@ export const designStep: Step = {
           h(
             'div',
             { class: 'btn-row' },
-            h('button', { class: 'btn sm ghost', onclick: () => captureShot(ctx, null, { quality: 'realtime' }).then(() => renderGallery()) }, '下書きとして保存（すぐ）'),
-            h('button', { class: 'btn sm ghost', onclick: () => batch(shots, 'realtime') }, '下書きを一括作成'),
+            h('button', { class: 'btn sm', onclick: async () => {
+              const shot = currentAsShot();
+              const it = await captureShot(ctx, null, { quality: 'studio' });
+              if (it) {
+                it.title = shot.title;
+                it.caption = shot.caption;
+                it.kind = shot.kind;
+                it.shotId = shot.id;
+                showImage(it);
+              }
+              renderGallery();
+            } }, '⚡ 高品質描画で保存（数秒）'),
+            h('button', { class: 'btn sm', onclick: () => batch(shots, 'studio') }, '⚡ 高品質描画で一括作成'),
           ),
         ),
       );

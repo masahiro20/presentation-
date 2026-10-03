@@ -95,7 +95,7 @@ export class App {
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
       h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),
     );
-    bar.title = '左ドラッグ：回転（移動モードでは移動）／右ドラッグ：移動（移動モードでは回転）／ホイール：カーソルの位置へズーム';
+    bar.title = '左ドラッグ：回転（移動モードでは移動）／右ドラッグ：移動（移動モードでは回転）／ホイール：カーソルの位置へズーム／W・A・S・D：歩いて移動（Q・E 上下、Shift 速く）';
     // スペースキーを押している間は一時的に「移動」
     let held: 'orbit' | 'pan' | null = null;
     const typing = (e: KeyboardEvent) => /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '');

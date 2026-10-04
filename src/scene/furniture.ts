@@ -3,7 +3,8 @@
  * 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
  */
 import * as THREE from 'three';
-import type { BuildingModel, Floor, Room } from '../core/types';
+import type { BuildingModel, Floor, Room, FurnitureItem, FurnitureKind } from '../core/types';
+import { pointInPolygon } from '../core/geometry';
 import { largestInnerRect, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
 import { MM } from './building';
@@ -113,6 +114,88 @@ interface RoomCtx {
   windows: Record<Side, number>;
   lights: LightPoint[];
   room: Room;
+  env: ItemEnv;
+}
+
+/** 家具を置くときの階の情報 */
+interface ItemEnv {
+  mb: MeshBuilder;
+  y: number;
+  ceilingY: number;
+  lights: LightPoint[];
+}
+/** この階に置いた家具（手修正の初期値・平面図に使う） */
+let currentItems: FurnitureItem[] | null = null;
+let itemSeq = 0;
+const DEG = 180 / Math.PI;
+
+export const FURNITURE_LABEL: Record<FurnitureKind, string> = {
+  kitchen: 'キッチン',
+  dining: 'ダイニング',
+  sofa: 'ソファ',
+  coffeeTable: 'ローテーブル',
+  tv: 'テレビ台',
+  rug: 'ラグ',
+  plant: '観葉植物',
+  chair: 'チェア',
+  bed: 'ベッド',
+  nightstand: 'ナイトテーブル',
+  desk: 'デスク',
+  cabinet: '収納',
+  bookshelf: '本棚',
+  lowTable: '座卓',
+  bath: '浴槽',
+  mirror: '鏡',
+  washstand: '洗面台',
+  washer: '洗濯機',
+  toilet: 'トイレ',
+  shoeCabinet: '下駄箱',
+};
+
+/** 平面に描くときの外形 (m): 幅 w（並び方向）、奥行 d、基準点から奥行方向への始まり v0 */
+export function furnitureDims(it: FurnitureItem): { w: number; d: number; v0: number } {
+  switch (it.kind) {
+    case 'kitchen':
+      return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: 2.1, v0: 0 };
+    case 'dining':
+      return { w: 1.6, d: 1.65, v0: -0.83 };
+    case 'sofa':
+      return { w: it.w ?? 2.1, d: 0.9, v0: 0 };
+    case 'coffeeTable':
+      return { w: 1.0, d: 0.5, v0: 0 };
+    case 'tv':
+      return { w: it.w ?? 1.8, d: 0.42, v0: 0 };
+    case 'rug':
+      return { w: it.w ?? 2.2, d: it.d ?? 1.6, v0: 0 };
+    case 'plant':
+      return { w: 0.5 * (it.w ?? 1), d: 0.5 * (it.w ?? 1), v0: -0.25 * (it.w ?? 1) };
+    case 'chair':
+      return { w: 0.75, d: 0.8, v0: -0.4 };
+    case 'bed':
+      return { w: (it.w ?? 1.4) + 0.06, d: 2.04, v0: -0.04 };
+    case 'nightstand':
+      return { w: 0.45, d: 0.4, v0: 0 };
+    case 'desk':
+      return { w: 1.0, d: 1.2, v0: 0 };
+    case 'cabinet':
+      return { w: 1.2, d: 0.45, v0: 0 };
+    case 'bookshelf':
+      return { w: 0.9, d: 0.32, v0: 0 };
+    case 'lowTable':
+      return { w: 1.2, d: 2.0, v0: -1.0 };
+    case 'bath':
+      return { w: it.len ?? 1.6, d: 0.8, v0: 0 };
+    case 'mirror':
+      return { w: 0.45, d: 0.06, v0: 0 };
+    case 'washstand':
+      return { w: 0.77, d: 0.52, v0: 0 };
+    case 'washer':
+      return { w: 0.6, d: 0.6, v0: 0 };
+    case 'toilet':
+      return { w: 0.4, d: 0.75, v0: 0 };
+    case 'shoeCabinet':
+      return { w: 1.22, d: 0.4, v0: 0 };
+  }
 }
 
 function sideFrame(ctx: RoomCtx, s: Side, R = ctx.R): { f: Frame; len: number } {
@@ -153,13 +236,19 @@ export function setModelsAvailable(v: boolean) {
   modelsAvailable = v;
 }
 
-export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[] } {
+export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[]; items: Map<number, FurnitureItem[]> } {
   const mb = new MeshBuilder();
   currentModels = [];
   const lights: LightPoint[] = [];
   const occupancy = new Map<string, Footprint[]>();
   kitchenSides = new Map();
+  const items = new Map<number, FurnitureItem[]>();
   for (const f of model.floors) {
+    currentItems = [];
+    items.set(f.level, currentItems);
+    // 手で置き直した階は、その家具だけを置く（天井の照明は自動のまま）
+    const override = model.furniture?.find((o) => o.level === f.level);
+    const env: ItemEnv = { mb, y: f.elevation * MM, ceilingY: f.ceilingHeight * MM, lights };
     for (const room of f.rooms) {
       const inner = largestInnerRect(room.polygon, 5);
       if (!inner) continue;
@@ -174,10 +263,14 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
       currentOcc = [];
       occupancy.set(room.id, currentOcc);
       currentRoomId = room.id;
-      const ctx: RoomCtx = { mb, R, y: f.elevation * MM, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room };
+      const ctx: RoomCtx = { mb, R, y: f.elevation * MM, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room, env };
       collectBlocked(ctx, f, inner);
       const ceilingY = f.ceilingHeight * MM;
       const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - 0.02, (R.minZ + R.maxZ) / 2);
+      if (override) {
+        if (!['void', 'balcony', 'porch', 'garage', 'other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
+        continue;
+      }
       switch (room.type) {
         case 'ldk':
         case 'living':
@@ -221,9 +314,135 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
           break;
       }
     }
+    if (override) {
+      for (const it of override.items) {
+        const room = (it.roomId && f.rooms.find((r) => r.id === it.roomId)) || f.rooms.find((r) => pointInPolygon({ x: it.x, y: it.y }, r.polygon));
+        currentRoomId = room?.id ?? '';
+        if (currentRoomId && !occupancy.has(currentRoomId)) occupancy.set(currentRoomId, []);
+        currentOcc = currentRoomId ? occupancy.get(currentRoomId)! : null;
+        emitItem({ ...it, roomId: currentRoomId || undefined }, env);
+      }
+    }
   }
   currentOcc = null;
-  return { mb, lights, occupancy, kitchenSide: kitchenSides, models: currentModels };
+  currentItems = null;
+  return { mb, lights, occupancy, kitchenSide: kitchenSides, models: currentModels, items };
+}
+
+/** 置く家具の一覧（手で置き直した階はその内容、ほかは自動配置の結果） */
+export function furnitureItems(model: BuildingModel): Map<number, FurnitureItem[]> {
+  return buildFurniture(model).items;
+}
+
+function sideOfRot(rot: number): Side {
+  const r = ((Math.round(rot / 90) % 4) + 4) % 4;
+  return (['n', 'e', 's', 'w'] as Side[])[r];
+}
+
+/** 家具を置く: 位置・向きを記録してから形を作る（手修正の初期値・平面図・3D を同じ経路で） */
+function place(kind: FurnitureKind, fr: Frame, u: number, v: number, env: ItemEnv, extra: Partial<FurnitureItem> = {}) {
+  const p = fr.point(u, v, 0);
+  const it: FurnitureItem = { id: `fi${++itemSeq}`, kind, x: Math.round(p.x / MM), y: Math.round(p.z / MM), rot: Math.round(Math.atan2(fr.along.z, fr.along.x) * DEG), roomId: currentRoomId || undefined, ...extra };
+  emitItem(it, env);
+}
+
+/** 記録した家具 1 つの形を作る */
+function emitItem(it: FurnitureItem, env: ItemEnv) {
+  currentItems?.push(it);
+  const r = it.rot / DEG;
+  const fr = new Frame(env.mb, V(it.x * MM, env.y, it.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));
+  const roomId = it.roomId ?? currentRoomId;
+  switch (it.kind) {
+    case 'kitchen':
+      kitchen(fr, it.len ?? 3, env.ceilingY);
+      kitchenSides.set(roomId, sideOfRot(it.rot));
+      env.lights.push({ pos: fr.point(0, 1.3, env.ceilingY - 0.02), kind: 'ceiling', roomId });
+      break;
+    case 'dining':
+      diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY);
+      break;
+    case 'sofa':
+      sofa(fr, 0, 0, it.w ?? 2.1);
+      break;
+    case 'coffeeTable':
+      coffeeTable(fr, 0, 0);
+      break;
+    case 'tv':
+      tvSet(fr, 0, 0, it.w ?? 1.8);
+      break;
+    case 'rug':
+      rug(fr, 0, 0, it.w ?? 2.2, it.d ?? 1.6);
+      break;
+    case 'plant':
+      plant(fr, 0, 0, it.w ?? 1);
+      break;
+    case 'chair': {
+      const p = fr.point(0, 0, 0);
+      currentModels.push({ id: 'modern_arm_chair_01', pos: p, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.82 });
+      if (currentPlan) currentPlan.push({ key: 'f.fabric', shape: 'box', cx: p.x, cz: p.z, w: 0.75, d: 0.8, ax: fr.along.x, az: fr.along.z, r: 0, top: 0.8, roomId });
+      if (currentOcc) currentOcc.push({ minX: p.x - 0.4, maxX: p.x + 0.4, minZ: p.z - 0.4, maxZ: p.z + 0.4, maxY: 0.8 });
+      break;
+    }
+    case 'bed':
+      bed(fr, 0, 0, it.w ?? 1.4);
+      break;
+    case 'nightstand':
+      nightstand(fr, 0, 0, env.lights, roomId);
+      break;
+    case 'desk':
+      desk(fr, 0, 0);
+      break;
+    case 'cabinet':
+      fr.box('f.cabinet', 0, 0, 1.2, 0.45, 0, 0.75);
+      break;
+    case 'bookshelf':
+      fr.box('f.cabinet', 0, 0, 0.9, 0.32, 0, 1.8);
+      for (let i = 1; i < 5; i++) fr.box('f.wood', 0, 0.01, 0.84, 0.3, i * 0.36, 0.02);
+      break;
+    case 'lowTable':
+      fr.box('f.wood', 0, -0.4, 1.2, 0.8, 0.3, 0.05);
+      for (const du of [-0.55, 0.55]) for (const dv of [-0.35, 0.35]) fr.box('f.wood', du, dv - 0.03, 0.06, 0.06, 0, 0.3);
+      for (const [du, dv] of [
+        [-0.35, -0.75],
+        [0.35, -0.75],
+        [-0.35, 0.75],
+        [0.35, 0.75],
+      ])
+        fr.box('f.fabric2', du, dv - 0.26, 0.52, 0.52, 0.01, 0.07);
+      break;
+    case 'bath': {
+      const tw = it.len ?? 1.6;
+      fr.box('f.white', 0, 0, tw, 0.8, 0, 0.55);
+      fr.box('f.water', 0, 0.08, tw - 0.16, 0.64, 0.5, 0.02);
+      break;
+    }
+    case 'mirror':
+      fr.box('f.mirror', 0, 0.005, 0.45, 0.01, 0.8, 0.8);
+      fr.box('f.chrome', 0, 0.02, 0.2, 0.08, 0.7, 0.05);
+      break;
+    case 'washstand':
+      fr.box('f.cabinet', 0, 0, 0.75, 0.5, 0, 0.78);
+      fr.box('f.counter', 0, 0, 0.77, 0.52, 0.78, 0.05);
+      fr.box('f.white', 0, 0.1, 0.45, 0.32, 0.8, 0.06);
+      fr.box('f.mirror', 0, 0.005, 0.72, 0.01, 1.05, 0.85);
+      fr.box('f.chrome', 0, 0.05, 0.03, 0.12, 0.83, 0.15);
+      break;
+    case 'washer':
+      fr.box('f.white', 0, 0, 0.6, 0.6, 0, 0.9);
+      fr.cyl('f.screen', 0, 0.61, 0.17, 0.35, 0.3, 20);
+      break;
+    case 'toilet':
+      fr.box('f.white', 0, 0.02, 0.38, 0.2, 0.45, 0.35); // タンク
+      fr.box('f.white', 0, 0.2, 0.36, 0.4, 0, 0.4);
+      fr.cyl('f.white', 0, 0.55, 0.19, 0, 0.4, 20);
+      fr.box('f.white', 0, 0.2, 0.38, 0.55, 0.4, 0.04);
+      fr.box('f.chrome', 0.28, 0.4, 0.12, 0.1, 0.7, 0.05);
+      break;
+    case 'shoeCabinet':
+      fr.box('f.cabinet', 0, 0, 1.2, 0.38, 0.25, 0.85);
+      fr.box('f.counter', 0, 0, 1.22, 0.4, 1.1, 0.03);
+      break;
+  }
 }
 
 let kitchenSides = new Map<string, Side>();
@@ -370,7 +589,7 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
 }
 
-function kitchen(ctx: RoomCtx, fr: Frame, len: number, ceilingY: number) {
+function kitchen(fr: Frame, len: number, ceilingY: number) {
   // 背面収納
   const bw = Math.min(len - 0.3, 2.7);
   fr.box('f.cabinet', 0, 0, bw - 0.75, 0.45, 0, 0.9);
@@ -399,7 +618,6 @@ function kitchen(ctx: RoomCtx, fr: Frame, len: number, ceilingY: number) {
   fr.cyl('f.white', -0.45, cv + 0.32, 0.035, 0.89, 0.22);
   fr.cyl('f.leaf', -0.45, cv + 0.32, 0.004, 1.11, 0.22, 6);
   fr.sphere('f.leaf', -0.45, cv + 0.32, 1.35, 0.045, 1.4);
-  void ctx;
 }
 
 function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
@@ -434,11 +652,9 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   const dDepth = total >= 6.5 ? 2.4 : 2.1;
   const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== 'dining' && ctx.room.type !== 'kitchen';
   const { f: kf, len: klen } = sideFrame(ctx, kSide);
-  kitchenSides.set(ctx.room.id, kSide);
-  kitchen(ctx, kf, klen, ceilingY);
-  ctx.lights.push({ pos: kf.point(0, 1.3, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
+  place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
   // ダイニング
-  diningSet(kf, 0, kDepth + dDepth / 2, ctx.lights, ctx.room.id, ceilingY);
+  place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
   if (!hasLiving) return;
   // リビング: 反対側の壁 or 窓のない長辺
   const livStart = kDepth + dDepth;
@@ -447,21 +663,21 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   const { f: ef, len: elen } = sideFrame(ctx, endSide);
   const tvU = findSpot(ctx, endSide, 2.0, elen, 0);
   if (tvU != null && livDepth >= 3.2) {
-    tvSet(ef, tvU, 0.02);
+    place('tv', ef, tvU, 0.02, ctx.env, { w: 1.8 });
     const sofaV = Math.min(livDepth - 1.0, 3.0);
-    rug(ef, tvU, 0.9, 2.2, Math.max(1.4, sofaV - 0.7));
-    coffeeTable(ef, tvU, 1.2);
+    place('rug', ef, tvU, 0.9, ctx.env, { w: 2.2, d: +Math.max(1.4, sofaV - 0.7).toFixed(2) });
+    place('coffeeTable', ef, tvU, 1.2, ctx.env);
     // ソファは TV を向く（反対向きのフレーム）
     const back = new Frame(ctx.mb, ef.point(tvU, sofaV + 0.9, 0), ef.along.clone().negate(), ef.inward.clone().negate());
-    sofa(back, 0, 0, 2.1);
-    plant(ef, -elen / 2 + 0.35, 0.35, 1.1);
+    place('sofa', back, 0, 0, ctx.env, { w: 2.1 });
+    place('plant', ef, -elen / 2 + 0.35, 0.35, ctx.env, { w: 1.1 });
     // ラウンジチェア（ソファの横で TV・ソファの方を向く）
     const chairU = tvU + 1.75;
     if (Math.abs(chairU) < elen / 2 - 0.5 && isFree(ctx, endSide, chairU - 0.45, chairU + 0.45)) {
       const cp = ef.point(chairU, Math.max(1.4, sofaV - 0.6), 0);
-      const toward = ef.point(tvU, sofaV * 0.5, 0).sub(cp);
-      currentModels.push({ id: 'modern_arm_chair_01', pos: cp, rotY: Math.atan2(toward.x, toward.z), height: 0.82 });
-      if (currentPlan) currentPlan.push({ key: 'f.fabric', shape: 'box', cx: cp.x, cz: cp.z, w: 0.75, d: 0.8, ax: toward.z / (Math.hypot(toward.x, toward.z) || 1), az: -toward.x / (Math.hypot(toward.x, toward.z) || 1), r: 0, top: 0.8, roomId: currentRoomId });
+      const toward = ef.point(tvU, sofaV * 0.5, 0).sub(cp).setY(0).normalize();
+      // チェアの向き（inward）を TV・ソファの方へ
+      place('chair', new Frame(ctx.mb, cp, V(toward.z, 0, -toward.x), toward), 0, 0, ctx.env);
     }
     ctx.lights.push({ pos: ef.point(tvU, livDepth / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
     return;
@@ -474,13 +690,13 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   const kfCenterToLiv = kf.point(0, livStart + livDepth / 2, 0);
   const uLiv = kfCenterToLiv.clone().sub(tf.origin).dot(tf.along);
   const tvU2 = findSpot(ctx, tvSide, 1.9, tlen, uLiv) ?? uLiv;
-  tvSet(tf, tvU2, 0.02);
+  place('tv', tf, tvU2, 0.02, ctx.env, { w: 1.8 });
   const across = tvSide === 'n' || tvSide === 's' ? D : W;
   const sofaV = Math.min(across - 1.0, 2.8);
-  rug(tf, tvU2, 0.9, 2.2, Math.max(1.4, sofaV - 0.7));
-  coffeeTable(tf, tvU2, 1.25);
+  place('rug', tf, tvU2, 0.9, ctx.env, { w: 2.2, d: +Math.max(1.4, sofaV - 0.7).toFixed(2) });
+  place('coffeeTable', tf, tvU2, 1.25, ctx.env);
   const back = new Frame(ctx.mb, tf.point(tvU2, sofaV + 0.9, 0), tf.along.clone().negate(), tf.inward.clone().negate());
-  sofa(back, 0, 0, 2.1);
+  place('sofa', back, 0, 0, ctx.env, { w: 2.1 });
   ctx.lights.push({ pos: tf.point(tvU2, across / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
   void model;
 }
@@ -529,24 +745,24 @@ function layoutBedroom(ctx: RoomCtx, big: boolean) {
   }
   if (placed) {
     const { s, f, u, depth } = placed;
-    bed(f, u, 0.02, bw);
+    place('bed', f, u, 0.02, ctx.env, { w: bw });
     if (placed.withStands) {
-      nightstand(f, u - bw / 2 - 0.3, 0.02, ctx.lights, ctx.room.id);
-      nightstand(f, u + bw / 2 + 0.3, 0.02, ctx.lights, ctx.room.id);
+      place('nightstand', f, u - bw / 2 - 0.3, 0.02, ctx.env);
+      place('nightstand', f, u + bw / 2 + 0.3, 0.02, ctx.env);
     }
-    rug(f, u, 0.9, bw + 0.9, 1.6);
+    place('rug', f, u, 0.9, ctx.env, { w: +(bw + 0.9).toFixed(2), d: 1.6 });
     // 机（子ども室・小さい部屋）
     if (!big) {
       const other = opposite[s];
       const { f: of, len: olen } = sideFrame(ctx, other);
       const du = findSpot(ctx, other, 1.1, olen, 0);
-      if (du != null && depth > 3.0) desk(of, du, 0.02);
+      if (du != null && depth > 3.0) place('desk', of, du, 0.02, ctx.env);
     } else {
       const { f: of, len: olen } = sideFrame(ctx, opposite[s]);
       const du = findSpot(ctx, opposite[s], 1.2, olen, olen / 4);
       if (du != null && depth > 3.4) {
-        of.box('f.cabinet', du, 0.02, 1.2, 0.45, 0, 0.75);
-        plant(of, du + 0.9, 0.3, 0.8);
+        place('cabinet', of, du, 0.02, ctx.env);
+        place('plant', of, du + 0.9, 0.3, ctx.env, { w: 0.8 });
       }
     }
     return;
@@ -569,14 +785,11 @@ function layoutStudy(ctx: RoomCtx) {
     const { f, len } = sideFrame(ctx, s);
     const u = findSpot(ctx, s, 1.1, len, 0);
     if (u == null) continue;
-    desk(f, u, 0.02);
+    place('desk', f, u, 0.02, ctx.env);
     const o = opposite[s];
     const { f: of, len: olen } = sideFrame(ctx, o);
     const su = findSpot(ctx, o, 0.9, olen, 0);
-    if (su != null) {
-      of.box('f.cabinet', su, 0.02, 0.9, 0.32, 0, 1.8);
-      for (let i = 1; i < 5; i++) of.box('f.wood', su, 0.03, 0.84, 0.3, i * 0.36, 0.02);
-    }
+    if (su != null) place('bookshelf', of, su, 0.02, ctx.env);
     return;
   }
 }
@@ -584,15 +797,7 @@ function layoutStudy(ctx: RoomCtx) {
 function layoutJapanese(ctx: RoomCtx) {
   const { R } = ctx;
   const fr = new Frame(ctx.mb, V((R.minX + R.maxX) / 2, ctx.y, (R.minZ + R.maxZ) / 2), V(1, 0, 0), V(0, 0, 1));
-  fr.box('f.wood', 0, -0.4, 1.2, 0.8, 0.3, 0.05);
-  for (const du of [-0.55, 0.55]) for (const dv of [-0.35, 0.35]) fr.box('f.wood', du, dv - 0.03, 0.06, 0.06, 0, 0.3);
-  for (const [du, dv] of [
-    [-0.35, -0.75],
-    [0.35, -0.75],
-    [-0.35, 0.75],
-    [0.35, 0.75],
-  ])
-    fr.box('f.fabric2', du, dv - 0.26, 0.52, 0.52, 0.01, 0.07);
+  place('lowTable', fr, 0, 0, ctx.env);
 }
 
 function layoutBath(ctx: RoomCtx) {
@@ -603,13 +808,11 @@ function layoutBath(ctx: RoomCtx) {
   const s: Side = W >= D ? (ctx.windows.n > ctx.windows.s ? 's' : 'n') : ctx.windows.w > ctx.windows.e ? 'e' : 'w';
   const { f, len } = sideFrame(ctx, s);
   const tw = Math.min(len - 0.05, 1.6);
-  f.box('f.white', 0, 0, tw, 0.8, 0, 0.55);
-  f.box('f.water', 0, 0.08, tw - 0.16, 0.64, 0.5, 0.02);
+  place('bath', f, 0, 0, ctx.env, { len: +tw.toFixed(2) });
   // 水栓・鏡
   const o = opposite[s];
   const { f: of } = sideFrame(ctx, o);
-  of.box('f.mirror', 0.3, 0.005, 0.45, 0.01, 0.8, 0.8);
-  of.box('f.chrome', 0.3, 0.02, 0.2, 0.08, 0.7, 0.05);
+  place('mirror', of, 0.3, 0, ctx.env);
 }
 
 function layoutWash(ctx: RoomCtx) {
@@ -619,11 +822,7 @@ function layoutWash(ctx: RoomCtx) {
     const { f, len } = sideFrame(ctx, s);
     const u = findSpot(ctx, s, 0.8, len, -len / 4);
     if (u == null) continue;
-    f.box('f.cabinet', u, 0, 0.75, 0.5, 0, 0.78);
-    f.box('f.counter', u, 0, 0.77, 0.52, 0.78, 0.05);
-    f.box('f.white', u, 0.1, 0.45, 0.32, 0.8, 0.06);
-    f.box('f.mirror', u, 0.005, 0.72, 0.01, 1.05, 0.85);
-    f.box('f.chrome', u, 0.05, 0.03, 0.12, 0.83, 0.15);
+    place('washstand', f, u, 0, ctx.env);
     used = s;
     break;
   }
@@ -633,8 +832,7 @@ function layoutWash(ctx: RoomCtx) {
     const { f, len } = sideFrame(ctx, s);
     const u = findSpot(ctx, s, 0.65, len, len / 4);
     if (u == null) continue;
-    f.box('f.white', u, 0.02, 0.6, 0.6, 0, 0.9);
-    f.cyl('f.screen', u, 0.63, 0.17, 0.35, 0.3, 20);
+    place('washer', f, u, 0.02, ctx.env);
     return;
   }
 }
@@ -647,11 +845,7 @@ function layoutToilet(ctx: RoomCtx) {
   const cands: Side[] = W < D ? ['n', 's'] : ['w', 'e'];
   const s = cands.sort((a, b) => ctx.blocked[a].length - ctx.blocked[b].length)[0];
   const { f } = sideFrame(ctx, s);
-  f.box('f.white', 0, 0.02, 0.38, 0.2, 0.45, 0.35); // タンク
-  f.box('f.white', 0, 0.2, 0.36, 0.4, 0, 0.4);
-  f.cyl('f.white', 0, 0.55, 0.19, 0, 0.4, 20);
-  f.box('f.white', 0, 0.2, 0.38, 0.55, 0.4, 0.04);
-  f.box('f.chrome', 0.28, 0.4, 0.12, 0.1, 0.7, 0.05);
+  place('toilet', f, 0, 0, ctx.env);
 }
 
 function layoutEntrance(ctx: RoomCtx) {
@@ -660,8 +854,7 @@ function layoutEntrance(ctx: RoomCtx) {
   const { f, len } = sideFrame(ctx, s);
   const u = findSpot(ctx, s, 1.2, len, 0);
   if (u == null) return;
-  f.box('f.cabinet', u, 0, 1.2, 0.38, 0.25, 0.85);
-  f.box('f.counter', u, 0, 1.22, 0.4, 1.1, 0.03);
-  plant(f, u + 0.3, 0.2, 0.35);
-  plant(f, u + 0.9, 0.25, 0.7);
+  place('shoeCabinet', f, u, 0, ctx.env);
+  place('plant', f, u + 0.3, 0.2, ctx.env, { w: 0.35 });
+  place('plant', f, u + 0.9, 0.25, ctx.env, { w: 0.7 });
 }

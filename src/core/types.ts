@@ -158,9 +158,50 @@ export interface SiteData {
   areaM2?: number;
 }
 
+/** 家具・設備の種類 */
+export type FurnitureKind =
+  | 'kitchen'
+  | 'dining'
+  | 'sofa'
+  | 'coffeeTable'
+  | 'tv'
+  | 'rug'
+  | 'plant'
+  | 'chair'
+  | 'bed'
+  | 'nightstand'
+  | 'desk'
+  | 'cabinet'
+  | 'bookshelf'
+  | 'lowTable'
+  | 'bath'
+  | 'mirror'
+  | 'washstand'
+  | 'washer'
+  | 'toilet'
+  | 'shoeCabinet';
+
+/** 置いた家具 1 つ（平面座標 mm。rot は壁に沿う向きの角度（度）: 0 = 東向きに並び手前が南） */
+export interface FurnitureItem {
+  id: string;
+  kind: FurnitureKind;
+  x: number;
+  y: number;
+  rot: number;
+  /** 幅 (m)（ソファ・ベッド・ラグ・テレビ台など） */
+  w?: number;
+  /** 奥行 (m)（ラグ） */
+  d?: number;
+  /** 長さ (m)（キッチン・浴槽） */
+  len?: number;
+  roomId?: string;
+}
+
 export interface BuildingModel {
   name: string;
   floors: Floor[];
+  /** 手で置き直した家具（階ごと）。無い階は自動配置 */
+  furniture?: { level: number; items: FurnitureItem[] }[];
   /** 真北の方向: 図面の上方向から時計回りの角度 (度) */
   northAngleDeg: number;
   /** 接道・敷地（読み取れた場合） */

@@ -7,13 +7,14 @@
  * - 部屋名を置く・変える（用途も選べる）
  * 壁を直すたびに、図面の読み取りと同じ方法で部屋を作り直す。
  */
-import type { BuildingModel, Floor, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
+import type { BuildingModel, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
+import { buildFurniture, furnitureDims, FURNITURE_LABEL } from '../scene/furniture';
 import { ROOM_TYPE_LABEL } from '../core/types';
 import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
 import { h, clear, toast } from './dom';
 
-type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label';
+type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
 
 interface FloorWork {
@@ -56,12 +57,20 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let changed = false;
   let wallStart: Vec2 | null = null;
   let thickness = 120;
+  // 家具: 階ごとの手配置（null = 自動配置）
+  const furn = new Map<number, FurnitureItem[] | null>();
+  for (const f of model.floors) furn.set(f.level, model.furniture?.find((o) => o.level === f.level)?.items.map((it) => ({ ...it })) ?? null);
+  let furnSel: string | null = null;
+  let addKind: FurnitureKind | null = null;
+  let drag: { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null = null;
+  let autoCache: Map<number, FurnitureItem[]> | null = null;
+  let furnSeq = 0;
   const undo: string[] = [];
   const redo: string[] = [];
   let seq = 0;
 
   const W = () => works[fi];
-  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed });
+  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null });
   const pushUndo = () => {
     undo.push(`${fi}|${snapshot()}`);
     if (undo.length > 60) undo.shift();
@@ -74,7 +83,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     W().floor = o.floor;
     W().labels = o.labels;
     W().removed = o.removed;
+    furn.set(W().floor.level, o.furn ?? null);
+    autoCache = null;
     sel = null;
+    furnSel = null;
     draw();
   };
 
@@ -93,6 +105,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['door', '開き戸', '壁をクリックすると開き戸を置きます'],
     ['sliding', '引戸', '壁をクリックすると引戸を置きます'],
     ['label', '部屋名', '部屋の中をクリックして部屋名を置きます'],
+    ['furniture', '家具', '家具をドラッグで移動、R キーで回転、Delete で削除。右の一覧から追加できます'],
   ];
   const tools = h(
     'div',
@@ -266,7 +279,44 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       console.error(e);
       toast(`部屋の作り直しに失敗しました: ${(e as Error).message}`, 'error');
     }
+    autoCache = null;
     changed = true;
+  };
+
+  // ---- 家具 ----
+  /** この階に置く家具（手配置があればそれ、無ければ自動配置の結果） */
+  const itemsOf = (level: number): FurnitureItem[] => {
+    const ex = furn.get(level);
+    if (ex) return ex;
+    if (!autoCache) {
+      const tmp: BuildingModel = { ...model, floors: works.map((w) => w.floor), furniture: [...furn].filter(([, v]) => v).map(([lv, v]) => ({ level: lv, items: v! })) };
+      try {
+        autoCache = buildFurniture(tmp).items;
+      } catch (e) {
+        console.error(e);
+        autoCache = new Map();
+      }
+    }
+    return autoCache.get(level) ?? [];
+  };
+  /** 手で直す階にする（自動配置の結果を初期値に） */
+  const ensureExplicit = (level: number): FurnitureItem[] => {
+    let ex = furn.get(level);
+    if (!ex) {
+      ex = itemsOf(level).map((it) => ({ ...it }));
+      furn.set(level, ex);
+    }
+    return ex;
+  };
+  const furnCorners = (it: FurnitureItem) => {
+    const { w, d, v0 } = furnitureDims(it);
+    const r = (it.rot * Math.PI) / 180;
+    const ax = Math.cos(r);
+    const ay = Math.sin(r);
+    const ix = -Math.sin(r);
+    const iy = Math.cos(r);
+    const pt = (u: number, v: number) => ({ x: it.x + (ax * u + ix * v) * 1000, y: it.y + (ay * u + iy * v) * 1000 });
+    return { pts: [pt(-w / 2, v0), pt(w / 2, v0), pt(w / 2, v0 + d), pt(-w / 2, v0 + d)], c: pt(0, v0 + d / 2), front: [pt(-w / 2, v0 + d), pt(w / 2, v0 + d)] };
   };
 
   // ---- 描画 ----
@@ -279,11 +329,12 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
   const gGhost = document.createElementNS(NS, 'g');
   const gRooms = document.createElementNS(NS, 'g');
+  const gFurn = document.createElementNS(NS, 'g');
   const gWalls = document.createElementNS(NS, 'g');
   const gOps = document.createElementNS(NS, 'g');
   const gLabels = document.createElementNS(NS, 'g');
   const gPreview = document.createElementNS(NS, 'g');
-  svg.append(gGhost, gRooms, gWalls, gOps, gLabels, gPreview);
+  svg.append(gGhost, gRooms, gFurn, gWalls, gOps, gLabels, gPreview);
 
   const wallPoly = (w: Wall) => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -293,7 +344,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gWalls, gOps, gLabels, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gFurn, gWalls, gOps, gLabels, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
     // 他の階（位置合わせの目安）
@@ -304,6 +355,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       el('polygon', { points: r.polygon.map((p) => `${p.x},${p.y}`).join(' '), fill: ROOM_TINT[r.type] ?? '#efece6', stroke: '#fff', 'stroke-width': 20 }, gRooms);
       const a = el('text', { x: r.labelPos.x, y: r.labelPos.y + fs * 1.15, 'font-size': fs * 0.75, 'text-anchor': 'middle', fill: '#8b8f96' }, gRooms);
       a.textContent = `${(r.labeledTatami ?? r.area / 1.62).toFixed(1)}帖`;
+    }
+    // 家具（家具の道具のときだけ操作できる）
+    const furnMode = tool === 'furniture';
+    for (const it of itemsOf(f.level)) {
+      const { pts, c, front } = furnCorners(it);
+      const on = furnMode && furnSel === it.id;
+      const g = el('g', { class: 'pe-furn', 'pointer-events': furnMode ? 'auto' : 'none', opacity: furnMode ? 1 : 0.55 }, gFurn) as SVGGElement;
+      g.dataset.id = it.id;
+      el('polygon', { points: pts.map((q) => `${q.x},${q.y}`).join(' '), fill: on ? '#f3c89a' : '#d8cfc2', stroke: on ? '#d9822b' : '#8b8f96', 'stroke-width': on ? 30 : 12 }, g);
+      // 手前側（inward の端）を太線で
+      el('line', { x1: front[0].x, y1: front[0].y, x2: front[1].x, y2: front[1].y, stroke: on ? '#d9822b' : '#6d7178', 'stroke-width': 24 }, g);
+      const t = el('text', { x: c.x, y: c.y + fs * 0.3, 'font-size': fs * 0.6, 'text-anchor': 'middle', fill: '#4a4e55', 'pointer-events': 'none' }, g);
+      t.textContent = FURNITURE_LABEL[it.kind];
     }
     for (const w of f.walls) {
       const on = sel?.kind === 'wall' && sel.id === w.id;
@@ -351,6 +415,59 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     panel.append(h('h3', null, `${f.level}階の修正`));
     const tip = toolDefs.find((t) => t[0] === tool)![2];
     panel.append(h('p', { class: 'hint' }, tip));
+    if (tool === 'furniture') {
+      const level = f.level;
+      const ex = furn.get(level);
+      const items = itemsOf(level);
+      const it = furnSel ? items.find((x) => x.id === furnSel) : null;
+      if (it) {
+        const edit = (fn: (x: FurnitureItem) => void) => {
+          pushUndo();
+          const list = ensureExplicit(level);
+          const x = list.find((q) => q.id === it.id);
+          if (x) fn(x);
+          changed = true;
+          draw();
+        };
+        panel.append(h('div', { class: 'field-label' }, FURNITURE_LABEL[it.kind]));
+        panel.append(
+          h(
+            'div',
+            { class: 'btn-row' },
+            h('button', { class: 'btn sm', title: '左に 90° 回す（Shift+R）', onclick: () => edit((x) => (x.rot = ((x.rot - 90 + 540) % 360) - 180)) }, '↶ 90°'),
+            h('button', { class: 'btn sm', title: '右に 90° 回す（R）', onclick: () => edit((x) => (x.rot = ((x.rot + 90 + 540) % 360) - 180)) }, '↷ 90°'),
+          ),
+        );
+        if (['sofa', 'bed', 'tv', 'rug'].includes(it.kind))
+          panel.append(
+            h(
+              'label',
+              { class: 'field' },
+              h('span', { class: 'field-label' }, '幅 (m)'),
+              h('input', { type: 'number', step: 0.1, min: 0.6, max: 4, value: it.w ?? furnitureDims(it).w, onchange: (e: Event) => edit((x) => (x.w = +(e.target as HTMLInputElement).value)) }),
+            ),
+          );
+        if (it.kind === 'rug')
+          panel.append(
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, '奥行 (m)'), h('input', { type: 'number', step: 0.1, min: 0.6, max: 4, value: it.d ?? 1.6, onchange: (e: Event) => edit((x) => (x.d = +(e.target as HTMLInputElement).value)) })),
+          );
+        if (it.kind === 'kitchen' || it.kind === 'bath')
+          panel.append(
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, '長さ (m)'), h('input', { type: 'number', step: 0.1, min: 1, max: 6, value: it.len ?? (it.kind === 'kitchen' ? 3 : 1.6), onchange: (e: Event) => edit((x) => (x.len = +(e.target as HTMLInputElement).value)) })),
+          );
+        panel.append(h('button', { class: 'btn sm block', onclick: () => deleteSel() }, '消す（Delete）'));
+      }
+      panel.append(h('div', { class: 'field-label', style: 'margin-top:10px' }, addKind ? `${FURNITURE_LABEL[addKind]}: 置きたい所をクリック` : '家具を追加'));
+      const grid = h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px' });
+      for (const k of Object.keys(FURNITURE_LABEL) as FurnitureKind[])
+        grid.appendChild(h('button', { class: `btn sm ${addKind === k ? 'dark' : 'ghost'}`, onclick: () => { addKind = addKind === k ? null : k; renderPanel(); } }, FURNITURE_LABEL[k]));
+      panel.append(grid);
+      panel.append(
+        h('p', { class: 'hint', style: 'margin-top:8px' }, ex ? 'この階は手で置いた配置です' : 'この階は自動配置です（動かすと手配置になります）'),
+        h('button', { class: 'btn sm ghost block', disabled: !ex, onclick: () => { pushUndo(); furn.set(level, null); autoCache = null; furnSel = null; changed = true; draw(); } }, '自動配置に戻す（この階）'),
+      );
+      return;
+    }
     if (sel?.kind === 'wall') {
       const sid = sel.id;
       const w = f.walls.find((x) => x.id === sid);
@@ -462,6 +579,17 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const deleteSel = () => {
+    if (tool === 'furniture') {
+      if (!furnSel) return;
+      pushUndo();
+      const list = ensureExplicit(W().floor.level);
+      const i = list.findIndex((x) => x.id === furnSel);
+      if (i >= 0) list.splice(i, 1);
+      furnSel = null;
+      changed = true;
+      draw();
+      return;
+    }
     if (!sel) return;
     pushUndo();
     const wk = W();
@@ -486,7 +614,9 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     tool = t;
     wallStart = null;
     sel = null;
-    svg.style.cursor = t === 'select' ? 'default' : 'crosshair';
+    furnSel = null;
+    addKind = null;
+    svg.style.cursor = t === 'select' || t === 'furniture' ? 'default' : 'crosshair';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
   };
@@ -574,6 +704,30 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const p = toMm(e);
+    if (tool === 'furniture') {
+      const level = W().floor.level;
+      if (addKind) {
+        pushUndo();
+        const list = ensureExplicit(level);
+        const id = `fu${++furnSeq}`;
+        const defaults: Partial<FurnitureItem> = addKind === 'sofa' ? { w: 2.1 } : addKind === 'bed' ? { w: 1.4 } : addKind === 'tv' ? { w: 1.8 } : addKind === 'rug' ? { w: 2.2, d: 1.6 } : addKind === 'kitchen' ? { len: 2.7 } : addKind === 'bath' ? { len: 1.6 } : {};
+        list.push({ id, kind: addKind, x: Math.round(p.x), y: Math.round(p.y), rot: 0, ...defaults });
+        furnSel = id;
+        addKind = null;
+        changed = true;
+        draw();
+        return;
+      }
+      const g = (e.target as SVGElement).closest('.pe-furn') as SVGGElement | null;
+      if (g?.dataset.id) {
+        furnSel = g.dataset.id;
+        const it = itemsOf(level).find((x) => x.id === furnSel);
+        if (it) drag = { id: it.id, sx: p.x, sy: p.y, ox: it.x, oy: it.y, moved: false };
+        svg.setPointerCapture(e.pointerId);
+      } else furnSel = null;
+      draw();
+      return;
+    }
     if (tool === 'select') {
       const t = e.target as SVGElement;
       if (t.classList.contains('pe-label')) sel = { kind: 'label', index: +(t.dataset.index ?? -1) };
@@ -609,6 +763,24 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     const p = toMm(e);
     const px = mmPerPx();
+    if (drag) {
+      const dx = p.x - drag.sx;
+      const dy = p.y - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 3 * px) return;
+      if (!drag.moved) {
+        pushUndo();
+        drag.moved = true;
+      }
+      const list = ensureExplicit(W().floor.level);
+      const it = list.find((x) => x.id === drag!.id);
+      if (it) {
+        it.x = Math.round((drag.ox + dx) / 10) * 10;
+        it.y = Math.round((drag.oy + dy) / 10) * 10;
+        changed = true;
+        draw();
+      }
+      return;
+    }
     if (tool === 'wall') {
       const s = snap(p, wallStart, e.shiftKey);
       el('circle', { cx: s.p.x, cy: s.p.y, r: 5 * px, fill: s.hint ? '#d9822b' : '#22252a' }, gPreview);
@@ -627,6 +799,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   });
   svg.addEventListener('pointerup', () => {
     pan = null;
+    drag = null;
   });
   const onKey = (e: KeyboardEvent) => {
     const tg = e.target as HTMLElement;
@@ -643,6 +816,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     } else if (e.key === 'Escape') {
       wallStart = null;
       sel = null;
+      addKind = null;
+      draw();
+    } else if (tool === 'furniture' && furnSel && e.key.toLowerCase() === 'r') {
+      e.preventDefault();
+      pushUndo();
+      const list = ensureExplicit(W().floor.level);
+      const it = list.find((x) => x.id === furnSel);
+      if (it) it.rot = ((it.rot + (e.shiftKey ? -90 : 90) + 540) % 360) - 180;
+      changed = true;
       draw();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
@@ -699,6 +881,9 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     root.remove();
     if (apply && changed) {
       works.forEach((w, i) => (model.floors[i] = w.floor));
+      const fl = [...furn].filter(([, v]) => v).map(([level, v]) => ({ level, items: v! }));
+      if (fl.length) model.furniture = fl;
+      else delete model.furniture;
       onDone(true);
     } else onDone(false);
   };

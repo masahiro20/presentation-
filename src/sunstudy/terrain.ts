@@ -66,9 +66,9 @@ export function demTileUrl(spec: DemSourceSpec, x: number, y: number): string {
 // 画素のデコード
 // ---------------------------------------------------------------------------
 
-/** 標高タイル PNG の画素 → 標高 (m)。無効値 (128,0,0) は NaN */
-export function decodeDemPixel(r: number, g: number, b: number): number {
-  if (r === 128 && g === 0 && b === 0) return NaN;
+/** 標高タイル PNG の画素 → 標高 (m)。無効値 (128,0,0) と不透明でない画素（alpha ≠ 255）は NaN */
+export function decodeDemPixel(r: number, g: number, b: number, a = 255): number {
+  if (a !== 255 || (r === 128 && g === 0 && b === 0)) return NaN;
   const x = r * 65536 + g * 256 + b;
   return (x < 8388608 ? x : x - 16777216) * 0.01;
 }
@@ -122,6 +122,10 @@ export interface DemMosaic extends TileRange {
   nx: number;
   ny: number;
   values: Float32Array;
+  /** タイルごとの取得成否（index = (ty - y0) * tilesX + (tx - x0)、1 = 200 で取得できた） */
+  tileOk: Uint8Array;
+  /** 画素ごとに「いずれかのデータソースにタイルがあった」か（1 = あった）。全ソースで 404 の領域（海など）を見分ける */
+  covered: Uint8Array;
   /** 取得できたタイル数 (200) */
   okTiles: number;
   /** 提供されていないタイル数 (404) */
@@ -136,15 +140,18 @@ export function createMosaic(range: TileRange): DemMosaic {
   const ny = (range.y1 - range.y0 + 1) * DEM_TILE;
   const values = new Float32Array(nx * ny);
   values.fill(NaN);
-  return { ...range, nx, ny, values, okTiles: 0, missingTiles: 0, failedTiles: 0, totalTiles: tileCount(range) };
+  const totalTiles = tileCount(range);
+  return { ...range, nx, ny, values, tileOk: new Uint8Array(totalTiles), covered: new Uint8Array(nx * ny), okTiles: 0, missingTiles: 0, failedTiles: 0, totalTiles };
 }
 
-/** タイル画像の RGBA 画素列（DEM_TILE × DEM_TILE）をデコードしてモザイクに書き込む */
+/** タイル画像の RGBA 画素列（DEM_TILE × DEM_TILE）をデコードしてモザイクに書き込む。alpha ≠ 255 の画素も無効値 */
 export function writeTile(m: DemMosaic, tx: number, ty: number, rgba: Uint8ClampedArray | Uint8Array): void {
   const ox = (tx - m.x0) * DEM_TILE;
   const oy = (ty - m.y0) * DEM_TILE;
   if (ox < 0 || oy < 0 || ox + DEM_TILE > m.nx || oy + DEM_TILE > m.ny) throw new Error('タイルがモザイクの範囲外です');
+  m.tileOk[(ty - m.y0) * (m.x1 - m.x0 + 1) + (tx - m.x0)] = 1;
   const v = m.values;
+  const cov = m.covered;
   let p = 0;
   for (let row = 0; row < DEM_TILE; row++) {
     let k = (oy + row) * m.nx + ox;
@@ -152,7 +159,9 @@ export function writeTile(m: DemMosaic, tx: number, ty: number, rgba: Uint8Clamp
       const r = rgba[p];
       const g = rgba[p + 1];
       const b = rgba[p + 2];
-      if (r === 128 && g === 0 && b === 0) {
+      const a = rgba[p + 3];
+      cov[k] = 1;
+      if (a !== 255 || (r === 128 && g === 0 && b === 0)) {
         v[k] = NaN;
       } else {
         const x = r * 65536 + g * 256 + b;
@@ -171,25 +180,50 @@ export function countNaN(values: ArrayLike<number>): number {
 /**
  * 細かいモザイクの NaN を、粗いモザイクをバイリニア補間で再標本化して埋める。
  * どちらも Web メルカトルのタイル画素なので、対応はタイル座標の算術だけで決まる。
+ * 粗い側にタイルがあった（200）画素は covered に記録する。
  * @returns 残った NaN の数
  */
 export function fillFromCoarser(fine: DemMosaic, coarse: DemMosaic): number {
   const s = 2 ** (coarse.z - fine.z);
-  // 列ごとの粗い側の画素座標（画素中心 = 整数）
+  const tilesX = coarse.x1 - coarse.x0 + 1;
+  const tilesY = coarse.y1 - coarse.y0 + 1;
+  // 列ごとの粗い側の画素座標（画素中心 = 整数）とタイル列
   const fxs = new Float64Array(fine.nx);
-  for (let c = 0; c < fine.nx; c++) fxs[c] = ((fine.x0 + (c + 0.5) / DEM_TILE) * s - coarse.x0) * DEM_TILE - 0.5;
+  const tcx = new Int32Array(fine.nx);
+  for (let c = 0; c < fine.nx; c++) {
+    fxs[c] = ((fine.x0 + (c + 0.5) / DEM_TILE) * s - coarse.x0) * DEM_TILE - 0.5;
+    tcx[c] = Math.min(tilesX - 1, Math.max(0, Math.floor((fxs[c] + 0.5) / DEM_TILE)));
+  }
   let remaining = 0;
   for (let r = 0; r < fine.ny; r++) {
     const fy = ((fine.y0 + (r + 0.5) / DEM_TILE) * s - coarse.y0) * DEM_TILE - 0.5;
+    const tcy = Math.min(tilesY - 1, Math.max(0, Math.floor((fy + 0.5) / DEM_TILE)));
     const base = r * fine.nx;
     for (let c = 0; c < fine.nx; c++) {
       const k = base + c;
       const v = fine.values[k];
       if (v === v) continue;
+      if (coarse.tileOk[tcy * tilesX + tcx[c]]) fine.covered[k] = 1;
       const h = bilinear(coarse.values, coarse.nx, coarse.ny, fxs[c], fy);
       if (h === h) fine.values[k] = h;
       else remaining++;
     }
+  }
+  return remaining;
+}
+
+/**
+ * どのデータソースにもタイルが無かった（すべて 404）画素を value（既定 0 m = 海面 T.P.）で埋める。
+ * タイルはあったが無効値だった画素はそのまま（NaN）。
+ * @returns 残った NaN の数
+ */
+export function fillUncovered(m: DemMosaic, value = 0): number {
+  let remaining = 0;
+  const v = m.values;
+  for (let k = 0; k < v.length; k++) {
+    if (v[k] === v[k]) continue;
+    if (!m.covered[k]) v[k] = value;
+    else remaining++;
   }
   return remaining;
 }
@@ -338,11 +372,106 @@ export async function fetchHeightGrid(lat: number, lon: number, radiusM: number,
       if (!coarse.okTiles) continue;
       remaining = fillFromCoarser(mosaic, coarse);
     }
-    if (remaining >= mosaic.values.length) throw new Error('標高データがすべて無効値でした（海上などの可能性があります）');
+    // どのデータにもタイルが無い領域（海など）は海面 T.P. 0 m。無効値だけが残った場合も全面なら 0 m
+    if (remaining > 0) remaining = fillUncovered(mosaic, 0);
+    if (remaining >= mosaic.values.length) mosaic.values.fill(0);
     onProgress?.(`標高データ（${spec.label}）を読み込みました`);
     return mosaicToGrid(mosaic, lat, lon, spec.id);
   }
-  throw new Error(sawNetworkError ? '国土地理院の標高タイルサーバーに接続できませんでした（インターネット接続を確認してください）' : 'この地域の標高タイルは提供されていません');
+  if (sawNetworkError) throw new Error('国土地理院の標高タイルサーバーに接続できませんでした（インターネット接続を確認してください）');
+  throw new Error('この地域の標高タイルは提供されていません');
+}
+
+// ---------------------------------------------------------------------------
+// 遠方の地平線（周囲 ±10 km の山並み。冬の低い太陽を遮る）
+// ---------------------------------------------------------------------------
+
+/** 方位ごとの地形の最大仰角 */
+export interface HorizonProfile {
+  /** 360 要素。index = 方位（真北から時計回り、度）、値 = その方向の地形の最大仰角（度、0 以上） */
+  elevDeg: Float32Array;
+  /** 'dem10b' | 'none'（取得できず平ら） */
+  source: string;
+  radiusKm: number;
+}
+
+/** 遠方地形に使う標高タイル: DEM10B を z=12（約 38 m/画素、1 タイル ≈ 9.8 km）で取得 */
+export const HORIZON_SOURCE: DemSourceSpec = { id: 'dem10b', layer: 'dem_png', z: 12, label: '10m' };
+/** 観測者の目の高さ（地盤からの m） */
+export const HORIZON_OBSERVER_HEIGHT = 2;
+/** これより近い地形は無視する（近傍の地形はメッシュとして別に扱う） */
+export const HORIZON_MIN_DIST = 150;
+
+/** 平らな地平線（取得できなかったとき） */
+export function flatHorizon(radiusKm = 10, source = 'none'): HorizonProfile {
+  return { elevDeg: new Float32Array(360), source, radiusKm };
+}
+
+/**
+ * 標高の格子から方位ごとの最大仰角を求める（純粋関数）。
+ * ピンから minDist より遠い有効な画素ごとに方位（atan2(e, n)）と仰角 atan((h - siteElev - observerH) / dist) を計算し、
+ * 1° のビンごとに最大値を取る。サンプルの無いビンは 0。負の仰角は 0 に丸める。
+ */
+export function horizonFromGrid(g: HeightGrid, siteElev: number, minDist = HORIZON_MIN_DIST, observerH = HORIZON_OBSERVER_HEIGHT): HorizonProfile {
+  const elevDeg = new Float32Array(360);
+  elevDeg.fill(-Infinity);
+  const { nx, ny } = g;
+  const dx = (g.east - g.west) / nx;
+  const dy = (g.north - g.south) / ny;
+  const eye = siteElev + observerH;
+  const minD2 = minDist * minDist;
+  const RAD = 180 / Math.PI;
+  const v = g.values;
+  for (let r = 0; r < ny; r++) {
+    const n = g.north - (r + 0.5) * dy;
+    const base = r * nx;
+    for (let c = 0; c < nx; c++) {
+      const h = v[base + c];
+      if (h !== h) continue;
+      const e = g.west + (c + 0.5) * dx;
+      const d2 = e * e + n * n;
+      if (d2 < minD2) continue;
+      const dist = Math.sqrt(d2);
+      const ang = Math.atan((h - eye) / dist) * RAD;
+      let az = Math.atan2(e, n) * RAD;
+      if (az < 0) az += 360;
+      let bin = Math.floor(az);
+      if (bin >= 360) bin -= 360;
+      if (ang > elevDeg[bin]) elevDeg[bin] = ang;
+    }
+  }
+  for (let i = 0; i < 360; i++) if (!(elevDeg[i] > 0)) elevDeg[i] = 0;
+  const radiusKm = Math.max(g.east - g.west, g.north - g.south) / 2000;
+  return { elevDeg, source: g.source, radiusKm };
+}
+
+/** 方位 azDeg（真北から時計回り）の地平線の仰角（隣のビンと線形補間） */
+export function horizonElevation(p: HorizonProfile, azDeg: number): number {
+  const a = ((azDeg % 360) + 360) % 360;
+  const i0 = Math.floor(a) % 360;
+  const i1 = (i0 + 1) % 360;
+  const t = a - Math.floor(a);
+  return p.elevDeg[i0] * (1 - t) + p.elevDeg[i1] * t;
+}
+
+/**
+ * ピン位置の周囲 ±radiusKm（既定 10 km）の DEM10B（z=12）から、方位ごとの地形の最大仰角を求める。
+ * 失敗したときは例外を投げず、平らな地平線（source 'none'）を返す。
+ */
+export async function fetchHorizonProfile(lat: number, lon: number, siteElev: number, opts: { signal?: AbortSignal; radiusKm?: number } = {}): Promise<HorizonProfile> {
+  const radiusKm = opts.radiusKm ?? 10;
+  try {
+    if (typeof document === 'undefined' || typeof fetch !== 'function') return flatHorizon(radiusKm);
+    const range = demTileRange(lat, lon, radiusKm * 1000, HORIZON_SOURCE.z);
+    const m = await fetchMosaic(HORIZON_SOURCE, range, { signal: opts.signal });
+    if (!m.okTiles) return flatHorizon(radiusKm);
+    const grid = mosaicToGrid(m, lat, lon, HORIZON_SOURCE.id);
+    const p = horizonFromGrid(grid, Number.isFinite(siteElev) ? siteElev : 0);
+    p.radiusKm = radiusKm;
+    return p;
+  } catch {
+    return flatHorizon(radiusKm);
+  }
 }
 
 // ---------------------------------------------------------------------------

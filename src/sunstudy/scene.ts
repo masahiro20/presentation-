@@ -51,6 +51,7 @@ export class StudyScene {
    *  sunpath   太陽の通り道・方位リング・太陽マーカー（影を落とさない）
    *  overlay   解析結果（日照時間マップ・面の色分け）
    *  markers   測定点
+   *  align     位置合わせ中の目印（①②の円盤と対応線。environment.ts は触らない。影を落とさない・解析から除く）
    */
   readonly groups = {
     terrain: new THREE.Group(),
@@ -60,6 +61,7 @@ export class StudyScene {
     sunpath: new THREE.Group(),
     overlay: new THREE.Group(),
     markers: new THREE.Group(),
+    align: new THREE.Group(),
   };
   sunDir = new THREE.Vector3(0.4, 0.7, 0.5).normalize();
   navMode: 'orbit' | 'pan' = 'orbit';
@@ -166,6 +168,7 @@ export class StudyScene {
     this.groups.sunpath.name = 'sunpath';
     this.groups.overlay.name = 'overlay';
     this.groups.markers.name = 'markers';
+    this.groups.align.name = 'align';
 
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);

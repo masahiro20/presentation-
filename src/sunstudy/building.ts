@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { PlacedModel } from './importModel';
 import type { StudyScene } from './scene';
 import { study } from './state';
-import type { ImportedModel } from './types';
+import type { EN, ImportedModel } from './types';
 
 let placed: PlacedModel | null = null;
 
@@ -79,4 +79,40 @@ export function buildingExtent(): number {
 /** 建物の足跡（ピンからの東・北 m）。無ければ null */
 export function buildingFootprintEN(): { e: number; n: number }[] | null {
   return placed ? placed.footprintEN() : null;
+}
+
+/**
+ * シーン無しで配置済み建物を用意する（建設地のステップは 3D を持たないが、地図に足跡を描きたい）。
+ * ensurePlaced(scene) が後で呼ばれると、同じインスタンスが building グループに入る
+ */
+export function ensurePlacedData(): PlacedModel | null {
+  const m = study.model;
+  if (!m) return placed;
+  if (placed && placed.model !== m) {
+    disposeModelGeometry(placed.model);
+    placed.dispose();
+    placed = null;
+  }
+  if (!placed) placed = new PlacedModel(m, study.placement);
+  else placed.placement = study.placement;
+  return placed;
+}
+
+/** 建物の外形（壁の高さ帯の凸包。軒先を含まない）。ピンからの東・北 m。3 点未満なら null */
+export function buildingOutlineEN(): EN[] | null {
+  if (!placed) return null;
+  const o = placed.outlineEN();
+  return o.length >= 3 ? o : null;
+}
+
+/** 建物の外形（全高さの凸包。軒先を含む = 航空写真で見える外形）。3 点未満なら null */
+export function buildingEavesOutlineEN(): EN[] | null {
+  if (!placed) return null;
+  const o = placed.outlineEN({ yMin: 0, yMax: Infinity });
+  return o.length >= 3 ? o : null;
+}
+
+/** 周辺建物の除外・周辺環境の作り直しに使う外形: 軒先の凸包、取れなければ足跡の矩形 */
+export function buildingExclusionEN(): EN[] | null {
+  return buildingEavesOutlineEN() ?? buildingFootprintEN();
 }

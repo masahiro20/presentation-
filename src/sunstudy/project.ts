@@ -15,7 +15,7 @@ import { resetPlaced } from './building';
 import { emit, study } from './state';
 import { sampleHeight } from './terrain';
 import { DEFAULT_PLACEMENT } from './types';
-import type { AerialImage, GeoFrame, HeightGrid, LatLon, ModelPlacement, Neighbor, ProjectEnv, ProjectJson } from './types';
+import type { AerialImage, GeoFrame, HeightGrid, LatLon, ModelPlacement, Neighbor, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
 
 /** 同梱する 3D データの上限 (bytes) */
 const MODEL_LIMIT = 40 * 1024 * 1024;
@@ -136,6 +136,38 @@ async function decodeAerial(a: NonNullable<ProjectEnv['aerial']>): Promise<Aeria
 // ---------------------------------------------------------------------------
 
 const isLatLon = (p: unknown): p is LatLon => !!p && typeof p === 'object' && Number.isFinite((p as LatLon).lat) && Number.isFinite((p as LatLon).lon);
+const isEN = (p: unknown): p is { e: number; n: number } => !!p && typeof p === 'object' && Number.isFinite((p as { e: number }).e) && Number.isFinite((p as { n: number }).n);
+
+/** 保存データの位置合わせの記録を検査して整える（無い・壊れている部分は捨てる）。古いデータには無い */
+function sanitizeAlignment(a: unknown): PlacementAlignment | undefined {
+  if (!a || typeof a !== 'object') return undefined;
+  const x = a as Record<string, unknown>;
+  const out: PlacementAlignment = { at: typeof x.at === 'string' ? x.at : '' };
+  if (x.kind === 'twoPoint' || x.kind === 'siteFit' || x.kind === 'orient') out.kind = x.kind;
+  if (Array.isArray(x.pairs)) {
+    const pairs = x.pairs
+      .filter((q): q is { local: { e: number; n: number }; target: LatLon } => !!q && typeof q === 'object' && isEN((q as { local: unknown }).local) && isLatLon((q as { target: unknown }).target))
+      .map((q) => ({ local: { e: +q.local.e, n: +q.local.n }, target: { lat: +q.target.lat, lon: +q.target.lon } }));
+    if (pairs.length) out.pairs = pairs;
+  }
+  for (const k of ['unitScaleM', 'rmsM', 'scaleRatio'] as const) if (Number.isFinite(x[k] as number)) out[k] = x[k] as number;
+  if (typeof x.mirror === 'boolean') out.mirror = x.mirror;
+  if (x.upAxis === 'z' || x.upAxis === 'y') out.upAxis = x.upAxis;
+  if (isLatLon(x.pivotLatLon)) out.pivotLatLon = { lat: +x.pivotLatLon.lat, lon: +x.pivotLatLon.lon };
+  // 2 点合わせなのに対応点が無ければ、種類は外して pivot の記録だけ残す
+  if (out.kind === 'twoPoint' && !out.pairs) delete out.kind;
+  return out;
+}
+
+/** 保存データの配置を今の形に（新しい任意項目が無くても既定値で埋める） */
+function sanitizePlacement(pl: Partial<ModelPlacement> | undefined): ModelPlacement {
+  const p = pl ?? {};
+  const out: ModelPlacement = { ...DEFAULT_PLACEMENT, ...p, hiddenObjects: Array.isArray(p.hiddenObjects) ? p.hiddenObjects.filter((s) => typeof s === 'string') : [] };
+  const al = sanitizeAlignment(p.alignment);
+  if (al) out.alignment = al;
+  else delete out.alignment;
+  return out;
+}
 
 function buildProject(notes: string[]): ProjectJson {
   const m = study.model;
@@ -224,10 +256,11 @@ export async function applyProject(p: ProjectJson): Promise<void> {
     ? ({ lat: +p.frame.lat, lon: +p.frame.lon, address: typeof p.frame.address === 'string' ? p.frame.address : '', groundElev: Number.isFinite(p.frame.groundElev as number) ? (p.frame.groundElev as number) : null } satisfies GeoFrame)
     : null;
   study.sitePolygon = Array.isArray(p.sitePolygon) ? p.sitePolygon.filter(isLatLon).map((q) => ({ lat: +q.lat, lon: +q.lon })) : [];
-  const pl = (p.placement ?? {}) as Partial<ModelPlacement>;
-  study.placement = { ...DEFAULT_PLACEMENT, ...pl, hiddenObjects: Array.isArray(pl.hiddenObjects) ? pl.hiddenObjects.filter((s) => typeof s === 'string') : [] };
+  study.placement = sanitizePlacement(p.placement as Partial<ModelPlacement> | undefined);
   study.neighborOverrides = p.neighborOverrides && typeof p.neighborOverrides === 'object' ? { ...p.neighborOverrides } : {};
-  study.points = Array.isArray(p.points) ? p.points : [];
+  // 測定点は最後に入れる（下の 'placement' などの発火で古い結果を捨てる処理が走り、復元した結果まで消えないように）
+  const points = Array.isArray(p.points) ? p.points : [];
+  study.points = [];
   study.results = { images: [] };
 
   // 周辺環境
@@ -280,7 +313,11 @@ export async function applyProject(p: ProjectJson): Promise<void> {
     }
   }
 
-  for (const ev of ['frame', 'site', 'model', 'placement', 'neighbors', 'points', 'project', 'env']) emit(ev);
+  for (const ev of ['frame', 'site', 'model', 'placement', 'neighbors', 'project', 'env']) emit(ev);
+  // 測定点（解析結果込み）は配置・周辺環境のイベントの後で入れる。
+  // 注意: その後に「建設地」で周辺環境を再取得すると（地形が変わるので）結果は捨てられる（loadEnvironment の 'frame'）
+  study.points = points;
+  emit('points');
 }
 
 /** ファイルから読込 */
@@ -347,7 +384,7 @@ export function readRecent(): RecentData | null {
     return {
       frame: isLatLon(d.frame) ? { lat: +d.frame.lat, lon: +d.frame.lon, address: typeof d.frame.address === 'string' ? d.frame.address : '', groundElev: Number.isFinite(d.frame.groundElev as number) ? (d.frame.groundElev as number) : null } : null,
       sitePolygon: Array.isArray(d.sitePolygon) ? d.sitePolygon.filter(isLatLon).map((q) => ({ lat: +q.lat, lon: +q.lon })) : [],
-      placement: { ...DEFAULT_PLACEMENT, ...(d.placement ?? {}), hiddenObjects: Array.isArray(d.placement?.hiddenObjects) ? d.placement!.hiddenObjects.filter((s) => typeof s === 'string') : [] },
+      placement: sanitizePlacement(d.placement),
       name: typeof d.name === 'string' ? d.name : '',
       customer: typeof d.customer === 'string' ? d.customer : '',
       company: typeof d.company === 'string' ? d.company : '',

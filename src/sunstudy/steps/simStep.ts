@@ -13,7 +13,7 @@ import { formatHM, keyDates, localDate, sunDirectionWorld, sunPosition, sunriseS
 import type { CameraProgram } from '../../video/paths';
 import { recordProgram } from '../../video/recorder';
 import { facadeSunHours, groundHeatmapMesh, groundSunHoursStudy, measureMarker, measurePointHours, shadowDiagramStudy, studyDates } from '../analysis';
-import { buildingCenter, buildingExtent, buildingFootprintEN, currentPlaced, ensurePlaced } from '../building';
+import { buildingCenter, buildingExclusionEN, buildingExtent, buildingFootprintEN, currentPlaced, ensurePlaced } from '../building';
 import { groundYWorld, loadEnvironment, rebuildEnvironment, sitePolygonWorld } from '../environment';
 import { makeManualNeighbor } from '../neighbors';
 import { downloadProject } from '../project';
@@ -200,7 +200,15 @@ function disposeMesh(m: THREE.Mesh) {
   }
 }
 
-/** 解析結果の表示（日照時間マップ・面の日照時間）を捨てる。周辺環境や建物の配置が変わると古い結果は意味を持たない */
+/** 結果を捨てた後に画面を更新する（mount 中だけ設定される） */
+let onResultsDropped: (() => void) | null = null;
+
+/**
+ * 解析結果（日照時間マップ・面の日照時間・日影図・測定点の結果・季節比較の画像）を捨てる。
+ * 周辺環境や建物の配置が変わると古い結果は意味を持たない。
+ * プロジェクトの読込は、測定点を最後に入れてから 'points' を発火するので、復元した結果はここで消えない（project.ts）。
+ * 周辺環境の再取得（loadEnvironment の 'frame'）では地形が変わるので捨てる
+ */
 function dropOverlays() {
   for (const m of [heat, facade]) {
     if (!m) continue;
@@ -213,6 +221,12 @@ function dropOverlays() {
   delete study.results.heatmapLabel;
   delete study.results.facadeUrl;
   delete study.results.facadeLabel;
+  delete study.results.diagramSvg;
+  delete study.results.diagramSummary;
+  delete study.results.diagramRef;
+  study.results.images = [];
+  for (const p of study.points) delete p.results;
+  onResultsDropped?.();
 }
 
 /** 直近のタイムラプス動画の URL（次の書き出し・画面を離れるときに解放） */
@@ -272,9 +286,10 @@ export const simStep: StudyStep = {
     const existingPath = scene.userData.sunPath as SunPath | undefined;
     const sunPath: SunPath = existingPath ?? new SunPath(scene.groups.sunpath);
     scene.userData.sunPath = sunPath;
-    const center = buildingCenter();
-    const R = Math.max(22, buildingExtent() * 1.6);
-    const bh = currentPlaced()?.dimensions().h ?? 0;
+    // 視点・太陽の通り道・影の範囲の基準（建物の配置が変わったら 'placement' で取り直す）
+    let center = buildingCenter();
+    let R = Math.max(22, buildingExtent() * 1.6);
+    let bh = currentPlaced()?.dimensions().h ?? 0;
 
     const applyShow = () => {
       scene.groups.neighbors.visible = study.show.neighbors;
@@ -284,7 +299,7 @@ export const simStep: StudyStep = {
       scene.invalidate();
     };
     const rebuildEnv = () => {
-      rebuildEnvironment(scene, buildingFootprintEN());
+      rebuildEnvironment(scene, buildingExclusionEN());
       builtVersion = envVersion;
       applyShow();
     };
@@ -1400,6 +1415,15 @@ export const simStep: StudyStep = {
     );
 
     // ---- 状態の変化に追従 ----
+    onResultsDropped = () => {
+      renderPoints();
+      renderImages();
+      syncHeatUI();
+      syncFacadeUI();
+    };
+    disposers.push(() => {
+      onResultsDropped = null;
+    });
     disposers.push(
       on('neighbors', () => {
         dropOverlays();
@@ -1408,6 +1432,21 @@ export const simStep: StudyStep = {
         renderSite();
         renderChipsLine();
         renderDiagramInfo();
+      }),
+      on('placement', () => {
+        // 建物の配置が変わった（別のステップからの通知・ピンの移動）: 視点の基準・太陽の通り道・影の範囲・周辺建物の除外を取り直す
+        ensurePlaced(scene);
+        center = buildingCenter();
+        R = Math.max(22, buildingExtent() * 1.6);
+        bh = currentPlaced()?.dimensions().h ?? 0;
+        rebuildEnv();
+        buildPath();
+        scene.fitShadow(center, Math.max(45, buildingExtent() * 1.5));
+        renderSite();
+        renderChipsLine();
+        renderNeighborList();
+        renderDiagramInfo();
+        apply(true);
       }),
       on('points', () => {
         rebuildMarkers();

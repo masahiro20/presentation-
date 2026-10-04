@@ -225,6 +225,7 @@ export class MapPicker {
   private _polyMode = false;
 
   private footprint: { e: number; n: number }[] | null = null;
+  private footprintInner: { e: number; n: number }[] | null = null;
   private neighborRings: { e: number; n: number }[][] | null = null;
   private radiusM: number | null = null;
 
@@ -377,8 +378,10 @@ export class MapPicker {
   // ----- オーバーレイ -----------------------------------------------------
 
   /** 建物の足跡（ピンからの東・北 m の多角形）を表示。null で消す */
-  setFootprint(fp: { e: number; n: number }[] | null): void {
+  setFootprint(fp: { e: number; n: number }[] | null, inner: { e: number; n: number }[] | null = null): void {
     this.footprint = fp && fp.length >= 3 ? fp.map((q) => ({ e: q.e, n: q.n })) : null;
+    // 内側の線（壁の外形）。塗りは軒先（航空写真で見える外形）、濃い線は壁
+    this.footprintInner = inner && inner.length >= 3 ? inner.map((q) => ({ e: q.e, n: q.n })) : null;
     this.requestDraw();
   }
   /** 周辺建物の輪郭（ピンからの東・北 m）を薄く表示 */
@@ -987,9 +990,21 @@ export class MapPicker {
       ctx.closePath();
       ctx.fillStyle = 'rgba(47,79,107,0.35)';
       ctx.fill();
-      ctx.strokeStyle = '#2f4f6b';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = this.footprintInner ? 'rgba(47,79,107,0.55)' : '#2f4f6b';
+      ctx.lineWidth = this.footprintInner ? 1 : 2;
       ctx.stroke();
+      if (this.footprintInner) {
+        ctx.beginPath();
+        this.footprintInner.forEach((q, i) => {
+          const s = toScreen(q);
+          if (i === 0) ctx.moveTo(s.x, s.y);
+          else ctx.lineTo(s.x, s.y);
+        });
+        ctx.closePath();
+        ctx.strokeStyle = '#1f3a52';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
     }
 
     if (this.radiusM) {

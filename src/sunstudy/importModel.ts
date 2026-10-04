@@ -19,7 +19,9 @@
  */
 import * as THREE from 'three';
 import { TDSLoader } from 'three/examples/jsm/loaders/TDSLoader.js';
-import type { ImportedModel, LengthUnit, ModelFormat, ModelObjectInfo, ModelPlacement, UpAxis } from './types';
+import { convexHull } from '../sun/align';
+import { localToEN, sectionOutline } from './alignment';
+import type { EN, ImportedModel, LengthUnit, ModelFormat, ModelObjectInfo, ModelPlacement, UpAxis } from './types';
 import { UNIT_METERS } from './types';
 
 export const ACCEPT_EXT = ['3ds', 'obj', 'stl', 'glb', 'gltf', 'fbx'];
@@ -29,10 +31,16 @@ const WHITE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAAC
 
 /** ガラスと見なす名前（メッシュ名・マテリアル名） */
 const GLASS_RE = /glass|ガラス|window|窓/i;
-/** 建物以外（地面・敷地・ダミー・カメラ・ライト）と見なすオブジェクト名（名前の先頭で判定。skylight・Ground floor・Site_wall などは建物） */
-const NON_BUILDING_RE = /^(ground|site|terrain|plane|dummy|camera|light)(?![a-z])|^(地盤|敷地|地面)/i;
+/** 建物以外（地面・敷地・ダミー・カメラ・ライト）と見なすオブジェクト名（名前の先頭で判定。skylight・Ground floor・Site_wall・Landing などは建物） */
+const NON_BUILDING_RE = /^(ground|site|lot|parcel|land|terrain|plane|dummy|camera|light)(?![a-z])|^(地盤|敷地|地面)/i;
 /** 名前に含まれていれば建物の部位とみなし、NON_BUILDING_RE に当たっても除外しない */
 const BUILDING_PART_RE = /floor|wall|roof|window|door|slab|stair|balcony|壁|床|屋根|窓|扉|階段/i;
+/** 敷地（site / lot / parcel / land / 敷地）のオブジェクト名か。Site_wall・Landing・landscape_fence などは建物の部位なので敷地ではない */
+export function isSiteObjectName(name: string): boolean {
+  return /^(site|lot|parcel|land)(?![a-z])|^敷地/i.test(name) && !BUILDING_PART_RE.test(name);
+}
+/** 外形（壁の高さ帯）の既定の切り出し範囲: 底面から 0.3 m 〜 min(2.0 m, 高さの 60 %) */
+export const WALL_SLICE = { yMin: 0.3, yMax: 2.0, heightRatio: 0.6 } as const;
 /** 名前の無いオブジェクトのまとめ名 */
 const UNNAMED = '(名前なし)';
 
@@ -581,6 +589,25 @@ export function applyAppearance(root: THREE.Object3D, mode: 'white' | 'original'
 // 配置
 // ---------------------------------------------------------------------------
 
+/**
+ * 正規化の行列（単位 → m、鏡像なら x 反転、Z-up → Y-up）: raw の座標 → 水平中心を合わせる前の pivot ローカル。
+ * PlacedModel.rebuild() の inner と同じ値（外形・敷地オブジェクトの計算で同じ変換を使うために共有する）
+ */
+export function innerMatrix(p: Pick<ModelPlacement, 'unit' | 'customScale' | 'upAxis' | 'mirror'>): THREE.Matrix4 {
+  const s = unitScale(p);
+  return new THREE.Matrix4().compose(new THREE.Vector3(), new THREE.Quaternion().setFromEuler(new THREE.Euler(p.upAxis === 'z' ? -Math.PI / 2 : 0, 0, 0)), new THREE.Vector3(p.mirror ? -s : s, s, s));
+}
+
+/**
+ * 中心合わせの平行移動: 読み込み時に建物と判定したオブジェクト全体（model.rawBox）を inner で変換した箱の
+ * 水平中心を 0、底面を y = 0 に。rawBox が空なら fallback（表示中のオブジェクトの箱）で
+ */
+export function normalizeOffset(model: ImportedModel, inner: THREE.Matrix4, fallback?: THREE.Box3): THREE.Vector3 {
+  const ref = model.rawBox.isEmpty() ? (fallback ?? new THREE.Box3(new THREE.Vector3(), new THREE.Vector3())) : model.rawBox.clone().applyMatrix4(inner);
+  const c = ref.getCenter(new THREE.Vector3());
+  return new THREE.Vector3(-c.x, -ref.min.y, -c.z);
+}
+
 /** 配置済みの建物。pivot をシーンの building グループに入れる */
 export class PlacedModel {
   readonly pivot = new THREE.Group();
@@ -590,6 +617,12 @@ export class PlacedModel {
   size = new THREE.Vector3();
   /** 正規化後の bbox（pivot のローカル: 水平中心 0、底面 y=0） */
   localBox = new THREE.Box3();
+
+  /** 外形のキャッシュ（rebuild ごと）。キーは高さ帯、sig は配置のうち形に関わる部分 */
+  private outlineCache = new Map<string, EN[]>();
+  private outlineSig = '';
+  private visiblePos: Float32Array | null = null;
+  private siteCache: EN[] | null | undefined;
 
   constructor(
     public model: ImportedModel,
@@ -603,6 +636,7 @@ export class PlacedModel {
   /** 単位・上方向・鏡像・表示が変わったとき: raw から作り直す（元のマテリアル色は保持） */
   rebuild(): void {
     this.clearObject();
+    this.invalidateOutlines();
     const p = this.placement;
     const hidden = new Set(p.hiddenObjects ?? []);
     const object = new THREE.Group();
@@ -622,7 +656,7 @@ export class PlacedModel {
     const s = unitScale(p);
     // 鏡像は x を反転（DoubleSide なので面の向きは問題にならない）
     inner.scale.set(p.mirror ? -s : s, s, s);
-    // Z-up → Y-up: (x,y,z) → (x,z,-y)
+    // Z-up → Y-up: (x,y,z) → (x,z,-y)。innerMatrix(p) と同じ変換
     inner.rotation.set(p.upAxis === 'z' ? -Math.PI / 2 : 0, 0, 0);
     object.add(inner);
     object.updateMatrixWorld(true);
@@ -631,9 +665,7 @@ export class PlacedModel {
     if (box.isEmpty()) box.set(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0));
     // 中心合わせは「読み込み時に建物と判定したオブジェクト全体（model.rawBox）」で行う。
     // オブジェクトの表示/非表示を切り替えても建物の位置が動かないようにするため（足跡を航空写真に合わせた後にずれない）
-    const ref = this.model.rawBox.isEmpty() ? box : this.model.rawBox.clone().applyMatrix4(inner.matrixWorld);
-    const c = ref.getCenter(new THREE.Vector3());
-    object.position.set(-c.x, -ref.min.y, -c.z);
+    object.position.copy(normalizeOffset(this.model, inner.matrixWorld, box));
     object.updateMatrixWorld(true);
     this.localBox.copy(box).translate(object.position);
     this.localBox.getSize(this.size);
@@ -673,6 +705,98 @@ export class PlacedModel {
   /** 足跡（ピンからの東・北 m） */
   footprintEN(): { e: number; n: number }[] {
     return this.footprintWorld().map((v) => ({ e: v.x, n: -v.y }));
+  }
+
+  // ---- 外形（凸包） ----
+
+  /** raw の頂点 → pivot ローカル（m・Y-up・水平中心 0・底面 y = 0）の行列。rebuild() が決めた中心合わせ込み */
+  localMatrix(): THREE.Matrix4 {
+    const o = this.object?.position ?? new THREE.Vector3();
+    return new THREE.Matrix4().makeTranslation(o.x, o.y, o.z).multiply(innerMatrix(this.placement));
+  }
+
+  /** 配置のうち形に関わる部分（キャッシュの鍵） */
+  private shapeSig(): string {
+    const p = this.placement;
+    return [p.unit, p.customScale, p.upAxis, p.mirror ? 1 : 0, ...(p.hiddenObjects ?? [])].join('\u0000');
+  }
+
+  private invalidateOutlines(): void {
+    this.outlineCache.clear();
+    this.visiblePos = null;
+    this.siteCache = undefined;
+    this.outlineSig = this.shapeSig();
+  }
+
+  private ensureOutlineCache(): void {
+    if (this.outlineSig !== this.shapeSig()) this.invalidateOutlines();
+  }
+
+  /** 名前が pred に合う raw メッシュの頂点をすべて pivot ローカルに変換して連結した配列（三角形ごとに 9 個） */
+  private localPositions(pred: (m: THREE.Mesh) => boolean): Float32Array {
+    const M = this.localMatrix();
+    const meshes = this.model.raw.children.filter((o) => (o as THREE.Mesh).isMesh && pred(o as THREE.Mesh)) as THREE.Mesh[];
+    let total = 0;
+    for (const m of meshes) total += (m.geometry.getAttribute('position')?.count ?? 0) * 3;
+    const out = new Float32Array(total);
+    const v = new THREE.Vector3();
+    let w = 0;
+    for (const m of meshes) {
+      const pos = m.geometry.getAttribute('position');
+      if (!pos) continue;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(M);
+        out[w++] = v.x;
+        out[w++] = v.y;
+        out[w++] = v.z;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 表示中のオブジェクトの外形（凸包、pivot ローカル EN: a = x, b = −z）。
+   * 既定は壁の高さ帯 y ∈ [0.3 m, min(2.0 m, 高さの 60 %)] の水平断面（軒先を含まない壁の外形）。
+   * {yMin: 0, yMax: Infinity} なら全高さ（軒先を含む、航空写真で見える外形）。帯に 3 点未満なら全頂点の凸包
+   */
+  outlineLocal(opts: { yMin?: number; yMax?: number } = {}): EN[] {
+    this.ensureOutlineCache();
+    const yMin = opts.yMin ?? WALL_SLICE.yMin;
+    const yMax = Math.max(yMin, opts.yMax ?? Math.min(WALL_SLICE.yMax, WALL_SLICE.heightRatio * this.size.y));
+    const key = `${yMin}|${yMax}`;
+    const hit = this.outlineCache.get(key);
+    if (hit) return hit;
+    if (!this.visiblePos) {
+      const hidden = new Set(this.placement.hiddenObjects ?? []);
+      this.visiblePos = this.localPositions((m) => !hidden.has(m.name));
+    }
+    const out = sectionOutline(this.visiblePos, { yMin, yMax });
+    this.outlineCache.set(key, out);
+    return out;
+  }
+
+  /** 外形（ワールド EN: ピンからの東・北 m。方位・位置を適用済み） */
+  outlineEN(opts: { yMin?: number; yMax?: number } = {}): EN[] {
+    return this.outlineLocal(opts).map((q) => localToEN(this.placement, q));
+  }
+
+  /**
+   * 3DS の敷地オブジェクト（site / lot / parcel / land / 敷地。非表示にしてあるもの）の外形（凸包、pivot ローカル EN）。
+   * 表示している敷地は建物の一部として扱うので対象にしない。無ければ null
+   */
+  siteOutlineLocal(): EN[] | null {
+    this.ensureOutlineCache();
+    if (this.siteCache !== undefined) return this.siteCache;
+    const hidden = new Set(this.placement.hiddenObjects ?? []);
+    const pos = this.localPositions((m) => isSiteObjectName(m.name) && hidden.has(m.name));
+    let hull: EN[] = [];
+    if (pos.length >= 9) {
+      const pts: EN[] = [];
+      for (let i = 0; i + 2 < pos.length; i += 3) pts.push({ e: pos[i], n: -pos[i + 2] });
+      hull = convexHull(pts);
+    }
+    this.siteCache = hull.length >= 3 ? hull : null;
+    return this.siteCache;
   }
 
   /** ワールド bbox（配置後） */

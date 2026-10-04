@@ -18,7 +18,18 @@ import {
   type Occluder,
 } from '../src/sun/analysis';
 import { sunDirectionWorld, trueSolarToLocal } from '../src/sun/solar';
-import { studyDates } from '../src/sunstudy/analysis';
+import {
+  studyDates,
+  buildStudyOccluder,
+  disposeStudyOccluder,
+  isShadedStudy,
+  groundSampler,
+  clearStudyOccluderCache,
+  measurePointHours,
+  facadeSunHours,
+  shadowDiagramStudy,
+} from '../src/sunstudy/analysis';
+import type { StudyScene } from '../src/sunstudy/scene';
 
 const TOKYO = { lat: 35.6895, lon: 139.6917 };
 const WINTER = { year: 2026, month: 12, day: 22, ...TOKYO, northAngleDeg: 0 };
@@ -129,7 +140,8 @@ describe('格子の日照時間', () => {
     const south = mean((x, z) => z > 6 && z < 9 && Math.abs(x) < 2);
     const far = mean((x, z) => z > 13);
     expect(north).toBeLessThan(south);
-    expect(north).toBeLessThan(0.5);
+    // 日の出直後（方位 ≈118°）だけ箱の東側をかすめて日が当たるので 0 ではない
+    expect(north).toBeLessThan(1.5);
     expect(south).toBeGreaterThan(6);
     // 箱から離れた南側は 1 日の長さに近い（冬至 ≈ 9.7h）
     expect(far).toBeGreaterThan(9);
@@ -220,5 +232,173 @@ describe('解析用の日付（二十四節気）', () => {
     expect([find(2026, 'winter').month, find(2026, 'winter').day]).toEqual([12, 22]);
     const ids = studyDates(2026).map((d) => d.id);
     expect(ids).toEqual(['winter', 'spring', 'summer', 'autumn']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3D データ読み込み版（scene は groups だけの偽物。DOM を使う関数は対象外）
+// ---------------------------------------------------------------------------
+
+function fakeScene(): StudyScene {
+  const groups = {
+    terrain: new THREE.Group(),
+    neighbors: new THREE.Group(),
+    building: new THREE.Group(),
+    site: new THREE.Group(),
+    sunpath: new THREE.Group(),
+    overlay: new THREE.Group(),
+    markers: new THREE.Group(),
+  };
+  // 地形: 200m の平面（y=0）
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200, 4, 4));
+  ground.rotateX(-Math.PI / 2);
+  ground.userData.terrain = true;
+  groups.terrain.add(ground);
+  // 建物: 10m の箱（底面 y=0）
+  const b = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+  b.position.y = 5;
+  groups.building.add(b);
+  // ガラス（noShadow）と解析結果の表示（overlay）は無視される
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+  glass.position.set(0, 30, 0);
+  glass.userData.noShadow = true;
+  groups.building.add(glass);
+  const ov = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+  ov.position.set(0, 40, 0);
+  ov.userData.overlay = true;
+  groups.building.add(ov);
+  // 周辺建物: 東 30m に 4m の箱
+  const nb = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 4));
+  nb.position.set(30, 2, 0);
+  nb.userData.neighbor = true;
+  groups.neighbors.add(nb);
+  return { groups } as unknown as StudyScene;
+}
+
+describe('sunstudy: 遮蔽物と地面の高さ', () => {
+  it('種別 terrain / neighbor / building、地形はキャッシュされる', () => {
+    clearStudyOccluderCache();
+    const scene = fakeScene();
+    const occ = buildStudyOccluder(scene, { terrain: true, neighbors: true, building: true });
+    expect(occ.triangles).toBe(24); // 箱 12 + 周辺建物 12（ガラス・overlay は除く）
+    expect(occ.extra).toHaveLength(1);
+    expect(occ.extra![0].kindOf(0)).toBe('terrain');
+    const down = new THREE.Vector3(0, -1, 0);
+    expect(raycastFirstKind(occ, new THREE.Vector3(0, 50, 0), down, 100)?.kind).toBe('building');
+    expect(raycastFirstKind(occ, new THREE.Vector3(30, 50, 0), down, 100)?.kind).toBe('neighbor');
+    const t = raycastFirstKind(occ, new THREE.Vector3(60, 50, 60), down, 100);
+    expect(t?.kind).toBe('terrain');
+    expect(t!.point.y).toBeCloseTo(0, 6);
+    // ガラスの位置（y=30）には何も無い
+    expect(raycastFirstKind(occ, new THREE.Vector3(0, 50, 0), down, 100)!.point.y).toBeCloseTo(10, 6);
+    // 2 回目は同じ地形 BVH
+    const occ2 = buildStudyOccluder(scene, { terrain: true, neighbors: false, building: true });
+    expect(occ2.extra![0]).toBe(occ.extra![0]);
+    expect(occ2.triangles).toBe(12);
+    // 地形だけ → キャッシュそのものを返す（cached）
+    const occ3 = buildStudyOccluder(scene, { terrain: true, neighbors: false, building: false });
+    expect(occ3.cached).toBe(true);
+    expect(occ3.bvh).toBe(occ.extra![0].bvh);
+    // isShadedStudy は extra（地形）も見る: 地面より下から上向きのレイは地形に当たる
+    expect(isShadedStudy(occ2, new THREE.Vector3(60, -1, 60), new THREE.Vector3(0, 1, 0))).toBe(true);
+    expect(isShadedStudy(occ2, new THREE.Vector3(60, 0.15, 60), new THREE.Vector3(0, 1, 0))).toBe(false);
+    disposeStudyOccluder(occ);
+    disposeStudyOccluder(occ2);
+    disposeStudyOccluder(occ3);
+    // 地形のキャッシュは生きている
+    expect(raycastFirstKind(occ.extra![0], new THREE.Vector3(60, 50, 60), down, 100)?.kind).toBe('terrain');
+    clearStudyOccluderCache();
+  });
+
+  it('groundSampler: 地形に当たればその高さ、無ければ fallback', () => {
+    const scene = fakeScene();
+    const g = groundSampler(scene, () => -99);
+    expect(g(10, 10)).toBeCloseTo(0, 6);
+    expect(g(500, 500)).toBe(-99); // 地形の外
+    scene.groups.terrain.clear();
+    const g2 = groundSampler(scene, () => 7);
+    expect(g2(0, 0)).toBe(7);
+    clearStudyOccluderCache();
+  });
+});
+
+describe('sunstudy: 測定点・面・日影図（偽のシーン）', () => {
+  const scene = fakeScene();
+  const dates = studyDates(2026);
+  const winter = dates.filter((d) => d.id === 'winter');
+
+  it('測定点: 箱の南の地面は長く、北の地面は短く、北の壁は 0', async () => {
+    const south = await measurePointHours(scene, { id: 's', label: '南', pos: [0, 0, 8], normal: [0, 1, 0] }, winter, TOKYO, { stepMin: 10 });
+    const north = await measurePointHours(scene, { id: 'n', label: '北', pos: [0, 0, -7], normal: [0, 1, 0] }, winter, TOKYO, { stepMin: 10 });
+    const nWall = await measurePointHours(scene, { id: 'w', label: '北壁', pos: [0, 5, -5], normal: [0, 0, -1] }, winter, TOKYO, { stepMin: 10 });
+    const sWall = await measurePointHours(scene, { id: 'w2', label: '南壁', pos: [0, 5, 5], normal: [0, 0, 1] }, winter, TOKYO, { stepMin: 10 });
+    expect(south).toHaveLength(1);
+    expect(south[0].dateId).toBe('winter');
+    expect(south[0].month).toBe(12);
+    expect(south[0].hours).toBeGreaterThan(8);
+    expect(south[0].spans.length).toBeGreaterThan(0);
+    expect(south[0].first).toBeLessThan(8);
+    expect(south[0].last).toBeGreaterThan(15);
+    expect(north[0].hours).toBeLessThan(1.5);
+    expect(nWall[0].hours).toBe(0);
+    expect(nWall[0].first).toBeNull();
+    expect(nWall[0].spans).toEqual([]);
+    expect(sWall[0].hours).toBeGreaterThan(8.5);
+    // spans の合計 = hours、区間は日の出〜日の入の中
+    const sum = sWall[0].spans.reduce((a, [x, y]) => a + (y - x), 0);
+    expect(sum).toBeCloseTo(sWall[0].hours, 9);
+  });
+
+  it('面の日照時間: 頂点色付きの非インデックス geometry、南面・屋根は長く北面は 0', async () => {
+    const mesh = await facadeSunHours(scene, { year: 2026, month: 12, day: 22, ...TOKYO }, { stepMin: 20 });
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    expect(geo.index).toBeNull();
+    expect(geo.getAttribute('position').count).toBe(36);
+    expect(geo.getAttribute('color').count).toBe(36);
+    expect(mesh.userData.facade).toBe(true);
+    expect(mesh.userData.overlay).toBe(true);
+    expect(mesh.userData.coarse).toBe(false);
+    expect(mesh.userData.maxHours).toBeGreaterThan(9);
+    expect(mesh.userData.maxHours).toBeLessThan(10.5);
+    const hours = mesh.userData.faceHours as Float32Array;
+    expect(hours).toHaveLength(12);
+    // 面の法線で分類
+    const pos = geo.getAttribute('position');
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (let f = 0; f < 12; f++) {
+      a.fromBufferAttribute(pos, f * 3);
+      b.fromBufferAttribute(pos, f * 3 + 1);
+      c.fromBufferAttribute(pos, f * 3 + 2);
+      new THREE.Triangle(a, b, c).getNormal(n);
+      if (n.y > 0.9) expect(hours[f]).toBeGreaterThan(8.5); // 屋根
+      if (n.z > 0.9) expect(hours[f]).toBeGreaterThan(8.5); // 南面
+      if (n.z < -0.9) expect(hours[f]).toBe(0); // 北面
+      if (n.y < -0.9) expect(hours[f]).toBe(0); // 底面（地形に接する）
+    }
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    expect(mat.vertexColors).toBe(true);
+    expect(mat.side).toBe(THREE.DoubleSide);
+    expect(mesh.castShadow).toBe(false);
+  });
+
+  it('日影図: 建物内外は真下レイキャスト、敷地なしの注記、周辺建物の注記', async () => {
+    const base = { ...TOKYO, year: 2026, planeHeight: 1.5, includeNeighbors: false, center: new THREE.Vector3(0, 0, 0), half: 20, sitePolygon: null };
+    const r = await shadowDiagramStudy(scene, base);
+    expect(r.svg).toContain('日影図');
+    expect(r.svg).toContain('省略');
+    expect(r.svg).toContain('※周辺建物は含みません');
+    expect(r.svg).toContain('建物の位置・方位は航空写真上での手動配置によるものです');
+    expect(r.extent.half).toBe(20);
+    expect(r.extent.cell).toBe(0.3);
+    expect(r.summary).toHaveLength(4);
+    expect(r.summary[0].maxDist).toBeGreaterThan(5); // 2 時間線は建物の輪郭から北へ 5m 以上
+    const r2 = await shadowDiagramStudy(scene, { ...base, includeNeighbors: true, sitePolygon: [new THREE.Vector2(-8, -8), new THREE.Vector2(8, -8), new THREE.Vector2(8, 8), new THREE.Vector2(-8, 8)] });
+    expect(r2.svg).toContain('※周辺建物を含みます');
+    expect(r2.svg).toContain('5mライン');
+    expect(r2.svg).not.toContain('省略');
+    clearStudyOccluderCache();
   });
 });

@@ -20,9 +20,10 @@ import type { StudyStep, StudyCtx } from '../shell';
 import { emit, study } from '../state';
 import { DEFAULT_PLACEMENT, UNIT_LABEL, bearingName, frameFromLocal } from '../types';
 import type { AlignmentPair, EN, ImportedModel, LengthUnit, UpAxis } from '../types';
-import { ACCEPT_EXT, importModelFile, loadSampleModel, unitScale } from '../importModel';
+import { ALIGN_COLORS, MIN_PAIR_DIST_M, TWO_POINT_CANCEL_HINT, TWO_POINT_STEPS } from '../../sun/align';
+import { ACCEPT_EXT, importModelFile, isSiteObjectName, loadSampleModel, unitScale } from '../importModel';
 import type { PlacedModel } from '../importModel';
-import { SCALE_WARN, alignmentContextOk, alignmentLabel, describeAlignment, fitToSite, orientToSite, pivotLatLonOf, reapplyAlignment, twoPointPlacement } from '../alignment';
+import { SCALE_WARN, alignmentContextOk, alignmentLabel, describeAlignment, fitToSite, orientToSite, pivotLatLonOf, reapplyAlignment, refitSiteAlignment, scaleSuspect, siteScaleText, twoPointPlacement } from '../alignment';
 import { buildingCenter, buildingExclusionEN, buildingExtent, currentPlaced, ensurePlaced } from '../building';
 import { groundY, rebuildEnvironment, sitePolygonEN } from '../environment';
 import { saveRecent } from '../project';
@@ -43,14 +44,10 @@ const SNAP_VERTEX_M = 0.3;
 /** 角の指定: 当たった高さの外形（凸包）の最寄り頂点に吸着する距離 (m)、その高さ帯の半幅 (m) */
 const SNAP_HULL_M = 0.6;
 const SNAP_BAND_M = 0.3;
-/** 2 点合わせの 2 つの角の最小距離 (m) */
-const MIN_PAIR_DIST_M = 0.5;
-/** 目印の色: 建物の角 / 航空写真の点 */
-const MODEL_COLOR = '#1f6fd0';
-const TARGET_COLOR = '#e5531f';
+/** 2 点合わせのボタン（手順の文言・目印の色・角の最小距離は両アプリ共通: src/sun/align.ts） */
 const TWO_POINT_LABEL = '📍 2 点合わせ（建物の角 → 航空写真の同じ角）';
-/** 2 点合わせの各段階の案内（ボタンと状態行に出す） */
-const PICK_TEXT = ['建物の 1 つ目の角をクリック（Esc で中止）', '航空写真でその角の実際の位置をクリック（建物は半透明にしています）', '建物の 2 つ目の角をクリック（Esc で中止）', '航空写真でその角の実際の位置をクリック（建物は半透明にしています）'];
+/** 大きさの比の表し方（1000 倍なら小数は要らない） */
+const fmtRatio = (k: number) => (k >= 10 ? k.toFixed(0) : k.toFixed(3));
 
 const UNIT_SHORT: Record<LengthUnit, string> = { mm: 'mm', cm: 'cm', m: 'm', in: 'in', ft: 'ft', custom: '任意の倍率' };
 
@@ -386,8 +383,8 @@ export const modelStep: StudyStep = {
     const refreshAll = () => {
       for (const f of refreshers) f();
     };
-    /** 単位・上方向・鏡像・表示・オブジェクトの変更 */
-    const afterRebuild = () => {
+    /** 単位・上方向・鏡像・表示・オブジェクトの変更。shapeChanged = false は表示（色）だけの変更（外形は変わらない） */
+    const afterRebuild = (shapeChanged = true) => {
       const p = currentPlaced();
       if (!p) return;
       cancelPick();
@@ -401,6 +398,12 @@ export const modelStep: StudyStep = {
       } else if (al?.kind === 'twoPoint' && study.frame) {
         // 単位が変わっても、指した角は航空写真の同じ所に留まる（対応点を新しい倍率で換算して解き直す）
         reapplyAlignment(study.frame, pl, p);
+      } else if (shapeChanged && (al?.kind === 'siteFit' || al?.kind === 'orient')) {
+        // 形・寸法が変わると合わせた外形も変わる: 今の形で合わせ直す。できなければ記録を外す（古い残差を表示し続けない）
+        const r = refitSiteAlignment(p, pl, sitePolygonEN());
+        if (r === 'dropped') toast('形・寸法を変えたので敷地の輪郭への合わせをやり直してください', 'info', 8000);
+        else if (r === 'refit' && al.kind === 'siteFit')
+          toast(scaleSuspect(al) ? `敷地の向きだけ合わせ直しました（${siteScaleText(al.scaleRatio ?? 1)}。単位を確認してください）` : `敷地の輪郭に合わせ直しました（残差 ${fmt(al.rmsM ?? NaN)} m）`, 'ok');
       }
       applyGL(p);
       p.applyTransform();
@@ -415,6 +418,11 @@ export const modelStep: StudyStep = {
     const afterTransform = (immediateEnv = false) => {
       const p = currentPlaced();
       if (!p) return;
+      if (pick) {
+        // 2 点合わせの途中でパネルから配置を変えた: 指した角の目印が建物から離れるので中止する
+        cancelPick();
+        toast('配置を変えたので 2 点合わせを中止しました');
+      }
       p.applyTransform();
       applyGL(p);
       p.applyTransform();
@@ -447,9 +455,18 @@ export const modelStep: StudyStep = {
     let pickDown: { x: number; y: number } | null = null;
     /** サイドの表示を更新する関数（renderSide が差し替える） */
     let refreshAlign: () => void = () => {};
+    /** ステージ上部の案内（renderStage が作る）。2 点合わせ中は手順に差し替える。キー操作の案内はタッチ端末では隠す（CSS .keys） */
+    let stageNote: HTMLElement | null = null;
+    const refreshStageNote = () => {
+      if (!stageNote) return;
+      clear(stageNote);
+      if (pick) stageNote.append(`${TWO_POINT_STEPS[pick.stage]}　／　${TWO_POINT_CANCEL_HINT}`);
+      else stageNote.append('建物をドラッグして敷地に合わせます　／　', h('span', { class: 'keys' }, '矢印キー: 0.1 m（Shift: 1 m）　R / Shift+R: 90° 回転　／　'), '空いた所をドラッグ: 回転　右ドラッグ: 移動');
+    };
     const baseCursor = () => (scene.navMode === 'pan' ? 'grab' : '');
     const syncPickUI = () => {
       canvas.style.cursor = pick ? 'crosshair' : baseCursor();
+      refreshStageNote();
       refreshAlign();
     };
     const setGhost = (on: boolean) => {
@@ -501,11 +518,16 @@ export const modelStep: StudyStep = {
         toast('2 点合わせを中止しました');
         return;
       }
+      if (!study.aerial) {
+        // 航空写真が無いと「その角の実際の位置」を指せない（地形の無地の面を指しても意味が無い）
+        toast('航空写真が無いので 2 点合わせは使えません。「建設地」で周辺環境を読み込んでください', 'info', 7000);
+        return;
+      }
       pick = { stage: 0, locals: [], targets: [], modelWorld: [], ghost: null };
       clearGroup(scene.groups.align);
       flyTop(scene, p);
       syncPickUI();
-      toast('真上から見ています。建物の角（軒先でも壁でも）をクリックし、つぎに航空写真でその角の実際の位置をクリックします。ホイールで拡大、ドラッグで視点移動はそのまま使えます', 'info', 8000);
+      toast('真上から見ています。建物の角（軒先でも壁でも）をクリックし、つぎに航空写真でその角の実際の位置をクリックします。ホイールで拡大、右ドラッグ（または ✋移動 モード・スペースキー）で画面をずらせます', 'info', 8000);
     };
     /** クリックした建物の点を角に吸着させる: 当たったメッシュの最寄り頂点（0.3 m）→ その高さの外形の最寄り頂点（0.6 m）→ そのまま */
     const snapCorner = (p: PlacedModel, hit: THREE.Intersection): THREE.Vector3 => {
@@ -564,6 +586,8 @@ export const modelStep: StudyStep = {
       pl.offsetE = r2(sol.offsetE);
       pl.offsetN = r2(sol.offsetN);
       pl.alignment = { kind: 'twoPoint', pairs, unitScaleM: unitScale(pl), mirror: pl.mirror, upAxis: pl.upAxis, rmsM: sol.rmsM, scaleRatio: sol.scaleRatio, at: stamp() };
+      // 位置合わせをやり直したので、日照へ進むときの「配置の確認」をもう一度出す
+      confirmed = false;
       afterTransform(true);
       toast(`2 点合わせで建物を置きました（残差 ${fmt(sol.rmsM)} m）`, 'ok');
       if (Math.abs(sol.scaleRatio - 1) > SCALE_WARN) toast(`航空写真上の距離はモデルの ${sol.scaleRatio.toFixed(3)} 倍です（約 ${(Math.abs(sol.scaleRatio - 1) * 100).toFixed(1)} % の差）。単位を確認してください。「寸法もこの比で合わせる」で合わせられます`, 'info', 8000);
@@ -586,7 +610,7 @@ export const modelStep: StudyStep = {
         const local = p.pivot.worldToLocal(world.clone());
         pick.locals.push({ e: local.x, n: -local.z });
         pick.modelWorld.push(world);
-        scene.groups.align.add(markerDisc(world, pick.stage === 0 ? '①' : '②', MODEL_COLOR));
+        scene.groups.align.add(markerDisc(world, pick.stage === 0 ? '①' : '②', ALIGN_COLORS.model));
         pick.stage = pick.stage === 0 ? 1 : 3;
         setGhost(true);
       } else {
@@ -598,7 +622,7 @@ export const modelStep: StudyStep = {
         const t = hit.point.clone();
         pick.targets.push({ e: t.x, n: -t.z });
         const idx = pick.stage === 1 ? 0 : 1;
-        scene.groups.align.add(markerDisc(t, idx === 0 ? '①' : '②', TARGET_COLOR), markerLine(pick.modelWorld[idx], t));
+        scene.groups.align.add(markerDisc(t, idx === 0 ? '①' : '②', ALIGN_COLORS.target), markerLine(pick.modelWorld[idx], t));
         setGhost(false);
         if (pick.stage === 3) {
           finishPick(p);
@@ -625,8 +649,30 @@ export const modelStep: StudyStep = {
       const out = new THREE.Vector3();
       return rc.ray.intersectPlane(plane, out) ? out : null;
     };
+    /** 建物のドラッグを取り消して元の位置に戻す（2 本目の指が触れた = ピンチなど） */
+    const cancelDrag = () => {
+      if (!drag) return;
+      study.placement.offsetE = drag.origE;
+      study.placement.offsetN = drag.origN;
+      try {
+        canvas.releasePointerCapture(drag.id);
+      } catch {
+        /* 既に解放 */
+      }
+      drag = null;
+      scene.controls.enabled = true;
+      canvas.style.cursor = baseCursor();
+      currentPlaced()?.applyTransform();
+      scene.invalidate();
+      refreshPos();
+    };
     const onDown = (ev: PointerEvent) => {
-      if (ev.button !== 0 || drag) return;
+      if (ev.button !== 0) return;
+      if (drag) {
+        // 2 本目のポインタ（タッチのピンチ）: 建物を動かさず、視点操作に任せる
+        cancelDrag();
+        return;
+      }
       if (pick) {
         // 位置合わせ中はクリックで角を指す。視点の操作（OrbitControls）はそのまま通す
         pickDown = { x: ev.clientX, y: ev.clientY };
@@ -651,7 +697,7 @@ export const modelStep: StudyStep = {
       }
     };
     const onMove = (ev: PointerEvent) => {
-      if (!drag) return;
+      if (!drag || ev.pointerId !== drag.id) return;
       const p = currentPlaced();
       if (!p) return;
       if (!drag.active) {
@@ -670,6 +716,7 @@ export const modelStep: StudyStep = {
     };
     const endDrag = (ev?: PointerEvent) => {
       if (!drag) return;
+      if (ev && ev.pointerId !== drag.id) return;
       if (ev) {
         try {
           canvas.releasePointerCapture(drag.id);
@@ -727,6 +774,8 @@ export const modelStep: StudyStep = {
         return;
       }
       if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      // 2 点合わせ中は移動・回転しない（指した角の目印が建物から離れる）
+      if (pick) return;
       if (!currentPlaced() || !hover) return;
       const step = e.shiftKey ? 1 : 0.1;
       switch (e.key) {
@@ -764,8 +813,11 @@ export const modelStep: StudyStep = {
     // ---- ステージ ----
     const renderStage = () => {
       clear(stage);
+      stageNote = null;
       if (study.model) {
-        stage.appendChild(h('div', { class: 'stage-note' }, '建物をドラッグして敷地に合わせます　／　矢印キー: 0.1 m（Shift: 1 m）　R / Shift+R: 90° 回転　／　空いた所をドラッグ: 回転　右ドラッグ: 移動'));
+        stageNote = h('div', { class: 'stage-note' });
+        refreshStageNote();
+        stage.appendChild(stageNote);
         return;
       }
       const zone = h(
@@ -1012,11 +1064,11 @@ export const modelStep: StudyStep = {
         class: 'btn sm',
         onclick: () => {
           const k = pl.alignment?.scaleRatio;
-          if (!k || !(k > 0)) return;
+          if (!k || !(k > 0) || !Number.isFinite(k)) return;
           setCustomScale(unitScale(pl) * k);
-          // 対応点を新しい倍率で換算して 2 点合わせを解き直す（afterRebuild → reapplyAlignment）
+          // 新しい倍率で合わせ直す: 2 点合わせは対応点を換算して解き直し（reapplyAlignment）、敷地の輪郭は再フィット（refitSiteAlignment）
           afterRebuild();
-          toast(`寸法を ${k.toFixed(3)} 倍にして合わせ直しました（1 単位 = ${pl.customScale.toPrecision(4)} m）`, 'ok');
+          toast(`寸法を ${fmtRatio(k)} 倍にして合わせ直しました（1 単位 = ${pl.customScale.toPrecision(4)} m）`, 'ok');
         },
       }, '寸法もこの比で合わせる');
       const scaleWarn = h('div', { class: 'warn', style: 'display:none' }, scaleWarnText, h('div', { class: 'btn-row', style: 'margin:6px 0 0' }, scaleBtn));
@@ -1030,6 +1082,8 @@ export const modelStep: StudyStep = {
             return;
           }
           cancelPick();
+          // 位置合わせをやり直したので、日照へ進むときの「配置の確認」をもう一度出す
+          confirmed = false;
           if (p.siteOutlineLocal()) {
             const r = fitToSite(p, site, pl.headingDeg);
             if (!r) {
@@ -1039,10 +1093,15 @@ export const modelStep: StudyStep = {
             pl.headingDeg = r2(r.headingDeg);
             pl.offsetE = r2(r.offsetE);
             pl.offsetN = r2(r.offsetN);
-            pl.alignment = { kind: 'siteFit', rmsM: r.rmsM, at: stamp() };
+            pl.alignment = { kind: 'siteFit', rmsM: r.rmsM, scaleRatio: r.scaleRatio, at: stamp() };
             afterTransform(true);
-            toast(`敷地の輪郭に合わせました（残差 ${fmt(r.rmsM)} m）`, 'ok');
-            if (r.rmsM > 0.5) toast('残差が大きめです。3DS の敷地オブジェクトと地図で描いた輪郭の形が違うかもしれません。航空写真で確かめてください', 'info', 8000);
+            if (r.unitSuspect) {
+              toast(`敷地の大きさが合わないので向きだけ合わせました。${siteScaleText(r.scaleRatio)}。単位（縮尺）を確認してください（「寸法もこの比で合わせる」で合わせられます）`, 'info', 9000);
+            } else {
+              toast(`敷地の輪郭に合わせました（残差 ${fmt(r.rmsM)} m）`, 'ok');
+              if (r.convexOnly) toast('地図で描いた輪郭には凹みがありますが、3DS の敷地は外周が取れない形（接する 2 枚の板など）なので凸包で合わせています。残差が大きめに出ます', 'info', 8000);
+              else if (r.rmsM > 0.5) toast('残差が大きめです。3DS の敷地オブジェクトと地図で描いた輪郭の形が違うかもしれません。航空写真で確かめてください', 'info', 8000);
+            }
           } else {
             pl.headingDeg = r2(orientToSite(p, site, pl.headingDeg));
             pl.alignment = { kind: 'orient', at: stamp() };
@@ -1052,18 +1111,31 @@ export const modelStep: StudyStep = {
         },
       }) as HTMLButtonElement;
       refreshAlign = () => {
-        alignStatus.textContent = pick ? PICK_TEXT[pick.stage] : describeAlignment(pl);
-        twoPtBtn.textContent = pick ? PICK_TEXT[pick.stage] : TWO_POINT_LABEL;
+        // 進行中はボタンに手順、状態行に進み具合と中止の仕方（同じ文を 2 か所に出さない）
+        alignStatus.textContent = pick ? `2 点合わせ中（${pick.stage + 1} / 4）— ${TWO_POINT_CANCEL_HINT}` : describeAlignment(pl);
+        twoPtBtn.textContent = pick ? TWO_POINT_STEPS[pick.stage] : TWO_POINT_LABEL;
         twoPtBtn.classList.toggle('dark', !!pick);
+        twoPtBtn.disabled = !pick && !study.aerial;
+        twoPtBtn.title = pick || study.aerial ? '' : '先に「建設地」で周辺環境（航空写真）を読み込むと使えます';
         const al = pl.alignment;
-        const k = al?.kind === 'twoPoint' ? al.scaleRatio ?? 1 : 1;
-        const off = Math.abs(k - 1) > SCALE_WARN;
+        const off = scaleSuspect(al);
         scaleWarn.style.display = off ? '' : 'none';
-        if (off) scaleWarnText.textContent = `航空写真上の距離はモデルの ${k.toFixed(3)} 倍です（約 ${(Math.abs(k - 1) * 100).toFixed(1)} % の差）。単位（縮尺）が違うかもしれません。`;
+        if (off && al?.scaleRatio != null) {
+          const k = al.scaleRatio;
+          scaleWarnText.textContent = al.kind === 'twoPoint' ? `航空写真上の距離はモデルの ${k.toFixed(3)} 倍です（約 ${(Math.abs(k - 1) * 100).toFixed(1)} % の差）。単位（縮尺）が違うかもしれません。` : `${siteScaleText(k)}。単位（縮尺）が違うかもしれません。`;
+        }
         const site = sitePolygonEN();
         siteBtn.disabled = !site;
         siteBtn.textContent = '敷地の輪郭に合わせる';
-        siteHint.textContent = !site ? '先に「建設地」で敷地の輪郭を描くと使えます' : p.siteOutlineLocal() ? '3DS に敷地（site）オブジェクトがあるので輪郭ごと合わせます' : '3DS に敷地が無いので向きだけ合わせます';
+        // 敷地オブジェクトは「非表示にしてあるもの」だけが対象（表示している敷地は建物の一部として扱う）。その違いが分かる文言にする
+        const siteObj = m.objects.find((o) => isSiteObjectName(o.name));
+        siteHint.textContent = !site
+          ? '先に「建設地」で敷地の輪郭を描くと使えます'
+          : p.siteOutlineLocal()
+            ? `3DS に敷地（${siteObj?.name ?? 'site'}）オブジェクトがあるので輪郭ごと合わせます${p.siteOutlineIsHull() ? '（外周が取れない形なので凸包で合わせます）' : ''}`
+            : siteObj
+              ? `敷地オブジェクト「${siteObj.name}」を非表示にすると輪郭ごと合わせられます（今は向きだけ合わせます）`
+              : '3DS に敷地が無いので向きだけ合わせます';
       };
       refreshAlign();
       refreshers.push(refreshAlign);
@@ -1193,7 +1265,7 @@ export const modelStep: StudyStep = {
             pl.appearance,
             (v) => {
               pl.appearance = v;
-              afterRebuild();
+              afterRebuild(false);
             },
           ),
           h('p', { class: 'hint', style: 'margin:0' }, '白モデルは影の形が見やすく、お客様への説明向きです'),

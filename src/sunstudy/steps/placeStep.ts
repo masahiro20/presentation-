@@ -17,7 +17,7 @@ import { MapPicker, MAP_LAYER_LABEL, polygonAreaM2, type MapLayer } from '../map
 import { loadEnvironment, NEIGHBOR_RADIUS } from '../environment';
 import { DEM_LABEL, gridStats, sampleHeight } from '../terrain';
 import { buildingFootprintEN } from '../building';
-import { downloadProject, loadProjectFile, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
+import { downloadProject, loadProjectFile, loadProjectFromUrl, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
 
 /** 初期表示（東京駅付近） */
 const TOKYO: LatLon = { lat: 35.681236, lon: 139.767125 };
@@ -385,6 +385,27 @@ export const placeStep: StudyStep = {
           fileIn,
         ),
         h('p', { class: 'hint', style: 'margin:0' }, '場所・敷地・建物の 3D データ・配置に加えて、取得した周辺環境（地形・航空写真・周辺建物）も 1 つの JSON に同梱します。保存したファイルは、インターネットに接続できない場所でも開いて検討を続けられます。'),
+        h(
+          'button',
+          {
+            class: 'btn sm block',
+            style: 'margin-top:10px',
+            onclick: async () => {
+              const pm = progressModal('デモのプロジェクトを開いています', false);
+              try {
+                // 同梱のデモ（世田谷区奥沢・地形/航空写真/周辺建物/サンプル住宅入り）。地図サーバーに接続できない環境でも 3D と解析を試せる
+                await loadProjectFromUrl(new URL('demo/okusawa.json', document.baseURI).toString());
+                pm.close();
+                toast('デモのプロジェクトを開きました（世田谷区奥沢・サンプル住宅）', 'ok');
+                await shell.go('model');
+              } catch (e) {
+                pm.close();
+                toast(`デモを開けませんでした: ${errMsg(e)}`, 'error', 8000);
+              }
+            },
+          },
+          '▶ デモを開く（世田谷区奥沢・サンプル住宅・周辺環境入り）',
+        ),
       ),
     );
 

@@ -1055,8 +1055,10 @@ export const simStep: StudyStep = {
           lon: f.lon,
           year: ui.year,
           planeHeight: plane,
+          planeLabel: String(height),
           includeNeighbors: includeNb,
-          includeTerrain: true,
+          // 日影図は水平な測定面に落ちる影を見る図なので地形は遮蔽物に含めない（斜面で測定面が地中に入り全面日陰になるのを防ぐ）
+          includeTerrain: false,
           center: center.clone(),
           sitePolygon: sitePolygonWorld(),
           onProgress: (r) => pm.set(r),

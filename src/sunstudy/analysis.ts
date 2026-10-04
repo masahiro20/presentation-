@@ -559,6 +559,8 @@ export async function shadowDiagramStudy(
     sitePolygon: THREE.Vector2[] | null;
     /** 真太陽時の範囲 (h)。省略時 [8, 16] */
     hours?: [number, number];
+    /** 測定面の表記（例 '1.5'）。planeHeight に平均地盤面を足して渡すときに、図には「GL+1.5m」と書くため */
+    planeLabel?: string;
     onProgress?: (r: number) => void;
     signal?: AbortSignal;
   },
@@ -628,6 +630,7 @@ export async function shadowDiagramStudy(
       cell,
       stepMin: 10,
       hours: p.hours,
+      planeLabel: p.planeLabel,
       insideBuilding,
       outlines,
       site,

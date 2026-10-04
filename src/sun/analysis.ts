@@ -800,6 +800,8 @@ export interface ShadowDiagramParams {
   year: number;
   /** 測定面の高さ (m)。1.5 / 4.0 / 6.5 など */
   planeHeight: number;
+  /** 測定面の表記（例 '1.5'。省略時は planeHeight をそのまま表示）。測定面を平均地盤面基準で渡すときに使う */
+  planeLabel?: string;
   /** 図の中心（ワールド XZ） */
   center: { x: number; z: number };
   /** 中心からの範囲 (m)。省略時 34。autoExtent があれば max(half, 建物の影の長さ + 6) */
@@ -1034,7 +1036,7 @@ export async function shadowDiagramCore(p: ShadowDiagramParams): Promise<ShadowD
   const subtitle = p.subtitle === undefined ? SHADOW_DIAGRAM_SUBTITLE : p.subtitle;
   const jst0 = formatHM(trueSolarToLocal(Y, M, D, H0, lon));
   const jst1 = formatHM(trueSolarToLocal(Y, M, D, H1, lon));
-  const title = `日影図（冬至日 真太陽時 ${formatHM(H0)}〜${formatHM(H1)} ＝ この場所では JST ${jst0}〜${jst1} ／ 測定面 GL+${planeHeight}m）`;
+  const title = `日影図（冬至日 真太陽時 ${formatHM(H0)}〜${formatHM(H1)} ＝ この場所では JST ${jst0}〜${jst1} ／ 測定面 GL+${p.planeLabel ?? String(planeHeight)}m）`;
   const siteText = sitePoly ? '点線: 敷地境界・5m/10mライン' : SHADOW_DIAGRAM_NO_SITE_NOTE;
   const legendText = `青線: 時刻日影線（毎正時）　橙〜紫: 等時間日影線（${levels.join('・')}時間）　${siteText}${p.note ? `　${p.note}` : ''}`;
   const top = z0 * S - (subtitle ? 330 : 250);

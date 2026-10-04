@@ -52,6 +52,70 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
   };
 }
 
+/**
+ * 図面の傾き（図面全体が回転して配置されている PDF）を求める。
+ * 長い線の角度を 90° で折り返して集計し、最も多い向きが水平・垂直からずれている分を返す（度、-45〜45）。
+ */
+export function dominantTilt(p: PageMm): number {
+  const bins = new Float64Array(180); // 0.5° 刻み（0〜90°）
+  let total = 0;
+  for (const s of p.segs) {
+    if (s.dashed) continue;
+    const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+    if (L < 300) continue;
+    let a = (Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x) * 180) / Math.PI;
+    a = ((a % 90) + 90) % 90;
+    bins[Math.min(179, Math.floor(a * 2))] += L;
+    total += L;
+  }
+  if (!total) return 0;
+  let best = 0;
+  let bestW = -1;
+  for (let i = 0; i < 180; i++) {
+    const w = bins[(i + 179) % 180] + bins[i] + bins[(i + 1) % 180];
+    if (w > bestW) {
+      bestW = w;
+      best = i;
+    }
+  }
+  // 重心
+  let sw = 0;
+  let sa = 0;
+  for (let k = -2; k <= 2; k++) {
+    const j = (best + k + 180) % 180;
+    let a = (j + 0.5) / 2;
+    if (best + k < 0) a -= 90;
+    if (best + k >= 180) a += 90;
+    sw += bins[j];
+    sa += bins[j] * a;
+  }
+  let t = sw ? sa / sw : 0;
+  if (t > 45) t -= 90;
+  // 図面の大半がその向きでなければ傾きとみなさない
+  return bestW / total > 0.3 ? t : 0;
+}
+
+/** 図面を角度 deg（度）だけ回転（図面の傾きを戻す） */
+export function rotatePageMm(p: PageMm, deg: number): PageMm {
+  const xs = p.segs.flatMap((s) => [s.a.x, s.b.x]);
+  const ys = p.segs.flatMap((s) => [s.a.y, s.b.y]);
+  const cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
+  const cy = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+  const th = (deg * Math.PI) / 180;
+  const c = Math.cos(th);
+  const sn = Math.sin(th);
+  const R = (q: Vec2): Vec2 => ({ x: cx + (q.x - cx) * c - (q.y - cy) * sn, y: cy + (q.x - cx) * sn + (q.y - cy) * c });
+  return {
+    ...p,
+    segs: p.segs.map((s) => ({ ...s, a: R(s.a), b: R(s.b) })),
+    arcs: p.arcs.map((a) => ({ p0: R(a.p0), p1: R(a.p1), p2: R(a.p2), p3: R(a.p3) })),
+    texts: p.texts.map((t) => ({ ...t, ...R({ x: t.x, y: t.y }), angle: t.angle + th })),
+    fills: p.fills.map((f) => ({ polygon: f.polygon.map(R) })),
+    masks: p.masks.map((m) => m.map(R)),
+    colorFills: p.colorFills.map((f) => ({ ...f, poly: f.poly.map(R) })),
+  };
+}
+
 /** 作業用の壁（軸・区間表現を保持） */
 interface WWall {
   a: Vec2;

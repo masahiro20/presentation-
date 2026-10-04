@@ -4,7 +4,7 @@
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
-import { assembleModel, pageToMm, moduleScaleFromWalls } from './assemble';
+import { assembleModel, pageToMm, moduleScaleFromWalls, dominantTilt, rotatePageMm, type PageMm } from './assemble';
 export { moduleScaleFromWalls };
 import { thickStrokeMask } from './rasterWalls';
 import { dxfToPages } from './dxf';
@@ -27,6 +27,8 @@ export interface ParseOptions {
   onProgress?: (msg: string, ratio: number) => void;
   /** 線のあるページでも、大きな画像の部分を画像として解析する（平面図が画像で貼られた資料用） */
   rasterImages?: boolean;
+  /** 図面全体が傾いている PDF を水平に戻してから読む */
+  straighten?: boolean;
   /** 座標 1 単位あたりの mm（DXF のように実寸のデータでは 1） */
   mmPerPt?: number;
 }
@@ -126,7 +128,16 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   if (segCount < 50 && !scanned) {
     warnings.push('ベクター線がほとんどありません。スキャン画像のPDFの可能性があります（CAD から出力した PDF を推奨）');
   }
-  let mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
+  // 図面全体が傾けて配置されている PDF を水平に戻す（opts.straighten 指定時のみ。図面ごとの傾きの判定は未対応）
+  const straighten = (mm: PageMm[]) =>
+    mm.map((p) => {
+      if (p.rasterMask || !opts.straighten) return p;
+      const tilt = dominantTilt(p);
+      if (Math.abs(tilt) < 1.5) return p;
+      warnings.push(`図面が ${Math.abs(tilt).toFixed(1)}° 傾いていたため、水平に戻して読み取りました`);
+      return rotatePageMm(p, -tilt);
+    });
+  let mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
   let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
   if (scanned && res.floors.length) {
     warnings.push('スキャン画像の図面のため、画像から壁を読み取りました。室名は読み取れないため、下の一覧で部屋名と用途を指定してください');
@@ -139,7 +150,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
         sc = { ...sc, mmPerPt: sc.mmPerPt * m.factor, denominator: STANDARD.includes(den) ? den : null };
         scaleSource = 'module';
         warnings.push(`壁の間隔（910mm モジュール）から縮尺を推定しました（約1/${Math.round(sc.mmPerPt / PT_TO_MM)}）`);
-        mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
+        mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
         res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
       }
     }

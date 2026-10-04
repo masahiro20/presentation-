@@ -50,6 +50,10 @@ console.log('[dims]', dims.replace(/\s+/g, ' '));
 
 // 日照シミュレーション
 await page.getByRole('button', { name: /日照シミュレーションへ/ }).first().click();
+await page.waitForTimeout(800);
+// 配置の確認ダイアログ（初回のみ）
+const confirmBtn = page.getByRole('button', { name: /確認して進む/ });
+if (await confirmBtn.count()) await confirmBtn.first().click();
 await page.waitForTimeout(3000);
 await shot('sunstudy-5-sim');
 const badge = await page.locator('.sun-badge').innerText().catch(() => '(no badge)');

@@ -181,7 +181,9 @@ export type FurnitureKind =
   | 'washstand'
   | 'washer'
   | 'toilet'
-  | 'shoeCabinet';
+  | 'shoeCabinet'
+  | 'fridge'
+  | 'cupboard';
 
 /** 置いた家具 1 つ（平面座標 mm。rot は壁に沿う向きの角度（度）: 0 = 東向きに並び手前が南） */
 export interface FurnitureItem {
@@ -197,6 +199,14 @@ export interface FurnitureItem {
   /** 長さ (m)（キッチン・浴槽） */
   len?: number;
   roomId?: string;
+  /** キッチンの型: 対面ペニンシュラ（既定）／アイランド／壁付け I 型 */
+  kitchenType?: 'peninsula' | 'island' | 'wall';
+  /** コンロの位置（部屋側からキッチンを見て左／右。既定: 右） */
+  stoveSide?: 'left' | 'right';
+  /** 冷蔵庫の位置（背面収納の端。既定: 右） */
+  fridge?: 'left' | 'right' | 'none';
+  /** レンジフード（既定: あり） */
+  hood?: boolean;
 }
 
 export interface BuildingModel {

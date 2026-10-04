@@ -150,13 +150,19 @@ export const FURNITURE_LABEL: Record<FurnitureKind, string> = {
   washer: '洗濯機',
   toilet: 'トイレ',
   shoeCabinet: '下駄箱',
+  fridge: '冷蔵庫',
+  cupboard: '背面収納',
 };
 
 /** 平面に描くときの外形 (m): 幅 w（並び方向）、奥行 d、基準点から奥行方向への始まり v0 */
 export function furnitureDims(it: FurnitureItem): { w: number; d: number; v0: number } {
   switch (it.kind) {
     case 'kitchen':
-      return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: 2.1, v0: 0 };
+      return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: (it.kitchenType ?? 'peninsula') === 'wall' ? 0.7 : 2.1, v0: 0 };
+    case 'fridge':
+      return { w: 0.68, d: 0.7, v0: 0 };
+    case 'cupboard':
+      return { w: it.w ?? 1.8, d: 0.45, v0: 0 };
     case 'dining':
       return { w: 1.6, d: 1.65, v0: -0.83 };
     case 'sofa':
@@ -360,10 +366,20 @@ function emitItem(it: FurnitureItem, env: ItemEnv) {
   const roomId = it.roomId ?? currentRoomId;
   switch (it.kind) {
     case 'kitchen':
-      kitchen(fr, it.len ?? 3, env.ceilingY);
+      kitchen(fr, it.len ?? 3, env.ceilingY, it);
       kitchenSides.set(roomId, sideOfRot(it.rot));
-      env.lights.push({ pos: fr.point(0, 1.3, env.ceilingY - 0.02), kind: 'ceiling', roomId });
+      env.lights.push({ pos: fr.point(0, (it.kitchenType ?? 'peninsula') === 'wall' ? 1.0 : 1.3, env.ceilingY - 0.02), kind: 'ceiling', roomId });
       break;
+    case 'fridge':
+      fr.box('f.fridge', 0, 0, 0.68, 0.7, 0, 1.82);
+      fr.box('f.metal', 0.2, 0.7, 0.02, 0.02, 0.9, 0.6);
+      break;
+    case 'cupboard': {
+      const cw = it.w ?? 1.8;
+      fr.box('f.cabinet', 0, 0, cw, 0.45, 0, 0.9);
+      fr.box('f.counter', 0, 0, cw, 0.47, 0.9, 0.03);
+      break;
+    }
     case 'dining':
       diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY);
       break;
@@ -595,35 +611,69 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
 }
 
-function kitchen(fr: Frame, len: number, ceilingY: number) {
-  // 背面収納
+function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureItem, 'kitchenType' | 'stoveSide' | 'fridge' | 'hood'> = {}) {
+  const type = opt.kitchenType ?? 'peninsula';
+  const stoveSign = (opt.stoveSide ?? 'right') === 'right' ? 1 : -1;
+  const fridge = opt.fridge ?? 'right';
+  const hood = opt.hood !== false;
+  // 小物（木のトレーと白い器、細い一輪挿し）
+  const props = (cv: number) => {
+    fr.box('f.wood', 0.05 * stoveSign, cv + 0.3, 0.42, 0.26, 0.89, 0.018);
+    fr.cyl('f.white', -0.03, cv + 0.3, 0.07, 0.908, 0.09);
+    fr.cyl('f.white', 0.13, cv + 0.3, 0.045, 0.908, 0.13);
+    fr.cyl('f.white', -0.45 * stoveSign, cv + 0.32, 0.035, 0.89, 0.22);
+    fr.cyl('f.leaf', -0.45 * stoveSign, cv + 0.32, 0.004, 1.11, 0.22, 6);
+    fr.sphere('f.leaf', -0.45 * stoveSign, cv + 0.32, 1.35, 0.045, 1.4);
+  };
+  // シンク・コンロ・フード（カウンターの中心線 cv、幅 cw）
+  const fittings = (cv: number, cw: number, depth: number) => {
+    const sinkU = -stoveSign * (cw / 2 - 0.6);
+    const stoveU = stoveSign * (cw / 2 - 0.5);
+    fr.box('f.chrome', sinkU, cv + 0.12, 0.75, 0.42, 0.855, 0.04);
+    fr.cyl('f.chrome', sinkU, cv + 0.08, 0.015, 0.89, 0.28);
+    fr.box('f.screen', stoveU, cv + 0.08, 0.6, 0.5, 0.89, 0.01);
+    if (hood) {
+      if (type === 'wall') {
+        // 壁付けは壁掛けのスリムなフード
+        fr.box('f.hood', stoveU, cv + 0.02, 0.75, depth - 0.1, 1.55, 0.06);
+        fr.box('f.hood', stoveU, cv + 0.02, 0.5, 0.3, 1.61, ceilingY - 1.61);
+      } else fr.box('f.hood', stoveU, cv + 0.05, 0.9, 0.5, ceilingY - 0.025, 0.025); // 天井埋込の薄型フード
+    }
+  };
+  if (type === 'wall') {
+    // 壁付け I 型: 壁沿いのカウンターにシンク・コンロ。冷蔵庫はその端
+    const cw = Math.min(len - 0.3, 3.0) - (fridge === 'none' ? 0 : 0.75);
+    const cu = fridge === 'none' ? 0 : fridge === 'right' ? -0.375 : 0.375;
+    fr.box('f.cabinet', cu, 0, cw, 0.65, 0, 0.85);
+    fr.box('f.counter', cu, -0.01, cw + 0.02, 0.67, 0.85, 0.04);
+    // 吊戸棚
+    fr.box('f.cabinet', cu, 0, cw, 0.35, 1.55, ceilingY - 1.6);
+    const sinkU = cu - stoveSign * (cw / 2 - 0.6);
+    const stoveU = cu + stoveSign * (cw / 2 - 0.5);
+    fr.box('f.chrome', sinkU, 0.12, 0.75, 0.42, 0.855, 0.04);
+    fr.cyl('f.chrome', sinkU, 0.08, 0.015, 0.89, 0.28);
+    fr.box('f.screen', stoveU, 0.08, 0.6, 0.5, 0.89, 0.01);
+    if (hood) fr.box('f.hood', stoveU, 0.02, 0.75, 0.5, 1.5, 0.06);
+    if (fridge !== 'none') fr.box('f.fridge', (fridge === 'right' ? 1 : -1) * (cw / 2 + 0.375 - 0.36) + cu, 0, 0.68, 0.7, 0, 1.82);
+    return;
+  }
+  // 背面収納（冷蔵庫の分だけ短く）
   const bw = Math.min(len - 0.3, 2.7);
-  fr.box('f.cabinet', 0, 0, bw - 0.75, 0.45, 0, 0.9);
-  fr.box('f.counter', 0, 0, bw - 0.75, 0.47, 0.9, 0.03);
-  // 冷蔵庫
-  fr.box('f.fridge', bw / 2 - 0.36, 0, 0.68, 0.7, 0, 1.82);
+  const cabW = fridge === 'none' ? bw : bw - 0.75;
+  const cabU = fridge === 'none' ? 0 : fridge === 'right' ? -0.375 : 0.375;
+  fr.box('f.cabinet', cabU, 0, cabW, 0.45, 0, 0.9);
+  fr.box('f.counter', cabU, 0, cabW, 0.47, 0.9, 0.03);
+  if (fridge !== 'none') fr.box('f.fridge', (fridge === 'right' ? 1 : -1) * (bw / 2 - 0.36), 0, 0.68, 0.7, 0, 1.82);
   // 対面カウンター（シンク・コンロ）
   const cw = Math.min(len - 0.4, 2.55);
   const cv = 0.45 + 0.9;
   fr.box('f.cabinet', 0, cv, cw, 0.65, 0, 0.85);
-  fr.box('f.counter', 0, cv - 0.01, cw + 0.02, 0.67, 0.85, 0.04);
-  // 腰壁の立ち上がり（対面側）
-  fr.box('f.counter', 0, cv + 0.65, cw + 0.02, 0.1, 0, 1.05);
-  // シンク
-  fr.box('f.chrome', -cw / 2 + 0.6, cv + 0.12, 0.75, 0.42, 0.855, 0.04);
-  fr.cyl('f.chrome', -cw / 2 + 0.6, cv + 0.08, 0.015, 0.89, 0.28);
-  // コンロ
-  fr.box('f.screen', cw / 2 - 0.5, cv + 0.08, 0.6, 0.5, 0.89, 0.01);
-  // 天井埋込の薄型フード（線を増やさない）
-  fr.box('f.hood', cw / 2 - 0.5, cv + 0.05, 0.9, 0.5, ceilingY - 0.025, 0.025);
-  // 小物
-  // 小物は控えめに: 木のトレーと白い器、細い一輪挿し
-  fr.box('f.wood', 0.05, cv + 0.3, 0.42, 0.26, 0.89, 0.018);
-  fr.cyl('f.white', -0.03, cv + 0.3, 0.07, 0.908, 0.09);
-  fr.cyl('f.white', 0.13, cv + 0.3, 0.045, 0.908, 0.13);
-  fr.cyl('f.white', -0.45, cv + 0.32, 0.035, 0.89, 0.22);
-  fr.cyl('f.leaf', -0.45, cv + 0.32, 0.004, 1.11, 0.22, 6);
-  fr.sphere('f.leaf', -0.45, cv + 0.32, 1.35, 0.045, 1.4);
+  fr.box('f.counter', 0, cv - 0.01, cw + 0.02, type === 'island' ? 0.95 : 0.67, 0.85, 0.04);
+  // ペニンシュラは部屋側に腰壁の立ち上がり。アイランドは四方から使えるフラットなカウンター
+  if (type === 'peninsula') fr.box('f.counter', 0, cv + 0.65, cw + 0.02, 0.1, 0, 1.05);
+  else fr.box('f.cabinet', 0, cv + 0.65, cw, 0.3, 0, 0.85);
+  fittings(cv, cw, 0.65);
+  props(cv);
 }
 
 function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {

@@ -9,6 +9,7 @@
  */
 import type { BuildingModel, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
 import { stairLayout, STAIR_KIND_LABEL, STAIR_ENTRY_LABEL, type StairPiece } from '../core/stairs';
+import { furnitureSymbol } from './furnitureSymbols';
 import type { Stair } from '../core/types';
 import { buildFurniture, furnitureDims, FURNITURE_LABEL } from '../scene/furniture';
 import { ROOM_TYPE_LABEL } from '../core/types';
@@ -111,7 +112,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['door', '開き戸', '壁をクリックすると開き戸を置きます'],
     ['sliding', '引戸', '壁をクリックすると引戸を置きます'],
     ['label', '部屋名', '部屋の中をクリックして部屋名を置きます'],
-    ['furniture', '家具', '家具をドラッグで移動、R キーで回転、Delete で削除。右の一覧から追加できます'],
+    ['furniture', '家具', '家具をドラッグで移動、R キーで回転（矢印が部屋側・手前）、Delete で削除。右の一覧から追加できます。キッチンは型・コンロ・冷蔵庫・フードを選べます'],
     ['stairs', '階段', '空いている所をドラッグして階段の範囲を描きます。既存の階段はクリックで選び、ドラッグで移動、R キーで昇り口を回転、Delete で削除'],
   ];
   const tools = h(
@@ -391,15 +392,33 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     // 家具（家具の道具のときだけ操作できる）
     const furnMode = tool === 'furniture';
     for (const it of itemsOf(f.level)) {
-      const { pts, c, front } = furnCorners(it);
+      const { pts, c } = furnCorners(it);
       const on = furnMode && furnSel === it.id;
-      const g = el('g', { class: 'pe-furn', 'pointer-events': furnMode ? 'auto' : 'none', opacity: furnMode ? 1 : 0.55 }, gFurn) as SVGGElement;
+      const g = el('g', { class: 'pe-furn', 'pointer-events': furnMode ? 'auto' : 'none', opacity: furnMode ? 1 : 0.6 }, gFurn) as SVGGElement;
       g.dataset.id = it.id;
-      el('polygon', { points: pts.map((q) => `${q.x},${q.y}`).join(' '), fill: on ? '#f3c89a' : '#d8cfc2', stroke: on ? '#d9822b' : '#8b8f96', 'stroke-width': on ? 30 : 12 }, g);
-      // 手前側（inward の端）を太線で
-      el('line', { x1: front[0].x, y1: front[0].y, x2: front[1].x, y2: front[1].y, stroke: on ? '#d9822b' : '#6d7178', 'stroke-width': 24 }, g);
-      const t = el('text', { x: c.x, y: c.y + fs * 0.3, 'font-size': fs * 0.6, 'text-anchor': 'middle', fill: '#4a4e55', 'pointer-events': 'none' }, g);
-      t.textContent = FURNITURE_LABEL[it.kind];
+      // 当たり判定用の外形（選択中は枠を強調）
+      el('polygon', { points: pts.map((q) => `${q.x},${q.y}`).join(' '), fill: on ? '#f3c89a' : '#f1ede6', 'fill-opacity': on ? 0.55 : 0.35, stroke: on ? '#d9822b' : 'none', 'stroke-width': 30 }, g);
+      // 平面記号（3D と同じ寸法・向き）
+      const sym = el('g', { transform: `translate(${it.x} ${it.y}) rotate(${it.rot})`, 'pointer-events': 'none' }, g);
+      const M = 1000;
+      for (const pr of furnitureSymbol(it)) {
+        if (pr.t === 'rect') {
+          const a: Record<string, string | number> = { x: (pr.u - pr.w / 2) * M, y: pr.v * M, width: pr.w * M, height: pr.d * M, fill: pr.fill ?? 'none', stroke: pr.stroke ?? '#8b8f96', 'stroke-width': 10 };
+          if (pr.r) a.rx = pr.r * M;
+          if (pr.dash) a['stroke-dasharray'] = '60 40';
+          el('rect', a, sym);
+        } else if (pr.t === 'circle') el('circle', { cx: pr.u * M, cy: pr.v * M, r: pr.r * M, fill: pr.fill ?? 'none', stroke: pr.stroke ?? '#8b8f96', 'stroke-width': 10 }, sym);
+        else if (pr.t === 'line') el('line', { x1: pr.u1 * M, y1: pr.v1 * M, x2: pr.u2 * M, y2: pr.v2 * M, stroke: pr.stroke ?? '#8b8f96', 'stroke-width': pr.dash ? 10 : 14, ...(pr.dash ? { 'stroke-dasharray': '60 40' } : {}) }, sym);
+        else {
+          // 文字は回転させず読める向きに（記号の位置だけ使う）
+          const t = el('text', { x: pr.u * M, y: pr.v * M, 'font-size': (pr.size ?? 0.16) * M * 0.8, 'text-anchor': 'middle', fill: '#4a4e55', transform: `rotate(${-it.rot} ${pr.u * M} ${pr.v * M})` }, sym);
+          t.textContent = pr.text;
+        }
+      }
+      if (it.kind !== 'kitchen') {
+        const t = el('text', { x: c.x, y: c.y + fs * 0.3, 'font-size': fs * 0.55, 'text-anchor': 'middle', fill: on ? '#b8683a' : '#6d7178', 'pointer-events': 'none', stroke: '#fff', 'stroke-width': fs * 0.12, 'paint-order': 'stroke' }, g);
+        t.textContent = FURNITURE_LABEL[it.kind];
+      }
     }
     for (const w of f.walls) {
       const on = sel?.kind === 'wall' && sel.id === w.id;
@@ -538,6 +557,21 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             h('button', { class: 'btn sm', title: '右に 90° 回す（R）', onclick: () => edit((x) => (x.rot = ((x.rot + 90 + 540) % 360) - 180)) }, '↷ 90°'),
           ),
         );
+        if (it.kind === 'kitchen') {
+          const optSel = (label: string, opts: [string, string][], get: () => string, set: (v: string) => void) =>
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('select', { onchange: (e: Event) => edit(() => set((e.target as HTMLSelectElement).value)) }, opts.map(([v, l]) => h('option', { value: v, selected: v === get() }, l))));
+          panel.append(
+            optSel('キッチンの型', [['peninsula', '対面ペニンシュラ（腰壁あり）'], ['island', 'アイランド'], ['wall', '壁付け I 型']], () => it.kitchenType ?? 'peninsula', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.kitchenType = v as FurnitureItem['kitchenType']; }),
+            optSel('コンロの位置（部屋側から見て）', [['right', '右'], ['left', '左']], () => it.stoveSide ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.stoveSide = v as FurnitureItem['stoveSide']; }),
+            optSel('冷蔵庫', [['right', '右端'], ['left', '左端'], ['none', '置かない（別に配置）']], () => it.fridge ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.fridge = v as FurnitureItem['fridge']; }),
+            optSel('レンジフード', [['on', 'あり'], ['off', 'なし']], () => (it.hood === false ? 'off' : 'on'), (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.hood = v === 'on'; }),
+            h('p', { class: 'hint' }, 'シンクはコンロの反対側に付きます。記号の矢印が部屋側（手前）です。冷蔵庫を別の場所に置くときは「置かない」にして、一覧の「冷蔵庫」を追加してください。'),
+          );
+        }
+        if (it.kind === 'cupboard')
+          panel.append(
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, '幅 (m)'), h('input', { type: 'number', step: 0.1, min: 0.6, max: 4, value: it.w ?? 1.8, onchange: (e: Event) => edit((x) => (x.w = +(e.target as HTMLInputElement).value)) })),
+          );
         if (['sofa', 'bed', 'tv', 'rug'].includes(it.kind))
           panel.append(
             h(

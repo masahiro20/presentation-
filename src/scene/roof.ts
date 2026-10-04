@@ -35,6 +35,7 @@ export interface RoofInfo {
 }
 
 export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType): { mb: MeshBuilder; info: RoofInfo } {
+  seq = 0;
   const mb = new MeshBuilder();
   const type = typeOverride ?? style.roof.type;
   const info: RoofInfo = { maxY: 0, eaveY: 0 };
@@ -244,7 +245,7 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
     // 妻壁
     for (const x of [R.minX, R.maxX]) {
       if (!ctx.onBoundary(x, R.minZ, x, R.maxZ)) continue;
-      prism(ctx.mb, ctx.gableKey, [V(x, H - 0.01, R.minZ - ctx.wallT / 2), V(x, H - 0.01, R.maxZ + ctx.wallT / 2), V(x, yR - T + 0.01, zc)], V(1, 0, 0), ctx.wallT);
+      prism(ctx.mb, ctx.gableKey, [V(x, H - 0.01, R.minZ - ctx.wallT / 2), V(x, H - 0.01, R.maxZ + ctx.wallT / 2), V(x, yR - T + 0.01, zc)], V(1, 0, 0), ctx.wallT - inset());
     }
     return yR;
   } else {
@@ -261,7 +262,7 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
     gutter(ctx, V(R.maxX + e, yE, z0), V(R.maxX + e, yE, z1), V(1, 0, 0));
     for (const z of [R.minZ, R.maxZ]) {
       if (!ctx.onBoundary(R.minX, z, R.maxX, z)) continue;
-      prism(ctx.mb, ctx.gableKey, [V(R.minX - ctx.wallT / 2, H - 0.01, z), V(xc, yR - T + 0.01, z), V(R.maxX + ctx.wallT / 2, H - 0.01, z)], V(0, 0, 1), ctx.wallT);
+      prism(ctx.mb, ctx.gableKey, [V(R.minX - ctx.wallT / 2, H - 0.01, z), V(xc, yR - T + 0.01, z), V(R.maxX + ctx.wallT / 2, H - 0.01, z)], V(0, 0, 1), ctx.wallT - inset());
     }
     return yR;
   }
@@ -358,11 +359,11 @@ function shedRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     for (const x of [R.minX, R.maxX]) {
       if (!ctx.onBoundary(x, R.minZ, x, R.maxZ)) continue;
       const pts = [V(x, H - 0.01, zLow), V(x, H - 0.01, zHigh), V(x, yAt(span) - 0.005, zHigh), V(x, H + 0.03, zLow)];
-      prism(ctx.mb, ctx.gableKey, high === 'n' ? pts.reverse() : pts, V(1, 0, 0), t);
+      prism(ctx.mb, ctx.gableKey, high === 'n' ? pts.reverse() : pts, V(1, 0, 0), t - inset());
     }
     if (!attached && ctx.onBoundary(R.minX, zHigh, R.maxX, zHigh)) {
       const c = V((R.minX + R.maxX) / 2, H - 0.01, zHigh);
-      ctx.mb.box(ctx.gableKey, c, V(1, 0, 0), R.maxX - R.minX + t, yAt(span) - H, t);
+      ctx.mb.box(ctx.gableKey, c, V(1, 0, 0), R.maxX - R.minX + t - boxLen(), yAt(span) - H, t - boxT());
     }
   } else {
     const xHigh = high === 'w' ? R.minX : R.maxX;
@@ -370,11 +371,11 @@ function shedRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     for (const z of [R.minZ, R.maxZ]) {
       if (!ctx.onBoundary(R.minX, z, R.maxX, z)) continue;
       const pts = [V(xLow, H - 0.01, z), V(xHigh, H - 0.01, z), V(xHigh, yAt(span) - 0.005, z), V(xLow, H + 0.03, z)];
-      prism(ctx.mb, ctx.gableKey, pts, V(0, 0, 1), t);
+      prism(ctx.mb, ctx.gableKey, pts, V(0, 0, 1), t - inset());
     }
     if (!attached && ctx.onBoundary(xHigh, R.minZ, xHigh, R.maxZ)) {
       const c = V(xHigh, H - 0.01, (R.minZ + R.maxZ) / 2);
-      ctx.mb.box(ctx.gableKey, c, V(0, 0, 1), R.maxZ - R.minZ + t, yAt(span) - H, t);
+      ctx.mb.box(ctx.gableKey, c, V(0, 0, 1), R.maxZ - R.minZ + t - boxLen(), yAt(span) - H, t - boxT());
     }
   }
   return yHigh;
@@ -438,7 +439,7 @@ function shedRoofPlane(
     [w1, bW1],
   ] as const) {
     if (!b) continue;
-    prism(ctx.mb, ctx.gableKey, [W(sA, wv, H - 0.01), W(sB, wv, H - 0.01), W(sB, wv, under(sB) - 0.005), W(sA, wv, under(sA) - 0.005)], wn, t);
+    prism(ctx.mb, ctx.gableKey, [W(sA, wv, H - 0.01), W(sB, wv, H - 0.01), W(sB, wv, under(sB) - 0.005), W(sA, wv, under(sA) - 0.005)], wn, t - inset());
   }
   // 高い側・低い側の壁の立ち上がり
   for (const [sv, b] of [
@@ -448,7 +449,7 @@ function shedRoofPlane(
     const h = under(sv) - H;
     if (!b || h < 0.06) continue;
     const c = W(sv, (w0 + w1) / 2, H - 0.01);
-    ctx.mb.box(ctx.gableKey, c, alongZ ? V(1, 0, 0) : V(0, 0, 1), w1 - w0 + t, h + 0.005, t);
+    ctx.mb.box(ctx.gableKey, c, alongZ ? V(1, 0, 0) : V(0, 0, 1), w1 - w0 + t - boxLen(), h + 0.005, t - boxT());
   }
   return yTop(s0);
 }
@@ -472,9 +473,22 @@ function flatRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     const L = dir.length();
     dir.normalize();
     const c = V((x0 + x1) / 2, H - 0.01, (z0 + z1) / 2);
-    ctx.mb.box(ctx.gableKey, c, dir, L + t, para + 0.01, t);
+    ctx.mb.box(ctx.gableKey, c, dir, L + t - boxLen(), para + 0.01, t - boxT());
     ctx.mb.box('ext.fascia', c.clone().setY(H + para), dir, L + t + 0.02, 0.04, t + 0.03);
   }
 }
+
+/**
+ * 妻壁・壁の立ち上がりは外壁よりわずかに薄くする。外壁や隣の立ち上がりと同じ平面に面が重なると、
+ * 光の計算（パストレーシング）で互いに影を落として真っ黒になるため（見た目の差は数 mm で分からない）。
+ * 屋根を区画に分けると同じ外壁線の上に複数の区画の壁ができるので、部材ごとに 0.5mm ずつ厚みを変えて
+ * 重ならないようにする。立ち上がりの箱は妻壁よりさらに薄く、角では隣の箱の側面より内側で止める
+ */
+const INSET = 0.004;
+let seq = 0;
+const jitter = () => 0.0005 * (seq++ % 8);
+const inset = () => INSET + jitter();
+const boxT = () => INSET * 3 + jitter();
+const boxLen = () => INSET * 5 + 0.0005 * (seq % 8);
 
 export type { Rect };

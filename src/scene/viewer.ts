@@ -14,7 +14,7 @@ import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
-import { exteriorShots, interiorShots, type Shot } from './shots';
+import { exteriorShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
@@ -585,7 +585,7 @@ export class Viewer {
       const first = [...this.shotCache.interiors.values()][0];
       this.shotCache.interiors.set(key, first);
     }
-    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg), ...this.shotCache.interiors.get(key)!];
+    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg, facadeWindows(s.model)), ...this.shotCache.interiors.get(key)!];
   }
 
   /** ショットを適用（時間帯・パース用の太陽も切り替え） */

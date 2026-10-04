@@ -70,7 +70,57 @@ function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vec
   return hi;
 }
 
-export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo, aspect = 16 / 9, northAngleDeg = 0): Shot[] {
+/** 外壁の窓（外向きの法線・面積）。外観パースで窓の多い面を選ぶのに使う */
+export interface FacadeWindow {
+  center: THREE.Vector3;
+  normal: THREE.Vector3;
+  area: number;
+}
+
+export function facadeWindows(model: BuildingModel): FacadeWindow[] {
+  const out: FacadeWindow[] = [];
+  for (const f of model.floors) {
+    for (const op of f.openings) {
+      if (op.kind !== 'window' && op.kind !== 'sliding' && op.kind !== 'entrance') continue;
+      const w = f.walls.find((x) => x.id === op.wallId);
+      if (!w || !w.exterior) continue;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      const t = (op.t0 + op.t1) / 2;
+      const cx = w.a.x + ux * t;
+      const cy = w.a.y + uy * t;
+      // 外向き: 外形の内外で確かめる
+      let sgn = w.outsideSign ?? 1;
+      const probe = (sg: number) => f.outline.some((l) => {
+        const q = { x: cx - uy * sg * (w.thickness / 2 + 300), y: cy + ux * sg * (w.thickness / 2 + 300) };
+        let inside = false;
+        for (let i = 0, j = l.length - 1; i < l.length; j = i++) {
+          if (l[i].y > q.y !== l[j].y > q.y && q.x < ((l[j].x - l[i].x) * (q.y - l[i].y)) / (l[j].y - l[i].y) + l[i].x) inside = !inside;
+        }
+        return inside;
+      });
+      const pin = probe(1);
+      const min = probe(-1);
+      if (pin !== min) sgn = pin ? -1 : 1;
+      const area = ((op.t1 - op.t0) * Math.max(600, op.height)) / 1e6;
+      out.push({ center: new THREE.Vector3(cx * MM, (f.elevation + op.sill + op.height / 2) * MM, cy * MM), normal: new THREE.Vector3(-uy * sgn, 0, ux * sgn), area: area * (op.kind === 'entrance' ? 1.5 : 1) });
+    }
+  }
+  return out;
+}
+
+/** その方向（建物から見たカメラの方向）から見える窓の量 */
+function facadeScore(wins: FacadeWindow[], fromDir: THREE.Vector3): number {
+  let s = 0;
+  for (const w of wins) {
+    const c = w.normal.dot(fromDir);
+    if (c > 0.15) s += w.area * c;
+  }
+  return s;
+}
+
+export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo, aspect = 16 / 9, northAngleDeg = 0, wins: FacadeWindow[] = []): Shot[] {
   const b = meta.bbox;
   const topY = Math.max(roof.maxY, meta.topY) + 0.2;
   const pts: THREE.Vector3[] = [];
@@ -96,18 +146,34 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
     const target = center.clone().setY(topY * 0.42);
     return { id, kind: 'exterior', title, caption, view: { pos, target, fov: vfov, architectural: true }, sunDir: sunForView(pos, target, sideSign), timeOfDay: tod };
   };
-  const frontDir = road.clone().multiplyScalar(Math.cos(0.6)).addScaledVector(along, entSide * Math.sin(0.6)).normalize();
+  let frontDir = road.clone().multiplyScalar(Math.cos(0.6)).addScaledVector(along, entSide * Math.sin(0.6)).normalize();
+  // 窓の情報があれば、道路側の半分の中で窓（＝表情）が最も多く見える角度を選ぶ（窓の無い壁ばかり写さない）
+  let gardenPick: THREE.Vector3 | null = null;
+  if (wins.length) {
+    const cands: { dir: THREE.Vector3; score: number }[] = [];
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      const d = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+      // 正面だけ・側面だけの真横より、2面が見える斜めの角度を少し優先
+      const diag = Math.abs(Math.sin(2 * a)) * 0.15 + 0.85;
+      cands.push({ dir: d, score: facadeScore(wins, d) * diag });
+    }
+    const roadSide = cands.filter((c) => c.dir.dot(road) > 0.25).sort((a, b) => b.score - a.score);
+    if (roadSide[0] && roadSide[0].score > 0) frontDir = roadSide[0].dir.clone();
+    const rest = cands.filter((c) => c.dir.dot(frontDir) < 0.2).sort((a, b) => b.score - a.score);
+    if (rest[0] && rest[0].score > 0) gardenPick = rest[0].dir.clone();
+  }
   shots.push(mk('ext-front', '外観パース（道路側）', '道路から見た正面の外観。玄関まわりのデザインと全体のバランスをご確認いただけます。', frontDir));
   const otherDir = road.clone().multiplyScalar(Math.cos(0.7)).addScaledVector(along, -entSide * Math.sin(0.7)).normalize();
   shots.push(mk('ext-front2', '外観パース（別アングル）', '反対側の角から見た外観。建物の奥行きと屋根の形がよくわかります。', otherDir, 'day', 1));
   // 庭側（道路の反対 or 最も窓の多い面）
-  const gardenDir = road.clone().negate().multiplyScalar(Math.cos(0.45)).addScaledVector(along, Math.sin(0.45)).normalize();
+  const gardenDir = gardenPick ?? road.clone().negate().multiplyScalar(Math.cos(0.45)).addScaledVector(along, Math.sin(0.45)).normalize();
   shots.push(mk('ext-garden', '外観パース（庭側）', '庭側からの外観。大きな窓からの明るさと、庭とのつながりをイメージしてください。', gardenDir));
   shots.push(mk('ext-evening', '夕景パース', '夕暮れどき、室内の灯りがともる外観。帰宅したくなる佇まいを演出します。', frontDir, 'evening'));
   shots.push(mk('ext-night', '夜景パース', '夜の外観。窓からこぼれる灯りが、暮らしのぬくもりを伝えます。', frontDir, 'night'));
   // 鳥瞰
   const aerialDir = frontDir.clone();
-  const dist = fitDistance(pts, center, aerialDir.clone().negate(), eye, 45, aspect) * 1.25;
+  const dist = fitDistance(pts, center, aerialDir.clone().negate(), eye, 45, aspect) * 1.6;
   const pos = center.clone().addScaledVector(aerialDir, dist * 0.85).setY(dist * 0.62);
   shots.push({
     id: 'aerial',

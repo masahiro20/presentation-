@@ -76,6 +76,48 @@ def setup_world(hdri_path, sun_dir_three, night=False):
     print(f"HDRI sun az {math.degrees(phi_h):.1f} -> target {math.degrees(phi_d):.1f}")
 
 
+def clean_meshes():
+    """重なった面（同じ位置の面が2枚）を1枚にする。光の計算では重なった面が互いに影を落として真っ黒になるため"""
+    import bmesh
+
+    removed = 0
+    for ob in bpy.data.objects:
+        if ob.type != "MESH":
+            continue
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0005)
+        seen = set()
+        dup = []
+        for f in bm.faces:
+            key = tuple(sorted(v.index for v in f.verts))
+            if key in seen:
+                dup.append(f)
+            else:
+                seen.add(key)
+        if dup:
+            bmesh.ops.delete(bm, geom=dup, context="FACES")
+            removed += len(dup)
+        bm.to_mesh(ob.data)
+        bm.free()
+    print("duplicate faces removed", removed)
+    # 建物の面は、書き出した頂点の法線が裏向きのことがある（three.js は両面表示で目立たないが、
+    # Cycles では光が当たらず真っ黒になる）。面の向きから法線を作り直し、平らに陰影を付ける
+    fixed = 0
+    for ob in bpy.data.objects:
+        if ob.type != "MESH" or not any(m and (m.name.startswith("ext.") or m.name.startswith("int.")) for m in ob.data.materials):
+            continue
+        me = ob.data
+        if me.has_custom_normals:
+            bpy.context.view_layer.objects.active = ob
+            with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+                bpy.ops.mesh.customdata_custom_splitnormals_clear()
+            fixed += 1
+        for poly in me.polygons:
+            poly.use_smooth = False
+    print("normals reset", fixed)
+
+
 def fix_materials(interior):
     for mat in bpy.data.materials:
         if not mat.use_nodes:
@@ -97,7 +139,7 @@ def fix_materials(interior):
             gl = nt.nodes.new("ShaderNodeBsdfGlossy")
             gl.inputs["Roughness"].default_value = 0.02 if not frosted else 0.3
             fr = nt.nodes.new("ShaderNodeLayerWeight")
-            fr.inputs["Blend"].default_value = 0.12
+            fr.inputs["Blend"].default_value = 0.3
             mix = nt.nodes.new("ShaderNodeMixShader")
             if frosted:
                 df = nt.nodes.new("ShaderNodeBsdfDiffuse")
@@ -197,6 +239,34 @@ def use_gpu():
     return False
 
 
+def auto_exposure(scene, a, target=0.42):
+    """小さな下書きを描いて、室内の中間の明るさ（輝度の中央値）が写真らしい明るさになる露出を求める"""
+    import os
+    import tempfile
+
+    keep = (scene.render.resolution_percentage, scene.cycles.samples, scene.render.filepath)
+    scene.render.resolution_percentage = 20
+    scene.cycles.samples = 24
+    ev = scene.view_settings.exposure
+    tmp = os.path.join(tempfile.gettempdir(), "madori_preview.png")
+    for _ in range(2):
+        scene.render.filepath = tmp
+        bpy.ops.render.render(write_still=True)
+        img = bpy.data.images.load(tmp, check_existing=False)
+        px = np.array(img.pixels[:], dtype=np.float32).reshape(-1, 4)
+        bpy.data.images.remove(img)
+        lum = px[:, 0] * 0.2126 + px[:, 1] * 0.7152 + px[:, 2] * 0.0722
+        med = float(np.median(lum))
+        step = math.log2(target / max(0.02, med))
+        ev = max(-1.0, min(5.0, ev + max(-2.0, min(2.0, step * 0.9))))
+        scene.view_settings.exposure = ev
+        if abs(step) < 0.15:
+            break
+    scene.render.resolution_percentage, scene.cycles.samples, scene.render.filepath = keep
+    print(f"exposure {ev:.2f} (median {med:.2f})")
+    return ev
+
+
 def set_camera(scene, shot, a):
     cam = scene.camera
     cam_data = cam.data
@@ -209,9 +279,14 @@ def set_camera(scene, shot, a):
     d = tgt - pos
     horiz = Vector((d.x, d.y, 0))
     pitch = math.atan2(d.z, horiz.length)
-    cam.rotation_euler = (math.pi / 2, 0, math.atan2(d.y, d.x) - math.pi / 2)
-    # シフトは画像の長辺に対する割合
-    cam_data.shift_y = math.tan(pitch) / (2 * math.tan(cam_data.angle_y / 2)) * (a.height / max(a.width, a.height))
+    if abs(pitch) > math.radians(15):
+        # 鳥瞰など大きく見下ろす構図は、カメラ自体を傾ける
+        cam.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
+        cam_data.shift_y = 0
+    else:
+        cam.rotation_euler = (math.pi / 2, 0, math.atan2(d.y, d.x) - math.pi / 2)
+        # シフトは画像の長辺に対する割合
+        cam_data.shift_y = math.tan(pitch) / (2 * math.tan(cam_data.angle_y / 2)) * (a.height / max(a.width, a.height))
 
 
 def main():
@@ -232,6 +307,7 @@ def main():
         os.makedirs(a.out, exist_ok=True)
     any_interior = any(s.get("kind") == "interior" for s in shots)
     bpy.ops.import_scene.gltf(filepath=a.glb)
+    clean_meshes()
     fix_materials(any_interior)
     setup_world(a.hdri, info["sunDir"], info.get("timeOfDay") == "night")
     if any_interior and info.get("bbox"):
@@ -277,6 +353,8 @@ def main():
         scene.cycles.samples = a.samples * (2 if interior else 1)
         scene.cycles.diffuse_bounces = 4 if interior else 3
         scene.view_settings.exposure = a.exposure if a.exposure is not None else (2.2 if interior else 0.0)
+        if a.exposure is None and interior:
+            scene.view_settings.exposure = auto_exposure(scene, a)
         scene.render.filepath = os.path.join(a.out, f"{shot['id']}.png") if multi else a.out
         bpy.ops.render.render(write_still=True)
         print("done", scene.render.filepath)

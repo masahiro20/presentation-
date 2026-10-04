@@ -186,6 +186,18 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
   // ---- 基礎 ----
   const f1 = model.floors[0];
   if (f1) {
+    // 外形の外に立つ外壁（中庭・ポーチの囲い、外形の切り欠きに沿う壁）にも基礎を付ける。外形に沿った基礎より
+    // わずかに細くし、同じ面が重ならないようにする（外形の基礎がある所では中に隠れる）
+    for (const w of f1.walls) {
+      if (!w.exterior) continue;
+      const A = V(w.a.x * MM, 0, w.a.y * MM);
+      const B = V(w.b.x * MM, 0, w.b.y * MM);
+      const L = A.distanceTo(B);
+      if (L < 0.05) continue;
+      const dir = new THREE.Vector3().subVectors(B, A).normalize();
+      const c = A.clone().addScaledVector(dir, L / 2).setY(-0.06);
+      mb.box('ext.foundation', c, dir, L + w.thickness * MM - 0.03, f1.elevation * MM - 0.1 + 0.06, w.thickness * MM - 0.03);
+    }
     const extT = Math.max(150, ...f1.walls.filter((w) => w.exterior).map((w) => w.thickness)) * MM;
     for (const poly of f1.outline) {
       const off = offsetPolygon(poly.map((p) => ({ x: p.x * MM, y: p.y * MM })), extT / 2 - 0.012);
@@ -354,7 +366,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   };
   const kPlus = sideKey(1);
   const kMinus = sideKey(-1);
-  const bottom = w.exterior && f.level === 1 ? fl - 0.1 : fl;
+  // 1階の外壁は基礎天端まで下げる。両側とも屋外の塀状の壁（中庭・ポーチの囲い）は外形の外で基礎が無いので地面まで
+  const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
+  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
   const wallTop = parapet ? Math.min(top, fl + 1.1) : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
@@ -426,7 +440,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     mb.box(frame, plane.clone().setY(head - fw), dir, width, fw, fd);
     mb.box(frame, plane.clone().addScaledVector(dir, -width / 2 + fw / 2).setY(sill), dir, fw, H, fd);
     mb.box(frame, plane.clone().addScaledVector(dir, width / 2 - fw / 2).setY(sill), dir, fw, H, fd);
-    const frosted = o.windowStyle === 'small' || o.windowStyle === 'high';
+    // 曇りガラスは浴室・トイレの小窓だけ（天井付けの高窓は透明で空を見せる）
+    const frosted = o.windowStyle === 'small';
     const glassKey = frosted ? 'ext.glassFrosted' : 'ext.glass';
     const panes = width > 1.0 && o.windowStyle !== 'high' ? 2 : 1;
     const innerW = width - fw * 2;

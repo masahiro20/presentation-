@@ -550,12 +550,18 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       const gap = ge - gs;
       if (gap < 250 || gap > 6000) continue;
       const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills);
+      if ((globalThis as any).__WALLDBG) console.log('GAP', Math.round(ax.o), Math.round(gs), Math.round(ge), op.kind, 'opEnds', occ[k].op, occ[k + 1].op, 'joined', endJoined(ax, gs), endJoined(ax, ge));
       // 住宅の窓は最大でも 4.5m 程度。それより広い隙間は別の図（隣の階の図面・屋根の斜線など）
       if (op.kind === 'window' && gap > 4600) continue;
       if (op.kind === 'open') {
         // 壁の途中の開口（両端が自由端）の場合のみ開口とみなす。廊下の通り抜けは開口にしない
         if (occ[k].op || occ[k + 1].op) continue;
-        if (endJoined(ax, gs) || endJoined(ax, ge)) continue;
+        // 両端が別の壁に接する隙間は廊下の通り抜け。片端だけ接する隙間は、扉の幅までなら出入口とみなす
+        // （壁の端と直交壁の交点の間の 800mm 程度の切れ目を無視すると、外壁に穴が開いたまま 3D になる）
+        const jA = endJoined(ax, gs);
+        const jB = endJoined(ax, ge);
+        if (jA && jB) continue;
+        if ((jA || jB) && gap > 1100) continue;
         if (gap > 2800) continue;
       }
       ax.openings.push(op);

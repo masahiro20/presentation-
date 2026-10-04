@@ -3,7 +3,7 @@ import { h, clear, toast, progressModal, section, field, modal, download, svgToD
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { SunContext } from '../../sun/context';
-import { geocode, siteLatLon } from '../../sun/geo';
+import { geocode, siteLatLon, PRECISION_LABEL } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -196,7 +196,25 @@ export const sunStep: Step = {
     side.append(h('h2', null, '日照シミュレーション'), h('p', { class: 'lead' }, '建設地の住所を入れると、航空写真と周辺の建物を読み込み、実際の太陽の動きで日当たりを確認できます。季節・時刻を動かして、部屋ごとの日当たりや日影図も自動で作成します。'));
 
     // 敷地
-    const addr = h('input', { type: 'text', placeholder: '例: 東京都世田谷区〇〇1丁目', value: state.site.address.includes('（仮）') ? '' : state.site.address }) as HTMLInputElement;
+    const googleKeyInput = h('input', {
+      type: 'password',
+      placeholder: 'Google Maps API キー（任意）',
+      value: (() => {
+        try {
+          return localStorage.getItem('googleMapsKey') ?? '';
+        } catch {
+          return '';
+        }
+      })(),
+      onchange: (e: Event) => {
+        try {
+          localStorage.setItem('googleMapsKey', (e.target as HTMLInputElement).value.trim());
+        } catch {
+          // 保存できない環境では入力中だけ使う
+        }
+      },
+    }) as HTMLInputElement;
+    const addr = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', value: state.site.address.includes('（仮）') ? '' : state.site.address }) as HTMLInputElement;
     const results = h('div');
     const locEl = h('div', { class: 'hint' });
     const showLoc = () => {
@@ -214,8 +232,10 @@ export const sunStep: Step = {
     const search = async () => {
       if (!addr.value.trim()) return;
       clear(results);
+      results.appendChild(h('p', { class: 'hint' }, '検索中…（番地の照合に数秒かかることがあります）'));
       try {
-        const rs = await geocode(addr.value.trim());
+        const rs = await geocode(addr.value.trim(), { googleKey: googleKeyInput.value.trim() || undefined });
+        clear(results);
         if (!rs.length) {
           results.appendChild(h('p', { class: 'hint' }, '見つかりませんでした'));
           return;
@@ -231,6 +251,8 @@ export const sunStep: Step = {
                   state.site = { lat: r.lat, lon: r.lon, address: r.title, offsetE: 0, offsetN: 0 };
                   clear(results);
                   showLoc();
+                  if (r.precision === 'town' || r.precision === 'chome')
+                    toast('番地までは特定できませんでした。「航空写真の上で敷地をクリック」で建物の位置を合わせてください', 'info', 8000);
                   await reloadContext();
                   if (!sc.state.aerialLoaded) await loadAerial();
                   await loadNeighbors('gsi');
@@ -238,10 +260,11 @@ export const sunStep: Step = {
                   v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
                 },
               },
-              r.title,
+              h('span', null, r.title, ' ', h('span', { class: 'hint', style: 'margin-left:6px' }, PRECISION_LABEL[r.precision])),
             ),
           );
       } catch (e) {
+        clear(results);
         toast((e as Error).message, 'error');
       }
     };
@@ -307,6 +330,13 @@ export const sunStep: Step = {
         '建設地',
         h('div', { style: 'display:flex;gap:6px' }, addr, h('button', { class: 'btn dark', onclick: search }, '検索')),
         results,
+        h(
+          'details',
+          { style: 'margin:6px 0' },
+          h('summary', { class: 'hint', style: 'cursor:pointer' }, '番地まで出ないときは Google の住所検索を使う（API キーを設定）'),
+          googleKeyInput,
+          h('span', { class: 'hint' }, 'Google Cloud で「Geocoding API」を有効にしたキーを貼ると、住居表示の無い地域や新しい番地も特定できます。キーはこのパソコンにだけ保存されます'),
+        ),
         locEl,
         placeBtn,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（航空写真に合わせてください）'),

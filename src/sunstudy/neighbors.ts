@@ -501,8 +501,7 @@ export async function fetchNeighbors(lat: number, lon: number, radiusM: number, 
       notes.push('PLATEAU・国土地理院の建物データが得られなかったため、OpenStreetMap の建物を使用しています（高さの多くは推定）。建物をクリックして高さを修正できます。');
     } catch (e) {
       if (signal?.aborted) throw e;
-      errors++;
-      if (errors) throw new Error(NETWORK_ERROR);
+      throw new Error(NETWORK_ERROR);
     }
   } else if (errors) {
     throw new Error(NETWORK_ERROR);

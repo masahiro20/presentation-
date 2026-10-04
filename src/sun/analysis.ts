@@ -1024,14 +1024,27 @@ export async function shadowDiagramCore(p: ShadowDiagramParams): Promise<ShadowD
   const ax = (x0 + half * 2 - 3) * S;
   const ay = (z0 + 3) * S;
   body += `<g transform="translate(${fmt(ax)} ${fmt(ay)}) rotate(${nA})"><circle r="150" fill="#fff" stroke="#333" stroke-width="10"/><path d="M0 -160 L50 90 L0 50 L-50 90Z" fill="#333"/><text y="-190" font-size="110" text-anchor="middle" font-weight="bold">N</text></g>`;
-  const vb = `${fmt(x0 * S)} ${fmt(z0 * S - 250)} ${fmt(half * 2 * S)} ${fmt(half * 2 * S + 500)}`;
-  const hm = (h: number) => `${Math.floor(h)}:${String(Math.round((h - Math.floor(h)) * 60)).padStart(2, '0')}`;
-  const title = `日影図（冬至日 真太陽時 ${hm(H0)}〜${hm(H1)} / 測定面 GL+${planeHeight}m）`;
-  const legendText = `青線: 時刻日影線（毎正時）　橙〜紫: 等時間日影線（${levels.join('・')}時間）　点線: 敷地境界・5m/10mライン${p.note ? `　${p.note}` : ''}`;
+  // 透かし（薄い灰色の斜め文字。図の中央）
+  const watermark = p.watermark === undefined ? SHADOW_DIAGRAM_WATERMARK : p.watermark;
+  if (watermark) {
+    const fs = Math.max(60, Math.round((half * 2 * S) / 42));
+    body += `<text transform="translate(${fmt(c.x * S)} ${fmt(c.z * S)}) rotate(-30)" text-anchor="middle" font-size="${fs}" fill="#9a9a9a" opacity="0.35" font-weight="bold" pointer-events="none">${watermark}</text>`;
+  }
+  // 題名: 真太陽時と、この場所での JST（均時差・経度差を含む）
+  const subtitle = p.subtitle === undefined ? SHADOW_DIAGRAM_SUBTITLE : p.subtitle;
+  const jst0 = formatHM(trueSolarToLocal(Y, M, D, H0, lon));
+  const jst1 = formatHM(trueSolarToLocal(Y, M, D, H1, lon));
+  const title = `日影図（冬至日 真太陽時 ${formatHM(H0)}〜${formatHM(H1)} ＝ この場所では JST ${jst0}〜${jst1} ／ 測定面 GL+${planeHeight}m）`;
+  const siteText = sitePoly ? '点線: 敷地境界・5m/10mライン' : SHADOW_DIAGRAM_NO_SITE_NOTE;
+  const legendText = `青線: 時刻日影線（毎正時）　橙〜紫: 等時間日影線（${levels.join('・')}時間）　${siteText}${p.note ? `　${p.note}` : ''}`;
+  const top = z0 * S - (subtitle ? 330 : 250);
+  const bottom = (z0 + half * 2) * S + 250;
   const legend =
-    `<text x="${fmt(x0 * S + 60)}" y="${fmt(z0 * S - 120)}" font-size="110" font-weight="bold" fill="#222">${title}</text>` +
+    `<text x="${fmt(x0 * S + 60)}" y="${fmt(z0 * S - (subtitle ? 200 : 120))}" font-size="110" font-weight="bold" fill="#222">${title}</text>` +
+    (subtitle ? `<text x="${fmt(x0 * S + 60)}" y="${fmt(z0 * S - 80)}" font-size="70" fill="#777">${subtitle}</text>` : '') +
     `<text x="${fmt(x0 * S + 60)}" y="${fmt((z0 + half * 2) * S + 180)}" font-size="75" fill="#555">${legendText}</text>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" font-family="'Noto Sans JP','Hiragino Sans',sans-serif"><rect x="${fmt(x0 * S)}" y="${fmt(z0 * S - 250)}" width="${fmt(half * 2 * S)}" height="${fmt(half * 2 * S + 500)}" fill="#fff"/>${body}${legend}</svg>`;
+  const vb = `${fmt(x0 * S)} ${fmt(top)} ${fmt(half * 2 * S)} ${fmt(bottom - top)}`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" font-family="'Noto Sans JP','Hiragino Sans',sans-serif"><rect x="${fmt(x0 * S)}" y="${fmt(top)}" width="${fmt(half * 2 * S)}" height="${fmt(bottom - top)}" fill="#fff"/>${body}${legend}</svg>`;
   return { svg, summary, extent: { x0, z0, half, cell } };
 }
 
@@ -1062,6 +1075,8 @@ export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: num
     outlines,
     site: { polygon: rectPolygon(site.min.x, site.min.y, site.max.x, site.max.y) },
     note: '※周辺建物は含みません',
+    // 既存アプリは図面の方位記号と住所から配置するので「航空写真上での手動配置」の副題は付けない
+    subtitle: null,
     onProgress,
   });
   disposeOccluder(occ);

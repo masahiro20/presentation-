@@ -9,7 +9,7 @@ import { siteLatLon } from '../../sun/geo';
 import type { StepCtx } from '../app';
 import type { Viewer } from '../../scene/viewer';
 import { textSprite, type SunContext } from '../../sun/context';
-import { solveTwoPoint, normDeg180, type EN } from '../../sun/align';
+import { solveTwoPoint, normDeg180, ALIGN_COLORS, TWO_POINT_STEPS, TWO_POINT_CANCEL_HINT, MIN_PAIR_DIST_M, type EN } from '../../sun/align';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
 import { UNIT_LABEL, type ImportedModel, type LengthUnit } from '../../sunstudy/types';
 import { applyTwoPointToSite, sizeText, snapToOutlineVertex, suggestsMirror, suggestsUnitError } from '../externalFit';
@@ -39,23 +39,53 @@ export interface ExternalPanelDeps {
 export interface ExternalPanel {
   section: HTMLElement;
   twoPointBtn: HTMLButtonElement;
-  /** 2 点合わせの待ち受けを中止する */
-  cancelTwoPoint: () => void;
+  /** 2 点合わせの待ち受け中なら中止する。notice があれば（中止したときだけ）その案内を出す。位置・向き・配置を変える前に呼ぶ（指した角の座標はワールドなので古くなる） */
+  cancelTwoPoint: (notice?: string) => void;
   /** emit('model') の後（方位の回転など）に external を再同期する */
   afterModelRebuilt: () => void;
   dispose: () => void;
 }
 
 const TWO_POINT_LABEL = '📍 2 点合わせ（建物の角 → 航空写真の同じ角）';
-const TWO_POINT_STEPS = [
-  '① 建物の角をクリックしてください（もう一度押すと中止・Esc でも中止）',
-  '② 航空写真で、その角がある位置をクリック（建物は半透明にしています）',
-  '③ 建物の別の角をクリックしてください',
-  '④ 航空写真で、その角がある位置をクリック（建物は半透明にしています）',
-];
 const UNITS: LengthUnit[] = ['mm', 'cm', 'm', 'in', 'ft', 'custom'];
-/** クリックとドラッグを分ける移動量 (px) */
-const CLICK_PX = 3;
+/** クリックとドラッグを分ける移動量 (px)。「敷地をクリック」（sunStep）も同じ値で判定する */
+export const CLICK_PX = 3;
+/** 3DS の配置を変えたときに待ち受け中の 2 点合わせを中止する案内 */
+const TWO_POINT_ABORT_EXT = '3DS の配置を変えたので 2 点合わせを中止しました（指した角の位置が変わるため）';
+/** 2 つの角が近すぎるときの案内（標準の日照ツールと同じ文言） */
+export const TOO_CLOSE_MSG = `2 つの角が近すぎます（${MIN_PAIR_DIST_M} m 以上離れた角を選んでください）`;
+
+/** pointerdown → pointerup の移動が CLICK_PX 以内ならクリック（それより大きければ視点のドラッグ） */
+export function isClick(down: { x: number; y: number }, up: { x: number; y: number }): boolean {
+  return Math.hypot(up.x - down.x, up.y - down.y) <= CLICK_PX;
+}
+
+/** 2 点合わせの手順の文言（段階 0..3）: 両アプリ共通の文言に中止の案内を添える（括弧で終わる文言には括弧を重ねない） */
+export function twoPointStepText(stage: number): string {
+  const step = TWO_POINT_STEPS[Math.min(Math.max(stage, 0), TWO_POINT_STEPS.length - 1)];
+  return step.endsWith('）') ? `${step}。${TWO_POINT_CANCEL_HINT}` : `${step}（${TWO_POINT_CANCEL_HINT}）`;
+}
+
+/** 2 つの角（建物側どうし・航空写真側どうし）が MIN_PAIR_DIST_M より近いと向きが定まらない */
+export function pairTooClose(a: EN, b: EN): boolean {
+  return Math.hypot(a.e - b.e, a.n - b.n) < MIN_PAIR_DIST_M;
+}
+
+/** 配置の状態の文言: 手で調整した／自動で合わせた／自動で合わせられなかった（fit 無し） */
+export function placementStateText(e: { manual?: boolean; fit?: unknown }): string {
+  return e.manual ? '手で調整した配置です' : e.fit ? '間取りの外形に自動で合わせた配置です' : '未調整（自動で合わせられませんでした）';
+}
+
+/** 2 点合わせで建物の角を拾う対象: 表示中でメッシュのあるグループだけ（隠れている PDF の建物を 3DS 越しに拾わない） */
+export function pickRoots(groups: THREE.Object3D[]): THREE.Object3D[] {
+  return groups.filter((g) => g.visible && g.children.length > 0);
+}
+
+/** o が root の子孫（root 自身を含む）か */
+export function descendsFrom(o: THREE.Object3D | null, root: THREE.Object3D): boolean {
+  for (let p = o; p; p = p.parent) if (p === root) return true;
+  return false;
+}
 
 export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   const { ctx, sc, center: c, R } = deps;
@@ -84,13 +114,17 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       const m = await load();
       pm.set(0.85, '間取りの外形に合わせています…');
       await new Promise((r) => setTimeout(r, 0));
+      // 待ち受け中の 2 点合わせは、指した角が古い建物のものなので中止する
+      cancelTwoPoint(TWO_POINT_ABORT_EXT);
       ctrl = installExternal(v, createExternal(m));
-      runAutoFit();
+      const fitted = runAutoFit();
       deps.invalidateResults();
       refresh();
       deps.applySun();
       flyTop();
-      toast(`${m.name} を読み込みました（${m.triangles.toLocaleString()} 三角形）。間取りの外形に合わせました`, 'ok');
+      const tri = `${m.triangles.toLocaleString()} 三角形`;
+      if (fitted) toast(`${m.name} を読み込みました（${tri}）。間取りの外形に合わせました`, 'ok');
+      else toast(`${m.name} を読み込みました（${tri}）。自動では合わせられなかったので、手で位置を合わせてください`, 'info', 8000);
     } catch (e) {
       toast((e as Error).message, 'error', 9000);
     } finally {
@@ -98,18 +132,33 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     }
   };
 
-  /** 間取りに自動で合わせ、単位や鏡像の疑いがあれば案内する。preferRotDeg: 同点のときに優先する回転（省略時は今の回転） */
-  const runAutoFit = (preferRotDeg?: number) => {
-    if (!ctrl) return;
+  /**
+   * 間取りに自動で合わせ、単位や鏡像の疑いがあれば案内する。合わせられたら true（例外や false 戻りなら false。配置は変えない）。
+   * preferRotDeg: 同点のときに優先する回転（省略時は今の回転）
+   */
+  const runAutoFit = (preferRotDeg?: number): boolean => {
+    if (!ctrl) return false;
+    let fitted = false;
     try {
-      const fit = ctrl.autoFitToPlan(v, preferRotDeg);
-      ctrl.ext.manual = false;
-      if (suggestsUnitError(fit)) toast(`PDF の外形 ${sizeText(fit.pdfW, fit.pdfD)} に対して 3DS は ${sizeText(fit.extW, fit.extD)} です。単位を確認してください`, 'info', 8000);
-      else if (suggestsMirror(fit.score, fit.mirrorScore)) toast(`外形の形が合いません（残差 ${fit.score.toFixed(2)} m。左右反転すると ${fit.mirrorScore.toFixed(2)} m）。鏡像で保存されたデータなら「左右反転」を試してください`, 'info', 8000);
-      else if (fit.mismatchM > 0.6) toast(`PDF の外形 ${sizeText(fit.pdfW, fit.pdfD)} に対して 3DS は ${sizeText(fit.extW, fit.extD)} です（ポーチ・下屋などが含まれていると差が出ます）。主屋の壁を PDF の外形に合わせました`, 'info', 8000);
+      // 戻り値は PlanFit（成功時）。外形が取れないときに false を返す版の controller でも扱えるようにする
+      const r: unknown = ctrl.autoFitToPlan(v, preferRotDeg);
+      fitted = r !== false;
     } catch (e) {
       toast(`間取りに合わせられませんでした: ${(e as Error).message}`, 'error', 8000);
+      return false;
     }
+    if (!fitted) {
+      toast('間取りに合わせられませんでした（3DS か間取りの外形が取れません）。手で位置を合わせてください', 'error', 8000);
+      return false;
+    }
+    ctrl.ext.manual = false;
+    const fit = ctrl.ext.fit;
+    if (fit) {
+      if (suggestsUnitError(fit)) toast(`PDF の外形 ${sizeText(fit.pdfW, fit.pdfD)} に対して 3DS は ${sizeText(fit.extW, fit.extD)} です。単位を確認してください`, 'info', 8000);
+      else if (suggestsMirror(fit.score, fit.mirrorScore ?? fit.score)) toast(`外形の形が合いません（残差 ${fit.score.toFixed(2)} m。左右反転すると ${(fit.mirrorScore ?? fit.score).toFixed(2)} m）。鏡像で保存されたデータなら「左右反転」を試してください`, 'info', 8000);
+      else if (fit.mismatchM > 0.6) toast(`PDF の外形 ${sizeText(fit.pdfW, fit.pdfD)} に対して 3DS は ${sizeText(fit.extW, fit.extD)} です（ポーチ・下屋などが含まれていると差が出ます）。主屋の壁を PDF の外形に合わせました`, 'info', 8000);
+    }
+    return true;
   };
 
   // ---------------------------------------------------------------- 変更の反映（1 本に集約）
@@ -117,6 +166,8 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   /** 配置・単位などの変更後: controller を同期（必要なら作り直し）、影の範囲を合わせ、結果を無効化、表示を更新 */
   const apply = (opts: { rebuild?: boolean; refit?: boolean; preferRotDeg?: number } = {}) => {
     if (!ctrl) return;
+    // 指した角はワールド座標なので、3DS が動く前に待ち受けを中止する（単位・反転・床高・微調整・回転・自動合わせのすべてがここを通る）
+    cancelTwoPoint(TWO_POINT_ABORT_EXT);
     if (opts.rebuild) ctrl.rebuild(v);
     if (opts.refit) runAutoFit(opts.preferRotDeg);
     else ctrl.sync(v);
@@ -180,6 +231,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   });
   replacesCb.addEventListener('change', () => {
     if (!ctrl) return;
+    cancelTwoPoint(TWO_POINT_ABORT_EXT);
     ctrl.setReplaces(v, replacesCb.checked);
     deps.invalidateResults();
     deps.applySun();
@@ -212,7 +264,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     // floor1M 未設定なら PDF の 1 階床高と同じ（= 3DS の底面を GL に置く）
     floorIn.value = (e.floor1M ?? pdfFloorText()).toFixed(2);
     replacesCb.checked = e.replaces;
-    stateLine.textContent = e.manual ? '手で調整した配置です' : '間取りの外形に自動で合わせた配置です';
+    stateLine.textContent = placementStateText(e);
     resetBtn.disabled = !e.manual;
   };
   const pdfFloorText = () => {
@@ -334,12 +386,12 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   const setStatus = () => {
     const armed = !!tp;
     twoPointBtn.classList.toggle('dark', armed);
-    twoPointBtn.textContent = armed ? TWO_POINT_STEPS[tp!.picks.length] : TWO_POINT_LABEL;
+    twoPointBtn.textContent = armed ? twoPointStepText(tp!.picks.length) : TWO_POINT_LABEL;
     canvasEl.style.cursor = armed ? 'crosshair' : '';
   };
   const addMarker = (p: THREE.Vector3, n: number, kind: 'building' | 'aerial') => {
     if (!tp) return;
-    const color = kind === 'building' ? '#ff6a3d' : '#3b9cff';
+    const color = kind === 'building' ? ALIGN_COLORS.model : ALIGN_COLORS.target;
     const disc = new THREE.Mesh(new THREE.CircleGeometry(0.35, 32), new THREE.MeshBasicMaterial({ color, toneMapped: false, depthTest: false, transparent: true, opacity: 0.9 }));
     disc.rotation.x = -Math.PI / 2;
     disc.position.copy(p).setY(p.y + 0.05);
@@ -364,16 +416,20 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     const r = canvasEl.getBoundingClientRect();
     return new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   };
-  /** 建物の角を拾う: 置き換え中なら external、そうでなければ PDF の建物・屋根。角に吸着する */
+  /**
+   * 建物の角を拾う: 見えているグループ（3DS・PDF の建物・屋根）のうち手前に当たったもの。角に吸着する。
+   * 置き換え中は PDF の建物・屋根が隠れているので 3DS だけ、置き換えでない 3DS は PDF の建物と重なって見えるので見えている方を拾う
+   */
   const pickBuilding = (ndc: THREE.Vector2): THREE.Vector3 | null => {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(ndc, v.camera);
-    const useExt = !!ctrl && ctrl.ext.replaces;
-    const roots = useExt ? [v.groups.external] : [v.groups.building, v.groups.roof];
+    const roots = pickRoots([v.groups.external, v.groups.building, v.groups.roof]);
+    if (!roots.length) return null;
     const hits = rc.intersectObjects(roots, true);
-    const hit = hits.find((x) => (x.object as THREE.Mesh).visible && (x.object as THREE.Mesh).isMesh);
+    const hit = hits.find((x) => (x.object as THREE.Mesh).isMesh && x.object.visible);
     if (!hit) return null;
-    return snapCorner(hit.point, hit.object as THREE.Mesh, useExt ? ctrl : null);
+    const onExt = !!ctrl && descendsFrom(hit.object, ctrl.wrapper);
+    return snapCorner(hit.point, hit.object as THREE.Mesh, onExt ? ctrl : null);
   };
   /** 吸着: 当たったメッシュの頂点が 0.3 m 以内にあればそれ、external ならその高さの外形（軒先なら軒先）の頂点 0.6 m 以内、無ければそのまま */
   const snapCorner = (p: THREE.Vector3, mesh: THREE.Mesh, ext: ExternalController | null): THREE.Vector3 => {
@@ -405,6 +461,12 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     if (!tp || tp.picks.length < 4 || !state.model) return;
     const [P1, Q1, P2, Q2] = tp.picks;
     const en = (p: THREE.Vector3): EN => sc.fromWorld(p);
+    // 2 つの角が近いと向きが定まらない（吸着で同じ角の別の頂点に付くと 1e-6 m のチェックは通ってしまう）
+    if (pairTooClose(en(P1), en(P2)) || pairTooClose(en(Q1), en(Q2))) {
+      toast(TOO_CLOSE_MSG, 'error', 7000);
+      cancelTwoPoint();
+      return;
+    }
     let fit;
     try {
       fit = solveTwoPoint([en(P1), en(P2)], [en(Q1), en(Q2)], { allowScale: false });
@@ -440,6 +502,10 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
         toast('建物の角をクリックしてください');
         return;
       }
+      if (i === 2 && pairTooClose(sc.fromWorld(tp.picks[0]), sc.fromWorld(p))) {
+        toast(`${TOO_CLOSE_MSG}。別の角をクリックしてください`, 'error', 7000);
+        return;
+      }
       tp.picks.push(p);
       addMarker(p, i / 2 + 1, 'building');
       setGhost(true);
@@ -447,6 +513,10 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       const q = sc.pickAerial(ndc);
       if (!q) {
         toast('航空写真の上をクリックしてください');
+        return;
+      }
+      if (i === 3 && pairTooClose(sc.fromWorld(tp.picks[1]), sc.fromWorld(q))) {
+        toast(`${TOO_CLOSE_MSG}。航空写真で別の角の位置をクリックしてください`, 'error', 7000);
         return;
       }
       tp.picks.push(q.clone());
@@ -462,15 +532,15 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   };
   const onUp = (e: PointerEvent) => {
     if (!tp || e.button !== 0 || !down) return;
-    const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    const d = down;
     down = null;
-    if (moved > CLICK_PX) return;
+    if (!isClick(d, { x: e.clientX, y: e.clientY })) return;
     handlePick(e);
   };
   canvasEl.addEventListener('pointerdown', onDown, true);
   canvasEl.addEventListener('pointerup', onUp, true);
 
-  const cancelTwoPoint = () => {
+  const cancelTwoPoint = (notice?: string) => {
     if (!tp) return;
     tp.markers.removeFromParent();
     tp.markers.traverse((o) => {
@@ -480,6 +550,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     tp = null;
     setGhost(false);
     setStatus();
+    if (notice) toast(notice);
   };
   const armTwoPoint = async () => {
     if (tp) {
@@ -508,15 +579,17 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     const t = e.target as HTMLElement | null;
     if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
     if (e.key === 'Escape') {
-      if (tp) {
-        cancelTwoPoint();
-        toast('2 点合わせを中止しました');
-      }
+      cancelTwoPoint('2 点合わせを中止しました');
       deps.cancelPlacing();
       return;
     }
     if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey && !e.altKey && hover && ctrl) {
       e.preventDefault();
+      // 待ち受け中に回すと指した角がずれるので、R は受け付けない
+      if (tp) {
+        toast('2 点合わせの待ち受け中は回転できません（先に Esc で中止してください）');
+        return;
+      }
       rotate(e.shiftKey ? -90 : 90);
     }
   };
@@ -528,7 +601,19 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     sc,
     external: () => ctrl,
     geo: () => siteLatLon(state.site),
-    twoPoint: { picks: () => tp?.picks ?? null, armed: () => !!tp },
+    twoPoint: {
+      picks: () => tp?.picks ?? null,
+      armed: () => !!tp,
+      /** 画面の NDC で建物の角を拾ってみる（吸着後の点か null） */
+      pickBuilding: (nx: number, ny: number) => pickBuilding(new THREE.Vector2(nx, ny)),
+      /** 同じ raycast の当たり（名前・距離・表示・3DS か） */
+      hits: (nx: number, ny: number) => {
+        const rc = new THREE.Raycaster();
+        rc.setFromCamera(new THREE.Vector2(nx, ny), v.camera);
+        const roots = pickRoots([v.groups.external, v.groups.building, v.groups.roof]);
+        return rc.intersectObjects(roots, true).map((x) => ({ name: x.object.name, type: x.object.type, visible: x.object.visible, distance: x.distance, point: x.point.toArray(), ext: !!ctrl && descendsFrom(x.object, ctrl.wrapper) }));
+      },
+    },
   };
 
   return {

@@ -27,6 +27,7 @@ function getCtx(ctx: StepCtx): SunContext {
   let sc = v.userData.sunCtx as SunContext | undefined;
   if (!sc) {
     sc = new SunContext(v, state.site);
+    (globalThis as any).__sunCtx = sc;
     v.userData.sunCtx = sc;
   }
   sc.state.site = state.site;
@@ -287,7 +288,39 @@ export const sunStep: Step = {
     let placing = false;
     const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '📍 航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
     const canvasEl = v.renderer.domElement;
+    // 周辺建物をクリックして「残す／消す」を切り替える
+    let selecting = false;
+    const selectBtn = h('button', { class: 'btn sm block' }, '🖱 周辺建物をクリックして残す／消す') as HTMLButtonElement;
+    const countEl = h('p', { class: 'hint' });
+    const renderCounts = () => {
+      const c = sc.neighborCounts();
+      countEl.textContent = c.total
+        ? `表示 ${c.shown} 棟／配置場所に重なるため自動で非表示 ${c.autoHidden} 棟／手で消した ${c.manualHidden} 棟／手で残した ${c.kept} 棟`
+        : '周辺建物はまだ読み込まれていません';
+    };
+    const stopSelecting = () => {
+      selecting = false;
+      selectBtn.classList.remove('dark');
+      selectBtn.textContent = '🖱 周辺建物をクリックして残す／消す';
+      canvasEl.style.cursor = '';
+      sc.setSelectMode(false);
+      renderCounts();
+    };
+    renderCounts();
     const onPlace = async (e: PointerEvent) => {
+      if (selecting && e.button === 0) {
+        const r = canvasEl.getBoundingClientRect();
+        const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+        const i = sc.pickNeighbor(ndc);
+        if (i == null) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const res = sc.toggleNeighbor(i);
+        toast(res === 'hidden' ? 'この建物を消しました（もう一度クリックで戻せます）' : 'この建物を残します', 'ok', 2500);
+        renderCounts();
+        apply(true);
+        return;
+      }
       if (!placing || e.button !== 0) return;
       const r = canvasEl.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -313,12 +346,32 @@ export const sunStep: Step = {
     cleanupPlace = () => {
       canvasEl.removeEventListener('pointerdown', onPlace, true);
       canvasEl.style.cursor = '';
+      if (selecting) stopSelecting();
     };
+    selectBtn.addEventListener('click', async () => {
+      if (selecting) {
+        stopSelecting();
+        return;
+      }
+      if (!sc.state.neighbors.length) {
+        await loadNeighbors('gsi');
+        if (!sc.state.neighbors.length) return;
+      }
+      if (placing) placeBtn.click();
+      selecting = true;
+      selectBtn.classList.add('dark');
+      selectBtn.textContent = '建物をクリック: 表示中 → 消す／薄い赤 → 残す（もう一度押すと終了）';
+      canvasEl.style.cursor = 'pointer';
+      sc.setSelectMode(true);
+      renderCounts();
+      v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 1.2, R * 2.6, R * 1.6)), target: c.clone(), fov: 45 });
+    });
     placeBtn.addEventListener('click', async () => {
       if (!sc.state.aerialLoaded) {
         await loadAerial();
         if (!sc.state.aerialLoaded) return;
       }
+      if (selecting) stopSelecting();
       placing = !placing;
       placeBtn.classList.toggle('dark', placing);
       placeBtn.textContent = placing ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
@@ -372,7 +425,9 @@ export const sunStep: Step = {
       const pm = progressModal('周辺の建物を取得しています', false);
       try {
         const n = await sc.loadNeighbors(src);
-        toast(`周辺の建物を ${n} 棟取得しました`, 'ok');
+        const c = sc.neighborCounts();
+        toast(c.autoHidden ? `周辺の建物を ${n} 棟取得しました（配置場所に重なる ${c.autoHidden} 棟は非表示。残したい建物は「クリックして残す／消す」で選べます）` : `周辺の建物を ${n} 棟取得しました`, 'ok', 6000);
+        renderCounts();
       } catch (e) {
         toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
       } finally {
@@ -419,8 +474,13 @@ export const sunStep: Step = {
           'div',
           { class: 'btn-row' },
           h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); apply(true); } }, '＋ 隣家を追加'),
-          h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); apply(true); } }, '周辺建物をすべて消す'),
+          h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); renderCounts(); apply(true); } }, '周辺建物をすべて消す'),
         ),
+        h('div', { class: 'field-label', style: 'margin-top:8px' }, '残す建物・消す建物を選ぶ'),
+        selectBtn,
+        countEl,
+        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { sc.resetNeighborChoices(); renderCounts(); apply(true); } }, '手で選んだ残す／消すを取り消す')),
+        h('p', { class: 'hint' }, '新築の建物に重なる既存の建物（建て替え前の家など）は自動で消えます。近くの隣家は消えません。実際より近い・遠いなどで調整したいときは、上のボタンを押してから建物をクリックしてください（表示中の建物は消え、薄い赤で表示される消えた建物は戻ります）。'),
         h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は手動で追加してください。'),
       ),
     );

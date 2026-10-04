@@ -66,3 +66,5 @@ export function emit(ev: string, payload?: unknown) {
 
 let idc = 0;
 export const uid = (p = 'id') => `${p}-${Date.now().toString(36)}-${(idc++).toString(36)}`;
+
+(globalThis as any).__state = state;

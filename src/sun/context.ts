@@ -142,23 +142,106 @@ export class SunContext {
       }
     }
     if (!list.length && err) throw err;
-    // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
-    const st = this.viewer.state!;
-    const site = st.site;
-    const bb = st.meta.bbox;
-    const inSite = (b: NeighborBuilding) => {
-      const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
-      if (ws.some((w) => w.x > site.min.x - 0.5 && w.x < site.max.x + 0.5 && w.z > site.min.y - 0.5 && w.z < site.max.y + 0.5)) return true;
-      const x0 = Math.min(...ws.map((w) => w.x));
-      const x1 = Math.max(...ws.map((w) => w.x));
-      const z0 = Math.min(...ws.map((w) => w.z));
-      const z1 = Math.max(...ws.map((w) => w.z));
-      return x1 > bb.min.x - 0.8 && x0 < bb.max.x + 0.8 && z1 > bb.min.z - 0.8 && z0 < bb.max.z + 0.8;
-    };
+    // 以前の「残す／消す」の指定は、同じ場所の建物に引き継ぐ
+    const prev = this.state.neighbors.filter((b) => b.source !== 'manual' && (b.hidden || b.keep));
+    const cen = (b: NeighborBuilding) => ({ e: b.ring.reduce((a, p) => a + p.e, 0) / b.ring.length, n: b.ring.reduce((a, p) => a + p.n, 0) / b.ring.length });
+    for (const b of list) {
+      const c = cen(b);
+      const m = prev.find((q) => {
+        const d = cen(q);
+        return Math.hypot(d.e - c.e, d.n - c.n) < 1.5;
+      });
+      if (m) {
+        b.hidden = m.hidden;
+        b.keep = m.keep;
+      }
+    }
     const manual = this.state.neighbors.filter((b) => b.source === 'manual');
-    this.state.neighbors = [...manual, ...list.filter((b) => !inSite(b))];
+    this.state.neighbors = [...manual, ...list];
     this.buildNeighbors();
-    return this.state.neighbors.length - manual.length;
+    return list.length;
+  }
+
+  /** 新築の建物（配置場所）に重なる既存建物か（建て替え前の家など）。「残す」にしたものは除く */
+  overlapsHouse(b: NeighborBuilding): boolean {
+    const st = this.viewer.state!;
+    const bb = st.meta.bbox;
+    const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
+    const x0 = Math.min(...ws.map((w) => w.x));
+    const x1 = Math.max(...ws.map((w) => w.x));
+    const z0 = Math.min(...ws.map((w) => w.z));
+    const z1 = Math.max(...ws.map((w) => w.z));
+    // 外接矩形の重なりでは隣家まで消えるので、建物の矩形の中にリングの頂点があるか、リングが建物を覆っているかで判定
+    const m = 0.3;
+    const inHouse = (x: number, z: number) => x > bb.min.x - m && x < bb.max.x + m && z > bb.min.z - m && z < bb.max.z + m;
+    if (ws.some((w) => inHouse(w.x, w.z))) return true;
+    const cx = (bb.min.x + bb.max.x) / 2;
+    const cz = (bb.min.z + bb.max.z) / 2;
+    return x0 < cx && x1 > cx && z0 < cz && z1 > cz;
+  }
+
+  /** 表示される周辺建物か */
+  isNeighborShown(b: NeighborBuilding): boolean {
+    if (b.hidden) return false;
+    if (b.keep || b.source === 'manual') return true;
+    return !this.overlapsHouse(b);
+  }
+
+  /** 残す／消す の選択モード（消えている建物も薄く表示してクリックできる） */
+  selectMode = false;
+  setSelectMode(on: boolean) {
+    this.selectMode = on;
+    this.buildNeighbors();
+  }
+
+  /** 画面上の点にある周辺建物の番号 */
+  pickNeighbor(ndc: THREE.Vector2): number | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.viewer.camera);
+    const hit = rc.intersectObjects(this.neighborsG.children, false)[0];
+    if (!hit) return null;
+    const i = hit.object.userData.index as number | undefined;
+    return i == null ? null : i;
+  }
+
+  /** 残す ↔ 消す を切り替える */
+  toggleNeighbor(i: number): 'shown' | 'hidden' {
+    const b = this.state.neighbors[i];
+    if (!b) return 'hidden';
+    if (this.isNeighborShown(b)) {
+      b.hidden = true;
+      b.keep = false;
+      this.buildNeighbors();
+      return 'hidden';
+    }
+    b.hidden = false;
+    b.keep = true;
+    this.buildNeighbors();
+    return 'shown';
+  }
+
+  /** 手で指定した残す／消すをすべて取り消す */
+  resetNeighborChoices() {
+    for (const b of this.state.neighbors) {
+      b.hidden = false;
+      b.keep = false;
+    }
+    this.buildNeighbors();
+  }
+
+  /** 残す／消す の集計 */
+  neighborCounts() {
+    let shown = 0;
+    let auto = 0;
+    let manualHidden = 0;
+    let kept = 0;
+    for (const b of this.state.neighbors) {
+      if (this.isNeighborShown(b)) shown++;
+      else if (b.hidden) manualHidden++;
+      else auto++;
+      if (b.keep) kept++;
+    }
+    return { shown, autoHidden: auto, manualHidden, kept, total: this.state.neighbors.length };
   }
 
   /** 手動で隣家を追加（方向・距離・大きさ） */
@@ -199,7 +282,11 @@ export class SunContext {
     const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
     const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
     const manualMat = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
-    for (const b of this.state.neighbors) {
+    const ghostMat = new THREE.MeshStandardMaterial({ color: '#c84b2f', roughness: 0.9, transparent: true, opacity: 0.22, depthWrite: false });
+    const keptMat = new THREE.MeshStandardMaterial({ color: '#dfe9d8', roughness: 0.9 });
+    this.state.neighbors.forEach((b, index) => {
+      const shown = this.isNeighborShown(b);
+      if (!shown && !this.selectMode) return;
       const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
       // ワールド XZ で Shape を作り、上方向へ押し出す
       const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
@@ -221,13 +308,17 @@ export class SunContext {
         uv.needsUpdate = true;
       }
       // ExtrudeGeometry のグループ: 0 = 上下面, 1 = 側面
-      const mesh = new THREE.Mesh(geo, [roofMat, b.source === 'manual' ? manualMat : wallMat]);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData.neighbor = true;
+      const side = b.source === 'manual' ? manualMat : this.selectMode && b.keep ? keptMat : wallMat;
+      const mesh = new THREE.Mesh(geo, shown ? [roofMat, side] : [ghostMat, ghostMat]);
+      // 消えている建物（選択モードの薄い表示）は影も日照の計算にも入れない
+      mesh.castShadow = shown;
+      mesh.receiveShadow = shown;
+      mesh.userData.neighbor = shown;
+      mesh.userData.index = index;
       mesh.userData.matKey = undefined;
+      if (!shown) mesh.renderOrder = 5;
       this.neighborsG.add(mesh);
-    }
+    });
     this.applyVisibility();
     this.viewer.invalidate();
   }

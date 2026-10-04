@@ -332,6 +332,10 @@ export interface NeighborBuilding {
   height: number;
   source: 'gsi' | 'osm' | 'manual';
   label?: string;
+  /** 手で「消す」にした */
+  hidden?: boolean;
+  /** 手で「残す」にした（敷地に近くても自動では消さない） */
+  keep?: boolean;
 }
 
 /** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */

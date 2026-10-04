@@ -38,6 +38,10 @@ input, select, textarea { font: inherit; }
 .step:disabled { opacity: 0.4; cursor: not-allowed; }
 .topbar .spacer { flex: 1; }
 .project-name { background: transparent; border: 1px solid #3a3e45; color: #fff; border-radius: 8px; padding: 6px 10px; width: 220px; }
+.proj-btns { display: flex; gap: 6px; }
+.proj-btns .btn { background: #2d3137; color: #fff; border-color: #3a3e45; white-space: nowrap; }
+.proj-btns .btn:hover { background: #3a3e45; }
+.resume { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #e3d9c8; background: #fbf6ec; border-radius: 10px; font-size: 13px; }
 
 /* レイアウト */
 .main { display: grid; grid-template-columns: 1fr 380px; min-height: 0; }

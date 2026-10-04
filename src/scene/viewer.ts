@@ -95,6 +95,14 @@ export class Viewer {
   private fastPR = 1;
   private keys = new Set<string>();
   private walkOcc: { state: SceneState; occ: ReturnType<typeof buildOccluder> } | null = null;
+  /** 歩行の速度（慣性付き）と、ホイール操作で残っている前進量 */
+  private walkVel = new THREE.Vector3();
+  private walkImpulse = new THREE.Vector3();
+  /** 目線モードの見回し: 指の位置（2 本指のつまみで前後） */
+  private walkPtrs = new Map<number, { x: number; y: number }>();
+  private walkPinch: number | null = null;
+  /** 目線モードの目の高さ（床から） */
+  eyeHeight = 1.5;
   private lastTick = performance.now();
   private camMoved() {
     this._dirty = true;
@@ -115,6 +123,7 @@ export class Viewer {
     this.design = design;
     // 自動点検（スクリーンショット）用のフック
     (globalThis as any).__viewer = this;
+    (globalThis as any).__THREE = THREE;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -150,12 +159,65 @@ export class Viewer {
       this.camMoved();
     });
     const el = this.renderer.domElement;
-    el.addEventListener('pointerdown', () => {
+    el.addEventListener('pointerdown', (e) => {
       if (this.navMode === 'pan') el.style.cursor = 'grabbing';
+      if (this.navMode === 'walk') {
+        this.walkPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        this.walkPinch = null;
+        el.setPointerCapture(e.pointerId);
+        el.style.cursor = 'grabbing';
+        this.anim = null;
+        return;
+      }
+      // 回転の中心をカーソルの下にある面の奥行きに合わせる（視線はそのまま）。
+      // 遠くの注視点を中心に回ると、クリックした物が大きく振られて操作しづらい
+      const rotates = (this.navMode === 'orbit' && e.button === 0) || (this.navMode === 'pan' && e.button === 2);
+      if (rotates && e.pointerType !== 'touch') this.pivotToCursor(e.clientX, e.clientY);
+      else if (rotates && e.pointerType === 'touch' && this.walkPtrs.size === 0) this.pivotToCursor(e.clientX, e.clientY);
     });
-    window.addEventListener('pointerup', () => {
+    el.addEventListener('pointermove', (e) => {
+      if (this.navMode !== 'walk') return;
+      const prev = this.walkPtrs.get(e.pointerId);
+      if (!prev) return;
+      this.walkPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.walkPtrs.size >= 2) {
+        // 2 本指: 開くと前進、閉じると後退
+        const pts = [...this.walkPtrs.values()];
+        const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (this.walkPinch != null) this.walkImpulse.addScaledVector(this.forwardFlat(), (d - this.walkPinch) * 0.012);
+        this.walkPinch = d;
+        return;
+      }
+      const dx = e.clientX - prev.x;
+      const dy = e.clientY - prev.y;
+      // 画面を掴んで回す感覚: 右へドラッグすると景色が右へ流れ、視線は左へ
+      const k = (0.0032 * this.camera.fov) / 55;
+      this.lookBy(dx * k, dy * k);
+    });
+    const endPtr = (e: PointerEvent) => {
+      this.walkPtrs.delete(e.pointerId);
+      if (this.walkPtrs.size < 2) this.walkPinch = null;
       if (this.navMode === 'pan') el.style.cursor = 'grab';
+      if (this.navMode === 'walk') el.style.cursor = this.walkPtrs.size ? 'grabbing' : 'grab';
+    };
+    el.addEventListener('pointerup', endPtr);
+    el.addEventListener('pointercancel', endPtr);
+    window.addEventListener('pointerup', () => {
+      if (this.navMode === 'pan' && this.walkPtrs.size === 0) el.style.cursor = 'grab';
     });
+    el.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.navMode !== 'walk') return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // ホイール 1 目盛りで約 0.6m 前進（なめらかに進む）
+        const step = -e.deltaY * (e.deltaMode === 1 ? 0.2 : 0.006);
+        this.walkImpulse.addScaledVector(this.forwardFlat(), step);
+        this.anim = null;
+      },
+      { passive: false, capture: true },
+    );
     this.controls.addEventListener('start', () => {
       this.anim = null;
       if (this.camera.shiftY) {
@@ -197,12 +259,33 @@ export class Viewer {
     this.loop();
   }
 
-  navMode: 'orbit' | 'pan' = 'orbit';
-  /** 左ドラッグの操作: 回転（orbit）か、画面を掴んで移動（pan） */
-  setNavMode(mode: 'orbit' | 'pan') {
+  navMode: 'orbit' | 'pan' | 'walk' = 'orbit';
+  /** 左ドラッグの操作: 回転（orbit）、画面を掴んで移動（pan）、目線で歩く（walk: ドラッグで見回し・ホイールで前後） */
+  setNavMode(mode: 'orbit' | 'pan' | 'walk') {
+    const prev = this.navMode;
     this.navMode = mode;
     const M = THREE.MOUSE;
     const T = THREE.TOUCH;
+    this.walkPtrs.clear();
+    this.walkPinch = null;
+    if (mode === 'walk') {
+      this.controls.enabled = false;
+      this.anim = null;
+      if (this.camera.shiftY) {
+        this.camera.shiftY = 0;
+        this.camera.updateProjectionMatrix();
+      }
+      this.enterEyeLevel();
+      this.renderer.domElement.style.cursor = 'grab';
+      return;
+    }
+    this.controls.enabled = true;
+    if (prev === 'walk') {
+      // 注視点を目の前 3m に置き、そのまま回転・移動に移れるようにする
+      this.controls.target.copy(this.camera.position).addScaledVector(this.forwardFlat(), 3);
+      this.controls.target.y = this.camera.position.y - 0.3;
+      this.controls.update();
+    }
     if (mode === 'pan') {
       this.controls.mouseButtons = { LEFT: M.PAN, MIDDLE: M.DOLLY, RIGHT: M.ROTATE };
       this.controls.touches = { ONE: T.PAN, TWO: T.DOLLY_ROTATE };
@@ -216,6 +299,11 @@ export class Viewer {
   /** ボタンでのズーム（k < 1 で近づく） */
   zoomBy(k: number) {
     this.anim = null;
+    if (this.navMode === 'walk') {
+      // 目線モードでは前後に歩く
+      this.walkImpulse.addScaledVector(this.forwardFlat(), k < 1 ? 1.2 : -1.2);
+      return;
+    }
     if (this.camera.shiftY) {
       this.camera.shiftY = 0;
       this.camera.updateProjectionMatrix();
@@ -232,6 +320,117 @@ export class Viewer {
       this.camera.position.copy(t).addScaledVector(off, k);
     }
     this.controls.update();
+    this.camMoved();
+  }
+
+  /** 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う） */
+  private occluder() {
+    if (!this.state) return null;
+    if (!this.walkOcc || this.walkOcc.state !== this.state) this.walkOcc = { state: this.state, occ: buildOccluder(this, { buildingOnly: true }) };
+    return this.walkOcc.occ;
+  }
+
+  /** 画面上の点（クライアント座標）の下にある面までの距離。無ければ地面との交点、それも無ければ null */
+  private depthAt(cx: number, cy: number): number | null {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const nx = ((cx - r.left) / Math.max(1, r.width)) * 2 - 1;
+    const ny = 1 - ((cy - r.top) / Math.max(1, r.height)) * 2;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
+    const occ = this.occluder();
+    if (occ) {
+      const hit = occ.bvh.raycastFirst(rc.ray, THREE.DoubleSide);
+      if (hit && hit.distance > 0.05) return hit.distance;
+    }
+    // 家具・外構
+    const hits = rc.intersectObjects([this.groups.furniture, this.groups.landscape], true);
+    const h = hits.find((x) => (x.object as THREE.Mesh).visible && x.distance > 0.05);
+    if (h) return h.distance;
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const p = new THREE.Vector3();
+    if (rc.ray.intersectPlane(ground, p)) return p.distanceTo(this.camera.position);
+    return null;
+  }
+
+  /** 回転の中心を、カーソルの下の面と同じ奥行き（視線上）に移す。視線は変えないので画面は動かない */
+  private pivotToCursor(cx: number, cy: number) {
+    const d = this.depthAt(cx, cy);
+    if (d == null) return;
+    const dist = Math.max(0.3, Math.min(400, d));
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    this.controls.target.copy(this.camera.position).addScaledVector(dir, dist);
+    this.controls.update();
+  }
+
+  /** 水平な前方向 */
+  private forwardFlat() {
+    const f = new THREE.Vector3();
+    this.camera.getWorldDirection(f);
+    f.y = 0;
+    if (f.lengthSq() < 1e-6) f.set(0, 0, -1);
+    return f.normalize();
+  }
+
+  /** 目線モードの見回し（yaw: 左右、pitch: 上下、ラジアン） */
+  private lookBy(yaw: number, pitch: number) {
+    const e = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+    e.y += yaw;
+    e.x = Math.max(-Math.PI * 0.42, Math.min(Math.PI * 0.42, e.x + pitch));
+    e.z = 0;
+    this.camera.quaternion.setFromEuler(e);
+    this.syncWalkTarget();
+    this.camMoved();
+  }
+
+  private syncWalkTarget() {
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    this.controls.target.copy(this.camera.position).addScaledVector(dir, 3);
+  }
+
+  /** 今いる場所の床の高さ（カメラの真下 4m 以内に床があれば） */
+  private floorBelow(): number | null {
+    const occ = this.occluder();
+    if (!occ) return 0;
+    const ray = new THREE.Ray(this.camera.position.clone(), new THREE.Vector3(0, -1, 0));
+    const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+    if (hit && hit.distance < 4) return hit.point.y;
+    return this.camera.position.y < 4 ? 0 : null;
+  }
+
+  /** 目線の高さに降りる（上空から切り替えたときは建物の前に立つ） */
+  private enterEyeLevel() {
+    const b = this.state?.meta.bbox;
+    const pos = this.camera.position;
+    if (b && pos.y > 6) {
+      // 上空からは、玄関があれば玄関の正面、無ければ今いる方角の建物の外に立つ
+      const ent = this.state!.meta.entrance;
+      if (ent) pos.copy(ent.pos).addScaledVector(ent.outward, 4);
+      else {
+        const c = new THREE.Vector3((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
+        const dir = pos.clone().setY(0).sub(c);
+        if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+        dir.normalize();
+        const rx = (b.max.x - b.min.x) / 2 + 4;
+        const rz = (b.max.z - b.min.z) / 2 + 4;
+        pos.copy(c).add(new THREE.Vector3(dir.x * rx, 0, dir.z * rz));
+      }
+      pos.y = this.eyeHeight;
+      const look = b.getCenter(new THREE.Vector3()).setY(this.eyeHeight);
+      this.camera.lookAt(look);
+    } else {
+      const fy = this.floorBelow();
+      pos.y = (fy ?? 0) + this.eyeHeight;
+      // 水平に近い視線に戻す
+      const e = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+      e.x = Math.max(-0.35, Math.min(0.35, e.x));
+      e.z = 0;
+      this.camera.quaternion.setFromEuler(e);
+    }
+    this.walkVel.set(0, 0, 0);
+    this.walkImpulse.set(0, 0, 0);
+    this.syncWalkTarget();
     this.camMoved();
   }
 
@@ -279,8 +478,8 @@ export class Viewer {
       if (t >= 1) this.anim = null;
       this.camMoved();
     }
-    if (this.keys.size) this.walk(dt);
-    const moved = this.controls.update();
+    if (this.keys.size || this.walkVel.lengthSq() > 1e-6 || this.walkImpulse.lengthSq() > 1e-6) this.walk(dt);
+    const moved = this.navMode === 'walk' ? false : this.controls.update();
     if (moved) this.camMoved();
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
     const moving = now - this.lastMove < 200 && this.quality === 'high';
@@ -323,30 +522,41 @@ export class Viewer {
     this.resize();
   }
 
-  /** キーボードで歩く: W/S・↑/↓ 前後、A/D・←/→ 左右、Q/E 下/上、Shift で速く */
+  /** 歩く: W/S・↑/↓ 前後、A/D・←/→ 左右、Q/E 下/上、Shift で速く。慣性を付けてなめらかに動き、壁は通り抜けない */
   private walk(dt: number) {
-    const f = new THREE.Vector3();
-    this.camera.getWorldDirection(f);
-    f.y = 0;
-    if (f.lengthSq() < 1e-6) f.set(0, 0, -1);
-    f.normalize();
+    const f = this.forwardFlat();
     const r = new THREE.Vector3(-f.z, 0, f.x);
-    const mv = new THREE.Vector3();
+    const want = new THREE.Vector3();
     const k = this.keys;
-    if (k.has('w') || k.has('arrowup')) mv.add(f);
-    if (k.has('s') || k.has('arrowdown')) mv.sub(f);
-    if (k.has('d') || k.has('arrowright')) mv.add(r);
-    if (k.has('a') || k.has('arrowleft')) mv.sub(r);
-    if (k.has('e')) mv.y += 1;
-    if (k.has('q')) mv.y -= 1;
-    if (mv.lengthSq() === 0) return;
-    // 室内は歩く速さ、外観は建物の大きさに合わせて速く
-    const indoor = this.camera.position.y < 8;
-    const speed = (indoor ? 2.2 : 9) * (k.has('shift') ? 3 : 1);
-    mv.normalize().multiplyScalar(speed * dt);
+    if (k.has('w') || k.has('arrowup')) want.add(f);
+    if (k.has('s') || k.has('arrowdown')) want.sub(f);
+    if (k.has('d') || k.has('arrowright')) want.add(r);
+    if (k.has('a') || k.has('arrowleft')) want.sub(r);
+    if (k.has('e')) want.y += 1;
+    if (k.has('q')) want.y -= 1;
+    const walkMode = this.navMode === 'walk';
+    // 室内・目線は歩く速さ、外観は建物の大きさに合わせて速く
+    const indoor = walkMode || this.camera.position.y < 8;
+    const speed = (indoor ? 1.6 : 9) * (k.has('shift') ? 2.5 : 1);
+    if (want.lengthSq() > 0) want.normalize().multiplyScalar(speed);
+    // 慣性: 加速 0.18 秒、減速 0.25 秒程度
+    const tau = want.lengthSq() > 0 ? 0.18 : 0.25;
+    const a = 1 - Math.exp(-dt / tau);
+    this.walkVel.lerp(want, a);
+    if (this.walkVel.lengthSq() < 1e-5 && want.lengthSq() === 0) this.walkVel.set(0, 0, 0);
+    const mv = this.walkVel.clone().multiplyScalar(dt);
+    // ホイールの前進分は指数的に消化する
+    if (this.walkImpulse.lengthSq() > 1e-8) {
+      const part = 1 - Math.exp(-dt / 0.12);
+      const d = this.walkImpulse.clone().multiplyScalar(part);
+      mv.add(d);
+      this.walkImpulse.sub(d);
+      if (this.walkImpulse.lengthSq() < 1e-6) this.walkImpulse.set(0, 0, 0);
+    }
+    if (mv.lengthSq() === 0 && !walkMode) return;
     // 壁の通り抜けを防ぐ（壁に沿って滑るように、東西・南北を別々に判定）
-    if (this.state) {
-      if (!this.walkOcc || this.walkOcc.state !== this.state) this.walkOcc = { state: this.state, occ: buildOccluder(this, { buildingOnly: true }) };
+    const occ = this.occluder();
+    if (occ && mv.lengthSq() > 0) {
       const ray = new THREE.Ray();
       const blocked = (d: THREE.Vector3) => {
         const len = d.length();
@@ -354,21 +564,44 @@ export class Viewer {
         for (const dy of [0, -0.9]) {
           ray.origin.copy(this.camera.position).setY(this.camera.position.y + dy);
           ray.direction.copy(d).normalize();
-          const hit = this.walkOcc!.occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+          const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
           if (hit && hit.distance < len + 0.3) return true;
         }
         return false;
       };
       const dx = new THREE.Vector3(mv.x, 0, 0);
       const dz = new THREE.Vector3(0, 0, mv.z);
-      if (blocked(dx)) mv.x = 0;
-      if (blocked(dz)) mv.z = 0;
-      if (mv.lengthSq() === 0) return;
+      if (blocked(dx)) {
+        mv.x = 0;
+        this.walkVel.x = 0;
+        this.walkImpulse.x = 0;
+      }
+      if (blocked(dz)) {
+        mv.z = 0;
+        this.walkVel.z = 0;
+        this.walkImpulse.z = 0;
+      }
     }
-    this.anim = null;
-    this.camera.position.add(mv);
-    this.controls.target.add(mv);
-    this.camMoved();
+    if (mv.lengthSq() > 0) {
+      this.anim = null;
+      this.camera.position.add(mv);
+      this.controls.target.add(mv);
+      this.camMoved();
+    }
+    // 目線モードは床の高さに追従する（階段も上れる）。Q/E で浮いた分はそのまま
+    if (walkMode && !k.has('q') && !k.has('e')) {
+      const fy = this.floorBelow();
+      if (fy != null) {
+        const ty = fy + this.eyeHeight;
+        const dy = ty - this.camera.position.y;
+        if (Math.abs(dy) > 0.002) {
+          const step = dy * (1 - Math.exp(-dt / 0.15));
+          this.camera.position.y += step;
+          this.controls.target.y += step;
+          this.camMoved();
+        }
+      }
+    }
   }
 
   /** キー操作の受付（入力欄の操作中は除く） */
@@ -624,6 +857,7 @@ export class Viewer {
       this.camera.lookAt(v.target);
     }
     this.camera.updateProjectionMatrix();
+    if (this.navMode === 'walk') this.syncWalkTarget();
     this.camMoved();
   }
 

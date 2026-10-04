@@ -7,6 +7,7 @@ import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type PlanSide, type RoomType } from '../../core/types';
+import { openProjectFile, isProjectFile, loadAutosave, applyProject, saveProjectFile, clearAutosave } from '../project';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf') {
   const pm = progressModal('平面図を解析しています', false);
@@ -41,15 +42,39 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
 let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf' } | null = null;
 
 function dropScreen(ctx: StepCtx) {
-  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf', style: 'display:none' }) as HTMLInputElement;
-  const readFile = async (f: File) => loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
+  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf,.json', style: 'display:none' }) as HTMLInputElement;
+  const readFile = async (f: File) => {
+    if (isProjectFile(f)) {
+      try {
+        await openProjectFile(f);
+      } catch (e) {
+        toast((e as Error).message, 'error', 6000);
+      }
+      return;
+    }
+    return loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
+  };
   input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
+  // 前回の続き（ブラウザに自動保存したもの）
+  const resumeBox = h('div', { class: 'resume', style: 'display:none' });
+  void loadAutosave().then((p) => {
+    if (!p) return;
+    const when = new Date(p.savedAt);
+    const t = `${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+    resumeBox.style.display = '';
+    resumeBox.append(
+      h('span', null, `前回の続き: ${p.name}（${p.pdfName ?? '図面'}・${t} 自動保存）`),
+      h('button', { class: 'btn sm primary', onclick: () => { try { applyProject(p); toast('前回の続きから再開しました', 'ok'); } catch (e) { toast((e as Error).message, 'error'); } } }, '▶ 続きから再開'),
+      h('button', { class: 'btn sm ghost', onclick: () => { void clearAutosave(); resumeBox.style.display = 'none'; } }, '消す'),
+    );
+  });
   const zone = h(
     'div',
     { class: 'dropzone' },
     h('div', { class: 'big' }, '📐'),
     h('p', null, h('b', null, '平面図の PDF（または CAD の DXF）をここにドロップ'), h('br'), 'または'),
     h('button', { class: 'btn primary', onclick: () => input.click() }, 'PDF / DXF ファイルを選択'),
+    h('p', { class: 'hint', style: 'margin:10px 0 0' }, '保存したプロジェクト（.madori.json）もここにドロップ、またはこのボタンから開けます'),
     input,
   );
   zone.addEventListener('dragover', (e) => {
@@ -75,6 +100,7 @@ function dropScreen(ctx: StepCtx) {
       { class: 'drop-card' },
       h('h1', null, '平面図 PDF から、ワクワクするプレゼンを。'),
       h('p', null, '間取りの PDF を読み込むだけで、壁・窓・ドア・部屋を自動で認識し、立面図・外観／内観パース・ウォークスルー動画・日照シミュレーションまで一気に作成します。'),
+      resumeBox,
       zone,
       h(
         'div',
@@ -375,6 +401,7 @@ function renderResult(ctx: StepCtx) {
         'div',
         { class: 'btn-row' },
         h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind) }, '再解析'),
+        h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, '💾 プロジェクトを保存'),
         h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),

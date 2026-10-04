@@ -1,6 +1,7 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
-import { h, clear } from './dom';
+import { h, clear, toast } from './dom';
 import { state, on, emit } from './state';
+import { saveProjectFile, openProjectFile, startAutosave } from './project';
 import { Viewer } from '../scene/viewer';
 
 export interface StepCtx {
@@ -54,6 +55,7 @@ export class App {
       this.stepBar,
       h('div', { class: 'spacer' }),
       nameInput,
+      this.buildProjectButtons(),
     );
     this.viewerHost = h('div', { id: 'viewer3d', class: 'view' });
     this.navBar = h('div', { class: 'nav-tools' });
@@ -67,6 +69,45 @@ export class App {
       this.modelVersion++;
       this.renderSteps();
     });
+    // 保存したプロジェクトを開いたら、3D のテイストも反映して外観・内観パースへ
+    on('project-loaded', () => {
+      (nameInput as HTMLInputElement).value = state.name;
+      if (this._viewer) {
+        this._viewer.setModel(state.model!);
+        this.builtVersion = this.modelVersion;
+        this._viewer.setDesign(state.design);
+      }
+      void this.go('design');
+    });
+    startAutosave();
+  }
+
+  /** 保存／開く（ヘッダー） */
+  private buildProjectButtons() {
+    const input = h('input', { type: 'file', accept: '.json,application/json', style: 'display:none' }) as HTMLInputElement;
+    input.addEventListener('change', async () => {
+      const f = input.files?.[0];
+      input.value = '';
+      if (!f) return;
+      try {
+        await openProjectFile(f);
+      } catch (e) {
+        toast((e as Error).message, 'error', 6000);
+      }
+    });
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        void saveProjectFile();
+      }
+    });
+    return h(
+      'div',
+      { class: 'proj-btns' },
+      h('button', { class: 'btn sm', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '💾 保存'),
+      h('button', { class: 'btn sm', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '📂 開く'),
+      input,
+    );
   }
 
   get viewer(): Viewer {
@@ -77,32 +118,36 @@ export class App {
     return this._viewer;
   }
 
-  /** 3D 操作ツール（回転／掴んで移動／ズーム） */
+  /** 3D 操作ツール（回転／掴んで移動／目線で歩く／ズーム） */
   private buildNavBar(v: Viewer) {
     const bar = this.navBar;
-    const orbit = h('button', { class: 'nav-btn', title: '回転（ドラッグで建物の周りを回る）', onclick: () => setMode('orbit') }, h('span', { class: 'ic' }, '⟲'), '回転');
+    type Mode = 'orbit' | 'pan' | 'walk';
+    const orbit = h('button', { class: 'nav-btn', title: '回転（ドラッグで建物の周りを回る。クリックした物を中心に回ります）', onclick: () => setMode('orbit') }, h('span', { class: 'ic' }, '⟲'), '回転');
     const pan = h('button', { class: 'nav-btn', title: '移動（画面を掴んで上下左右にずらす）\nスペースキーを押している間も移動になります', onclick: () => setMode('pan') }, h('span', { class: 'ic' }, '✋'), '移動');
-    const setMode = (m: 'orbit' | 'pan') => {
+    const walk = h('button', { class: 'nav-btn', title: '目線（人の目の高さで歩く）\nドラッグで見回し、ホイールまたは W/S で前後、A/D で左右。階段も上れます', onclick: () => setMode('walk') }, h('span', { class: 'ic' }, '👁'), '目線');
+    const setMode = (m: Mode) => {
       v.setNavMode(m);
       orbit.classList.toggle('on', m === 'orbit');
       pan.classList.toggle('on', m === 'pan');
+      walk.classList.toggle('on', m === 'walk');
     };
     setMode('orbit');
     bar.append(
       orbit,
       pan,
+      walk,
       h('div', { class: 'nav-sep' }),
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
       h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),
     );
-    bar.title = '左ドラッグ：回転（移動モードでは移動）／右ドラッグ：移動（移動モードでは回転）／ホイール：カーソルの位置へズーム／W・A・S・D：歩いて移動（Q・E 上下、Shift 速く）';
+    bar.title = '左ドラッグ：回転（移動モードでは移動、目線モードでは見回し）／右ドラッグ：移動／ホイール：カーソルの位置へズーム（目線モードでは前後）／W・A・S・D：歩いて移動（Q・E 上下、Shift 速く）';
     // スペースキーを押している間は一時的に「移動」
-    let held: 'orbit' | 'pan' | null = null;
+    let held: Mode | null = null;
     const typing = (e: KeyboardEvent) => /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '');
     window.addEventListener('keydown', (e) => {
       if (e.code !== 'Space' || typing(e) || this.viewerHost.style.visibility === 'hidden' || !this.current?.uses3d) return;
       e.preventDefault();
-      if (held == null) {
+      if (held == null && v.navMode !== 'walk') {
         held = v.navMode;
         setMode('pan');
       }

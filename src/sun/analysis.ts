@@ -176,12 +176,28 @@ export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filt
   return occluderFromTriangles(bakeWorldTriangles(roots, filter, opts));
 }
 
-/** 既存アプリ: 影を落とす物体を 1 つの BVH にまとめる */
+/** 外部の正確な建物（groups.external）が PDF の建物に代わって影を落とすか（userData.externalReplaces かつメッシュがある） */
+export function externalReplacesBuilding(viewer: Viewer): boolean {
+  if (viewer.userData.externalReplaces !== true) return false;
+  let has = false;
+  viewer.groups.external.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) has = true;
+  });
+  return has;
+}
+
+/**
+ * 既存アプリ: 影を落とす物体を 1 つの BVH にまとめる。
+ * 外部の建物（3DS）が置き換え中なら、建物の種別 'building' は groups.external だけ（PDF の建物・屋根は焼き込まない）。
+ * 置き換えでない外部の建物は無視する
+ */
 export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean } = {}): Occluder {
-  const parts: OccluderPart[] = [
-    { root: viewer.groups.building, kind: 'building' },
-    { root: viewer.groups.roof, kind: 'building' },
-  ];
+  const parts: OccluderPart[] = externalReplacesBuilding(viewer)
+    ? [{ root: viewer.groups.external, kind: 'building' }]
+    : [
+        { root: viewer.groups.building, kind: 'building' },
+        { root: viewer.groups.roof, kind: 'building' },
+      ];
   const filters = new Map<THREE.Object3D, (m: THREE.Mesh) => boolean>();
   if (opts.furniture) parts.push({ root: viewer.groups.furniture, kind: 'furniture' });
   if (!opts.buildingOnly) {
@@ -343,8 +359,12 @@ export interface RoomSunResult {
   peakAt: number | null;
 }
 
-/** 部屋ごとの日当たり */
-export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?: number; spacing?: number; onProgress?: (r: number) => void } = {}): Promise<RoomSunResult[]> {
+/**
+ * 部屋ごとの日当たり（PDF の部屋の床面に測定点を置く）。
+ * opts.sampleY(x, z, floorY): 測定点の高さを決める（省略時 floorY + 0.03）。外部の建物（3DS）で置き換えているときに、
+ * 3DS 自身の床の上から測るために使う
+ */
+export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?: number; spacing?: number; onProgress?: (r: number) => void; sampleY?: (x: number, z: number, floorY: number) => number } = {}): Promise<RoomSunResult[]> {
   const st = viewer.state!;
   const model: BuildingModel = st.model;
   void model;
@@ -372,7 +392,7 @@ export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?
           const t = Math.max(0, Math.min(1, ((x - p.x) * dx + (z - p.y) * dy) / l2));
           return Math.hypot(p.x + dx * t - x, p.y + dy * t - z) < 0.12;
         });
-        if (!nearEdge) pts.push(new THREE.Vector3(x, ri.floorY + 0.03, z));
+        if (!nearEdge) pts.push(new THREE.Vector3(x, opts.sampleY ? opts.sampleY(x, z, ri.floorY) : ri.floorY + 0.03, z));
       }
     const series: { h: number; frac: number }[] = [];
     for (const t of times) {
@@ -457,11 +477,11 @@ export async function sunHoursGrid(
   return { x0, z0, cell, nx, nz, values };
 }
 
-/** 既存アプリ: 地面の日照時間マップ（指定した時間帯, h 単位） */
-export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?: number; to?: number; stepMin?: number; cell?: number; half?: number; height?: number; onProgress?: (r: number) => void } = {}): Promise<GridResult> {
+/** 既存アプリ: 地面の日照時間マップ（指定した時間帯, h 単位）。opts.center で格子の中心を指定できる（省略時は PDF の建物の中心） */
+export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?: number; to?: number; stepMin?: number; cell?: number; half?: number; height?: number; center?: { x: number; z: number }; onProgress?: (r: number) => void } = {}): Promise<GridResult> {
   const st = viewer.state!;
   const occ = buildOccluder(viewer, { context: true, trees: true });
-  const c = st.meta.bbox.getCenter(new THREE.Vector3());
+  const c = opts.center ? new THREE.Vector3(opts.center.x, 0, opts.center.z) : st.meta.bbox.getCenter(new THREE.Vector3());
   const half = opts.half ?? 22;
   const cell = opts.cell ?? 0.5;
   const nx = Math.ceil((half * 2) / cell);
@@ -1051,17 +1071,31 @@ export async function shadowDiagramCore(p: ShadowDiagramParams): Promise<ShadowD
   return { svg, summary, extent: { x0, z0, half, cell } };
 }
 
+/** shadowDiagram の上書き: 外部の建物（3DS）で置き換えているときに、その輪郭・中心を使う */
+export interface ShadowDiagramOverrides {
+  /** 建物の輪郭（ワールド XZ）。省略時は PDF の各階外形 */
+  outlines?: THREE.Vector2[][];
+  /** 建物の内部か。省略時は PDF の 1 階外形の内側 */
+  insideBuilding?: (x: number, z: number) => boolean;
+  /** 図の中心（ワールド XZ）。省略時は PDF の bbox 中心 */
+  center?: THREE.Vector2;
+  /** 建物の最高高さ (m)。与えると影の長さから図の範囲を広げる */
+  buildingTop?: number;
+}
+
 /**
  * 既存アプリ: 日影図（冬至日・真太陽時 8〜16 時）
  * planeHeight: 測定面の高さ (m)。1.5 / 4.0 など
  */
-export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: number; northAngleDeg: number; year: number }, planeHeight = 1.5, onProgress?: (r: number) => void): Promise<ShadowDiagram> {
+export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: number; northAngleDeg: number; year: number }, planeHeight = 1.5, onProgress?: (r: number) => void, over: ShadowDiagramOverrides = {}): Promise<ShadowDiagram> {
   const st = viewer.state!;
   const occ = buildOccluder(viewer, { buildingOnly: true });
-  const c = st.meta.bbox.getCenter(new THREE.Vector3());
+  const c = over.center ? new THREE.Vector3(over.center.x, 0, over.center.y) : st.meta.bbox.getCenter(new THREE.Vector3());
   const footprints = st.meta.outlines.map((o) => o.polys.map((poly) => poly.map((q) => ({ x: q.x, y: q.y }))));
   const outlines: ShadowOutline[] = [];
-  for (const o of st.meta.outlines) for (const poly of o.polys) outlines.push({ points: poly.map((q) => ({ x: q.x, y: q.y })), fill: o.level === 1 });
+  if (over.outlines) for (const poly of over.outlines) outlines.push({ points: poly.map((q) => ({ x: q.x, y: q.y })), fill: true });
+  else for (const o of st.meta.outlines) for (const poly of o.polys) outlines.push({ points: poly.map((q) => ({ x: q.x, y: q.y })), fill: o.level === 1 });
+  const insideBuilding = over.insideBuilding ?? ((x: number, z: number) => footprints.some((loops) => insideLoops({ x, y: z }, loops)));
   const site = st.site;
   const r = await shadowDiagramCore({
     occ,
@@ -1072,9 +1106,10 @@ export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: num
     planeHeight,
     center: { x: c.x, z: c.z },
     half: 34,
+    autoExtent: over.buildingTop ? { buildingTop: over.buildingTop } : undefined,
     cell: 0.3,
     stepMin: 10,
-    insideBuilding: (x, z) => footprints.some((loops) => insideLoops({ x, y: z }, loops)),
+    insideBuilding,
     outlines,
     site: { polygon: rectPolygon(site.min.x, site.min.y, site.max.x, site.max.y) },
     note: '※周辺建物は含みません',

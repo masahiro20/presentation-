@@ -7,6 +7,7 @@ import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFail
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
+import { externalSampleY } from '../externalBuilding';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
@@ -64,12 +65,18 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
       const { lat, lon } = siteLatLon(state.site);
       const seasons: SeasonResult[] = [];
       const dates = keyDates(new Date().getFullYear()).filter((d) => d.id !== 'autumn');
+      // 設計の 3DS で置き換えているときは、3DS 自身の床の上から測る（日照ステップと同じ）
+      const sy = externalSampleY(v);
       for (let i = 0; i < dates.length; i++) {
-        if (pm.signal.aborted) return;
+        if (pm.signal.aborted) {
+          sy?.dispose();
+          return;
+        }
         const d = dates[i];
-        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`) });
+        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`), sampleY: sy?.fn });
         seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
       }
+      sy?.dispose();
       const order = ['winter', 'spring', 'summer'];
       seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
       state.sun.seasons = seasons;

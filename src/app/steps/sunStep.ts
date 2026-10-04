@@ -8,6 +8,10 @@ import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, key
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { clearGroup } from '../../scene/viewer';
+import { normDeg180 } from '../../sun/align';
+import { externalController, externalSampleY } from '../externalBuilding';
+import { createExternalPanel, twoPointBlock, type ExternalPanel } from './sunExternal';
+import { pointInPolygon } from '../../core/geometry';
 
 interface SunUI {
   year: number;
@@ -39,6 +43,7 @@ function sunDay(): SunDay {
 }
 
 let cleanupPlace: (() => void) | null = null;
+let extPanel: ExternalPanel | null = null;
 
 export const sunStep: Step = {
   id: 'sun',
@@ -50,6 +55,9 @@ export const sunStep: Step = {
     ui.playing = false;
     cleanupPlace?.();
     cleanupPlace = null;
+    // 3DS の表示・PDF の建物の非表示は日照ステップの間だけ（他のステップは PDF の建物のまま）
+    extPanel?.dispose();
+    extPanel = null;
   },
   async mount(ctx) {
     const v = ctx.app.viewer;
@@ -269,24 +277,37 @@ export const sunStep: Step = {
       }
     };
     addr.addEventListener('keydown', (e) => e.key === 'Enter' && search());
+    // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ）を捨てる。
+    // 位置・方位・3DS が変わった後に古い結果（プレゼン資料にも使われる state.sun.seasons）が残らないようにする
+    let invalidateResults: () => void = () => {};
     const nudge = (de: number, dn: number) => {
       state.site = { ...state.site, offsetE: state.site.offsetE + de, offsetN: state.site.offsetN + dn };
       showLoc();
+      invalidateResults();
       reloadContext();
     };
     const rotate = (d: number) => {
-      state.model!.northAngleDeg += d;
+      state.model!.northAngleDeg = normDeg180(state.model!.northAngleDeg + d);
       emit('model');
       ctx.app.ensureScene();
+      // PDF の建物を作り直したので、3DS（external）を再同期（影の範囲・隠す設定）
+      extPanel?.afterModelRebuilt();
       sc.buildSunPath();
       sc.buildNeighbors();
       if (sc.state.aerialLoaded) loadAerial();
+      invalidateResults();
       apply(true);
     };
     // 航空写真をクリックして、建物を実際の敷地の位置に置く（住所検索は町・丁目の代表点になることが多いため）
     let placing = false;
     const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '📍 航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
     const canvasEl = v.renderer.domElement;
+    const setPlacing = (on: boolean) => {
+      placing = on;
+      placeBtn.classList.toggle('dark', on);
+      placeBtn.textContent = on ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止・Esc でも中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
+      canvasEl.style.cursor = on ? 'crosshair' : '';
+    };
     const onPlace = async (e: PointerEvent) => {
       if (!placing || e.button !== 0) return;
       const r = canvasEl.getBoundingClientRect();
@@ -298,12 +319,10 @@ export const sunStep: Step = {
       }
       e.stopPropagation();
       const d = sc.fromWorld(hit);
-      placing = false;
-      placeBtn.classList.remove('dark');
-      placeBtn.textContent = '📍 航空写真の上で敷地をクリックして位置を合わせる';
-      canvasEl.style.cursor = '';
+      setPlacing(false);
       state.site = { ...state.site, offsetE: state.site.offsetE + d.e, offsetN: state.site.offsetN + d.n };
       showLoc();
+      invalidateResults();
       await reloadContext();
       v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, R * 4.2, 0.02)), target: c.clone(), fov: 40 });
       toast('建物の位置を合わせました（細かいずれは下の「北へ2m」などで調整できます）', 'ok');
@@ -314,16 +333,31 @@ export const sunStep: Step = {
       canvasEl.removeEventListener('pointerdown', onPlace, true);
       canvasEl.style.cursor = '';
     };
+    const ensureAerial = async () => {
+      if (!sc.state.aerialLoaded) await loadAerial();
+      return sc.state.aerialLoaded;
+    };
     placeBtn.addEventListener('click', async () => {
-      if (!sc.state.aerialLoaded) {
-        await loadAerial();
-        if (!sc.state.aerialLoaded) return;
-      }
-      placing = !placing;
-      placeBtn.classList.toggle('dark', placing);
-      placeBtn.textContent = placing ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
-      canvasEl.style.cursor = placing ? 'crosshair' : '';
+      if (!(await ensureAerial())) return;
+      // 2 点合わせと同時に有効にしない（1 クリックが両方に効いてしまう）
+      extPanel?.cancelTwoPoint();
+      setPlacing(!placing);
       if (placing) v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, 160, 0.02)), target: c.clone(), fov: 45 });
+    });
+    // 設計の 3D データ（3DS）で正確な建物にするパネルと 2 点合わせ。
+    // setCutaway / setDesign / ensureScene の後に作る（PDF の建物を隠す設定がそれらで戻されないように）
+    extPanel?.dispose();
+    extPanel = createExternalPanel({
+      ctx,
+      sc,
+      center: c,
+      R,
+      reloadContext,
+      applySun: () => apply(true),
+      invalidateResults: () => invalidateResults(),
+      showLoc,
+      cancelPlacing: () => setPlacing(false),
+      ensureAerial,
     });
     side.append(
       section(
@@ -339,6 +373,7 @@ export const sunStep: Step = {
         ),
         locEl,
         placeBtn,
+        ...twoPointBlock(extPanel),
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（航空写真に合わせてください）'),
         h(
           'div',
@@ -424,6 +459,10 @@ export const sunStep: Step = {
         h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は手動で追加してください。'),
       ),
     );
+    // 3DS のパネルは 建設地 の直後に置く
+    const siteSection = side.querySelector('section.panel-section');
+    if (siteSection) siteSection.after(extPanel.section);
+    else side.appendChild(extPanel.section);
 
     // 解析
     const out = h('div');
@@ -439,13 +478,15 @@ export const sunStep: Step = {
     };
     const runRooms = async () => {
       const pm = progressModal('部屋ごとの日当たりを解析しています');
+      // 3DS で置き換え中: 測定点は 3DS 自身の床の上から（PDF の床高と違う 3DS でも床下から測らない）
+      const sy = externalSampleY(v);
       try {
         const seasons: SeasonResult[] = [];
         const dates = keyDates(ui.year).filter((d) => d.id !== 'autumn');
         for (let i = 0; i < dates.length; i++) {
           const d = dates[i];
           const day = { ...sunDay(), month: d.month, day: d.day };
-          const rooms = await analyzeRooms(v, day, { onProgress: (r) => pm.set((i + r) / dates.length, `${d.label}の解析中…`) });
+          const rooms = await analyzeRooms(v, day, { onProgress: (r) => pm.set((i + r) / dates.length, `${d.label}の解析中…`), sampleY: sy?.fn });
           if (pm.signal.aborted) break;
           seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
         }
@@ -455,10 +496,13 @@ export const sunStep: Step = {
         state.sun.highlights = sunHighlights(seasons);
         renderResults();
         toast('日当たりの解析が完了しました', 'ok');
+        if (sy && seasons.length && seasons.every((s) => s.rooms.every((r) => r.hours <= 0)))
+          toast('3DS の壁に窓の開口が無いと室内に日が入りません。PDF の建物で部屋の日当たりを解析するには「3DS で影を計算する」を外してください', 'info', 8000);
       } catch (e) {
         console.error(e);
         toast('解析に失敗しました', 'error');
       } finally {
+        sy?.dispose();
         pm.close();
       }
     };
@@ -474,10 +518,17 @@ export const sunStep: Step = {
       try {
         const d = sunDay();
         const rs = sunriseSunset(ui.year, ui.month, ui.day, d.lat, d.lon);
-        const g = await groundSunHours(v, d, { onProgress: (r) => pm.set(r) });
+        // 3DS で置き換え中は、その外形（壁）の中を抜き、3DS の中心で格子を切る
+        const ext = externalController();
+        const useExt = !!ext && ext.ext.replaces;
+        const extBox = useExt ? ext!.worldBox() : null;
+        const extPoly = useExt ? ext!.outlineWorld().map((p) => ({ x: p.x, y: p.y })) : null;
+        const center = extBox ? extBox.getCenter(new THREE.Vector3()) : undefined;
+        const g = await groundSunHours(v, d, { onProgress: (r) => pm.set(r), center: center ? { x: center.x, z: center.z } : undefined });
         const max = Math.max(1, rs.sunset - rs.sunrise);
         const b = v.state!.meta.bbox;
-        heat = heatmapMesh(g, max, 0.08, (x, z) => !(x > b.min.x && x < b.max.x && z > b.min.z && z < b.max.z));
+        const mask = extPoly && extPoly.length >= 3 ? (x: number, z: number) => !pointInPolygon({ x, y: z }, extPoly) : (x: number, z: number) => !(x > b.min.x && x < b.max.x && z > b.min.z && z < b.max.z);
+        heat = heatmapMesh(g, max, 0.08, mask);
         v.groups.overlay.add(heat);
         heatLegend.style.display = 'flex';
         heatMax.textContent = `${max.toFixed(1)}時間`;
@@ -495,7 +546,16 @@ export const sunStep: Step = {
       const pm = progressModal(`日影図（測定面 GL+${height}m）を作成しています`);
       try {
         const d = sunDay();
-        const res = await shadowDiagram(v, { lat: d.lat, lon: d.lon, northAngleDeg: d.northAngleDeg, year: ui.year }, height, (r) => pm.set(r));
+        // 3DS で置き換え中は、その外形（壁）と中心・高さで図を作る
+        const ext = externalController();
+        const over = ext && ext.ext.replaces ? (() => {
+          const poly = ext.outlineWorld();
+          const box = ext.worldBox();
+          const cc = box.getCenter(new THREE.Vector3());
+          const pts = poly.map((p) => ({ x: p.x, y: p.y }));
+          return { outlines: [poly], insideBuilding: (x: number, z: number) => pointInPolygon({ x, y: z }, pts), center: new THREE.Vector2(cc.x, cc.z), buildingTop: box.max.y };
+        })() : {};
+        const res = await shadowDiagram(v, { lat: d.lat, lon: d.lon, northAngleDeg: d.northAngleDeg, year: ui.year }, height, (r) => pm.set(r), over);
         state.sun.diagramSvg = res.svg;
         pm.close();
         const body = h('div', null, h('div', { html: res.svg }), h('p', { class: 'hint' }, res.summary.map((s) => `${s.hour}時間日影: 敷地境界から最大 約${s.maxDist.toFixed(1)}m`).join('／')));
@@ -549,6 +609,16 @@ export const sunStep: Step = {
       ),
     );
     renderResults();
+    invalidateResults = () => {
+      state.sun = { ...state.sun, seasons: [], highlights: [], diagramSvg: undefined };
+      if (heat) {
+        v.groups.overlay.remove(heat);
+        heat = null;
+        heatLegend.style.display = 'none';
+        v.invalidate();
+      }
+      renderResults();
+    };
     // 影の網羅
     void clearGroup;
   },

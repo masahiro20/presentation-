@@ -1127,6 +1127,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // ---- 外壁判定 ----
   const sideState = (p: Vec2) => {
     const [x, y] = grid.cellOf(p);
+    // 中庭・ポーチ（屋外の区画）は外として扱う → 面した壁は外壁、ガラス戸は窓になる
+    if (x >= 0 && y >= 0 && x < grid.w && y < grid.h && courtLabels.has(labels[y * grid.w + x])) return OUTSIDE;
     return grid.get(x, y);
   };
   const outWalls: Wall[] = [];

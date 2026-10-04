@@ -89,17 +89,21 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       gableKey: upperAccent ? 'ext.accent' : 'ext.wall',
       gutter: style.roof.gutter,
       onBoundary: (x0, z0, x1, z1) => {
-        // 辺の中点の両側を調べ、片側が外（この階の範囲外）なら外周
-        const mx = (x0 + x1) / 2 / MM;
-        const mz = (z0 + z1) / 2 / MM;
+        // 辺に沿って数点、両側を調べ、どこかで片側が外（この階の範囲外）なら外周
+        // （中点だけだと、辺の一部が隣の四角形に接する L 字形の外周で妻壁が抜け、屋根の裏が見えていた）
         const dx = (x1 - x0) / MM;
         const dz = (z1 - z0) / MM;
         const L = Math.hypot(dx, dz) || 1;
         const nxp = -dz / L;
         const nzp = dx / L;
-        const inA = insideLoops({ x: mx + nxp * 60, y: mz + nzp * 60 }, polys);
-        const inB = insideLoops({ x: mx - nxp * 60, y: mz - nzp * 60 }, polys);
-        return inA !== inB;
+        for (const f of [0.5, 0.15, 0.85, 0.35, 0.65]) {
+          const mx = (x0 + (x1 - x0) * f) / MM;
+          const mz = (z0 + (z1 - z0) * f) / MM;
+          const inA = insideLoops({ x: mx + nxp * 60, y: mz + nzp * 60 }, polys);
+          const inB = insideLoops({ x: mx - nxp * 60, y: mz - nzp * 60 }, polys);
+          if (inA !== inB) return true;
+        }
+        return false;
       },
     };
     const cellIn = (m: Uint8Array, x: number, z: number) => {
@@ -146,9 +150,14 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       if (type === 'gable') y = gableRoof(ctx, R, H);
       else if (type === 'hip') y = hipRoof(ctx, R, H);
       else {
-        // 片流れ: 北側を高く（南面に屋根面を向ける）
-        const high: 'n' | 's' | 'e' | 'w' =
-          Math.abs(north.y) >= Math.abs(north.x) ? (north.y < 0 ? 'n' : 's') : north.x > 0 ? 'e' : 'w';
+        // 片流れ: 建物の短い方向に流し（長い方向に流すと高い側の壁が1階分も高くなる）、北寄りの側を高く
+        const gx = (Math.max(...rects.map((q) => q.maxX)) - Math.min(...rects.map((q) => q.minX))) * MM;
+        const gz = (Math.max(...rects.map((q) => q.maxY)) - Math.min(...rects.map((q) => q.minY))) * MM;
+        const alongZ = gz <= gx * 1.15; // ほぼ正方形なら南北に流す
+        const high: 'n' | 's' | 'e' | 'w' = alongZ ? (north.y <= 0 ? 'n' : 's') : north.x > 0 ? 'e' : 'w';
+        // 高い側の壁の立ち上がりは最大でも 2.4m（勾配を急にしても壁が1階分伸びないように）
+        const span = alongZ ? gz : gx;
+        if (span * ctx.slope > 2.4) ctx.slope = 2.4 / span;
         // 最上階は1枚の屋根面にそろえる（四角形ごとに屋根を架けると高さの違う屋根が段々に重なり、まとまりのない外観になる）
         if (isTop && rects.length > 1) {
           const g = {

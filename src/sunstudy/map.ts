@@ -56,7 +56,17 @@ export interface MapPickerOptions {
   onPolygonModeChange?: (on: boolean) => void;
   /** スケールバーの位置（左下からのオフセット px）。既定 {x:12, y:12} */
   scaleBarOffset?: { x: number; y: number };
+  /**
+   * 地図タイルが 1 枚も読めないまま一定枚数失敗した（地図サーバーに接続できない環境・オフライン）。
+   * 1 回だけ呼ばれる。その後 1 枚でも読めれば onTilesAvailable が呼ばれ、また失敗が続けば再度呼ばれる
+   */
+  onTilesUnavailable?: () => void;
+  /** 地図タイルが読めるようになった（onTilesUnavailable の後） */
+  onTilesAvailable?: () => void;
 }
+
+/** 1 枚も読めないまま何枚失敗したら「地図サーバーに接続できない」と判断するか */
+const TILE_FAIL_THRESHOLD = 6;
 
 // ---------------------------------------------------------------------------
 // 純粋なヘルパー（DOM 不要）
@@ -220,6 +230,9 @@ export class MapPicker {
 
   private readonly cache = new Map<string, TileEntry>();
   private inflight = 0;
+  /** 連続して失敗したタイル数（1 枚読めたら 0 に戻る） */
+  private failStreak = 0;
+  private tilesUnavailable = false;
 
   private rafId = 0;
   private animId = 0;
@@ -859,6 +872,11 @@ export class MapPicker {
       this.inflight--;
       if (this.disposed) return;
       this.cache.set(url, img);
+      this.failStreak = 0;
+      if (this.tilesUnavailable) {
+        this.tilesUnavailable = false;
+        this.opts.onTilesAvailable?.();
+      }
       this.trimCache();
       this.requestDraw();
     };
@@ -866,6 +884,11 @@ export class MapPicker {
       this.inflight--;
       if (this.disposed) return;
       this.cache.set(url, 'error');
+      this.failStreak++;
+      if (!this.tilesUnavailable && this.failStreak >= TILE_FAIL_THRESHOLD) {
+        this.tilesUnavailable = true;
+        this.opts.onTilesUnavailable?.();
+      }
       this.requestDraw();
     };
     img.src = url;

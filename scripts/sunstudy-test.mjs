@@ -22,7 +22,8 @@ await shot('sunstudy-1-place');
 // 住所検索
 await page.locator('.side input[type=text]').first().fill('東京都世田谷区奥沢3丁目');
 await page.getByRole('button', { name: '検索' }).first().click();
-await page.getByRole('button', { name: /奥沢/ }).first().click({ timeout: 60000 });
+// 住所検索の候補（「▶ デモを開く（世田谷区奥沢…）」ボタンと区別するため都道府県から始まるものを選ぶ）
+await page.getByRole('button', { name: /^東京都.*奥沢/ }).first().click({ timeout: 60000 });
 await page.waitForTimeout(2500);
 await shot('sunstudy-2-pin');
 

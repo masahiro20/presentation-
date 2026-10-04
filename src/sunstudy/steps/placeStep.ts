@@ -31,6 +31,10 @@ const TSUBO = 3.305785;
 const STATS_RADIUS = 60;
 
 let map: MapPicker | null = null;
+
+/** 地図タイルが読めないときに地図上へ出す案内 */
+
+let offlineNote: HTMLElement | null = null;
 let disposers: (() => void)[] = [];
 /** 住所の基準点（検索結果・読み込んだプロジェクトの住所）。ピンが近ければこの住所を使う */
 let anchor: { lat: number; lon: number; address: string } | null = null;
@@ -179,6 +183,7 @@ export const placeStep: StudyStep = {
       /* 地図が初期化できていない */
     }
     map = null;
+    offlineNote = null;
   },
   mount(ctx: StudyCtx) {
     const { stage, side, shell } = ctx;
@@ -594,6 +599,28 @@ export const placeStep: StudyStep = {
         onPolygonModeChange: () => {
           drawCount = 0;
           refreshAll();
+        },
+        // 地図サーバー（国土地理院）に接続できない環境（社内の制限・オフライン・外部通信を遮断するホスティング）では
+        // 地図が灰色のままになる。原因と回避策（同梱デモ／制限のない環境で開く）を地図の上に示す
+        onTilesUnavailable: () => {
+          if (offlineNote) return;
+          offlineNote = h(
+            'div',
+            { class: 'warn map-offline-note' },
+            h('b', null, navigator.onLine ? '地図サーバー（国土地理院）に接続できません' : 'インターネットに接続されていません'),
+            h(
+              'div',
+              { style: 'margin-top:4px' },
+              navigator.onLine
+                ? 'この環境では外部サーバーへの通信が制限されているため、地図・住所検索・周辺環境（地形・周辺建物）を取得できません。サイドの「▶ デモを開く」で同梱のデモを試すか、制限のないパソコン（start-sun.bat）や公開版の URL でこのページを開いてください。保存済みのプロジェクト（JSON）は周辺環境ごと開けます。'
+                : '接続が戻ると自動で再読み込みします。保存済みのプロジェクト（JSON）や「▶ デモを開く」はオフラインでも開けます。',
+            ),
+          );
+          root.appendChild(offlineNote);
+        },
+        onTilesAvailable: () => {
+          offlineNote?.remove();
+          offlineNote = null;
         },
       });
     } catch (e) {

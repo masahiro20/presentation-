@@ -118,13 +118,21 @@ describe('形式の判定・単位と上方向の推定', () => {
     expect(guessUpAxis('obj', box(10, 8, 6))).toBe('z');
     expect(guessUpAxis('stl', new THREE.Box3())).toBe('z');
     // Z が 3 軸で最大、Y が最小、比 1.5 倍超 → Y-up で保存されたデータと見る
-    expect(guessUpAxis('3ds', box(6000, 3000, 8000))).toBe('y');
+    // 3DS は形式として Z-up なので、狭小住宅（高さ > 幅）でも向きを変えない
+    expect(guessUpAxis('3ds', box(6000, 3000, 8000))).toBe('z');
+    // OBJ/STL は塔のように極端に細長いときだけ横倒しとみなす
+    expect(guessUpAxis('obj', box(3, 1, 12))).toBe('y');
+    expect(guessUpAxis('obj', box(6, 3, 8))).toBe('z');
     // 比が 1.5 倍以下なら既定のまま
     expect(guessUpAxis('3ds', box(6000, 6000, 8000))).toBe('z');
     // Z が最大でも X の方が大きければ（幅 > 高さの普通の建物）既定のまま
     expect(guessUpAxis('3ds', box(10000, 3000, 8000))).toBe('z');
     expect(guessUpAxis('glb', box(10, 6, 8))).toBe('y');
-    expect(guessUpAxis('fbx', box(6000, 8000, 3000))).toBe('z');
+    // FBX は Y-up が既定。平屋のように見える比率でも、極端に細長くなければ向きは変えない（UI で切替可能）
+    expect(guessUpAxis('fbx', box(6000, 8000, 3000))).toBe('y');
+    // 既定の上方向（Y）だけが極端に長い = 実は Z-up で保存された細長いデータと見なす
+    expect(guessUpAxis('fbx', box(3, 12, 1))).toBe('z');
+    expect(guessUpAxis('fbx', box(3, 1, 12))).toBe('y');
   });
 
   it('unitScale: 単位 → m。custom は customScale（不正なら 1）', () => {
@@ -193,7 +201,8 @@ describe('サンプル住宅（3DS, mm, Z-up）', () => {
     }
     const ud = (name: string) => (model.raw.children.find((o) => o.name === name) as THREE.Mesh).userData as BakedMeshData;
     expect(ud('window_1').glass).toBe(true);
-    expect(ud('window_1').noShadow).toBe(true);
+    // ガラスも影を落とす・遮蔽する（表示だけ半透明）
+    expect(ud('window_1').noShadow).toBe(false);
     expect(ud('roof').glass).toBe(false);
     expect(ud('wall').materialName).toBe('wall');
     expect(ud('roof').materialName).toBe('roof');
@@ -346,13 +355,13 @@ describe('サンプル住宅（3DS, mm, Z-up）', () => {
     custom.dispose();
   });
 
-  it('表示: appearance white / original で材質が差し替わり、窓は半透明・影を落とさない', () => {
+  it('表示: appearance white / original で材質が差し替わり、窓は半透明（影は落とす）', () => {
     const white = place(model);
     const wallW = (white.object!.getObjectByName('wall') as THREE.Mesh).material as THREE.MeshStandardMaterial;
     expect(wallW.name).toBe('white');
     expect(wallW.color.getHexString()).toBe('f2f0ea');
     const win = white.object!.getObjectByName('window_1') as THREE.Mesh;
-    expect(win.castShadow).toBe(false);
+    expect(win.castShadow).toBe(true);
     expect((win.material as THREE.MeshStandardMaterial).transparent).toBe(true);
     const orig = place(model, { appearance: 'original' });
     const wallO = (orig.object!.getObjectByName('wall') as THREE.Mesh).material as THREE.MeshStandardMaterial;

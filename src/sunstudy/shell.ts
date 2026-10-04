@@ -148,7 +148,16 @@ export class StudyShell {
     } else if (this._scene) this._scene.pause(true);
     const inner = h('div', { class: 'side-inner' });
     this.side.appendChild(inner);
-    await s.mount({ shell: this, stage: this.stepHost, side: inner, scene: this.scene });
+    // 3D を使わないステップでは WebGL のシーンを作らない（必要になったときに作る）
+    const shell = this;
+    await s.mount({
+      shell,
+      stage: this.stepHost,
+      side: inner,
+      get scene() {
+        return shell.scene;
+      },
+    });
     location.hash = id;
   }
 

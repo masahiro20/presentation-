@@ -477,7 +477,8 @@ export const modelStep: StudyStep = {
         class: 'btn',
         onclick: () => {
           const w = num(widthIn, 0);
-          const raw = rawHorizontalLong(m, pl.upAxis);
+          // 表示中のオブジェクトの長辺（元の単位）。寸法表示と同じ基準で合わせる
+          const raw = Math.max(p.size.x, p.size.z) / unitScale(pl) || rawHorizontalLong(m, pl.upAxis);
           if (!(w > 0)) {
             toast('実際の幅（m）を入力してください', 'error');
             return;
@@ -499,8 +500,8 @@ export const modelStep: StudyStep = {
         const d = p.dimensions();
         clear(dimsBox);
         for (const [label, v] of [
-          ['幅（東西）', d.w],
-          ['奥行（南北）', d.d],
+          ['幅（図面の横）', d.w],
+          ['奥行（図面の縦）', d.d],
           ['高さ', d.h],
         ] as [string, number][])
           dimsBox.appendChild(h('div', { class: 'stat' }, h('b', null, fmt(v), h('small', null, 'm')), h('span', null, label)));

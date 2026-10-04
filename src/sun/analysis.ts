@@ -116,9 +116,10 @@ function normalizeParts(roots: THREE.Object3D[] | OccluderPart[]): OccluderPart[
  *  - userData.noShadow のメッシュ、ガラス等（matKey）は除く
  *  - opts.ancestors（既定 true）: root までの祖先グループが非表示なら除く。false なら各メッシュ自身の visible だけを見る（既存アプリ互換）
  */
-export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean } = {}): BakedTriangles {
+export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean } = {}): BakedTriangles {
   const parts = normalizeParts(roots);
-  const ancestors = opts.ancestors !== false;
+  const ancestors = opts.ancestors !== false && !opts.ignoreVisibility;
+  const ignoreVis = !!opts.ignoreVisibility;
   const lists: { kind: string; meshes: THREE.Mesh[] }[] = [];
   let total = 0;
   for (const part of parts) {
@@ -126,7 +127,7 @@ export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], fil
     const meshes: THREE.Mesh[] = [];
     part.root.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (!m.isMesh || !m.visible) return;
+      if (!m.isMesh || (!ignoreVis && !m.visible)) return;
       if (ancestors && !visibleUpTo(m, part.root)) return;
       if (m.userData.noShadow) return;
       if (filter && !filter(m)) return;
@@ -171,7 +172,7 @@ export function occluderFromTriangles(b: BakedTriangles): Occluder {
  *  buildOccluderFrom([group1, group2]) — 種別は root の name
  *  buildOccluderFrom([{ root, kind: 'building' }, { root, kind: 'neighbor' }]) — 種別を指定
  */
-export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean } = {}): Occluder {
+export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean } = {}): Occluder {
   return occluderFromTriangles(bakeWorldTriangles(roots, filter, opts));
 }
 

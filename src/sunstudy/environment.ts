@@ -15,8 +15,8 @@ import { enToWorld, frameToLocal } from './types';
 import type { Neighbor } from './types';
 
 /** 地形・航空写真・周辺建物の取得半径 (m) */
-export const TERRAIN_RADIUS = 260;
-export const AERIAL_RADIUS = 220;
+export const TERRAIN_RADIUS = 320;
+export const AERIAL_RADIUS = 320;
 export const NEIGHBOR_RADIUS = 300;
 
 export interface LoadReport {
@@ -30,6 +30,9 @@ export interface LoadReport {
 export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: number) => void; signal?: AbortSignal } = {}): Promise<LoadReport> {
   const f = study.frame;
   if (!f) throw new Error('建設地が指定されていません');
+  // 中止されたときに元に戻すための控え
+  const prev = { grid: study.grid, aerial: study.aerial, horizon: study.horizon, neighbors: study.neighbors, sources: study.neighborSources, notes: study.neighborNotes, attribution: study.env.attribution, loaded: study.env.loaded, groundElev: f.groundElev };
+  const aborted = () => !!opts.signal?.aborted;
   study.env.loading = true;
   study.env.error = null;
   emit('env');
@@ -43,6 +46,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       report.terrain = g.source;
     })
     .catch((e: Error) => {
+      if (aborted()) return;
       study.grid = flatGrid(TERRAIN_RADIUS, 0);
       report.terrain = 'flat';
       report.errors.push(`標高データを取得できませんでした（平地として扱います）: ${e.message}`);
@@ -58,6 +62,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       report.aerial = 'ok';
     })
     .catch((e: Error) => {
+      if (aborted()) return;
       study.aerial = null;
       report.aerial = 'none';
       report.errors.push(`航空写真を取得できませんでした: ${e.message}`);
@@ -75,6 +80,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       report.neighbors = `${r.list.length}`;
     })
     .catch((e: Error) => {
+      if (aborted()) return;
       study.neighbors = study.neighbors.filter((n) => n.source === 'manual');
       study.neighborSources = [];
       study.neighborNotes = [];
@@ -86,6 +92,21 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       tick('周辺建物を読み込みました');
     });
   await Promise.all([tTerrain, tAerial, tNeighbors]);
+  if (aborted()) {
+    // 中止: 読み込み前の状態に戻す（途中まで入った値を使わない）
+    study.grid = prev.grid;
+    study.aerial = prev.aerial;
+    study.horizon = prev.horizon;
+    study.neighbors = prev.neighbors;
+    study.neighborSources = prev.sources;
+    study.neighborNotes = prev.notes;
+    study.env.attribution = prev.attribution;
+    study.env.loaded = prev.loaded;
+    study.env.loading = false;
+    f.groundElev = prev.groundElev;
+    emit('env');
+    throw new DOMException('周辺環境の読み込みを中止しました', 'AbortError');
+  }
   // ピン位置の地盤高
   const g = study.grid!;
   const h0 = sampleHeight(g, 0, 0);
@@ -158,6 +179,8 @@ export function rebuildEnvironment(scene: StudyScene, footprintEN: { e: number; 
   clearGroup(scene.groups.terrain);
   clearGroup(scene.groups.neighbors);
   clearGroup(scene.groups.site);
+  // 解析用に残している地形の BVH も捨てる（古い地形を参照し続けない）
+  void import('./analysis').then((m) => m.clearStudyOccluderCache()).catch(() => {});
   if (!f) return;
   const g = study.grid ?? flatGrid(TERRAIN_RADIUS, 0);
   const ge = f.groundElev ?? 0;
@@ -174,7 +197,7 @@ export function rebuildEnvironment(scene: StudyScene, footprintEN: { e: number; 
   if (site) {
     const pts: THREE.Vector3[] = [];
     const n = site.length;
-    for (let i = 0; i <= n; i++) {
+    for (let i = 0; i < n; i++) {
       const a = site[i % n];
       const b = site[(i + 1) % n];
       const seg = Math.max(1, Math.ceil(Math.hypot(b.e - a.e, b.n - a.n) / 2));

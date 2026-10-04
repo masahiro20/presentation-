@@ -294,7 +294,8 @@ export function buildReportHtml(): string {
 
   // 6) 日影図
   if (res.diagramSvg) {
-    const summary = res.diagramSummary?.length ? `<ul>${res.diagramSummary.map((s) => `<li>${s.hour}時間日影: 敷地境界から最大 約${s.maxDist.toFixed(1)} m</li>`).join('')}</ul>` : '';
+    const refLabel = res.diagramRef === 'outline' ? '建物の輪郭から最大' : '敷地境界から最大';
+    const summary = res.diagramSummary?.length ? `<ul>${res.diagramSummary.map((s) => `<li>${s.hour}時間日影: ${refLabel} 約${s.maxDist.toFixed(1)} m</li>`).join('')}</ul>` : '';
     pages.push(
       `<section class="page"><h2>日影図（冬至日・真太陽時）</h2><div class="grid2" style="grid-template-columns:2fr 1fr"><div class="diagram">${res.diagramSvg}</div><div>${summary}<div class="warnbox">本図は検討用であり、法規上の日影規制の判定・申請図ではありません。</div></div></div>${foot(pages.length + 1)}</section>`,
     );

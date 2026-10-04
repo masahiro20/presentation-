@@ -29,8 +29,10 @@ const WHITE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAAC
 
 /** ガラスと見なす名前（メッシュ名・マテリアル名） */
 const GLASS_RE = /glass|ガラス|window|窓/i;
-/** 建物以外（地面・敷地・ダミー・カメラ・ライト）と見なすオブジェクト名 */
-const NON_BUILDING_RE = /ground|site|terrain|plane|dummy|camera|light|地盤|敷地|地面/i;
+/** 建物以外（地面・敷地・ダミー・カメラ・ライト）と見なすオブジェクト名（名前の先頭で判定。skylight・Ground floor・Site_wall などは建物） */
+const NON_BUILDING_RE = /^(ground|site|terrain|plane|dummy|camera|light)(?![a-z])|^(地盤|敷地|地面)/i;
+/** 名前に含まれていれば建物の部位とみなし、NON_BUILDING_RE に当たっても除外しない */
+const BUILDING_PART_RE = /floor|wall|roof|window|door|slab|stair|balcony|壁|床|屋根|窓|扉|階段/i;
 /** 名前の無いオブジェクトのまとめ名 */
 const UNNAMED = '(名前なし)';
 
@@ -324,11 +326,12 @@ function materialInfo(material: THREE.Material | THREE.Material[], meshName: str
   }
   const glassLike = (m: THREE.Material) => m.opacity < 0.5 || ((m as THREE.MeshPhysicalMaterial).transmission ?? 0) > 0.5 || GLASS_RE.test(m.name);
   const glass = GLASS_RE.test(meshName) || (mats.length > 0 && mats.every(glassLike));
+  // ガラスも影を落とす・遮蔽する（窓から入った光が建物の外に抜けて地面を照らすことはない。表示だけ半透明にする）
   return {
     origColor: color ?? new THREE.Color(1, 1, 1),
     origOpacity: Math.max(0, Math.min(1, opacity)),
     glass,
-    noShadow: glass,
+    noShadow: false,
     materialName: mats.map((m) => m.name).filter(Boolean).join(', '),
   };
 }
@@ -460,6 +463,11 @@ export function describeObjects(raw: THREE.Object3D, up: UpAxis): ModelObjectInf
     } else acc.set(m.name, { box: m.geometry.boundingBox!.clone(), triangles: tri });
   }
   const [h0, h1, upIdx] = up === 'z' ? [0, 1, 2] : [0, 2, 1];
+  // モデル全体の底と高さ（薄い板が「底に敷かれた地面」か「屋根・床スラブ」かを見分ける）
+  const all = new THREE.Box3();
+  for (const e of acc.values()) all.union(e.box);
+  const allMin = all.isEmpty() ? 0 : all.min.toArray()[upIdx];
+  const allH = all.isEmpty() ? 0 : all.getSize(new THREE.Vector3()).toArray()[upIdx];
   const entries = [...acc.entries()].map(([name, e]) => {
     const s = e.box.getSize(new THREE.Vector3()).toArray() as [number, number, number];
     const footprint = s[h0] * s[h1];
@@ -472,8 +480,10 @@ export function describeObjects(raw: THREE.Object3D, up: UpAxis): ModelObjectInf
   const median = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : 0;
   return entries.map(({ name, e, s, footprint, extent, height }) => {
     let reason: string | undefined;
-    if (NON_BUILDING_RE.test(name)) reason = '名前から地面・敷地・ダミーなどと判定';
-    else if (footprint > 4 * median && height < 0.02 * extent) reason = '大きく薄い板（地面・敷地）と判定';
+    const bottom = e.box.min.toArray()[upIdx];
+    const atBottom = bottom <= allMin + 0.05 * allH;
+    if (NON_BUILDING_RE.test(name) && !BUILDING_PART_RE.test(name)) reason = '名前から地面・敷地・ダミーなどと判定';
+    else if (footprint > 4 * median && height < 0.02 * extent && atBottom) reason = '底に敷かれた大きく薄い板（地面・敷地）と判定';
     const info: ModelObjectInfo = { name, triangles: e.triangles, size: s, autoHidden: !!reason };
     if (reason) info.reason = reason;
     return info;
@@ -514,14 +524,14 @@ export function guessUnit(rawBox: THREE.Box3, upAxis: UpAxis): LengthUnit {
  */
 export function guessUpAxis(format: ModelFormat, rawBox: THREE.Box3): UpAxis {
   const def: UpAxis = format === 'glb' || format === 'fbx' ? 'y' : 'z';
-  if (rawBox.isEmpty()) return def;
+  // 3DS は形式として Z-up（3ds Max）。狭小住宅など「高さ > 幅」でも寸法から向きを変えない
+  if (format === '3ds' || rawBox.isEmpty()) return def;
   const s = rawBox.getSize(new THREE.Vector3());
   const other: UpAxis = def === 'z' ? 'y' : 'z';
   const sDef = def === 'z' ? s.z : s.y;
   const sOther = other === 'z' ? s.z : s.y;
-  const largest = sDef >= s.x && sDef >= sOther;
-  const smallest = sOther <= s.x && sOther <= sDef;
-  if (largest && smallest && sOther > 0 && sDef > 1.5 * sOther) return other;
+  // 既定の上方向の長さが他の 2 軸より極端に大きい（塔のように細長い）ときだけ、横倒しと見なして切り替える
+  if (sOther > 0 && sDef > 3 * sOther && sDef > 1.5 * s.x) return other;
   return def;
 }
 
@@ -561,8 +571,8 @@ export function applyAppearance(root: THREE.Object3D, mode: 'white' | 'original'
     const old = m.material;
     m.material = makeMaterial(m.userData as Partial<BakedMeshData>, mode);
     for (const mt of Array.isArray(old) ? old : [old]) mt?.dispose();
-    const glass = !!(m.userData as Partial<BakedMeshData>).glass;
-    m.castShadow = !glass;
+    // ガラスも影を落とす（表示だけ半透明）
+    m.castShadow = true;
     m.receiveShadow = true;
   });
 }
@@ -616,11 +626,14 @@ export class PlacedModel {
     inner.rotation.set(p.upAxis === 'z' ? -Math.PI / 2 : 0, 0, 0);
     object.add(inner);
     object.updateMatrixWorld(true);
-    // 水平の中心を原点に、底面を y=0 に
+    // 表示中のオブジェクトの bbox（寸法・足跡用）
     const box = new THREE.Box3().setFromObject(inner, true);
     if (box.isEmpty()) box.set(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0));
-    const c = box.getCenter(new THREE.Vector3());
-    object.position.set(-c.x, -box.min.y, -c.z);
+    // 中心合わせは「読み込み時に建物と判定したオブジェクト全体（model.rawBox）」で行う。
+    // オブジェクトの表示/非表示を切り替えても建物の位置が動かないようにするため（足跡を航空写真に合わせた後にずれない）
+    const ref = this.model.rawBox.isEmpty() ? box : this.model.rawBox.clone().applyMatrix4(inner.matrixWorld);
+    const c = ref.getCenter(new THREE.Vector3());
+    object.position.set(-c.x, -ref.min.y, -c.z);
     object.updateMatrixWorld(true);
     this.localBox.copy(box).translate(object.position);
     this.localBox.getSize(this.size);

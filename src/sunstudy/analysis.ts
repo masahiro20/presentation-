@@ -136,7 +136,7 @@ function terrainKey(scene: StudyScene): string {
   const parts: string[] = [];
   g.traverse((o) => {
     const m = o as THREE.Mesh;
-    if (!m.isMesh || !m.visible || !studyMeshFilter(m)) return;
+    if (!m.isMesh || !studyMeshFilter(m)) return;
     const e = m.matrixWorld.elements;
     parts.push(`${m.uuid}:${m.geometry.uuid}:${e[12].toFixed(3)},${e[13].toFixed(3)},${e[14].toFixed(3)}`);
   });
@@ -163,7 +163,8 @@ export function terrainOccluder(scene: StudyScene): Occluder | null {
   }
   if (terrainCache && terrainCache.key === key) return terrainCache.occ;
   clearStudyOccluderCache();
-  const occ = buildOccluderFrom([{ root: scene.groups.terrain, kind: 'terrain' }], studyMeshFilter);
+  // 表示の切替（航空写真・地形の非表示）に関わらず、物理的な遮蔽物として扱う
+  const occ = buildOccluderFrom([{ root: scene.groups.terrain, kind: 'terrain' }], studyMeshFilter, { ignoreVisibility: true });
   terrainCache = { key, occ };
   return occ;
 }
@@ -179,7 +180,8 @@ export function buildStudyOccluder(scene: StudyScene, opts: OccluderOpts): Study
   if (opts.neighbors) parts.push({ root: scene.groups.neighbors, kind: 'neighbor' });
   const terr = opts.terrain ? terrainOccluder(scene) : null;
   if (!parts.length && terr) return { ...terr, cached: true };
-  const occ: StudyOccluder = buildOccluderFrom(parts, studyMeshFilter);
+  // 周辺建物を表示上は隠していても、解析では遮蔽物として扱う（表示と計算を切り離す）
+  const occ: StudyOccluder = buildOccluderFrom(parts, studyMeshFilter, { ignoreVisibility: true });
   if (terr) occ.extra = [terr];
   return occ;
 }

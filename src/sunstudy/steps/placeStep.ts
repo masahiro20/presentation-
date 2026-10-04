@@ -38,6 +38,8 @@ let anchor: { lat: number; lon: number; address: string } | null = null;
 let fetchedThisSession = false;
 /** 描いている途中の輪郭の頂点数 */
 let drawCount = 0;
+/** 周辺環境を取得（復元）したときのピン位置。ここから ENV_SHIFT_MAX_M 以上離れたら周辺環境を捨てる（ドラッグの積算） */
+let envOrigin: LatLon | null = null;
 
 const fmtDeg = (v: number) => v.toFixed(5);
 const coordAddress = (p: LatLon) => `緯度 ${fmtDeg(p.lat)}, 経度 ${fmtDeg(p.lon)} 付近`;
@@ -83,6 +85,7 @@ function networkHint(): string {
 
 /** 周辺環境を破棄する（ピンが大きく動いた・場所を変えた） */
 function invalidateEnv() {
+  envOrigin = null;
   study.grid = null;
   study.aerial = null;
   study.horizon = null;
@@ -103,7 +106,10 @@ function relocateEnvironment(prev: GeoFrame, next: GeoFrame) {
     next.groundElev = prev.groundElev;
     return;
   }
-  if (!study.env.loaded || !study.grid || dist > ENV_SHIFT_MAX_M) {
+  // 取得したときの位置からの累積の移動量で判定する（ドラッグで少しずつ動かしても遠くへ行けば捨てる）
+  const origin = envOrigin ?? prev;
+  const total = distM(origin, next);
+  if (!study.env.loaded || !study.grid || total > ENV_SHIFT_MAX_M) {
     invalidateEnv();
     return;
   }
@@ -115,7 +121,12 @@ function relocateEnvironment(prev: GeoFrame, next: GeoFrame) {
   };
   shift(study.grid);
   if (study.aerial) shift(study.aerial);
-  for (const n of study.neighbors) n.ring = n.ring.map((q) => ({ e: q.e - d.e, n: q.n - d.n }));
+  for (const n of study.neighbors) {
+    n.ring = n.ring.map((q) => ({ e: q.e - d.e, n: q.n - d.n }));
+    // PLATEAU の中庭などの穴も同じ座標系なので一緒にずらす
+    const x = n as typeof n & { holes?: { e: number; n: number }[][] };
+    if (x.holes) x.holes = x.holes.map((h) => h.map((q) => ({ e: q.e - d.e, n: q.n - d.n })));
+  }
   const h0 = sampleHeight(study.grid, 0, 0);
   next.groundElev = Number.isFinite(h0) ? h0 : prev.groundElev;
   emit('env');
@@ -172,6 +183,8 @@ export const placeStep: StudyStep = {
   mount(ctx: StudyCtx) {
     const { stage, side, shell } = ctx;
     drawCount = 0;
+    // 保存データから周辺環境が復元されている場合は、今のピン位置を取得位置として扱う
+    if (study.env.loaded && study.frame && !envOrigin) envOrigin = { lat: study.frame.lat, lon: study.frame.lon };
     if (study.frame && study.frame.address && !isCoordAddress(study.frame.address)) anchor = { lat: study.frame.lat, lon: study.frame.lon, address: study.frame.address };
 
     // ---- ステージ: 地図 ----
@@ -510,6 +523,7 @@ export const placeStep: StudyStep = {
       let report: Awaited<ReturnType<typeof loadEnvironment>>;
       try {
         report = await loadEnvironment({ onProgress: (msg, ratio) => pm.set(ratio, msg) });
+        envOrigin = study.frame ? { lat: study.frame.lat, lon: study.frame.lon } : null;
       } catch (e) {
         study.env.loading = false;
         emit('env');
@@ -556,6 +570,10 @@ export const placeStep: StudyStep = {
           refreshAll();
         },
         onView: () => refreshAttrib(),
+        onPolygonModeChange: () => {
+          drawCount = 0;
+          refreshAll();
+        },
       });
     } catch (e) {
       map = null;

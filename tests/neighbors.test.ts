@@ -45,7 +45,7 @@ describe('PLATEAU タイルの読み込み', () => {
     const again = parsePlateauTile(plateauBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
     expect(again.map((b) => b.id)).toEqual(list.map((b) => b.id));
     expect(new Set(list.map((b) => b.id)).size).toBe(list.length);
-    for (const b of list) expect(b.id).toMatch(/^plateau:\d+\.\d{5}:\d+\.\d{5}$/);
+    for (const b of list) expect(b.id).toMatch(/^plateau:\d+\.\d{5}:\d+\.\d{5}:\d+$/);
   });
   it('リングは閉じる重複点を持たず、短すぎる辺が無い', () => {
     for (const b of list) {

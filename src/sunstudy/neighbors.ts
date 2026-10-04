@@ -236,7 +236,8 @@ export function neighborId(source: NeighborSource, ring: EN[], pinLat: number, p
   const { mLat, mLon } = metersPerDegree(pinLat);
   const lat = pinLat + c.n / mLat;
   const lon = pinLon + c.e / mLon;
-  return `${source}:${lat.toFixed(5)}:${lon.toFixed(5)}`;
+  // 中心が同じでも大きさが違う屋根面（同心の塔屋など）を区別するため、面積 (m²) も含める
+  return `${source}:${lat.toFixed(5)}:${lon.toFixed(5)}:${Math.round(Math.abs(ringArea(ring)))}`;
 }
 
 interface ParsedPolygon {
@@ -420,6 +421,8 @@ export async function fetchNeighbors(lat: number, lon: number, radiusM: number, 
   let plateau: Neighbor[] = [];
   let plateauCovered = false;
   let plateauPartial = false;
+  /** 404 のタイルがあった（= その地域は PLATEAU の対象外） */
+  let plateauMissing = false;
   if (sources.includes('plateau')) {
     throwIfAborted(signal);
     onProgress?.('周辺建物（PLATEAU）を取得しています…');
@@ -428,6 +431,8 @@ export async function fetchNeighbors(lat: number, lon: number, radiusM: number, 
       if (r.status === 'ok') {
         plateauCovered = true;
         plateau.push(...r.list);
+      } else if (r.status === 'none') {
+        plateauMissing = true;
       } else if (r.status === 'error') {
         errors++;
         plateauPartial = true;
@@ -472,14 +477,19 @@ export async function fetchNeighbors(lat: number, lon: number, radiusM: number, 
     }
     if (plateauPartial) notes.push('PLATEAU の一部のタイルを取得できなかったため、建物が欠けている可能性があります。');
     if (gsiFailed) notes.push('国土地理院の地図データは取得できませんでした。');
-  } else if (gsiOk && gsi.length) {
+  } else if (gsiOk) {
+    // 国土地理院のタイルは取得できた（建物が 0 棟でも「データはある」として扱う）
     list = gsi;
     sourcesUsed.push('gsi');
-    notes.push(
-      sources.includes('plateau')
-        ? 'この地域は PLATEAU の対象外のため、周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。'
-        : '周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。',
-    );
+    if (!gsi.length) notes.push('この範囲には国土地理院の地図データに建物がありません（田畑・空き地など）。隣家があれば手動で追加してください。');
+    else if (sources.includes('plateau') && plateauPartial && !plateauMissing)
+      notes.push('PLATEAU のデータを取得できなかったため（通信エラー）、周辺建物の高さは国土地理院の建物種類から推定しています。「周辺建物を取り直す」でやり直せます。');
+    else
+      notes.push(
+        sources.includes('plateau')
+          ? 'この地域は PLATEAU の対象外のため、周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。'
+          : '周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。',
+      );
   } else if (sources.includes('osm')) {
     // 3. OSM（最後の手段）
     throwIfAborted(signal);

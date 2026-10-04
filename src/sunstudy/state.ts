@@ -45,6 +45,8 @@ export interface StudyState {
     images: { label: string; url: string }[];
     diagramSvg?: string;
     diagramSummary?: { hour: number; maxDist: number }[];
+    /** 等時間日影線の到達距離の基準: 敷地境界 / 建物の輪郭（敷地の輪郭が無いとき） */
+    diagramRef?: 'site' | 'outline';
     heatmapUrl?: string;
     heatmapLabel?: string;
     facadeUrl?: string;

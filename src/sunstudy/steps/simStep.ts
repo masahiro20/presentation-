@@ -1078,12 +1078,15 @@ export const simStep: StudyStep = {
       const out = res;
       study.results.diagramSvg = out.svg;
       study.results.diagramSummary = out.summary;
+      const hasSite = !!sitePolygonWorld();
+      study.results.diagramRef = hasSite ? 'site' : 'outline';
+      const refLabel = hasSite ? '敷地境界から最大' : '建物の輪郭から最大';
       const body = h(
         'div',
         null,
         h('div', { html: out.svg }),
         h('p', { class: 'hint' }, `${label}／測定面 平均地盤面+${height} m（GL${fmtSigned(plane)} m）／${solarNote()}／${includeNb ? '周辺建物を含む' : '自建物のみ'}`),
-        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影: 敷地境界から最大 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
+        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影: ${refLabel} 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
         h('div', { class: 'warn' }, '検討用であり申請図ではありません。'),
       );
       modal(

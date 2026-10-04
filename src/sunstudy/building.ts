@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { PlacedModel } from './importModel';
 import type { StudyScene } from './scene';
 import { study } from './state';
+import type { ImportedModel } from './types';
 
 let placed: PlacedModel | null = null;
 
@@ -20,10 +21,15 @@ export function currentPlaced(): PlacedModel | null {
 export function ensurePlaced(scene: StudyScene): PlacedModel | null {
   const m = study.model;
   if (!m) {
+    if (placed) disposeModelGeometry(placed.model);
     disposePlaced(scene);
     return null;
   }
-  if (placed && placed.model !== m) disposePlaced(scene);
+  if (placed && placed.model !== m) {
+    // 差し替え: 古いデータのジオメトリ（GPU のバッファ）も解放する
+    disposeModelGeometry(placed.model);
+    disposePlaced(scene);
+  }
   if (!placed) {
     placed = new PlacedModel(m, study.placement);
     scene.groups.building.add(placed.pivot);
@@ -32,6 +38,11 @@ export function ensurePlaced(scene: StudyScene): PlacedModel | null {
     if (!placed.pivot.parent) scene.groups.building.add(placed.pivot);
   }
   return placed;
+}
+
+/** 読み込んだデータの焼き込み済みジオメトリを解放する（データを差し替えたとき） */
+export function disposeModelGeometry(model: ImportedModel) {
+  for (const o of model.raw.children) (o as THREE.Mesh).geometry?.dispose?.();
 }
 
 export function disposePlaced(scene: StudyScene) {

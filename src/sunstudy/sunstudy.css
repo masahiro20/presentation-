@@ -1,0 +1,69 @@
+/* 日照シミュレーション（3D データ読み込み版）固有のスタイル。共通部分は app/styles.css */
+.brand-mark.sun { background: linear-gradient(135deg, #f3b14a, #d98a2b); color: #1f2226; }
+.top-link { color: #c9ccd2; font-size: 12.5px; text-decoration: none; white-space: nowrap; padding: 6px 10px; border-radius: 8px; border: 1px solid #3a3e45; }
+.top-link:hover { background: #2c3036; color: #fff; }
+
+/* 地図（場所のステップ） */
+.map-root { position: absolute; inset: 0; background: #e9e6df; }
+.map-root canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab; }
+.map-root canvas.placing { cursor: crosshair; }
+.map-root canvas.dragging { cursor: grabbing; }
+.map-tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+.map-tools .btn { background: rgba(255,255,255,0.94); backdrop-filter: blur(4px); font-size: 12.5px; padding: 6px 11px; }
+.map-tools .btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.map-status { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.94); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; box-shadow: var(--shadow); z-index: 2; max-width: 60%; line-height: 1.6; }
+.map-status b { font-size: 13.5px; }
+.map-attrib { position: absolute; right: 10px; bottom: 6px; font-size: 10.5px; color: #333; background: rgba(255,255,255,0.7); padding: 1px 6px; border-radius: 4px; z-index: 2; }
+.map-hint { position: absolute; top: 14px; right: 14px; background: rgba(31,34,38,0.86); color: #fff; border-radius: 10px; padding: 8px 12px; font-size: 12.5px; z-index: 2; max-width: 300px; line-height: 1.6; }
+.map-zoom { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 4px; background: rgba(255,255,255,0.94); border-radius: 12px; padding: 6px; box-shadow: var(--shadow); z-index: 2; }
+.map-zoom button { width: 36px; height: 36px; border: 0; background: transparent; border-radius: 8px; font-size: 18px; color: var(--ink2); }
+.map-zoom button:hover { background: #f1ede7; color: var(--ink); }
+
+/* 検索結果 */
+.geo-results button { display: block; width: 100%; text-align: left; margin: 3px 0; }
+
+/* 3D データの寸法表示 */
+.dims { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.dims .stat b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.dims .stat b small { font-size: 12px; font-weight: 400; color: var(--ink2); margin-left: 2px; }
+.ok-box { background: #eef7f0; border: 1px solid #bfe0c8; color: #24633a; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin: 6px 0; line-height: 1.6; }
+.info-box { background: #f7f5f1; border: 1px solid var(--line); color: var(--ink2); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin: 6px 0; line-height: 1.6; }
+
+/* 周辺環境の取得状況 */
+.env-status { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; line-height: 1.7; margin: 6px 0; }
+.env-status .k { color: var(--ink3); white-space: nowrap; }
+.src-tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: #e8e6e1; color: #444; margin-left: 4px; vertical-align: 1px; }
+.src-tag.measured { background: #dcefe2; color: #24633a; }
+.src-tag.estimated { background: #fbe9d0; color: #8a5a14; }
+.src-tag.manual { background: #e3e9f4; color: #2f4f6b; }
+
+/* 測定点 */
+.pt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pt-table th { text-align: left; font-weight: 500; color: var(--ink3); padding: 3px 4px; border-bottom: 1px solid var(--line); }
+.pt-table td { padding: 4px 4px; border-bottom: 1px solid #f0ece5; vertical-align: top; }
+.pt-table input { width: 100%; border: 1px solid transparent; background: transparent; border-radius: 5px; padding: 2px 4px; }
+.pt-table input:hover, .pt-table input:focus { border-color: var(--line); background: #fff; }
+.pt-table .del { border: 0; background: transparent; color: var(--ink3); font-size: 15px; }
+.pt-table .del:hover { color: #a33b2b; }
+
+/* 隣家の編集ポップアップ（3D の上） */
+.pop { position: absolute; background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 12.5px; z-index: 5; min-width: 220px; pointer-events: auto; }
+.pop h5 { margin: 0 0 6px; font-size: 13px; }
+.pop .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.pop input[type=number] { width: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+
+/* 進行中のオーバーレイ案内 */
+.stage-note { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(31,34,38,0.86); color: #fff; border-radius: 999px; padding: 7px 14px; font-size: 13px; z-index: 4; pointer-events: none; white-space: nowrap; }
+
+/* ドロップ画面（建物のステップ） */
+.drop.light { background: radial-gradient(1200px 600px at 30% 20%, #fbf8f3, #ece7df); }
+.drop-card .sub { color: var(--ink3); font-size: 12px; margin-top: 8px; }
+
+/* 凡例（面の日照時間） */
+.legend.facade .grad { background: linear-gradient(90deg, rgb(40,60,150), rgb(50,140,210), rgb(80,190,120), rgb(240,210,60), rgb(235,90,40)); }
+
+/* 季節比較の画像一覧 */
+.img-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.img-grid figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #eee; }
+.img-grid img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; }
+.img-grid figcaption { font-size: 11px; padding: 4px 6px; background: #fff; }

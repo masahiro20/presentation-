@@ -85,6 +85,13 @@ function dropScreen(ctx: StepCtx) {
         h('button', { class: 'btn sm', onclick: () => sample('sample_house_site.pdf') }, 'サンプル平面図（敷地・道路あり）'),
       ),
       h(
+        'p',
+        { class: 'sub', style: 'margin:12px 0 0;font-size:12.5px;color:#8b9098' },
+        '設計の 3D データ（3DS など）だけで日当たりを検討する場合は ',
+        h('a', { href: './sun.html', style: 'color:#b8683a;font-weight:600' }, '日照シミュレーション（3D データ読み込み）'),
+        ' へ。地図で場所を指定すると、地形と周辺建物を自動で立ち上げます。',
+      ),
+      h(
         'div',
         { class: 'flow' },
         h('div', null, h('b', null, '① 図面を読む'), '壁・開口部・室名・寸法・方位を自動認識'),

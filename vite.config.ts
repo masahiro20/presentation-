@@ -50,6 +50,11 @@ function pdfjsAssets(): Plugin {
       if (existsSync(hdri))
         for (const f of readdirSync(hdri))
           if (f.endsWith('.hdr')) this.emitFile({ type: 'asset', fileName: `hdri/${f}.txt`, source: readFileSync(path.join(hdri, f)).toString('base64') });
+      // サンプルの 3D データ（.3ds）も base64 テキストの写しを同梱する
+      const samples = path.join(pub, 'samples');
+      if (existsSync(samples))
+        for (const f of readdirSync(samples))
+          if (/\.(3ds|obj|stl|glb|fbx)$/i.test(f)) this.emitFile({ type: 'asset', fileName: `samples/${f}.txt`, source: readFileSync(path.join(samples, f)).toString('base64') });
       const models = path.join(pub, 'models');
       if (existsSync(models))
         for (const id of readdirSync(models)) {
@@ -70,6 +75,8 @@ export default defineConfig({
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 4000,
+    // 入口は 2 つ: 間取りプレゼン（index.html）と、3D データ読み込みの日照シミュレーション（sun.html）
+    rollupOptions: { input: { main: path.resolve(__dirname, 'index.html'), sun: path.resolve(__dirname, 'sun.html') } },
   },
   worker: { format: 'es' },
   test: {

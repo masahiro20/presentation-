@@ -4,8 +4,17 @@
  */
 import * as THREE from 'three';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
-import type { Viewer } from '../scene/viewer';
 import type { CameraProgram } from './paths';
+
+/** 書き出し元（間取りプレゼンの Viewer と、日照シミュレーションの StudyScene の両方が満たす） */
+export interface RecordTarget {
+  renderer: THREE.WebGLRenderer;
+  camera: THREE.PerspectiveCamera & { shiftY?: number };
+  composer: { setPixelRatio(pr: number): void; setSize(w: number, h: number): void };
+  pause(p: boolean): void;
+  renderFrame(): void;
+  resize(): void;
+}
 
 export interface RecordOptions {
   width: number;
@@ -90,7 +99,7 @@ class Compositor {
   }
 }
 
-export async function recordProgram(viewer: Viewer, program: CameraProgram, opts: RecordOptions): Promise<RecordResult> {
+export async function recordProgram(viewer: RecordTarget, program: CameraProgram, opts: RecordOptions): Promise<RecordResult> {
   const { width, height, fps } = opts;
   const renderer = viewer.renderer;
   const camera = viewer.camera;

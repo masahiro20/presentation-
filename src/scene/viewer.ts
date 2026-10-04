@@ -15,7 +15,7 @@ import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, interiorShots, facadeWindows, type Shot } from './shots';
-import { buildOccluder } from '../sun/analysis';
+import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
@@ -109,6 +109,11 @@ export class Viewer {
   quality: 'fast' | 'high' = 'high';
   contextLost = false;
   userData: Record<string, unknown> = {};
+  /**
+   * 外部の建物（groups.external）のワールド bbox を速く返す関数（src/app/externalBuilding.ts が置く: 配置の箱の 8 隅から計算）。
+   * 無ければ externalBox() は全頂点を歩く
+   */
+  externalBounds: (() => THREE.Box3 | null) | null = null;
   private shotCache: { state: SceneState; interiors: Map<string, Shot[]> } | null = null;
   /** 影の範囲の中心（PDF の建物と外部の建物の和）。fitShadow が決める */
   private shadowCenter: THREE.Vector3 | null = null;
@@ -451,11 +456,12 @@ export class Viewer {
   }
 
   /**
-   * 外部の正確な建物（groups.external）が PDF の建物に代わるとき（userData.externalReplaces かつ日照ステップ表示中 userData.externalMounted）、
-   * PDF 由来の建物・屋根・家具・室内照明を隠す。条件が外れたら元に戻す（隠していたときだけ戻すので、断面表示などの状態を壊さない）
+   * 外部の正確な建物（groups.external）が PDF の建物に代わるとき（userData.externalReplaces かつ日照ステップ表示中 userData.externalMounted
+   * かつ表示中のメッシュがある）、PDF 由来の建物・屋根・家具・室内照明を隠す。条件が外れたら元に戻す（隠していたときだけ戻すので、
+   * 断面表示などの状態を壊さない）。メッシュが 1 つも無い（すべて非表示の）3DS では隠さない（建物が何も無い画面にならないように）
    */
   applyExternalReplace() {
-    const hide = this.userData.externalReplaces === true && this.userData.externalMounted === true && this.groups.external.children.length > 0;
+    const hide = this.userData.externalReplaces === true && this.userData.externalMounted === true && externalHasVisibleMesh(this);
     if (hide) {
       for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.lights]) g.visible = false;
       this.pdfGroupsHidden = true;
@@ -475,9 +481,13 @@ export class Viewer {
     this.shotCache = null;
   }
 
-  /** 外部の建物（groups.external）のワールド bbox（無ければ null） */
+  /** 外部の建物（groups.external）のワールド bbox（無ければ null）。externalBounds があればそれ（全頂点を歩かない） */
   externalBox(): THREE.Box3 | null {
     if (!this.groups.external.children.length) return null;
+    if (this.externalBounds) {
+      const b = this.externalBounds();
+      return b && !b.isEmpty() ? b : null;
+    }
     this.groups.external.updateMatrixWorld(true);
     const b = new THREE.Box3().setFromObject(this.groups.external, true);
     return b.isEmpty() ? null : b;
@@ -513,13 +523,14 @@ export class Viewer {
 
   /**
    * 影の範囲（平行光源の正射影カメラ）を建物に合わせる。
-   * PDF の建物（meta.bbox）と外部の建物（groups.external、あれば）の和にさらに extra を加えた箱を囲む。
-   * setModel から毎回呼ばれるので、外部の建物を足した後も setModel で範囲が戻ることはない
+   * PDF の建物（meta.bbox）と外部の建物（groups.external、日照ステップ表示中 = 見えているときだけ）の和にさらに extra を加えた箱を囲む。
+   * setModel から毎回呼ばれるので、外部の建物を足した後も setModel で範囲が戻ることはない。
+   * 見えていない 3DS（他のステップ）は範囲に入れない（単位違いで巨大なままの 3DS が PDF の建物の影を粗くしないように）
    */
   fitShadow(extra?: THREE.Box3) {
     if (!this.state) return;
     const b = this.state.meta.bbox.clone();
-    const ext = this.externalBox();
+    const ext = this.userData.externalMounted === true || this.groups.external.visible ? this.externalBox() : null;
     if (ext) b.union(ext);
     if (extra && !extra.isEmpty()) b.union(extra);
     const c = b.getCenter(new THREE.Vector3());

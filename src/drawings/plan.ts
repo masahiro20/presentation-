@@ -3,6 +3,7 @@
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
 import type { BuildingModel, Floor, RoomType } from '../core/types';
+import { stairLayout, stairStepCount } from '../core/stairs';
 import { polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
@@ -213,21 +214,22 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level));
   // 階段
   for (const st of f.stairs) {
-    const n = 10;
-    const vertical = st.entry === 'n' || st.entry === 's';
+    const lay = stairLayout(st, stairStepCount(f.height || 2900));
     s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
-    for (let i = 1; i < n; i++) {
-      if (vertical) {
-        const y = st.minY + ((st.maxY - st.minY) * i) / n;
-        s += `<line x1="${st.minX}" y1="${y}" x2="${st.maxX}" y2="${y}" stroke="#aaa" stroke-width="8"/>`;
-      } else {
-        const x = st.minX + ((st.maxX - st.minX) * i) / n;
-        s += `<line x1="${x}" y1="${st.minY}" x2="${x}" y2="${st.maxY}" stroke="#aaa" stroke-width="8"/>`;
-      }
+    for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
+    // 昇る向きの矢印（段の中心をつなぐ）
+    const cs = lay.pieces.map((p) => `${((p.minX + p.maxX) / 2).toFixed(0)},${((p.minY + p.maxY) / 2).toFixed(0)}`);
+    if (cs.length > 1) s += `<polyline points="${cs.join(' ')}" fill="none" stroke="#888" stroke-width="12"/>`;
+    const last = lay.pieces[lay.pieces.length - 1];
+    if (last) {
+      const cx = (last.minX + last.maxX) / 2;
+      const cy = (last.minY + last.maxY) / 2;
+      const d = last.dir;
+      const tip = { x: cx + d.x * 160, y: cy + d.y * 160 };
+      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="#888"/>`;
     }
-    const cx = (st.minX + st.maxX) / 2;
-    const cy = (st.minY + st.maxY) / 2;
-    s += `<text x="${cx}" y="${cy + 60}" font-size="180" text-anchor="middle" fill="#888">${st.goesUp ? 'UP' : 'DN'}</text>`;
+    const first = lay.pieces[0];
+    if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777">${st.goesUp ? 'UP' : 'DN'}</text>`;
   }
   // 壁（開口部を抜いて描く）
   for (const w of f.walls) {

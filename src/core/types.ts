@@ -93,9 +93,11 @@ export interface Stair {
   minY: number;
   maxX: number;
   maxY: number;
-  /** 'straight' = 直階段, 'u' = 折り返し階段 */
-  kind: 'straight' | 'u';
-  /** 昇り口のある辺 */
+  /** 'straight' = 直階段, 'u' = 折り返し階段, 'l' = かね折れ階段 */
+  kind: 'straight' | 'u' | 'l';
+  /** 折り返し・かね折れで曲がる向き（昇る人から見て）。省略時: 折り返しは左、かね折れは右 */
+  turn?: 'left' | 'right';
+  /** 昇り口のある辺（n = 図面の上側 = minY） */
   entry: 'n' | 's' | 'e' | 'w';
   /** 上階へ昇る階段か（上階側に記載された DN 階段は false） */
   goesUp: boolean;

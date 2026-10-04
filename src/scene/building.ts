@@ -7,6 +7,7 @@ import type { BuildingModel, Floor, Opening, Room, Stair, Wall } from '../core/t
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
+import { stairLayout, stairStepCount } from '../core/stairs';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
@@ -763,22 +764,17 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
 /** 階段（直・折り返し） */
 function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
   const rise = y1 - y0;
-  const n = Math.max(10, Math.round(rise / 0.2));
+  const n = stairStepCount(rise / MM);
   const rh = rise / n;
-  const r = { minX: s.minX * MM, maxX: s.maxX * MM, minZ: s.minY * MM, maxZ: s.maxY * MM };
-  const w = r.maxX - r.minX;
-  const d = r.maxZ - r.minZ;
-  // 昇り方向（入口から奥へ）
-  const entry = s.entry;
-  const runAlongZ = entry === 'n' || entry === 's';
   const tread = 'int.stairs';
   // 蹴込みの無い「ストリップ階段」: 厚さ 40mm の踏板を、両端の細いスチールの受け材で支える（重い箱の積み重ねに見せない）
-  const put = (x0: number, z0: number, x1: number, z1: number, yTop: number) => {
-    const min = V(Math.min(x0, x1), yTop - 0.04, Math.min(z0, z1));
-    const max = V(Math.max(x0, x1), yTop, Math.max(z0, z1));
+  const put = (p: { minX: number; minY: number; maxX: number; maxY: number }, yTop: number) => {
+    const min = V(p.minX * MM, yTop - 0.04, p.minY * MM);
+    const max = V(p.maxX * MM, yTop, p.maxY * MM);
+    if (max.x - min.x < 0.01 || max.z - min.z < 0.01) return;
     mb.aabb(tread, min, max);
     // 受け材（踏板の長手方向の両端＝階段の両脇の下に薄い板）
-    const longX = Math.abs(x1 - x0) >= Math.abs(z1 - z0);
+    const longX = max.x - min.x >= max.z - min.z;
     const plateT = 0.012;
     const ph = Math.min(0.08, rh * 0.5);
     if (longX) {
@@ -787,69 +783,8 @@ function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
       for (const z of [min.z + 0.03, max.z - 0.03 - plateT]) mb.aabb('ext.frame', V(min.x + 0.02, yTop - 0.04 - ph, z), V(max.x - 0.02, yTop - 0.04, z + plateT));
     }
   };
-  if (s.kind === 'straight') {
-    const len = runAlongZ ? d : w;
-    const step = len / n;
-    for (let i = 0; i < n; i++) {
-      const yTop = y0 + rh * (i + 1);
-      if (runAlongZ) {
-        const zs = entry === 's' ? r.maxZ - step * i : r.minZ + step * i;
-        const ze = entry === 's' ? zs - step : zs + step;
-        put(r.minX, zs, r.maxX, ze, yTop);
-      } else {
-        const xs = entry === 'e' ? r.maxX - step * i : r.minX + step * i;
-        const xe = entry === 'e' ? xs - step : xs + step;
-        put(xs, r.minZ, xe, r.maxZ, yTop);
-      }
-    }
-    return;
-  }
-  // 折り返し階段: 入口辺に平行な方向で左右2列に分け、奥で踊り場
-  const n1 = Math.floor(n / 2);
-  const n2 = n - n1 - 1; // 踊り場で1段分
-  if (runAlongZ) {
-    const half = w / 2;
-    const land = Math.min(d * 0.4, half);
-    const runLen = d - land;
-    const st1 = runLen / n1;
-    const st2 = runLen / n2;
-    const fromS = entry === 's';
-    const zStart = fromS ? r.maxZ : r.minZ;
-    const sgn = fromS ? -1 : 1;
-    for (let i = 0; i < n1; i++) {
-      const z0 = zStart + sgn * st1 * i;
-      put(r.minX, z0, r.minX + half, z0 + sgn * st1, y0 + rh * (i + 1));
-    }
-    // 踊り場
-    const zl = zStart + sgn * runLen;
-    const yl = y0 + rh * (n1 + 1);
-    put(r.minX, zl, r.maxX, zl + sgn * land, yl);
-    for (let i = 0; i < n2; i++) {
-      const z0 = zl - sgn * st2 * i;
-      put(r.minX + half, z0, r.maxX, z0 - sgn * st2, yl + rh * (i + 1));
-    }
-    // 中央の腰壁
-    mb.aabb('int.wall', V(r.minX + half - 0.05, y0, Math.min(zStart, zl)), V(r.minX + half + 0.05, y0 + rise * 0.5 + 0.9, Math.max(zStart, zl)));
-  } else {
-    const half = d / 2;
-    const land = Math.min(w * 0.4, half);
-    const runLen = w - land;
-    const st1 = runLen / n1;
-    const st2 = runLen / n2;
-    const fromE = entry === 'e';
-    const xStart = fromE ? r.maxX : r.minX;
-    const sgn = fromE ? -1 : 1;
-    for (let i = 0; i < n1; i++) {
-      const x0 = xStart + sgn * st1 * i;
-      put(x0, r.minZ, x0 + sgn * st1, r.minZ + half, y0 + rh * (i + 1));
-    }
-    const xl = xStart + sgn * runLen;
-    const yl = y0 + rh * (n1 + 1);
-    put(xl, r.minZ, xl + sgn * land, r.maxZ, yl);
-    for (let i = 0; i < n2; i++) {
-      const x0 = xl - sgn * st2 * i;
-      put(x0, r.minZ + half, x0 - sgn * st2, r.maxZ, yl + rh * (i + 1));
-    }
-    mb.aabb('int.wall', V(Math.min(xStart, xl), y0, r.minZ + half - 0.05), V(Math.max(xStart, xl), y0 + rise * 0.5 + 0.9, r.minZ + half + 0.05));
-  }
+  const lay = stairLayout(s, n);
+  for (const p of lay.pieces) put(p, y0 + rh * p.i);
+  // 折り返し階段の中央の腰壁
+  if (lay.wall) mb.aabb('int.wall', V(lay.wall.minX * MM, y0, lay.wall.minY * MM), V(lay.wall.maxX * MM, y0 + rise * 0.5 + 0.9, lay.wall.maxY * MM));
 }

@@ -8,13 +8,15 @@
  * 壁を直すたびに、図面の読み取りと同じ方法で部屋を作り直す。
  */
 import type { BuildingModel, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
+import { stairLayout, STAIR_KIND_LABEL, STAIR_ENTRY_LABEL, type StairPiece } from '../core/stairs';
+import type { Stair } from '../core/types';
 import { buildFurniture, furnitureDims, FURNITURE_LABEL } from '../scene/furniture';
 import { ROOM_TYPE_LABEL } from '../core/types';
 import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
 import { h, clear, toast } from './dom';
 
-type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture';
+type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
 
 interface FloorWork {
@@ -65,6 +67,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let drag: { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null = null;
   let autoCache: Map<number, FurnitureItem[]> | null = null;
   let furnSeq = 0;
+  // 階段
+  let stairSel: string | null = null;
+  let stairDraw: { a: Vec2; b: Vec2 } | null = null;
+  let stairDrag: { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null = null;
   const undo: string[] = [];
   const redo: string[] = [];
   let seq = 0;
@@ -106,6 +112,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['sliding', '引戸', '壁をクリックすると引戸を置きます'],
     ['label', '部屋名', '部屋の中をクリックして部屋名を置きます'],
     ['furniture', '家具', '家具をドラッグで移動、R キーで回転、Delete で削除。右の一覧から追加できます'],
+    ['stairs', '階段', '空いている所をドラッグして階段の範囲を描きます。既存の階段はクリックで選び、ドラッグで移動、R キーで昇り口を回転、Delete で削除'],
   ];
   const tools = h(
     'div',
@@ -329,12 +336,13 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
   const gGhost = document.createElementNS(NS, 'g');
   const gRooms = document.createElementNS(NS, 'g');
+  const gStairs = document.createElementNS(NS, 'g');
   const gFurn = document.createElementNS(NS, 'g');
   const gWalls = document.createElementNS(NS, 'g');
   const gOps = document.createElementNS(NS, 'g');
   const gLabels = document.createElementNS(NS, 'g');
   const gPreview = document.createElementNS(NS, 'g');
-  svg.append(gGhost, gRooms, gFurn, gWalls, gOps, gLabels, gPreview);
+  svg.append(gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreview);
 
   const wallPoly = (w: Wall) => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -344,7 +352,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gFurn, gWalls, gOps, gLabels, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
     // 他の階（位置合わせの目安）
@@ -356,6 +364,30 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const a = el('text', { x: r.labelPos.x, y: r.labelPos.y + fs * 1.15, 'font-size': fs * 0.75, 'text-anchor': 'middle', fill: '#8b8f96' }, gRooms);
       a.textContent = `${(r.labeledTatami ?? r.area / 1.62).toFixed(1)}帖`;
     }
+    // 階段（段割り・昇る向き）
+    const stairMode = tool === 'stairs';
+    const drawStair = (st: Stair, parent: Element, on: boolean, ghost = false) => {
+      const lay = stairLayout(st, 14);
+      const g = el('g', { class: 'pe-stair', 'pointer-events': stairMode && !ghost ? 'auto' : 'none', opacity: ghost ? 0.7 : stairMode ? 1 : 0.75 }, parent) as SVGGElement;
+      g.dataset.id = st.id;
+      el('rect', { x: st.minX, y: st.minY, width: st.maxX - st.minX, height: st.maxY - st.minY, fill: on ? '#f3c89a' : '#e9e6df', stroke: on ? '#d9822b' : '#8b8f96', 'stroke-width': on ? 30 : 14 }, g);
+      for (const q of lay.pieces) el('rect', { x: q.minX, y: q.minY, width: q.maxX - q.minX, height: q.maxY - q.minY, fill: q.kind === 'landing' ? '#ddd8cf' : 'none', stroke: '#9a9a9a', 'stroke-width': 8, 'pointer-events': 'none' }, g);
+      const cs = lay.pieces.map((q: StairPiece) => `${(q.minX + q.maxX) / 2},${(q.minY + q.maxY) / 2}`);
+      if (cs.length > 1) el('polyline', { points: cs.join(' '), fill: 'none', stroke: '#6d7178', 'stroke-width': 14, 'pointer-events': 'none' }, g);
+      const last = lay.pieces[lay.pieces.length - 1];
+      if (last) {
+        const cx = (last.minX + last.maxX) / 2;
+        const cy = (last.minY + last.maxY) / 2;
+        const d = last.dir;
+        el('polygon', { points: `${cx + d.x * 180},${cy + d.y * 180} ${cx - d.y * 100},${cy + d.x * 100} ${cx + d.y * 100},${cy - d.x * 100}`, fill: '#6d7178', 'pointer-events': 'none' }, g);
+      }
+      const first = lay.pieces[0];
+      if (first) {
+        const t = el('text', { x: (first.minX + first.maxX) / 2, y: (first.minY + first.maxY) / 2 + fs * 0.3, 'font-size': fs * 0.7, 'text-anchor': 'middle', fill: '#4a4e55', 'pointer-events': 'none', 'font-weight': 600 }, g);
+        t.textContent = st.goesUp ? 'UP' : 'DN';
+      }
+    };
+    for (const st of f.stairs) drawStair(st, gStairs, stairMode && stairSel === st.id);
     // 家具（家具の道具のときだけ操作できる）
     const furnMode = tool === 'furniture';
     for (const it of itemsOf(f.level)) {
@@ -415,6 +447,74 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     panel.append(h('h3', null, `${f.level}階の修正`));
     const tip = toolDefs.find((t) => t[0] === tool)![2];
     panel.append(h('p', { class: 'hint' }, tip));
+    if (tool === 'stairs') {
+      const st = stairSel ? f.stairs.find((x) => x.id === stairSel) : null;
+      if (st) {
+        const edit = (fn: (x: Stair) => void) => {
+          pushUndo();
+          const x = W().floor.stairs.find((q) => q.id === st.id);
+          if (x) fn(x);
+          changed = true;
+          draw();
+        };
+        const num = (label: string, get: () => number, set: (v: number) => void, step = 10) =>
+          h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'number', step, value: Math.round(get()), onchange: (e: Event) => edit(() => set(+(e.target as HTMLInputElement).value)) }));
+        panel.append(
+          h('div', { class: 'field-label' }, `階段（${STAIR_KIND_LABEL[st.kind]}）`),
+          h(
+            'label',
+            { class: 'field' },
+            h('span', { class: 'field-label' }, '種類'),
+            h('select', { onchange: (e: Event) => edit((x) => (x.kind = (e.target as HTMLSelectElement).value as Stair['kind'])) }, (Object.keys(STAIR_KIND_LABEL) as Stair['kind'][]).map((k) => h('option', { value: k, selected: k === st.kind }, STAIR_KIND_LABEL[k]))),
+          ),
+          h(
+            'label',
+            { class: 'field' },
+            h('span', { class: 'field-label' }, '昇り口の辺'),
+            h('select', { onchange: (e: Event) => edit((x) => (x.entry = (e.target as HTMLSelectElement).value as Stair['entry'])) }, (Object.keys(STAIR_ENTRY_LABEL) as Stair['entry'][]).map((k) => h('option', { value: k, selected: k === st.entry }, STAIR_ENTRY_LABEL[k]))),
+          ),
+        );
+        if (st.kind !== 'straight')
+          panel.append(
+            h(
+              'label',
+              { class: 'field' },
+              h('span', { class: 'field-label' }, '曲がる向き（昇る人から見て）'),
+              h('select', { onchange: (e: Event) => edit((x) => (x.turn = (e.target as HTMLSelectElement).value as Stair['turn'])) }, [
+                h('option', { value: 'left', selected: (st.turn ?? (st.kind === 'u' ? 'left' : 'right')) === 'left' }, '左'),
+                h('option', { value: 'right', selected: (st.turn ?? (st.kind === 'u' ? 'left' : 'right')) === 'right' }, '右'),
+              ]),
+            ),
+          );
+        panel.append(
+          h(
+            'label',
+            { class: 'field' },
+            h('span', { class: 'field-label' }, '上る／下る'),
+            h('select', { onchange: (e: Event) => edit((x) => (x.goesUp = (e.target as HTMLSelectElement).value === 'up')) }, [
+              h('option', { value: 'up', selected: st.goesUp }, '上の階へ上る（UP）'),
+              h('option', { value: 'down', selected: !st.goesUp }, '下の階へ下る（DN）'),
+            ]),
+          ),
+          h(
+            'div',
+            { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' },
+            num('左端 X (mm)', () => st.minX, (v) => { const w = st.maxX - st.minX; st.minX = v; st.maxX = v + w; }),
+            num('上端 Y (mm)', () => st.minY, (v) => { const d = st.maxY - st.minY; st.minY = v; st.maxY = v + d; }),
+            num('幅 (mm)', () => st.maxX - st.minX, (v) => (st.maxX = st.minX + Math.max(500, v))),
+            num('奥行 (mm)', () => st.maxY - st.minY, (v) => (st.maxY = st.minY + Math.max(500, v))),
+          ),
+          h('p', { class: 'hint' }, '幅・奥行は壁の内側の寸法で入れてください（例: 折り返し階段 1,820 × 1,820、直階段 910 × 2,730）。上の階の同じ位置には自動で吹抜（階段の穴）ができます。'),
+          h('button', { class: 'btn sm block', onclick: () => deleteSel() }, 'この階段を消す（Delete）'),
+        );
+      } else {
+        panel.append(
+          h('p', { class: 'hint' }, f.stairs.length ? `この階の階段: ${f.stairs.length} か所。クリックして選ぶと種類・昇り口・寸法を変えられます。` : 'この階に階段はありません。空いている所をドラッグして描いてください。'),
+          h('ul', { class: 'hint pe-howto' }, h('li', null, '読み取りで階段が無い・ずれている時は、ここで描き直してください。'), h('li', null, '昇り口は、階段に入る側の辺（ホール側）を選びます。'), h('li', null, '2 階側にも同じ位置に「下る（DN）」階段を置くと、2 階の床に穴が開きます。')),
+        );
+      }
+      return;
+    }
     if (tool === 'furniture') {
       const level = f.level;
       const ex = furn.get(level);
@@ -579,6 +679,16 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const deleteSel = () => {
+    if (tool === 'stairs') {
+      if (!stairSel) return;
+      pushUndo();
+      const f = W().floor;
+      f.stairs = f.stairs.filter((x) => x.id !== stairSel);
+      stairSel = null;
+      changed = true;
+      draw();
+      return;
+    }
     if (tool === 'furniture') {
       if (!furnSel) return;
       pushUndo();
@@ -616,6 +726,9 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     sel = null;
     furnSel = null;
     addKind = null;
+    stairSel = null;
+    stairDraw = null;
+    stairDrag = null;
     svg.style.cursor = t === 'select' || t === 'furniture' ? 'default' : 'crosshair';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
@@ -704,6 +817,23 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const p = toMm(e);
+    if (tool === 'stairs') {
+      const g = (e.target as SVGElement).closest('.pe-stair') as SVGGElement | null;
+      if (g?.dataset.id) {
+        stairSel = g.dataset.id;
+        const st = W().floor.stairs.find((x) => x.id === stairSel);
+        if (st) stairDrag = { id: st.id, sx: p.x, sy: p.y, ox: st.minX, oy: st.minY, moved: false };
+        svg.setPointerCapture(e.pointerId);
+        draw();
+        return;
+      }
+      stairSel = null;
+      const a = snap(p, null, true).p;
+      stairDraw = { a, b: a };
+      svg.setPointerCapture(e.pointerId);
+      draw();
+      return;
+    }
     if (tool === 'furniture') {
       const level = W().floor.level;
       if (addKind) {
@@ -763,6 +893,40 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     const p = toMm(e);
     const px = mmPerPx();
+    if (stairDrag) {
+      const dx = p.x - stairDrag.sx;
+      const dy = p.y - stairDrag.sy;
+      if (!stairDrag.moved && Math.hypot(dx, dy) < 3 * px) return;
+      if (!stairDrag.moved) {
+        pushUndo();
+        stairDrag.moved = true;
+      }
+      const st = W().floor.stairs.find((x) => x.id === stairDrag!.id);
+      if (st) {
+        const w = st.maxX - st.minX;
+        const d = st.maxY - st.minY;
+        st.minX = Math.round((stairDrag.ox + dx) / 10) * 10;
+        st.minY = Math.round((stairDrag.oy + dy) / 10) * 10;
+        st.maxX = st.minX + w;
+        st.maxY = st.minY + d;
+        changed = true;
+        draw();
+      }
+      return;
+    }
+    if (stairDraw) {
+      const s2 = snap(p, null, true);
+      stairDraw.b = s2.p;
+      const x = Math.min(stairDraw.a.x, stairDraw.b.x);
+      const y = Math.min(stairDraw.a.y, stairDraw.b.y);
+      const w = Math.abs(stairDraw.b.x - stairDraw.a.x);
+      const d = Math.abs(stairDraw.b.y - stairDraw.a.y);
+      el('rect', { x, y, width: w, height: d, fill: '#d9822b', 'fill-opacity': 0.25, stroke: '#d9822b', 'stroke-width': 3 * px }, gPreview);
+      const t = el('text', { x: x + w / 2, y: y - 8 * px, 'font-size': 12 * px, 'text-anchor': 'middle', fill: '#d9822b', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gPreview);
+      t.textContent = `${Math.round(w)} × ${Math.round(d)} mm`;
+      status.textContent = s2.hint ? `吸着: ${s2.hint}` : '';
+      return;
+    }
     if (drag) {
       const dx = p.x - drag.sx;
       const dy = p.y - drag.sy;
@@ -800,6 +964,38 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   svg.addEventListener('pointerup', () => {
     pan = null;
     drag = null;
+    stairDrag = null;
+    if (stairDraw) {
+      const { a, b } = stairDraw;
+      stairDraw = null;
+      while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
+      const minX = Math.round(Math.min(a.x, b.x));
+      const minY = Math.round(Math.min(a.y, b.y));
+      const maxX = Math.round(Math.max(a.x, b.x));
+      const maxY = Math.round(Math.max(a.y, b.y));
+      const w = maxX - minX;
+      const d = maxY - minY;
+      if (w < 500 || d < 500) {
+        if (w > 60 || d > 60) toast('階段は 500mm 以上の大きさで描いてください');
+        draw();
+        return;
+      }
+      pushUndo();
+      const f = W().floor;
+      const level = f.level;
+      // 種類の目安: ほぼ正方形なら折り返し、細長ければ直階段。昇り口は短い辺のうち、同じ位置に階段がある階が無ければ図面の下側
+      const kind: Stair['kind'] = Math.max(w, d) / Math.min(w, d) < 1.5 ? 'u' : 'straight';
+      const entry: Stair['entry'] = w >= d ? 'w' : 's';
+      const below = works.find((o) => o.floor.level === level - 1);
+      const hasBelow = !!below?.floor.stairs.some((t) => Math.abs(t.minX - minX) < 600 && Math.abs(t.minY - minY) < 600);
+      let k = f.stairs.length + 1;
+      while (f.stairs.some((t) => t.id === `F${level}-S${k}`)) k++;
+      const id = `F${level}-S${k}`;
+      f.stairs.push({ id, minX, minY, maxX, maxY, kind, entry, goesUp: !hasBelow });
+      stairSel = id;
+      changed = true;
+      draw();
+    }
   });
   const onKey = (e: KeyboardEvent) => {
     const tg = e.target as HTMLElement;
@@ -810,13 +1006,23 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     if (e.type !== 'keydown' || typing) return;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel))) {
       e.preventDefault();
       deleteSel();
     } else if (e.key === 'Escape') {
       wallStart = null;
       sel = null;
       addKind = null;
+      stairSel = null;
+      stairDraw = null;
+      draw();
+    } else if (tool === 'stairs' && stairSel && e.key.toLowerCase() === 'r') {
+      e.preventDefault();
+      pushUndo();
+      const st = W().floor.stairs.find((x) => x.id === stairSel);
+      const order: Stair['entry'][] = ['n', 'e', 's', 'w'];
+      if (st) st.entry = order[(order.indexOf(st.entry) + (e.shiftKey ? 3 : 1)) % 4];
+      changed = true;
       draw();
     } else if (tool === 'furniture' && furnSel && e.key.toLowerCase() === 'r') {
       e.preventDefault();

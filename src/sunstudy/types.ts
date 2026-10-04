@@ -92,6 +92,44 @@ export type ModelFormat = '3ds' | 'obj' | 'stl' | 'glb' | 'fbx';
 export const UNIT_METERS: Record<Exclude<LengthUnit, 'custom'>, number> = { mm: 0.001, cm: 0.01, m: 1, in: 0.0254, ft: 0.3048 };
 export const UNIT_LABEL: Record<LengthUnit, string> = { mm: 'ミリメートル (mm)', cm: 'センチメートル (cm)', m: 'メートル (m)', in: 'インチ (in)', ft: 'フィート (ft)', custom: '任意の倍率' };
 
+/** 東・北 (m) の 2D 座標（src/sun/align.ts の EN と同じ形） */
+export interface EN {
+  e: number;
+  n: number;
+}
+
+/** 位置合わせの種類: 2 点合わせ／敷地の輪郭に合わせた／向きだけ敷地の辺に合わせた。無ければ手で置いた配置 */
+export type AlignmentKind = 'twoPoint' | 'siteFit' | 'orient';
+
+/** 2 点合わせの対応: 建物の角（pivot ローカル EN, m）と、その角の実際の位置（緯度経度） */
+export interface AlignmentPair {
+  local: EN;
+  target: LatLon;
+}
+
+/**
+ * どう位置合わせしたか（配置と一緒に保存する）。
+ * pairs の local は「採ったときの単位・上方向・反転」での pivot ローカル座標なので、
+ * unitScaleM / mirror / upAxis を一緒に残し、単位が変わったら unitScale(今) / unitScaleM で換算する
+ * （反転・上方向が変わったら対応点は使えないので位置合わせをやり直す）。
+ * pivotLatLon は建物の基準点（pivot）の緯度経度。ピンが動いても建物を地球上の同じ所に保つために使う。
+ */
+export interface PlacementAlignment {
+  kind?: AlignmentKind;
+  pairs?: AlignmentPair[];
+  /** pairs を採ったときの 1 モデル単位の長さ (m) */
+  unitScaleM?: number;
+  mirror?: boolean;
+  upAxis?: UpAxis;
+  /** 残差の RMS (m) */
+  rmsM?: number;
+  /** 計測した寸法の比（航空写真上の距離 / モデル上の距離）。1 から 3 % 以上ずれていれば単位を疑う */
+  scaleRatio?: number;
+  pivotLatLon?: LatLon;
+  /** ISO 日時 */
+  at: string;
+}
+
 export interface ModelPlacement {
   unit: LengthUnit;
   /** unit === 'custom' のとき、1 モデル単位 = customScale m */
@@ -111,6 +149,8 @@ export interface ModelPlacement {
   mirror: boolean;
   /** 表示・解析から除くオブジェクト名（地面の板・敷地・ダミーなど。読み込み時に自動判定し、UI で変更できる） */
   hiddenObjects: string[];
+  /** 位置合わせの記録（任意。無ければ手で置いた配置）。古い保存データには無い */
+  alignment?: PlacementAlignment;
 }
 
 export const DEFAULT_PLACEMENT: ModelPlacement = { unit: 'mm', customScale: 1, upAxis: 'z', headingDeg: 0, offsetE: 0, offsetN: 0, baseY: 0, appearance: 'white', mirror: false, hiddenObjects: [] };

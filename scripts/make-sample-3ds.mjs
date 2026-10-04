@@ -5,6 +5,8 @@
  * 使い方:
  *   node scripts/make-sample-3ds.mjs                      → public/samples/sample_house.3ds
  *   node scripts/make-sample-3ds.mjs --scale 0.5 --out X  → MASTER_SCALE = 0.5 の変種をテスト用に X へ書く
+ *   node scripts/make-sample-3ds.mjs --site --out X       → 敷地の板（オブジェクト名 'site'）を加えた変種を X へ書く
+ *     （--site も --scale ≠ 1 も、既定の出力 public/samples/sample_house.3ds は上書きしない）
  *
  * 書くチャンク（lib3ds / TDSLoader が読む範囲）:
  *   0x4D4D M3DMAGIC
@@ -23,6 +25,7 @@
  *   roof     切妻（棟は x 方向、棟高 8200）。妻側（±x）に 600 のけらば（はね出し）
  *   porch    ポーチ 2000 × 1500 × 2400（+y = 北側）
  *   window_1 / window_2  南面（−y）の浅い窓の箱（面から 10 mm 出て 120 mm 入る）
+ *   site（--site のときだけ） 敷地の薄い板 x −5000..9000、y −7000..5000、z −10..0。材質 site '#c8c0a8'
  *   材質: wall '#f0ece4'（wall・porch）、roof '#5a5e66'（roof・窓）
  *   三角形はすべて外向きで反時計回り（右手系で法線が外を向く）。
  *
@@ -138,6 +141,14 @@ export const HOUSE = {
   materials: { wall: '#f0ece4', roof: '#5a5e66' },
 };
 
+/** 敷地の板（--site）: 住宅の周りに非対称に広がる 14 × 12 m の薄い板。名前 'site' で読み込み時に自動で非表示になる */
+export const SITE = { x0: -5000, x1: 9000, y0: -7000, y1: 5000, z0: -10, z1: 0, material: '#c8c0a8' };
+
+/** 敷地の板のオブジェクト（houseObjects() の後ろに足す） */
+export function siteObject(s = SITE) {
+  return { name: 'site', material: 'site', geometry: box(s.x0, s.x1, s.y0, s.y1, s.z0, s.z1) };
+}
+
 /** オブジェクト一覧 [{ name, material, geometry }] */
 export function houseObjects(h = HOUSE) {
   const hx = h.wallX / 2;
@@ -173,14 +184,15 @@ function namedObjectChunk(name, geometry, materialName, scale) {
 
 /**
  * 3DS ファイルのバイト列を作る
- * @param {{ scale?: number, objects?: ReturnType<typeof houseObjects>, materials?: Record<string, string> }} opts
+ * @param {{ scale?: number, site?: boolean, objects?: ReturnType<typeof houseObjects>, materials?: Record<string, string> }} opts
  * @returns {Buffer}
  */
 export function buildSampleHouse3ds(opts = {}) {
   const scale = opts.scale ?? 1;
   if (!(Number.isFinite(scale) && scale > 0)) throw new Error(`--scale は正の数で指定してください: ${scale}`);
-  const materials = opts.materials ?? HOUSE.materials;
-  const objects = opts.objects ?? houseObjects();
+  // --site: 材質とオブジェクトを後ろに足すだけなので、既定の出力（site 無し）のバイト列は変わらない
+  const materials = opts.materials ?? (opts.site ? { ...HOUSE.materials, site: SITE.material } : HOUSE.materials);
+  const objects = opts.objects ?? (opts.site ? [...houseObjects(), siteObject()] : houseObjects());
   for (const o of objects) if (!(o.material in materials)) throw new Error(`${o.name}: 材質 ${o.material} が定義されていません`);
   return chunk(
     0x4d4d,
@@ -200,13 +212,14 @@ export function buildSampleHouse3ds(opts = {}) {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { scale: 1, out: null };
+  const out = { scale: 1, out: null, site: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--scale') out.scale = Number(argv[++i]);
     else if (a.startsWith('--scale=')) out.scale = Number(a.slice(8));
     else if (a === '--out') out.out = argv[++i];
     else if (a.startsWith('--out=')) out.out = a.slice(6);
+    else if (a === '--site') out.site = true;
     else throw new Error(`不明な引数: ${a}`);
   }
   return out;
@@ -216,15 +229,19 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const defaultOut = path.join(root, 'public', 'samples', 'sample_house.3ds');
-  if (args.scale !== 1 && !args.out) {
-    console.error('--scale が 1 以外のときは --out で出力先を指定してください（public/ のサンプルを上書きしません）');
+  if ((args.scale !== 1 || args.site) && !args.out) {
+    console.error('--scale が 1 以外、または --site のときは --out で出力先を指定してください（public/ のサンプルを上書きしません）');
     process.exit(1);
   }
   const outPath = path.resolve(args.out ?? defaultOut);
-  const buf = buildSampleHouse3ds({ scale: args.scale });
+  if (args.site && path.resolve(outPath) === path.resolve(defaultOut)) {
+    console.error('--site の出力先に public/samples/sample_house.3ds は指定できません');
+    process.exit(1);
+  }
+  const buf = buildSampleHouse3ds({ scale: args.scale, site: args.site });
   mkdirSync(path.dirname(outPath), { recursive: true });
   writeFileSync(outPath, buf);
-  const objects = houseObjects();
+  const objects = args.site ? [...houseObjects(), siteObject()] : houseObjects();
   const tris = objects.reduce((s, o) => s + o.geometry.faces.length, 0);
   console.log(`${path.relative(process.cwd(), outPath)}: ${buf.length} bytes, ${objects.length} objects (${objects.map((o) => o.name).join(', ')}), ${tris} triangles, MASTER_SCALE ${args.scale}`);
 }

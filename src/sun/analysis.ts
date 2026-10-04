@@ -176,23 +176,36 @@ export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filt
   return occluderFromTriangles(bakeWorldTriangles(roots, filter, opts));
 }
 
-/** 外部の正確な建物（groups.external）が PDF の建物に代わって影を落とすか（userData.externalReplaces かつメッシュがある） */
-export function externalReplacesBuilding(viewer: Viewer): boolean {
-  if (viewer.userData.externalReplaces !== true) return false;
+/** 外部の正確な建物（groups.external）に表示中のメッシュが 1 つ以上あるか（すべて非表示・空のデータなら false） */
+export function externalHasVisibleMesh(viewer: Viewer): boolean {
   let has = false;
   viewer.groups.external.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) has = true;
+    if ((o as THREE.Mesh).isMesh && o.visible) has = true;
   });
   return has;
 }
 
 /**
+ * 外部の正確な建物（groups.external）が PDF の建物に代わって影を落とすか:
+ * userData.externalReplaces かつ 日照ステップ表示中（userData.externalMounted）かつ 表示中のメッシュがある。
+ * 他のステップ（デザイン・ウォークスルー・提案資料）では、見えている PDF の建物が壁判定・見どころ・影を担う。
+ * 日照ステップ外で 3DS を使いたい解析は buildOccluder に external: true を渡す
+ */
+export function externalReplacesBuilding(viewer: Viewer): boolean {
+  if (viewer.userData.externalReplaces !== true) return false;
+  if (viewer.userData.externalMounted !== true) return false;
+  return externalHasVisibleMesh(viewer);
+}
+
+/**
  * 既存アプリ: 影を落とす物体を 1 つの BVH にまとめる。
  * 外部の建物（3DS）が置き換え中なら、建物の種別 'building' は groups.external だけ（PDF の建物・屋根は焼き込まない）。
- * 置き換えでない外部の建物は無視する
+ * opts.external: true なら日照ステップ表示中でなくても 3DS を使う（表示中のメッシュがあるとき。提案資料の解析など）、
+ * false なら 3DS を使わない、省略時は externalReplacesBuilding（日照ステップ表示中の置き換え）に従う
  */
-export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean } = {}): Occluder {
-  const parts: OccluderPart[] = externalReplacesBuilding(viewer)
+export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean; external?: boolean } = {}): Occluder {
+  const useExternal = opts.external === true ? externalHasVisibleMesh(viewer) : opts.external === false ? false : externalReplacesBuilding(viewer);
+  const parts: OccluderPart[] = useExternal
     ? [{ root: viewer.groups.external, kind: 'building' }]
     : [
         { root: viewer.groups.building, kind: 'building' },
@@ -362,13 +375,14 @@ export interface RoomSunResult {
 /**
  * 部屋ごとの日当たり（PDF の部屋の床面に測定点を置く）。
  * opts.sampleY(x, z, floorY): 測定点の高さを決める（省略時 floorY + 0.03）。外部の建物（3DS）で置き換えているときに、
- * 3DS 自身の床の上から測るために使う
+ * 3DS 自身の床の上から測るために使う。
+ * opts.external: 外部の建物（3DS）を PDF の建物の代わりに使うか（buildOccluder と同じ。省略時は日照ステップ表示中の置き換えに従う）
  */
-export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?: number; spacing?: number; onProgress?: (r: number) => void; sampleY?: (x: number, z: number, floorY: number) => number } = {}): Promise<RoomSunResult[]> {
+export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?: number; spacing?: number; onProgress?: (r: number) => void; sampleY?: (x: number, z: number, floorY: number) => number; external?: boolean } = {}): Promise<RoomSunResult[]> {
   const st = viewer.state!;
   const model: BuildingModel = st.model;
   void model;
-  const occ = buildOccluder(viewer, { context: true, trees: false });
+  const occ = buildOccluder(viewer, { context: true, trees: false, external: opts.external });
   const step = (opts.stepMin ?? 10) / 60;
   const spacing = opts.spacing ?? 0.35;
   const times = sunSamplesForDay(day, { stepMin: opts.stepMin ?? 10, minElev: 0.5, centered: false });
@@ -477,10 +491,13 @@ export async function sunHoursGrid(
   return { x0, z0, cell, nx, nz, values };
 }
 
-/** 既存アプリ: 地面の日照時間マップ（指定した時間帯, h 単位）。opts.center で格子の中心を指定できる（省略時は PDF の建物の中心） */
-export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?: number; to?: number; stepMin?: number; cell?: number; half?: number; height?: number; center?: { x: number; z: number }; onProgress?: (r: number) => void } = {}): Promise<GridResult> {
+/**
+ * 既存アプリ: 地面の日照時間マップ（指定した時間帯, h 単位）。opts.center で格子の中心を指定できる（省略時は PDF の建物の中心）。
+ * opts.external: 外部の建物（3DS）を PDF の建物の代わりに使うか（buildOccluder と同じ。省略時は日照ステップ表示中の置き換えに従う）
+ */
+export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?: number; to?: number; stepMin?: number; cell?: number; half?: number; height?: number; center?: { x: number; z: number }; onProgress?: (r: number) => void; external?: boolean } = {}): Promise<GridResult> {
   const st = viewer.state!;
-  const occ = buildOccluder(viewer, { context: true, trees: true });
+  const occ = buildOccluder(viewer, { context: true, trees: true, external: opts.external });
   const c = opts.center ? new THREE.Vector3(opts.center.x, 0, opts.center.z) : st.meta.bbox.getCenter(new THREE.Vector3());
   const half = opts.half ?? 22;
   const cell = opts.cell ?? 0.5;
@@ -1081,6 +1098,8 @@ export interface ShadowDiagramOverrides {
   center?: THREE.Vector2;
   /** 建物の最高高さ (m)。与えると影の長さから図の範囲を広げる */
   buildingTop?: number;
+  /** 外部の建物（3DS）を PDF の建物の代わりに使うか（buildOccluder と同じ。省略時は日照ステップ表示中の置き換えに従う） */
+  external?: boolean;
 }
 
 /**
@@ -1089,7 +1108,7 @@ export interface ShadowDiagramOverrides {
  */
 export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: number; northAngleDeg: number; year: number }, planeHeight = 1.5, onProgress?: (r: number) => void, over: ShadowDiagramOverrides = {}): Promise<ShadowDiagram> {
   const st = viewer.state!;
-  const occ = buildOccluder(viewer, { buildingOnly: true });
+  const occ = buildOccluder(viewer, { buildingOnly: true, external: over.external });
   const c = over.center ? new THREE.Vector3(over.center.x, 0, over.center.y) : st.meta.bbox.getCenter(new THREE.Vector3());
   const footprints = st.meta.outlines.map((o) => o.polys.map((poly) => poly.map((q) => ({ x: q.x, y: q.y }))));
   const outlines: ShadowOutline[] = [];

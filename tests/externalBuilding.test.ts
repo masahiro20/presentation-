@@ -2,10 +2,13 @@
  * 外部の正確な建物（3DS）を間取りに合わせる計算（src/app/externalFit.ts）のテスト。Node 上で DOM 無しに動くこと。
  *  - 水平断面の外形（sectionOutline / outlineOfPivot）: 焼き込んだサンプル住宅で壁 9.1 × (7.28 + ポーチ 1.5) m、全高なら軒先 10.3 m
  *  - 間取りへの自動合わせ（fitExternalToPlan）: 0°・90°（幅と奥行きの入れ替え）・中心のずれ・鏡像（残差で検出）
- *  - 読み込み直後の配置（seedPlacement）: 'ground' の板を除いた worldBox
+ *  - 読み込み直後の配置（seedPlacement）: 'ground' の板を除いた worldBox。すべてが建物以外と判定されたら何も隠さない
  *  - 2 点合わせの符号（applyTwoPointToSite）: applyFit(r)(fromWorld_a(P)) == fromWorld_{a−r}(P)、角の地理位置が航空写真の点に一致
+ *  - 片側に寄ったポーチ（主屋の東の壁と面一）でも主屋の回転が 0.5° 未満。単位違いの判定の帯（1/2・2 倍）。周長の比で ICP を省く
+ *  - controller（偽の viewer）: 日照ステップ表示中だけ 3DS が置き換える（externalReplacesBuilding / buildOccluder の external）、
+ *    別の間取りで外す、差し替えでジオメトリを解放、外形のキャッシュ、8 隅からの worldBox、ガラスのマテリアル優先の判定
  */
-import { describe, expect, it, beforeAll } from 'vitest';
+import { describe, expect, it, beforeAll, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +16,12 @@ import * as THREE from 'three';
 import { importModelFile, PlacedModel } from '../src/sunstudy/importModel';
 import { DEFAULT_PLACEMENT, type ImportedModel } from '../src/sunstudy/types';
 import { applyFit, convexHull, fitPolygonToPolygon, minAreaRect, normDeg180, polygonArea, solveTwoPoint, type EN } from '../src/sun/align';
-import { applyTwoPointToSite, fitExternalToPlan, fromWorldEN, outlineOfPivot, planOutlineEN, planOutlinePolygon, sectionOutline, sectionPolygon, seedPlacement, simplifyPolygon, snapToOutlineVertex, suggestsMirror, suggestsUnitError, wallBand } from '../src/app/externalFit';
+import { allObjectsAutoHidden, applyTwoPointToSite, fitExternalToPlan, fromWorldEN, outlineOfPivot, planOutlineEN, planOutlinePolygon, sectionOutline, sectionPolygon, seedPlacement, simplifyPolygon, snapToOutlineVertex, suggestsMirror, suggestsUnitError, wallBand } from '../src/app/externalFit';
+import { EXTERNAL_DETACHED_MSG, classifyGlass, createExternal, externalController, installExternal, isGlassMesh, setExternalMounted } from '../src/app/externalBuilding';
+import { buildOccluder, externalHasVisibleMesh, externalReplacesBuilding } from '../src/sun/analysis';
+import { emit, state } from '../src/app/state';
+import type { Viewer } from '../src/scene/viewer';
+import type { BuildingModel } from '../src/core/types';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SAMPLE = path.join(ROOT, 'public', 'samples', 'sample_house.3ds');
@@ -202,13 +210,31 @@ describe('間取りへの自動合わせ（fitExternalToPlan）', () => {
     expect(f.dz).toBeCloseTo(-0.8, 2);
   });
 
-  it('回転 + ずれを同時に', () => {
+  it('回転 + ずれを同時に。37° は「幅と奥行きの入れ替え」ではない', () => {
     const dst = planOutlineEN(toPlanOutline(rotEN(houseL(), 37, -2, 1.5), c), c);
     const f = fitExternalToPlan(src, dst, 0);
     expect(Math.abs(normDeg180(f.planRotDeg - 37))).toBeLessThan(0.5);
     expect(f.dx).toBeCloseTo(-2, 1);
     expect(f.dz).toBeCloseTo(-1.5, 1);
     expect(f.score).toBeLessThan(0.05);
+    expect(f.swapped).toBe(false);
+  });
+
+  it('swapped は 3DS を 90° 回したときだけ: 頂点の順（最小外接矩形の w/d の付き方）が違っても、同じ向きなら false で寸法は PDF の向き', () => {
+    const dst = planOutlineEN(toPlanOutline(houseL(), c), c);
+    for (const start of [0, 1, 2, 3, 5]) {
+      const rolled = [...src.slice(start), ...src.slice(0, start)];
+      const f = fitExternalToPlan(rolled, dst, 0);
+      expect(Math.abs(f.planRotDeg)).toBeLessThan(0.5);
+      expect(f.swapped).toBe(false);
+      expect(f.extW).toBeCloseTo(9.1, 3);
+      expect(f.extD).toBeCloseTo(7.28 + 3.0, 3);
+    }
+    // 90° 回した PDF は swapped、寸法はやはり PDF の向きで一致
+    const f90 = fitExternalToPlan(src, planOutlineEN(toPlanOutline(rotEN(houseL(), -90), c), c), 0);
+    expect(f90.swapped).toBe(true);
+    expect(f90.extW).toBeCloseTo(f90.pdfW, 3);
+    expect(f90.extD).toBeCloseTo(f90.pdfD, 3);
   });
 
   it('鏡像の 3DS → 外形の残差が大きい（> 0.3 m）が、反転すると ≈ 0 になるので検出できる。正しい向きは ≈ 0 で反転の提案は出ない', () => {
@@ -323,6 +349,402 @@ describe('読み込み直後の配置（seedPlacement）', () => {
     // 既定の配置（hiddenObjects: []）だと板が入って 40 m になる
     const naive = new PlacedModel(m, { ...DEFAULT_PLACEMENT, unit: 'm', upAxis: 'z' });
     expect(naive.worldBox().getSize(new THREE.Vector3()).x).toBeCloseTo(40, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 片側に寄ったポーチ・単位違いの判定
+// ---------------------------------------------------------------------------
+
+describe('片側に寄ったポーチ（主屋の東の壁と面一）と単位違いの判定', () => {
+  const c = { x: 4.55, z: 3.64 };
+  const rect: EN[] = [
+    { e: -4.55, n: -3.64 },
+    { e: 4.55, n: -3.64 },
+    { e: 4.55, n: 3.64 },
+    { e: -4.55, n: 3.64 },
+  ];
+  const dst = planOutlineEN(toPlanOutline(rect, c), c);
+
+  it('東の壁と面一のポーチ（2.0×1.5 〜 3.64×2.73）でも主屋の回転 < 0.5°、ずれ < 5 cm（割合固定の切り捨てだと 0.9〜3° 回っていた）', () => {
+    for (const [pw, pd] of [
+      [2.0, 1.5],
+      [2.73, 1.82],
+      [3.64, 1.82],
+      [3.64, 2.73],
+    ]) {
+      for (const pe of [4.55 - pw / 2, -(4.55 - pw / 2)]) {
+        const f = fitExternalToPlan(houseL(9.1, 7.28, pw, pd, pe), dst, 0);
+        expect(Math.abs(f.planRotDeg), `pw ${pw} pd ${pd} pe ${pe}: rot ${f.planRotDeg}`).toBeLessThan(0.5);
+        expect(Math.abs(f.dx), `pw ${pw} pd ${pd} pe ${pe}: dx ${f.dx}`).toBeLessThan(0.05);
+        expect(Math.abs(f.dz), `pw ${pw} pd ${pd} pe ${pe}: dz ${f.dz}`).toBeLessThan(0.05);
+        expect(f.unitSuspect).toBe(false);
+        expect(suggestsUnitError(f)).toBe(false);
+        expect(f.mismatchM).toBeCloseTo(pd, 1);
+      }
+    }
+  });
+
+  it('面一のポーチ + PDF 側の回転とずれ → 回転 37°・ずれも主屋で合う', () => {
+    const d2 = planOutlineEN(toPlanOutline(rotEN(rect, 37, -2, 1.5), c), c);
+    const f = fitExternalToPlan(houseL(9.1, 7.28, 3.64, 2.73, 4.55 - 1.82), d2, 0);
+    expect(Math.abs(normDeg180(f.planRotDeg - 37))).toBeLessThan(0.5);
+    expect(f.dx).toBeCloseTo(-2, 1);
+    expect(f.dz).toBeCloseTo(-1.5, 1);
+  });
+
+  it('下屋が 2.0 m 深い（extD/pdfD = 1.27）だけでは単位違いと言わない。1000 倍なら言う（周長の比で ICP を省き、矩形で合わせる）', () => {
+    const porch = houseL(9.1, 7.28, 2.0, 2.0, 0);
+    const f = fitExternalToPlan(porch, dst, 0);
+    expect(f.extD).toBeCloseTo(9.28, 6);
+    expect(f.mismatchM).toBeCloseTo(2.0, 6);
+    expect(f.unitSuspect).toBe(false);
+    expect(suggestsUnitError(f)).toBe(false);
+    const t0 = Date.now();
+    const big = fitExternalToPlan(porch.map((p) => ({ e: p.e * 1000, n: p.n * 1000 })), dst, 0);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(big.unitSuspect).toBe(true);
+    expect(suggestsUnitError(big)).toBe(true);
+    expect(big.extW).toBeCloseTo(9100, 3);
+    // 矩形どうしの姿勢: 軸は合っている
+    expect(Math.abs(big.planRotDeg)).toBeLessThan(0.5);
+    // mirrorScore も同じ経路（巨大な点数にならない）
+    expect(Number.isFinite(big.mirrorScore)).toBe(true);
+  });
+
+  it('suggestsUnitError の帯: 片方の寸法が 1/2〜2 倍の中なら疑わない、外れたら疑う、両方 20% 以上違えば疑う（×2 の mm→cm 違い）', () => {
+    const base = { pdfW: 9.1, pdfD: 7.28 };
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 9.28, mismatchM: 2.0 })).toBe(false); // 2.0 m の下屋
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 10.01, mismatchM: 2.73 })).toBe(false); // 2.73 m の下屋
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28, mismatchM: 0 })).toBe(false);
+    expect(suggestsUnitError({ ...base, extW: 9.1 * 3.28, extD: 7.28 * 3.28, mismatchM: 37 })).toBe(true); // ft のまま
+    expect(suggestsUnitError({ ...base, extW: 9.1 / 10, extD: 7.28 / 10, mismatchM: 14.7 })).toBe(true); // cm → ×0.1
+    expect(suggestsUnitError({ ...base, extW: 18.2, extD: 14.56, mismatchM: 16.4 })).toBe(true); // ×2（両方 20% 以上）
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28 * 2.2, mismatchM: 8.7 })).toBe(true); // 片方だけでも 2 倍超
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28, mismatchM: 0, unitSuspect: true })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// controller（偽の viewer）
+// ---------------------------------------------------------------------------
+
+/** Z-up・m 単位の OBJ（箱の列）。各箱は o 名で 1 オブジェクト */
+function objBoxes(boxes: { name: string; x0: number; x1: number; y0: number; y1: number; z0: number; z1: number }[]): ArrayBuffer {
+  const lines: string[] = [];
+  let base = 0;
+  for (const b of boxes) {
+    lines.push(`o ${b.name}`);
+    const vs = [
+      [b.x0, b.y0, b.z0], [b.x1, b.y0, b.z0], [b.x1, b.y1, b.z0], [b.x0, b.y1, b.z0],
+      [b.x0, b.y0, b.z1], [b.x1, b.y0, b.z1], [b.x1, b.y1, b.z1], [b.x0, b.y1, b.z1],
+    ];
+    for (const v of vs) lines.push(`v ${v.join(' ')}`);
+    const q = (a: number, bb: number, c: number, d: number) => lines.push(`f ${base + a} ${base + bb} ${base + c} ${base + d}`);
+    q(1, 4, 3, 2);
+    q(5, 6, 7, 8);
+    q(1, 2, 6, 5);
+    q(3, 4, 8, 7);
+    q(4, 1, 5, 8);
+    q(2, 3, 7, 6);
+    base += 8;
+  }
+  return new TextEncoder().encode(lines.join('\n') + '\n').buffer as ArrayBuffer;
+}
+
+/** 9.1 × 7.28 × 6 の家 1 箱（12 三角形） */
+const houseObj = () => objBoxes([{ name: 'house', x0: -4.55, x1: 4.55, y0: -3.64, y1: 3.64, z0: 0, z1: 6 }]);
+
+type FakeViewer = Viewer & { calls: { applyExternalReplace: number; invalidateOccluders: number; fitShadow: number; invalidate: number } };
+
+/** Viewer のうち externalBuilding / analysis.buildOccluder が触る部分だけの偽物。PDF の建物は三角形 1 枚（焼き込みの三角形数で見分ける） */
+function fakeViewer(model: BuildingModel): FakeViewer {
+  const groups: Record<string, THREE.Group> = {};
+  for (const k of ['external', 'building', 'roof', 'furniture', 'lights', 'context', 'landscape', 'overlay']) {
+    groups[k] = new THREE.Group();
+    groups[k].name = k;
+  }
+  const pdfMesh = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 0, 1], 3)));
+  groups.building.add(pdfMesh);
+  const calls = { applyExternalReplace: 0, invalidateOccluders: 0, fitShadow: 0, invalidate: 0 };
+  const rect = [new THREE.Vector2(0, 0), new THREE.Vector2(9.1, 0), new THREE.Vector2(9.1, 7.28), new THREE.Vector2(0, 7.28)];
+  const v = {
+    groups,
+    userData: {} as Record<string, unknown>,
+    externalBounds: null,
+    calls,
+    design: { furniture: true },
+    state: { model, meta: { bbox: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(9.1, 6, 7.28)), rooms: [], outlines: [{ level: 1, polys: [rect] }] } },
+    applyExternalReplace() {
+      calls.applyExternalReplace++;
+    },
+    invalidateOccluders() {
+      calls.invalidateOccluders++;
+    },
+    fitShadow() {
+      calls.fitShadow++;
+    },
+    invalidate() {
+      calls.invalidate++;
+    },
+  };
+  return v as unknown as FakeViewer;
+}
+
+const planA = { floors: [{ level: 1, elevation: 500, height: 2900, rooms: [] }], northAngleDeg: 0 } as unknown as BuildingModel;
+const planB = { floors: [{ level: 1, elevation: 500, height: 2900, rooms: [] }], northAngleDeg: 0 } as unknown as BuildingModel;
+
+describe('ExternalController と viewer の連携（偽の viewer）', () => {
+  afterEach(() => {
+    // モジュールの状態を戻す
+    const v = fakeViewer(planA);
+    installExternal(v, null);
+    state.model = null;
+    state.external = null;
+  });
+
+  it('日照ステップ表示中（externalMounted）だけ 3DS が PDF の建物に代わる。buildOccluder の external: true/false は表示中かに関わらず従う', async () => {
+    const m = await importModelFile({ name: 'house.obj', data: houseObj() });
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, createExternal(m))!;
+    expect(externalController()).toBe(ctrl);
+    expect(v.userData.externalReplaces).toBe(true);
+    expect(externalHasVisibleMesh(v)).toBe(true);
+    // まだ日照ステップではない（externalMounted 未設定）→ 置き換えない。壁判定・見どころ（省略時）は PDF の建物（三角形 1 枚）
+    expect(externalReplacesBuilding(v)).toBe(false);
+    expect(buildOccluder(v, { buildingOnly: true }).triangles).toBe(1);
+    // 提案資料などが明示的に頼めば表示中でなくても 3DS（箱 12 三角形）
+    expect(buildOccluder(v, { buildingOnly: true, external: true }).triangles).toBe(12);
+    // 日照ステップ表示中 → 置き換える。遮蔽物のキャッシュと影の範囲を作り直す
+    const before = { ...v.calls };
+    setExternalMounted(v, true);
+    expect(v.groups.external.visible).toBe(true);
+    expect(v.calls.invalidateOccluders).toBe(before.invalidateOccluders + 1);
+    expect(v.calls.fitShadow).toBe(before.fitShadow + 1);
+    expect(externalReplacesBuilding(v)).toBe(true);
+    expect(buildOccluder(v, { buildingOnly: true }).triangles).toBe(12);
+    expect(buildOccluder(v, { buildingOnly: true, external: false }).triangles).toBe(1);
+    // 日照ステップを離れる → PDF の建物に戻る（externalReplaces は true のまま）
+    setExternalMounted(v, false);
+    expect(v.groups.external.visible).toBe(false);
+    expect(v.userData.externalReplaces).toBe(true);
+    expect(externalReplacesBuilding(v)).toBe(false);
+    expect(buildOccluder(v, { buildingOnly: true }).triangles).toBe(1);
+    expect(v.calls.invalidateOccluders).toBe(before.invalidateOccluders + 2);
+    expect(v.calls.fitShadow).toBe(before.fitShadow + 2);
+  });
+
+  it('autoFitToPlan は true を返し ext.fit を入れる。表示中のメッシュが無ければ false（fitError）、置き換えもしない', async () => {
+    const m = await importModelFile({ name: 'house.obj', data: houseObj() });
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, createExternal(m))!;
+    expect(ctrl.autoFitToPlan(v)).toBe(true);
+    expect(ctrl.ext.fit).toBeDefined();
+    expect(ctrl.lastFit).not.toBeNull();
+    expect(Math.abs(ctrl.ext.fit!.mismatchM)).toBeLessThan(0.02);
+    expect(Math.abs(ctrl.ext.dx)).toBeLessThan(0.02);
+    expect(Math.abs(ctrl.ext.dz)).toBeLessThan(0.02);
+    expect(ctrl.fitModel).toBe(planA);
+    // すべて非表示 → 外形が取れない → false。fit は前のまま。置き換えの条件も外れる
+    ctrl.ext.placement.hiddenObjects = ['house'];
+    ctrl.rebuild(v);
+    expect(ctrl.hasVisibleMesh()).toBe(false);
+    expect(ctrl.autoFitToPlan(v)).toBe(false);
+    expect(ctrl.fitError).toMatch(/外形が取れません/);
+    expect(ctrl.lastFit).toBeNull();
+    expect(ctrl.ext.fit).toBeDefined();
+    setExternalMounted(v, true);
+    expect(externalHasVisibleMesh(v)).toBe(false);
+    expect(externalReplacesBuilding(v)).toBe(false);
+    expect(buildOccluder(v, { buildingOnly: true }).triangles).toBe(1);
+  });
+
+  it('別の間取り（state.model が別のオブジェクト・null）で emit(model) → 3DS を外す。同じ間取りなら残して dirty にする', async () => {
+    const m = await importModelFile({ name: 'house.obj', data: houseObj() });
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, createExternal(m))!;
+    ctrl.dirty = false;
+    emit('model');
+    expect(externalController()).toBe(ctrl);
+    expect(ctrl.dirty).toBe(true);
+    expect(state.external).not.toBeNull();
+    // 別の PDF
+    state.model = planB;
+    emit('model');
+    expect(externalController()).toBeNull();
+    expect(state.external).toBeNull();
+    expect(v.groups.external.children.length).toBe(0);
+    expect(v.userData.externalReplaces).toBe(false);
+    expect(v.externalBounds).toBeNull();
+    // 「別の PDF を読み込む」= null
+    const m2 = await importModelFile({ name: 'house.obj', data: houseObj() });
+    installExternal(v, createExternal(m2));
+    state.model = null;
+    emit('model');
+    expect(externalController()).toBeNull();
+    expect(state.external).toBeNull();
+    expect(EXTERNAL_DETACHED_MSG).toBe('別の間取りを読み込んだため 3DS を外しました');
+  });
+
+  it('差し替え・外すときに古いデータのジオメトリを解放する（同じデータを使い回すときは解放しない）', async () => {
+    const m1 = await importModelFile({ name: 'a.obj', data: houseObj() });
+    const m2 = await importModelFile({ name: 'b.obj', data: houseObj() });
+    const disposed = { a: 0, b: 0 };
+    for (const o of m1.raw.children) (o as THREE.Mesh).geometry.addEventListener('dispose', () => disposed.a++);
+    for (const o of m2.raw.children) (o as THREE.Mesh).geometry.addEventListener('dispose', () => disposed.b++);
+    state.model = planA;
+    const v = fakeViewer(planA);
+    installExternal(v, createExternal(m1));
+    expect(disposed).toEqual({ a: 0, b: 0 });
+    installExternal(v, createExternal(m2));
+    expect(disposed).toEqual({ a: 1, b: 0 });
+    // 同じ ImportedModel で状態だけ作り直す → 解放しない
+    installExternal(v, createExternal(m2));
+    expect(disposed).toEqual({ a: 1, b: 0 });
+    installExternal(v, null);
+    expect(disposed).toEqual({ a: 1, b: 1 });
+  });
+
+  it('外形は帯ごとにキャッシュし、sync では捨てず rebuild で捨てる。worldBox は 8 隅から（全頂点を歩く結果と一致）', async () => {
+    const m = await importModelFile({ name: 'house.obj', data: houseObj() });
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, createExternal(m))!;
+    const o1 = ctrl.outlineLocal();
+    expect(o1.length).toBeGreaterThanOrEqual(4);
+    expect(ctrl.outlineLocal()).toBe(o1);
+    expect(ctrl.outlineLocal({ yMin: 1, yMax: 2 })).toBe(ctrl.outlineLocal({ yMin: 1, yMax: 2 }));
+    expect(ctrl.outlineLocal({ yMin: 1, yMax: 2 })).not.toBe(o1);
+    // 位置・回転の変更（sync）では形は変わらないのでそのまま
+    ctrl.ext.planRotDeg = 37;
+    ctrl.ext.dx = 1.2;
+    ctrl.sync(v);
+    expect(ctrl.outlineLocal()).toBe(o1);
+    // outlineOfPivot（キャッシュ無し）と同じ結果
+    expect(ctrl.outlineLocal()).toEqual(outlineOfPivot(ctrl.placed.pivot));
+    // rebuild（単位など）で作り直す
+    ctrl.rebuild(v);
+    const o2 = ctrl.outlineLocal();
+    expect(o2).not.toBe(o1);
+    expect(o2).toEqual(o1);
+    // worldBox: 回転 0 / 90 では全頂点の箱と一致、37° では全頂点の箱を含む（寸法表示・影の範囲には十分）
+    for (const rot of [0, 90, 180]) {
+      ctrl.ext.planRotDeg = rot;
+      ctrl.sync(v);
+      const fast = ctrl.worldBox();
+      const precise = new THREE.Box3().setFromObject(ctrl.placed.pivot, true);
+      expect(fast.min.distanceTo(precise.min)).toBeLessThan(1e-6);
+      expect(fast.max.distanceTo(precise.max)).toBeLessThan(1e-6);
+    }
+    ctrl.ext.planRotDeg = 37;
+    ctrl.sync(v);
+    expect(ctrl.worldBox().containsBox(new THREE.Box3().setFromObject(ctrl.placed.pivot, true).expandByScalar(-1e-6))).toBe(true);
+    // viewer.externalBounds は controller の worldBox を返す
+    expect(v.externalBounds).not.toBeNull();
+    expect(v.externalBounds!()!.equals(ctrl.worldBox())).toBe(true);
+  });
+
+  it('すべてのオブジェクトが建物以外（Plane001…）と判定された OBJ: 何も隠さず表示し、注意に書く（戻す UI が無いので）', async () => {
+    const m = await importModelFile({
+      name: 'walls.obj',
+      data: objBoxes([
+        { name: 'Plane001', x0: -4.55, x1: 4.55, y0: -3.64, y1: -3.49, z0: 0, z1: 6 },
+        { name: 'Plane002', x0: -4.55, x1: 4.55, y0: 3.49, y1: 3.64, z0: 0, z1: 6 },
+        { name: 'Plane003', x0: -4.55, x1: -4.4, y0: -3.64, y1: 3.64, z0: 0, z1: 6 },
+        { name: 'Plane004', x0: 4.4, x1: 4.55, y0: -3.64, y1: 3.64, z0: 0, z1: 6 },
+      ]),
+    });
+    expect(m.objects.every((o) => o.autoHidden)).toBe(true);
+    expect(allObjectsAutoHidden(m)).toBe(true);
+    expect(seedPlacement(m).hiddenObjects).toEqual([]);
+    const ext = createExternal(m);
+    expect(ext.placement.hiddenObjects).toEqual([]);
+    expect(ext.model.notes.some((n) => /すべてのオブジェクト/.test(n) && /Plane001/.test(n))).toBe(true);
+    expect(ext.model.notes.some((n) => /オブジェクト一覧で戻せます/.test(n))).toBe(false);
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, ext)!;
+    expect(ctrl.hasVisibleMesh()).toBe(true);
+    expect(ctrl.autoFitToPlan(v)).toBe(true);
+    expect(Math.abs(ctrl.ext.fit!.mismatchM)).toBeLessThan(0.05);
+  });
+
+  it("一部だけ建物以外（'ground'）なら従来どおり隠し、注意は「オブジェクト一覧で戻せます」を付けない", async () => {
+    const m = await importModelFile({
+      name: 'house.obj',
+      data: objBoxes([
+        { name: 'house', x0: -4.5, x1: 4.5, y0: -3.5, y1: 3.5, z0: 0, z1: 6 },
+        { name: 'ground', x0: -20, x1: 20, y0: -20, y1: 20, z0: -0.05, z1: 0 },
+      ]),
+    });
+    const ext = createExternal(m);
+    expect(ext.placement.hiddenObjects).toEqual(['ground']);
+    expect(ext.model.notes.some((n) => /^建物以外と判定して除外: ground$/.test(n))).toBe(true);
+    expect(ext.model.notes.some((n) => /オブジェクト一覧で戻せます/.test(n))).toBe(false);
+  });
+
+  it('ガラスの判定: マテリアルがあればマテリアル（不透明度・名前）で決め、無いときだけオブジェクト名。扱いを注意に書く', () => {
+    const mesh = (name: string, ud: Record<string, unknown>) => {
+      const m = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 0, 1], 3)));
+      m.name = name;
+      m.userData = { origOpacity: 1, glass: false, noShadow: false, materialName: '', ...ud };
+      return m;
+    };
+    const raw = new THREE.Group();
+    raw.add(
+      mesh('Wall_with_windows_S', { materialName: 'Concrete', glass: true }), // 読み込み時は名前でガラス扱いだった
+      mesh('窓付き外壁', { materialName: 'wall', glass: true }),
+      mesh('Pane_01', { materialName: 'Glass' }),
+      mesh('Win_03', { materialName: 'Mat#3', origOpacity: 0.3 }),
+      mesh('Frame_and_pane', { materialName: 'Alu, Glass' }), // 混在で不透明 → 壁
+      mesh('window_7', { glass: true }), // マテリアル情報なし → 名前
+      mesh('wall_s', {}),
+      mesh('skylight', { materialName: 'Glazing', origOpacity: 0.9 }), // 名前にガラスは無いがマテリアルが Glazing… は GLASS_RE 外 → 壁
+    );
+    expect(isGlassMesh(raw.children[0] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[1] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[2] as THREE.Mesh)).toBe(true);
+    expect(isGlassMesh(raw.children[3] as THREE.Mesh)).toBe(true);
+    expect(isGlassMesh(raw.children[4] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[5] as THREE.Mesh)).toBe(true);
+    expect(isGlassMesh(raw.children[6] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[7] as THREE.Mesh)).toBe(false);
+    const model = { raw, notes: ['ガラスと判定したオブジェクト（影を落とさない）: 5 個'], objects: [] } as unknown as ImportedModel;
+    const r = classifyGlass(model);
+    expect(r.glass).toEqual(['Pane_01', 'Win_03', 'window_7']);
+    // 名前にも窓・ガラスが無い Frame_and_pane は「名前は窓だが…」には入らない
+    expect(r.nameOnly).toEqual(['Wall_with_windows_S', '窓付き外壁']);
+    // userData.glass が更新されている（PlacedModel はこれを写す）
+    expect((raw.children[0] as THREE.Mesh).userData.glass).toBe(false);
+    expect((raw.children[2] as THREE.Mesh).userData.glass).toBe(true);
+    const ext = createExternal({ ...model, objects: [], guessedUnit: 'm', guessedUp: 'z' } as unknown as ImportedModel);
+    expect(ext.model.notes.some((n) => /ガラスとして扱うオブジェクト.*Pane_01, Win_03, window_7/.test(n))).toBe(true);
+    expect(ext.model.notes.some((n) => /壁として扱うオブジェクト.*Wall_with_windows_S/.test(n))).toBe(true);
+    expect(ext.model.notes.some((n) => /^ガラスと判定したオブジェクト/.test(n))).toBe(false);
+  });
+
+  it("MTL の無い OBJ（マテリアル情報なし）: 'window_N' は名前でガラス、壁は影を落とす（PlacedModel のメッシュにも写る）", async () => {
+    const m = await importModelFile({
+      name: 'house.obj',
+      data: objBoxes([
+        { name: 'wall_s', x0: -4.55, x1: 4.55, y0: -3.64, y1: -3.49, z0: 0, z1: 6 },
+        { name: 'window_1', x0: -1, x1: 1, y0: -3.65, y1: -3.63, z0: 0.6, z1: 2.6 },
+      ]),
+    });
+    state.model = planA;
+    const v = fakeViewer(planA);
+    const ctrl = installExternal(v, createExternal(m))!;
+    const flags: Record<string, { glass: boolean; castShadow: boolean; noShadow: boolean }> = {};
+    ctrl.placed.pivot.traverse((o) => {
+      const mm = o as THREE.Mesh;
+      if (mm.isMesh) flags[mm.name] = { glass: !!mm.userData.glass, castShadow: mm.castShadow, noShadow: !!mm.userData.noShadow };
+    });
+    expect(flags.window_1).toEqual({ glass: true, castShadow: false, noShadow: true });
+    expect(flags.wall_s).toEqual({ glass: false, castShadow: true, noShadow: false });
+    expect(m.notes.some((n) => /ガラスとして扱うオブジェクト.*window_1/.test(n))).toBe(true);
   });
 });
 

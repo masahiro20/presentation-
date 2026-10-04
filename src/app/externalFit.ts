@@ -16,7 +16,7 @@ import {
   applyFit,
   closestPointOnPolygon,
   convexHull,
-  densify,
+  densifyBudget,
   fitPolygonToPolygon,
   fitRectToRect,
   invertFit,
@@ -51,6 +51,8 @@ export interface ExternalFitRecord {
   extD: number;
   /** 自動合わせが選んだ回転（「自動配置に戻す」で優先する） */
   planRotDeg?: number;
+  /** 周長が PDF の 1/2 未満か 2 倍超（単位違いの疑い）で、外形どうしの ICP をせず矩形どうしで合わせた */
+  unitSuspect?: boolean;
 }
 
 /** 設計の 3D データで置き換えた正確な建物（state.external） */
@@ -282,17 +284,32 @@ export function sectionPolygon(positions: ArrayLike<number>, opts: SectionOption
   if (best.length < 3) return sectionOutline(positions, opts);
   if (areaOf(best) < 0) best.reverse();
   let poly = simplifyPolygon(best, cell * 0.75);
-  // 角を近くの断面点へ（格子の半セル分の外側へのずれを戻す）
+  // 角を近くの断面点へ（格子の半セル分の外側へのずれを戻す）。断面点は格子ハッシュで引く（全点を総当たりしない）
+  const snapR = cell * 1.5;
+  const buckets = new Map<number, EN[]>();
+  const bucketKey = (e: number, n: number) => Math.floor((e - e0) / snapR) * 1_048_576 + Math.floor((n - n0) / snapR);
+  for (const p of all) {
+    if (!Number.isFinite(p.e) || !Number.isFinite(p.n)) continue;
+    const k = bucketKey(p.e, p.n);
+    const b = buckets.get(k);
+    if (b) b.push(p);
+    else buckets.set(k, [p]);
+  }
   poly = poly.map((v) => {
     let q = v;
-    let bd = cell * 1.5;
-    for (const p of all) {
-      const d = Math.hypot(p.e - v.e, p.n - v.n);
-      if (d < bd) {
-        bd = d;
-        q = p;
+    let bd = snapR;
+    for (let di = -1; di <= 1; di++)
+      for (let dj = -1; dj <= 1; dj++) {
+        const b = buckets.get(bucketKey(v.e + di * snapR, v.n + dj * snapR));
+        if (!b) continue;
+        for (const p of b) {
+          const d = Math.hypot(p.e - v.e, p.n - v.n);
+          if (d < bd) {
+            bd = d;
+            q = p;
+          }
+        }
       }
-    }
     return q;
   });
   poly = simplifyPolygon(poly, cell * 0.25);
@@ -358,9 +375,11 @@ export function pivotLocalTriangles(pivot: THREE.Object3D, filter?: (m: THREE.Me
   return out;
 }
 
-/** pivot ローカルの高さ帯 band の外周の多角形（EN: a = x, b = −z、凹みも残る）。band 省略時は壁の高さ帯 */
-export function outlineOfPivot(pivot: THREE.Object3D, band?: { yMin: number; yMax: number }, filter?: (m: THREE.Mesh) => boolean): EN[] {
-  const tris = pivotLocalTriangles(pivot, filter);
+/**
+ * 焼き込んだ三角形（pivot ローカル、9 floats / 三角形）の高さ帯 band の外周の多角形（EN: a = x, b = −z、凹みも残る）。
+ * band 省略時は壁の高さ帯（底 + 0.3 〜 min(2.0, 0.6×高さ)）。三角形を使い回せるので、同じ形で帯だけ変えるときはこちらを使う
+ */
+export function outlineOfTriangles(tris: Float32Array, band?: { yMin: number; yMax: number }): EN[] {
   let b = band;
   if (!b) {
     let yMin = Infinity;
@@ -374,6 +393,11 @@ export function outlineOfPivot(pivot: THREE.Object3D, band?: { yMin: number; yMa
     b = { yMin: yMin + wb.yMin, yMax: Number.isFinite(wb.yMax) ? yMin + wb.yMax : Infinity };
   }
   return sectionPolygon(tris, b);
+}
+
+/** pivot ローカルの高さ帯 band の外周の多角形（EN: a = x, b = −z、凹みも残る）。band 省略時は壁の高さ帯 */
+export function outlineOfPivot(pivot: THREE.Object3D, band?: { yMin: number; yMax: number }, filter?: (m: THREE.Mesh) => boolean): EN[] {
+  return outlineOfTriangles(pivotLocalTriangles(pivot, filter), band);
 }
 
 // ---------------------------------------------------------------- PDF 外形
@@ -428,51 +452,79 @@ export interface PlanFit {
   pdfD: number;
   extW: number;
   extD: number;
+  /** 周長が PDF の 1/2 未満か 2 倍超（単位違いの疑い）で、外形どうしの ICP をせず矩形どうしで合わせた */
+  unitSuspect: boolean;
 }
 
 /** 近い候補（残差の差 < 0.02 m）は同点とみなし、今の回転に近い方を選ぶ */
 const TIE_M = 0.02;
-/** 外れ値を除く ICP で残す対応点の割合（PDF に無いポーチ・下屋・外階段などを無視する） */
+/** 外れ値を除いた残差（trimmedScore）で残す対応点の割合。2 つの仕上げ候補を同じ物差しで比べるために使う */
 const TRIM_KEEP = 0.75;
+/** 外れ値を除く ICP: 距離が中央値の TRIM_K 倍を超える対応を捨てる */
+const TRIM_K = 2.5;
+/** 仕上げの候補を選ぶとき、残差の差がこれ以下なら同点（元の候補 = 今の回転に近い方を残す） */
+const REFINE_TIE_M = 0.005;
+/** 周長の比（3DS / PDF）がこの範囲を外れたら単位違いとみなし、外形どうしの ICP をしない */
+const PERIMETER_RATIO_RANGE: [number, number] = [0.5, 2];
 
 /** 鏡像の 3DS と判定する条件: 反転して合わせた残差が、そのままの残差の 0.7 倍未満で、そのままの残差が 0.3 m を超える */
 export function suggestsMirror(score: number, mirrorScore: number): boolean {
   return score > 0.3 && mirrorScore < 0.7 * score;
 }
 
-/** 単位違いを疑う条件: 寸法差が 0.6 m を超え、かつどちらかの寸法が 25% 以上違う（ポーチ分の 1〜2 m の差では疑わない） */
-export function suggestsUnitError(f: { mismatchM: number; pdfW: number; pdfD: number; extW: number; extD: number }): boolean {
+/**
+ * 単位違いを疑う条件: 寸法差が 0.6 m を超え、かつ
+ *  - どちらかの寸法が 1/2 未満か 2 倍超（×10・×1000・×3.28 はここ）、または
+ *  - 両方の寸法が 20% 以上違う（ポーチ・下屋は片方の寸法しか増やさない）、または
+ *  - 寸法差が 4 m を超える、または fit が周長の比から単位違いと判定していた（unitSuspect）。
+ * 片方の寸法が 2〜3 m 違うだけ（深い下屋）では疑わない
+ */
+export function suggestsUnitError(f: { mismatchM: number; pdfW: number; pdfD: number; extW: number; extD: number; unitSuspect?: boolean }): boolean {
+  if (f.unitSuspect) return true;
   if (!(f.mismatchM > 0.6)) return false;
   const r1 = f.extW / Math.max(1e-6, f.pdfW);
   const r2 = f.extD / Math.max(1e-6, f.pdfD);
+  const far = (r: number) => r < 0.5 || r > 2;
   const off = (r: number) => r < 0.8 || r > 1.25;
-  return off(r1) || off(r2) || f.mismatchM > 4;
+  return far(r1) || far(r2) || (off(r1) && off(r2)) || f.mismatchM > 4;
+}
+
+/** src の境界点 → dst の最近点、dst の境界点 → src の最近点（逆変換で戻して探す）の両方向の対応 */
+function correspondences(srcPts: EN[], dstPts: EN[], src: EN[], dst: EN[], f: RigidFit): { a: EN; b: EN; d: number }[] {
+  const pairs: { a: EN; b: EN; d: number }[] = [];
+  for (const p of srcPts) {
+    const q = closestPointOnPolygon(applyFit(f, p), dst);
+    pairs.push({ a: p, b: q.point, d: q.dist });
+  }
+  const inv = invertFit(f);
+  for (const q of dstPts) {
+    const a = closestPointOnPolygon(applyFit(inv, q), src);
+    pairs.push({ a: a.point, b: q, d: a.dist });
+  }
+  return pairs;
 }
 
 /**
- * 外れ値を除く ICP の仕上げ: src の境界点 → dst の最近点、dst の境界点 → src の最近点（逆変換で戻して探す）の対応を取り、
- * 距離の大きい方 (1 − keep) を捨てて solveRigid（倍率なし）。PDF に無いポーチなどの出っ張りに引っ張られないようにする
+ * 外れ値を除く ICP の仕上げ: 両方向の対応のうち、距離が中央値の k 倍（下限は点の間隔の半分）を超えるものを捨てて
+ * solveRigid（倍率なし）し、変化が無くなるまで繰り返す。PDF に無いポーチ・下屋などの出っ張りは主屋の壁が乗るにつれて
+ * 距離が中央値から離れていくので捨てられ、割合固定の切り捨てのように主屋の点が落ちて回った所で止まることがない。
+ * 対応が 3 つ未満になるときは距離の小さい 3 つで解く
  */
-export function refineTrimmed(src: EN[], dst: EN[], fit: RigidFit, stepM: number, keep = TRIM_KEEP, maxIter = 8): RigidFit {
-  const srcPts = densify(src, stepM);
-  const dstPts = densify(dst, stepM);
+export function refineTrimmed(src: EN[], dst: EN[], fit: RigidFit, stepM: number, k = TRIM_K, maxIter = 30): RigidFit {
+  const srcPts = densifyBudget(src, stepM);
+  const dstPts = densifyBudget(dst, stepM);
+  const floorM = Math.max(stepM * 0.5, 0.02);
   let f = fit;
   for (let it = 0; it < maxIter; it++) {
-    const pairs: { a: EN; b: EN; d: number }[] = [];
-    for (const p of srcPts) {
-      const q = closestPointOnPolygon(applyFit(f, p), dst);
-      pairs.push({ a: p, b: q.point, d: q.dist });
-    }
-    const inv = invertFit(f);
-    for (const q of dstPts) {
-      const a = closestPointOnPolygon(applyFit(inv, q), src);
-      pairs.push({ a: a.point, b: q, d: a.dist });
-    }
+    const pairs = correspondences(srcPts, dstPts, src, dst, f);
     pairs.sort((x, y) => x.d - y.d);
-    const kept = pairs.slice(0, Math.max(2, Math.ceil(pairs.length * keep)));
+    const median = pairs[Math.floor(pairs.length / 2)]?.d ?? 0;
+    const thr = Math.max(k * median, floorM);
+    let kept = pairs.filter((p) => p.d <= thr);
+    if (kept.length < 3) kept = pairs.slice(0, 3);
     const next = solveRigid(
-      kept.map((k) => k.a),
-      kept.map((k) => k.b),
+      kept.map((p) => p.a),
+      kept.map((p) => p.b),
       { allowScale: false },
     );
     const change = Math.hypot(next.te - f.te, next.tn - f.tn) + Math.abs(normDeg180(next.rotDeg - f.rotDeg)) * 0.1;
@@ -482,11 +534,11 @@ export function refineTrimmed(src: EN[], dst: EN[], fit: RigidFit, stepM: number
   return f;
 }
 
-/** 外形どうしの両方向の最近点残差 RMS (m) */
+/** 外形どうしの両方向の最近点残差 RMS (m)。境界点は外形ごとに最大 MAX_ICP_POINTS */
 export function outlineScore(src: EN[], dst: EN[], fit: RigidFit, stepM?: number): number {
   const step = stepM ?? Math.max(polygonPerimeter(dst) / 200, 1e-4);
-  const a = densify(src, step);
-  const b = densify(dst, step);
+  const a = densifyBudget(src, step);
+  const b = densifyBudget(dst, step);
   const inv = invertFit(fit);
   let s = 0;
   for (const p of a) s += closestPointOnPolygon(applyFit(fit, p), dst).dist ** 2;
@@ -494,13 +546,27 @@ export function outlineScore(src: EN[], dst: EN[], fit: RigidFit, stepM?: number
   return Math.sqrt(s / (a.length + b.length));
 }
 
+/** 外れ値を除いた残差: 両方向の最近点距離のうち小さい方 keep の割合の RMS (m)。出っ張りの大きさに左右されずに主屋の乗り具合を測る */
+export function trimmedScore(src: EN[], dst: EN[], fit: RigidFit, stepM: number, keep = TRIM_KEEP): number {
+  const ds = correspondences(densifyBudget(src, stepM), densifyBudget(dst, stepM), src, dst, fit)
+    .map((p) => p.d)
+    .sort((x, y) => x - y);
+  const n = Math.max(1, Math.ceil(ds.length * keep));
+  let s = 0;
+  for (let i = 0; i < n; i++) s += ds[i] ** 2;
+  return Math.sqrt(s / n);
+}
+
 /**
  * 3DS の壁の外形 src（pivot ローカル EN）を PDF の外形 dst（bbox 中心基準の EN）に重ねる。
  * 1. 最小外接矩形どうし（fitRectToRect）で Δ と寸法差 mismatchM を得る（単位違いの検出用）
- * 2. 凸包どうしの ICP（fitPolygonToPolygon、倍率なし）を Δ, Δ±90, Δ+180 と preferRotDeg から始めて残差 score を得る
- * 3. 180° 対称な外形では Δ と Δ+180 が同点になるので、残差の差 < 0.02 m の候補は preferRotDeg（今の回転）に近い方を選ぶ
- * 4. 外れ値を除く ICP で仕上げる（PDF に無いポーチ・下屋があっても主屋の壁が PDF の外形に乗る）
- * 5. 左右反転した src でも同じことをして mirrorScore を得る（鏡像のデータの検出用）
+ * 2. 周長の比が 1/2〜2 を外れる（mm のまま等の単位違い）なら、外形どうしの ICP はせず矩形どうしの変換を返す（unitSuspect）
+ * 3. 凸包どうしの ICP（fitPolygonToPolygon、倍率なし）を Δ, Δ±90, Δ+180 と preferRotDeg から始めて残差 score を得る
+ * 4. 180° 対称な外形では Δ と Δ+180 が同点になるので、残差の差 < 0.02 m の候補は preferRotDeg（今の回転）に近い方を選ぶ
+ * 5. 外れ値を除く ICP で仕上げる（PDF に無いポーチ・下屋があっても主屋の壁が PDF の外形に乗る）。
+ *    ICP の解（ポーチに引かれて回っていることがある）と、矩形どうしの姿勢（軸は正確だが中心がポーチ分ずれる）の両方から
+ *    始め、外れ値を除いた残差（trimmedScore）が小さい方を採る（同点なら ICP の解 = 今の回転に近い方）
+ * 6. 左右反転した src でも同じことをして mirrorScore を得る（鏡像のデータの検出用）
  * 戻り値の dx/dz は PLAN 座標（dz = −tn）
  */
 export function fitExternalToPlan(src: EN[], dst: EN[], preferRotDeg = 0): PlanFit {
@@ -525,9 +591,32 @@ function fitOnce(srcIn: EN[], dstIn: EN[], preferRotDeg: number): Omit<PlanFit, 
   const rd = minAreaRect(dstHull)!;
   const rect = fitRectToRect(srcHull, dstHull);
   const prefer = normDeg180(preferRotDeg);
+  const stepM = Math.max(polygonPerimeter(dst) / 200, 1e-4);
+  /** 回転 rotDeg で src の矩形の中心を dst の矩形の中心に重ねた変換 */
+  const rectPose = (rotDeg: number): RigidFit => {
+    const c = applyFit({ rotDeg, te: 0, tn: 0, scale: 1, scaleRatio: 1, rmsM: 0 }, rs.center);
+    return { rotDeg: normDeg180(rotDeg), te: rd.center.e - c.e, tn: rd.center.n - c.n, scale: 1, scaleRatio: 1, rmsM: 0 };
+  };
+  const result = (fit: RigidFit, score: number, unitSuspect: boolean): Omit<PlanFit, 'mirrorScore'> => {
+    const planRotDeg = normDeg180(fit.rotDeg);
+    // 3DS の寸法を PDF の向きで報告する: 回した src の矩形の w 軸と dst の矩形の w 軸の差（軸は向きを持たないので mod 180）が
+    // 90° 付近なら w と d を入れ替える（minAreaRect の w/d は外形の辺の順で決まり、同じ向きの形でも入れ替わることがある）
+    const axisDiff = normDeg(rs.angleDeg + planRotDeg - rd.angleDeg) % 180;
+    const axisSwapped = Math.abs(axisDiff - 90) < 45;
+    const extW = axisSwapped ? rs.d : rs.w;
+    const extD = axisSwapped ? rs.w : rs.d;
+    // swapped（UI の「幅と奥行きを入れ替えて合わせました」）は 3DS を 90° 回して合わせたときだけ
+    const swapped = Math.abs(Math.abs(planRotDeg) - 90) < 45;
+    return { planRotDeg, dx: fit.te, dz: -fit.tn, mismatchM: Math.abs(extW - rd.w) + Math.abs(extD - rd.d), swapped, score, pdfW: rd.w, pdfD: rd.d, extW, extD, unitSuspect };
+  };
+  // 単位違い（周長が 1/2 未満・2 倍超）: 外形どうしの合わせは意味が無いので矩形どうしの姿勢だけ返す
+  const perRatio = polygonPerimeter(src) / Math.max(1e-9, polygonPerimeter(dst));
+  if (!(perRatio >= PERIMETER_RATIO_RANGE[0] && perRatio <= PERIMETER_RATIO_RANGE[1])) {
+    const f = rectPose(rect.rotDeg);
+    return result(f, outlineScore(src, dst, f, stepM), true);
+  }
   const initial = [prefer, rect.rotDeg, rect.rotDeg + 90, rect.rotDeg + 180, rect.rotDeg + 270].map(normDeg180);
   const best = fitPolygonToPolygon(src, dst, { allowScale: false, initialRotDeg: initial });
-  const stepM = Math.max(polygonPerimeter(dst) / 200, 1e-4);
   // 同点候補: best を 90° ずつ回し、重心を合わせただけの変換の残差を測る
   const cS = centroidOf(src);
   const cD = centroidOf(dst);
@@ -542,27 +631,20 @@ function fitOnce(srcIn: EN[], dstIn: EN[], preferRotDeg: number): Omit<PlanFit, 
   const min = Math.min(...cands.map((c) => c.score));
   const tied = cands.filter((c) => c.score <= min + TIE_M);
   tied.sort((a, b) => Math.abs(normDeg180(a.fit.rotDeg - prefer)) - Math.abs(normDeg180(b.fit.rotDeg - prefer)));
-  // 仕上げ: 出っ張り（ポーチなど）を外れ値として除いた合わせ。残差 score は全体で測る（形の違いの指標）
-  const refined = refineTrimmed(src, dst, tied[0].fit, stepM);
-  const chosen = { fit: refined, score: outlineScore(src, dst, refined, stepM) };
-  const planRotDeg = normDeg180(chosen.fit.rotDeg);
-  // 矩形の軸が入れ替わるか: 回した src の上軸と dst の上軸の差（軸は向きを持たないので mod 180）が 90° 付近
-  const axisDiff = normDeg(rs.angleDeg + planRotDeg - rd.angleDeg) % 180;
-  const swapped = Math.abs(axisDiff - 90) < 45;
-  const extW = swapped ? rs.d : rs.w;
-  const extD = swapped ? rs.w : rs.d;
-  return {
-    planRotDeg,
-    dx: chosen.fit.te,
-    dz: -chosen.fit.tn,
-    mismatchM: Math.abs(extW - rd.w) + Math.abs(extD - rd.d),
-    swapped,
-    score: chosen.score,
-    pdfW: rd.w,
-    pdfD: rd.d,
-    extW,
-    extD,
-  };
+  // 仕上げ: 出っ張り（ポーチなど）を外れ値として除いた合わせ。ICP の解と、それに最も近い矩形どうしの姿勢（軸は正確）の両方から始める
+  const seedA = tied[0].fit;
+  let rectRot = rect.rotDeg;
+  for (let k = 1; k < 4; k++) {
+    const r = rect.rotDeg + 90 * k;
+    if (Math.abs(normDeg180(r - seedA.rotDeg)) < Math.abs(normDeg180(rectRot - seedA.rotDeg))) rectRot = r;
+  }
+  const refinedA = refineTrimmed(src, dst, seedA, stepM);
+  const refinedB = refineTrimmed(src, dst, rectPose(rectRot), stepM);
+  const trimA = trimmedScore(src, dst, refinedA, stepM);
+  const trimB = trimmedScore(src, dst, refinedB, stepM);
+  const refined = trimB < trimA - REFINE_TIE_M ? refinedB : refinedA;
+  // 残差 score は全体で測る（形の違いの指標。鏡像の検出に使う）
+  return result(refined, outlineScore(src, dst, refined, stepM), false);
 }
 
 function centroidOf(poly: EN[]): EN {
@@ -591,9 +673,18 @@ export function sizeText(w: number, d: number): string {
 
 // ---------------------------------------------------------------- 読み込み直後の配置
 
-/** 読み込んだモデルの既定の配置: 推定した単位・上方向、建物以外と判定したオブジェクトは非表示 */
+/** 読み込んだモデルのオブジェクトがすべて建物以外（地面・敷地・ダミーなど）と判定されたか（名前が Plane001… や 敷地A.stl など） */
+export function allObjectsAutoHidden(m: ImportedModel): boolean {
+  return m.objects.length > 0 && m.objects.every((o) => o.autoHidden);
+}
+
+/**
+ * 読み込んだモデルの既定の配置: 推定した単位・上方向、建物以外と判定したオブジェクトは非表示。
+ * すべてのオブジェクトが建物以外と判定されたときは何も隠さない（建物が空になり外形も取れず、外す以外に戻す手段が無くなるため）
+ */
 export function seedPlacement(m: ImportedModel): ModelPlacement {
-  return { ...DEFAULT_PLACEMENT, unit: m.guessedUnit, upAxis: m.guessedUp, hiddenObjects: m.objects.filter((o) => o.autoHidden).map((o) => o.name) };
+  const hiddenObjects = allObjectsAutoHidden(m) ? [] : m.objects.filter((o) => o.autoHidden).map((o) => o.name);
+  return { ...DEFAULT_PLACEMENT, unit: m.guessedUnit, upAxis: m.guessedUp, hiddenObjects };
 }
 
 /** 角を外形の頂点に吸着（radius 以内に頂点があればそれ、無ければ null） */

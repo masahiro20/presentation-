@@ -7,7 +7,7 @@ page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404'
 await page.goto('http://localhost:5173/?sample=sample_house_A3.pdf#sun');
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
 const click = async (text) => { await page.getByRole('button', { name: text }).first().click(); };
-await page.locator('input[placeholder^="例: 東京都"]').fill('東京都世田谷区奥沢3丁目');
+await page.locator('input[placeholder^="例: "]').fill('東京都世田谷区奥沢3丁目');
 await click('検索');
 await page.getByRole('button', { name: /奥沢三丁目/ }).first().click({ timeout: 30000 });
 await page.waitForTimeout(3000);

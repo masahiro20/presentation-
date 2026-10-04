@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tileToLonLat, toLocal } from '../src/sun/geo';
 import {
   applyDistanceRule,
   buildNeighborMeshes,
   clipRingToRect,
   excludeOverlapping,
+  fetchNeighbors,
   fillGapsWithGsi,
   makeManualNeighbor,
   parseGsiTile,
@@ -53,11 +55,21 @@ describe('PLATEAU タイルの読み込み', () => {
       for (let i = 1; i < b.ring.length; i++) expect(Math.hypot(b.ring[i].e - b.ring[i - 1].e, b.ring[i].n - b.ring[i - 1].n)).toBeGreaterThanOrEqual(0.05);
     }
   });
-  it('ピンのあるタイルなので建物はピンから 1 km 以内にある', () => {
-    for (const b of list) {
-      const c = ringCenter(b.ring);
-      expect(Math.hypot(c.e, c.n)).toBeLessThan(1000);
-    }
+  it('のりしろを切り取るので、すべての頂点がタイルの範囲内にある', () => {
+    const nw = tileToLonLat(TILE.x, TILE.y, TILE.z);
+    const se = tileToLonLat(TILE.x + 1, TILE.y + 1, TILE.z);
+    const a = toLocal(nw.lat, nw.lon, PIN.lat, PIN.lon);
+    const b = toLocal(se.lat, se.lon, PIN.lat, PIN.lon);
+    // タイル 1 枚は約 500 m 角
+    expect(b.e - a.e).toBeGreaterThan(400);
+    expect(a.n - b.n).toBeGreaterThan(400);
+    for (const nb of list)
+      for (const p of nb.ring) {
+        expect(p.e).toBeGreaterThanOrEqual(a.e - 0.01);
+        expect(p.e).toBeLessThanOrEqual(b.e + 0.01);
+        expect(p.n).toBeLessThanOrEqual(a.n + 0.01);
+        expect(p.n).toBeGreaterThanOrEqual(b.n - 0.01);
+      }
   });
 });
 
@@ -204,5 +216,73 @@ describe('押し出しメッシュ', () => {
     const solid = buildNeighborMeshes([nb(square(0, 0, 10), 5)], { groundY: () => 0 }).children[0] as THREE.Mesh;
     const holed = buildNeighborMeshes([{ ...nb(square(0, 0, 10), 5), holes: [square(3, 3, 4)] } as Neighbor], { groundY: () => 0 }).children[0] as THREE.Mesh;
     expect(holed.geometry.getAttribute('position').count).toBeGreaterThan(solid.geometry.getAttribute('position').count);
+  });
+});
+
+describe('fetchNeighbors（fetch をモック）', () => {
+  // 取得先に関係なく同じタイルの中身を返す（タイル座標が違うので別の場所の建物になる）
+  const center = tileToLonLat(TILE.x + 0.5, TILE.y + 0.5, TILE.z);
+  const mockFetch = (plateau: number | 'reject', gsi: number | 'reject') =>
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const kind = url.includes('plateau-lod2-mvt') ? plateau : url.includes('optimal_bvmap') ? gsi : 'reject';
+      if (kind === 'reject') throw new TypeError('fetch failed');
+      const bytes = url.includes('plateau-lod2-mvt') ? plateauBytes : gsiBytes;
+      return new Response(kind === 200 ? bytes : null, { status: kind });
+    });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('PLATEAU の対象地域: PLATEAU を使い、国土地理院は隙間だけ補う', async () => {
+    const f = mockFetch(200, 200);
+    vi.stubGlobal('fetch', f);
+    const msgs: string[] = [];
+    const r = await fetchNeighbors(center.lat, center.lon, 300, { onProgress: (m) => msgs.push(m) });
+    expect(r.list.length).toBeGreaterThan(0);
+    expect(r.sourcesUsed[0]).toBe('plateau');
+    expect(r.notes[0]).toMatch(/^PLATEAU（国土交通省 3D都市モデル・東京23区・2020年度）の実測の高さを使用（\d+ 棟）。$/);
+    expect(new Set(r.list.map((b) => b.id)).size).toBe(r.list.length);
+    expect(r.list.some((b) => b.source === 'plateau')).toBe(true);
+    expect(msgs.some((m) => m.includes('PLATEAU'))).toBe(true);
+    // 150 m 以上の建物は far か高層だけ
+    for (const b of r.list as (Neighbor & { far?: boolean })[]) {
+      const c = ringCenter(b.ring);
+      const d = Math.hypot(c.e, c.n);
+      if (d >= 150) {
+        expect(b.far).toBe(true);
+        expect(d - b.height * 6.9).toBeLessThan(60);
+      } else expect(b.far).toBeUndefined();
+    }
+    // 2 回目も同じ id
+    const r2 = await fetchNeighbors(center.lat, center.lon, 300, {});
+    expect(r2.list.map((b) => b.id)).toEqual(r.list.map((b) => b.id));
+  });
+
+  it('PLATEAU が 404（対象外）なら国土地理院の推定で、注記が付く', async () => {
+    vi.stubGlobal('fetch', mockFetch(404, 200));
+    const r = await fetchNeighbors(center.lat, center.lon, 300, {});
+    expect(r.list.length).toBeGreaterThan(0);
+    expect(r.sourcesUsed).toEqual(['gsi']);
+    expect(r.list.every((b) => b.source === 'gsi' && b.heightKind === 'estimated')).toBe(true);
+    expect(r.notes[0]).toMatch(/PLATEAU の対象外/);
+  });
+
+  it('sources で PLATEAU を外せる', async () => {
+    const f = mockFetch(200, 200);
+    vi.stubGlobal('fetch', f);
+    const r = await fetchNeighbors(center.lat, center.lon, 300, { sources: ['gsi'] });
+    expect(r.sourcesUsed).toEqual(['gsi']);
+    expect(f.mock.calls.every((c) => !String(c[0]).includes('plateau-lod2-mvt'))).toBe(true);
+  });
+
+  it('すべて失敗なら日本語のエラーを投げる', async () => {
+    vi.stubGlobal('fetch', mockFetch('reject', 'reject'));
+    await expect(fetchNeighbors(center.lat, center.lon, 300, {})).rejects.toThrow('周辺建物を取得できませんでした（インターネット接続を確認してください）');
+  });
+
+  it('中止された signal は中止の理由を投げる', async () => {
+    vi.stubGlobal('fetch', mockFetch(200, 200));
+    const ac = new AbortController();
+    ac.abort(new Error('cancelled'));
+    await expect(fetchNeighbors(center.lat, center.lon, 300, { signal: ac.signal })).rejects.toThrow('cancelled');
   });
 });

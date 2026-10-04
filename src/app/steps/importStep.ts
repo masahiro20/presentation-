@@ -266,7 +266,7 @@ function renderResult(ctx: StepCtx) {
                 toast('間取りの修正を反映しました（3D・パース・日照に反映されます）', 'ok');
                 ctx.app.go('import');
               }
-            });
+            }, state.pdfName ?? '');
           },
         },
         '✏️ 間取りを手で修正する',

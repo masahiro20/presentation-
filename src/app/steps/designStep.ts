@@ -7,6 +7,7 @@ import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
 import { renderStudio } from '../../scene/studio';
+import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -545,6 +546,28 @@ export const designStep: Step = {
               renderGallery();
             } }, '⚡ 高品質描画で保存（数秒）'),
             h('button', { class: 'btn sm', onclick: () => batch(shots, 'studio') }, '⚡ 高品質描画で一括作成'),
+          ),
+          h(
+            'button',
+            {
+              class: 'btn sm ghost block',
+              style: 'margin-top:6px',
+              title: 'Blender・D5 Render・Twinmotion・Lumion などで写真品質のパースを作るための 3D モデル（材料・テクスチャ付き）と、見どころカメラの位置',
+              onclick: async () => {
+                const pm = progressModal('3D モデルを書き出しています', false);
+                try {
+                  const glb = await exportGlb(v);
+                  downloadBlob(glb, `${state.name}_3Dモデル.glb`, 'model/gltf-binary');
+                  downloadBlob(JSON.stringify(sceneInfo(v), null, 1), `${state.name}_カメラ.json`, 'application/json');
+                  toast('3D モデル（.glb）とカメラ位置（.json）を書き出しました', 'ok');
+                } catch (e) {
+                  toast(`書き出しに失敗しました: ${(e as Error).message}`, 'error');
+                } finally {
+                  pm.close();
+                }
+              },
+            },
+            '🧊 3D モデルを書き出す（.glb・外部レンダラー用）',
           ),
         ),
       );

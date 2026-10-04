@@ -36,13 +36,13 @@ export interface PhotorealOptions {
   finish?: AbortSignal;
 }
 
-interface Saved {
+export interface Saved {
   mat: THREE.Material;
   props: Record<string, unknown>;
 }
 
 /** パストレース用にマテリアルを物理的な値へ一時変更 */
-function prepareMaterials(root: THREE.Object3D): Saved[] {
+export function prepareMaterials(root: THREE.Object3D): Saved[] {
   const saved: Saved[] = [];
   const seen = new Set<THREE.Material>();
   root.traverse((o) => {
@@ -68,7 +68,7 @@ function prepareMaterials(root: THREE.Object3D): Saved[] {
   return saved;
 }
 
-function restoreMaterials(saved: Saved[]) {
+export function restoreMaterials(saved: Saved[]) {
   for (const s of saved) Object.assign(s.mat, s.props);
 }
 

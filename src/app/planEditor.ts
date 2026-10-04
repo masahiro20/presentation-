@@ -33,7 +33,8 @@ const OPENING_LABEL: Record<string, string> = { window: '窓', door: '開き戸'
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 
-export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: (changed: boolean) => void) {
+export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: (changed: boolean) => void, pdfName = '') {
+  const autoFloors = clone(model.floors);
   const works: FloorWork[] = model.floors.map((f) => ({
     floor: clone(f),
     labels: f.rooms.filter((r) => r.type !== 'stairs').map((r) => ({ name: r.name, x: r.labelPos.x, y: r.labelPos.y })),
@@ -108,6 +109,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     h('button', { class: 'btn sm ghost', title: 'やり直す（Ctrl+Y）', onclick: () => doRedo() }, '↷'),
     h('button', { class: 'btn sm ghost', title: '全体を表示', onclick: () => fit() }, '全体'),
     h('span', { style: 'flex:1' }),
+    h('button', { class: 'btn sm ghost', title: '読み取り精度の評価用に、自動の読み取り結果と、直した正解の間取りを1つのファイルに保存します', onclick: () => saveTruth() }, '評価用に保存'),
     h('button', { class: 'btn sm ghost', onclick: () => close(false) }, 'やめる'),
     h('button', { class: 'btn sm primary', onclick: () => close(true) }, '修正を反映する'),
   );
@@ -625,6 +627,31 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     if (!s) return;
     undo.push(`${fi}|${snapshot()}`);
     restore(s);
+  };
+
+  /** 精度評価用: 自動の読み取り結果と、手で直した正解を1つの JSON に */
+  const saveTruth = () => {
+    const strip = (f: Floor) => ({
+      level: f.level,
+      walls: f.walls.map((w) => ({ a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })),
+      openings: f.openings.map((o) => {
+        const w = f.walls.find((x) => x.id === o.wallId);
+        const L = w ? Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1 : 1;
+        const t = (o.t0 + o.t1) / 2 / L;
+        return { kind: o.kind, width: Math.round(o.t1 - o.t0), center: w ? { x: Math.round(w.a.x + (w.b.x - w.a.x) * t), y: Math.round(w.a.y + (w.b.y - w.a.y) * t) } : null };
+      }),
+      rooms: f.rooms.map((r) => ({ name: r.name, type: r.type, area: +r.area.toFixed(2), polygon: r.polygon.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) })),
+    });
+    const data = { format: 'madori-truth-v1', pdf: pdfName, savedAt: new Date().toISOString(), scale: model.report.scaleDenominator, auto: autoFloors.map(strip), truth: works.map((w) => strip(w.floor)) };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${pdfName || '間取り'}_正解データ.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast('評価用データを保存しました（このファイルを送っていただければ精度の測定に使えます）', 'ok', 6000);
   };
 
   const close = (apply: boolean) => {

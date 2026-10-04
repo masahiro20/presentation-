@@ -245,18 +245,15 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     h('label', { class: 'check' }, mirrorCb, '左右反転（鏡像で保存されたデータ）'),
     field('1階の床の高さ (m)', floorIn, `3DS の最下点から 1 階の床までの高さ。PDF の 1 階床（GL+${pdfFloorText().toFixed(2)} m）に合わせて上下します`),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => apply({ refit: true }) }, '間取りに自動で合わせる')),
-    h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置の微調整（図面の向きで）'),
+    h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置の微調整（図面の上下左右で）'),
+    // 4 列のグリッド（btn-row だと 4 つ目が折り返して 1 つだけ次の行になる）
     h(
       'div',
-      { class: 'btn-row' },
-      h('button', { class: 'btn sm', onclick: () => nudge(0, -0.1) }, '図面の上へ0.1m'),
+      { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:4px 0' },
+      h('button', { class: 'btn sm', onclick: () => nudge(0, -0.1) }, '上へ0.1m'),
       h('button', { class: 'btn sm', onclick: () => nudge(0, 0.1) }, '下へ0.1m'),
       h('button', { class: 'btn sm', onclick: () => nudge(-0.1, 0) }, '左へ0.1m'),
       h('button', { class: 'btn sm', onclick: () => nudge(0.1, 0) }, '右へ0.1m'),
-    ),
-    h(
-      'div',
-      { class: 'btn-row' },
       h('button', { class: 'btn sm', onclick: () => nudge(0, -0.5) }, '上へ0.5m'),
       h('button', { class: 'btn sm', onclick: () => nudge(0, 0.5) }, '下へ0.5m'),
       h('button', { class: 'btn sm', onclick: () => nudge(-0.5, 0) }, '左へ0.5m'),
@@ -264,7 +261,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     ),
     h(
       'div',
-      { class: 'btn-row' },
+      { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:4px 0' },
       rotBtn('↺ 90°', -90, '上から見て反時計回りに 90°（3D の上で Shift+R）'),
       rotBtn('↻ 90°', 90, '上から見て時計回りに 90°（3D の上で R）'),
       rotBtn('↺ 1°', -1, '上から見て反時計回りに 1°'),

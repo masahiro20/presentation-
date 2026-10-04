@@ -3,6 +3,7 @@ import type { BuildingModel } from '../core/types';
 import { DEFAULT_DESIGN, type DesignOptions } from '../styles/presets';
 import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
 import type { SeasonResult, SunHighlight } from '../sun/report';
+import type { ExternalBuilding } from './externalFit';
 
 export interface GalleryItem {
   id: string;
@@ -34,6 +35,8 @@ export interface ProjectState {
   videos: { title: string; url: string; ext: string }[];
   /** 提案用パース（写真品質）の設定 */
   render: { samples: number; width: number; height: number };
+  /** 設計の 3D データ（3DS など）で置き換えた正確な建物（日照ステップ）。無ければ null */
+  external: ExternalBuilding | null;
 }
 
 export const state: ProjectState = {
@@ -49,6 +52,7 @@ export const state: ProjectState = {
   sun: { seasons: [], highlights: [], images: [] },
   videos: [],
   render: { samples: 512, width: 1920, height: 1080 },
+  external: null,
 };
 
 type Handler = (payload?: unknown) => void;

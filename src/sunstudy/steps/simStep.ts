@@ -35,6 +35,8 @@ import type { Neighbor, NeighborSource } from '../types';
 let envVersion = 0;
 let builtVersion = -1;
 for (const ev of ['env', 'neighbors', 'site', 'placement', 'model', 'frame']) on(ev, () => envVersion++);
+// 建物の配置・敷地・場所が変わったら、古い解析結果の表示は捨てる（env / neighbors は画面側の処理で捨てる）
+for (const ev of ['site', 'placement', 'model', 'frame']) on(ev, () => dropOverlays());
 
 let raf = 0;
 /** 地面の日照時間マップ・面の日照時間（overlay グループに入れたまま残す） */
@@ -191,7 +193,33 @@ function sourceKind(src: NeighborSource, list: Neighbor[]): Neighbor['heightKind
 
 function disposeMesh(m: THREE.Mesh) {
   m.geometry?.dispose();
-  for (const mt of Array.isArray(m.material) ? m.material : [m.material]) mt?.dispose();
+  for (const mt of Array.isArray(m.material) ? m.material : [m.material]) {
+    const map = (mt as THREE.MeshBasicMaterial | undefined)?.map;
+    map?.dispose();
+    mt?.dispose();
+  }
+}
+
+/** 解析結果の表示（日照時間マップ・面の日照時間）を捨てる。周辺環境や建物の配置が変わると古い結果は意味を持たない */
+function dropOverlays() {
+  for (const m of [heat, facade]) {
+    if (!m) continue;
+    m.parent?.remove(m);
+    disposeMesh(m);
+  }
+  heat = null;
+  facade = null;
+  delete study.results.heatmapUrl;
+  delete study.results.heatmapLabel;
+  delete study.results.facadeUrl;
+  delete study.results.facadeLabel;
+}
+
+/** 直近のタイムラプス動画の URL（次の書き出し・画面を離れるときに解放） */
+let tlUrl: string | null = null;
+function dropTlUrl() {
+  if (tlUrl) URL.revokeObjectURL(tlUrl);
+  tlUrl = null;
 }
 
 const num = (value: number, min = 0, max = 500, step = 0.5) => h('input', { type: 'number', value, min, max, step }) as HTMLInputElement;
@@ -214,6 +242,7 @@ export const simStep: StudyStep = {
     study.ui.playing = false;
     cleanup?.();
     cleanup = null;
+    dropTlUrl();
   },
   async mount(ctx) {
     const { scene, stage, side, shell } = ctx;
@@ -877,6 +906,7 @@ export const simStep: StudyStep = {
         scene.invalidate();
         syncFacadeUI();
         study.results.facadeUrl = await scene.capture(1600, 900);
+        study.results.facadeLabel = `${ui.month}月${ui.day}日（この日の昼の長さ ${Number(facade?.userData.maxHours ?? 0).toFixed(1)}時間）`;
         toast('建物の面の日照時間を表示しました', 'ok');
       } catch (e) {
         if (!isAbort(e)) {
@@ -1233,7 +1263,8 @@ export const simStep: StudyStep = {
       }
       if (!result) return;
       const out = result;
-      const url = URL.createObjectURL(out.blob);
+      dropTlUrl();
+      const url = (tlUrl = URL.createObjectURL(out.blob));
       modal(
         label,
         h('video', { src: url, controls: true, autoplay: true, style: 'width:100%' }),
@@ -1371,6 +1402,7 @@ export const simStep: StudyStep = {
     // ---- 状態の変化に追従 ----
     disposers.push(
       on('neighbors', () => {
+        dropOverlays();
         rebuildEnv();
         renderNeighborList();
         renderSite();
@@ -1384,6 +1416,7 @@ export const simStep: StudyStep = {
       on('env', () => {
         if (study.env.loading) return;
         hzCache.clear();
+        dropOverlays();
         rebuildEnv();
         renderSite();
         renderChipsLine();

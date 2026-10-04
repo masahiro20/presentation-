@@ -45,6 +45,14 @@ export function disposeModelGeometry(model: ImportedModel) {
   for (const o of model.raw.children) (o as THREE.Mesh).geometry?.dispose?.();
 }
 
+/** 配置済み建物を捨てる（プロジェクト読込などで model / placement が丸ごと差し替わるとき）。次の ensurePlaced で作り直される */
+export function resetPlaced(): void {
+  if (!placed) return;
+  disposeModelGeometry(placed.model);
+  placed.dispose();
+  placed = null;
+}
+
 export function disposePlaced(scene: StudyScene) {
   if (!placed) return;
   scene.groups.building.remove(placed.pivot);

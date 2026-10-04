@@ -85,7 +85,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       study.neighborSources = [];
       study.neighborNotes = [];
       report.neighbors = 'none';
-      report.errors.push(`周辺建物を取得できませんでした: ${e.message}`);
+      report.errors.push(e.message.startsWith('周辺建物を取得できませんでした') ? e.message : `周辺建物を取得できませんでした: ${e.message}`);
     })
     .finally(() => {
       done++;

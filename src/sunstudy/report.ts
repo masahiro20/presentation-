@@ -270,7 +270,7 @@ export function buildReportHtml(): string {
   if (res.heatmapUrl || res.facadeUrl) {
     const figs: string[] = [];
     if (res.heatmapUrl) figs.push(`<figure><img src="${res.heatmapUrl}" alt="地面の日照時間マップ"><figcaption>地面の日照時間マップ${res.heatmapLabel ? `：${esc(res.heatmapLabel)}` : ''}（青=短い → 赤=長い）</figcaption></figure>`);
-    if (res.facadeUrl) figs.push(`<figure><img src="${res.facadeUrl}" alt="建物の面の日照時間"><figcaption>建物の面の日照時間（青=短い → 赤=長い）</figcaption></figure>`);
+    if (res.facadeUrl) figs.push(`<figure><img src="${res.facadeUrl}" alt="建物の面の日照時間"><figcaption>建物の面の日照時間${res.facadeLabel ? `：${esc(res.facadeLabel)}` : ''}（青=短い → 赤=長い）</figcaption></figure>`);
     pages.push(
       `<section class="page"><h2>日照時間マップ</h2><div class="${figs.length > 1 ? 'grid2' : ''}">${figs.join('')}</div><p class="note">直射日光が当たる時間の合計。地形・周辺建物・自建物の影を計算しています。${esc(assume)}</p>${foot(pages.length + 1)}</section>`,
     );
@@ -279,7 +279,12 @@ export function buildReportHtml(): string {
   // 5) 測定点
   const analyzed = study.points.filter((p) => p.results && p.results.length);
   if (analyzed.length) {
-    const dates = keyDates(study.ui.year);
+    // 見出しの日付は、実際に解析した日付（二十四節気の年ごとの日）に合わせる
+    const allRes = analyzed.flatMap((p) => p.results ?? []);
+    const dates = keyDates(study.ui.year).map((d) => {
+      const r = allRes.find((x) => x.dateId === d.id);
+      return r ? { ...d, month: r.month, day: r.day } : d;
+    });
     const head = `<tr><th>#</th><th>名前</th><th>位置（東・北・高さ m）</th>${dates.map((d) => `<th>${d.label}（${d.month}/${d.day}）</th>`).join('')}</tr>`;
     const body = study.points
       .map((p, i) => {
@@ -306,7 +311,9 @@ export function buildReportHtml(): string {
     '太陽の位置は NOAA（米国海洋大気庁）の太陽位置計算式で求めています（誤差 ±0.01° 程度）。',
     '時刻はすべて日本標準時（JST, UTC+9）です。日影図のみ建築基準法に合わせて真太陽時（その場所で太陽が真南に来る時刻を 12 時とする時刻系）で表しています。',
     '方位は真北（地図の上）を基準にしています。磁北とは数度ずれます。',
-    `地形の高さは国土地理院の標高タイル${study.grid?.source ? `（${DEM_LABEL[study.grid.source] ?? study.grid.source}）` : ''}を用いています。地盤高は建設地のピン位置の値を GL±0 としています。`,
+    !study.grid?.source || study.grid.source === 'flat'
+      ? '地形の標高データは取得していない（または取得できなかった）ため、地形は平地（建設地のピン位置の地盤高で水平）として計算しています。周囲の高低差による影は含みません。'
+      : `地形の高さは${DEM_LABEL[study.grid.source] ?? `国土地理院の標高タイル（${study.grid.source}）`}を用いています。地盤高は建設地のピン位置の値を GL±0 としています。`,
     `周辺建物は ${study.neighborSources.length ? study.neighborSources.map((s) => NEIGHBOR_SOURCE_LABEL[s]).join('、') : '自動取得していません'}。「推定」と表示した建物の高さは建物の種類などから推定した値で、実際の高さと異なることがあります。隣家の高さが分かる場合は手入力で修正してください。`,
     '建物の寸法・方位・位置・GL は上記「前提」の値を用いています。3D データの単位の設定が違うと縮尺が変わります。',
     '樹木・塀・電柱など、データに無いものの影は含みません。窓ガラスの反射や空の明るさ（天空光）は含まず、直射日光のみを計算しています。',

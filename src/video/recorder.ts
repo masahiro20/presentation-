@@ -141,21 +141,26 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
         output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
         error: (e) => (encErr = e),
       });
-      enc.configure({ codec: codec.codec, width, height, bitrate: Math.round(width * height * fps * 0.18), framerate: fps });
-      for (let i = 0; i < frames; i++) {
-        if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
-        if (encErr) throw encErr;
-        renderAt(i);
-        const vf = new VideoFrame(comp.canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
-        enc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
-        vf.close();
-        while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1));
-        if (i % 5 === 0) {
-          opts.onProgress?.(i / frames, i % 30 === 0 ? comp.canvas.toDataURL('image/jpeg', 0.6) : undefined);
-          await new Promise((r) => setTimeout(r, 0));
+      try {
+        enc.configure({ codec: codec.codec, width, height, bitrate: Math.round(width * height * fps * 0.18), framerate: fps });
+        for (let i = 0; i < frames; i++) {
+          if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+          if (encErr) throw encErr;
+          renderAt(i);
+          const vf = new VideoFrame(comp.canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+          enc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
+          vf.close();
+          while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1));
+          if (i % 5 === 0) {
+            opts.onProgress?.(i / frames, i % 30 === 0 ? comp.canvas.toDataURL('image/jpeg', 0.6) : undefined);
+            await new Promise((r) => setTimeout(r, 0));
+          }
         }
+        await enc.flush();
+      } finally {
+        // エンコーダーを必ず解放する（エラー後は既に closed なので再 close しない）
+        if (enc.state !== 'closed') enc.close();
       }
-      await enc.flush();
       muxer.finalize();
       const buf = (muxer.target as ArrayBufferTarget).buffer;
       return { blob: new Blob([buf], { type: 'video/mp4' }), mime: 'video/mp4', ext: 'mp4' };
@@ -169,8 +174,12 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     const done = new Promise<void>((r) => (rec.onstop = () => r()));
     rec.start();
+    let aborted = false;
     for (let i = 0; i < frames; i++) {
-      if (opts.signal?.aborted) break;
+      if (opts.signal?.aborted) {
+        aborted = true;
+        break;
+      }
       const t0 = performance.now();
       renderAt(i);
       track.requestFrame();
@@ -180,6 +189,7 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
     }
     rec.stop();
     await done;
+    if (aborted) throw new DOMException('中止しました', 'AbortError');
     return { blob: new Blob(chunks, { type: 'video/webm' }), mime: 'video/webm', ext: 'webm' };
   } finally {
     renderer.setPixelRatio(prevPR);

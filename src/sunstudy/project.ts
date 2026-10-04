@@ -11,6 +11,7 @@
  */
 import { download, toast } from '../app/dom';
 import { base64ToArrayBuffer, importModelFile } from './importModel';
+import { resetPlaced } from './building';
 import { emit, study } from './state';
 import { sampleHeight } from './terrain';
 import { DEFAULT_PLACEMENT } from './types';
@@ -268,6 +269,8 @@ export async function applyProject(p: ProjectJson): Promise<void> {
   study.neighbors = [...manual, ...auto];
 
   // 3D データ
+  // 旧 model / placement に束縛された配置済み建物を捨てる（地図の足跡が古い建物のまま残らないように）
+  resetPlaced();
   study.model = null;
   if (p.model && typeof p.model.base64 === 'string' && p.model.base64.length) {
     try {

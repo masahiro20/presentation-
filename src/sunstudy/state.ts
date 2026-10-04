@@ -50,6 +50,7 @@ export interface StudyState {
     heatmapUrl?: string;
     heatmapLabel?: string;
     facadeUrl?: string;
+    facadeLabel?: string;
     mapUrl?: string;
   };
 }

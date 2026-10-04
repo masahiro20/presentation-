@@ -355,7 +355,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const kPlus = sideKey(1);
   const kMinus = sideKey(-1);
   // 1階の外壁は基礎天端まで下げる。両側とも屋外の塀状の壁（中庭・ポーチの囲い）は外形の外で基礎が無いので地面まで
-  const bottom = w.exterior && f.level === 1 ? (!rPlus && !rMinus ? -0.05 : fl - 0.1) : fl;
+  const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
+  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
   const wallTop = parapet ? Math.min(top, fl + 1.1) : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない

@@ -34,7 +34,10 @@ const str = (e: Ent, code: number) => e.g.find(([c]) => c === code)?.[1] ?? '';
 export function decodeDxf(bytes: Uint8Array): string {
   const utf8 = new TextDecoder('utf-8').decode(bytes);
   // 古い DXF は Shift_JIS（$DWGCODEPAGE ANSI_932）
-  if ((utf8.match(/�/g) ?? []).length > 3) {
+  // 文字化け（置換文字 U+FFFD）が多ければ Shift_JIS で読み直す
+  let bad = 0;
+  for (let i = 0; i < utf8.length && bad <= 3; i++) if (utf8.charCodeAt(i) === 0xfffd) bad++;
+  if (bad > 3) {
     try {
       return new TextDecoder('shift_jis').decode(bytes);
     } catch {

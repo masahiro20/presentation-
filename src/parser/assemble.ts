@@ -2,7 +2,7 @@
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
 import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
-import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, type BBox } from '../core/geometry';
+import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
@@ -722,7 +722,12 @@ function collinearGaps(walls: WWall[], maxGap: number, axisTol = 30): { a: Vec2;
 }
 
 /** 1つの図面（階）から部屋・外形などを作る */
-export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[], expectedArea?: number): Floor {
+export interface FloorHints {
+  /** この点を含む区画は中庭（上階の床が無く、ガラス戸に囲まれた室名の無い区画） */
+  courtyards?: Vec2[];
+}
+
+export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[], expectedArea?: number, hints?: FloorHints): Floor {
   const walls = plan.walls;
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
@@ -1101,6 +1106,17 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   }
 
+  // 上下階の比較で分かった中庭（室名が無く、上階に床が無く、ガラス戸に囲まれた区画）
+  for (const pt of hints?.courtyards ?? []) {
+    const idx = rooms.findIndex((r) => r.name === '室' && pointInPolygon(pt, r.polygon));
+    if (idx < 0) continue;
+    const l = labelOfRoom.get(idx);
+    if (l == null) continue;
+    rooms[idx].name = '中庭';
+    rooms[idx].type = 'balcony';
+    courtLabels.add(l);
+  }
+
   // ---- 外形 ----
   const building = new Uint8Array(grid.w * grid.h);
   for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== OUTSIDE && !courtLabels.has(labels[i]) ? 1 : 0;
@@ -1164,9 +1180,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       if (sideState({ x: p.x + w.n.x * off, y: p.y + w.n.y * off }) === OUTSIDE) outPlus++;
       if (sideState({ x: p.x - w.n.x * off, y: p.y - w.n.y * off }) === OUTSIDE) outMinus++;
     }
-    const exterior = outPlus + outMinus >= 2 && (outPlus === 0 || outMinus === 0);
+    // 片側の大半が屋外なら外壁。長い壁の一部だけ両側が屋外（ピロティ・ポーチ・バルコニーの囲い）でも外壁として扱う
+    // （以前は「片側が全て屋内」を条件にしていたため、玄関ポーチの下まで伸びた外壁が内壁扱いになり、
+    //  外観で壁の仕上げが変わる・基礎との間に隙間が出る、といった見た目の崩れが起きていた）
+    const exterior = Math.max(outPlus, outMinus) >= 3;
     // Wall の a→b 方向に対する n の向き: perp(u) = (-u.y, u.x) = n
-    const outsideSign: 1 | -1 | undefined = exterior ? (outPlus > outMinus ? 1 : -1) : undefined;
+    const outsideSign: 1 | -1 | undefined = exterior ? (outPlus >= outMinus ? 1 : -1) : undefined;
     const id = `F${level}-W${wi + 1}`;
     outWalls.push({
       id,
@@ -1840,8 +1859,10 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
   const floors: Floor[] = [];
   const thicknesses = new Set<number>();
   let elev = 500;
+  const planOf = new Map<Floor, PlanData>();
   for (const p of sorted) {
     const f = buildFloor(p, levelOf.get(p)!, north, warnings, areaTable[levelOf.get(p)!]);
+    planOf.set(f, p);
     // 部屋が取れない図（凡例・断面など）は階として扱わない
     const roomArea = f.rooms.reduce((s0, r) => s0 + r.area, 0);
     if (f.rooms.length === 0 || roomArea < 4) continue;
@@ -1851,6 +1872,49 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     elev += f.height;
     f.walls.forEach((w) => thicknesses.add(w.thickness));
     floors.push(f);
+  }
+  // 1階の室名の無い区画で、上階に床が無く（2階図で空白）、周囲の大半がガラス戸・窓なら中庭（コの字プランの光庭）。
+  // 面積表の無い図面（CAD 書き出し等）では面積の照合で見つけられないため、上下階の比較で判定する
+  if (floors.length >= 2) {
+    const f1 = floors[0];
+    const f2 = floors[1];
+    const pts: Vec2[] = [];
+    for (const r of f1.rooms) {
+      if (r.name !== '室' || r.area < 6 || r.area > 40) continue;
+      const c = polygonCentroid(r.polygon);
+      if (f2.outline.some((l) => pointInPolygon(c, l))) continue;
+      // 区画の周囲のうち、窓・引戸・開口が占める長さ
+      let perim = 0;
+      let glass = 0;
+      for (let i = 0; i < r.polygon.length; i++) {
+        const a = r.polygon[i];
+        const b = r.polygon[(i + 1) % r.polygon.length];
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        perim += L;
+        for (const o of f1.openings) {
+          if (o.kind === 'door' || o.kind === 'entrance') continue;
+          const w = f1.walls.find((q) => q.id === o.wallId);
+          if (!w) continue;
+          const oa = { x: w.a.x + ((w.b.x - w.a.x) * o.t0) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), y: w.a.y + ((w.b.y - w.a.y) * o.t0) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) };
+          const ob = { x: w.a.x + ((w.b.x - w.a.x) * o.t1) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), y: w.a.y + ((w.b.y - w.a.y) * o.t1) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) };
+          // 開口が区画のこの辺の上にあるか（辺から 150mm 以内、辺の範囲内）
+          const dist = (p: Vec2) => {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const u = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (L * L || 1)));
+            return Math.hypot(p.x - a.x - dx * u, p.y - a.y - dy * u);
+          };
+          if (dist(oa) < 150 && dist(ob) < 150) glass += o.t1 - o.t0;
+        }
+      }
+      if (perim > 0 && glass / perim >= 0.4) pts.push(c);
+    }
+    if (pts.length) {
+      const p = planOf.get(f1)!;
+      const nf = buildFloor(p, f1.level, north, warnings, areaTable[f1.level], { courtyards: pts });
+      nf.elevation = f1.elevation;
+      floors[0] = nf;
+    }
   }
   // 住宅の階段として大きすぎるもの（縞模様の床・デッキ材などを巻き込んだ）は、上下階の同じ位置の階段に合わせる
   for (const f of floors) {

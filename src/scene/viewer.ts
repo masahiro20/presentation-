@@ -412,7 +412,7 @@ export class Viewer {
     const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch) });
     const resolve = (k: string) => this.registry.get(k);
     this.groups.building.add(mb.build(resolve, { name: 'building' }));
-    const roof = buildRoofs(model, ext, this.design.roofOverride);
+    const roof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch);
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
@@ -454,7 +454,7 @@ export class Viewer {
     if (!this.state) return;
     const ext = exteriorById(design.exteriorId);
     const roofChanged =
-      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch);
+      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch);
     if (roofChanged || prev.exteriorId !== design.exteriorId) {
       // 外構・アクセント位置も変わるので建物以外を再構築
       this.setModel(this.state.model);

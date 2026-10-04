@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, segmented, modal, download } from '../dom';
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
-import { EXTERIOR_STYLES, INTERIOR_STYLES, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
+import { EXTERIOR_STYLES, INTERIOR_STYLES, exteriorById, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
 import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
@@ -309,7 +309,7 @@ export const designStep: Step = {
         h('h2', null, '外観・内観パース'),
         h('p', { class: 'lead' }, '「こういうイメージ」を選ぶだけで、外壁・屋根・床・家具まで一式の仕上げが切り替わります。見どころのカメラは自動で用意しています。'),
       );
-      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, wallColorOverride: undefined }));
+      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined }));
       const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id }));
       const others = (cards: HTMLElement[], open: boolean) =>
         h('details', { open, style: 'margin-top:8px' }, h('summary', { style: 'font-size:12.5px;color:#8b9098;cursor:pointer' }, 'その他のテイスト（比較用）'), h('div', { class: 'style-grid', style: 'margin-top:8px' }, cards));
@@ -410,6 +410,23 @@ export const designStep: Step = {
             state.design.roofOverride ?? 'auto',
             (val) => update({ roofOverride: val === 'auto' ? undefined : val }),
           ),
+          (() => {
+            const ext = exteriorById(state.design.exteriorId);
+            const type = state.design.roofOverride ?? ext.roof.type;
+            if (type === 'flat') return null;
+            const cur = state.design.roofPitch ?? ext.roof.pitch;
+            const label = h('span', { class: 'field-label' }, `屋根の勾配 ${cur} 寸`);
+            const slider = h('input', {
+              type: 'range',
+              min: 0.5,
+              max: 6,
+              step: 0.5,
+              value: cur,
+              oninput: (e: Event) => (label.textContent = `屋根の勾配 ${(e.target as HTMLInputElement).value} 寸`),
+              onchange: (e: Event) => update({ roofPitch: +(e.target as HTMLInputElement).value }),
+            });
+            return h('label', { class: 'field', style: 'margin-top:10px' }, label, slider, h('span', { class: 'hint' }, '10 に対する立ち上がり。片流れは 2〜3 寸、切妻・寄棟は 4〜5 寸が一般的'));
+          })(),
           h('div', { class: 'field-label', style: 'margin-top:10px' }, '時間帯'),
           segmented<TimeOfDay>(
             [

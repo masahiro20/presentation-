@@ -83,7 +83,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#f1efea', '#1f1f1f', '#a07b56', '#2b2b2b'],
     roof: {
       type: 'shed',
-      pitch: 1.5,
+      pitch: 3,
       eaves: 450,
       verge: 300,
       material: { pattern: 'standingSeam', color: '#2b2c2e', roughness: 0.5, metalness: 0.45 },
@@ -143,7 +143,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#cfcfcc', '#8e6a49', '#2c2d2f', '#1f1f1f'],
     roof: {
       type: 'shed',
-      pitch: 2,
+      pitch: 3,
       eaves: 350,
       verge: 200,
       material: { pattern: 'standingSeam', color: '#2c2d2f', roughness: 0.5, metalness: 0.45 },
@@ -173,7 +173,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#4a4845', '#9a7654', '#2a2a2a', '#1a1a1a'],
     roof: {
       type: 'shed',
-      pitch: 1.5,
+      pitch: 3,
       eaves: 450,
       verge: 300,
       material: { pattern: 'standingSeam', color: '#2a2a2b', roughness: 0.5, metalness: 0.45 },
@@ -204,7 +204,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#f2f1ee', '#2b2c2e', '#2b2c2e', '#1d1d1f'],
     roof: {
       type: 'shed',
-      pitch: 1.0,
+      pitch: 2.5,
       eaves: 150,
       verge: 100,
       material: { pattern: 'standingSeam', color: '#2f3033', roughness: 0.45, metalness: 0.5 },
@@ -699,6 +699,8 @@ export interface DesignOptions {
   exteriorId: string;
   interiorId: string;
   roofOverride?: RoofType;
+  /** 屋根勾配の上書き（寸。10 に対する立ち上がり） */
+  roofPitch?: number;
   wallColorOverride?: string;
   timeOfDay: TimeOfDay;
   furniture: boolean;

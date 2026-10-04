@@ -151,7 +151,12 @@ def fix_materials(interior):
                 nt.links.new(m2.outputs["Shader"], mix.inputs[1])
             else:
                 nt.links.new(tr.outputs["BSDF"], mix.inputs[1])
-            nt.links.new(fr.outputs["Fresnel"], mix.inputs["Fac"])
+            # 正面から見た窓でも少しは空を映す（室内が暗い窓が真っ黒な穴に見えないように）
+            floor = nt.nodes.new("ShaderNodeMath")
+            floor.operation = "MAXIMUM"
+            floor.inputs[1].default_value = 0.12
+            nt.links.new(fr.outputs["Fresnel"], floor.inputs[0])
+            nt.links.new(floor.outputs["Value"], mix.inputs["Fac"])
             nt.links.new(gl.outputs["BSDF"], mix.inputs[2])
             nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
         elif name in ("f.downlight", "f.lamp", "int.cove") or name.startswith("f.lampShade"):

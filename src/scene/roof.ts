@@ -34,7 +34,7 @@ export interface RoofInfo {
   eaveY: number;
 }
 
-export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType): { mb: MeshBuilder; info: RoofInfo } {
+export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType, pitchOverride?: number): { mb: MeshBuilder; info: RoofInfo } {
   seq = 0;
   const mb = new MeshBuilder();
   const type = typeOverride ?? style.roof.type;
@@ -84,7 +84,7 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       T: 0.16,
       eaves: style.roof.eaves * MM,
       verge: style.roof.verge * MM,
-      slope: style.roof.pitch / 10,
+      slope: (pitchOverride ?? style.roof.pitch) / 10,
       wallT: extT,
       gableKey: upperAccent ? 'ext.accent' : 'ext.wall',
       gutter: style.roof.gutter,

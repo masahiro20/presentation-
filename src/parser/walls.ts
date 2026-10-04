@@ -561,6 +561,37 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       ax.openings.push(op);
       openings.push(op);
     }
+    // 壁の端と直交する壁の間の隙間（吹抜のガラス壁・玄関横の大きな窓など）: 窓の描き方（サッシの平行線）なら窓。
+    // 壁片同士の隙間ではないため上の分類に掛からず、壁が途切れて見えていた
+    if (occ.length) {
+      const grp = groups[ax.g];
+      for (const side of [-1, 1] as const) {
+        const tEnd = side < 0 ? occ[0].t0 : occ[occ.length - 1].t1;
+        let tCross: number | null = null;
+        for (const b of axes) {
+          if (b.g === ax.g) continue;
+          const gb = groups[b.g];
+          const dot = grp.u.x * gb.n.x + grp.u.y * gb.n.y;
+          if (Math.abs(dot) < 0.7) continue;
+          // この軸の線が b の軸と交わる位置 t と、b の軸上での位置 tb
+          const t = (b.o - ax.o * (grp.n.x * gb.n.x + grp.n.y * gb.n.y)) / dot;
+          const gapHere = (t - tEnd) * side;
+          if (gapHere < 250 || gapHere > 4600) continue;
+          const P = { x: grp.u.x * t + grp.n.x * ax.o, y: grp.u.y * t + grp.n.y * ax.o };
+          const tb = P.x * gb.u.x + P.y * gb.u.y;
+          if (!b.pieces.some((p) => tb > p.t0 - b.d / 2 - 40 && tb < p.t1 + b.d / 2 + 40)) continue;
+          if (tCross === null || Math.abs(t - tEnd) < Math.abs(tCross - tEnd)) tCross = t;
+        }
+        if (tCross === null) continue;
+        const gs = side < 0 ? tCross : tEnd;
+        const ge = side < 0 ? tEnd : tCross;
+        if (ax.openings.some((o) => o.t0 < ge && o.t1 > gs)) continue;
+        const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, grp, lines[ax.g], infills);
+        if (op.kind !== 'window' || op.confidence < 0.7) continue;
+        ax.openings.push(op);
+        openings.push(op);
+      }
+    }
     // 端部の infill（角窓など）
     for (const f of infills) {
       if (f.g !== ax.g || Math.abs(f.o - ax.o) > 20) continue;

@@ -153,9 +153,13 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     // 中庭などの穴の部分にはスラブを張らない
     const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
     const holeRects = holes.length ? polygonToRects(holes) : [];
+    const lower = model.floors[model.floors.indexOf(f) - 1];
+    const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
     for (const poly of f.outline) {
       if (holes.includes(poly)) continue;
       emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005);
+      // 下階からはみ出した部分（オーバーハング・ピロティの天井）は軒天の仕上げで見せる
+      if (lower) emitFlat(mb, 'ext.soffit', poly, [...voids, ...holeRects, ...lowerRects], fl - 0.25, false);
     }
     // ---- 天井 ----
     const upper = model.floors[model.floors.indexOf(f) + 1];
@@ -342,7 +346,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     if (w.exterior && w.outsideSign === sign) return extKey;
     // 室内側: 部屋の種類で変える
     const r = sign === 1 ? rPlus : rMinus;
-    if (isOutdoor(r) || (parapet && !r)) return extKey;
+    // 部屋が無い側（ピロティ・ポーチの下など屋外）は外壁の仕上げ
+    if (isOutdoor(r) || !r) return extKey;
     if (r?.type === 'bath') return 'int.bathWall';
     if (r && (r.type === 'ldk' || r.type === 'living') && !w.exterior && ops.length === 0 && L > 2.2) return 'int.accent';
     return 'int.wall';

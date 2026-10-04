@@ -71,7 +71,7 @@ await shot('sunstudy-6-heatmap');
 
 // 建物の面の日照時間
 t0 = Date.now();
-await page.getByRole('button', { name: /面の日照時間/ }).first().click();
+await page.getByRole('button', { name: /建物の面の日照時間/ }).first().click();
 await page.waitForTimeout(500);
 await noModal();
 t('facade', t0);

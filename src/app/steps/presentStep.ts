@@ -7,11 +7,19 @@ import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFail
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
-import { externalSampleY } from '../externalBuilding';
+import { externalController, externalSampleY, setExternalMounted } from '../externalBuilding';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
 import { resolveSpec } from '../../styles/spec';
+
+/** 日当たりを設計の 3D データ（3DS）で解析しているときに資料に添える注記 */
+export const SUN_EXTERNAL_CAPTION = '日当たりは設計 3D データ（3DS）で解析';
+
+/** 光と日当たりの注記（3DS で置き換えているときだけ）。資料の数字・写真がどの建物のものかを示す */
+export function sunCaption(external: { replaces: boolean } | null | undefined): string | null {
+  return external?.replaces ? SUN_EXTERNAL_CAPTION : null;
+}
 
 /** 足りない素材をすべて自動で作る（一気通貫） */
 export async function autoGenerate(ctx: StepCtx, draft = false) {
@@ -61,48 +69,61 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     }
     state.plans = state.model!.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(state.model!, f) }));
     // 日照
-    if (!state.sun.seasons.length) {
-      const { lat, lon } = siteLatLon(state.site);
-      const seasons: SeasonResult[] = [];
-      const dates = keyDates(new Date().getFullYear()).filter((d) => d.id !== 'autumn');
-      // 設計の 3DS で置き換えているときは、3DS 自身の床の上から測る（日照ステップと同じ）
-      const sy = externalSampleY(v);
-      for (let i = 0; i < dates.length; i++) {
-        if (pm.signal.aborted) {
-          sy?.dispose();
-          return;
-        }
-        const d = dates[i];
-        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`), sampleY: sy?.fn });
-        seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
-      }
-      sy?.dispose();
-      const order = ['winter', 'spring', 'summer'];
-      seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-      state.sun.seasons = seasons;
-      state.sun.highlights = sunHighlights(seasons);
+    // 設計の 3DS があるときは、解析と撮影の間だけ日照ステップと同じ表示にする（3DS を見せ、置き換えなら PDF の建物・屋根・家具を隠す）。
+    // 解析（buildOccluder）は 3DS で影を計算するので、写真も同じ建物でないと数字と写真が別の建物になる
+    const extCtrl = externalController();
+    if (extCtrl) {
+      setExternalMounted(v, true);
+      // PDF の建物が作り直されていたら、ラッパー位置・影の範囲・隠す設定を今の状態に合わせる
+      if (extCtrl.dirty) extCtrl.sync(v);
     }
-    if (!state.sun.images.length) {
-      const { lat, lon } = siteLatLon(state.site);
-      const y = new Date().getFullYear();
-      const ldkShot = currentShots(ctx).find((s) => s.kind === 'interior');
-      const b = v.state!.meta.bbox;
-      const c = b.getCenter(new THREE.Vector3());
-      const R = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
-      const aerial = { pos: c.clone().set(c.x + R * 1.5, R * 1.6, c.z + R * 2), target: c.clone().setY(1), fov: 45 };
-      const list = [
-        { label: '冬至 10:00（外観）', m: 12, d: 22, hh: 10, view: aerial },
-        { label: '冬至 14:00（外観）', m: 12, d: 22, hh: 14, view: aerial },
-        ...(ldkShot ? [{ label: '冬至 12:00（室内）', m: 12, d: 22, hh: 12, view: ldkShot.view }, { label: '夏至 12:00（室内）', m: 6, d: 21, hh: 12, view: ldkShot.view }] : []),
-      ];
-      for (let i = 0; i < list.length; i++) {
-        const s = list[i];
-        pm.set(0.87 + (i / list.length) * 0.12, `日当たり比較を撮影中（${s.label}）`);
-        const sp = sunPosition(localDate(y, s.m, s.d, s.hh), lat, lon);
-        v.setSunDirection(sunDirectionWorld(sp.azimuth, sp.elevation, state.model!.northAngleDeg));
-        v.applyView(s.view);
-        state.sun.images.push({ label: s.label, url: await v.capture(1600, 900) });
+    try {
+      if (!state.sun.seasons.length) {
+        const { lat, lon } = siteLatLon(state.site);
+        const seasons: SeasonResult[] = [];
+        const dates = keyDates(new Date().getFullYear()).filter((d) => d.id !== 'autumn');
+        // 設計の 3DS で置き換えているときは、3DS 自身の床の上から測る（日照ステップと同じ）
+        const sy = externalSampleY(v);
+        try {
+          for (let i = 0; i < dates.length; i++) {
+            if (pm.signal.aborted) return;
+            const d = dates[i];
+            const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`), sampleY: sy?.fn });
+            seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
+          }
+        } finally {
+          sy?.dispose();
+        }
+        const order = ['winter', 'spring', 'summer'];
+        seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+        state.sun.seasons = seasons;
+        state.sun.highlights = sunHighlights(seasons);
       }
+      if (!state.sun.images.length) {
+        const { lat, lon } = siteLatLon(state.site);
+        const y = new Date().getFullYear();
+        const ldkShot = currentShots(ctx).find((s) => s.kind === 'interior');
+        const b = v.state!.meta.bbox;
+        const c = b.getCenter(new THREE.Vector3());
+        const R = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
+        const aerial = { pos: c.clone().set(c.x + R * 1.5, R * 1.6, c.z + R * 2), target: c.clone().setY(1), fov: 45 };
+        const list = [
+          { label: '冬至 10:00（外観）', m: 12, d: 22, hh: 10, view: aerial },
+          { label: '冬至 14:00（外観）', m: 12, d: 22, hh: 14, view: aerial },
+          ...(ldkShot ? [{ label: '冬至 12:00（室内）', m: 12, d: 22, hh: 12, view: ldkShot.view }, { label: '夏至 12:00（室内）', m: 6, d: 21, hh: 12, view: ldkShot.view }] : []),
+        ];
+        for (let i = 0; i < list.length; i++) {
+          const s = list[i];
+          pm.set(0.87 + (i / list.length) * 0.12, `日当たり比較を撮影中（${s.label}）`);
+          const sp = sunPosition(localDate(y, s.m, s.d, s.hh), lat, lon);
+          v.setSunDirection(sunDirectionWorld(sp.azimuth, sp.elevation, state.model!.northAngleDeg));
+          v.applyView(s.view);
+          state.sun.images.push({ label: s.label, url: await v.capture(1600, 900) });
+        }
+      }
+    } finally {
+      // 他のステップでは PDF の建物のまま（3DS の表示は日照ステップの間だけ）
+      if (extCtrl) setExternalMounted(v, false);
     }
     toast('プレゼン資料の素材がそろいました', 'ok');
   } finally {
@@ -338,6 +359,7 @@ export function buildDeck(): HTMLElement[] {
           { style: 'min-height:0;overflow:hidden' },
           head(no('Sunlight'), 'Sunlight', '光と日当たり'),
           ...state.sun.highlights.slice(0, 3).map((hl) => h('div', { class: 'hl' }, h('b', { class: 'serif' }, hl.title), h('span', null, hl.body))),
+          sunCaption(state.external) ? h('p', { style: 'font-size:0.9cqw;color:var(--ink-3);margin-top:1.2cqw' }, sunCaption(state.external)) : null,
         ),
         state.sun.images.length
           ? h('div', { class: 'sungrid' }, ...state.sun.images.slice(0, 4).map((im) => h('div', { class: 'cell' }, h('img', { class: 'photo', src: im.url }), h('div', { class: 'lbl' }, im.label))))
@@ -484,7 +506,7 @@ export const presentStep: Step = {
           { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
           h('li', null, `パース ${state.gallery.length} 枚（写真品質 ${state.gallery.filter((g) => g.quality === 'photoreal').length} 枚）`),
           h('li', null, `立面図 ${state.elevations.length} 面・平面図 ${state.plans.length} 枚`),
-          h('li', null, `日照解析 ${state.sun.seasons.length ? '済' : '未'}／日影図 ${state.sun.diagramSvg ? '済' : '未'}`),
+          h('li', null, `日照解析 ${state.sun.seasons.length ? '済' : '未'}／日影図 ${state.sun.diagramSvg ? '済' : '未'}${sunCaption(state.external) ? '（設計 3D データで解析）' : ''}`),
           h('li', null, `動画 ${state.videos.length} 本`),
         ),
         h('p', { class: 'hint' }, '写真品質のパースがある場合は優先して使われます。印刷は A4 横に最適化されています。'),

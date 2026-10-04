@@ -124,11 +124,13 @@ describe('格子の日照時間', () => {
         }
       return sum / n;
     };
-    const north = mean((x, z) => z < -6 && Math.abs(x) < 4);
-    const south = mean((x, z) => z > 6 && Math.abs(x) < 4);
+    // 箱のすぐ北（1〜4m）は冬至の太陽（最大高度 ≈31°、影の長さ ≥ 16m）では一日中日影
+    const north = mean((x, z) => z < -6 && z > -9 && Math.abs(x) < 2);
+    const south = mean((x, z) => z > 6 && z < 9 && Math.abs(x) < 2);
     const far = mean((x, z) => z > 13);
     expect(north).toBeLessThan(south);
-    expect(north).toBeLessThan(2);
+    expect(north).toBeLessThan(0.5);
+    expect(south).toBeGreaterThan(6);
     // 箱から離れた南側は 1 日の長さに近い（冬至 ≈ 9.7h）
     expect(far).toBeGreaterThan(9);
     expect(far).toBeLessThan(10.5);

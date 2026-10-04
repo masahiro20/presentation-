@@ -4,7 +4,8 @@ const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromi
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('404')) console.log('[console]', m.text()); });
-await page.goto('http://localhost:5173/?sample=sample_house_A3.pdf#sun');
+const base = process.argv[2] ?? 'http://localhost:5173';
+await page.goto(`${base}/?sample=sample_house_A3.pdf#sun`);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
 const click = async (text) => { await page.getByRole('button', { name: text }).first().click(); };
 await page.locator('input[placeholder^="例: "]').fill('東京都世田谷区奥沢3丁目');

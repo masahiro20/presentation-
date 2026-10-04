@@ -2,8 +2,9 @@
  * 外部の正確な建物（3DS）を間取りに合わせる計算（src/app/externalFit.ts）のテスト。Node 上で DOM 無しに動くこと。
  *  - 水平断面の外形（sectionOutline / outlineOfPivot）: 焼き込んだサンプル住宅で壁 9.1 × (7.28 + ポーチ 1.5) m、全高なら軒先 10.3 m
  *  - 間取りへの自動合わせ（fitExternalToPlan）: 0°・90°（幅と奥行きの入れ替え）・中心のずれ・鏡像（残差で検出）
- *  - 読み込み直後の配置（seedPlacement）: 'ground' の板を除いた worldBox
+ *  - 読み込み直後の配置（seedPlacement）: 'ground' の板を除いた worldBox。すべてが建物以外と判定されたら何も隠さない
  *  - 2 点合わせの符号（applyTwoPointToSite）: applyFit(r)(fromWorld_a(P)) == fromWorld_{a−r}(P)、角の地理位置が航空写真の点に一致
+ *  - 片側に寄ったポーチ（主屋の東の壁と面一）でも主屋の回転が 0.5° 未満。単位違いの判定の帯（1/2・2 倍）。周長の比で ICP を省く
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ import * as THREE from 'three';
 import { importModelFile, PlacedModel } from '../src/sunstudy/importModel';
 import { DEFAULT_PLACEMENT, type ImportedModel } from '../src/sunstudy/types';
 import { applyFit, convexHull, fitPolygonToPolygon, minAreaRect, normDeg180, polygonArea, solveTwoPoint, type EN } from '../src/sun/align';
-import { applyTwoPointToSite, fitExternalToPlan, fromWorldEN, outlineOfPivot, planOutlineEN, planOutlinePolygon, sectionOutline, sectionPolygon, seedPlacement, simplifyPolygon, snapToOutlineVertex, suggestsMirror, suggestsUnitError, wallBand } from '../src/app/externalFit';
+import { allObjectsAutoHidden, applyTwoPointToSite, fitExternalToPlan, fromWorldEN, outlineOfPivot, planOutlineEN, planOutlinePolygon, sectionOutline, sectionPolygon, seedPlacement, simplifyPolygon, snapToOutlineVertex, suggestsMirror, suggestsUnitError, wallBand } from '../src/app/externalFit';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SAMPLE = path.join(ROOT, 'public', 'samples', 'sample_house.3ds');
@@ -202,13 +203,31 @@ describe('間取りへの自動合わせ（fitExternalToPlan）', () => {
     expect(f.dz).toBeCloseTo(-0.8, 2);
   });
 
-  it('回転 + ずれを同時に', () => {
+  it('回転 + ずれを同時に。37° は「幅と奥行きの入れ替え」ではない', () => {
     const dst = planOutlineEN(toPlanOutline(rotEN(houseL(), 37, -2, 1.5), c), c);
     const f = fitExternalToPlan(src, dst, 0);
     expect(Math.abs(normDeg180(f.planRotDeg - 37))).toBeLessThan(0.5);
     expect(f.dx).toBeCloseTo(-2, 1);
     expect(f.dz).toBeCloseTo(-1.5, 1);
     expect(f.score).toBeLessThan(0.05);
+    expect(f.swapped).toBe(false);
+  });
+
+  it('swapped は 3DS を 90° 回したときだけ: 頂点の順（最小外接矩形の w/d の付き方）が違っても、同じ向きなら false で寸法は PDF の向き', () => {
+    const dst = planOutlineEN(toPlanOutline(houseL(), c), c);
+    for (const start of [0, 1, 2, 3, 5]) {
+      const rolled = [...src.slice(start), ...src.slice(0, start)];
+      const f = fitExternalToPlan(rolled, dst, 0);
+      expect(Math.abs(f.planRotDeg)).toBeLessThan(0.5);
+      expect(f.swapped).toBe(false);
+      expect(f.extW).toBeCloseTo(9.1, 3);
+      expect(f.extD).toBeCloseTo(7.28 + 3.0, 3);
+    }
+    // 90° 回した PDF は swapped、寸法はやはり PDF の向きで一致
+    const f90 = fitExternalToPlan(src, planOutlineEN(toPlanOutline(rotEN(houseL(), -90), c), c), 0);
+    expect(f90.swapped).toBe(true);
+    expect(f90.extW).toBeCloseTo(f90.pdfW, 3);
+    expect(f90.extD).toBeCloseTo(f90.pdfD, 3);
   });
 
   it('鏡像の 3DS → 外形の残差が大きい（> 0.3 m）が、反転すると ≈ 0 になるので検出できる。正しい向きは ≈ 0 で反転の提案は出ない', () => {
@@ -323,6 +342,79 @@ describe('読み込み直後の配置（seedPlacement）', () => {
     // 既定の配置（hiddenObjects: []）だと板が入って 40 m になる
     const naive = new PlacedModel(m, { ...DEFAULT_PLACEMENT, unit: 'm', upAxis: 'z' });
     expect(naive.worldBox().getSize(new THREE.Vector3()).x).toBeCloseTo(40, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 片側に寄ったポーチ・単位違いの判定
+// ---------------------------------------------------------------------------
+
+describe('片側に寄ったポーチ（主屋の東の壁と面一）と単位違いの判定', () => {
+  const c = { x: 4.55, z: 3.64 };
+  const rect: EN[] = [
+    { e: -4.55, n: -3.64 },
+    { e: 4.55, n: -3.64 },
+    { e: 4.55, n: 3.64 },
+    { e: -4.55, n: 3.64 },
+  ];
+  const dst = planOutlineEN(toPlanOutline(rect, c), c);
+
+  it('東の壁と面一のポーチ（2.0×1.5 〜 3.64×2.73）でも主屋の回転 < 0.5°、ずれ < 5 cm（割合固定の切り捨てだと 0.9〜3° 回っていた）', () => {
+    for (const [pw, pd] of [
+      [2.0, 1.5],
+      [2.73, 1.82],
+      [3.64, 1.82],
+      [3.64, 2.73],
+    ]) {
+      for (const pe of [4.55 - pw / 2, -(4.55 - pw / 2)]) {
+        const f = fitExternalToPlan(houseL(9.1, 7.28, pw, pd, pe), dst, 0);
+        expect(Math.abs(f.planRotDeg), `pw ${pw} pd ${pd} pe ${pe}: rot ${f.planRotDeg}`).toBeLessThan(0.5);
+        expect(Math.abs(f.dx), `pw ${pw} pd ${pd} pe ${pe}: dx ${f.dx}`).toBeLessThan(0.05);
+        expect(Math.abs(f.dz), `pw ${pw} pd ${pd} pe ${pe}: dz ${f.dz}`).toBeLessThan(0.05);
+        expect(f.unitSuspect).toBe(false);
+        expect(suggestsUnitError(f)).toBe(false);
+        expect(f.mismatchM).toBeCloseTo(pd, 1);
+      }
+    }
+  });
+
+  it('面一のポーチ + PDF 側の回転とずれ → 回転 37°・ずれも主屋で合う', () => {
+    const d2 = planOutlineEN(toPlanOutline(rotEN(rect, 37, -2, 1.5), c), c);
+    const f = fitExternalToPlan(houseL(9.1, 7.28, 3.64, 2.73, 4.55 - 1.82), d2, 0);
+    expect(Math.abs(normDeg180(f.planRotDeg - 37))).toBeLessThan(0.5);
+    expect(f.dx).toBeCloseTo(-2, 1);
+    expect(f.dz).toBeCloseTo(-1.5, 1);
+  });
+
+  it('下屋が 2.0 m 深い（extD/pdfD = 1.27）だけでは単位違いと言わない。1000 倍なら言う（周長の比で ICP を省き、矩形で合わせる）', () => {
+    const porch = houseL(9.1, 7.28, 2.0, 2.0, 0);
+    const f = fitExternalToPlan(porch, dst, 0);
+    expect(f.extD).toBeCloseTo(9.28, 6);
+    expect(f.mismatchM).toBeCloseTo(2.0, 6);
+    expect(f.unitSuspect).toBe(false);
+    expect(suggestsUnitError(f)).toBe(false);
+    const t0 = Date.now();
+    const big = fitExternalToPlan(porch.map((p) => ({ e: p.e * 1000, n: p.n * 1000 })), dst, 0);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(big.unitSuspect).toBe(true);
+    expect(suggestsUnitError(big)).toBe(true);
+    expect(big.extW).toBeCloseTo(9100, 3);
+    // 矩形どうしの姿勢: 軸は合っている
+    expect(Math.abs(big.planRotDeg)).toBeLessThan(0.5);
+    // mirrorScore も同じ経路（巨大な点数にならない）
+    expect(Number.isFinite(big.mirrorScore)).toBe(true);
+  });
+
+  it('suggestsUnitError の帯: 片方の寸法が 1/2〜2 倍の中なら疑わない、外れたら疑う、両方 20% 以上違えば疑う（×2 の mm→cm 違い）', () => {
+    const base = { pdfW: 9.1, pdfD: 7.28 };
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 9.28, mismatchM: 2.0 })).toBe(false); // 2.0 m の下屋
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 10.01, mismatchM: 2.73 })).toBe(false); // 2.73 m の下屋
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28, mismatchM: 0 })).toBe(false);
+    expect(suggestsUnitError({ ...base, extW: 9.1 * 3.28, extD: 7.28 * 3.28, mismatchM: 37 })).toBe(true); // ft のまま
+    expect(suggestsUnitError({ ...base, extW: 9.1 / 10, extD: 7.28 / 10, mismatchM: 14.7 })).toBe(true); // cm → ×0.1
+    expect(suggestsUnitError({ ...base, extW: 18.2, extD: 14.56, mismatchM: 16.4 })).toBe(true); // ×2（両方 20% 以上）
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28 * 2.2, mismatchM: 8.7 })).toBe(true); // 片方だけでも 2 倍超
+    expect(suggestsUnitError({ ...base, extW: 9.1, extD: 7.28, mismatchM: 0, unitSuspect: true })).toBe(true);
   });
 });
 

@@ -70,6 +70,8 @@ export class Viewer {
     context: new THREE.Group(),
     overlay: new THREE.Group(),
     lights: new THREE.Group(),
+    /** 設計の 3D データ（3DS など）で置き換えた正確な建物。setModel では消さない（src/app/externalBuilding.ts が管理） */
+    external: new THREE.Group(),
   };
   registry: MaterialRegistry;
   state: SceneState | null = null;
@@ -108,6 +110,10 @@ export class Viewer {
   contextLost = false;
   userData: Record<string, unknown> = {};
   private shotCache: { state: SceneState; interiors: Map<string, Shot[]> } | null = null;
+  /** 影の範囲の中心（PDF の建物と外部の建物の和）。fitShadow が決める */
+  private shadowCenter: THREE.Vector3 | null = null;
+  /** 外部の建物が PDF の建物に代わっている間、PDF 由来のグループを隠した */
+  private pdfGroupsHidden = false;
   onAfterRender?: () => void;
   private anim: { from: CameraView; to: CameraView; t0: number; dur: number } | null = null;
 
@@ -439,7 +445,42 @@ export class Viewer {
     this.fitShadow();
     this.updateInteriorLights();
     this.updateEnvironment();
+    // 外部の建物（3DS）で置き換え中なら、作り直した PDF の建物もまた隠す
+    this.applyExternalReplace();
     this.dirty = true;
+  }
+
+  /**
+   * 外部の正確な建物（groups.external）が PDF の建物に代わるとき（userData.externalReplaces かつ日照ステップ表示中 userData.externalMounted）、
+   * PDF 由来の建物・屋根・家具・室内照明を隠す。条件が外れたら元に戻す（隠していたときだけ戻すので、断面表示などの状態を壊さない）
+   */
+  applyExternalReplace() {
+    const hide = this.userData.externalReplaces === true && this.userData.externalMounted === true && this.groups.external.children.length > 0;
+    if (hide) {
+      for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.lights]) g.visible = false;
+      this.pdfGroupsHidden = true;
+    } else if (this.pdfGroupsHidden) {
+      this.groups.building.visible = true;
+      this.groups.roof.visible = true;
+      this.groups.furniture.visible = this.design.furniture;
+      this.groups.lights.visible = true;
+      this.pdfGroupsHidden = false;
+    }
+    this.dirty = true;
+  }
+
+  /** 遮蔽物のキャッシュ（歩行の壁判定・見どころカメラ）を捨てる。外部の建物が変わったときに呼ぶ */
+  invalidateOccluders() {
+    this.walkOcc = null;
+    this.shotCache = null;
+  }
+
+  /** 外部の建物（groups.external）のワールド bbox（無ければ null） */
+  externalBox(): THREE.Box3 | null {
+    if (!this.groups.external.children.length) return null;
+    this.groups.external.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(this.groups.external, true);
+    return b.isEmpty() ? null : b;
   }
 
   /** テイスト変更（屋根形状の変更時のみ屋根を再生成） */
@@ -470,11 +511,27 @@ export class Viewer {
     this.dirty = true;
   }
 
-  private fitShadow() {
+  /**
+   * 影の範囲（平行光源の正射影カメラ）を建物に合わせる。
+   * PDF の建物（meta.bbox）と外部の建物（groups.external、あれば）の和にさらに extra を加えた箱を囲む。
+   * setModel から毎回呼ばれるので、外部の建物を足した後も setModel で範囲が戻ることはない
+   */
+  fitShadow(extra?: THREE.Box3) {
     if (!this.state) return;
-    const b = this.state.meta.bbox;
+    const b = this.state.meta.bbox.clone();
+    const ext = this.externalBox();
+    if (ext) b.union(ext);
+    if (extra && !extra.isEmpty()) b.union(extra);
     const c = b.getCenter(new THREE.Vector3());
     const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5 + 14;
+    this.fitShadowTo(c, r);
+  }
+
+  /** 影の範囲を中心 center・半径 radius (m) の箱にする */
+  fitShadowTo(center: THREE.Vector3, radius: number) {
+    const r = Math.max(1, radius);
+    const c = center.clone();
+    this.shadowCenter = c;
     const cam = this.sun.shadow.camera;
     cam.left = -r;
     cam.right = r;
@@ -490,7 +547,7 @@ export class Viewer {
   setSunDirection(dir: THREE.Vector3, envUpdate = true) {
     this.sunDir.copy(dir).normalize();
     const b = this.state?.meta.bbox;
-    const c = b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+    const c = this.shadowCenter ? this.shadowCenter.clone() : b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3();
     this.sun.target.position.copy(c);
     this.sun.position.copy(c).addScaledVector(this.sunDir, 80);
     const elev = Math.asin(this.sunDir.y);

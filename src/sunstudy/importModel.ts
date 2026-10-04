@@ -20,7 +20,7 @@
 import * as THREE from 'three';
 import { TDSLoader } from 'three/examples/jsm/loaders/TDSLoader.js';
 import { convexHull } from '../sun/align';
-import { localToEN, sectionOutline } from './alignment';
+import { localToEN, plateOutline, sectionOutline } from './alignment';
 import type { EN, ImportedModel, LengthUnit, ModelFormat, ModelObjectInfo, ModelPlacement, UpAxis } from './types';
 import { UNIT_METERS } from './types';
 
@@ -781,22 +781,34 @@ export class PlacedModel {
   }
 
   /**
-   * 3DS の敷地オブジェクト（site / lot / parcel / land / 敷地。非表示にしてあるもの）の外形（凸包、pivot ローカル EN）。
-   * 表示している敷地は建物の一部として扱うので対象にしない。無ければ null
+   * 3DS の敷地オブジェクト（site / lot / parcel / land / 敷地。非表示にしてあるもの）の外形（pivot ローカル EN）。
+   * 板の天面の外周を境界辺から取るので旗竿地・L 字などの凹みも残る（plateOutline）。外周が取れない形（傾いた地面・
+   * 接する 2 枚の板など）は凸包。表示している敷地は建物の一部として扱うので対象にしない。無ければ null
    */
   siteOutlineLocal(): EN[] | null {
     this.ensureOutlineCache();
     if (this.siteCache !== undefined) return this.siteCache;
     const hidden = new Set(this.placement.hiddenObjects ?? []);
     const pos = this.localPositions((m) => isSiteObjectName(m.name) && hidden.has(m.name));
-    let hull: EN[] = [];
+    let outline: EN[] = [];
     if (pos.length >= 9) {
-      const pts: EN[] = [];
-      for (let i = 0; i + 2 < pos.length; i += 3) pts.push({ e: pos[i], n: -pos[i + 2] });
-      hull = convexHull(pts);
+      outline = plateOutline(pos) ?? [];
+      if (outline.length < 3) {
+        const pts: EN[] = [];
+        for (let i = 0; i + 2 < pos.length; i += 3) pts.push({ e: pos[i], n: -pos[i + 2] });
+        outline = convexHull(pts);
+      }
     }
-    this.siteCache = hull.length >= 3 ? hull : null;
+    this.siteCache = outline.length >= 3 ? outline : null;
     return this.siteCache;
+  }
+
+  /** 敷地オブジェクトの外形が凸包でしか取れなかった（凹みのある敷地では残差が大きめに出る）か。敷地オブジェクトが無ければ false */
+  siteOutlineIsHull(): boolean {
+    const o = this.siteOutlineLocal();
+    if (!o) return false;
+    const hidden = new Set(this.placement.hiddenObjects ?? []);
+    return plateOutline(this.localPositions((m) => isSiteObjectName(m.name) && hidden.has(m.name))) == null;
   }
 
   /** ワールド bbox（配置後） */

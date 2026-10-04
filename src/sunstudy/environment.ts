@@ -10,7 +10,7 @@ import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neigh
 import type { StudyScene } from './scene';
 import { clearGroup } from './scene';
 import { emit, study, visibleNeighbors } from './state';
-import { buildTerrainMesh, fetchHeightGrid, flatGrid, minHeightInRing, sampleHeight } from './terrain';
+import { buildTerrainMesh, fetchHeightGrid, fetchHorizonProfile, flatGrid, minHeightInRing, sampleHeight } from './terrain';
 import { enToWorld, frameToLocal } from './types';
 import type { Neighbor } from './types';
 
@@ -90,6 +90,14 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
   const g = study.grid!;
   const h0 = sampleHeight(g, 0, 0);
   f.groundElev = Number.isFinite(h0) ? h0 : 0;
+  // 遠方の山・丘による地平線（粗い DEM、半径 10km）。失敗しても平らな地平線で続行
+  tick('周囲の山・丘による地平線を計算しています…');
+  try {
+    const hz = await fetchHorizonProfile(f.lat, f.lon, f.groundElev, { signal: opts.signal });
+    study.horizon = hz.source === 'none' ? null : hz;
+  } catch {
+    study.horizon = null;
+  }
   study.env.loading = false;
   study.env.loaded = true;
   study.env.error = report.errors.length ? report.errors.join('\n') : null;

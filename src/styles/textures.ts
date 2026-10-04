@@ -393,9 +393,9 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'fabric': {
-          // 織り目は画面上でモアレになりやすいので、ごく弱いむら程度に
+          // 織り目は画面上でモアレになりやすいので、ごく弱いむら程度に（凹凸もほぼ無し）
           const slub = noise.fbm(x * 4, y * 0.5, N * 4, 32, 3);
-          set(i, tint(base, 0.97 + 0.03 * slub + 0.03 * n1), slub * 0.3, baseRough);
+          set(i, tint(base, 0.985 + 0.015 * slub + 0.015 * n1), slub * 0.08, baseRough);
           break;
         }
         case 'leather': {
@@ -464,7 +464,8 @@ export function textureSet(spec: MatSpec, size = 512): TextureSet {
     },
     true,
   );
-  const strength = (spec.normalStrength ?? 1) * (n / tileOf(spec)) * 0.004;
+  // 布は細かい織り目の凹凸を強く出すと石のように見えるので、ごく弱く
+  const strength = (spec.normalStrength ?? (spec.pattern === 'fabric' ? 0.08 : 1)) * (n / tileOf(spec)) * 0.004;
   const normalMap = toTexture(
     n,
     (d) => {

@@ -440,7 +440,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     mb.box(frame, plane.clone().setY(head - fw), dir, width, fw, fd);
     mb.box(frame, plane.clone().addScaledVector(dir, -width / 2 + fw / 2).setY(sill), dir, fw, H, fd);
     mb.box(frame, plane.clone().addScaledVector(dir, width / 2 - fw / 2).setY(sill), dir, fw, H, fd);
-    const frosted = o.windowStyle === 'small' || o.windowStyle === 'high';
+    // 曇りガラスは浴室・トイレの小窓だけ（天井付けの高窓は透明で空を見せる）
+    const frosted = o.windowStyle === 'small';
     const glassKey = frosted ? 'ext.glassFrosted' : 'ext.glass';
     const panes = width > 1.0 && o.windowStyle !== 'high' ? 2 : 1;
     const innerW = width - fw * 2;

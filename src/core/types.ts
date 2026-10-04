@@ -36,7 +36,7 @@ export type RoomType =
 export type OpeningKind = 'window' | 'door' | 'sliding' | 'entrance' | 'open';
 
 /** 窓の種類（高さ・腰高の決定に使う） */
-export type WindowStyle = 'hakidashi' | 'koshi' | 'small' | 'high' | 'none';
+export type WindowStyle = 'hakidashi' | 'koshi' | 'small' | 'high' | 'slit' | 'none';
 
 export interface Wall {
   id: string;

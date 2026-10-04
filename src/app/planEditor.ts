@@ -29,6 +29,15 @@ const ROOM_TINT: Partial<Record<RoomType, string>> = {
 };
 
 const OPENING_DEFAULT: Record<'window' | 'door' | 'sliding', number> = { window: 1690, door: 780, sliding: 1640 };
+/** 窓の形（腰高と高さ。天井付けの高窓は天井高から決める） */
+const WINDOW_SHAPES = {
+  hakidashi: { label: '掃き出し（床から天井まで）', sill: () => 0, height: (ch: number) => ch },
+  koshi: { label: '腰窓', sill: () => 900, height: (ch: number) => ch - 900 },
+  small: { label: '小窓（浴室・トイレなど、曇りガラス）', sill: () => 1400, height: () => 600 },
+  high: { label: '高窓（天井付け・横長）', sill: (ch: number) => ch - 500, height: () => 500 },
+  slit: { label: '縦スリット（細長・床から天井）', sill: () => 0, height: (ch: number) => ch },
+} as const;
+
 const OPENING_LABEL: Record<string, string> = { window: '窓', door: '開き戸', sliding: '引戸', entrance: '玄関ドア', open: '開口' };
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -365,6 +374,36 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             h('span', { class: 'field-label' }, '種類'),
             h('select', { onchange: (e: Event) => { pushUndo(); op.kind = (e.target as HTMLSelectElement).value as Opening['kind']; rebuild(); draw(); } }, (['window', 'door', 'sliding', 'entrance', 'open'] as const).map((k) => h('option', { value: k, selected: k === op.kind }, OPENING_LABEL[k]))),
           ),
+          ...(op.kind === 'window'
+            ? [h(
+                'label',
+                { class: 'field' },
+                h('span', { class: 'field-label' }, '窓の形'),
+                h(
+                  'select',
+                  {
+                    onchange: (e: Event) => {
+                      const v = (e.target as HTMLSelectElement).value as keyof typeof WINDOW_SHAPES;
+                      pushUndo();
+                      const sh = WINDOW_SHAPES[v];
+                      op.windowStyle = v;
+                      op.sill = sh.sill(f.ceilingHeight);
+                      op.height = sh.height(f.ceilingHeight);
+                      if (v === 'slit' && op.t1 - op.t0 > 450) {
+                        // 縦スリットは幅 300mm に絞る（中心はそのまま）
+                        const c = (op.t0 + op.t1) / 2;
+                        op.t0 = c - 150;
+                        op.t1 = c + 150;
+                      }
+                      rebuild();
+                      draw();
+                    },
+                  },
+                  (Object.keys(WINDOW_SHAPES) as (keyof typeof WINDOW_SHAPES)[]).map((k) => h('option', { value: k, selected: k === (op.windowStyle ?? 'koshi') }, WINDOW_SHAPES[k].label)),
+                ),
+                h('span', { class: 'hint' }, '腰高・高さは標準仕様（サッシ上端＝天井）に合わせて 3D に反映'),
+              )]
+            : []),
           h(
             'label',
             { class: 'field' },

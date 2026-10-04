@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
-import { state, emit } from '../state';
+import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
 import { SunContext } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL } from '../../sun/geo';
@@ -10,7 +10,7 @@ import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/repo
 import { clearGroup } from '../../scene/viewer';
 import { normDeg180 } from '../../sun/align';
 import { externalController, externalSampleY } from '../externalBuilding';
-import { createExternalPanel, twoPointBlock, type ExternalPanel } from './sunExternal';
+import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
 
 interface SunUI {
@@ -44,6 +44,20 @@ function sunDay(): SunDay {
 
 let cleanupPlace: (() => void) | null = null;
 let extPanel: ExternalPanel | null = null;
+
+/** 建設地の位置・向きを変えたときに、待ち受け中の 2 点合わせを中止する案内（指した角の座標はワールドなので古くなる） */
+const TWO_POINT_ABORT_SITE = '位置・向きを変えたので 2 点合わせを中止しました';
+/** 撮影済みの季節比較画像も捨てたときの案内 */
+export const IMAGES_CLEARED_MSG = '位置・向き・建物・周辺が変わったので、撮影済みの季節の日当たり比較画像も消しました（プレゼン資料に使うなら撮り直してください）';
+
+/**
+ * 建物に依存する解析結果（部屋の日当たり・日影図・撮影済みの季節比較画像）を捨てた state.sun。
+ * 画像はその時点の建物・影・航空写真の写りなので、位置・向き・3DS・周辺建物が変わると数字と写真が別の建物になる。
+ * hadImages: 画像を消した（案内を出す）
+ */
+export function clearedSunResults(sun: ProjectState['sun']): { sun: ProjectState['sun']; hadImages: boolean } {
+  return { sun: { ...sun, seasons: [], highlights: [], diagramSvg: undefined, images: [] }, hadImages: sun.images.length > 0 };
+}
 
 export const sunStep: Step = {
   id: 'sun',
@@ -237,6 +251,9 @@ export const sunStep: Step = {
       if (sc.state.aerialLoaded) await loadAerial();
       if (sc.state.neighbors.some((n) => n.source !== 'manual')) await loadNeighbors('gsi');
     };
+    // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ・撮影済みの季節比較画像）を捨てる。
+    // 位置・方位・3DS・周辺建物が変わった後に古い結果（プレゼン資料にも使われる state.sun）が残らないようにする。実体は解析セクションの後で入れる
+    let invalidateResults: () => void = () => {};
     const search = async () => {
       if (!addr.value.trim()) return;
       clear(results);
@@ -256,9 +273,12 @@ export const sunStep: Step = {
                 class: 'btn sm block',
                 style: 'justify-content:flex-start;margin:3px 0',
                 onclick: async () => {
+                  // 建設地が変わる: 待ち受け中の 2 点合わせを中止し、前の住所の解析結果を捨てる
+                  extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
                   state.site = { lat: r.lat, lon: r.lon, address: r.title, offsetE: 0, offsetN: 0 };
                   clear(results);
                   showLoc();
+                  invalidateResults();
                   if (r.precision === 'town' || r.precision === 'chome')
                     toast('番地までは特定できませんでした。「航空写真の上で敷地をクリック」で建物の位置を合わせてください', 'info', 8000);
                   await reloadContext();
@@ -277,16 +297,15 @@ export const sunStep: Step = {
       }
     };
     addr.addEventListener('keydown', (e) => e.key === 'Enter' && search());
-    // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ）を捨てる。
-    // 位置・方位・3DS が変わった後に古い結果（プレゼン資料にも使われる state.sun.seasons）が残らないようにする
-    let invalidateResults: () => void = () => {};
     const nudge = (de: number, dn: number) => {
+      extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
       state.site = { ...state.site, offsetE: state.site.offsetE + de, offsetN: state.site.offsetN + dn };
       showLoc();
       invalidateResults();
       reloadContext();
     };
     const rotate = (d: number) => {
+      extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
       state.model!.northAngleDeg = normDeg180(state.model!.northAngleDeg + d);
       emit('model');
       ctx.app.ensureScene();
@@ -308,8 +327,17 @@ export const sunStep: Step = {
       placeBtn.textContent = on ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止・Esc でも中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
       canvasEl.style.cursor = on ? 'crosshair' : '';
     };
-    const onPlace = async (e: PointerEvent) => {
+    // 2 点合わせと同じく、押した所から動かさずに離したときだけ置く（ドラッグで視点を動かしても置かない）
+    let placeDown: { x: number; y: number } | null = null;
+    const onPlaceDown = (e: PointerEvent) => {
       if (!placing || e.button !== 0) return;
+      placeDown = { x: e.clientX, y: e.clientY };
+    };
+    const onPlaceUp = async (e: PointerEvent) => {
+      if (!placing || e.button !== 0 || !placeDown) return;
+      const down = placeDown;
+      placeDown = null;
+      if (!isClick(down, { x: e.clientX, y: e.clientY })) return;
       const r = canvasEl.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       const hit = sc.pickAerial(ndc);
@@ -320,6 +348,7 @@ export const sunStep: Step = {
       e.stopPropagation();
       const d = sc.fromWorld(hit);
       setPlacing(false);
+      extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
       state.site = { ...state.site, offsetE: state.site.offsetE + d.e, offsetN: state.site.offsetN + d.n };
       showLoc();
       invalidateResults();
@@ -328,9 +357,11 @@ export const sunStep: Step = {
       toast('建物の位置を合わせました（細かいずれは下の「北へ2m」などで調整できます）', 'ok');
     };
     cleanupPlace?.();
-    canvasEl.addEventListener('pointerdown', onPlace, true);
+    canvasEl.addEventListener('pointerdown', onPlaceDown, true);
+    canvasEl.addEventListener('pointerup', onPlaceUp, true);
     cleanupPlace = () => {
-      canvasEl.removeEventListener('pointerdown', onPlace, true);
+      canvasEl.removeEventListener('pointerdown', onPlaceDown, true);
+      canvasEl.removeEventListener('pointerup', onPlaceUp, true);
       canvasEl.style.cursor = '';
     };
     const ensureAerial = async () => {
@@ -374,16 +405,17 @@ export const sunStep: Step = {
         locEl,
         placeBtn,
         ...twoPointBlock(extPanel),
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（航空写真に合わせてください）'),
+        h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（建物は図面のまま。航空写真と方位のほうを動かして合わせます）'),
         h(
           'div',
           { class: 'btn-row' },
-          h('button', { class: 'btn sm', onclick: () => nudge(0, 2) }, '北へ2m'),
-          h('button', { class: 'btn sm', onclick: () => nudge(0, -2) }, '南へ2m'),
-          h('button', { class: 'btn sm', onclick: () => nudge(2, 0) }, '東へ2m'),
-          h('button', { class: 'btn sm', onclick: () => nudge(-2, 0) }, '西へ2m'),
-          h('button', { class: 'btn sm', onclick: () => rotate(-2) }, '↺ 2°'),
-          h('button', { class: 'btn sm', onclick: () => rotate(2) }, '↻ 2°'),
+          h('button', { class: 'btn sm', title: '建物を実際の敷地で北へ 2 m 動かします（画面では航空写真が南へずれます）', onclick: () => nudge(0, 2) }, '北へ2m'),
+          h('button', { class: 'btn sm', title: '建物を実際の敷地で南へ 2 m 動かします（画面では航空写真が北へずれます）', onclick: () => nudge(0, -2) }, '南へ2m'),
+          h('button', { class: 'btn sm', title: '建物を実際の敷地で東へ 2 m 動かします（画面では航空写真が西へずれます）', onclick: () => nudge(2, 0) }, '東へ2m'),
+          h('button', { class: 'btn sm', title: '建物を実際の敷地で西へ 2 m 動かします（画面では航空写真が東へずれます）', onclick: () => nudge(-2, 0) }, '西へ2m'),
+          // 向き: 回るのは航空写真・方位（太陽の通り道・周辺建物）。建物は図面のまま動かないので、写真に対しては建物が逆向きに回って見える
+          h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て反時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は時計回りに回って見えます', onclick: () => rotate(-2) }, '↺ 2°'),
+          h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は反時計回りに回って見えます', onclick: () => rotate(2) }, '↻ 2°'),
         ),
       ),
     );
@@ -407,6 +439,8 @@ export const sunStep: Step = {
       const pm = progressModal('周辺の建物を取得しています', false);
       try {
         const n = await sc.loadNeighbors(src);
+        // 周辺建物は影を落とす（部屋の日当たり・日影図・日照時間マップに入る）ので、前の結果は捨てる
+        invalidateResults();
         toast(`周辺の建物を ${n} 棟取得しました`, 'ok');
       } catch (e) {
         toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
@@ -453,8 +487,8 @@ export const sunStep: Step = {
         h(
           'div',
           { class: 'btn-row' },
-          h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); apply(true); } }, '＋ 隣家を追加'),
-          h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); apply(true); } }, '周辺建物をすべて消す'),
+          h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); } }, '＋ 隣家を追加'),
+          h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
         h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は手動で追加してください。'),
       ),
@@ -610,7 +644,9 @@ export const sunStep: Step = {
     );
     renderResults();
     invalidateResults = () => {
-      state.sun = { ...state.sun, seasons: [], highlights: [], diagramSvg: undefined };
+      const { sun, hadImages } = clearedSunResults(state.sun);
+      state.sun = sun;
+      if (hadImages) toast(IMAGES_CLEARED_MSG, 'info', 7000);
       if (heat) {
         v.groups.overlay.remove(heat);
         heat = null;

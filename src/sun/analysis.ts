@@ -19,7 +19,7 @@ import type { Viewer } from '../scene/viewer';
 import type { BuildingModel, Room } from '../core/types';
 import { isHabitable } from '../core/types';
 import { pointInPolygon, insideLoops } from '../core/geometry';
-import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, trueSolarToLocal } from './solar';
+import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, trueSolarToLocal, formatHM } from './solar';
 
 // ---------------------------------------------------------------------------
 // 遮蔽物（BVH）
@@ -253,7 +253,7 @@ export function raycastFirstKind(occ: Occluder, origin: THREE.Vector3, dir: THRE
   let best: KindHit | null = null;
   const visit = (o: Occluder) => {
     const hit = o.bvh.raycastFirst(_ray, THREE.DoubleSide, 0, best ? best.distance : far);
-    if (hit && (!best || hit.distance < best.distance)) best = { distance: hit.distance, point: hit.point.clone(), kind: o.kindOf(hit.faceIndex) };
+    if (hit && (!best || hit.distance < best.distance)) best = { distance: hit.distance, point: hit.point.clone(), kind: o.kindOf(hit.faceIndex ?? -1) };
     if (o.extra) for (const e of o.extra) visit(e);
   };
   visit(occ);
@@ -818,13 +818,24 @@ export interface ShadowDiagramParams {
   insideBuilding: (x: number, z: number) => boolean;
   /** 建物の輪郭（ワールド XZ, x→x, z→y） */
   outlines: ShadowOutline[];
-  /** 敷地境界（ワールド XZ の多角形。矩形は 4 点） */
-  site: { polygon: Pt2[] };
+  /**
+   * 敷地境界（ワールド XZ の多角形。矩形は 4 点）。
+   * 省略時（null/undefined）は敷地境界・5m/10m ラインを描かず、summary.maxDist は建物の輪郭からの距離になる
+   */
+  site?: { polygon: Pt2[] } | null;
   /** 凡例に付ける注記（'※周辺建物を含みます' など） */
   note?: string;
+  /** 副題。省略時は '建物の位置・方位は航空写真上での手動配置によるものです'、null なら描かない */
+  subtitle?: string | null;
+  /** 斜めの薄い透かし文字。省略時は '参考図（簡易シミュレーション）／建築確認申請用の日影図ではありません'、null なら描かない */
+  watermark?: string | null;
   onProgress?: (r: number) => void;
   signal?: AbortSignal;
 }
+
+export const SHADOW_DIAGRAM_SUBTITLE = '建物の位置・方位は航空写真上での手動配置によるものです';
+export const SHADOW_DIAGRAM_WATERMARK = '参考図（簡易シミュレーション）／建築確認申請用の日影図ではありません';
+export const SHADOW_DIAGRAM_NO_SITE_NOTE = '敷地境界が未指定のため 5m/10m ラインは省略しています';
 
 /** 遮蔽状態の遷移を二分探索する細かさ（1 刻みを 2^REFINE に分ける: 10 分刻み・5 回 → 18.75 秒） */
 const REFINE = 5;
@@ -933,19 +944,31 @@ export async function shadowDiagramCore(p: ShadowDiagramParams): Promise<ShadowD
   const fmt = (v: number) => (Math.round(v * 100) / 100).toString();
   const ptsAttr = (poly: Pt2[]) => poly.map((q) => `${fmt(q.x * S)},${fmt(q.y * S)}`).join(' ');
   let body = '';
-  // 敷地
-  const sitePoly = p.site.polygon;
-  if (sitePoly.length >= 3) body += `<polygon points="${ptsAttr(sitePoly)}" fill="none" stroke="#333" stroke-width="12" stroke-dasharray="60 25 10 25"/>`;
-  // 5m・10m ライン（敷地境界から）
-  for (const [d, col] of [
-    [5, '#9a9a9a'],
-    [10, '#bdbdbd'],
-  ] as const) {
-    const off = offsetPolygon(sitePoly, d);
-    const bb = bboxOf(off);
-    body += `<polygon points="${ptsAttr(off)}" fill="none" stroke="${col}" stroke-width="8" stroke-dasharray="30 20"/>`;
-    body += `<text x="${fmt(bb.maxX * S + 20)}" y="${fmt(bb.minY * S + 60)}" font-size="70" fill="${col}">${d}mライン</text>`;
+  // 敷地（指定があるときだけ。無ければ 5m/10m ラインも省く）
+  const sitePoly = p.site && p.site.polygon.length >= 3 ? p.site.polygon : null;
+  if (sitePoly) {
+    body += `<polygon points="${ptsAttr(sitePoly)}" fill="none" stroke="#333" stroke-width="12" stroke-dasharray="60 25 10 25"/>`;
+    // 5m・10m ライン（敷地境界から）
+    for (const [d, col] of [
+      [5, '#9a9a9a'],
+      [10, '#bdbdbd'],
+    ] as const) {
+      const off = offsetPolygon(sitePoly, d);
+      const bb = bboxOf(off);
+      body += `<polygon points="${ptsAttr(off)}" fill="none" stroke="${col}" stroke-width="8" stroke-dasharray="30 20"/>`;
+      body += `<text x="${fmt(bb.maxX * S + 20)}" y="${fmt(bb.minY * S + 60)}" font-size="70" fill="${col}">${d}mライン</text>`;
+    }
   }
+  // summary.maxDist の基準: 敷地境界。無ければ建物の輪郭（閉じた多角形）、それも無ければ図の中心
+  const refPolys: Pt2[][] = sitePoly
+    ? [sitePoly]
+    : p.outlines.map((o) => (Array.isArray(o) ? o : o.closed === false ? [] : o.points)).filter((poly) => poly.length >= 3);
+  const distFromRef = (X: number, Z: number) => {
+    if (!refPolys.length) return Math.hypot(X - c.x, Z - c.z);
+    let best = Infinity;
+    for (const poly of refPolys) best = Math.min(best, distanceToPolygon({ x: X, y: Z }, poly));
+    return best;
+  };
   // 建物の輪郭
   for (const o of p.outlines) {
     const ol = Array.isArray(o) ? { points: o, fill: false, closed: true } : o;
@@ -986,8 +1009,8 @@ export async function shadowDiagramCore(p: ShadowDiagramParams): Promise<ShadowD
     for (const [a, b] of segs) {
       const X = x0 + (a + 0.5) * cell;
       const Z = z0 + (b + 0.5) * cell;
-      // 敷地境界からの距離
-      const dist = distanceToPolygon({ x: X, y: Z }, sitePoly);
+      // 敷地境界（無ければ建物の輪郭）からの距離
+      const dist = distFromRef(X, Z);
       if (dist > maxDist) {
         maxDist = dist;
         lab = [X, Z];

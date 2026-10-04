@@ -232,8 +232,10 @@ export const sunStep: Step = {
     const search = async () => {
       if (!addr.value.trim()) return;
       clear(results);
+      results.appendChild(h('p', { class: 'hint' }, '検索中…（番地の照合に数秒かかることがあります）'));
       try {
         const rs = await geocode(addr.value.trim(), { googleKey: googleKeyInput.value.trim() || undefined });
+        clear(results);
         if (!rs.length) {
           results.appendChild(h('p', { class: 'hint' }, '見つかりませんでした'));
           return;
@@ -262,6 +264,7 @@ export const sunStep: Step = {
             ),
           );
       } catch (e) {
+        clear(results);
         toast((e as Error).message, 'error');
       }
     };

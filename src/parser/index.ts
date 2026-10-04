@@ -7,6 +7,7 @@ import { detectScale, PT_TO_MM, STANDARD } from './scale';
 import { assembleModel, pageToMm, moduleScaleFromWalls } from './assemble';
 export { moduleScaleFromWalls };
 import { thickStrokeMask } from './rasterWalls';
+import { dxfToPages } from './dxf';
 
 export interface PdfjsLike {
   getDocument(src: any): { promise: Promise<{ numPages: number; getPage(i: number): Promise<PdfPageLike>; canvasFactory?: any }> };
@@ -24,6 +25,10 @@ export interface ParseOptions {
   scaleDenominator?: number;
   name?: string;
   onProgress?: (msg: string, ratio: number) => void;
+  /** 線のあるページでも、大きな画像の部分を画像として解析する（平面図が画像で貼られた資料用） */
+  rasterImages?: boolean;
+  /** 座標 1 単位あたりの mm（DXF のように実寸のデータでは 1） */
+  mmPerPt?: number;
 }
 
 export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<PageVectors[]> {
@@ -44,10 +49,12 @@ export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: P
     const page = await doc.getPage(i);
     const pv = await extractPageVectors(page, pdfjs.OPS, i - 1);
     // 線がほとんど無く画像だけのページ（スキャン図面）は、画像にして太い線（壁）を取り出す
-    if (pv.segments.length < 50 && (pv.imageCount ?? 0) > 0) {
+    const bigImages = (pv.images ?? []).filter((r) => (r.x1 - r.x0) * (r.y1 - r.y0) > pv.width * pv.height * 0.04);
+    const imagePlan = opts.rasterImages && bigImages.length > 0;
+    if ((pv.segments.length < 50 && (pv.imageCount ?? 0) > 0) || imagePlan) {
       try {
         opts.onProgress?.(`${i}/${n} ページ: スキャン画像を解析中`, (i - 0.5) / n * 0.5);
-        pv.raster = await renderThickMask(page, doc.canvasFactory, pv.width, pv.height);
+        pv.raster = await renderThickMask(page, doc.canvasFactory, pv.width, pv.height, imagePlan ? bigImages : undefined);
       } catch {
         // 描画できない環境では線のみで解析
       }
@@ -58,7 +65,7 @@ export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: P
 }
 
 /** ページを約150dpi（最大 600万画素）で描画し、太い線だけの2値画像にする */
-async function renderThickMask(page: PdfPageLike, factory: any, wPt: number, hPt: number): Promise<PageVectors['raster']> {
+async function renderThickMask(page: PdfPageLike, factory: any, wPt: number, hPt: number, only?: { x0: number; y0: number; x1: number; y1: number }[]): Promise<PageVectors['raster']> {
   const scale = Math.min(150 / 72, Math.sqrt(6e6 / (wPt * hPt)));
   const vp = (page as any).getViewport({ scale });
   const w = Math.ceil(vp.width);
@@ -86,6 +93,18 @@ async function renderThickMask(page: PdfPageLike, factory: any, wPt: number, hPt
   for (let i = 0; i < gray.length; i++) gray[i] = (rgba[i * 4] * 0.3 + rgba[i * 4 + 1] * 0.59 + rgba[i * 4 + 2] * 0.11) | 0;
   // 紙で約0.7mm 未満の細い線（寸法線・家具・文字・手書き）を消す
   const k = Math.max(1, Math.round(2 * (scale / (150 / 72))));
+  // 資料の中に貼られた平面図の画像だけを見る（表題・説明の帯や写真は除く）
+  if (only?.length) {
+    const keep = new Uint8Array(w * h);
+    for (const r of only) {
+      const x0 = Math.max(0, Math.floor(r.x0 * scale));
+      const x1 = Math.min(w, Math.ceil(r.x1 * scale));
+      const y0 = Math.max(0, Math.floor(r.y0 * scale));
+      const y1 = Math.min(h, Math.ceil(r.y1 * scale));
+      for (let y = y0; y < y1; y++) keep.fill(1, y * w + x0, y * w + x1);
+    }
+    for (let i = 0; i < gray.length; i++) if (!keep[i]) gray[i] = 255;
+  }
   return { mask: thickStrokeMask(gray, w, h, k, undefined, k), w, h, scale };
 }
 
@@ -96,6 +115,10 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   let scaleSource: BuildingModel['report']['scaleSource'] = sc.source;
   if (opts.scaleDenominator) {
     sc = { mmPerPt: opts.scaleDenominator * PT_TO_MM, denominator: opts.scaleDenominator, source: 'text', matches: 0 };
+    scaleSource = 'manual';
+  }
+  if (opts.mmPerPt) {
+    sc = { mmPerPt: opts.mmPerPt, denominator: null, source: 'text', matches: 0 };
     scaleSource = 'manual';
   }
   const segCount = pages.reduce((s, p) => s + p.segments.length, 0);
@@ -180,11 +203,33 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
 
 export async function parseFloorPlanPdf(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<BuildingModel> {
   const t0 = performance.now();
-  const pages = await loadPdfVectors(data, pdfjs, opts);
+  // pdf.js は読み込み時にデータをワーカーへ移すので、読み直し用に写しを取っておく
+  const spare = data.slice();
+  let pages = await loadPdfVectors(data, pdfjs, opts);
   const t1 = performance.now();
   opts.onProgress?.('壁・開口部・部屋を解析中', 0.6);
-  const model = modelFromVectors(pages, opts);
+  let model = modelFromVectors(pages, opts);
+  // 線から壁が見つからず、大きな画像が貼られている資料（プラン集・プレゼンボードなど）は、画像から壁を読み直す
+  const noWalls = !model.floors.length || model.floors.every((f) => f.walls.length < 4);
+  if (noWalls && !opts.rasterImages && pages.some((p) => (p.images ?? []).some((r) => (r.x1 - r.x0) * (r.y1 - r.y0) > p.width * p.height * 0.04))) {
+    opts.onProgress?.('平面図の画像から壁を読み取っています', 0.65);
+    pages = await loadPdfVectors(spare, pdfjs, { ...opts, rasterImages: true });
+    const m2 = modelFromVectors(pages, opts);
+    if (m2.floors.some((f) => f.walls.length >= 4)) {
+      model = m2;
+      model.report.warnings.unshift('平面図が画像で貼られた資料のため、画像から壁を読み取りました');
+    }
+  }
   model.report.timingsMs.load = Math.round(t1 - t0);
   opts.onProgress?.('完了', 1);
+  return model;
+}
+
+/** DXF（CAD データ, 実寸 mm）→ 建物モデル */
+export function parseDxf(text: string, opts: ParseOptions = {}): BuildingModel {
+  const pages = dxfToPages(text);
+  const model = modelFromVectors(pages, { ...opts, mmPerPt: 1 });
+  model.report.scaleDenominator = null;
+  model.report.warnings = model.report.warnings.filter((w) => !/縮尺/.test(w));
   return model;
 }

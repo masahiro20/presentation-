@@ -53,6 +53,8 @@ export interface PageVectors {
   texts: RawText[];
   /** 画像の描画回数（スキャン図面の判定用） */
   imageCount?: number;
+  /** 画像の置かれた範囲（ページの pt 座標、y は下向き） */
+  images?: { x0: number; y0: number; x1: number; y1: number }[];
   /** スキャン図面: ページを画像にして作った「太い線（壁）」の2値画像。1画素 = 1/scale pt */
   raster?: { mask: Uint8Array; w: number; h: number; scale: number };
 }
@@ -105,6 +107,7 @@ export async function extractPageVectors(
   let gs: GState = { ctm: base, lineWidth: 1, dashed: false, stroke: '#000000', fill: '#000000', clip: null };
   let pendingClip = false;
   let imageCount = 0;
+  const images: { x0: number; y0: number; x1: number; y1: number }[] = [];
   /** クリップされた塗り（グラデーションを同心円などで描き部屋の形で切り抜いたもの）は、
    *  クリップの形を塗りとして1回だけ出力する */
   const clipEmitted = new Set<Vec2[]>();
@@ -167,6 +170,13 @@ export async function extractPageVectors(
       case OPS.paintImageMaskXObject:
       case OPS.paintImageXObjectRepeat:
         imageCount++;
+        {
+          // 画像の置かれた範囲（単位正方形を現在の変換で写した外接矩形, ページの pt 座標）
+          const m = gs.ctm;
+          const xs = [m[4], m[0] + m[4], m[2] + m[4], m[0] + m[2] + m[4]];
+          const ys = [m[5], m[1] + m[5], m[3] + m[5], m[1] + m[3] + m[5]];
+          images.push({ x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) });
+        }
         break;
       case OPS.shadingFill:
         emitClipFill('#shading');
@@ -306,7 +316,7 @@ export async function extractPageVectors(
     texts.push({ str, cx, cy, size, width: w, angle });
   }
 
-  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts), imageCount };
+  return { pageIndex, width: viewport.width, height: viewport.height, segments, curves, fills, texts: mergeTextFragments(texts), imageCount, images };
 }
 
 function bboxPts(pts: Vec2[]) {

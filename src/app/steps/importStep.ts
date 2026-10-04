@@ -2,18 +2,23 @@ import { h, clear, toast, progressModal, section, field } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
+import { parseDxf } from '../../parser';
+import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type PlanSide, type RoomType } from '../../core/types';
 
-async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number) {
+async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf') {
   const pm = progressModal('平面図を解析しています', false);
   try {
-    const model = await parsePdfInBrowser(data, {
-      name,
-      scaleDenominator,
-      onProgress: (msg, r) => pm.set(r, msg),
-    });
+    const model =
+      kind === 'dxf'
+        ? parseDxf(decodeDxf(data), { name })
+        : await parsePdfInBrowser(data.slice(), {
+            name,
+            scaleDenominator,
+            onProgress: (msg, r) => pm.set(r, msg),
+          });
     const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
     if (!model.floors.length || rooms === 0) {
       toast('平面図を認識できませんでした。CAD から出力したベクター形式の PDF をお試しください', 'error', 6000);
@@ -21,7 +26,7 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
     }
     state.model = model;
     state.pdfName = name;
-    lastPdf = { data, name };
+    lastPdf = { data, name, kind };
     emit('model');
     toast(`${model.floors.length}階分・${rooms}室を認識しました`, 'ok');
     ctx.app.go('import');
@@ -33,18 +38,18 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
   }
 }
 
-let lastPdf: { data: Uint8Array; name: string } | null = null;
+let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf' } | null = null;
 
 function dropScreen(ctx: StepCtx) {
-  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf', style: 'display:none' }) as HTMLInputElement;
-  const readFile = async (f: File) => loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.pdf$/i, ''));
+  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf', style: 'display:none' }) as HTMLInputElement;
+  const readFile = async (f: File) => loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
   input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
   const zone = h(
     'div',
     { class: 'dropzone' },
     h('div', { class: 'big' }, '📐'),
-    h('p', null, h('b', null, '平面図の PDF をここにドロップ'), h('br'), 'または'),
-    h('button', { class: 'btn primary', onclick: () => input.click() }, 'PDF ファイルを選択'),
+    h('p', null, h('b', null, '平面図の PDF（または CAD の DXF）をここにドロップ'), h('br'), 'または'),
+    h('button', { class: 'btn primary', onclick: () => input.click() }, 'PDF / DXF ファイルを選択'),
     input,
   );
   zone.addEventListener('dragover', (e) => {
@@ -369,7 +374,7 @@ function renderResult(ctx: StepCtx) {
       h(
         'div',
         { class: 'btn-row' },
-        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined) }, '再解析'),
+        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind) }, '再解析'),
         h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),

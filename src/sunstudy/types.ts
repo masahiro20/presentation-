@@ -123,7 +123,10 @@ export interface PlacementAlignment {
   upAxis?: UpAxis;
   /** 残差の RMS (m) */
   rmsM?: number;
-  /** 計測した寸法の比（航空写真上の距離 / モデル上の距離）。1 から 3 % 以上ずれていれば単位を疑う */
+  /**
+   * 計測した大きさの比。2 点合わせ: 航空写真上の距離 / モデル上の距離（1 から 3 % 以上ずれていれば単位を疑う）。
+   * 敷地の輪郭に合わせた: 描いた輪郭の周長 / 3DS の敷地の周長（0.5〜2 を外れると単位違いとみなし、向きと中心だけ合わせる）
+   */
   scaleRatio?: number;
   pivotLatLon?: LatLon;
   /** ISO 日時 */

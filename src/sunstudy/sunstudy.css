@@ -54,7 +54,9 @@
 .pop input[type=number] { width: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 
 /* 進行中のオーバーレイ案内 */
-.stage-note { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(31,34,38,0.86); color: #fff; border-radius: 999px; padding: 7px 14px; font-size: 13px; z-index: 4; pointer-events: none; white-space: nowrap; }
+/* 狭い画面では折り返す（.stage は overflow: hidden なので nowrap だと両端が切れる）。キー操作の案内はタッチ端末では隠す */
+.stage-note { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(31,34,38,0.86); color: #fff; border-radius: 999px; padding: 7px 14px; font-size: 13px; line-height: 1.5; z-index: 4; pointer-events: none; white-space: normal; max-width: calc(100% - 28px); width: max-content; text-align: center; box-sizing: border-box; }
+@media (pointer: coarse) { .stage-note .keys { display: none; } }
 
 /* ドロップ画面（建物のステップ） */
 .drop.light { background: radial-gradient(1200px 600px at 30% 20%, #fbf8f3, #ece7df); }

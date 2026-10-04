@@ -6,6 +6,9 @@
  * 状態の更新は必ず study を書き換えて emit し、表示を refresh*() で作り直す。
  * ピンを動かしたとき: 周辺環境が読み込み済みで移動が小さければ（150m 未満）、格子・航空写真・周辺建物を新しいピン基準に
  * ずらして使い続ける（座標系の原点 = ピン）。大きく動いたときは破棄し、再読み込みを促す。
+ * 建物と測定点の追従は周辺環境とは別に followPinMove（alignment.ts）で決める: 位置合わせ・手で置いた記録がある建物は
+ * 地球上の同じ所に留まり、読み込んだだけの建物はピンに付いて動く。測定点は建物と同じだけ動く。
+ * 3D の pivot は placement を書き換えた後に必ず applyTransform() で同期する（日照画面が古い位置で描かないように）。
  */
 import { h, clear, toast, progressModal, section, segmented } from '../../app/dom';
 import { geocode, PRECISION_LABEL } from '../../sun/geo';
@@ -16,8 +19,8 @@ import { frameToLocal } from '../types';
 import { MapPicker, MAP_LAYER_LABEL, polygonAreaM2, type MapLayer } from '../map';
 import { loadEnvironment, NEIGHBOR_RADIUS } from '../environment';
 import { DEM_LABEL, gridStats, sampleHeight } from '../terrain';
-import { buildingEavesOutlineEN, buildingFootprintEN, buildingOutlineEN, ensurePlacedData } from '../building';
-import { reapplyAlignment } from '../alignment';
+import { buildingEavesOutlineEN, buildingFootprintEN, buildingOutlineEN, currentPlaced, ensurePlacedData } from '../building';
+import { followPinMove } from '../alignment';
 import { downloadProject, loadProjectFile, loadProjectFromUrl, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
 
 /** 初期表示（東京駅付近） */
@@ -132,37 +135,11 @@ function relocateEnvironment(prev: GeoFrame, next: GeoFrame) {
     const x = n as typeof n & { holes?: { e: number; n: number }[][] };
     if (x.holes) x.holes = x.holes.map((h) => h.map((q) => ({ e: q.e - d.e, n: q.n - d.n })));
   }
-  // 建物と測定点も周辺環境と同じだけずらし、航空写真に合わせた位置から滑らない（座標系の原点 = ピン）
-  if (study.model) {
-    study.placement.offsetE = Math.round((study.placement.offsetE - d.e) * 100) / 100;
-    study.placement.offsetN = Math.round((study.placement.offsetN - d.n) * 100) / 100;
-  }
-  for (const pt of study.points) {
-    pt.pos = [pt.pos[0] - d.e, pt.pos[1], pt.pos[2] + d.n];
-  }
+  // 建物と測定点は周辺環境とは別に followPinMove（setFrame）で追従させる（周辺環境を捨てる分岐でも同じ規則になるように）
   const h0 = sampleHeight(study.grid, 0, 0);
   next.groundElev = Number.isFinite(h0) ? h0 : prev.groundElev;
   emit('env');
   emit('neighbors');
-}
-
-/**
- * ピンが動いた後、記録した位置合わせから建物の方位・位置を決め直す（建物を地球上の同じ所に保つ）。
- * 2 点合わせなら対応点の緯度経度から解き直し（小さな移動のずらしを厳密にする）、それ以外は pivot の緯度経度に戻す。
- * 新しいピンから周辺環境の半径より遠くなるときは（建設地そのものが変わった）ピンの位置に戻し、記録を外す
- */
-function keepBuildingGeoFixed(next: GeoFrame): boolean {
-  if (!study.model) return false;
-  const pl = study.placement;
-  const kind = reapplyAlignment(next, pl, null);
-  if (!kind) return false;
-  if (Math.hypot(pl.offsetE, pl.offsetN) > NEIGHBOR_RADIUS) {
-    pl.offsetE = 0;
-    pl.offsetN = 0;
-    pl.alignment = undefined;
-    toast('建設地が大きく変わったため、建物をピンの位置に戻しました。「建物を置く」で位置合わせをやり直してください', 'info', 8000);
-  }
-  return true;
 }
 
 /** ピンの位置と住所を確定する */
@@ -173,7 +150,15 @@ function setFrame(p: LatLon, address: string) {
   else if (study.env.loaded) invalidateEnv();
   const moved = !prev || distM(prev, next) >= 0.01;
   study.frame = next;
-  if (moved) keepBuildingGeoFixed(next);
+  if (moved) {
+    // 建物: 位置合わせ・手で置いた記録があれば地球上の同じ所に保つ（2 点合わせは対応点から解き直す）。
+    // 新しいピンから周辺環境の半径より遠くなるときは（建設地そのものが変わった）ピンの位置に戻して記録を外す。
+    // 記録が無い（読み込んだだけの）建物はピンに付いて動く。測定点は建物と同じだけ動く
+    const r = followPinMove(prev, next, study.model ? study.placement : null, study.points, NEIGHBOR_RADIUS);
+    if (r.kind === 'reset') toast('建設地が大きく変わったため、建物をピンの位置に戻しました。「建物を置く」で位置合わせをやり直してください', 'info', 8000);
+    // 3D の pivot は placement を書き換えただけでは動かないので、ここで同期する（日照画面に直接進んでも正しい位置で描く・解析する）
+    currentPlaced()?.applyTransform();
+  }
   emit('frame');
   // 建物の位置（ピンからの相対）が変わったので、地図の足跡・日照画面の視点などに知らせる
   if (study.model && moved) emit('placement');
@@ -313,7 +298,7 @@ export const placeStep: StudyStep = {
     toolbar.append(layerSeg, ...makePolyButtons(), locateBtn);
 
     // ---- サイド ----
-    side.append(h('h2', null, '建設地を指定'), h('p', { class: 'lead' }, '住所で探すか、地図をクリックして建設地にピンを置きます。ピンの位置が 3D の原点（建物を置く場所・地盤高の基準）になります。航空写真に切り替えると敷地の形がよく分かります。'));
+    side.append(h('h2', null, '建設地を指定'), h('p', { class: 'lead' }, '住所で探すか、地図をクリックして建設地にピンを置きます。ピンの位置が 3D の原点（建物を置く場所・地盤高の基準）になります。「建物を置く」で位置を合わせた建物は、ピンを動かしても地球上の同じ所に留まります。航空写真に切り替えると敷地の形がよく分かります。'));
 
     // 住所で探す
     const q = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', autocomplete: 'off' });

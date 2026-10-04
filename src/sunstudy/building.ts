@@ -34,7 +34,10 @@ export function ensurePlaced(scene: StudyScene): PlacedModel | null {
     placed = new PlacedModel(m, study.placement);
     scene.groups.building.add(placed.pivot);
   } else {
+    // placement は別のステップ（建設地のピン移動 → followPinMove）が書き換えていることがある。
+    // pivot の位置・向きは applyTransform() でしか更新されないので、ここで必ず同期する（古い位置で描く・解析するのを防ぐ）
     placed.placement = study.placement;
+    placed.applyTransform();
     if (!placed.pivot.parent) scene.groups.building.add(placed.pivot);
   }
   return placed;
@@ -94,7 +97,10 @@ export function ensurePlacedData(): PlacedModel | null {
     placed = null;
   }
   if (!placed) placed = new PlacedModel(m, study.placement);
-  else placed.placement = study.placement;
+  else {
+    placed.placement = study.placement;
+    placed.applyTransform();
+  }
   return placed;
 }
 

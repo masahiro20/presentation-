@@ -14,8 +14,8 @@ import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
 import { emit, study } from './state';
 import { sampleHeight } from './terrain';
-import { DEFAULT_PLACEMENT } from './types';
-import type { AerialImage, GeoFrame, HeightGrid, LatLon, ModelPlacement, Neighbor, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
+import { DEFAULT_PLACEMENT, UNIT_LABEL } from './types';
+import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
 
 /** 同梱する 3D データの上限 (bytes) */
 const MODEL_LIMIT = 40 * 1024 * 1024;
@@ -159,13 +159,32 @@ function sanitizeAlignment(a: unknown): PlacementAlignment | undefined {
   return out;
 }
 
-/** 保存データの配置を今の形に（新しい任意項目が無くても既定値で埋める） */
-function sanitizePlacement(pl: Partial<ModelPlacement> | undefined): ModelPlacement {
-  const p = pl ?? {};
-  const out: ModelPlacement = { ...DEFAULT_PLACEMENT, ...p, hiddenObjects: Array.isArray(p.hiddenObjects) ? p.hiddenObjects.filter((s) => typeof s === 'string') : [] };
+const isFiniteNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const LENGTH_UNITS = Object.keys(UNIT_LABEL) as LengthUnit[];
+
+/**
+ * 保存データの配置を今の形に（新しい任意項目が無くても既定値で埋める）。
+ * 手で編集した・壊れた JSON や localStorage から文字列・NaN・未知の単位が入ると pivot の行列が NaN になって建物が消えるので、
+ * 数値は有限値だけ、列挙は既知の値だけを受け取り、それ以外は既定値にする
+ */
+export function sanitizePlacement(pl: Partial<ModelPlacement> | undefined | null): ModelPlacement {
+  const p: Partial<Record<keyof ModelPlacement, unknown>> = pl && typeof pl === 'object' ? (pl as Partial<Record<keyof ModelPlacement, unknown>>) : {};
+  const num = (v: unknown, d: number) => (isFiniteNum(v) ? v : d);
+  const D = DEFAULT_PLACEMENT;
+  const out: ModelPlacement = {
+    unit: LENGTH_UNITS.includes(p.unit as LengthUnit) ? (p.unit as LengthUnit) : D.unit,
+    customScale: isFiniteNum(p.customScale) && p.customScale > 0 ? p.customScale : D.customScale,
+    upAxis: p.upAxis === 'z' || p.upAxis === 'y' ? p.upAxis : D.upAxis,
+    headingDeg: num(p.headingDeg, D.headingDeg),
+    offsetE: num(p.offsetE, D.offsetE),
+    offsetN: num(p.offsetN, D.offsetN),
+    baseY: num(p.baseY, D.baseY),
+    appearance: p.appearance === 'white' || p.appearance === 'original' ? p.appearance : D.appearance,
+    mirror: p.mirror === true,
+    hiddenObjects: Array.isArray(p.hiddenObjects) ? (p.hiddenObjects as unknown[]).filter((s): s is string => typeof s === 'string') : [],
+  };
   const al = sanitizeAlignment(p.alignment);
   if (al) out.alignment = al;
-  else delete out.alignment;
   return out;
 }
 

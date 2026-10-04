@@ -83,7 +83,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#f1efea', '#1f1f1f', '#a07b56', '#2b2b2b'],
     roof: {
       type: 'shed',
-      pitch: 3,
+      pitch: 0.5,
       eaves: 450,
       verge: 300,
       material: { pattern: 'standingSeam', color: '#2b2c2e', roughness: 0.5, metalness: 0.45 },
@@ -112,8 +112,8 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     description: 'あたたかみのあるグレージュの塗り壁で包んだ、陸屋根の水平ラインが美しいキューブ型。余計な線を出さない、静かで洗練された外観です。',
     swatch: ['#d8d1c6', '#2a2a2a', '#b7ad9f', '#1f1f1f'],
     roof: {
-      type: 'flat',
-      pitch: 0,
+      type: 'shed',
+      pitch: 0.5,
       eaves: 0,
       verge: 0,
       material: { pattern: 'concrete', color: '#9f9b95', roughness: 0.9 },
@@ -143,7 +143,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#cfcfcc', '#8e6a49', '#2c2d2f', '#1f1f1f'],
     roof: {
       type: 'shed',
-      pitch: 3,
+      pitch: 0.5,
       eaves: 350,
       verge: 200,
       material: { pattern: 'standingSeam', color: '#2c2d2f', roughness: 0.5, metalness: 0.45 },
@@ -173,7 +173,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     swatch: ['#4a4845', '#9a7654', '#2a2a2a', '#1a1a1a'],
     roof: {
       type: 'shed',
-      pitch: 3,
+      pitch: 0.5,
       eaves: 450,
       verge: 300,
       material: { pattern: 'standingSeam', color: '#2a2a2b', roughness: 0.5, metalness: 0.45 },

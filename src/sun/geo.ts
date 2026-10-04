@@ -65,7 +65,7 @@ export const PRECISION_LABEL: Record<GeocodePrecision, string> = {
 };
 
 const KANJI_NUM: Record<string, number> = { 〇: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-function kanjiToNum(k: string): number {
+export function kanjiToNum(k: string): number {
   // 一〜十九程度（丁目に使われる範囲）
   if (/^\d+$/.test(k)) return +k;
   let n = 0;
@@ -77,7 +77,7 @@ function kanjiToNum(k: string): number {
 }
 
 /** 検索結果の文字列から、どこまで特定できているかを判定 */
-function precisionOf(title: string): GeocodePrecision {
+export function precisionOf(title: string): GeocodePrecision {
   const t = title.normalize('NFKC');
   if (/\d+号$/.test(t)) return 'go';
   if (/\d+番地?(\d+)?$/.test(t) || /\d+(-\d+)*$/.test(t)) return 'ban';
@@ -86,7 +86,7 @@ function precisionOf(title: string): GeocodePrecision {
 }
 
 /** 緯度経度の直接入力（"35.288, 136.924"）や Google マップの URL（@35.288,136.924 / q=35.288,136.924） */
-function parsePoint(q: string): GeocodeResult | null {
+export function parsePoint(q: string): GeocodeResult | null {
   const m = q.match(/@?(-?\d{1,2}\.\d{3,}),\s*(-?\d{1,3}\.\d{3,})/);
   if (!m) return null;
   const lat = +m[1];
@@ -96,7 +96,7 @@ function parsePoint(q: string): GeocodeResult | null {
 }
 
 /** 入力の末尾の番号（丁目・番地・号）を取り出す。例 "4-213-1" "4丁目213番地1号" "宮前50" */
-function tailNumbers(q: string): number[] {
+export function tailNumbers(q: string): number[] {
   const t = q.replace(/\s.*$/, '');
   const m = t.match(/((?:\d+(?:丁目|番地?|号|[-ー−‐の])?)+)$/);
   if (!m) return [];
@@ -167,6 +167,19 @@ async function lookupAbr(townTitle: string, nums: number[]): Promise<GeocodeResu
     return { title: `${label}${suffix}`, lat, lon, precision: exact.length && kind === '住居表示' ? 'go' : 'ban' };
   }
   return null;
+}
+
+/**
+ * OpenStreetMap の display_name（「奥沢三丁目, 奥沢, 世田谷区, 東京都, 158-0083, 日本」）を日本式の 1 行にする。
+ * 郵便番号・国名・数字だけの部分は捨て、「奥沢」のように次の部分の先頭に含まれる重複（奥沢→奥沢三丁目）は 1 回だけにする
+ */
+export function osmTitle(displayName: string): string {
+  const parts = displayName
+    .split(',')
+    .reverse()
+    .map((x) => x.trim())
+    .filter((x) => x && x !== '日本' && !/^[0-9-]+$/.test(x));
+  return parts.filter((x, i) => !(i + 1 < parts.length && parts[i + 1].startsWith(x))).join('');
 }
 
 /**
@@ -241,7 +254,7 @@ export async function geocode(q: string, opts: { googleKey?: string } = {}): Pro
       if (res.ok) {
         const js = (await res.json()) as { lat: string; lon: string; display_name: string; class?: string; type?: string }[];
         for (const r of js) {
-          const title = r.display_name.split(',').reverse().map((x) => x.trim()).filter((x) => x && x !== '日本' && !/^[0-9-]+$/.test(x)).join('');
+          const title = osmTitle(r.display_name);
           const p = r.class === 'building' || r.type === 'house' || /\d+$/.test(title) ? 'ban' : precisionOf(title);
           out.push({ title, lat: +r.lat, lon: +r.lon, precision: p });
         }

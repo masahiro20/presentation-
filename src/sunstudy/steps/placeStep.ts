@@ -8,7 +8,7 @@
  * ずらして使い続ける（座標系の原点 = ピン）。大きく動いたときは破棄し、再読み込みを促す。
  */
 import { h, clear, toast, progressModal, section, segmented } from '../../app/dom';
-import { geocode } from '../../sun/geo';
+import { geocode, PRECISION_LABEL } from '../../sun/geo';
 import type { StudyStep, StudyCtx } from '../shell';
 import { study, emit, on, visibleNeighbors } from '../state';
 import type { GeoFrame, LatLon, NeighborSource } from '../types';
@@ -284,7 +284,27 @@ export const placeStep: StudyStep = {
     side.append(h('h2', null, '建設地を指定'), h('p', { class: 'lead' }, '住所で探すか、地図をクリックして建設地にピンを置きます。ピンの位置が 3D の原点（建物を置く場所・地盤高の基準）になります。航空写真に切り替えると敷地の形がよく分かります。'));
 
     // 住所で探す
-    const q = h('input', { type: 'text', placeholder: '例: 東京都千代田区丸の内1-9-1', autocomplete: 'off' });
+    const q = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', autocomplete: 'off' });
+    // Google Geocoding API のキー（任意）。国土地理院・アドレス・ベース・レジストリで番地まで出ないときの補助
+    const googleKeyInput = h('input', {
+      type: 'password',
+      placeholder: 'Google Maps API キー（任意）',
+      autocomplete: 'off',
+      value: (() => {
+        try {
+          return localStorage.getItem('googleMapsKey') ?? '';
+        } catch {
+          return '';
+        }
+      })(),
+      onchange: (e: Event) => {
+        try {
+          localStorage.setItem('googleMapsKey', (e.target as HTMLInputElement).value.trim());
+        } catch {
+          // 保存できない環境では入力中だけ使う
+        }
+      },
+    });
     const results = h('div', { class: 'geo-results' });
     const searchBtn = h('button', { class: 'btn', onclick: () => void search() }, '検索');
     const search = async () => {
@@ -295,26 +315,30 @@ export const placeStep: StudyStep = {
       }
       searchBtn.disabled = true;
       clear(results);
-      results.appendChild(h('div', { class: 'hint' }, '検索しています…'));
+      results.appendChild(h('div', { class: 'hint' }, '検索中…（番地の照合に数秒かかることがあります）'));
       try {
-        const list = (await geocode(text)).slice(0, 6);
+        const list = (await geocode(text, { googleKey: googleKeyInput.value.trim() || undefined })).slice(0, 6);
         clear(results);
         if (!list.length) {
           results.appendChild(h('div', { class: 'warn' }, '見つかりませんでした。番地を省く、または市区町村から入力してみてください。地図を直接クリックしてピンを置くこともできます'));
           return;
         }
         for (const r of list) {
+          // 番地・号・座標まで特定できた候補はピンが正確なので一段寄せる（MAX_ZOOM = 18）
+          const precise = r.precision === 'point' || r.precision === 'go' || r.precision === 'ban';
           results.appendChild(
             h('button', {
               class: 'btn sm',
               onclick: () => {
                 anchor = { lat: r.lat, lon: r.lon, address: r.title };
                 setFrame(r, r.title);
-                map?.setCenter(r, 17);
+                map?.setCenter(r, precise ? 18 : 17);
                 map?.setPin(r, true);
                 refreshAll();
+                if (r.precision === 'town' || r.precision === 'chome')
+                  toast('番地までは特定できませんでした。地図上でピンをドラッグ（または航空写真でクリック）して建設地に合わせてください', 'info', 8000);
               },
-            }, r.title),
+            }, r.title, h('span', { class: 'hint', style: 'margin-left:6px' }, PRECISION_LABEL[r.precision])),
           );
         }
         results.appendChild(h('div', { class: 'hint' }, '候補を選ぶとピンが置かれます。番地まで一致しない場合は、地図上でピンをドラッグして合わせてください'));
@@ -331,7 +355,20 @@ export const placeStep: StudyStep = {
         void search();
       }
     });
-    side.appendChild(section('住所で探す', h('div', { class: 'btn-row', style: 'margin:0' }, h('div', { class: 'field', style: 'flex:1;margin:0' }, q), searchBtn), results));
+    side.appendChild(
+      section(
+        '住所で探す',
+        h('div', { class: 'btn-row', style: 'margin:0' }, h('div', { class: 'field', style: 'flex:1;margin:0' }, q), searchBtn),
+        h(
+          'details',
+          { style: 'margin:6px 0' },
+          h('summary', { class: 'hint', style: 'cursor:pointer' }, '番地まで出ないときは Google の住所検索を使う（API キーを設定）'),
+          h('div', { class: 'field', style: 'margin:6px 0 0' }, googleKeyInput),
+          h('span', { class: 'hint' }, 'Google Cloud で「Geocoding API」を有効にしたキーを貼ると、住居表示の無い地域や新しい番地も特定できます。キーはこのパソコンにだけ保存されます'),
+        ),
+        results,
+      ),
+    );
 
     // 敷地（任意）
     const areaOut = h('div', { class: 'ok-box', style: 'display:none' });

@@ -41,7 +41,7 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
       // 白い塗り（隠蔽用マスク）の輪郭は除外
       .filter((s) => !(s.source === 'fill' && /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(s.color)))
       .map((s) => ({ a: sc(s.a), b: sc(s.b), width: s.width, dashed: s.dashed, source: s.source })),
-    arcs: p.curves.filter((c) => !c.dashed).map((c) => ({ p0: sc(c.p0), p1: sc(c.p1), p2: sc(c.p2), p3: sc(c.p3) })),
+    arcs: p.curves.filter((c) => !c.dashed).map((c) => ({ p0: sc(c.p0), p1: sc(c.p1), p2: sc(c.p2), p3: sc(c.p3), width: c.width })),
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
     masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 8).map((f) => f.polygon.map(sc)),
@@ -108,7 +108,7 @@ export function rotatePageMm(p: PageMm, deg: number): PageMm {
   return {
     ...p,
     segs: p.segs.map((s) => ({ ...s, a: R(s.a), b: R(s.b) })),
-    arcs: p.arcs.map((a) => ({ p0: R(a.p0), p1: R(a.p1), p2: R(a.p2), p3: R(a.p3) })),
+    arcs: p.arcs.map((a) => ({ ...a, p0: R(a.p0), p1: R(a.p1), p2: R(a.p2), p3: R(a.p3) })),
     texts: p.texts.map((t) => ({ ...t, ...R({ x: t.x, y: t.y }), angle: t.angle + th })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(R) })),
     masks: p.masks.map((m) => m.map(R)),

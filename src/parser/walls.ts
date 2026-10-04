@@ -24,6 +24,8 @@ export interface Arc {
   p1: Vec2;
   p2: Vec2;
   p3: Vec2;
+  /** 線幅（分かる場合） */
+  width?: number;
 }
 
 /** 角度グループ内での線（オフセット・区間表現） */
@@ -154,7 +156,7 @@ export function findAngleGroups(segs: Seg[], minFrac = 0.02): AngleGroup[] {
   const used = new Uint8Array(360);
   const order = [...smooth.keys()].sort((a, b) => smooth[b] - smooth[a]);
   for (const i of order) {
-    if (smooth[i] < total * minFrac || used[i]) continue;
+    if (smooth[i] <= 0 || smooth[i] < total * minFrac || used[i]) continue;
     // 周辺を使用済みに
     for (let k = -4; k <= 4; k++) used[(i + k + 360) % 360] = 1;
     // 重心角度
@@ -272,7 +274,16 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   const O = { ...DEFAULTS, ...opts };
   const segs = allSegs.filter((s) => !s.dashed && segLen(s) >= O.minSegment);
   const heavyT = O.ignoreWidth ? null : heavyWidthThreshold(segs);
+  // 曲線の壁（玄関の角のR など）は弦の直線壁に置き換えて拾う
+  const curved = curvedWallChords(arcs, segs, heavyT, O);
+  const chords = curved.segs;
+  segs.push(...chords);
+  // 曲線壁に使った円弧はドア記号の候補から外す
+  arcs = arcs.filter((a) => !curved.used.has(a));
   const groups = findAngleGroups(segs);
+  for (const g of findAngleGroups(chords, 0)) {
+    if (groups.every((q) => angleDiff(q.theta, g.theta) > (0.8 * Math.PI) / 180)) groups.push(g);
+  }
   // 壁が塗りつぶしで描かれている場合、塗りの輪郭の角度からも壁の向きを拾う（斜めの壁は全体の線に占める割合が小さい）
   const fillSegs = segs.filter((s) => s.source === 'fill');
   if (fillSegs.length > 40) {
@@ -661,6 +672,123 @@ interface DoorSym {
  * 開き戸記号の検出: 円弧（中心=吊元、半径=扉幅、約90度）
  * 開口 = 吊元 → 戸先側の円弧端点 (壁上の点)
  */
+/**
+ * 同心に近い 2 本の円弧（壁の内側線と外側線）を、弦に沿った直線壁 2 本（平行線ペア）に置き換える。
+ * 円弧の壁は角度グループ・平行線ペアの検出に乗らないため、ここで直線化して壁検出に渡す。
+ */
+export function curvedWallChords(arcs: Arc[], segs: Seg[], heavyT: number | null, O: WallDetectOptions): { segs: Seg[]; used: Set<Arc> } {
+  // 壁線（太線）の端点。曲線壁は直線壁の続きとして描かれるので、円弧の両端に壁線の端が無ければ家具・設備の円弧とみなす
+  const wallEnds: Vec2[] = [];
+  for (const s of segs) {
+    if (segLen(s) < 60) continue;
+    if (heavyT != null && s.source === 'stroke' && s.width < heavyT) continue;
+    wallEnds.push(s.a, s.b);
+  }
+  const touchesWall = (p: Vec2) => wallEnds.some((e) => Math.hypot(e.x - p.x, e.y - p.y) < 120);
+  interface A {
+    c: Vec2;
+    r: number;
+    e0: Vec2;
+    e1: Vec2;
+    width: number | undefined;
+    used: boolean;
+    arcs: Arc[];
+  }
+  const parts: A[] = [];
+  for (const a of arcs) {
+    const circ = circleOf(a.p0, bez(a, 0.5), a.p3);
+    if (!circ || circ.r < 300 || circ.r > 8000) continue;
+    const q = bez(a, 0.25);
+    if (Math.abs(Math.hypot(q.x - circ.c.x, q.y - circ.c.y) - circ.r) > circ.r * 0.03) continue;
+    // 同一円の連続ベジェをつなぐ（端点が一致するもの）
+    const m = parts.find(
+      (p) =>
+        Math.hypot(p.c.x - circ.c.x, p.c.y - circ.c.y) < 10 &&
+        Math.abs(p.r - circ.r) < 10 &&
+        [p.e0, p.e1].some((e) => [a.p0, a.p3].some((f) => Math.hypot(e.x - f.x, e.y - f.y) < 5)),
+    );
+    if (m) {
+      const pts = [m.e0, m.e1, a.p0, a.p3];
+      let best = [m.e0, m.e1];
+      let bd = -1;
+      for (let i = 0; i < pts.length; i++)
+        for (let j = i + 1; j < pts.length; j++) {
+          const dd = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+          if (dd > bd) {
+            bd = dd;
+            best = [pts[i], pts[j]];
+          }
+        }
+      m.e0 = best[0];
+      m.e1 = best[1];
+      m.arcs.push(a);
+    } else parts.push({ c: circ.c, r: circ.r, e0: a.p0, e1: a.p3, width: a.width, used: false, arcs: [a] });
+  }
+  const used = new Set<Arc>();
+  const spanOf = (p: A) => {
+    const a0 = Math.atan2(p.e0.y - p.c.y, p.e0.x - p.c.x);
+    const a1 = Math.atan2(p.e1.y - p.c.y, p.e1.x - p.c.x);
+    let d = Math.abs(a1 - a0);
+    if (d > Math.PI) d = 2 * Math.PI - d;
+    return d;
+  };
+  const out: Seg[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const P = parts[i];
+    if (P.used) continue;
+    const sp = spanOf(P);
+    // 30°〜150°の円弧のみ（半円・全円は家具・設備）
+    if (sp < Math.PI / 6 || sp > Math.PI * (150 / 180)) continue;
+    if (!touchesWall(P.e0) || !touchesWall(P.e1)) continue;
+    for (let j = i + 1; j < parts.length; j++) {
+      const Q = parts[j];
+      if (Q.used) continue;
+      const sq = spanOf(Q);
+      if (sq < Math.PI / 6 || sq > Math.PI * (150 / 180)) continue;
+      if (!touchesWall(Q.e0) || !touchesWall(Q.e1)) continue;
+      if (Math.hypot(P.c.x - Q.c.x, P.c.y - Q.c.y) > O.maxThickness) continue;
+      if (Math.abs(P.r - Q.r) > O.maxThickness) continue;
+      // 端点同士を対応づけ、その距離が壁厚になる
+      const d00 = Math.hypot(P.e0.x - Q.e0.x, P.e0.y - Q.e0.y);
+      const d11 = Math.hypot(P.e1.x - Q.e1.x, P.e1.y - Q.e1.y);
+      const d01 = Math.hypot(P.e0.x - Q.e1.x, P.e0.y - Q.e1.y);
+      const d10 = Math.hypot(P.e1.x - Q.e0.x, P.e1.y - Q.e0.y);
+      const straight = d00 + d11 <= d01 + d10;
+      const tA = straight ? d00 : d01;
+      const tB = straight ? d11 : d10;
+      const t = (tA + tB) / 2;
+      if (Math.min(tA, tB) < O.minThickness * 0.8 || Math.max(tA, tB) > O.maxThickness) continue;
+      if (Math.abs(tA - tB) > t * 0.5) continue;
+      // 線幅が分かる図面では、太線（壁線）であること
+      if (heavyT != null && P.width != null && Q.width != null && Math.max(P.width, Q.width) < heavyT) continue;
+      const Qe0 = straight ? Q.e0 : Q.e1;
+      const Qe1 = straight ? Q.e1 : Q.e0;
+      // 中心線の弦
+      const m0 = { x: (P.e0.x + Qe0.x) / 2, y: (P.e0.y + Qe0.y) / 2 };
+      const m1 = { x: (P.e1.x + Qe1.x) / 2, y: (P.e1.y + Qe1.y) / 2 };
+      const L = Math.hypot(m1.x - m0.x, m1.y - m0.y);
+      if (L < 300) continue;
+      const nx = -(m1.y - m0.y) / L;
+      const ny = (m1.x - m0.x) / L;
+      const w = Math.max(1, heavyT ?? 1, P.width ?? 0, Q.width ?? 0);
+      for (const sgn of [-1, 1]) {
+        out.push({
+          a: { x: m0.x + nx * sgn * (t / 2), y: m0.y + ny * sgn * (t / 2) },
+          b: { x: m1.x + nx * sgn * (t / 2), y: m1.y + ny * sgn * (t / 2) },
+          width: w,
+          dashed: false,
+          source: 'stroke',
+        });
+      }
+      P.used = Q.used = true;
+      for (const a of [...P.arcs, ...Q.arcs]) used.add(a);
+      if ((globalThis as any).__WALLDBG) console.log('CHORD', Math.round(m0.x), Math.round(m0.y), '->', Math.round(m1.x), Math.round(m1.y), 't', Math.round(t), 'r', Math.round(P.r), Math.round(Q.r), 'span', Math.round((sp * 180) / Math.PI), Math.round((sq * 180) / Math.PI), 'w', P.width, Q.width, 'heavyT', heavyT);
+      break;
+    }
+  }
+  return { segs: out, used };
+}
+
 export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]): DoorSym[] {
   // 連続するベジェを同一円弧にまとめる
   interface A {

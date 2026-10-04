@@ -113,6 +113,8 @@ export class Viewer {
 
   constructor(readonly container: HTMLElement, design: DesignOptions) {
     this.design = design;
+    // 自動点検（スクリーンショット）用のフック
+    (globalThis as any).__viewer = this;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;

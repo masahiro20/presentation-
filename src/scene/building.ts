@@ -140,6 +140,19 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       buildWall(mb, f, w, ops, fl, top, accentHere ? 'ext.accent' : 'ext.wall', isTop, spec);
       for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec);
     }
+    // 斜めの壁の継ぎ目（外側の角のくさび状の隙間）を丸柱で埋める
+    for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
+      const w = j.w;
+      const outdoorAt = (x: number, y: number) => {
+        const r = roomAt(f, x, y);
+        return !r || r.type === 'balcony' || r.type === 'porch';
+      };
+      const bothOutdoor = w.exterior && [1, -1].every((sg) => outdoorAt(j.p.x + ((w.b.y - w.a.y) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * -sg * (w.thickness + 80), j.p.y + ((w.b.x - w.a.x) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * sg * (w.thickness + 80)));
+      const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
+      const wallTop = w.exterior ? top : fl + f.ceilingHeight * MM;
+      const key = w.exterior ? (ext.accent && ((ext.accentRule === 'upper' && f.level >= 2) || (ext.accentRule === 'lower' && f.level === 1)) ? 'ext.accent' : 'ext.wall') : 'int.wall';
+      mb.cylinder(key, V(j.p.x * MM, bottom, j.p.y * MM), (j.t * MM) / 2 - 0.002, wallTop - bottom, 24, false);
+    }
 
     // ---- 床 ----
     const voids = stairVoidsFor(model, f);
@@ -196,7 +209,12 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (L < 0.05) continue;
       const dir = new THREE.Vector3().subVectors(B, A).normalize();
       const c = A.clone().addScaledVector(dir, L / 2).setY(-0.06);
-      mb.box('ext.foundation', c, dir, L + w.thickness * MM - 0.03, f1.elevation * MM - 0.1 + 0.06, w.thickness * MM - 0.03);
+      // 壁の軸線は接合先の壁の外面まで延ばしてあるので、帯は壁と同じ長さで角が閉じる。細くした分（片側 15mm）だけ
+      // 端も引っ込め、接合先の帯の面と揃える（斜めの接合は下の丸柱で埋める）
+      mb.box('ext.foundation', c, dir, L - 0.03, f1.elevation * MM - 0.1 + 0.06, w.thickness * MM - 0.03);
+    }
+    for (const j of diagonalJoints(f1.walls, true)) {
+      mb.cylinder('ext.foundation', V(j.p.x * MM, -0.06, j.p.y * MM), (j.t * MM - 0.03) / 2 - 0.001, f1.elevation * MM - 0.1 + 0.06, 24, false);
     }
     const extT = Math.max(150, ...f1.walls.filter((w) => w.exterior).map((w) => w.thickness)) * MM;
     for (const poly of f1.outline) {
@@ -325,6 +343,53 @@ function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
     if (inside) mb.quad(key, pa, pb, tb, ta);
     else mb.quad(key, pb, pa, ta, tb);
   }
+}
+
+
+/**
+ * 斜めの壁（直交しない壁同士）の継ぎ目。角が直角でないと、矩形の壁同士では外側の角にくさび状の隙間が残るので、
+ * 壁の軸線の交点に壁厚の丸柱を立てて埋める。戻り値は交点と、その継ぎ目の最大壁厚（mm）。
+ */
+function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; y: number }; t: number; w: Wall }[] {
+  const out: { p: { x: number; y: number }; t: number; w: Wall }[] = [];
+  const angOf = (w: Wall) => Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
+  const distToSeg = (p: { x: number; y: number }, w: Wall) => {
+    const dx = w.b.x - w.a.x;
+    const dy = w.b.y - w.a.y;
+    const L2 = dx * dx + dy * dy || 1;
+    const u = Math.max(0, Math.min(1, ((p.x - w.a.x) * dx + (p.y - w.a.y) * dy) / L2));
+    return Math.hypot(p.x - w.a.x - dx * u, p.y - w.a.y - dy * u);
+  };
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i];
+    if (onlyExterior && !w.exterior) continue;
+    for (let j = 0; j < walls.length; j++) {
+      if (i === j) continue;
+      const v = walls[j];
+      if (onlyExterior && !v.exterior) continue;
+      // 直交・平行は矩形同士で納まる
+      let d = Math.abs(angOf(w) - angOf(v)) % (Math.PI / 2);
+      d = Math.min(d, Math.PI / 2 - d);
+      if (d < (3 * Math.PI) / 180) continue;
+      for (const e of [w.a, w.b]) {
+        if (distToSeg(e, v) > w.thickness + v.thickness) continue;
+        // 軸線の交点
+        const r = { x: w.b.x - w.a.x, y: w.b.y - w.a.y };
+        const q = { x: v.b.x - v.a.x, y: v.b.y - v.a.y };
+        const den = r.x * q.y - r.y * q.x;
+        let p = e;
+        if (Math.abs(den) > 1e-6) {
+          const tt = ((v.a.x - w.a.x) * q.y - (v.a.y - w.a.y) * q.x) / den;
+          const ip = { x: w.a.x + r.x * tt, y: w.a.y + r.y * tt };
+          if (Math.hypot(ip.x - e.x, ip.y - e.y) < w.thickness + v.thickness) p = ip;
+        }
+        const t = Math.max(w.thickness, v.thickness);
+        if (out.some((o) => Math.hypot(o.p.x - p.x, o.p.y - p.y) < t)) continue;
+        out.push({ p, t, w });
+      }
+    }
+  }
+  return out;
 }
 
 /** 壁を開口部で分割して生成 */

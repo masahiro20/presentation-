@@ -271,7 +271,9 @@ describe('タイルの範囲とモザイク', () => {
     expect(fine.values[255]).toBeCloseTo(127.25 * 0.01, 5);
     // 行方向には一定
     expect(fine.values[200 * 256 + 100]).toBeCloseTo(49.75 * 0.01, 5);
-    expect(fine.covered.every((v) => v === 1)).toBe(true);
+    // covered は粗い側から埋めた画素に付く（もとから値があった画素 5 はそのまま）
+    expect(fine.covered[5]).toBe(0);
+    expect(fine.covered.filter((v) => v === 1).length).toBe(fine.covered.length - 1);
   });
   it('fillFromCoarser: 粗い側も NaN なら残る。タイルが無ければ covered は付かない', () => {
     const fine = createMosaic({ z: 15, x0: 2, y0: 2, x1: 3, y1: 3 }); // 粗い (1,1) の 1 タイルに対応

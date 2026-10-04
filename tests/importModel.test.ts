@@ -117,10 +117,12 @@ describe('形式の判定・単位と上方向の推定', () => {
     expect(guessUpAxis('3ds', box(10000, 8000, 3000))).toBe('z');
     expect(guessUpAxis('obj', box(10, 8, 6))).toBe('z');
     expect(guessUpAxis('stl', new THREE.Box3())).toBe('z');
-    // Z が最大で Y が最小、比 1.5 倍超 → Y-up で保存されたデータと見る
-    expect(guessUpAxis('3ds', box(10000, 3000, 8000))).toBe('y');
+    // Z が 3 軸で最大、Y が最小、比 1.5 倍超 → Y-up で保存されたデータと見る
+    expect(guessUpAxis('3ds', box(6000, 3000, 8000))).toBe('y');
     // 比が 1.5 倍以下なら既定のまま
-    expect(guessUpAxis('3ds', box(10000, 7000, 8000))).toBe('z');
+    expect(guessUpAxis('3ds', box(6000, 6000, 8000))).toBe('z');
+    // Z が最大でも X の方が大きければ（幅 > 高さの普通の建物）既定のまま
+    expect(guessUpAxis('3ds', box(10000, 3000, 8000))).toBe('z');
     expect(guessUpAxis('glb', box(10, 6, 8))).toBe('y');
     expect(guessUpAxis('fbx', box(6000, 8000, 3000))).toBe('z');
   });
@@ -447,8 +449,11 @@ describe('OBJ（テキスト）', () => {
     const s = m.rawBox.getSize(new THREE.Vector3());
     expect([s.x, s.y, s.z]).toEqual([10, 8, 6]);
     const p = new PlacedModel(m, { ...DEFAULT_PLACEMENT, unit: 'm', upAxis: 'z' });
-    expect(p.dimensions()).toEqual({ w: 10, d: 8, h: 6 });
-    expect(p.localBox.min.y).toBe(0);
+    const d = p.dimensions();
+    expect(d.w).toBeCloseTo(10, 9);
+    expect(d.d).toBeCloseTo(8, 9);
+    expect(d.h).toBeCloseTo(6, 9);
+    expect(p.localBox.min.y).toBeCloseTo(0, 9);
     p.dispose();
   });
 

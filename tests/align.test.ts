@@ -28,6 +28,8 @@ import {
   solveTwoPoint,
   type EN,
   type RigidFit,
+  densifyBudget,
+  MAX_ICP_POINTS,
 } from '../src/sun/align';
 
 const fitOf = (rotDeg: number, te: number, tn: number, scale = 1): RigidFit => ({ rotDeg, te, tn, scale, scaleRatio: scale, rmsM: 0 });
@@ -568,5 +570,24 @@ describe('sliceOutline: 頂点配列の高さ帯の外形', () => {
     expect(sliceOutline(pos, { yMin: 1, yMax: 2 })).toEqual([]);
     expect(sliceOutline([0, 0, 0, 1, 0, 1], { yMin: -1, yMax: 1 })).toEqual([]);
     expect(sliceOutline([0, 0, 0, 1, 0, 1, 2, 0, 2], { yMin: -1, yMax: 1 })).toEqual([]);
+  });
+});
+
+describe('densifyBudget / 単位違いの ICP', () => {
+  const rect = (w: number, d: number) => [{ e: 0, n: 0 }, { e: w, n: 0 }, { e: w, n: d }, { e: 0, n: d }];
+  it('点数が上限を超えない', () => {
+    expect(densifyBudget(rect(9.1, 7.28), 0.001).length).toBeLessThanOrEqual(MAX_ICP_POINTS);
+    expect(densifyBudget(rect(9100, 7280), 0.01).length).toBeLessThanOrEqual(MAX_ICP_POINTS);
+    // 間隔が十分広ければ densify と同じ
+    expect(densifyBudget(rect(9.1, 7.28), 1)).toEqual(densify(rect(9.1, 7.28), 1));
+  });
+  it('src が mm のまま（1000 倍）でも固まらずに終わり、倍率なしでも例外にならない', () => {
+    const t0 = Date.now();
+    const fit = fitPolygonToPolygon(rect(9100, 7280), rect(9.1, 7.28), { allowScale: false });
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(Number.isFinite(fit.rmsM)).toBe(true);
+    const fit2 = fitPolygonToPolygon(rect(9100, 7280), rect(9.1, 7.28), { allowScale: true });
+    expect(fit2.scale).toBeCloseTo(0.001, 6);
+    expect(fit2.rmsM).toBeLessThan(0.01);
   });
 });

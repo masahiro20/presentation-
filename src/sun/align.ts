@@ -431,6 +431,19 @@ export function densify(poly: EN[], stepM: number): EN[] {
   return out;
 }
 
+/** 1 つの外形から ICP に使う境界点の上限（単位違いや頂点の多い外形で固まらないため） */
+export const MAX_ICP_POINTS = 800;
+
+/** densify の点数を MAX_ICP_POINTS 以下に抑える（間隔を広げて再分割。頂点が上限より多ければ間引く） */
+export function densifyBudget(poly: EN[], stepM: number, maxPoints = MAX_ICP_POINTS): EN[] {
+  const per = polygonPerimeter(poly);
+  const step = Math.max(stepM, per / Math.max(1, maxPoints - poly.length));
+  const pts = densify(poly, step);
+  if (pts.length <= maxPoints) return pts;
+  const stride = Math.ceil(pts.length / maxPoints);
+  return pts.filter((_, i) => i % stride === 0);
+}
+
 // ---------------------------------------------------------------- 外形どうしの位置合わせ
 
 /**
@@ -463,9 +476,10 @@ export function fitPolygonToPolygon(src: EN[], dst: EN[], opts: FitPolygonOption
   }
   const cS = centroid(src);
   const cD = centroid(dst);
-  // src 側は（mm など別単位でも）dst と同じ密度になるように間隔を倍率で割る
-  const srcPts = densify(src, stepM / s0);
-  const dstPts = densify(dst, stepM);
+  // 境界点の数を外形ごとに ≈ 200（最大 MAX_ICP_POINTS）に抑える。
+  // src が別単位（mm のまま等）でも周長比で間隔を決めるので、単位違いで 20 万点になって固まることはない
+  const srcPts = densifyBudget(src, allowScale ? stepM / s0 : (stepM * perSrc) / perDst);
+  const dstPts = densifyBudget(dst, stepM);
 
   const delta = dominantAngleDeg(dst) - dominantAngleDeg(src);
   const cands: number[] = [];
@@ -554,3 +568,22 @@ export function fitRectToRect(src: EN[], dst: EN[]): { rotDeg: number; te: numbe
   const c = rotate(rs.center, best!.rotDeg);
   return { rotDeg: best!.rotDeg, te: rd.center.e - c.e, tn: rd.center.n - c.n, mismatchM: best!.mismatch, swapped: best!.swapped };
 }
+
+// ---------------------------------------------------------------- 2 点合わせ UI の共通定数（両アプリで同じ色・文言にする）
+
+/** マーカーの色: 建物の角（青）／航空写真の点（橙） */
+export const ALIGN_COLORS = { model: '#1f6fd0', target: '#e5531f' } as const;
+
+/** 2 点合わせの手順の文言（0..3 の段階） */
+export const TWO_POINT_STEPS = [
+  '建物の 1 つ目の角をクリック',
+  '航空写真でその角の実際の位置をクリック（建物は半透明にしています）',
+  '建物の 2 つ目の角をクリック',
+  '航空写真でその角の実際の位置をクリック（建物は半透明にしています）',
+] as const;
+
+/** 2 点合わせの中止の案内 */
+export const TWO_POINT_CANCEL_HINT = 'もう一度押すか Esc で中止';
+
+/** 2 点の角がこれより近いと向きが定まらないので中止する (m) */
+export const MIN_PAIR_DIST_M = 0.5;

@@ -88,3 +88,36 @@ details.obj-details summary { cursor: pointer; font-size: 13px; color: var(--ink
 .drop-card .fmt { display: inline-block; background: #f1efea; border-radius: 6px; padding: 2px 9px; margin: 2px; font-size: 12.5px; font-weight: 600; color: var(--ink2); }
 .field .btn-row input[type=number] { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
 .btn-row input[type=number] { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; width: 100%; }
+
+/* ===== 日照シミュレーション画面（steps/simStep.ts） ===== */
+/* ステージ左上の列: 視点ボタン → 前提チップ → 周辺環境の案内 */
+.stage-left { position: absolute; top: 14px; left: 14px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; pointer-events: none; max-width: calc(100% - 270px); z-index: 3; }
+.stage-left > * { pointer-events: auto; }
+.stage-left .view-tools { position: static; }
+.stage-left .warn.float { max-width: 400px; margin: 0; background: rgba(255,246,232,0.96); box-shadow: var(--shadow); }
+/* 前提チップ（単位・寸法・方位・GL・周辺建物・地形・時刻） */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips .chip.light { background: rgba(255,255,255,0.92); color: #333; border: 1px solid transparent; font-size: 11.5px; padding: 3px 10px; backdrop-filter: blur(4px); line-height: 1.5; }
+.chips button.chip.light:hover { background: #fff; border-color: #cfc8bc; }
+.chips .chip.light.caution { background: rgba(255,243,223,0.95); color: #8a5a14; border-color: #f1d4a6; }
+/* 太陽バッジ */
+.sun-badge .dim { color: #8b9098; }
+.sun-badge .small { font-size: 11px; margin-top: 4px; }
+body.presenting .sun-badge { font-size: 16px; }
+body.presenting .sun-badge b { font-size: 22px; }
+/* 時刻バーの速さ */
+.overlay-bar .speed { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.overlay-bar select { background: #2a2d31; color: #fff; border: 1px solid #50555d; border-radius: 6px; padding: 3px; }
+/* 要確認の隣家 */
+.nb-row { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin: 6px 0; font-size: 12.5px; }
+.nb-row.done { opacity: 0.55; }
+.nb-row .meta { color: var(--ink3); font-size: 11.5px; margin-left: 6px; }
+.nb-row input[type=number] { width: 72px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+/* 隣家の手動追加 */
+.manual-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.manual-grid .field { margin: 0; }
+.manual-grid .field input, .manual-grid .field select { padding: 6px 6px; }
+/* 測定点の表: 時間帯の 2 行目 */
+.pt-table .spans { color: var(--ink3); font-size: 11px; line-height: 1.4; }
+/* 隣家ポップアップの補足 */
+.pop .hint { margin: 0 0 4px; }

@@ -375,7 +375,7 @@ export const modelStep: StudyStep = {
     const renderStage = () => {
       clear(stage);
       if (study.model) {
-        stage.appendChild(h('div', { class: 'stage-note' }, '建物をドラッグして敷地に合わせられます　／　空いた所をドラッグ: 回転　右ドラッグ: 画面の移動　ホイール: ズーム'));
+        stage.appendChild(h('div', { class: 'stage-note' }, '建物をドラッグして敷地に合わせます　／　空いた所をドラッグ: 回転　右ドラッグ: 移動'));
         return;
       }
       const zone = h(

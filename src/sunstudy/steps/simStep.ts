@@ -237,6 +237,9 @@ export const simStep: StudyStep = {
     // ---- シーンの準備 ----
     ensurePlaced(scene);
     const landOnly = !study.model;
+    // 別のステップで overlay が空にされていたら、残していた参照を捨てる
+    if (heat && heat.parent !== scene.groups.overlay) heat = null;
+    if (facade && facade.parent !== scene.groups.overlay) facade = null;
     const existingPath = scene.userData.sunPath as SunPath | undefined;
     const sunPath: SunPath = existingPath ?? new SunPath(scene.groups.sunpath);
     scene.userData.sunPath = sunPath;

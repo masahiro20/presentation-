@@ -177,28 +177,6 @@ export const placeStep: StudyStep = {
     // ---- ステージ: 地図 ----
     const root = h('div', { class: 'map-root' });
     stage.appendChild(root);
-    const recent = readRecent();
-    const initial: LatLon = study.frame ?? (recent?.frame && Number.isFinite(recent.frame.lat) && Number.isFinite(recent.frame.lon) ? recent.frame : TOKYO);
-    try {
-      map = new MapPicker(root, {
-        initial: { lat: initial.lat, lon: initial.lon },
-        zoom: study.frame ? 17 : 16,
-        layer: 'std',
-        onPin: (p) => {
-          pinFromMap(p);
-          refreshAll();
-        },
-        onPolygonChange: (poly, closed) => {
-          applyPolygon(poly, closed);
-          refreshAll();
-        },
-        onView: () => refreshAttrib(),
-      });
-    } catch (e) {
-      map = null;
-      root.appendChild(h('div', { class: 'warn', style: 'position:absolute;left:14px;top:60px;z-index:3;max-width:420px' }, `地図を表示できませんでした: ${errMsg(e)}`));
-    }
-
     const status = h('div', { class: 'map-status' });
     const attrib = h('div', { class: 'map-attrib' });
     const hint = h('div', { class: 'map-hint' });
@@ -560,6 +538,29 @@ export const placeStep: StudyStep = {
         void shell.go('model');
       }
     };
+
+    // ---- 地図を作る（表示の更新関数を定義した後に。コンストラクタ内で onView が呼ばれても良いように） ----
+    const recent = readRecent();
+    const initial: LatLon = study.frame ?? (recent?.frame && Number.isFinite(recent.frame.lat) && Number.isFinite(recent.frame.lon) ? recent.frame : TOKYO);
+    try {
+      map = new MapPicker(root, {
+        initial: { lat: initial.lat, lon: initial.lon },
+        zoom: study.frame ? 17 : 16,
+        layer: 'std',
+        onPin: (p) => {
+          pinFromMap(p);
+          refreshAll();
+        },
+        onPolygonChange: (poly, closed) => {
+          applyPolygon(poly, closed);
+          refreshAll();
+        },
+        onView: () => refreshAttrib(),
+      });
+    } catch (e) {
+      map = null;
+      root.appendChild(h('div', { class: 'warn', style: 'position:absolute;left:14px;top:60px;z-index:3;max-width:420px' }, `地図を表示できませんでした: ${errMsg(e)}`));
+    }
 
     // ---- 初期状態を地図へ ----
     if (map) {

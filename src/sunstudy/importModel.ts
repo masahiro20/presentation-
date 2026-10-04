@@ -852,12 +852,15 @@ export function base64ToArrayBuffer(text: string): ArrayBuffer {
 /**
  * 同梱のサンプル（public/samples）を読み込む。
  * バイナリを配信しない公開先では `url + '.txt'`（base64 の写し。vite.config.ts が build 時に作る）から読む。
+ * どちらも取れない（オフライン・SPA の書き換えで HTML が返る・base64 が壊れている）ときは、ブラウザの英語の例外ではなく
+ * 日本語の説明で失敗する（UI がそのままトーストに出す）
  */
 export async function loadSampleModel(path: string): Promise<ImportedModel> {
   const base = typeof document !== 'undefined' ? document.baseURI : 'http://localhost/';
   const url = new URL(path, base).toString();
   const name = decodeURIComponent(path.split(/[?#]/)[0].split('/').pop() || path);
   const format = detectFormat(name);
+  const looksRight = (buf: ArrayBuffer) => buf.byteLength > 0 && (format !== '3ds' || is3dsBuffer(buf));
   let data: ArrayBuffer | null = null;
   try {
     const res = await fetch(url);
@@ -865,15 +868,28 @@ export async function loadSampleModel(path: string): Promise<ImportedModel> {
     if (res.ok && !/text\/html|text\/plain|application\/json/i.test(ct)) {
       const buf = await res.arrayBuffer();
       // 中身も確認（3DS は先頭 4D4D）。HTML のエラーページなどが返る公開先への備え
-      if (buf.byteLength > 0 && (format !== '3ds' || is3dsBuffer(buf))) data = buf;
+      if (looksRight(buf)) data = buf;
     }
   } catch {
     data = null;
   }
   if (!data) {
-    const res = await fetch(url + '.txt');
-    if (!res.ok) throw new Error(`サンプルを取得できませんでした（${res.status}）: ${path}`);
-    data = base64ToArrayBuffer(await res.text());
+    let text: string;
+    try {
+      const res = await fetch(url + '.txt');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (/text\/html/i.test(res.headers.get('content-type') || '')) throw new Error('HTML が返されました');
+      text = await res.text();
+    } catch (e) {
+      const why = e instanceof Error && e.message ? e.message : String(e);
+      throw new Error(`サンプルを取得できませんでした（ネットワークまたは配信設定: ${why}）: ${path}`);
+    }
+    try {
+      data = base64ToArrayBuffer(text);
+    } catch {
+      throw new Error(`サンプルを取得できませんでした（配信されたデータが壊れています）: ${path}`);
+    }
+    if (!looksRight(data)) throw new Error(`サンプルを取得できませんでした（配信されたデータが ${format ?? '3D'} ファイルではありません）: ${path}`);
   }
   return importModelFile({ name, data });
 }

@@ -33,7 +33,7 @@ import {
   twoPointPlacement,
 } from '../src/sunstudy/alignment';
 import { importModelFile, isSiteObjectName, PlacedModel, unitScale } from '../src/sunstudy/importModel';
-import { applyProject, serializeProject } from '../src/sunstudy/project';
+import { applyProject, sanitizePlacement, serializeProject } from '../src/sunstudy/project';
 import { study } from '../src/sunstudy/state';
 import { DEFAULT_PLACEMENT, frameFromLocal, frameToLocal } from '../src/sunstudy/types';
 import type { AlignmentPair, EN, GeoFrame, ImportedModel, MeasurePoint, ModelPlacement } from '../src/sunstudy/types';
@@ -733,5 +733,29 @@ describe('プロジェクトの往復', () => {
     expect(study.placement.alignment?.kind).toBeUndefined();
     expect(study.placement.alignment?.pairs).toBeUndefined();
     expect(normDeg(study.placement.headingDeg)).toBe(23);
+  });
+
+  it('sanitizePlacement: 文字列・NaN・未知の単位や列挙は既定値に（pivot の行列が NaN になって建物が消えない）', async () => {
+    const bad = sanitizePlacement({ unit: 'furlong', customScale: -1, upAxis: 'x', headingDeg: 'abc', offsetE: NaN, offsetN: '3', baseY: Infinity, appearance: 'pink', mirror: 'yes', hiddenObjects: ['a', 1, null] } as unknown as Partial<ModelPlacement>);
+    expect(bad).toEqual({ ...DEFAULT_PLACEMENT, hiddenObjects: ['a'] });
+    expect(bad.alignment).toBeUndefined();
+    // 正しい値はそのまま
+    const ok = sanitizePlacement({ unit: 'custom', customScale: 0.3, upAxis: 'y', headingDeg: -12.5, offsetE: 1.25, offsetN: -3, baseY: 0.4, appearance: 'original', mirror: true, hiddenObjects: ['site'] });
+    expect(ok).toEqual({ unit: 'custom', customScale: 0.3, upAxis: 'y', headingDeg: -12.5, offsetE: 1.25, offsetN: -3, baseY: 0.4, appearance: 'original', mirror: true, hiddenObjects: ['site'] });
+    expect(sanitizePlacement(undefined)).toEqual(DEFAULT_PLACEMENT);
+    expect(sanitizePlacement(null)).toEqual(DEFAULT_PLACEMENT);
+    expect(sanitizePlacement('x' as unknown as Partial<ModelPlacement>)).toEqual(DEFAULT_PLACEMENT);
+    // プロジェクト JSON 経由でも同じ
+    study.frame = { ...FRAME };
+    const json = serializeProject();
+    const broken = JSON.parse(JSON.stringify(json));
+    broken.placement = { unit: 'm', headingDeg: '90', offsetE: { e: 1 }, baseY: null, mirror: 1 };
+    await applyProject(broken);
+    expect(study.placement.unit).toBe('m');
+    expect(study.placement.headingDeg).toBe(0);
+    expect(study.placement.offsetE).toBe(0);
+    expect(study.placement.baseY).toBe(0);
+    expect(study.placement.mirror).toBe(false);
+    expect(study.placement.hiddenObjects).toEqual([]);
   });
 });

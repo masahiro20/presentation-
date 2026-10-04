@@ -9,7 +9,7 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import type { BuildingModel } from '../core/types';
-import { buildBuilding, type BuildingMeta } from './building';
+import { buildBuilding, type BuildingMeta, type DoorInfo } from './building';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
@@ -74,6 +74,8 @@ export class Viewer {
   registry: MaterialRegistry;
   state: SceneState | null = null;
   design: DesignOptions;
+  /** 開閉できる扉（部品ごとの Group） */
+  private doors: { info: DoorInfo; group: THREE.Group }[] = [];
   sunDir = new THREE.Vector3(0.4, 0.7, 0.5).normalize();
   /** 実物モデルの非同期配置の世代（図面を読み直したら古い配置を捨てる） */
   private modelGen = 0;
@@ -647,6 +649,16 @@ export class Viewer {
     const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch) });
     const resolve = (k: string) => this.registry.get(k);
     this.groups.building.add(mb.build(resolve, { name: 'building' }));
+    // 扉は独立した部品にして、ウォークスルーで開閉できるようにする
+    this.doors = [];
+    for (const info of meta.doors) {
+      const group = new THREE.Group();
+      group.name = `door:${info.id}`;
+      group.add(info.mb.build(resolve, { name: 'door' }));
+      this.groups.building.add(group);
+      this.doors.push({ info, group });
+    }
+    this.setDoors(null);
     const roof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch);
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
     const fur = buildFurniture(model);
@@ -675,6 +687,23 @@ export class Viewer {
     this.updateInteriorLights();
     this.updateEnvironment();
     this.dirty = true;
+  }
+
+  /** 扉の開き具合を設定（null = 通常表示の状態に戻す）。map に無い扉は閉じる */
+  setDoors(open: Map<string, number> | null) {
+    for (const { info, group } of this.doors) {
+      const frac = open ? Math.max(0, Math.min(1, open.get(info.id) ?? 0)) : info.staticOpen;
+      group.position.copy(info.origin);
+      group.rotation.set(0, info.yaw0, 0);
+      if (info.kind === 'swing') group.rotation.y = info.yaw0 + info.openAngle * frac;
+      else group.position.addScaledVector(info.slideDir, info.slideDist * frac);
+    }
+    if (this.doors.length) this.camMoved();
+  }
+
+  /** 扉の一覧（経路の計画用） */
+  doorInfos(): DoorInfo[] {
+    return this.doors.map((d) => d.info);
   }
 
   /** テイスト変更（屋根形状の変更時のみ屋根を再生成） */

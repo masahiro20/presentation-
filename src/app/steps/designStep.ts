@@ -8,6 +8,7 @@ import type { Shot } from '../../scene/shots';
 import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
 import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
+import { exportCuts } from '../cuts';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -523,6 +524,13 @@ export const designStep: Step = {
         }
       };
       side.append(
+        section(
+          'AI 仕上げ用カット集',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめます。構図と間取りはそのまま、質感だけを写真のように仕上げてもらう使い方です。'),
+          h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `📦 カット集を保存（${shots.length}枚・ZIP）`),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind !== 'interior'), { width: state.render.width, height: state.render.height }) }, '外観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind === 'interior'), { width: state.render.width, height: state.render.height }) }, '内観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, [currentAsShot()], { width: state.render.width, height: state.render.height }) }, 'この構図だけ')),
+          h('p', { class: 'hint' }, 'サイズは下の「サイズ」の設定です。ZIP の「カット一覧と説明文.txt」に、各カットのプロンプト（日本語・英語）が入っています。'),
+        ),
         section(
           '提案用パースの書き出し',
           h('p', { class: 'hint', style: 'margin-top:0' }, '「写真品質」は光の反射・間接光を物理的に計算します（GPU の性能により数分）。途中で「ここで仕上げる」を押すと、その時点の画像で保存できます。計算できないパソコンでは自動で高品質描画に切り替えます。急ぐときは「高品質描画」（数秒）をお使いください。'),

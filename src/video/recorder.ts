@@ -111,6 +111,7 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
     const t = i / fps;
     const s = program.sample(t);
     opts.beforeFrame?.(t, s);
+    viewer.setDoors(s.doors ?? null);
     camera.fov = s.fov;
     camera.position.copy(s.pos);
     camera.lookAt(s.target);
@@ -173,6 +174,7 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
     await done;
     return { blob: new Blob(chunks, { type: 'video/webm' }), mime: 'video/webm', ext: 'webm' };
   } finally {
+    viewer.setDoors(null);
     renderer.setPixelRatio(prevPR);
     renderer.setSize(prevSize.x, prevSize.y, false);
     viewer.pause(false);

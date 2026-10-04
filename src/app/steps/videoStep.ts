@@ -22,7 +22,11 @@ let previewRaf = 0;
 function makeProgram(ctx: StepCtx, kind: Kind): { program: CameraProgram; before?: (t: number, s: ReturnType<CameraProgram['sample']>) => void } {
   const v = ctx.app.viewer;
   const st = v.state!;
-  if (kind === 'walk') return { program: walkthroughProgram(st.model, st.meta, st.site, currentShots(ctx)) };
+  if (kind === 'walk') {
+    const program = walkthroughProgram(st.model, st.meta, st.site, currentShots(ctx));
+    (globalThis as any).__walkProgram = program;
+    return { program };
+  }
   if (kind === 'drone') return { program: droneProgram(st.meta) };
   const { lat, lon } = siteLatLon(state.site);
   const y = new Date().getFullYear();
@@ -47,6 +51,7 @@ function stopPreview(ctx: StepCtx) {
   cancelAnimationFrame(previewRaf);
   previewRaf = 0;
   ctx.app.viewer.controls.enabled = true;
+  ctx.app.viewer.setDoors(null);
 }
 
 export const videoStep: Step = {
@@ -78,6 +83,7 @@ export const videoStep: Step = {
         }
         const s = program.sample(t);
         before?.(t, s);
+        v.setDoors(s.doors ?? null);
         v.applyView({ pos: s.pos, target: s.target, fov: s.fov });
         capEl.style.display = s.caption ? 'block' : 'none';
         capEl.textContent = s.caption ?? '';

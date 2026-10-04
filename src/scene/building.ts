@@ -33,13 +33,39 @@ export interface RoomInfo {
 export interface BuildingMeta {
   bbox: THREE.Box3;
   rooms: RoomInfo[];
-  entrance?: { pos: THREE.Vector3; outward: THREE.Vector3; width: number };
+  entrance?: { pos: THREE.Vector3; outward: THREE.Vector3; width: number; level: number; openingId: string };
   wallTop: number[];
   /** 開いた扉の位置（カメラの干渉判定用） */
   doorLeaves: { a: THREE.Vector3; b: THREE.Vector3 }[];
+  /** 開閉できる扉（独立した部品として表示側で動かす） */
+  doors: DoorInfo[];
   /** 各階の外形（ワールド） */
   outlines: { level: number; y: number; polys: THREE.Vector2[][] }[];
   topY: number;
+}
+
+/**
+ * 扉 1 枚。扉の板は局所座標（原点 = ヒンジ／引戸の閉位置、+X = 閉じた状態で板が伸びる向き）で作り、
+ * 表示側で Group に入れて回転（開き戸）または平行移動（引戸）させる。
+ */
+export interface DoorInfo {
+  /** 開口の ID */
+  id: string;
+  kind: 'swing' | 'slide';
+  level: number;
+  /** Group の位置（床の高さ 0。板の高さは局所座標に含む） */
+  origin: THREE.Vector3;
+  /** 閉じた状態の Group の Y 回転 */
+  yaw0: number;
+  /** 開き戸: 全開時の回転（符号付き、ラジアン）。引戸: 0 */
+  openAngle: number;
+  /** 引戸: 全開時の移動方向と距離 */
+  slideDir: THREE.Vector3;
+  slideDist: number;
+  /** 通常表示（ウォークスルー以外）での開き具合 0〜1 */
+  staticOpen: number;
+  mb: MeshBuilder;
+  width: number;
 }
 
 const up = new THREE.Vector3(0, 1, 0);
@@ -77,7 +103,7 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
 
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
   const mb = new MeshBuilder();
-  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [] };
+  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [] };
   const ext = opts.exterior;
   const spec = opts.spec ?? BUILDER_SPECS[0];
   const entranceWalls = new Set<string>();
@@ -583,15 +609,31 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     mb.box('ext.frame', plane.clone().setY(head - fw), dir, width, fw, 0.08);
     mb.box('ext.frame', plane.clone().addScaledVector(dir, -width / 2 + fw / 2).setY(sill), dir, fw, H, 0.08);
     mb.box('ext.frame', plane.clone().addScaledVector(dir, width / 2 - fw / 2).setY(sill), dir, fw, H, 0.08);
-    // 扉（閉）
+    // 扉（通常は閉。ウォークスルーで内側へ開く）: ヒンジを原点にした部品
     const dw = width - fw * 2;
-    mb.box('ext.door', plane.clone().setY(sill), dir, dw, H - fw, 0.045);
-    // 縦長の取っ手
-    const hx = plane.clone().addScaledVector(dir, dw / 2 - 0.12).addScaledVector(outN, 0.05).setY(sill + 0.75);
-    mb.box('f.metal', hx, dir, 0.02, 0.8, 0.02);
-    // 採光スリット
-    const sl = plane.clone().addScaledVector(dir, -dw / 2 + 0.12).addScaledVector(outN, 0.024).setY(sill + 0.3);
-    mb.box('ext.glassFrosted', sl, dir, 0.08, H - 0.6, 0.004);
+    const hingeStart = o.hingeAtStart !== false;
+    const closedDir = dir.clone().multiplyScalar(hingeStart ? 1 : -1);
+    const hinge = plane.clone().addScaledVector(dir, hingeStart ? -dw / 2 : dw / 2).setY(0);
+    const dmb = new MeshBuilder();
+    dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
+    const zOut = outN.dot(nW); // 局所 +Z = nW
+    // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
+    dmb.box('f.metal', V(dw - 0.12, sill + 0.75, zOut * 0.05), V(1, 0, 0), 0.02, 0.8, 0.02);
+    dmb.box('ext.glassFrosted', V(0.12, sill + 0.3, zOut * 0.024), V(1, 0, 0), 0.08, H - 0.6, 0.004);
+    const inward = outN.clone().negate();
+    meta.doors.push({
+      id: o.id,
+      kind: 'swing',
+      level: f.level,
+      origin: hinge,
+      yaw0: Math.atan2(-closedDir.z, closedDir.x),
+      openAngle: Math.atan2(closedDir.z * inward.x - closedDir.x * inward.z, closedDir.dot(inward)),
+      slideDir: new THREE.Vector3(),
+      slideDist: 0,
+      staticOpen: 0,
+      mb: dmb,
+      width: dw,
+    });
     // ポーチと庇
     const porchW = Math.max(1.6, width + 0.8);
     const porchD = 1.3;
@@ -601,7 +643,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     mb.box('l.porch', step.clone().setY(0), dir, porchW, (fl - 0.02) / 2, 0.4);
     const canopy = mid.clone().addScaledVector(outN, t / 2 + 0.5);
     mb.box('ext.canopy', canopy.setY(head + 0.25), dir, porchW, 0.06, 1.0);
-    meta.entrance = { pos: mid.clone().setY(fl), outward: outN.clone(), width };
+    // 玄関は最下階のものを採用（上階の外部扉が玄関扱いにならないように）
+    if (!meta.entrance || f.level < meta.entrance.level) meta.entrance = { pos: mid.clone().setY(fl), outward: outN.clone(), width, level: f.level, openingId: o.id };
     return;
   }
 
@@ -622,17 +665,17 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     mb.box('int.door', mid.clone().addScaledVector(dir, width / 2 - iw / 2).setY(fl), dir, iw, H, t * 0.6);
   }
   // ステルス枠は枠を見せない（小口は壁と同じ仕上げ）
-  const handle = (base: THREE.Vector3, along: THREE.Vector3, nrm: THREE.Vector3) => {
+  const handle = (mbx: MeshBuilder, base: THREE.Vector3, along: THREE.Vector3, nrm: THREE.Vector3) => {
     if (spec.doors.handle === 'slim-lever') {
       // 細身のレバーハンドル（両面）
       for (const sgn of [1, -1]) {
         const p = base.clone().addScaledVector(nrm, sgn * (doorT / 2 + 0.028));
-        mb.box('f.handle', p.clone().addScaledVector(along, 0.055), along, 0.13, 0.012, 0.012);
-        mb.box('f.handle', p.clone().addScaledVector(nrm, -sgn * 0.014).addScaledVector(along, 0), along, 0.012, 0.012, 0.028);
+        mbx.box('f.handle', p.clone().addScaledVector(along, 0.055), along, 0.13, 0.012, 0.012);
+        mbx.box('f.handle', p.clone().addScaledVector(nrm, -sgn * 0.014).addScaledVector(along, 0), along, 0.012, 0.012, 0.028);
       }
     } else {
-      mb.box('f.metal', base.clone().addScaledVector(nrm, doorT / 2 + 0.02), along, 0.12, 0.02, 0.02);
-      mb.box('f.metal', base.clone().addScaledVector(nrm, -doorT / 2 - 0.02), along, 0.12, 0.02, 0.02);
+      mbx.box('f.metal', base.clone().addScaledVector(nrm, doorT / 2 + 0.02), along, 0.12, 0.02, 0.02);
+      mbx.box('f.metal', base.clone().addScaledVector(nrm, -doorT / 2 - 0.02), along, 0.12, 0.02, 0.02);
     }
   };
   if (o.kind === 'door') {
@@ -656,45 +699,79 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const hinge = A.clone().addScaledVector(dir, hingeS).addScaledVector(nW, side * (t / 2));
     const leafDir = dir.clone().multiplyScalar(towards * Math.cos(ang)).addScaledVector(nW, side * Math.sin(ang)).normalize();
     const lw = width - 0.008;
-    const c = hinge.clone().addScaledVector(leafDir, lw / 2).setY(fl + 0.008);
-    mb.box('int.door', c, leafDir, lw, H - 0.008 - topGap, doorT);
     meta.doorLeaves.push({ a: hinge.clone().setY(fl), b: hinge.clone().addScaledVector(leafDir, lw).setY(fl) });
-    const knob = hinge.clone().addScaledVector(leafDir, lw - 0.075).setY(fl + 1.0);
-    const nLeaf = new THREE.Vector3(-leafDir.z, 0, leafDir.x);
-    handle(knob, leafDir.clone().negate(), nLeaf);
+    // 扉の板は独立した部品（ヒンジが原点、+X が閉じた板の向き）。通常表示は従来どおりの開き具合、ウォークスルーで開閉する
+    const closedDir = dir.clone().multiplyScalar(towards);
+    const fullOpen = dir.clone().multiplyScalar(towards * Math.cos(1.396)).addScaledVector(nW, side * Math.sin(1.396)).normalize();
+    const dmb = new MeshBuilder();
+    dmb.box('int.door', V(lw / 2, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT);
+    handle(dmb, V(lw - 0.075, fl + 1.0, 0), V(-1, 0, 0), V(0, 0, 1));
+    meta.doors.push({
+      id: o.id,
+      kind: 'swing',
+      level: f.level,
+      origin: hinge.clone().setY(0),
+      yaw0: Math.atan2(-closedDir.z, closedDir.x),
+      openAngle: Math.atan2(closedDir.z * fullOpen.x - closedDir.x * fullOpen.z, closedDir.dot(fullOpen)),
+      slideDir: new THREE.Vector3(),
+      slideDist: 0,
+      staticOpen: ang > 0 ? ang / 1.396 : 0,
+      mb: dmb,
+      width: lw,
+    });
   } else if (o.kind === 'sliding') {
-    // 半分開いた引戸（壁面に沿って）。フルハイトは上レールを天井に埋め込み見せない
-    // 引き込む側: 戸が壁の外（建物の外・壁の端・別の開口）にはみ出さない向きと面を選ぶ。どちらも無理なら閉じた状態
-    let lw = width * 0.55;
+    // 引戸: 通常は 6 割開けておく（壁の端・別の開口・建物の外にはみ出さない側へ引き込む）。ウォークスルーで開閉する
     const Lw = A.distanceTo(B);
     const others = f.openings.filter((q) => q.wallId === w.id && q.id !== o.id);
-    const sOpts: { sd: number; fc: number }[] = [];
-    for (const sd of [-1, 1]) for (const fc of [1, -1]) sOpts.push({ sd, fc });
-    const fits = ({ sd, fc }: { sd: number; fc: number }) => {
-      // 開口の外に出る範囲（壁芯方向 t）
-      const lo = sd < 0 ? s0 - width * 0.35 : s1 - width * 0.2;
-      const hi = sd < 0 ? s0 + width * 0.2 : s1 + width * 0.35;
-      const out0 = sd < 0 ? lo : s1;
-      const out1 = sd < 0 ? s0 : hi;
-      if (out0 < 0.05 || out1 > Lw - 0.05) return false;
-      if (others.some((q) => q.t1 * MM > out0 - 0.02 && q.t0 * MM < out1 + 0.02)) return false;
-      for (const tt of [lo, hi]) {
-        const p = A.clone().addScaledVector(dir, tt).addScaledVector(nW, fc * (t / 2 + 0.06));
-        if (f.outline.length && !f.outline.some((l) => pointInPolygon({ x: p.x / MM, y: p.z / MM }, l))) return false;
+    const lw = width - 0.01;
+    // 引き込める長さ（壁芯方向）: 壁の端か次の開口まで
+    const avail = (sd: number) => {
+      let lim = sd > 0 ? Lw - 0.05 - s1 : s0 - 0.05;
+      for (const q of others) {
+        const q0 = q.t0 * MM;
+        const q1 = q.t1 * MM;
+        if (sd > 0 && q0 > s1 - 0.02) lim = Math.min(lim, q0 - 0.02 - s1);
+        if (sd < 0 && q1 < s0 + 0.02) lim = Math.min(lim, s0 - (q1 + 0.02));
       }
-      return true;
+      return Math.max(0, lim);
     };
-    const pick = sOpts.find(fits);
-    if (!pick) lw = width - 0.01;
-    const face = mid.clone().addScaledVector(nW, (pick?.fc ?? 1) * (t / 2 + 0.025));
-    const c = pick
-      ? face.clone().addScaledVector(dir, pick.sd * (width / 2 - lw / 2 + width * 0.35)).setY(fl + 0.008)
-      : face.clone().setY(fl + 0.008);
-    mb.box('int.door', c, dir, lw, H - 0.008 - topGap, doorT * 0.9);
-    meta.doorLeaves.push({ a: c.clone().addScaledVector(dir, -lw / 2), b: c.clone().addScaledVector(dir, lw / 2) });
+    const insideAt = (sd: number, fc: number, dist: number) => {
+      const tt = sd > 0 ? s1 + dist : s0 - dist;
+      const p = A.clone().addScaledVector(dir, tt).addScaledVector(nW, fc * (t / 2 + 0.06));
+      return !f.outline.length || f.outline.some((l) => pointInPolygon({ x: p.x / MM, y: p.z / MM }, l));
+    };
+    let pick: { sd: number; fc: number; dist: number } | null = null;
+    for (const sd of [1, -1])
+      for (const fc of [1, -1]) {
+        const dist = Math.min(width * 0.92, avail(sd));
+        if (dist < 0.3 || !insideAt(sd, fc, dist * 0.5) || !insideAt(sd, fc, dist)) continue;
+        if (!pick || dist > pick.dist) pick = { sd, fc, dist };
+      }
+    const fc = pick?.fc ?? 1;
+    const face = mid.clone().addScaledVector(nW, fc * (t / 2 + 0.025));
+    const slideDir = dir.clone().multiplyScalar(pick?.sd ?? 1);
+    const slideDist = pick?.dist ?? 0;
+    const staticOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
+    const dmb = new MeshBuilder();
+    dmb.box('int.door', V(0, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT * 0.9);
+    // 引手（細い縦長の彫り込みを暗い線で表現。引き込む側と反対の端）
+    dmb.box('f.handle', V(-(pick?.sd ?? 1) * (lw / 2 - 0.05), fl + 0.85, fc * (doorT * 0.45 + 0.001)), V(1, 0, 0), 0.012, 0.35, 0.002);
+    meta.doors.push({
+      id: o.id,
+      kind: 'slide',
+      level: f.level,
+      origin: face.clone().setY(0),
+      yaw0: Math.atan2(-dir.z, dir.x),
+      openAngle: 0,
+      slideDir,
+      slideDist,
+      staticOpen,
+      mb: dmb,
+      width: lw,
+    });
+    const cs = face.clone().addScaledVector(slideDir, slideDist * staticOpen).setY(fl);
+    meta.doorLeaves.push({ a: cs.clone().addScaledVector(dir, -lw / 2), b: cs.clone().addScaledVector(dir, lw / 2) });
     if (!spec.doors.fullHeight) mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);
-    // 引手（細い縦長の彫り込みを暗い線で表現）
-    mb.box('f.handle', c.clone().addScaledVector(dir, lw / 2 - 0.05).addScaledVector(nW, doorT * 0.45 + 0.001).setY(fl + 0.85), dir, 0.012, 0.35, 0.002);
   }
 }
 

@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import type { BuildingModel, Floor, Room, FurnitureItem, FurnitureKind } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
-import { largestInnerRect, type Rect } from '../core/rects';
+import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, V } from './meshBuilder';
 import { MM } from './building';
 
@@ -250,8 +250,14 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
     const override = model.furniture?.find((o) => o.level === f.level);
     const env: ItemEnv = { mb, y: f.elevation * MM, ceilingY: f.ceilingHeight * MM, lights };
     for (const room of f.rooms) {
-      const inner = largestInnerRect(room.polygon, 5);
+      let inner = largestInnerRect(room.polygon, 5);
       if (!inner) continue;
+      // 階段の上には家具を置かない: 部屋の内側の矩形から階段を除いた最大の矩形を使う
+      const stairRects = f.stairs.filter((st) => st.maxX > inner!.minX && st.minX < inner!.maxX && st.maxY > inner!.minY && st.minY < inner!.maxY).map((st) => ({ minX: st.minX - 150, minY: st.minY - 150, maxX: st.maxX + 150, maxY: st.maxY + 150 }));
+      if (stairRects.length) {
+        const parts = rectsMinus([inner], stairRects).sort((a, b) => (b.maxX - b.minX) * (b.maxY - b.minY) - (a.maxX - a.minX) * (a.maxY - a.minY));
+        if (parts[0]) inner = parts[0];
+      }
       const inset = 0.07;
       const R = {
         minX: inner.minX * MM + inset,

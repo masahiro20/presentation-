@@ -1278,10 +1278,17 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       let sill = 0;
       let height = 2000;
       let windowStyle: WindowStyle | undefined;
-      if (exterior) {
-        if (op.kind === 'door' || inRoom?.type === 'entrance' && op.kind !== 'window') {
+      // 外壁扱いの壁でも、両側が室内（中庭に面する壁の、ホール側の区間など）なら室内の建具として扱う
+      const outdoorType = (t: string | undefined) => !t || t === 'balcony' || t === 'porch' || t === 'garage';
+      const bothInside = !!inRoom && !!otherRoom && !outdoorType(inRoom.type) && !outdoorType(otherRoom.type);
+      if (exterior && !bothInside) {
+        if (level === 1 && (op.kind === 'door' || (inRoom?.type === 'entrance' && op.kind !== 'window'))) {
           kind = 'entrance';
           height = 2200;
+        } else if (op.kind === 'door') {
+          // 2 階以上の外壁の扉（バルコニーへの出入り）
+          kind = 'door';
+          height = 2000;
         } else {
           kind = 'window';
           const outN = { x: w.n.x * (outsideSign ?? 1), y: w.n.y * (outsideSign ?? 1) };
@@ -1329,6 +1336,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const cc = { x: (c.minX + c.maxX) / 2, y: (c.minY + c.maxY) / 2 };
       const rr = roomAt(cc);
       if (rr && (rr.type === 'balcony' || rr.type === 'garage' || rr.type === 'porch')) continue;
+      // 建物の外（寸法線・図面の余白の等間隔線）は階段にしない
+      if (!rr && !outline.some((l) => pointInPolygon(cc, l))) continue;
     }
     // 周囲の壁面まで広げる
     const r = { ...c };

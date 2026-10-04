@@ -16,7 +16,8 @@ import { frameToLocal } from '../types';
 import { MapPicker, MAP_LAYER_LABEL, polygonAreaM2, type MapLayer } from '../map';
 import { loadEnvironment, NEIGHBOR_RADIUS } from '../environment';
 import { DEM_LABEL, gridStats, sampleHeight } from '../terrain';
-import { buildingFootprintEN } from '../building';
+import { buildingEavesOutlineEN, buildingFootprintEN, buildingOutlineEN, ensurePlacedData } from '../building';
+import { reapplyAlignment } from '../alignment';
 import { downloadProject, loadProjectFile, loadProjectFromUrl, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
 
 /** 初期表示（東京駅付近） */
@@ -131,10 +132,37 @@ function relocateEnvironment(prev: GeoFrame, next: GeoFrame) {
     const x = n as typeof n & { holes?: { e: number; n: number }[][] };
     if (x.holes) x.holes = x.holes.map((h) => h.map((q) => ({ e: q.e - d.e, n: q.n - d.n })));
   }
+  // 建物と測定点も周辺環境と同じだけずらし、航空写真に合わせた位置から滑らない（座標系の原点 = ピン）
+  if (study.model) {
+    study.placement.offsetE = Math.round((study.placement.offsetE - d.e) * 100) / 100;
+    study.placement.offsetN = Math.round((study.placement.offsetN - d.n) * 100) / 100;
+  }
+  for (const pt of study.points) {
+    pt.pos = [pt.pos[0] - d.e, pt.pos[1], pt.pos[2] + d.n];
+  }
   const h0 = sampleHeight(study.grid, 0, 0);
   next.groundElev = Number.isFinite(h0) ? h0 : prev.groundElev;
   emit('env');
   emit('neighbors');
+}
+
+/**
+ * ピンが動いた後、記録した位置合わせから建物の方位・位置を決め直す（建物を地球上の同じ所に保つ）。
+ * 2 点合わせなら対応点の緯度経度から解き直し（小さな移動のずらしを厳密にする）、それ以外は pivot の緯度経度に戻す。
+ * 新しいピンから周辺環境の半径より遠くなるときは（建設地そのものが変わった）ピンの位置に戻し、記録を外す
+ */
+function keepBuildingGeoFixed(next: GeoFrame): boolean {
+  if (!study.model) return false;
+  const pl = study.placement;
+  const kind = reapplyAlignment(next, pl, null);
+  if (!kind) return false;
+  if (Math.hypot(pl.offsetE, pl.offsetN) > NEIGHBOR_RADIUS) {
+    pl.offsetE = 0;
+    pl.offsetN = 0;
+    pl.alignment = undefined;
+    toast('建設地が大きく変わったため、建物をピンの位置に戻しました。「建物を置く」で位置合わせをやり直してください', 'info', 8000);
+  }
+  return true;
 }
 
 /** ピンの位置と住所を確定する */
@@ -143,8 +171,12 @@ function setFrame(p: LatLon, address: string) {
   const next: GeoFrame = { lat: p.lat, lon: p.lon, address, groundElev: null };
   if (prev) relocateEnvironment(prev, next);
   else if (study.env.loaded) invalidateEnv();
+  const moved = !prev || distM(prev, next) >= 0.01;
   study.frame = next;
+  if (moved) keepBuildingGeoFixed(next);
   emit('frame');
+  // 建物の位置（ピンからの相対）が変わったので、地図の足跡・日照画面の視点などに知らせる
+  if (study.model && moved) emit('placement');
   saveRecent();
 }
 
@@ -373,13 +405,15 @@ export const placeStep: StudyStep = {
     // 敷地（任意）
     const areaOut = h('div', { class: 'ok-box', style: 'display:none' });
     const polyInfo = h('div', { class: 'info-box' });
+    const footprintHint = h('p', { class: 'hint', style: 'margin:4px 0 0;display:none' }, '地図上の建物: 濃い線 = 壁、薄い面 = 軒先（航空写真で見えるのは軒先です）');
     side.appendChild(
       section(
         '敷地（任意）',
-        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '敷地の輪郭を描いておくと、日影図の 5m／10m ラインの基準になり、敷地内にある既存の建物（取り壊す家など）を周辺建物から自動で除外できます。'),
+        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '敷地の輪郭を描いておくと、日影図の 5m／10m ラインの基準になり、敷地内にある既存の建物（取り壊す家など）を周辺建物から自動で除外できます。「建物を置く」の「敷地の輪郭に合わせる」でも使います。'),
         areaOut,
         polyInfo,
         h('div', { class: 'btn-row' }, ...makePolyButtons()),
+        footprintHint,
       ),
     );
 
@@ -495,9 +529,14 @@ export const placeStep: StudyStep = {
       if (a != null) areaOut.textContent = `敷地面積 ${areaText(a)}（${study.sitePolygon.length} 点の輪郭。地図上で計算した概算です）`;
       polyInfo.style.display = has ? 'none' : '';
       polyInfo.textContent = mode ? '地図上で敷地の角を順にクリックしてください。' : '敷地の輪郭はまだありません。描かなくても検討はできます（日影図の 5m／10m ラインは建物の外形 +2m の矩形を使います）。';
+      footprintHint.style.display = study.model ? '' : 'none';
       if (map) {
         try {
-          map.setFootprint(study.model ? buildingFootprintEN() : null);
+          // 建物の外形: 塗り = 軒先（全高さの凸包。航空写真に写るのはこれ）、濃い線 = 壁。外形が取れなければ足跡の矩形
+          if (study.model) {
+            ensurePlacedData();
+            map.setFootprint(buildingEavesOutlineEN() ?? buildingFootprintEN(), buildingOutlineEN());
+          } else map.setFootprint(null);
         } catch {
           /* 地図未実装 */
         }
@@ -687,6 +726,8 @@ export const placeStep: StudyStep = {
       on('frame', refreshStatus),
       on('site', refreshPolyUI),
       on('model', refreshPolyUI),
+      // 位置合わせ・ピンの移動で建物の外形が変わったら地図の足跡も追従
+      on('placement', refreshPolyUI),
     );
     const onLine = () => refreshEnv();
     window.addEventListener('online', onLine);

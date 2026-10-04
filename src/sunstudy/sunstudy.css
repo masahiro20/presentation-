@@ -82,7 +82,9 @@
 .obj-row .obj-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .obj-row .obj-meta, .obj-row .hint { grid-column: 2; font-size: 11.5px; color: var(--ink3); margin: 0; }
 details.obj-details summary { cursor: pointer; font-size: 13px; color: var(--ink2); margin: 4px 0; }
-.nudge { display: grid; grid-template-columns: auto 1fr 1fr; gap: 4px 6px; align-items: center; font-size: 12.5px; margin: 6px 0; }
+.nudge { display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: 4px 6px; align-items: center; font-size: 12.5px; margin: 6px 0; }
+.pos-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.pos-fields .field { margin: 4px 0; }
 .nudge .k { color: var(--ink2); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; line-height: 1.7; }
 .kv .k { color: var(--ink3); white-space: nowrap; }

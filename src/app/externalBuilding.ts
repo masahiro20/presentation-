@@ -37,7 +37,8 @@ const GLASS_NAME_RE = /glass|ガラス|window|窓/i;
 /**
  * 焼き込んだメッシュ（importModel の BakedMeshData を持つ）をガラスとして扱うか。
  *  - マテリアルの情報があるとき（名前がある、または不透明度 < 1）: そのマテリアルで決める
- *    （不透明度 < 0.5・transmission > 0.5（読み込み時に不透明度 0.3 に写される）・すべてのマテリアル名がガラス）
+ *    （不透明度 < 0.5・transmission > 0.5（読み込み時に不透明度 0.3 に写される）・名前があってすべてのマテリアル名がガラス）。
+ *    名前の無い半透明（0.5〜1）のマテリアルはガラスではない（importModel.ts の判定と同じ。空の名前の every() は常に true なので明示的に除く）
  *  - マテリアルの情報が無いとき（MTL の無い OBJ・STL など）だけ、オブジェクト名で決める（読み込み時の判定 = 名前）
  * 'Wall_with_windows' のように名前に窓を含む壁が、不透明なマテリアルを持つのにガラス扱いで影を落とさなくなるのを防ぐ
  */
@@ -46,7 +47,7 @@ export function isGlassMesh(m: THREE.Mesh): boolean {
   const names = (ud.materialName ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const opacity = typeof ud.origOpacity === 'number' ? ud.origOpacity : 1;
   const hasMaterialInfo = names.length > 0 || opacity < 1;
-  if (hasMaterialInfo) return opacity < 0.5 || names.every((n) => GLASS_NAME_RE.test(n));
+  if (hasMaterialInfo) return opacity < 0.5 || (names.length > 0 && names.every((n) => GLASS_NAME_RE.test(n)));
   return GLASS_NAME_RE.test(m.name) || ud.glass === true;
 }
 

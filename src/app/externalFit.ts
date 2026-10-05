@@ -26,6 +26,7 @@ import {
   polygonPerimeter,
   solveRigid,
   type EN,
+  type MinAreaRect,
   type RigidFit,
 } from '../sun/align';
 import { DEFAULT_PLACEMENT, type ImportedModel, type ModelPlacement } from '../sunstudy/types';
@@ -560,7 +561,9 @@ export function trimmedScore(src: EN[], dst: EN[], fit: RigidFit, stepM: number,
 /**
  * 3DS の壁の外形 src（pivot ローカル EN）を PDF の外形 dst（bbox 中心基準の EN）に重ねる。
  * 1. 最小外接矩形どうし（fitRectToRect）で Δ と寸法差 mismatchM を得る（単位違いの検出用）
- * 2. 周長の比が 1/2〜2 を外れる（mm のまま等の単位違い）なら、外形どうしの ICP はせず矩形どうしの変換を返す（unitSuspect）
+ * 2. 周長の比が 1/2〜2 を外れる（mm のまま等の単位違い）なら、外形どうしの ICP はせず矩形どうしの変換を返す（unitSuspect）。
+ *    その向きは、src を周長の比で dst の大きさに縮めた外形の残差で Δ, Δ±90, Δ+180 から選ぶ（provisionalRotDeg。
+ *    大きさの違う矩形どうしの寸法差では 4 候補が同点になり、45° を超える Δ で 90° ずれていた）
  * 3. 凸包どうしの ICP（fitPolygonToPolygon、倍率なし）を Δ, Δ±90, Δ+180 と preferRotDeg から始めて残差 score を得る
  * 4. 180° 対称な外形では Δ と Δ+180 が同点になるので、残差の差 < 0.02 m の候補は preferRotDeg（今の回転）に近い方を選ぶ
  * 5. 外れ値を除く ICP で仕上げる（PDF に無いポーチ・下屋があっても主屋の壁が PDF の外形に乗る）。
@@ -609,10 +612,10 @@ function fitOnce(srcIn: EN[], dstIn: EN[], preferRotDeg: number): Omit<PlanFit, 
     const swapped = Math.abs(Math.abs(planRotDeg) - 90) < 45;
     return { planRotDeg, dx: fit.te, dz: -fit.tn, mismatchM: Math.abs(extW - rd.w) + Math.abs(extD - rd.d), swapped, score, pdfW: rd.w, pdfD: rd.d, extW, extD, unitSuspect };
   };
-  // 単位違い（周長が 1/2 未満・2 倍超）: 外形どうしの合わせは意味が無いので矩形どうしの姿勢だけ返す
+  // 単位違い（周長が 1/2 未満・2 倍超）: 外形どうしの合わせは意味が無いので矩形どうしの姿勢だけ返す（向きは縮めた外形で選ぶ）
   const perRatio = polygonPerimeter(src) / Math.max(1e-9, polygonPerimeter(dst));
   if (!(perRatio >= PERIMETER_RATIO_RANGE[0] && perRatio <= PERIMETER_RATIO_RANGE[1])) {
-    const f = rectPose(rect.rotDeg);
+    const f = rectPose(provisionalRotDeg(src, dst, rs, rd, perRatio, prefer, stepM));
     return result(f, outlineScore(src, dst, f, stepM), true);
   }
   const initial = [prefer, rect.rotDeg, rect.rotDeg + 90, rect.rotDeg + 180, rect.rotDeg + 270].map(normDeg180);
@@ -645,6 +648,30 @@ function fitOnce(srcIn: EN[], dstIn: EN[], preferRotDeg: number): Omit<PlanFit, 
   const refined = trimB < trimA - REFINE_TIE_M ? refinedB : refinedA;
   // 残差 score は全体で測る（形の違いの指標。鏡像の検出に使う）
   return result(refined, outlineScore(src, dst, refined, stepM), false);
+}
+
+/**
+ * 単位違いの疑いがあるときの仮の向き。矩形どうしで軸は合う（Δ = dst の矩形の軸 − src の矩形の軸）が、Δ, Δ±90, Δ+180 のどれかは
+ * 大きさの違う矩形の寸法差では決まらない（src の両辺が dst より大きいと |W−w|+|D−d| と |W−d|+|D−w| が同じ値になり、
+ * fitRectToRect は |回転| の小さい候補に倒れて 45° を超える Δ で 90° ずれる）。
+ * そこで src を周長の比 perRatio で dst の大きさに縮め、4 候補それぞれで矩形の中心を重ねた外形の残差（outlineScore）が最小の向きを選ぶ。
+ * 外接矩形が正方形に近い（ポーチ付きなど）形でも外形の形で決まる。同点（差 < TIE_M。矩形は Δ と Δ+180 が同点）は prefer に近い方
+ */
+function provisionalRotDeg(src: EN[], dst: EN[], rs: MinAreaRect, rd: MinAreaRect, perRatio: number, prefer: number, stepM: number): number {
+  const scaled = src.map((p) => ({ e: p.e / perRatio, n: p.n / perRatio }));
+  const cS: EN = { e: rs.center.e / perRatio, n: rs.center.n / perRatio };
+  const delta = rd.angleDeg - rs.angleDeg;
+  const cands: { rotDeg: number; score: number }[] = [];
+  for (let k = 0; k < 4; k++) {
+    const rotDeg = normDeg180(delta + 90 * k);
+    const m = applyFit({ rotDeg, te: 0, tn: 0, scale: 1, scaleRatio: 1, rmsM: 0 }, cS);
+    const f: RigidFit = { rotDeg, te: rd.center.e - m.e, tn: rd.center.n - m.n, scale: 1, scaleRatio: 1, rmsM: 0 };
+    cands.push({ rotDeg, score: outlineScore(scaled, dst, f, stepM) });
+  }
+  const min = Math.min(...cands.map((c) => c.score));
+  const tied = cands.filter((c) => c.score <= min + TIE_M);
+  tied.sort((a, b) => Math.abs(normDeg180(a.rotDeg - prefer)) - Math.abs(normDeg180(b.rotDeg - prefer)));
+  return tied[0].rotDeg;
 }
 
 function centroidOf(poly: EN[]): EN {

@@ -12,7 +12,7 @@ import { textSprite, type SunContext } from '../../sun/context';
 import { solveTwoPoint, normDeg180, ALIGN_COLORS, TWO_POINT_STEPS, TWO_POINT_CANCEL_HINT, MIN_PAIR_DIST_M, type EN } from '../../sun/align';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
 import { UNIT_LABEL, type ImportedModel, type LengthUnit } from '../../sunstudy/types';
-import { applyTwoPointToSite, sizeText, snapToOutlineVertex, suggestsMirror, suggestsUnitError } from '../externalFit';
+import { applyTwoPointToSite, sizeText, snapToOutlineVertex, suggestsMirror, suggestsUnitError, type ExternalFitRecord } from '../externalFit';
 import { createExternal, externalController, installExternal, loadExternal, loadSampleExternal, setExternalMounted, type ExternalController } from '../externalBuilding';
 
 export interface ExternalPanelDeps {
@@ -71,9 +71,14 @@ export function pairTooClose(a: EN, b: EN): boolean {
   return Math.hypot(a.e - b.e, a.n - b.n) < MIN_PAIR_DIST_M;
 }
 
-/** 配置の状態の文言: 手で調整した／自動で合わせた／自動で合わせられなかった（fit 無し） */
-export function placementStateText(e: { manual?: boolean; fit?: unknown }): string {
-  return e.manual ? '手で調整した配置です' : e.fit ? '間取りの外形に自動で合わせた配置です' : '未調整（自動で合わせられませんでした）';
+/** 自動合わせの結果: 外形を合わせた／単位違いの疑いで向きだけ仮に合わせた／合わせられなかった（配置は変えない） */
+export type AutoFitResult = 'fitted' | 'unitSuspect' | false;
+
+/** 配置の状態の文言: 手で調整した／単位違いの疑いで向きだけ仮に合わせた／自動で合わせた／自動で合わせられなかった（fit 無し） */
+export function placementStateText(e: { manual?: boolean; fit?: Partial<ExternalFitRecord> | null }): string {
+  if (e.manual) return '手で調整した配置です';
+  if (!e.fit) return '未調整（自動で合わせられませんでした）';
+  return e.fit.unitSuspect ? '仮の配置（単位を確認してください）' : '間取りの外形に自動で合わせた配置です';
 }
 
 /** 2 点合わせで建物の角を拾う対象: 表示中でメッシュのあるグループだけ（隠れている PDF の建物を 3DS 越しに拾わない） */
@@ -123,7 +128,8 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       deps.applySun();
       flyTop();
       const tri = `${m.triangles.toLocaleString()} 三角形`;
-      if (fitted) toast(`${m.name} を読み込みました（${tri}）。間取りの外形に合わせました`, 'ok');
+      if (fitted === 'fitted') toast(`${m.name} を読み込みました（${tri}）。間取りの外形に合わせました`, 'ok');
+      else if (fitted === 'unitSuspect') toast(`${m.name} を読み込みました（${tri}）。単位違いの疑いがあるので向きだけ仮に合わせました。単位を確認してください`, 'info', 8000);
       else toast(`${m.name} を読み込みました（${tri}）。自動では合わせられなかったので、手で位置を合わせてください`, 'info', 8000);
     } catch (e) {
       toast((e as Error).message, 'error', 9000);
@@ -133,10 +139,12 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
   };
 
   /**
-   * 間取りに自動で合わせ、単位や鏡像の疑いがあれば案内する。合わせられたら true（例外や false 戻りなら false。配置は変えない）。
+   * 間取りに自動で合わせ、単位や鏡像の疑いがあれば案内する。
+   * 戻り値: 'fitted' = 外形を合わせた、'unitSuspect' = 周長の比が外れていて（単位違いの疑い）向きだけ仮に合わせた、
+   * false = 合わせられなかった（例外や false 戻り。配置は変えない）。
    * preferRotDeg: 同点のときに優先する回転（省略時は今の回転）
    */
-  const runAutoFit = (preferRotDeg?: number): boolean => {
+  const runAutoFit = (preferRotDeg?: number): AutoFitResult => {
     if (!ctrl) return false;
     let fitted = false;
     try {
@@ -158,7 +166,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       else if (suggestsMirror(fit.score, fit.mirrorScore ?? fit.score)) toast(`外形の形が合いません（残差 ${fit.score.toFixed(2)} m。左右反転すると ${(fit.mirrorScore ?? fit.score).toFixed(2)} m）。鏡像で保存されたデータなら「左右反転」を試してください`, 'info', 8000);
       else if (fit.mismatchM > 0.6) toast(`PDF の外形 ${sizeText(fit.pdfW, fit.pdfD)} に対して 3DS は ${sizeText(fit.extW, fit.extD)} です（ポーチ・下屋などが含まれていると差が出ます）。主屋の壁を PDF の外形に合わせました`, 'info', 8000);
     }
-    return true;
+    return fit?.unitSuspect ? 'unitSuspect' : 'fitted';
   };
 
   // ---------------------------------------------------------------- 変更の反映（1 本に集約）
@@ -250,8 +258,9 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       const f = e.fit;
       const diff = f.mismatchM <= 0.3 ? '一致' : `差 ${f.mismatchM.toFixed(1)} m`;
       lines.push(h('b', null, `PDF 外形 ${sizeText(f.pdfW, f.pdfD)}／3DS ${sizeText(f.extW, f.extD)}（${diff}）`));
-      const mirror = suggestsMirror(f.score, f.mirrorScore ?? f.score);
-      lines.push(`外形の残差 ${f.score.toFixed(2)} m${mirror ? ' — 形が合いません。左右反転を試してください' : f.mismatchM > 0.3 ? '（PDF に無いポーチ・下屋などの分。主屋の壁で合わせています）' : ''}${f.swapped ? '（幅と奥行きを入れ替えて合わせました）' : ''}`);
+      // 単位違いの疑い（向きだけ仮に合わせた）では、残差は大きさの差そのものなので鏡像・ポーチの説明は付けない
+      const mirror = !f.unitSuspect && suggestsMirror(f.score, f.mirrorScore ?? f.score);
+      lines.push(`外形の残差 ${f.score.toFixed(2)} m${f.unitSuspect ? '（単位違いの疑いがあるため、外形は合わせず向きだけ仮に合わせています）' : mirror ? ' — 形が合いません。左右反転を試してください' : f.mismatchM > 0.3 ? '（PDF に無いポーチ・下屋などの分。主屋の壁で合わせています）' : ''}${f.swapped ? '（幅と奥行きを入れ替えて合わせました）' : ''}`);
     } else lines.push(h('b', null, `${e.model.name}`));
     const b = ctrl.worldBox();
     lines.push(`3DS の大きさ ${(b.max.x - b.min.x).toFixed(1)}×${(b.max.z - b.min.z).toFixed(1)} m・高さ ${(b.max.y - b.min.y).toFixed(1)} m／回転 ${e.planRotDeg.toFixed(0)}°・ずれ 右 ${e.dx.toFixed(2)} m・下 ${e.dz.toFixed(2)} m`);

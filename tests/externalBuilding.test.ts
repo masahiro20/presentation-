@@ -412,6 +412,43 @@ describe('片側に寄ったポーチ（主屋の東の壁と面一）と単位�
     expect(Number.isFinite(big.mirrorScore)).toBe(true);
   });
 
+  it('単位違い（×1000）で PDF の向きが 45° を超えて違っても、仮の向きは 90° ずれない（Δ = 60° → 60°。寸法も入れ替わらない）', () => {
+    // 矩形どうしの寸法差では、3DS の両辺が PDF より大きいと 4 候補（Δ + 90k）が同点になり、|回転| の小さい候補（−30°）に倒れていた
+    const big = rect.map((p) => ({ e: p.e * 1000, n: p.n * 1000 }));
+    for (const delta of [17, 46, 60, 75, 89, -60, -85]) {
+      const d = planOutlineEN(toPlanOutline(rotEN(rect, delta), c), c);
+      const f = fitExternalToPlan(big, d, 0);
+      expect(f.unitSuspect, `Δ ${delta}`).toBe(true);
+      // 矩形は Δ と Δ+180 が同点なので prefer（0）に近い方 = Δ そのもの
+      expect(Math.abs(normDeg180(f.planRotDeg - delta)), `Δ ${delta}: planRotDeg ${f.planRotDeg}`).toBeLessThan(0.5);
+      // 3DS の寸法は PDF の矩形の w/d の向きで報告される（回った PDF では minAreaRect が 7.28 m の辺を w に選ぶこともある）ので、
+      // 対応する辺どうしの比で見る: どちらも 1000（90° ずれていると 800 と 1250 になる）
+      expect(f.extW / f.pdfW, `Δ ${delta}: extW ${f.extW} / pdfW ${f.pdfW}`).toBeCloseTo(1000, 3);
+      expect(f.extD / f.pdfD, `Δ ${delta}: extD ${f.extD} / pdfD ${f.pdfD}`).toBeCloseTo(1000, 3);
+      // swapped（UI の「幅と奥行きを入れ替えて合わせました」）は回転が ±90° から 45° 以内のときだけ（寸法の入れ替えではない）
+      expect(f.swapped, `Δ ${delta}`).toBe(Math.abs(Math.abs(delta) - 90) < 45);
+      expect(Number.isFinite(f.mirrorScore)).toBe(true);
+    }
+    // 180° 対称の同点は preferRotDeg に近い方（180 を優先すれば Δ − 180）
+    const d60 = planOutlineEN(toPlanOutline(rotEN(rect, 60), c), c);
+    expect(Math.abs(normDeg180(fitExternalToPlan(big, d60, 180).planRotDeg - (60 - 180)))).toBeLessThan(0.5);
+    // 縮尺が小さい側（cm → ×0.01）でも同じ
+    const small = rect.map((p) => ({ e: p.e * 0.01, n: p.n * 0.01 }));
+    const fs = fitExternalToPlan(small, d60, 0);
+    expect(fs.unitSuspect).toBe(true);
+    expect(Math.abs(normDeg180(fs.planRotDeg - 60))).toBeLessThan(0.5);
+    // ポーチ付き（外接矩形 9.1 × 9.28 でほぼ正方形。矩形の寸法では長い辺どうしを合わせて 90° ずれる）でも、縮めた外形の形で向きが決まる
+    const porch = houseL(9.1, 7.28, 2.0, 2.0, 0).map((p) => ({ e: p.e * 1000, n: p.n * 1000 }));
+    const fp = fitExternalToPlan(porch, d60, 0);
+    expect(fp.unitSuspect).toBe(true);
+    expect(Math.abs(normDeg180(fp.planRotDeg - 60))).toBeLessThan(0.5);
+    // PDF の 9.1 m の辺に 3DS の 9100 の辺が対応する（9280 の辺が対応していたら 90° ずれ）
+    const [pdf91, ext91, ext92] = fp.pdfW > 8 ? [fp.pdfW, fp.extW, fp.extD] : [fp.pdfD, fp.extD, fp.extW];
+    expect(pdf91).toBeCloseTo(9.1, 6);
+    expect(ext91).toBeCloseTo(9100, 3);
+    expect(ext92).toBeCloseTo(9280, 3);
+  });
+
   it('suggestsUnitError の帯: 片方の寸法が 1/2〜2 倍の中なら疑わない、外れたら疑う、両方 20% 以上違えば疑う（×2 の mm→cm 違い）', () => {
     const base = { pdfW: 9.1, pdfD: 7.28 };
     expect(suggestsUnitError({ ...base, extW: 9.1, extD: 9.28, mismatchM: 2.0 })).toBe(false); // 2.0 m の下屋
@@ -703,6 +740,8 @@ describe('ExternalController と viewer の連携（偽の viewer）', () => {
       mesh('window_7', { glass: true }), // マテリアル情報なし → 名前
       mesh('wall_s', {}),
       mesh('skylight', { materialName: 'Glazing', origOpacity: 0.9 }), // 名前にガラスは無いがマテリアルが Glazing… は GLASS_RE 外 → 壁
+      mesh('Panel_08', { materialName: '', origOpacity: 0.8 }), // 名前の無い半透明（0.5〜1）のマテリアル → ガラスではない（空の every() に倒れない）
+      mesh('Panel_03', { materialName: '', origOpacity: 0.3 }), // 名前が無くても不透明度 < 0.5 ならガラス
     );
     expect(isGlassMesh(raw.children[0] as THREE.Mesh)).toBe(false);
     expect(isGlassMesh(raw.children[1] as THREE.Mesh)).toBe(false);
@@ -712,9 +751,13 @@ describe('ExternalController と viewer の連携（偽の viewer）', () => {
     expect(isGlassMesh(raw.children[5] as THREE.Mesh)).toBe(true);
     expect(isGlassMesh(raw.children[6] as THREE.Mesh)).toBe(false);
     expect(isGlassMesh(raw.children[7] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[8] as THREE.Mesh)).toBe(false);
+    expect(isGlassMesh(raw.children[9] as THREE.Mesh)).toBe(true);
+    // glTF で名前の無いマテリアル（GLTFLoader は material.name = ''）が alphaMode BLEND・不透明度 0.99 でも壁（importModel.ts の判定と同じ）
+    expect(isGlassMesh(mesh('', { materialName: '', origOpacity: 0.99 }))).toBe(false);
     const model = { raw, notes: ['ガラスと判定したオブジェクト（影を落とさない）: 5 個'], objects: [] } as unknown as ImportedModel;
     const r = classifyGlass(model);
-    expect(r.glass).toEqual(['Pane_01', 'Win_03', 'window_7']);
+    expect(r.glass).toEqual(['Pane_01', 'Win_03', 'window_7', 'Panel_03']);
     // 名前にも窓・ガラスが無い Frame_and_pane は「名前は窓だが…」には入らない
     expect(r.nameOnly).toEqual(['Wall_with_windows_S', '窓付き外壁']);
     // userData.glass が更新されている（PlacedModel はこれを写す）

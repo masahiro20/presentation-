@@ -101,8 +101,14 @@ describe('3DS の配置の状態の文言', () => {
   it('手で調整／自動で合わせた／自動で合わせられなかった（fit 無し）を区別する', () => {
     expect(placementStateText({ manual: true, fit: { mismatchM: 0 } })).toBe('手で調整した配置です');
     expect(placementStateText({ manual: false, fit: { mismatchM: 0 } })).toBe('間取りの外形に自動で合わせた配置です');
+    expect(placementStateText({ manual: false, fit: { mismatchM: 0, unitSuspect: false } })).toBe('間取りの外形に自動で合わせた配置です');
     expect(placementStateText({})).toBe('未調整（自動で合わせられませんでした）');
     expect(placementStateText({ manual: false })).toBe('未調整（自動で合わせられませんでした）');
+    expect(placementStateText({ manual: false, fit: null })).toBe('未調整（自動で合わせられませんでした）');
+    // 周長の比で単位違いと判定し、向きだけ仮に合わせた配置は「合わせた」と言わない
+    expect(placementStateText({ manual: false, fit: { mismatchM: 18000, unitSuspect: true } })).toBe('仮の配置（単位を確認してください）');
+    // 仮の配置を手で動かせば「手で調整」
+    expect(placementStateText({ manual: true, fit: { mismatchM: 18000, unitSuspect: true } })).toBe('手で調整した配置です');
   });
 });
 

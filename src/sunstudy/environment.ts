@@ -5,6 +5,7 @@
  * rebuildEnvironment(): state からシーンの terrain / neighbors / site グループを作り直す
  */
 import * as THREE from 'three';
+import { polygonArea } from '../sun/align';
 import { fetchAerial } from '../sun/geo';
 import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neighbors';
 import type { StudyScene } from './scene';
@@ -151,11 +152,12 @@ export function sitePolygonWorld(): THREE.Vector2[] | null {
   });
 }
 
-/** 敷地ポリゴン（ピンからの東・北 m）。無ければ null */
+/** 敷地ポリゴン（ピンからの東・北 m）。無い・面積 0（保存データが壊れているなど。輪郭に合わせる計算で矩形が作れない）なら null */
 export function sitePolygonEN(): { e: number; n: number }[] | null {
   const f = study.frame;
   if (!f || study.sitePolygon.length < 3) return null;
-  return study.sitePolygon.map((p) => frameToLocal(f, p));
+  const pts = study.sitePolygon.map((p) => frameToLocal(f, p));
+  return Math.abs(polygonArea(pts)) > 0 ? pts : null;
 }
 
 /** 敷地内（または建物の足跡に重なる）の自動取得建物を除いた一覧 */

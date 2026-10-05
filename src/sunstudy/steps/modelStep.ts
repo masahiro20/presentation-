@@ -399,15 +399,22 @@ export const modelStep: StudyStep = {
         // 単位が変わっても、指した角は航空写真の同じ所に留まる（対応点を新しい倍率で換算して解き直す）
         reapplyAlignment(study.frame, pl, p);
       } else if (shapeChanged && (al?.kind === 'siteFit' || al?.kind === 'orient')) {
-        // 形・寸法が変わると合わせた外形も変わる: 今の形で合わせ直す。できなければ記録を外す（古い残差を表示し続けない）
-        const r = refitSiteAlignment(p, pl, sitePolygonEN());
-        if (r === 'dropped') toast('形・寸法を変えたので敷地の輪郭への合わせをやり直してください', 'info', 8000);
-        else if (r === 'refit' && al.kind === 'siteFit')
-          toast(scaleSuspect(al) ? `敷地の向きだけ合わせ直しました（${siteScaleText(al.scaleRatio ?? 1)}。単位を確認してください）` : `敷地の輪郭に合わせ直しました（残差 ${fmt(al.rmsM ?? NaN)} m）`, 'ok');
+        // 形・寸法が変わると合わせた外形も変わる: 今の形で合わせ直す。できなければ記録を外す（古い残差を表示し続けない）。
+        // 計算が失敗しても（想定外の外形）配置の反映・保存・表示の更新は続ける
+        try {
+          const r = refitSiteAlignment(p, pl, sitePolygonEN());
+          if (r === 'dropped') toast('形・寸法を変えたので敷地の輪郭への合わせをやり直してください', 'info', 8000);
+          else if (r === 'refit' && al.kind === 'siteFit')
+            toast(scaleSuspect(al) ? `敷地の向きだけ合わせ直しました（${siteScaleText(al.scaleRatio ?? 1)}。単位を確認してください）` : `敷地の輪郭に合わせ直しました（残差 ${fmt(al.rmsM ?? NaN)} m）`, 'ok');
+        } catch {
+          toast('敷地の輪郭に合わせられませんでした', 'error');
+        }
       }
       applyGL(p);
       p.applyTransform();
-      notePivot();
+      // pivot の緯度経度は位置合わせ・手で動かした記録がある建物だけ更新する。単位・表示だけの変更で記録を作ると、
+      // 読み込んだだけの建物がピンに付いて動かなくなる（followPinMove の 'pin'）
+      if (study.placement.alignment) notePivot();
       emit('placement');
       saveRecent();
       scheduleEnv(scene, 0);
@@ -426,7 +433,9 @@ export const modelStep: StudyStep = {
       p.applyTransform();
       applyGL(p);
       p.applyTransform();
-      notePivot();
+      // 位置を決める経路（markManual・2 点合わせ・敷地の輪郭）は先に記録を作っているのでここで緯度経度が入る。
+      // GL・床の高さだけの変更では記録を作らない（読み込んだだけの建物はピンに付いて動く）
+      if (study.placement.alignment) notePivot();
       emit('placement');
       saveRecent();
       scheduleEnv(scene, immediateEnv ? 0 : ENV_DEBOUNCE_MS);
@@ -1084,29 +1093,36 @@ export const modelStep: StudyStep = {
           cancelPick();
           // 位置合わせをやり直したので、日照へ進むときの「配置の確認」をもう一度出す
           confirmed = false;
-          if (p.siteOutlineLocal()) {
-            const r = fitToSite(p, site, pl.headingDeg);
-            if (!r) {
-              toast('敷地の輪郭に合わせられませんでした', 'error');
-              return;
-            }
-            pl.headingDeg = r2(r.headingDeg);
-            pl.offsetE = r2(r.offsetE);
-            pl.offsetN = r2(r.offsetN);
-            pl.alignment = { kind: 'siteFit', rmsM: r.rmsM, scaleRatio: r.scaleRatio, at: stamp() };
-            afterTransform(true);
-            if (r.unitSuspect) {
-              toast(`敷地の大きさが合わないので向きだけ合わせました。${siteScaleText(r.scaleRatio)}。単位（縮尺）を確認してください（「寸法もこの比で合わせる」で合わせられます）`, 'info', 9000);
+          // 計算が失敗しても（一直線上の輪郭など想定外の外形）英語の例外ではなく日本語で伝え、配置は触らない
+          try {
+            if (p.siteOutlineLocal()) {
+              const r = fitToSite(p, site, pl.headingDeg);
+              if (!r) {
+                toast('敷地の輪郭に合わせられませんでした', 'error');
+                return;
+              }
+              pl.headingDeg = r2(r.headingDeg);
+              pl.offsetE = r2(r.offsetE);
+              pl.offsetN = r2(r.offsetN);
+              pl.alignment = { kind: 'siteFit', rmsM: r.rmsM, scaleRatio: r.scaleRatio, at: stamp() };
+              afterTransform(true);
+              if (r.unitSuspect) {
+                toast(`敷地の大きさが合わないので向きだけ合わせました。${siteScaleText(r.scaleRatio)}。単位（縮尺）を確認してください（「寸法もこの比で合わせる」で合わせられます）`, 'info', 9000);
+              } else {
+                toast(`敷地の輪郭に合わせました（残差 ${fmt(r.rmsM)} m）`, 'ok');
+                // convexOnly は 3DS の敷地が凸包でしか取れなかったとき（siteOutlineIsHull）だけ。板の外周が取れていて凸なら形の違い
+                if (r.convexOnly) toast('地図で描いた輪郭には凹みがありますが、3DS の敷地は外周が取れない形（接する 2 枚の板など）なので凸包で合わせています。残差が大きめに出ます', 'info', 8000);
+                else if (r.shapeDiffers) toast('描いた輪郭には凹みがありますが 3DS の敷地は凸なので残差が大きめに出ます。航空写真で確かめてください', 'info', 8000);
+                else if (r.rmsM > 0.5) toast('残差が大きめです。3DS の敷地オブジェクトと地図で描いた輪郭の形が違うかもしれません。航空写真で確かめてください', 'info', 8000);
+              }
             } else {
-              toast(`敷地の輪郭に合わせました（残差 ${fmt(r.rmsM)} m）`, 'ok');
-              if (r.convexOnly) toast('地図で描いた輪郭には凹みがありますが、3DS の敷地は外周が取れない形（接する 2 枚の板など）なので凸包で合わせています。残差が大きめに出ます', 'info', 8000);
-              else if (r.rmsM > 0.5) toast('残差が大きめです。3DS の敷地オブジェクトと地図で描いた輪郭の形が違うかもしれません。航空写真で確かめてください', 'info', 8000);
+              pl.headingDeg = r2(orientToSite(p, site, pl.headingDeg));
+              pl.alignment = { kind: 'orient', at: stamp() };
+              afterTransform(true);
+              toast('建物の向きを敷地の辺に合わせました（位置は変えていません。航空写真に合わせてドラッグするか 2 点合わせで位置を決めてください）', 'info', 8000);
             }
-          } else {
-            pl.headingDeg = r2(orientToSite(p, site, pl.headingDeg));
-            pl.alignment = { kind: 'orient', at: stamp() };
-            afterTransform(true);
-            toast('建物の向きを敷地の辺に合わせました（位置は変えていません。航空写真に合わせてドラッグするか 2 点合わせで位置を決めてください）', 'info', 8000);
+          } catch {
+            toast('敷地の輪郭に合わせられませんでした', 'error');
           }
         },
       }) as HTMLButtonElement;

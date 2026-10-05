@@ -623,6 +623,8 @@ export class PlacedModel {
   private outlineSig = '';
   private visiblePos: Float32Array | null = null;
   private siteCache: EN[] | null | undefined;
+  /** siteCache が凸包への退避で埋まったか（siteOutlineLocal が決める。siteOutlineIsHull 用） */
+  private siteIsHull = false;
 
   constructor(
     public model: ImportedModel,
@@ -725,6 +727,7 @@ export class PlacedModel {
     this.outlineCache.clear();
     this.visiblePos = null;
     this.siteCache = undefined;
+    this.siteIsHull = false;
     this.outlineSig = this.shapeSig();
   }
 
@@ -791,24 +794,27 @@ export class PlacedModel {
     const hidden = new Set(this.placement.hiddenObjects ?? []);
     const pos = this.localPositions((m) => isSiteObjectName(m.name) && hidden.has(m.name));
     let outline: EN[] = [];
+    let isHull = false;
     if (pos.length >= 9) {
       outline = plateOutline(pos) ?? [];
       if (outline.length < 3) {
         const pts: EN[] = [];
         for (let i = 0; i + 2 < pos.length; i += 3) pts.push({ e: pos[i], n: -pos[i + 2] });
         outline = convexHull(pts);
+        isHull = true;
       }
     }
     this.siteCache = outline.length >= 3 ? outline : null;
+    this.siteIsHull = isHull;
     return this.siteCache;
   }
 
-  /** 敷地オブジェクトの外形が凸包でしか取れなかった（凹みのある敷地では残差が大きめに出る）か。敷地オブジェクトが無ければ false */
+  /**
+   * 敷地オブジェクトの外形が凸包でしか取れなかった（凹みのある敷地では残差が大きめに出る）か。敷地オブジェクトが無ければ false。
+   * siteOutlineLocal と同じキャッシュ（rebuild ごと）なので、表示の更新のたびに呼んでも頂点を読み直さない
+   */
   siteOutlineIsHull(): boolean {
-    const o = this.siteOutlineLocal();
-    if (!o) return false;
-    const hidden = new Set(this.placement.hiddenObjects ?? []);
-    return plateOutline(this.localPositions((m) => isSiteObjectName(m.name) && hidden.has(m.name))) == null;
+    return this.siteOutlineLocal() != null && this.siteIsHull;
   }
 
   /** ワールド bbox（配置後） */

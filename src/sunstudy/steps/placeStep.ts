@@ -171,10 +171,20 @@ function pinFromMap(p: LatLon) {
   setFrame(p, addr);
 }
 
-/** 敷地ポリゴンを状態に反映（閉じた 3 点以上だけを敷地とみなす） */
+/** 面積 0 の輪郭を閉じたことを既に伝えたか（頂点をドラッグするたびに繰り返さない） */
+let degenerateWarned = false;
+
+/**
+ * 敷地ポリゴンを状態に反映（閉じた 3 点以上だけを敷地とみなす）。
+ * 閉じていても面積が 0（点が一直線上・同じ点の繰り返し: A→B→A を A で閉じるなど）なら敷地とはみなさない
+ * （輪郭に合わせる計算で矩形が作れず、周辺建物の除外にも使えない）
+ */
 function applyPolygon(poly: LatLon[], closed: boolean) {
   drawCount = poly.length;
-  const next = closed && poly.length >= 3 ? poly.map((q) => ({ lat: q.lat, lon: q.lon })) : [];
+  const degenerate = closed && poly.length >= 3 && !(polygonAreaM2(poly) > 0);
+  if (degenerate && !degenerateWarned) toast('敷地の輪郭の面積が 0 です（点が一直線上か同じ点の繰り返し）。描き直してください', 'error', 7000);
+  degenerateWarned = degenerate;
+  const next = closed && poly.length >= 3 && !degenerate ? poly.map((q) => ({ lat: q.lat, lon: q.lon })) : [];
   const same = next.length === study.sitePolygon.length && next.every((q, i) => Math.abs(q.lat - study.sitePolygon[i].lat) < 1e-9 && Math.abs(q.lon - study.sitePolygon[i].lon) < 1e-9);
   if (!same) {
     study.sitePolygon = next;

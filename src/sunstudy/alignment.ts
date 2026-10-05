@@ -20,6 +20,7 @@ import {
   fitPolygonToPolygon,
   fitRectToRect,
   invertFit,
+  minAreaRect,
   normDeg180,
   pointInPolygon,
   polygonArea,
@@ -157,7 +158,8 @@ function dropCollinear(poly: EN[], tol: number): EN[] {
  * 三角形の集まり（xyz を 9 個ずつ）のうち水平な三角形（3 頂点の y が同じ）を高さごとにまとめ、面積が最大の層（天面。
  * 同点なら高い方）を採り、その層で 1 つの三角形だけが使う辺（境界辺）をつないで多角形にする。一直線上の点は除き、反時計回りで返す。
  * 境界辺が 1 周につながらない（T 字の接合・2 枚の板の重なり・接する 2 つの輪）、別の輪が外周の外にある（穴ではない）、
- * 外周が全頂点の凸包より大きい、天面が板の足跡の半分に届かない（傾いた地面など）ときは null（呼び出し側で凸包に戻す）。
+ * 外周が全頂点の凸包より大きい、天面が板の足跡の半分に届かない（傾いた地面など）、天面の外に他の層・傾いた面の頂点がある
+ * （段差のある敷地・土手の付いた板: 天面だけでは敷地全体を表さない）ときは null（呼び出し側で凸包に戻す）。
  * toEN の既定は (x, _, z) → { e: x, n: −z }（pivot ローカルと同じ）
  */
 export function plateOutline(positions: ArrayLike<number>, opts: { toEN?: (x: number, y: number, z: number) => EN } = {}): EN[] | null {
@@ -177,13 +179,18 @@ export function plateOutline(positions: ArrayLike<number>, opts: { toEN?: (x: nu
   type Tri = { y: number; p: [EN, EN, EN]; area: number };
   const horiz: Tri[] = [];
   const allPts: EN[] = [];
+  /** 水平でない三角形の頂点（天面の外にはみ出していないかを後で確かめる） */
+  const sloped: EN[] = [];
   for (let t = 0; t < triCount; t++) {
     const i = t * 9;
     const ys = [positions[i + 1], positions[i + 4], positions[i + 7]];
     const p: [EN, EN, EN] = [toEN(positions[i], ys[0], positions[i + 2]), toEN(positions[i + 3], ys[1], positions[i + 5]), toEN(positions[i + 6], ys[2], positions[i + 8])];
     if (!ys.every(Number.isFinite) || !p.every((q) => Number.isFinite(q.e) && Number.isFinite(q.n))) continue;
     allPts.push(...p);
-    if (Math.max(...ys) - Math.min(...ys) > tol) continue;
+    if (Math.max(...ys) - Math.min(...ys) > tol) {
+      sloped.push(...p);
+      continue;
+    }
     const area = Math.abs(cross2({ e: p[1].e - p[0].e, n: p[1].n - p[0].n }, { e: p[2].e - p[0].e, n: p[2].n - p[0].n })) / 2;
     horiz.push({ y: (ys[0] + ys[1] + ys[2]) / 3, p, area });
   }
@@ -287,7 +294,24 @@ export function plateOutline(positions: ArrayLike<number>, opts: { toEN?: (x: nu
   // 外周は凸包の中（面積で判定）
   if (Math.abs(outerArea) > hullArea * (1 + 1e-6) + tol) return null;
   // 他の輪は穴（外周の内側）であること。外にあれば別の板（接する 2 枚の板など）なので外周とは言えない
-  for (const loop of loops.slice(1)) for (const q of loop) if (!pointInPolygon(q, outer) && closestPointOnPolygon(q, outer).dist > tol) return null;
+  const outside = (q: EN) => !pointInPolygon(q, outer) && closestPointOnPolygon(q, outer).dist > tol;
+  for (const loop of loops.slice(1)) for (const q of loop) if (outside(q)) return null;
+  // 天面の外に他の層・傾いた面の頂点があってはならない（段差のある敷地・土手の付いた板は天面だけでは敷地全体を表さない。
+  // 薄い箱の側面・底面の頂点は外周の真下にあるので通る）。外周の bbox の外なら多角形の判定をせずに確定
+  let minE = Infinity;
+  let maxE = -Infinity;
+  let minN = Infinity;
+  let maxN = -Infinity;
+  for (const q of outer) {
+    if (q.e < minE) minE = q.e;
+    if (q.e > maxE) maxE = q.e;
+    if (q.n < minN) minN = q.n;
+    if (q.n > maxN) maxN = q.n;
+  }
+  const beyond = (q: EN) => q.e < minE - tol || q.e > maxE + tol || q.n < minN - tol || q.n > maxN + tol || outside(q);
+  for (const q of sloped) if (beyond(q)) return null;
+  const levelSet = new Set<Tri>(level);
+  for (const t of horiz) if (!levelSet.has(t)) for (const q of t.p) if (beyond(q)) return null;
   if (outerArea < 0) outer = outer.reverse();
   return outer;
 }
@@ -392,8 +416,16 @@ export interface SiteFitResult {
   scaleRatio: number;
   /** 大きさが 2 倍以上違う: 単位が違う可能性が高い。ICP はせず、最小外接矩形の向きだけ合わせた（位置は今のまま） */
   unitSuspect: boolean;
-  /** 描いた輪郭には凹みがあるのに、3DS の敷地は凸包でしか外形が取れなかった（残差が大きめに出る） */
+  /**
+   * 描いた輪郭には凹みがあるのに、3DS の敷地オブジェクトは外周が取れない形（接する 2 枚の板・傾いた地面など）で
+   * 凸包でしか外形が取れなかった（PlacedModel.siteOutlineIsHull）。凹みの分だけ残差が大きめに出る
+   */
   convexOnly: boolean;
+  /**
+   * 3DS の敷地オブジェクトの外周は取れていて凸なのに、描いた輪郭には凹みがある（convexOnly とは排他）。
+   * 3DS の敷地と描いた輪郭の形が違うか、描いた輪郭が隣地を含んでいる。残差が大きめに出る
+   */
+  shapeDiffers: boolean;
 }
 
 /**
@@ -401,7 +433,9 @@ export interface SiteFitResult {
  * 候補は辺の主方向の差 + k·90° と今の向き（preferHeadingDeg）。矩形の敷地では Δ と Δ+180 が同点になるので、
  * 残差の差が 2 cm 以内なら今の向きに最も近い候補を採る。
  * 周長の比が SITE_SCALE_RANGE を外れる（単位違い）ときは ICP をせず、最小外接矩形の向きだけ合わせ（位置は今のまま。
- * 1000 倍の建物を中心合わせで数 km 先へ飛ばさない）unitSuspect を立てる。敷地オブジェクトが無ければ null
+ * 1000 倍の建物を中心合わせで数 km 先へ飛ばさない）unitSuspect を立てる。矩形どうしの比較は 3DS の敷地を周長の比で
+ * 描いた輪郭の大きさに揃えてから行う（揃えないと幅・奥行の差が同点になり、向きが 90° ずれる）。矩形は 180° 対称なので
+ * Δ と Δ+180 のうち今の向きに近い方を採る。敷地オブジェクトが無い・どちらかの外形から矩形が作れない（一直線上）なら null
  */
 export function fitToSite(placed: PlacedModel, sitePolygonEN: EN[], preferHeadingDeg = placed.placement.headingDeg): SiteFitResult | null {
   const src = placed.siteOutlineLocal();
@@ -410,15 +444,20 @@ export function fitToSite(placed: PlacedModel, sitePolygonEN: EN[], preferHeadin
   const perD = polygonPerimeter(sitePolygonEN);
   if (!(perS > 0) || !(perD > 0)) return null;
   const scaleRatio = perD / perS;
-  const convexOnly = !isConcave(src) && isConcave(sitePolygonEN);
+  const dstConcave = isConcave(sitePolygonEN);
+  const convexOnly = placed.siteOutlineIsHull() && dstConcave;
+  const shapeDiffers = !convexOnly && dstConcave && !isConcave(src);
   // 今の向きの表し方（例: −10°）に連続な値で返す
   const continuous = (rotDeg: number) => preferHeadingDeg + normDeg180(rotDeg - preferHeadingDeg);
+  const closeness = (r: number) => Math.abs(normDeg180(r - preferHeadingDeg));
   if (scaleRatio < SITE_SCALE_RANGE.min || scaleRatio > SITE_SCALE_RANGE.max) {
-    const r = fitRectToRect(src, sitePolygonEN);
-    return { headingDeg: continuous(r.rotDeg), offsetE: placed.placement.offsetE, offsetN: placed.placement.offsetN, rmsM: NaN, scaleRatio, unitSuspect: true, convexOnly };
+    const scaled = src.map((p) => ({ e: p.e * scaleRatio, n: p.n * scaleRatio }));
+    if (!minAreaRect(scaled) || !minAreaRect(sitePolygonEN)) return null;
+    const r = fitRectToRect(scaled, sitePolygonEN);
+    const rot = closeness(r.rotDeg + 180) < closeness(r.rotDeg) - 1e-9 ? r.rotDeg + 180 : r.rotDeg;
+    return { headingDeg: continuous(rot), offsetE: placed.placement.offsetE, offsetN: placed.placement.offsetN, rmsM: NaN, scaleRatio, unitSuspect: true, convexOnly, shapeDiffers };
   }
   const best = fitPolygonToPolygon(src, sitePolygonEN, { allowScale: false, initialRotDeg: [preferHeadingDeg] });
-  const closeness = (r: number) => Math.abs(normDeg180(r - preferHeadingDeg));
   let chosen: RigidFit & { score: number } = best;
   for (let k = 1; k < 4; k++) {
     const r = normDeg180(best.rotDeg + 90 * k);
@@ -426,7 +465,7 @@ export function fitToSite(placed: PlacedModel, sitePolygonEN: EN[], preferHeadin
     const cand = icpRigid(src, sitePolygonEN, r);
     if (cand.score <= best.score + FIT_TIE_M) chosen = cand;
   }
-  return { headingDeg: continuous(chosen.rotDeg), offsetE: chosen.te, offsetN: chosen.tn, rmsM: chosen.rmsM, scaleRatio, unitSuspect: false, convexOnly };
+  return { headingDeg: continuous(chosen.rotDeg), offsetE: chosen.te, offsetN: chosen.tn, rmsM: chosen.rmsM, scaleRatio, unitSuspect: false, convexOnly, shapeDiffers };
 }
 
 /**
@@ -551,7 +590,9 @@ export interface PinMoveResult {
  * ピンが prev → next に動いたときの建物と測定点の追従（placement・points を書き換える）。
  *  - 位置合わせの記録（2 点合わせの対応点／pivot の緯度経度）があれば、建物を地球上の同じ所に保つ（reapplyAlignment）。
  *    新しいピンから maxOffsetM より遠くなるときは（建設地そのものが変わった）ピンの位置に戻し、記録を外す → 'reset'
- *  - 記録が無い（読み込んだだけで動かしていない）建物はピンに付いて動く（ピンの位置 = 建物を置く場所）→ 'pin'
+ *  - 記録が無い（読み込んだだけで動かしていない）建物はピンに付いて動く（ピンの位置 = 建物を置く場所）→ 'pin'。
+ *    種類の無い記録（pivot の緯度経度だけ）でも配置が既定（ピンの位置・図面の上 = 真北。describeAlignment の「自動配置」）なら同じ:
+ *    以前の版が単位・表示の変更でも記録を作っていた保存データや「ピンの位置に戻す」の後も、ピンに付いて動く（記録の緯度経度は新しいピンに揃える）
  *  - 地球上の同じ所に保つときは底面の高さも T.P. を保つ: GL（ピン位置の地盤高）が変わった分だけ baseY を補正する（両方の地盤高が分かるとき）
  *  - 測定点（ワールド座標 = ピン基準）は建物と同じだけ動かす（建物に置いた点が壁から離れない。向きの微小な変化は無視する）。
  *    建物が無ければ周辺環境と同じく地球上の同じ所に保つ
@@ -570,7 +611,9 @@ export function followPinMove(prev: GeoFrame | null, next: GeoFrame, placement: 
     const e0 = placement.offsetE;
     const n0 = placement.offsetN;
     const y0 = placement.baseY;
-    const k = reapplyAlignment(next, placement, null);
+    const al = placement.alignment;
+    const untouched = !!al && !al.kind && e0 === 0 && n0 === 0 && placement.headingDeg === 0;
+    const k = untouched ? null : reapplyAlignment(next, placement, null);
     if (k) {
       kind = k;
       if (Math.hypot(placement.offsetE, placement.offsetN) > maxOffsetM) {
@@ -579,7 +622,10 @@ export function followPinMove(prev: GeoFrame | null, next: GeoFrame, placement: 
         placement.alignment = undefined;
         kind = 'reset';
       } else if (dG) placement.baseY = r2(y0 - dG);
-    } else kind = 'pin';
+    } else {
+      kind = 'pin';
+      if (al?.pivotLatLon) al.pivotLatLon = pivotLatLonOf(next, placement);
+    }
     dE = placement.offsetE - e0;
     dN = placement.offsetN - n0;
     dY = placement.baseY - y0;

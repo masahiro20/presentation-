@@ -327,7 +327,7 @@ export const sunStep: Step = {
       placeBtn.textContent = on ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止・Esc でも中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
       canvasEl.style.cursor = on ? 'crosshair' : '';
     };
-    // 2 点合わせと同じく、押した所から動かさずに離したときだけ置く（ドラッグで視点を動かしても置かない）
+    // 2 点合わせと同じく、押した所から動かさずに離したときだけ置く（ドラッグで視点を動かしても置かない）。イベントは止めずに OrbitControls にも渡す
     let placeDown: { x: number; y: number } | null = null;
     const onPlaceDown = (e: PointerEvent) => {
       if (!placing || e.button !== 0) return;
@@ -345,7 +345,8 @@ export const sunStep: Step = {
         toast('航空写真の上をクリックしてください');
         return;
       }
-      e.stopPropagation();
+      // stopPropagation はしない: pointerup を止めると OrbitControls（document で pointerup を待つ）がドラッグ状態のまま残り、
+      // ボタンを離した後のマウス移動だけで視点が回ってしまう。クリックの判定は isClick で済んでいる
       const d = sc.fromWorld(hit);
       setPlacing(false);
       extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);

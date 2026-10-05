@@ -1186,7 +1186,8 @@ export const modelStep: StudyStep = {
         onclick: () => {
           pl.offsetE = 0;
           pl.offsetN = 0;
-          markManual();
+          // 位置合わせの記録を外す → 以後は向きに関わらずピンに付いて動く（「読み込んだだけ」と同じ扱い）
+          pl.alignment = undefined;
           afterTransform(true);
         },
       }, 'ピンの位置に戻す') as HTMLButtonElement;

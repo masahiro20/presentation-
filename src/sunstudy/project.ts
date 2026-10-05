@@ -14,6 +14,7 @@ import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
 import { emit, study } from './state';
 import { sampleHeight } from './terrain';
+import { polygonAreaM2 } from './map';
 import { DEFAULT_PLACEMENT, UNIT_LABEL } from './types';
 import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
 
@@ -134,6 +135,17 @@ async function decodeAerial(a: NonNullable<ProjectEnv['aerial']>): Promise<Aeria
 // ---------------------------------------------------------------------------
 // 保存
 // ---------------------------------------------------------------------------
+
+/** 保存データの敷地の輪郭: 緯度経度でない点を除き、3 点未満・面積 0（一直線上・同じ点の繰り返し）なら無しにする */
+function cleanPolygon(v: unknown): LatLon[] {
+  const poly = Array.isArray(v) ? (v as unknown[]).filter(isLatLon).map((q) => ({ lat: +q.lat, lon: +q.lon })) : [];
+  if (poly.length < 3) return [];
+  try {
+    return polygonAreaM2(poly) > 0 ? poly : [];
+  } catch {
+    return [];
+  }
+}
 
 const isLatLon = (p: unknown): p is LatLon => !!p && typeof p === 'object' && Number.isFinite((p as LatLon).lat) && Number.isFinite((p as LatLon).lon);
 const isEN = (p: unknown): p is { e: number; n: number } => !!p && typeof p === 'object' && Number.isFinite((p as { e: number }).e) && Number.isFinite((p as { n: number }).n);
@@ -274,7 +286,7 @@ export async function applyProject(p: ProjectJson): Promise<void> {
   study.frame = isLatLon(p.frame)
     ? ({ lat: +p.frame.lat, lon: +p.frame.lon, address: typeof p.frame.address === 'string' ? p.frame.address : '', groundElev: Number.isFinite(p.frame.groundElev as number) ? (p.frame.groundElev as number) : null } satisfies GeoFrame)
     : null;
-  study.sitePolygon = Array.isArray(p.sitePolygon) ? p.sitePolygon.filter(isLatLon).map((q) => ({ lat: +q.lat, lon: +q.lon })) : [];
+  study.sitePolygon = cleanPolygon(p.sitePolygon);
   study.placement = sanitizePlacement(p.placement as Partial<ModelPlacement> | undefined);
   study.neighborOverrides = p.neighborOverrides && typeof p.neighborOverrides === 'object' ? { ...p.neighborOverrides } : {};
   // 測定点は最後に入れる（下の 'placement' などの発火で古い結果を捨てる処理が走り、復元した結果まで消えないように）
@@ -402,7 +414,7 @@ export function readRecent(): RecentData | null {
     if (!d || typeof d !== 'object') return null;
     return {
       frame: isLatLon(d.frame) ? { lat: +d.frame.lat, lon: +d.frame.lon, address: typeof d.frame.address === 'string' ? d.frame.address : '', groundElev: Number.isFinite(d.frame.groundElev as number) ? (d.frame.groundElev as number) : null } : null,
-      sitePolygon: Array.isArray(d.sitePolygon) ? d.sitePolygon.filter(isLatLon).map((q) => ({ lat: +q.lat, lon: +q.lon })) : [],
+      sitePolygon: cleanPolygon(d.sitePolygon),
       placement: sanitizePlacement(d.placement),
       name: typeof d.name === 'string' ? d.name : '',
       customer: typeof d.customer === 'string' ? d.customer : '',

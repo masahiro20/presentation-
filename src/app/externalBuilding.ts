@@ -46,7 +46,8 @@ export function isGlassMesh(m: THREE.Mesh): boolean {
   const ud = m.userData as { glass?: boolean; origOpacity?: number; materialName?: string };
   const names = (ud.materialName ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const opacity = typeof ud.origOpacity === 'number' ? ud.origOpacity : 1;
-  const hasMaterialInfo = names.length > 0 || opacity < 1;
+  // 名前の無いマテリアルは不透明度 < 0.5 のときだけ「マテリアル情報あり（ガラス）」。0.5〜1 の名無しはオブジェクト名で判定に回す
+  const hasMaterialInfo = names.length > 0 || opacity < 0.5;
   if (hasMaterialInfo) return opacity < 0.5 || (names.length > 0 && names.every((n) => GLASS_NAME_RE.test(n)));
   return GLASS_NAME_RE.test(m.name) || ud.glass === true;
 }

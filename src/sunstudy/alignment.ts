@@ -18,7 +18,6 @@ import {
   densifyBudget,
   dominantAngleDeg,
   fitPolygonToPolygon,
-  fitRectToRect,
   invertFit,
   minAreaRect,
   normDeg180,
@@ -43,6 +42,8 @@ const FIT_TIE_M = 0.02;
  * 最小外接矩形の向きと中心だけ合わせ、単位の確認を促す
  */
 export const SITE_SCALE_RANGE = { min: 0.5, max: 2 } as const;
+/** 単位違いのときの矩形どうしの比較で、幅・奥行の差がこれ以内なら同点とみなす (m) */
+export const RECT_TIE_M = 0.01;
 /** 描いた輪郭の凸包の面積がこれ以上（比）大きければ「凹みのある敷地」とみなす */
 const CONCAVE_AREA_RATIO = 1.05;
 
@@ -162,6 +163,9 @@ function dropCollinear(poly: EN[], tol: number): EN[] {
  * （段差のある敷地・土手の付いた板: 天面だけでは敷地全体を表さない）ときは null（呼び出し側で凸包に戻す）。
  * toEN の既定は (x, _, z) → { e: x, n: −z }（pivot ローカルと同じ）
  */
+/** 天面の外に別の層・斜面があっても、天面が足跡（全頂点の凸包）のこの割合以上なら天面を敷地の外周とみなす */
+export const PLATE_TOP_FRACTION = 0.7;
+
 export function plateOutline(positions: ArrayLike<number>, opts: { toEN?: (x: number, y: number, z: number) => EN } = {}): EN[] | null {
   const toEN = opts.toEN ?? ((x: number, _y: number, z: number): EN => ({ e: x, n: -z }));
   const n = positions.length;
@@ -309,9 +313,21 @@ export function plateOutline(positions: ArrayLike<number>, opts: { toEN?: (x: nu
     if (q.n > maxN) maxN = q.n;
   }
   const beyond = (q: EN) => q.e < minE - tol || q.e > maxE + tol || q.n < minN - tol || q.n > maxN + tol || outside(q);
-  for (const q of sloped) if (beyond(q)) return null;
   const levelSet = new Set<Tri>(level);
-  for (const t of horiz) if (!levelSet.has(t)) for (const q of t.p) if (beyond(q)) return null;
+  let outsideOther = false;
+  for (const q of sloped) {
+    if (beyond(q)) {
+      outsideOther = true;
+      break;
+    }
+  }
+  if (!outsideOther) for (const t of horiz) if (!levelSet.has(t) && t.p.some(beyond)) {
+    outsideOther = true;
+    break;
+  }
+  // 天面の外に他の層・傾いた面がある: 天面が足跡の PLATE_TOP_FRACTION 以上なら「敷地の板 + 縁石・前面の低い帯（エプロン）」とみなして
+  // 天面を外周にし、それ未満なら段差のある敷地・土手（天面だけでは敷地全体を表さない）なので null（呼び出し側で凸包へ）
+  if (outsideOther && bestArea < PLATE_TOP_FRACTION * hullArea) return null;
   if (outerArea < 0) outer = outer.reverse();
   return outer;
 }
@@ -452,9 +468,18 @@ export function fitToSite(placed: PlacedModel, sitePolygonEN: EN[], preferHeadin
   const closeness = (r: number) => Math.abs(normDeg180(r - preferHeadingDeg));
   if (scaleRatio < SITE_SCALE_RANGE.min || scaleRatio > SITE_SCALE_RANGE.max) {
     const scaled = src.map((p) => ({ e: p.e * scaleRatio, n: p.n * scaleRatio }));
-    if (!minAreaRect(scaled) || !minAreaRect(sitePolygonEN)) return null;
-    const r = fitRectToRect(scaled, sitePolygonEN);
-    const rot = closeness(r.rotDeg + 180) < closeness(r.rotDeg) - 1e-9 ? r.rotDeg + 180 : r.rotDeg;
+    const rs = minAreaRect(scaled);
+    const rd = minAreaRect(sitePolygonEN);
+    if (!rs || !rd) return null;
+    // 矩形どうしの 4 候補（Δ + k·90°、奇数 k は幅と奥行きを入れ替えて比較）。幅・奥行の差が RECT_TIE_M 以内で同点の候補は
+    // 今の向きに最も近いものを採る（正方形に近い板で向きが 0° に飛ばないように。ICP 側・プレゼン側の provisionalRotDeg と同じ規則）
+    const delta = rd.angleDeg - rs.angleDeg;
+    const cands = [0, 1, 2, 3].map((k) => ({
+      rotDeg: normDeg180(delta + 90 * k),
+      mis: k % 2 ? Math.abs(rs.d - rd.w) + Math.abs(rs.w - rd.d) : Math.abs(rs.w - rd.w) + Math.abs(rs.d - rd.d),
+    }));
+    const bestMis = Math.min(...cands.map((c) => c.mis));
+    const rot = cands.filter((c) => c.mis <= bestMis + RECT_TIE_M).reduce((a, b) => (closeness(b.rotDeg) < closeness(a.rotDeg) - 1e-9 ? b : a)).rotDeg;
     return { headingDeg: continuous(rot), offsetE: placed.placement.offsetE, offsetN: placed.placement.offsetN, rmsM: NaN, scaleRatio, unitSuspect: true, convexOnly, shapeDiffers };
   }
   const best = fitPolygonToPolygon(src, sitePolygonEN, { allowScale: false, initialRotDeg: [preferHeadingDeg] });
@@ -592,7 +617,8 @@ export interface PinMoveResult {
  *    新しいピンから maxOffsetM より遠くなるときは（建設地そのものが変わった）ピンの位置に戻し、記録を外す → 'reset'
  *  - 記録が無い（読み込んだだけで動かしていない）建物はピンに付いて動く（ピンの位置 = 建物を置く場所）→ 'pin'。
  *    種類の無い記録（pivot の緯度経度だけ）でも配置が既定（ピンの位置・図面の上 = 真北。describeAlignment の「自動配置」）なら同じ:
- *    以前の版が単位・表示の変更でも記録を作っていた保存データや「ピンの位置に戻す」の後も、ピンに付いて動く（記録の緯度経度は新しいピンに揃える）
+ *    以前の版が単位・表示の変更でも記録を作っていた保存データでも、ピンに付いて動く（記録の緯度経度は新しいピンに揃える）。
+ *    「ピンの位置に戻す」は記録そのものを外すので、向きに関わらずピンに付いて動く
  *  - 地球上の同じ所に保つときは底面の高さも T.P. を保つ: GL（ピン位置の地盤高）が変わった分だけ baseY を補正する（両方の地盤高が分かるとき）
  *  - 測定点（ワールド座標 = ピン基準）は建物と同じだけ動かす（建物に置いた点が壁から離れない。向きの微小な変化は無視する）。
  *    建物が無ければ周辺環境と同じく地球上の同じ所に保つ

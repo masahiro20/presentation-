@@ -742,6 +742,7 @@ describe('ExternalController と viewer の連携（偽の viewer）', () => {
       mesh('skylight', { materialName: 'Glazing', origOpacity: 0.9 }), // 名前にガラスは無いがマテリアルが Glazing… は GLASS_RE 外 → 壁
       mesh('Panel_08', { materialName: '', origOpacity: 0.8 }), // 名前の無い半透明（0.5〜1）のマテリアル → ガラスではない（空の every() に倒れない）
       mesh('Panel_03', { materialName: '', origOpacity: 0.3 }), // 名前が無くても不透明度 < 0.5 ならガラス
+      mesh('Window_01', { materialName: '', origOpacity: 0.8 }), // 名前の無い半透明（0.5〜1）はマテリアル情報なし扱い → オブジェクト名でガラス
     );
     expect(isGlassMesh(raw.children[0] as THREE.Mesh)).toBe(false);
     expect(isGlassMesh(raw.children[1] as THREE.Mesh)).toBe(false);
@@ -753,11 +754,12 @@ describe('ExternalController と viewer の連携（偽の viewer）', () => {
     expect(isGlassMesh(raw.children[7] as THREE.Mesh)).toBe(false);
     expect(isGlassMesh(raw.children[8] as THREE.Mesh)).toBe(false);
     expect(isGlassMesh(raw.children[9] as THREE.Mesh)).toBe(true);
+    expect(isGlassMesh(raw.children[10] as THREE.Mesh)).toBe(true);
     // glTF で名前の無いマテリアル（GLTFLoader は material.name = ''）が alphaMode BLEND・不透明度 0.99 でも壁（importModel.ts の判定と同じ）
     expect(isGlassMesh(mesh('', { materialName: '', origOpacity: 0.99 }))).toBe(false);
     const model = { raw, notes: ['ガラスと判定したオブジェクト（影を落とさない）: 5 個'], objects: [] } as unknown as ImportedModel;
     const r = classifyGlass(model);
-    expect(r.glass).toEqual(['Pane_01', 'Win_03', 'window_7', 'Panel_03']);
+    expect(r.glass).toEqual(['Pane_01', 'Win_03', 'window_7', 'Panel_03', 'Window_01']);
     // 名前にも窓・ガラスが無い Frame_and_pane は「名前は窓だが…」には入らない
     expect(r.nameOnly).toEqual(['Wall_with_windows_S', '窓付き外壁']);
     // userData.glass が更新されている（PlacedModel はこれを写す）

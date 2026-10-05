@@ -144,16 +144,16 @@ export function groundYWorld(x: number, z: number): number {
 
 /** 敷地ポリゴン（ワールド XZ）。無ければ null */
 export function sitePolygonWorld(): THREE.Vector2[] | null {
-  const f = study.frame;
-  if (!f || study.sitePolygon.length < 3) return null;
-  return study.sitePolygon.map((p) => {
-    const { e, n } = frameToLocal(f, p);
-    return new THREE.Vector2(e, -n);
-  });
+  return sitePolygonLocal()?.map((p) => new THREE.Vector2(p.e, -p.n)) ?? null;
 }
 
 /** 敷地ポリゴン（ピンからの東・北 m）。無い・面積 0（保存データが壊れているなど。輪郭に合わせる計算で矩形が作れない）なら null */
 export function sitePolygonEN(): { e: number; n: number }[] | null {
+  return sitePolygonLocal();
+}
+
+/** EN と world の両方の元。面積 0 の輪郭は「無い」扱いにして、日影図の敷地境界・輪郭への合わせ・地図の表示で食い違わないようにする */
+function sitePolygonLocal(): { e: number; n: number }[] | null {
   const f = study.frame;
   if (!f || study.sitePolygon.length < 3) return null;
   const pts = study.sitePolygon.map((p) => frameToLocal(f, p));

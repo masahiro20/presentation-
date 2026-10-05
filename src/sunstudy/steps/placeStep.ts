@@ -65,7 +65,7 @@ function siteArea(): number | null {
   if (study.sitePolygon.length < 3) return null;
   try {
     const a = polygonAreaM2(study.sitePolygon);
-    return Number.isFinite(a) ? a : null;
+    return Number.isFinite(a) && a > 0 ? a : null;
   } catch {
     return null;
   }

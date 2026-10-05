@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Mesh } from 'three';
 import { applyFit, convexHull, dominantAngleDeg, fitPolygonToPolygon, minAreaRect, normDeg, normDeg180, polygonArea } from '../src/sun/align';
 import type { RigidFit } from '../src/sun/align';
 import {
@@ -221,6 +222,29 @@ describe('plateOutline: 水平な板の外周（凹みも残す）', () => {
     expect(plateOutline(patch)).toBeNull();
     expect(plateOutline([])).toBeNull();
   });
+  it('天面の外に傾いた土手・別の段がある板は null（天面だけでは敷地全体を表さない）。足跡の中のスロープ・薄い箱の側面は通る', () => {
+    // 平らなパッド 12 × 10（天面 y = 0、面積 120）+ 南へ 1 m 下がる土手 12 × 6（n −5 → −11）。
+    // 天面 120 ≥ 足跡 192 の半分なので 50 % の判定は通る → 土手の頂点が天面の外にあることで null
+    const pos: number[] = [];
+    pushPlate(pos, rectAt({ e: 0, n: 0 }, 0, 12, 10), 0, 0.01);
+    pos.push(...xyz({ e: -6, n: -5 }, 0), ...xyz({ e: 6, n: -5 }, 0), ...xyz({ e: 6, n: -11 }, -1));
+    pos.push(...xyz({ e: -6, n: -5 }, 0), ...xyz({ e: 6, n: -11 }, -1), ...xyz({ e: -6, n: -11 }, -1));
+    expect(plateOutline(pos)).toBeNull();
+    // 段差のある敷地（上段 12 × 6 at 0.5 m、下段 12 × 4 at 0）: 面積最大の層は上段だが、下段の頂点がその外 → null
+    const terrace: number[] = [];
+    pushPlate(terrace, rectAt({ e: 0, n: 2 }, 0, 12, 6), 0.5, 0.01);
+    pushPlate(terrace, rectAt({ e: 0, n: -3 }, 0, 12, 4), 0, 0.01);
+    expect(plateOutline(terrace)).toBeNull();
+    // 足跡の中のスロープ（竿の中へ 0.5 m 下がる）は天面の外周の内側なので旗竿地の外周のまま
+    const ramp: number[] = [];
+    pushPlate(ramp, FLAG, 0, 0.01);
+    ramp.push(...xyz({ e: 4.5, n: -1 }, 0), ...xyz({ e: 6, n: -1 }, 0), ...xyz({ e: 6, n: -6 }, -0.5));
+    ramp.push(...xyz({ e: 4.5, n: -1 }, 0), ...xyz({ e: 6, n: -6 }, -0.5), ...xyz({ e: 4.5, n: -6 }, -0.5));
+    const out = plateOutline(ramp);
+    expect(out).not.toBeNull();
+    expect(out!.length).toBe(8);
+    expect(sameCorners(out!, FLAG, 1e-6)).toBe(true);
+  });
 });
 
 describe('align.ts の向きの規約（方位: 北 0°、東 90°、時計回り）', () => {
@@ -363,7 +387,9 @@ describe('凹みのある敷地（旗竿地）の輪郭へのフィット', () =
     expect(Number.isNaN(r.rmsM)).toBe(true);
     expect(r.offsetE).toBe(1.5);
     expect(r.offsetN).toBe(-2);
+    // 向きは 90° の周期ではなく（180° 対称な矩形どうしなので）180° の周期で正しい
     expect(diff90(r.headingDeg, 17)).toBeLessThan(0.5);
+    expect(Math.abs(normDeg180(r.headingDeg - 17))).toBeLessThan(0.5);
     expect(ms).toBeLessThan(3000);
     const al = { kind: 'siteFit' as const, rmsM: r.rmsM, scaleRatio: r.scaleRatio, at: '' };
     expect(scaleSuspect(al)).toBe(true);
@@ -374,6 +400,74 @@ describe('凹みのある敷地（旗竿地）の輪郭へのフィット', () =
     expect(near.unitSuspect).toBe(false);
     expect(scaleSuspect({ kind: 'siteFit', rmsM: near.rmsM, scaleRatio: near.scaleRatio, at: '' })).toBe(false);
     big.dispose();
+  });
+
+  it('単位違いの向き合わせは 3DS の敷地を周長の比で揃えてから矩形を比べる: 方位 60° の輪郭で 60°（−30° ではなく）。Δ と Δ+180 は今の向きに近い方', () => {
+    const big = placeLikeApp(model, { unit: 'm' });
+    // 揃えずに矩形を比べると、幅・奥行とも 3DS の方が大きいので 4 候補が同点になり |向き| が最小の −30° に倒れていた
+    for (const truthHeading of [60, 75, 89, -70]) {
+      const site = placed.siteOutlineLocal()!.map((c) => localToEN({ headingDeg: truthHeading, offsetE: 12.3, offsetN: -4.5 }, c));
+      const r = fitToSite(big, site, 0)!;
+      expect(r.unitSuspect).toBe(true);
+      expect(Math.abs(normDeg180(r.headingDeg - truthHeading))).toBeLessThan(0.5);
+    }
+    // 矩形は 180° 対称: 今の向きが 190° なら 17 ではなく 197（190 に連続な表し方）
+    const site17 = placed.siteOutlineLocal()!.map((c) => localToEN({ headingDeg: 17, offsetE: 12.3, offsetN: -4.5 }, c));
+    const r190 = fitToSite(big, site17, 190)!;
+    expect(r190.unitSuspect).toBe(true);
+    expect(Math.abs(r190.headingDeg - 197)).toBeLessThan(0.5);
+    // 単位を直す（寸法もこの比で合わせる）と ICP で輪郭ごと合わせ、同じ向きに収まる
+    const fixed = placeLikeApp(model, { unit: 'custom', customScale: unitScale(big.placement) * r190.scaleRatio });
+    const rf = fitToSite(fixed, site17, r190.headingDeg)!;
+    expect(rf.unitSuspect).toBe(false);
+    expect(Math.abs(normDeg180(rf.headingDeg - 17))).toBeLessThan(0.3);
+    expect(rf.rmsM).toBeLessThan(0.05);
+    fixed.dispose();
+    big.dispose();
+  });
+
+  it('一直線上の輪郭（A → B → A を A で閉じた面積 0）では例外を投げず null（単位違いの分岐でも）', () => {
+    const degenerate: EN[] = [
+      { e: 0, n: 0 },
+      { e: 10, n: 0 },
+      { e: 0, n: 0 },
+    ];
+    const big = placeLikeApp(model, { unit: 'm' });
+    expect(() => fitToSite(big, degenerate, 0)).not.toThrow();
+    expect(fitToSite(big, degenerate, 0)).toBeNull();
+    // 周長の比 20 / 60 = 0.33 でも単位違いの分岐（mm の建物でも矩形が作れないので null）
+    expect(() => fitToSite(placed, degenerate, 0)).not.toThrow();
+    expect(fitToSite(placed, degenerate, 0)).toBeNull();
+    // 面積 0 でも周長 0 の輪郭（同じ点だけ）も null
+    expect(fitToSite(placed, [degenerate[0], degenerate[0], degenerate[0]], 0)).toBeNull();
+    big.dispose();
+  });
+
+  it('convexOnly は 3DS の敷地が凸包でしか取れなかったとき（接する 2 枚の板）だけ。板の外周が取れていれば shapeDiffers', async () => {
+    // 'lot' が接する 2 枚の板（主部 12 × 10 と竿 2.5 × 8 を別の面で描いた T 字の接合）: 外周が取れず凸包に戻る
+    const main = rectAt({ e: 6, n: 5 }, 0, 12, 10);
+    const pole = rectAt({ e: 5.25, n: -4 }, 0, 2.5, 8);
+    const house = ['o house', 'v 1500 1500 0', 'v 10600 1500 0', 'v 10600 8780 0', 'v 1500 8780 0', 'v 1500 1500 6000', 'v 10600 1500 6000', 'v 10600 8780 6000', 'v 1500 8780 6000', 'f 1 4 3 2', 'f 5 6 7 8', 'f 1 2 6 5', 'f 3 4 8 7', 'f 4 1 5 8', 'f 2 3 7 6'];
+    const lot = ['o lot', ...[...main, ...pole].map((p) => `v ${p.e * 1000} ${p.n * 1000} 0`), 'f 9 10 11 12', 'f 13 14 15 16'];
+    const tModel = await importModelFile({ name: 'two_plates.obj', data: new TextEncoder().encode([...house, ...lot, ''].join('\n')).buffer as ArrayBuffer });
+    const two = placeLikeApp(tModel);
+    expect(two.siteOutlineIsHull()).toBe(true);
+    expect(two.siteOutlineLocal()!.length).toBe(6);
+    const truth = { headingDeg: 17, offsetE: 12.3, offsetN: -4.5 };
+    const siteFlag = FLAG.map((c) => localToEN(truth, c));
+    const rHull = fitToSite(two, siteFlag, 0)!;
+    expect(rHull.unitSuspect).toBe(false);
+    expect(rHull.convexOnly).toBe(true);
+    expect(rHull.shapeDiffers).toBe(false);
+    two.dispose();
+    // 旗竿地の板（外周が取れる・凹）に凹んだ輪郭: どちらも立たない
+    const rFlag = fitToSite(placed, siteFlag, 0)!;
+    expect(rFlag.convexOnly).toBe(false);
+    expect(rFlag.shapeDiffers).toBe(false);
+    // 旗竿地の板に凸（矩形）の輪郭: 描いた輪郭に凹みが無いのでどちらも立たない
+    const rRect = fitToSite(placed, rectAt({ e: 6, n: 1 }, 17, 12, 18), 0)!;
+    expect(rRect.convexOnly).toBe(false);
+    expect(rRect.shapeDiffers).toBe(false);
   });
 });
 
@@ -473,6 +567,63 @@ describe('サンプル住宅（--site 変種）の外形と位置合わせ', () 
     expect(Math.abs(r!.offsetE - 12.3)).toBeLessThan(0.05);
     expect(Math.abs(r!.offsetN - -4.5)).toBeLessThan(0.05);
     expect(r!.rmsM).toBeLessThan(0.05);
+  });
+
+  it('(iv-c) 板の外周が取れていて凸なのに、描いた輪郭が L 字（凹）: convexOnly ではなく shapeDiffers（凸包で合わせた、とは言わない）', () => {
+    expect(placed.siteOutlineIsHull()).toBe(false);
+    const truth = { headingDeg: 17, offsetE: 12.3, offsetN: -4.5 };
+    const plate = placed.siteOutlineLocal()!;
+    const e0 = Math.min(...plate.map((p) => p.e));
+    const e1 = Math.max(...plate.map((p) => p.e));
+    const n0 = Math.min(...plate.map((p) => p.n));
+    const n1 = Math.max(...plate.map((p) => p.n));
+    // 北東の角を 6 × 5 m 欠いた L 字（面積は板の約 8 割。凸包との比 > 1.05 で「凹みのある敷地」）
+    const lShape: EN[] = [
+      { e: e0, n: n0 },
+      { e: e1, n: n0 },
+      { e: e1, n: n1 - 5 },
+      { e: e1 - 6, n: n1 - 5 },
+      { e: e1 - 6, n: n1 },
+      { e: e0, n: n1 },
+    ];
+    const r = fitToSite(placed, lShape.map((c) => localToEN(truth, c)), 0)!;
+    expect(r.unitSuspect).toBe(false);
+    expect(r.convexOnly).toBe(false);
+    expect(r.shapeDiffers).toBe(true);
+    // 矩形の輪郭ならどちらも立たない
+    const rRect = fitToSite(placed, plate.map((c) => localToEN(truth, c)), 0)!;
+    expect(rRect.convexOnly).toBe(false);
+    expect(rRect.shapeDiffers).toBe(false);
+  });
+
+  it('siteOutlineIsHull は siteOutlineLocal と同じキャッシュを使う（表示の更新のたびに敷地の頂点を読み直さない）。rebuild で更新', () => {
+    const p = placeLikeApp(model);
+    const siteMesh = model.raw.children.find((o) => o.name === 'site') as Mesh;
+    const geom = siteMesh.geometry;
+    const orig = geom.getAttribute.bind(geom);
+    let reads = 0;
+    geom.getAttribute = ((name: string) => {
+      if (name === 'position') reads++;
+      return orig(name);
+    }) as typeof geom.getAttribute;
+    try {
+      expect(p.siteOutlineIsHull()).toBe(false);
+      const n0 = reads;
+      expect(n0).toBeGreaterThan(0);
+      for (let i = 0; i < 50; i++) {
+        p.siteOutlineIsHull();
+        p.siteOutlineLocal();
+      }
+      expect(reads).toBe(n0);
+      // 敷地を表示に戻す → 外形が無いので false（rebuild でキャッシュが捨てられる）
+      p.placement.hiddenObjects = [];
+      p.rebuild();
+      expect(p.siteOutlineLocal()).toBeNull();
+      expect(p.siteOutlineIsHull()).toBe(false);
+    } finally {
+      geom.getAttribute = orig;
+      p.dispose();
+    }
   });
 
   it('(iv-b) 矩形の敷地は 180° 対称なので、今の向き（190°）に近い候補 197° を採る', () => {
@@ -630,6 +781,29 @@ describe('followPinMove: ピンが動いたときの建物と測定点の追従'
     expect(pts[0].pos).toEqual([4, 1.5, -2]);
   });
 
+  it('種類の無い記録（pivot の緯度経度だけ）でも配置が既定（ピンの位置・真北）なら読み込んだだけと同じ: ピンに付いて動き、記録の緯度経度は新しいピンに揃う', () => {
+    // 以前の版は単位・表示だけの変更でも記録を作っていた（保存データに残る）。「ピンの位置に戻す」の後も同じ形
+    const pl: ModelPlacement = { ...DEFAULT_PLACEMENT, baseY: 0.3, alignment: { at: '', pivotLatLon: pivotLatLonOf(prev, { offsetE: 0, offsetN: 0 }) } };
+    const pts = points();
+    const r = followPinMove(prev, next, pl, pts, 300);
+    expect(r.kind).toBe('pin');
+    expect([r.dE, r.dN, r.dY]).toEqual([0, 0, 0]);
+    expect([pl.offsetE, pl.offsetN, pl.headingDeg, pl.baseY]).toEqual([0, 0, 0, 0.3]);
+    expect(pts[0].pos).toEqual([4, 1.5, -2]);
+    expect(pl.alignment?.pivotLatLon).toEqual(pivotLatLonOf(next, pl));
+    expect(describeAlignment(pl)).toMatch(/自動配置/);
+    // 向きだけ変えてある（R で 90°）なら手で置いた配置: 地球上の同じ所に留まる
+    const turned: ModelPlacement = { ...DEFAULT_PLACEMENT, headingDeg: 90, alignment: { at: '', pivotLatLon: pivotLatLonOf(prev, { offsetE: 0, offsetN: 0 }) } };
+    expect(followPinMove(prev, next, turned, [], 300).kind).toBe('pivot');
+    expect(turned.offsetE).toBeCloseTo(-20, 2);
+    expect(turned.offsetN).toBeCloseTo(-22.4, 2);
+    expect(describeAlignment(turned)).toBe('手で置いた配置です');
+    // 種類のある記録（敷地の輪郭に合わせた）は配置が既定でも留まる
+    const fit: ModelPlacement = { ...DEFAULT_PLACEMENT, alignment: { kind: 'siteFit', at: '', rmsM: 0.01, pivotLatLon: pivotLatLonOf(prev, { offsetE: 0, offsetN: 0 }) } };
+    expect(followPinMove(prev, next, fit, [], 300).kind).toBe('pivot');
+    expect(fit.offsetE).toBeCloseTo(-20, 2);
+  });
+
   it('pivot の緯度経度がある（手で置いた）建物は地球上の同じ所に留まり、測定点も同じだけ動く。底面は T.P. を保つ', () => {
     const pl: ModelPlacement = { ...DEFAULT_PLACEMENT, offsetE: 3, offsetN: -2, baseY: 0.3, alignment: { at: '', pivotLatLon: pivotLatLonOf(prev, { offsetE: 3, offsetN: -2 }) } };
     const pts = points();
@@ -686,8 +860,8 @@ describe('followPinMove: ピンが動いたときの建物と測定点の追従'
     expect(pts[0].pos[0]).toBeCloseTo(4 - 20, 2);
     expect(pts[0].pos[1]).toBeCloseTo(1.5 - 2.5, 6);
     expect(pts[0].pos[2]).toBeCloseTo(-2 + 22.4, 2);
-    // 最初のピン（prev 無し）: 記録があればその位置へ、無ければ何もしない
-    const pl: ModelPlacement = { ...DEFAULT_PLACEMENT, alignment: { at: '', pivotLatLon: pivotLatLonOf(next, { offsetE: 5, offsetN: 6 }) } };
+    // 最初のピン（prev 無し）: 手で置いた記録があればその位置へ、無ければ何もしない
+    const pl: ModelPlacement = { ...DEFAULT_PLACEMENT, offsetE: 1, alignment: { at: '', pivotLatLon: pivotLatLonOf(next, { offsetE: 5, offsetN: 6 }) } };
     expect(followPinMove(null, next, pl, []).kind).toBe('pivot');
     expect(pl.offsetE).toBeCloseTo(5, 2);
     expect(followPinMove(null, next, { ...DEFAULT_PLACEMENT }, []).kind).toBe('pin');

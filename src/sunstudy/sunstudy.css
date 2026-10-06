@@ -126,3 +126,8 @@ body.presenting .sun-badge b { font-size: 22px; }
 .pt-table .spans { color: var(--ink3); font-size: 11px; line-height: 1.4; }
 /* 隣家ポップアップの補足 */
 .pop .hint { margin: 0 0 4px; }
+
+/* 座標で指定（建設地のステップ）: 度分秒の表示とコピーの行 */
+.coord-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink3); margin: 2px 0 0; line-height: 1.5; }
+.coord-row .coord-dms { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.coord-row .btn.sm { padding: 3px 9px; font-size: 11.5px; }

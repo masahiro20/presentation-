@@ -95,6 +95,73 @@ export function parsePoint(q: string): GeocodeResult | null {
   return { title: `緯度 ${lat.toFixed(5)}／経度 ${lon.toFixed(5)}`, lat, lon, precision: 'point' };
 }
 
+/** 日本付近の緯度経度か（それ以外は入力ミスとみなす） */
+export function inJapan(lat: number, lon: number): boolean {
+  return lat >= 20 && lat <= 46 && lon >= 122 && lon <= 154;
+}
+
+/**
+ * 1 つの角度の文字列を度（10 進）にする。10 進（"35.21058"）、度分秒（"35°12'38.1\"", "35度12分38.1秒", "35 12 38.1"、
+ * 全角数字、N/S/E/W の記号付き）に対応。読めなければ null
+ */
+export function parseDegrees(text: string): number | null {
+  let t = text.normalize('NFKC').trim();
+  if (!t) return null;
+  let sign = 1;
+  if (/[SW南西]/i.test(t) && !/[NE北東]/i.test(t.replace(/[SW南西]/gi, ''))) sign = -1;
+  t = t.replace(/[NSEW北南東西]/gi, ' ');
+  if (/^\s*-/.test(t)) {
+    sign = -sign;
+    t = t.replace('-', ' ');
+  }
+  // 度・分・秒の記号は区切りに（"' " と '" ' と "′″" と 漢字）
+  t = t.replace(/[°度]/g, ' ').replace(/[′'分]/g, ' ').replace(/[″"秒]/g, ' ').replace(/,/g, ' ');
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (!parts.length || parts.length > 3) return null;
+  const nums = parts.map(Number);
+  if (nums.some((v) => !Number.isFinite(v) || v < 0)) return null;
+  if (parts.length > 1 && (nums[1] >= 60 || (parts.length === 3 && nums[2] >= 60))) return null;
+  const deg = nums[0] + (nums[1] ?? 0) / 60 + (nums[2] ?? 0) / 3600;
+  return sign * deg;
+}
+
+/**
+ * 緯度・経度の入力欄（別々）または 1 行（"35.21058, 136.93831"／Google マップの URL）を読む。
+ * 日本付近の座標でなければ null（緯度と経度を取り違えていれば入れ替えて再判定する）
+ */
+export function parseLatLonFields(latText: string, lonText = ''): { lat: number; lon: number } | null {
+  const a = latText.normalize('NFKC').trim();
+  const b = lonText.normalize('NFKC').trim();
+  if (!b) {
+    const pt = parsePoint(a);
+    if (pt) return { lat: pt.lat, lon: pt.lon };
+    // "35 12 38.1  136 56 17.9" のような 1 行はカンマ区切りだけ受ける
+    const m = a.split(/[,，]/);
+    if (m.length === 2) return parseLatLonFields(m[0], m[1]);
+    return null;
+  }
+  const lat = parseDegrees(a);
+  const lon = parseDegrees(b);
+  if (lat == null || lon == null) return null;
+  if (inJapan(lat, lon)) return { lat, lon };
+  if (inJapan(lon, lat)) return { lat: lon, lon: lat };
+  return null;
+}
+
+/** 緯度経度の表示（10 進 5 桁 ≈ 1 m）と、度分秒の表示 */
+export function formatDeg(v: number): string {
+  return v.toFixed(5);
+}
+export function formatDms(v: number, axis: 'lat' | 'lon'): string {
+  const hemi = axis === 'lat' ? (v >= 0 ? 'N' : 'S') : v >= 0 ? 'E' : 'W';
+  const a = Math.abs(v);
+  const d = Math.floor(a);
+  const mFull = (a - d) * 60;
+  const m = Math.floor(mFull);
+  const sec = (mFull - m) * 60;
+  return `${hemi}${d}°${String(m).padStart(2, '0')}′${sec.toFixed(1).padStart(4, '0')}″`;
+}
+
 /** 入力の末尾の番号（丁目・番地・号）を取り出す。例 "4-213-1" "4丁目213番地1号" "宮前50" */
 export function tailNumbers(q: string): number[] {
   const t = q.replace(/\s.*$/, '');

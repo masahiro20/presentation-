@@ -7,7 +7,7 @@ import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type BuildingModel, type PlanSide, type RoomType } from '../../core/types';
-import { openProjectFile, isProjectFile, loadAutosave, applyProject, saveProjectFile, clearAutosave } from '../project';
+import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf') {
   const pm = progressModal('平面図を解析しています', false);
@@ -55,19 +55,6 @@ function dropScreen(ctx: StepCtx) {
     return loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
   };
   input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
-  // 前回の続き（ブラウザに自動保存したもの）
-  const resumeBox = h('div', { class: 'resume', style: 'display:none' });
-  void loadAutosave().then((p) => {
-    if (!p) return;
-    const when = new Date(p.savedAt);
-    const t = `${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
-    resumeBox.style.display = '';
-    resumeBox.append(
-      h('span', null, `前回の続き: ${p.name}（${p.pdfName ?? '図面'}・${t} 自動保存）`),
-      h('button', { class: 'btn sm primary', onclick: () => { try { applyProject(p); toast('前回の続きから再開しました', 'ok'); } catch (e) { toast((e as Error).message, 'error'); } } }, '▶ 続きから再開'),
-      h('button', { class: 'btn sm ghost', onclick: () => { void clearAutosave(); resumeBox.style.display = 'none'; } }, '消す'),
-    );
-  });
   const zone = h(
     'div',
     { class: 'dropzone' },
@@ -100,7 +87,6 @@ function dropScreen(ctx: StepCtx) {
       { class: 'drop-card' },
       h('h1', null, '平面図 PDF から、ワクワクするプレゼンを。'),
       h('p', null, '間取りの PDF を読み込むだけで、壁・窓・ドア・部屋を自動で認識し、立面図・外観／内観パース・ウォークスルー動画・日照シミュレーションまで一気に作成します。'),
-      resumeBox,
       zone,
       h(
         'div',

@@ -1,7 +1,7 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
 import { h, clear, toast } from './dom';
 import { state, on, emit } from './state';
-import { saveProjectFile, openProjectFile, startAutosave } from './project';
+import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project';
 import { Viewer } from '../scene/viewer';
 
 export interface StepCtx {
@@ -79,7 +79,7 @@ export class App {
       }
       void this.go('design');
     });
-    startAutosave();
+    purgeLegacyAutosave();
   }
 
   /** 保存／開く（ヘッダー） */

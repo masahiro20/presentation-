@@ -208,6 +208,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       wallThicknesses: scanned ? [...new Set(res.floors.flatMap((f) => f.walls.map((w) => Math.round(w.thickness))))].sort((a, b) => a - b) : thicknesses,
       warnings: [...new Set(warnings)],
       timingsMs: { analyze: Math.round(performance.now() - t0) },
+      northDetected: res.northDetected,
     },
   };
 }

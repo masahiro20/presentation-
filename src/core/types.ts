@@ -129,6 +129,8 @@ export interface ParseReport {
   wallThicknesses: number[];
   warnings: string[];
   timingsMs: Record<string, number>;
+  /** 方位記号が読み取れたか（false = 図面の上を北とみなした） */
+  northDetected?: boolean;
 }
 
 /** 図面上の辺（図面の上 = top） */

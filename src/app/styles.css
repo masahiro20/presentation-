@@ -310,6 +310,21 @@ body.presenting .main { grid-template-columns: 1fr; }
 }
 
 /* 間取りの手修正 */
+.check-card { border: 1px solid var(--line); border-radius: 10px; background: #fff; margin: 10px 0 4px; overflow: hidden; }
+.check-card.has-ng { border-color: #e8c98f; }
+.check-head { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: #f1f6ef; font-size: 13px; }
+.check-card.has-ng .check-head { background: #fff6e8; }
+.check-head span { color: var(--ink2); font-size: 11.5px; }
+.check-rows { display: flex; flex-direction: column; }
+.check-row { display: grid; grid-template-columns: 18px 56px 1fr auto; align-items: center; gap: 6px; padding: 7px 12px; border-top: 1px solid #f0ece5; font-size: 12.5px; }
+.check-row .ic { font-weight: 700; text-align: center; }
+.check-row.ok .ic { color: var(--good); }
+.check-row.ng .ic { color: var(--warn); }
+.check-row.info .ic { color: var(--accent2); }
+.check-row .lb { color: var(--ink2); }
+.check-row .dt { color: var(--ink); line-height: 1.5; min-width: 0; }
+.check-row.ng .dt { color: #8a5a14; }
+.check-row .btn.sm { white-space: nowrap; padding: 3px 8px; font-size: 11.5px; }
 .edit-callout { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfaf7; }
 .edit-callout b { font-size: 13.5px; }
 .edit-callout p { font-size: 12.5px; color: var(--ink2); line-height: 1.75; margin: 6px 0 10px; }

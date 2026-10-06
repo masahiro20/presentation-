@@ -1923,7 +1923,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 
-export function assembleModel(pages: PageMm[], name: string, warnings: string[]): Omit<BuildingModel, 'report'> & { thicknesses: number[] } {
+export function assembleModel(pages: PageMm[], name: string, warnings: string[]): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean } {
   let plans = detectPlans(pages, warnings);
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
@@ -2059,7 +2059,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     for (const f of floors) translateFloor(f, dx, dy);
     if (site) translateSite(site, dx, dy);
   }
-  return { name, floors, northAngleDeg: north, site: site ?? undefined, thicknesses: [...thicknesses].sort((a, b) => a - b) };
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

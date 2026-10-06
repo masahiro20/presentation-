@@ -379,7 +379,8 @@ export const sunStep: Step = {
     };
     const coordBlock = h(
       'details',
-      { style: 'margin:6px 0' },
+      // 住所と並ぶ指定方法なので最初から開いておく（閉じれば畳める）
+      { style: 'margin:6px 0', open: true },
       h('summary', { class: 'hint', style: 'cursor:pointer' }, '座標で指定（緯度・経度）'),
       h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px' }, field('緯度', latIn), field('経度', lonIn)),
       h('button', { class: 'btn sm block', onclick: applyCoords }, 'この座標を建設地にする'),

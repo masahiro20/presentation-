@@ -522,6 +522,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             num('上端 Y (mm)', () => st.minY, (v) => { const d = st.maxY - st.minY; st.minY = v; st.maxY = v + d; }),
             num('幅 (mm)', () => st.maxX - st.minX, (v) => (st.maxX = st.minX + Math.max(500, v))),
             num('奥行 (mm)', () => st.maxY - st.minY, (v) => (st.maxY = st.minY + Math.max(500, v))),
+            num('段数（0 = 自動）', () => st.steps ?? 0, (v) => { if (v >= 6 && v <= 30) st.steps = Math.round(v); else delete st.steps; }),
           ),
           h('p', { class: 'hint' }, '幅・奥行は壁の内側の寸法で入れてください（例: 折り返し階段 1,820 × 1,820、直階段 910 × 2,730）。上の階の同じ位置には自動で吹抜（階段の穴）ができます。'),
           h('button', { class: 'btn sm block', onclick: () => deleteSel() }, 'この階段を消す（Delete）'),

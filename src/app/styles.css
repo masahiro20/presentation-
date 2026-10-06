@@ -105,6 +105,7 @@ input, select, textarea { font: inherit; }
 .shot-btn:hover { border-color: var(--accent); }
 .shot-btn .k { display: inline-block; font-size: 10.5px; color: #fff; background: var(--accent2); border-radius: 4px; padding: 1px 6px; margin-bottom: 4px; }
 .shot-btn .k.int { background: var(--accent); }
+.shot-btn .k.cut { background: #5a6b4a; }
 .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .gallery figure { margin: 0; position: relative; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #eee; }
 .gallery img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; }

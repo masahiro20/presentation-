@@ -78,3 +78,62 @@ export function parseFloorTitle(raw: string): number | null {
   if (/屋根伏|ROOF/.test(s)) return null;
   return null;
 }
+
+/** サッシ記号の高さ記号 → 内法高さ (mm)。幅は上 3 桁 ×10 */
+const SASH_HEIGHT: Record<string, number> = {
+  '03': 370,
+  '05': 570,
+  '07': 770,
+  '09': 970,
+  '11': 1170,
+  '13': 1370,
+  '15': 1570,
+  '18': 1830,
+  '20': 2030,
+  '22': 2230,
+  '24': 2430,
+};
+
+/** 「16511」「07405」などのサッシ記号 → 幅・高さ (mm) */
+export function parseSashCode(raw: string): { width: number; height: number } | null {
+  const s = normalizeText(raw).replace(/^[A-Z]{1,2}[-・]?/, '');
+  const m = /^(\d{3})(\d{2})$/.exec(s);
+  if (!m) return null;
+  const width = parseInt(m[1], 10) * 10;
+  const height = SASH_HEIGHT[m[2]];
+  if (!height || width < 300 || width > 4500) return null;
+  return { width, height };
+}
+
+/** 「FL+2000」「FL+900」→ 床からの高さ (mm) */
+export function parseFlOffset(raw: string): number | null {
+  const s = normalizeText(raw);
+  const m = /^FL\+?(\d{3,4})$/.exec(s);
+  if (!m) return null;
+  const v = parseInt(m[1], 10);
+  return v >= 100 && v <= 2600 ? v : null;
+}
+
+/** 「14段」「１４段」→ 段数 */
+export function parseStepCount(raw: string): number | null {
+  const s = normalizeText(raw);
+  const m = /^(\d{1,2})段$/.exec(s);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return n >= 8 && n <= 24 ? n : null;
+}
+
+/** 「開口」（建具の無い開口部）の注記 */
+export function isOpenMark(raw: string): boolean {
+  const s = normalizeText(raw);
+  return /^開口(部)?$/.test(s) || /^(OPEN|W\/O)$/.test(s);
+}
+
+/** 「FIX」「引違」「片開」などの建具種別の注記 */
+export function parseSashKind(raw: string): 'fix' | 'sliding' | 'swing' | null {
+  const s = normalizeText(raw);
+  if (/^FIX$|^はめ殺し$|^嵌め殺し$/.test(s)) return 'fix';
+  if (/^引違い?$|^引き違い$|^引戸$|^引き戸$/.test(s)) return 'sliding';
+  if (/^片開き?$|^両開き?$|^開き戸$/.test(s)) return 'swing';
+  return null;
+}

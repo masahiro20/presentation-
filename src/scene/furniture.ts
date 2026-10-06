@@ -242,14 +242,20 @@ export function setModelsAvailable(v: boolean) {
   modelsAvailable = v;
 }
 
-export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[]; items: Map<number, FurnitureItem[]> } {
+export function buildFurniture(
+  model: BuildingModel,
+  opts: { cut?: { level: number; y: number } } = {},
+): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[]; items: Map<number, FurnitureItem[]> } {
   const mb = new MeshBuilder();
+  // 輪切り（模型）: 切断面より上は作らず、切った階より上の階の家具は置かない
+  mb.clampTop = opts.cut ? { y: opts.cut.y, capKey: 'cut.face' } : null;
   currentModels = [];
   const lights: LightPoint[] = [];
   const occupancy = new Map<string, Footprint[]>();
   kitchenSides = new Map();
   const items = new Map<number, FurnitureItem[]>();
   for (const f of model.floors) {
+    if (opts.cut && f.level > opts.cut.level) continue;
     currentItems = [];
     items.set(f.level, currentItems);
     // 手で置き直した階は、その家具だけを置く（天井の照明は自動のまま）
@@ -338,7 +344,8 @@ export function buildFurniture(model: BuildingModel): { mb: MeshBuilder; lights:
   }
   currentOcc = null;
   currentItems = null;
-  return { mb, lights, occupancy, kitchenSide: kitchenSides, models: currentModels, items };
+  const models = opts.cut ? currentModels.filter((m) => m.pos.y < opts.cut!.y - 0.3) : currentModels;
+  return { mb, lights, occupancy, kitchenSide: kitchenSides, models, items };
 }
 
 /** 置く家具の一覧（手で置き直した階はその内容、ほかは自動配置の結果） */

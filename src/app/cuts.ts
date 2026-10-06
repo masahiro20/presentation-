@@ -101,6 +101,11 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
     const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. Floor: ${mat(int.floor, 'en')}; walls: ${mat(int.wall, 'en')}; ceiling: ${mat(int.ceiling, 'en')}; doors: ${mat(int.door, 'en')} (${spec.doors.fullHeight ? 'full-height frameless' : 'standard casing'}); window frames ${ext.frame.color}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural photography, 24mm lens, vertical lines kept vertical, soft natural light.`;
     return { ja, en };
   }
+  if (shot.kind === 'cutaway') {
+    const ja = `${common.ja}\n輪切り模型（${shot.level ?? ''}階）: 壁を床から約 1.35m の高さで水平に切り、斜め上から見下ろした建築模型のカット。切り口は白いまま、壁の厚みも残してください。床は${mat(int.floor, 'ja')}、壁は${mat(int.wall, 'ja')}、建具は${mat(int.door, 'ja')}。家具・キッチン・階段の配置と大きさはそのまま。外構: 地面は${mat(ext.landscape.ground, 'ja')}。時間帯は${TOD_JA[tod]}。柔らかい自然光で、建築模型を撮った写真のように仕上げてください。`;
+    const en = `${common.en}\nDollhouse section (floor ${shot.level ?? ''}): walls cut horizontally about 1.35 m above the floor, seen from above at an oblique angle, like an architectural model. Keep the white cut faces and wall thickness. Floor: ${mat(int.floor, 'en')}; walls: ${mat(int.wall, 'en')}; doors: ${mat(int.door, 'en')}; furniture, kitchen and stairs exactly as placed; ground ${mat(ext.landscape.ground, 'en')}. Lighting: ${TOD_EN[tod]}. Soft natural light, photorealistic architectural model photography.`;
+    return { ja, en };
+  }
   const roofJa = ext.roof.type === 'shed' ? '片流れ' : ext.roof.type === 'gable' ? '切妻' : ext.roof.type === 'hip' ? '寄棟' : '陸屋根';
   const ja = `${common.ja}\n外観${shot.kind === 'aerial' ? '（鳥瞰）' : ''}: 外壁は${mat(ext.wall, 'ja')}${ext.accent ? `、アクセントに${mat(ext.accent, 'ja')}` : ''}。屋根は${roofJa}（${mat(ext.roof.material, 'ja')}）、軒の出 ${ext.roof.eaves}mm。サッシは${ext.frame.color}の細いフレーム、玄関ドアは${mat(ext.entranceDoor, 'ja')}。外構: 地面は${mat(ext.landscape.ground, 'ja')}、アプローチは${mat(ext.landscape.approach, 'ja')}。テイスト「${ext.name}」: ${ext.catch}。時間帯は${TOD_JA[tod]}。建築写真のように、周囲は落ち着いた住宅地、空は自然に。`;
   const en = `${common.en}\nExterior${shot.kind === 'aerial' ? ' (aerial)' : ''}: walls ${mat(ext.wall, 'en')}${ext.accent ? `, accent ${mat(ext.accent, 'en')}` : ''}; ${ext.roof.type} roof in ${mat(ext.roof.material, 'en')} with ${ext.roof.eaves}mm eaves; slim ${ext.frame.color} window frames; entrance door ${mat(ext.entranceDoor, 'en')}; ground ${mat(ext.landscape.ground, 'en')}, approach ${mat(ext.landscape.approach, 'en')}. Style: ${ext.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural photography, quiet residential surroundings, natural sky.`;
@@ -119,6 +124,9 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
   }
   const pm = progressModal(`AI 仕上げ用のカット集を作成中（${shots.length}枚・${opts.width}×${opts.height}）`);
   const prev = v.currentView();
+  // AI 仕上げの下絵に文字を焼き込まない（部屋名の札は消す）
+  const prevLabels = v.roomLabelsShown();
+  v.setRoomLabels(false);
   const entries: { name: string; data: Uint8Array }[] = [];
   const lines: string[] = [];
   lines.push(`${state.name}　カット集（AI 仕上げ用）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を画像生成 AI（写真化・リライティング）に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感だけを仕上げる指示になっています。', '');
@@ -153,6 +161,7 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
     toast(`カット集を保存しました（${n}枚・${(zip.size / 1024 / 1024).toFixed(1)} MB）`, 'ok', 6000);
   } finally {
     pm.close();
+    v.setRoomLabels(prevLabels);
     v.applyView(prev);
   }
 }

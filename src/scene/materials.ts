@@ -90,6 +90,8 @@ export class MaterialRegistry {
     set('int.accent', M(i.accentWall ?? i.wall));
     set('int.bathWall', M({ pattern: 'tileFloor', color: '#e9e7e2', roughness: 0.35, tile: 1.8 }));
     set('int.wallTop', color('#e9e6e0', 0.9));
+    // 輪切り模型の切り口（白い断面）
+    set('cut.face', color('#f6f4f0', 0.95));
     set('int.ceiling', M(i.ceiling));
     set('int.floor', M(i.floor));
     set('int.wetFloor', M(i.wetFloor));

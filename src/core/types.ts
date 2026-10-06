@@ -101,6 +101,8 @@ export interface Stair {
   entry: 'n' | 's' | 'e' | 'w';
   /** 上階へ昇る階段か（上階側に記載された DN 階段は false） */
   goesUp: boolean;
+  /** 図面に書かれた段数（「14段」など）。省略時は階高から推定 */
+  steps?: number;
 }
 
 export interface Floor {

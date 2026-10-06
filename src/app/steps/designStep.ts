@@ -273,6 +273,12 @@ export const designStep: Step = {
     const tools = h('div', { class: 'view-tools', style: 'pointer-events:auto' });
     const toolBtn = (label: string, fn: () => void) => h('button', { class: 'btn', onclick: fn }, label);
     const setCut = (lv: number | null) => {
+      const s = shots.find((x) => (lv == null ? x.id === 'ext-front' : x.id === `cut-${lv}`));
+      if (s) {
+        v.applyShot(s, true);
+        active = s;
+        return;
+      }
       v.setCutaway(lv);
       if (lv != null) {
         const b = v.state!.meta.bbox;
@@ -283,17 +289,33 @@ export const designStep: Step = {
     };
     tools.append(
       toolBtn('外観', () => {
-        setCut(null);
+        v.setCutaway(null);
         const s = shots.find((x) => x.id === 'ext-front');
-        if (s) v.applyShot(s, true);
+        if (s) {
+          v.applyShot(s, true);
+          active = s;
+        }
       }),
       toolBtn('鳥瞰', () => {
-        setCut(null);
+        v.setCutaway(null);
         const s = shots.find((x) => x.id === 'aerial');
-        if (s) v.applyShot(s, true);
+        if (s) {
+          v.applyShot(s, true);
+          active = s;
+        }
       }),
       ...v.state!.model.floors.map((f) => toolBtn(`${f.level}階 模型`, () => setCut(f.level))),
     );
+    {
+      // 模型の部屋名タグ
+      const lbl = toolBtn('部屋名', () => {
+        v.setRoomLabels(!v.roomLabelsShown());
+        lbl.classList.toggle('on', v.roomLabelsShown());
+      });
+      lbl.title = '輪切り模型に部屋名と帖数の札を表示する';
+      lbl.classList.toggle('on', v.roomLabelsShown());
+      tools.appendChild(lbl);
+    }
     ctx.stage.appendChild(tools);
 
     // ---- サイドパネル ----
@@ -461,12 +483,11 @@ export const designStep: Step = {
             {
               class: 'shot-btn',
               onclick: () => {
-                v.setCutaway(null);
                 v.applyShot(s, true);
                 active = s;
               },
             },
-            h('span', { class: `k ${s.kind === 'interior' ? 'int' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : '外観'),
+            h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' ? 'cut' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : '外観'),
             h('div', null, s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title),
           ),
         );
@@ -496,7 +517,8 @@ export const designStep: Step = {
       ) as HTMLSelectElement;
       const currentAsShot = (): Shot => {
         const cur = v.currentView();
-        return { id: active?.id ?? uid('custom'), kind: active?.kind ?? 'exterior', title: active?.title ?? 'パース', caption: active?.caption ?? '', view: cur, sunDir: null, timeOfDay: state.design.timeOfDay };
+        const cutLv = v.cutawayLevel();
+        return { id: active?.id ?? uid('custom'), kind: cutLv != null ? 'cutaway' : (active?.kind ?? 'exterior'), title: active?.title ?? (cutLv != null ? `${cutLv}階 輪切り模型` : 'パース'), caption: active?.caption ?? '', view: cur, sunDir: null, timeOfDay: state.design.timeOfDay, cutaway: cutLv ?? undefined, level: cutLv ?? active?.level };
       };
       const batch = async (list: Shot[], quality: 'photoreal' | 'realtime' | 'studio') => {
         const pm = progressModal(quality === 'photoreal' ? `提案用パースを写真品質で一括作成中（${list.length}枚）` : quality === 'studio' ? `提案用パースを高品質描画で一括作成中（${list.length}枚）` : 'おすすめパースを下書き作成中');

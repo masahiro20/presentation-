@@ -16,7 +16,7 @@ import { MM } from './building';
 
 export interface Shot {
   id: string;
-  kind: 'exterior' | 'interior' | 'aerial';
+  kind: 'exterior' | 'interior' | 'aerial' | 'cutaway';
   title: string;
   caption: string;
   view: CameraView;
@@ -25,6 +25,37 @@ export interface Shot {
   timeOfDay?: 'day' | 'evening' | 'night';
   roomId?: string;
   level?: number;
+  /** 輪切り模型: 切る階 */
+  cutaway?: number;
+}
+
+/** 斜め上から見下ろすカメラで、点群が収まる距離を探す */
+function fitOblique(pts: THREE.Vector3[], target: THREE.Vector3, fromDir: THREE.Vector3, elevRad: number, vfov: number, aspect: number, margin = 1.1): number {
+  const tanV = Math.tan((vfov * Math.PI) / 360);
+  const tanH = tanV * aspect;
+  const hdir = fromDir.clone().setY(0).normalize();
+  const fits = (dist: number) => {
+    const pos = target.clone().addScaledVector(hdir, dist * Math.cos(elevRad)).add(new THREE.Vector3(0, dist * Math.sin(elevRad), 0));
+    const fwd = target.clone().sub(pos).normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+    for (const p of pts) {
+      const r = p.clone().sub(pos);
+      const z = r.dot(fwd);
+      if (z < 0.5) return false;
+      if ((Math.abs(r.dot(right)) / z) * margin > tanH) return false;
+      if ((Math.abs(r.dot(up)) / z) * margin > tanV) return false;
+    }
+    return true;
+  };
+  let lo = 1;
+  let hi = 400;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
 }
 
 function sunForView(pos: THREE.Vector3, target: THREE.Vector3, sideSign = -1, elevDeg = 38): THREE.Vector3 {
@@ -184,6 +215,30 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
     sunDir: sunForView(pos, center, -1, 45),
     timeOfDay: 'day',
   });
+  // 輪切り模型（階ごと）: 壁を腰の高さで切って、道路側の斜め上から見下ろす
+  for (const o of meta.outlines) {
+    const bb = new THREE.Box2();
+    for (const poly of o.polys) for (const p of poly) bb.expandByPoint(p);
+    if (bb.isEmpty()) continue;
+    const cpts: THREE.Vector3[] = [];
+    for (const x of [bb.min.x - 0.4, bb.max.x + 0.4]) for (const z of [bb.min.y - 0.4, bb.max.y + 0.4]) for (const y of [o.y - 0.3, o.y + 1.5]) cpts.push(new THREE.Vector3(x, y, z));
+    const tgt = new THREE.Vector3((bb.min.x + bb.max.x) / 2, o.y + 0.5, (bb.min.y + bb.max.y) / 2);
+    const elev = (36 * Math.PI) / 180;
+    const cfov = 36;
+    const d = fitOblique(cpts, tgt, frontDir, elev, cfov, aspect, 1.06);
+    const cpos = tgt.clone().addScaledVector(frontDir.clone().setY(0).normalize(), d * Math.cos(elev)).add(new THREE.Vector3(0, d * Math.sin(elev), 0));
+    shots.push({
+      id: `cut-${o.level}`,
+      kind: 'cutaway',
+      title: `${o.level}階 輪切り模型`,
+      caption: `${o.level}階の壁を腰の高さで水平に切り、斜め上から見下ろした模型。部屋のつながり・広さ・家具の配置が一目でわかります。`,
+      view: { pos: cpos, target: tgt, fov: cfov },
+      sunDir: sunForView(cpos, tgt, -1, 52),
+      timeOfDay: 'day',
+      level: o.level,
+      cutaway: o.level,
+    });
+  }
   return shots;
 }
 

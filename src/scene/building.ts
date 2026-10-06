@@ -19,7 +19,14 @@ export interface BuildOptions {
   spec?: BuilderSpec;
   /** 最上階の外壁の高さ（床から、mm） */
   topWallHeight?: number;
+  /** 輪切り（模型）: 指定階を床から height (m) の高さで水平に切り、上の階・天井・屋根は作らない */
+  cut?: { level: number; height?: number };
 }
+
+/** 輪切りの切断高さの既定（床から、m）。腰窓の下端より少し上で、キッチンや家具の形が残る高さ */
+export const CUT_HEIGHT = 1.35;
+/** 建具など別部品の MeshBuilder にも同じ高さ制限を掛ける */
+let partClamp: MeshBuilder['clampTop'] = null;
 
 export interface RoomInfo {
   room: Room;
@@ -106,6 +113,9 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
   const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [] };
   const ext = opts.exterior;
   const spec = opts.spec ?? BUILDER_SPECS[0];
+  const cutF = opts.cut ? model.floors.find((f) => f.level === opts.cut!.level) : undefined;
+  mb.clampTop = cutF ? { y: cutF.elevation * MM + (opts.cut!.height ?? CUT_HEIGHT), capKey: 'cut.face' } : null;
+  partClamp = mb.clampTop;
   const entranceWalls = new Set<string>();
   // 玄関のある壁と、その上階の同じ位置の壁（縦のアクセント帯）
   const entranceRanges: { a: THREE.Vector2; b: THREE.Vector2 }[] = [];
@@ -120,6 +130,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       }
 
   for (const f of model.floors) {
+    // 輪切りでは切った階より上は作らない
+    if (cutF && f.level > cutF.level) continue;
     const isTop = model.floors.indexOf(f) === model.floors.length - 1;
     const fl = f.elevation * MM;
     const top = wallTopOf(model, f, opts) * MM;
@@ -615,6 +627,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const closedDir = dir.clone().multiplyScalar(hingeStart ? 1 : -1);
     const hinge = plane.clone().addScaledVector(dir, hingeStart ? -dw / 2 : dw / 2).setY(0);
     const dmb = new MeshBuilder();
+    dmb.clampTop = partClamp;
     dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
     const zOut = outN.dot(nW); // 局所 +Z = nW
     // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
@@ -704,6 +717,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const closedDir = dir.clone().multiplyScalar(towards);
     const fullOpen = dir.clone().multiplyScalar(towards * Math.cos(1.396)).addScaledVector(nW, side * Math.sin(1.396)).normalize();
     const dmb = new MeshBuilder();
+    dmb.clampTop = partClamp;
     dmb.box('int.door', V(lw / 2, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT);
     handle(dmb, V(lw - 0.075, fl + 1.0, 0), V(-1, 0, 0), V(0, 0, 1));
     meta.doors.push({
@@ -753,6 +767,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const slideDist = pick?.dist ?? 0;
     const staticOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
     const dmb = new MeshBuilder();
+    dmb.clampTop = partClamp;
     dmb.box('int.door', V(0, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT * 0.9);
     // 引手（細い縦長の彫り込みを暗い線で表現。引き込む側と反対の端）
     dmb.box('f.handle', V(-(pick?.sd ?? 1) * (lw / 2 - 0.05), fl + 0.85, fc * (doorT * 0.45 + 0.001)), V(1, 0, 0), 0.012, 0.35, 0.002);
@@ -841,7 +856,7 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
 /** 階段（直・折り返し） */
 function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
   const rise = y1 - y0;
-  const n = stairStepCount(rise / MM);
+  const n = stairStepCount(rise / MM, s);
   const rh = rise / n;
   const tread = 'int.stairs';
   // 蹴込みの無い「ストリップ階段」: 厚さ 40mm の踏板を、両端の細いスチールの受け材で支える（重い箱の積み重ねに見せない）

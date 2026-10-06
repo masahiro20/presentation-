@@ -34,9 +34,11 @@ export interface RoofInfo {
   eaveY: number;
 }
 
-export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType, pitchOverride?: number): { mb: MeshBuilder; info: RoofInfo } {
+export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType, pitchOverride?: number, clampTop: MeshBuilder['clampTop'] = null): { mb: MeshBuilder; info: RoofInfo } {
   seq = 0;
   const mb = new MeshBuilder();
+  // 輪切り（模型）: 切断面より上の屋根は作らない（下屋など低い屋根は残る）
+  mb.clampTop = clampTop;
   const type = typeOverride ?? style.roof.type;
   const info: RoofInfo = { maxY: 0, eaveY: 0 };
   const floors = model.floors;

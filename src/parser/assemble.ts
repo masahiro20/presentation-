@@ -7,7 +7,7 @@ import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
-import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText } from './labels';
+import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs } from './stairs';
 import { detectSite, translateSite } from './site';
 
@@ -1270,6 +1270,21 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const t1 = Math.min(L, op.t1 - w.t0);
       if (t1 - t0 < 200) continue;
       const center = { x: w.a.x + w.u.x * ((t0 + t1) / 2), y: w.a.y + w.u.y * ((t0 + t1) / 2) };
+      // 開口のそばに書かれた注記（サッシ記号・FL+・開口・FIX など）。壁に沿って開口幅+余裕、壁と直交方向に 900mm 以内
+      const notes = plan.texts
+        .map((t) => {
+          const dx = t.x - center.x;
+          const dy = t.y - center.y;
+          const along = Math.abs(dx * w.u.x + dy * w.u.y);
+          const across = Math.abs(dx * w.n.x + dy * w.n.y);
+          return { t, along, across };
+        })
+        .filter((q) => q.along <= (t1 - t0) / 2 + 350 && q.across <= 900)
+        .sort((a, b) => a.across + a.along * 0.3 - (b.across + b.along * 0.3));
+      const noteSash = notes.map((q) => ({ q, v: parseSashCode(q.t.str) })).find((q) => q.v)?.v ?? null;
+      const noteFl = notes.map((q) => parseFlOffset(q.t.str)).find((v) => v != null) ?? null;
+      const noteOpen = notes.some((q) => isOpenMark(q.t.str));
+      const noteKind = notes.map((q) => parseSashKind(q.t.str)).find((v) => v != null) ?? null;
       const inSign = exterior ? -(outsideSign ?? 1) : 1;
       const inRoom = roomAt({ x: center.x + w.n.x * inSign * (w.d / 2 + 60), y: center.y + w.n.y * inSign * (w.d / 2 + 60) });
       const otherRoom = roomAt({ x: center.x - w.n.x * inSign * (w.d / 2 + 60), y: center.y - w.n.y * inSign * (w.d / 2 + 60) });
@@ -1297,12 +1312,30 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
           sill = ws.sill;
           height = ws.height;
           windowStyle = ws.style;
+          // 図面に書かれたサッシ記号（例 16511 = W1650×H1170）があれば、その寸法を優先する
+          if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) {
+            height = noteSash.height;
+            if (noteFl != null && noteFl < 1600) sill = noteFl;
+            else if (height >= 1800) sill = 0;
+            else sill = Math.max(0, 2000 - height);
+            windowStyle = height >= 1800 ? 'hakidashi' : height <= 600 ? (sill >= 1300 ? 'high' : 'small') : 'koshi';
+          } else if (noteFl != null && noteFl < 1600) {
+            // FL+900 などの腰高の注記だけがある場合
+            sill = noteFl;
+            height = Math.min(height, 2000 - sill);
+            windowStyle = sill === 0 ? 'hakidashi' : sill >= 1300 ? 'high' : 'koshi';
+          }
+          void noteKind;
         }
       } else {
         if (op.kind === 'door') kind = 'door';
         else if (op.kind === 'window') kind = 'sliding';
         else kind = 'open';
+        // 「開口」の注記 = 建具なしの開口部。「引違」「FIX」の注記があれば引戸／固定として扱う
+        if (noteOpen) kind = 'open';
+        else if (noteKind === 'sliding' && kind !== 'door') kind = 'sliding';
         height = 2000;
+        if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) height = noteSash.height >= 1800 ? noteSash.height : 2000;
         void otherRoom;
       }
       openings.push({
@@ -1381,6 +1414,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const kind: Stair['kind'] = c.flights >= 2 || Math.max(w, h) / Math.min(w, h) < 1.5 ? 'u' : 'straight';
     // 同じ部屋の UP/DN 記号
     const hasDn = plan.texts.some((t) => parseStairMark(t.str) === 'down' && t.x > r.minX - 300 && t.x < r.maxX + 300 && t.y > r.minY - 300 && t.y < r.maxY + 300);
+    // 「14段」などの段数注記（階段の近く）
+    const stepNote = plan.texts
+      .map((t) => ({ n: parseStepCount(t.str), d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY)) }))
+      .filter((q) => q.n != null && q.d <= 1200)
+      .sort((a, b) => a.d - b.d)[0];
     stairs.push({
       id: `F${level}-S${stairs.length + 1}`,
       minX: r.minX,
@@ -1390,6 +1428,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       kind,
       entry: sides[0].s,
       goesUp: !hasDn,
+      ...(stepNote ? { steps: stepNote.n! } : {}),
     });
   }
   // 階段の部屋ラベルを補正（階段が大部分を占める部屋）

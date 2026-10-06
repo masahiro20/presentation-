@@ -354,8 +354,48 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   // 入れ子のペアを除外: 壁の2本の線の間にあるサッシ線などとの組は壁ではない
   {
     const bracket = new Map<string, [number, number][]>();
+    // 仮の主要壁厚（長さ加重の最頻値）: 二重壁の判定に使う
+    let domT = 0;
+    {
+      const h = new Map<number, number>();
+      for (const q of pairs) {
+        const b = Math.round(q.d / 5) * 5;
+        h.set(b, (h.get(b) ?? 0) + (q.t1 - q.t0));
+      }
+      let best = 0;
+      for (const [b, v] of h) if (v > best) { best = v; domT = b; }
+    }
+    {
+      // デバッグ: __WALLDBG_O = [min, max] の範囲にある線とペアを出力
+      const rng = (globalThis as any).__WALLDBG_O as [number, number] | undefined;
+      if (rng) {
+        for (let g = 0; g < lines.length; g++) for (const l of lines[g]) if (Math.abs(l.o) >= rng[0] && Math.abs(l.o) <= rng[1]) console.log('LINE', g, JSON.stringify({ o: Math.round(l.o), t0: Math.round(l.t0), t1: Math.round(l.t1), heavy: l.heavy, eligible: l.eligible, width: l.width }));
+        for (const q of pairs) { const qo = (lines[q.g][q.i].o + lines[q.g][q.j].o) / 2; if (Math.abs(qo) >= rng[0] && Math.abs(qo) <= rng[1]) console.log('PAIR', q.g, JSON.stringify({ o: Math.round(qo), d: Math.round(q.d), t0: Math.round(q.t0), t1: Math.round(q.t1), i: q.i, j: q.j })); }
+      }
+    }
     for (const q of pairs) {
       if (q.d > 260) continue;
+      // 二重壁（外壁の内側にもう 1 枚の壁）: 間の線が 1 本だけで、両側がそれぞれ壁厚になる太線なら、サッシ線ではなく壁面
+      {
+        const ls = lines[q.g];
+        const inner = [];
+        for (let k = q.i + 1; k < q.j; k++) {
+          const C = ls[k];
+          if (C.o <= ls[q.i].o + 3 || C.o >= ls[q.j].o - 3) continue;
+          if (Math.min(C.t1, q.t1) - Math.max(C.t0, q.t0) > (q.t1 - q.t0) * 0.3) inner.push(k);
+        }
+        if (inner.length === 1 && q.t1 - q.t0 >= 600) {
+          const C = ls[inner[0]];
+          const ov = Math.min(C.t1, q.t1) - Math.max(C.t0, q.t0);
+          // 引違い戸の 3 本線や棚の線（間隔が狭い・短い）は対象外: 両側の間隔が壁厚相当で、長さもある場合だけ
+          // 両側の間隔がどちらも主要な壁厚（±12%）であること（収納のパイプ・棚の線は間隔が壁厚と違う）
+          const nearT = (d: number) => d >= Math.max(O.minThickness, 75) && (domT <= 0 || Math.abs(d - domT) <= Math.max(12, domT * 0.12));
+          if (C.heavy && ov > (q.t1 - q.t0) * 0.5 && C.t1 - C.t0 >= 600 && nearT(C.o - ls[q.i].o) && nearT(ls[q.j].o - C.o)) {
+            if ((globalThis as any).__WALLDBG_O) console.log('DOUBLE', q.g, JSON.stringify({ o0: Math.round(ls[q.i].o), oc: Math.round(C.o), o1: Math.round(ls[q.j].o), t0: Math.round(q.t0), t1: Math.round(q.t1), ct0: Math.round(C.t0), ct1: Math.round(C.t1), cw: C.width }));
+            continue;
+          }
+        }
+      }
       for (let k = q.i + 1; k < q.j; k++) {
         const key = `${q.g}:${k}`;
         if (!bracket.has(key)) bracket.set(key, []);

@@ -8,8 +8,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
-import type { BuildingModel } from '../core/types';
-import { buildBuilding, type BuildingMeta, type DoorInfo } from './building';
+import type { BuildingModel, Room } from '../core/types';
+import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
@@ -66,6 +66,8 @@ export class Viewer {
     building: new THREE.Group(),
     roof: new THREE.Group(),
     furniture: new THREE.Group(),
+    /** 輪切り（模型）表示用に作り直した建物・家具 */
+    cut: new THREE.Group(),
     landscape: new THREE.Group(),
     context: new THREE.Group(),
     overlay: new THREE.Group(),
@@ -96,7 +98,12 @@ export class Viewer {
   private renderMode: 'fast' | 'hq' = 'hq';
   private fastPR = 1;
   private keys = new Set<string>();
-  private walkOcc: { state: SceneState; occ: ReturnType<typeof buildOccluder> } | null = null;
+  private walkOcc: { state: SceneState; cut: number | null; occ: ReturnType<typeof buildOccluder> } | null = null;
+  /** 輪切り表示中の階（null = 通常表示） */
+  private cutLevel: number | null = null;
+  private cutBuilt: { key: string } | null = null;
+  /** 輪切り模型の部屋名タグ */
+  private roomLabels = true;
   /** 歩行の速度（慣性付き）と、ホイール操作で残っている前進量 */
   private walkVel = new THREE.Vector3();
   private walkImpulse = new THREE.Vector3();
@@ -328,7 +335,7 @@ export class Viewer {
   /** 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う） */
   private occluder() {
     if (!this.state) return null;
-    if (!this.walkOcc || this.walkOcc.state !== this.state) this.walkOcc = { state: this.state, occ: buildOccluder(this, { buildingOnly: true }) };
+    if (!this.walkOcc || this.walkOcc.state !== this.state || this.walkOcc.cut !== this.cutLevel) this.walkOcc = { state: this.state, cut: this.cutLevel, occ: buildOccluder(this, { buildingOnly: true }) };
     return this.walkOcc.occ;
   }
 
@@ -642,7 +649,8 @@ export class Viewer {
 
   setModel(model: BuildingModel) {
     const ext = exteriorById(this.design.exteriorId);
-    for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape, this.groups.lights]) clearGroup(g);
+    for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape, this.groups.lights, this.groups.cut]) clearGroup(g);
+    this.cutBuilt = null;
     // 天井高の上書き（仕様の調整）
     const ch = this.design.specPatch?.ceilingHeight;
     if (ch) for (const f of model.floors) f.ceilingHeight = Math.min(ch, f.height - 200);
@@ -686,6 +694,8 @@ export class Viewer {
     this.fitShadow();
     this.updateInteriorLights();
     this.updateEnvironment();
+    // 輪切り表示中なら、新しい建物で作り直す
+    this.setCutaway(this.cutLevel);
     this.dirty = true;
   }
 
@@ -725,7 +735,8 @@ export class Viewer {
       return;
     }
     this.registry.apply(this.root);
-    this.groups.furniture.visible = design.furniture;
+    this.groups.furniture.visible = design.furniture && this.cutLevel == null;
+    if (this.cutLevel != null && prev.furniture !== design.furniture) this.setCutaway(this.cutLevel);
     if (prev.timeOfDay !== design.timeOfDay) {
       this.updateInteriorLights();
       this.updateEnvironment();
@@ -830,8 +841,8 @@ export class Viewer {
     if (!this.state) return [];
     const s = this.state;
     if (!this.shotCache || this.shotCache.state !== s) {
-      // 家具込みの BVH でレイキャストし、室内の見通しを評価
-      const occ = buildOccluder(this, { buildingOnly: true, furniture: this.groups.furniture.visible });
+      // 家具込みの BVH でレイキャストし、室内の見通しを評価（輪切り表示中でも通常の建物で評価する）
+      const occ = buildOccluder(this, { buildingOnly: true, furniture: this.design.furniture, force: true });
       const ray = new THREE.Ray();
       const fn = (o: THREE.Vector3, d: THREE.Vector3, far: number) => {
         ray.origin.copy(o);
@@ -857,6 +868,7 @@ export class Viewer {
     const tod = shot.timeOfDay ?? this.design.timeOfDay;
     if (tod !== this.design.timeOfDay) this.setDesign({ ...this.design, timeOfDay: tod });
     if (shot.sunDir) this.setSunDirection(shot.sunDir);
+    this.setCutaway(shot.cutaway ?? null);
     if (animate) this.flyTo(shot.view);
     else this.applyView(shot.view);
   }
@@ -901,24 +913,93 @@ export class Viewer {
     this.camMoved();
   }
 
-  /** 断面（模型）表示: 指定階より上と屋根を隠し、天井を消す */
-  setCutaway(level: number | null) {
-    this.groups.roof.visible = level == null;
-    const model = this.state?.model;
-    // 天井はマテリアル単位で非表示
-    this.root.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      if (m.userData.matKey === 'int.ceiling') m.visible = level == null;
+  /** 輪切り表示中の階（null = 通常表示） */
+  cutawayLevel(): number | null {
+    return this.cutLevel;
+  }
+
+  /** 輪切り模型の部屋名タグの表示／非表示 */
+  setRoomLabels(on: boolean) {
+    this.roomLabels = on;
+    this.groups.cut.traverse((o) => {
+      if (o.userData.roomLabel) o.visible = on;
     });
-    if (model && level != null) {
-      const f = model.floors.find((f) => f.level === level);
-      const clipY = f ? (f.elevation + f.ceilingHeight * 0.55) / 1000 : Infinity;
-      const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), clipY);
-      this.renderer.clippingPlanes = [plane];
-    } else {
-      this.renderer.clippingPlanes = [];
+    this.dirty = true;
+  }
+
+  roomLabelsShown() {
+    return this.roomLabels;
+  }
+
+  /**
+   * 輪切り（模型）表示: 指定階の壁を腰の高さで水平に切った建物・家具を作り直して見せる。
+   * 切り口は白い断面で閉じ、上の階・天井・屋根は作らない（クリッピングで中身が抜けて見えることが無い）
+   */
+  setCutaway(level: number | null) {
+    const model = this.state?.model;
+    const f = level != null && model ? model.floors.find((x) => x.level === level) : undefined;
+    this.cutLevel = f ? level : null;
+    this.renderer.clippingPlanes = [];
+    const on = !!f;
+    this.groups.roof.visible = !on;
+    this.groups.building.visible = !on;
+    this.groups.furniture.visible = !on && this.design.furniture;
+    this.groups.cut.visible = on;
+    if (on && model && f) {
+      const key = [level, this.design.exteriorId, this.design.interiorId, this.design.specId, JSON.stringify(this.design.specPatch ?? null), this.design.furniture, this.design.roofOverride ?? '', this.design.roofPitch ?? ''].join('|');
+      if (!this.cutBuilt || this.cutBuilt.key !== key) {
+        clearGroup(this.groups.cut);
+        const ext = exteriorById(this.design.exteriorId);
+        const resolve = (k: string) => this.registry.get(k);
+        const cutY = f.elevation * MM + CUT_HEIGHT;
+        const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch), cut: { level: level!, height: CUT_HEIGHT } });
+        this.groups.cut.add(mb.build(resolve, { name: 'cut-building' }));
+        // 切断面より低い屋根（下屋・ポーチ屋根）は残す
+        const cutRoof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch, { y: cutY, capKey: 'cut.face' });
+        this.groups.cut.add(cutRoof.mb.build(resolve, { name: 'cut-roof' }));
+        // 扉は少し開いた状態で固定（間取りのつながりが見える）
+        for (const info of meta.doors) {
+          const g = new THREE.Group();
+          g.name = `cutdoor:${info.id}`;
+          g.add(info.mb.build(resolve, { name: 'door' }));
+          g.position.copy(info.origin);
+          g.rotation.set(0, info.yaw0, 0);
+          const frac = info.kind === 'swing' ? Math.max(info.staticOpen, 0.35) : info.staticOpen;
+          if (info.kind === 'swing') g.rotation.y = info.yaw0 + info.openAngle * frac;
+          else g.position.addScaledVector(info.slideDir, info.slideDist * frac);
+          this.groups.cut.add(g);
+        }
+        // 部屋名タグ（模型の札のように、切り口の少し上に浮かせる）
+        for (const r of f.rooms) {
+          if (r.type === 'void' || r.area < 1.2) continue;
+          const sp = roomLabelSprite(r);
+          if (!sp) continue;
+          sp.position.set(r.labelPos.x * MM, cutY + 0.22, r.labelPos.y * MM);
+          sp.visible = this.roomLabels;
+          this.groups.cut.add(sp);
+        }
+        if (this.design.furniture) {
+          const fur = buildFurniture(model, { cut: { level: level!, y: cutY } });
+          this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
+          const gen = this.modelGen;
+          const built = { key };
+          this.cutBuilt = built;
+          void placeModels(fur.models, this.groups.cut, () => gen === this.modelGen && this.cutBuilt === built).then((n) => {
+            if (n) this.dirty = true;
+          });
+        } else {
+          this.cutBuilt = { key };
+        }
+        this.groups.cut.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (m.isMesh && (m.userData.matKey?.startsWith('ext.glass') || m.userData.matKey === 'f.water')) {
+            m.castShadow = false;
+            m.renderOrder = 2;
+          }
+        });
+      }
     }
+    this.walkOcc = null;
     this.dirty = true;
   }
 
@@ -977,4 +1058,65 @@ export function kelvinToColor(k: number): THREE.Color {
   }
   const c = (x: number) => Math.max(0, Math.min(255, x)) / 255;
   return new THREE.Color().setRGB(c(r), c(g), c(b), THREE.SRGBColorSpace);
+}
+
+/** 部屋名と帖数を書いた札（スプライト）。模型に置く名札のように、常にカメラを向く */
+function roomLabelSprite(r: Room): THREE.Sprite | null {
+  if (typeof document === 'undefined') return null;
+  const name = r.name.replace(/[（(].*?[)）]/g, '').trim() || r.name;
+  const tatami = r.labeledTatami ?? r.area / 1.62;
+  const sub = tatami >= 1 ? `${tatami.toFixed(tatami >= 10 ? 0 : 1)}帖` : '';
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const S = 2;
+  const font = `600 ${22 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
+  const subFont = `500 ${15 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
+  g.font = font;
+  const wName = g.measureText(name).width;
+  g.font = subFont;
+  const wSub = sub ? g.measureText(sub).width + 10 * S : 0;
+  const padX = 14 * S;
+  const W = Math.ceil(wName + wSub + padX * 2);
+  const H = 40 * S;
+  c.width = W;
+  c.height = H;
+  // 白い札（角丸）と細い縁
+  const rad = 10 * S;
+  g.beginPath();
+  g.moveTo(rad, 0);
+  g.lineTo(W - rad, 0);
+  g.quadraticCurveTo(W, 0, W, rad);
+  g.lineTo(W, H - rad);
+  g.quadraticCurveTo(W, H, W - rad, H);
+  g.lineTo(rad, H);
+  g.quadraticCurveTo(0, H, 0, H - rad);
+  g.lineTo(0, rad);
+  g.quadraticCurveTo(0, 0, rad, 0);
+  g.closePath();
+  g.fillStyle = 'rgba(255,255,255,0.94)';
+  g.fill();
+  g.lineWidth = 1.5 * S;
+  g.strokeStyle = 'rgba(40,40,40,0.35)';
+  g.stroke();
+  g.fillStyle = '#20232a';
+  g.textBaseline = 'middle';
+  g.font = font;
+  g.fillText(name, padX, H / 2 + 1 * S);
+  if (sub) {
+    g.fillStyle = '#6b6f78';
+    g.font = subFont;
+    g.fillText(sub, padX + wName + 10 * S, H / 2 + 2 * S);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
+  const sp = new THREE.Sprite(mat);
+  // 模型を斜め上から見た時に読める大きさ（高さ 0.6m 相当）
+  const h = 0.6;
+  sp.scale.set((h * W) / H, h, 1);
+  sp.renderOrder = 50;
+  sp.userData.roomLabel = true;
+  return sp;
 }

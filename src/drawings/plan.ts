@@ -214,7 +214,7 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level));
   // 階段
   for (const st of f.stairs) {
-    const lay = stairLayout(st, stairStepCount(f.height || 2900));
+    const lay = stairLayout(st, stairStepCount(f.height || 2900, st));
     s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
     for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
     // 昇る向きの矢印（段の中心をつなぐ）

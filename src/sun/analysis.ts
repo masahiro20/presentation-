@@ -18,9 +18,11 @@ export interface Occluder {
 }
 
 /** 影を落とす物体を1つの BVH にまとめる */
-export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean } = {}): Occluder {
+export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean; force?: boolean } = {}): Occluder {
   const positions: number[] = [];
   const add = (root: THREE.Object3D, filter?: (m: THREE.Mesh) => boolean) => {
+    // 非表示のグループ（輪切り表示中の通常の建物など）は、force 指定が無ければ含めない
+    if (!root.visible && !opts.force) return;
     root.updateMatrixWorld(true);
     root.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -39,6 +41,7 @@ export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?:
   };
   add(viewer.groups.building);
   add(viewer.groups.roof);
+  if (!opts.force) add(viewer.groups.cut);
   if (opts.furniture) add(viewer.groups.furniture);
   if (!opts.buildingOnly) {
     if (opts.context !== false) add(viewer.groups.context, (m) => !!m.userData.neighbor);

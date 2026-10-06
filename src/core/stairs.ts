@@ -45,7 +45,9 @@ export function stairFrame(s: Stair) {
 }
 
 /** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
-export function stairStepCount(riseMm: number) {
+/** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
+export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps'> | null) {
+  if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
   return Math.max(10, Math.round(riseMm / 200));
 }
 

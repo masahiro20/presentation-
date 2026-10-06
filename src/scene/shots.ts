@@ -13,10 +13,11 @@ import type { CameraView } from './viewer';
 import type { Footprint } from './furniture';
 import type { RoofInfo } from './roof';
 import { MM } from './building';
+import { stairFrame } from '../core/stairs';
 
 export interface Shot {
   id: string;
-  kind: 'exterior' | 'interior' | 'aerial' | 'cutaway';
+  kind: 'exterior' | 'interior' | 'aerial' | 'cutaway' | 'section';
   title: string;
   caption: string;
   view: CameraView;
@@ -27,6 +28,8 @@ export interface Shot {
   level?: number;
   /** 輪切り模型: 切る階 */
   cutaway?: number;
+  /** 断面: 鉛直の切断面（n の側を取り除く） */
+  section?: { nx: number; nz: number; d: number };
 }
 
 /** 斜め上から見下ろすカメラで、点群が収まる距離を探す */
@@ -239,6 +242,61 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
       cutaway: o.level,
     });
   }
+  return shots;
+}
+
+/**
+ * 断面パース: 建物を鉛直に切って、階段・吹抜・天井高のつながりを見せる。
+ * 1 枚目は階段の進行方向に沿って（階段があれば）、2 枚目はそれと直交する向き。
+ */
+export function sectionShots(model: BuildingModel, meta: BuildingMeta, roadDir: THREE.Vector3, aspect = 16 / 9): Shot[] {
+  const b = meta.bbox;
+  if (b.isEmpty()) return [];
+  const c = b.getCenter(new THREE.Vector3());
+  const road = new THREE.Vector3(roadDir.x, 0, roadDir.z).normalize();
+  const stair = model.floors[0]?.stairs.find((s) => s.goesUp) ?? model.floors.flatMap((f) => f.stairs)[0];
+  // 1 枚目の切断面の法線（取り除く側 = カメラ側）。階段があれば階段の進行方向を含む面
+  let n1: THREE.Vector3;
+  let through: THREE.Vector3;
+  if (stair) {
+    const F = stairFrame(stair);
+    n1 = new THREE.Vector3(F.r.x, 0, F.r.y).normalize();
+    through = new THREE.Vector3(((stair.minX + stair.maxX) / 2) * MM, 0, ((stair.minY + stair.maxY) / 2) * MM);
+  } else {
+    n1 = road.clone();
+    through = c.clone();
+  }
+  if (n1.dot(road) < -0.05) n1.negate();
+  const topY = b.max.y + 0.3;
+  const corners: THREE.Vector3[] = [];
+  for (const x of [b.min.x - 0.5, b.max.x + 0.5]) for (const z of [b.min.z - 0.5, b.max.z + 0.5]) for (const y of [-0.2, topY]) corners.push(new THREE.Vector3(x, y, z));
+  const mk = (id: string, title: string, caption: string, n: THREE.Vector3, p: THREE.Vector3): Shot => {
+    const d = n.dot(p);
+    // 残る側の点群（取り除く側の角は切断面の上に寄せる）
+    const pts = corners.map((q) => {
+      const f = q.dot(n) - d;
+      return f > 0 ? q.clone().addScaledVector(n, -f) : q.clone();
+    });
+    const tgt = c.clone().addScaledVector(n, -(c.dot(n) - d)).setY(topY * 0.42);
+    const elev = (14 * Math.PI) / 180;
+    const fov = 34;
+    const dist = fitOblique(pts, tgt, n, elev, fov, aspect, 1.08);
+    const pos = tgt.clone().addScaledVector(n, dist * Math.cos(elev)).add(new THREE.Vector3(0, dist * Math.sin(elev), 0));
+    return { id, kind: 'section', title, caption, view: { pos, target: tgt, fov }, sunDir: sunForView(pos, tgt, -1, 42), timeOfDay: 'day', section: { nx: n.x, nz: n.z, d } };
+  };
+  const shots: Shot[] = [];
+  shots.push(
+    mk(
+      'section-1',
+      stair ? '断面パース（階段まわり）' : '断面パース',
+      '建物を縦に切った断面。各階の天井の高さ、階段や吹抜のつながり、窓の高さの関係が一目でわかります。',
+      n1,
+      through,
+    ),
+  );
+  const n2 = new THREE.Vector3(-n1.z, 0, n1.x);
+  if (n2.dot(road) < -0.05) n2.negate();
+  shots.push(mk('section-2', '断面パース（直交方向）', '反対の向きに切った断面。LDK の奥行きと天井高、上下階の関係をご確認いただけます。', n2, c));
   return shots;
 }
 

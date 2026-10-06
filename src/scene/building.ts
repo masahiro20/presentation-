@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import type { BuildingModel, Floor, Opening, Room, Stair, Wall } from '../core/types';
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
-import { MeshBuilder, V } from './meshBuilder';
+import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
 import { stairLayout, stairStepCount } from '../core/stairs';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
@@ -21,12 +21,20 @@ export interface BuildOptions {
   topWallHeight?: number;
   /** 輪切り（模型）: 指定階を床から height (m) の高さで水平に切り、上の階・天井・屋根は作らない */
   cut?: { level: number; height?: number };
+  /** 断面: 任意の切断面（鉛直の面など）。cut より優先 */
+  clip?: ClipPlane;
 }
 
 /** 輪切りの切断高さの既定（床から、m）。腰窓の下端より少し上で、キッチンや家具の形が残る高さ */
 export const CUT_HEIGHT = 1.35;
-/** 建具など別部品の MeshBuilder にも同じ高さ制限を掛ける */
-let partClamp: MeshBuilder['clampTop'] = null;
+/** 建具など別部品の MeshBuilder にも同じ切断面を掛ける */
+let partClip: ClipPlane | null = null;
+/** 部品の局所座標（原点 origin・Y 軸まわり yaw）に切断面を変換する */
+function localClip(origin: THREE.Vector3, yaw: number): ClipPlane | null {
+  if (!partClip) return null;
+  const n = partClip.n.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
+  return { n, d: partClip.d - partClip.n.dot(origin), capKey: partClip.capKey };
+}
 
 export interface RoomInfo {
   room: Room;
@@ -114,8 +122,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
   const ext = opts.exterior;
   const spec = opts.spec ?? BUILDER_SPECS[0];
   const cutF = opts.cut ? model.floors.find((f) => f.level === opts.cut!.level) : undefined;
-  mb.clampTop = cutF ? { y: cutF.elevation * MM + (opts.cut!.height ?? CUT_HEIGHT), capKey: 'cut.face' } : null;
-  partClamp = mb.clampTop;
+  mb.clip = opts.clip ?? (cutF ? topClip(cutF.elevation * MM + (opts.cut!.height ?? CUT_HEIGHT)) : null);
+  partClip = mb.clip;
   const entranceWalls = new Set<string>();
   // 玄関のある壁と、その上階の同じ位置の壁（縦のアクセント帯）
   const entranceRanges: { a: THREE.Vector2; b: THREE.Vector2 }[] = [];
@@ -627,7 +635,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const closedDir = dir.clone().multiplyScalar(hingeStart ? 1 : -1);
     const hinge = plane.clone().addScaledVector(dir, hingeStart ? -dw / 2 : dw / 2).setY(0);
     const dmb = new MeshBuilder();
-    dmb.clampTop = partClamp;
+    dmb.clip = localClip(hinge, Math.atan2(-closedDir.z, closedDir.x));
     dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
     const zOut = outN.dot(nW); // 局所 +Z = nW
     // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
@@ -717,7 +725,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const closedDir = dir.clone().multiplyScalar(towards);
     const fullOpen = dir.clone().multiplyScalar(towards * Math.cos(1.396)).addScaledVector(nW, side * Math.sin(1.396)).normalize();
     const dmb = new MeshBuilder();
-    dmb.clampTop = partClamp;
+    dmb.clip = localClip(hinge.clone().setY(0), Math.atan2(-closedDir.z, closedDir.x));
     dmb.box('int.door', V(lw / 2, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT);
     handle(dmb, V(lw - 0.075, fl + 1.0, 0), V(-1, 0, 0), V(0, 0, 1));
     meta.doors.push({
@@ -767,7 +775,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const slideDist = pick?.dist ?? 0;
     const staticOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
     const dmb = new MeshBuilder();
-    dmb.clampTop = partClamp;
+    dmb.clip = localClip(face.clone().setY(0), Math.atan2(-dir.z, dir.x));
     dmb.box('int.door', V(0, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT * 0.9);
     // 引手（細い縦長の彫り込みを暗い線で表現。引き込む側と反対の端）
     dmb.box('f.handle', V(-(pick?.sd ?? 1) * (lw / 2 - 0.05), fl + 0.85, fc * (doorT * 0.45 + 0.001)), V(1, 0, 0), 0.012, 0.35, 0.002);

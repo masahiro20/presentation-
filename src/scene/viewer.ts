@@ -10,11 +10,12 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import type { BuildingModel, Room } from '../core/types';
 import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
+import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
-import { exteriorShots, interiorShots, facadeWindows, type Shot } from './shots';
+import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder } from '../sun/analysis';
 import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
@@ -98,9 +99,9 @@ export class Viewer {
   private renderMode: 'fast' | 'hq' = 'hq';
   private fastPR = 1;
   private keys = new Set<string>();
-  private walkOcc: { state: SceneState; cut: number | null; occ: ReturnType<typeof buildOccluder> } | null = null;
-  /** 輪切り表示中の階（null = 通常表示） */
-  private cutLevel: number | null = null;
+  private walkOcc: { state: SceneState; cut: string; occ: ReturnType<typeof buildOccluder> } | null = null;
+  /** 切断表示（輪切り／断面）の状態（null = 通常表示） */
+  private cut: CutSpec | null = null;
   private cutBuilt: { key: string } | null = null;
   /** 輪切り模型の部屋名タグ */
   private roomLabels = true;
@@ -335,7 +336,8 @@ export class Viewer {
   /** 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う） */
   private occluder() {
     if (!this.state) return null;
-    if (!this.walkOcc || this.walkOcc.state !== this.state || this.walkOcc.cut !== this.cutLevel) this.walkOcc = { state: this.state, cut: this.cutLevel, occ: buildOccluder(this, { buildingOnly: true }) };
+    const cutKey = JSON.stringify(this.cut);
+    if (!this.walkOcc || this.walkOcc.state !== this.state || this.walkOcc.cut !== cutKey) this.walkOcc = { state: this.state, cut: cutKey, occ: buildOccluder(this, { buildingOnly: true }) };
     return this.walkOcc.occ;
   }
 
@@ -694,8 +696,8 @@ export class Viewer {
     this.fitShadow();
     this.updateInteriorLights();
     this.updateEnvironment();
-    // 輪切り表示中なら、新しい建物で作り直す
-    this.setCutaway(this.cutLevel);
+    // 切断表示中なら、新しい建物で作り直す
+    this.setCut(this.cut);
     this.dirty = true;
   }
 
@@ -735,8 +737,8 @@ export class Viewer {
       return;
     }
     this.registry.apply(this.root);
-    this.groups.furniture.visible = design.furniture && this.cutLevel == null;
-    if (this.cutLevel != null && prev.furniture !== design.furniture) this.setCutaway(this.cutLevel);
+    this.groups.furniture.visible = design.furniture && this.cut == null;
+    if (this.cut && prev.furniture !== design.furniture) this.setCut(this.cut);
     if (prev.timeOfDay !== design.timeOfDay) {
       this.updateInteriorLights();
       this.updateEnvironment();
@@ -860,7 +862,7 @@ export class Viewer {
       const first = [...this.shotCache.interiors.values()][0];
       this.shotCache.interiors.set(key, first);
     }
-    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg, facadeWindows(s.model)), ...this.shotCache.interiors.get(key)!];
+    return [...exteriorShots(s.meta, s.site, s.roof, aspect, s.model.northAngleDeg, facadeWindows(s.model)), ...sectionShots(s.model, s.meta, s.site.roadDir, aspect), ...this.shotCache.interiors.get(key)!];
   }
 
   /** ショットを適用（時間帯・パース用の太陽も切り替え） */
@@ -868,7 +870,7 @@ export class Viewer {
     const tod = shot.timeOfDay ?? this.design.timeOfDay;
     if (tod !== this.design.timeOfDay) this.setDesign({ ...this.design, timeOfDay: tod });
     if (shot.sunDir) this.setSunDirection(shot.sunDir);
-    this.setCutaway(shot.cutaway ?? null);
+    this.setCut(shot.cutaway != null ? { level: shot.cutaway } : shot.section ? { section: shot.section } : null);
     if (animate) this.flyTo(shot.view);
     else this.applyView(shot.view);
   }
@@ -913,9 +915,14 @@ export class Viewer {
     this.camMoved();
   }
 
-  /** 輪切り表示中の階（null = 通常表示） */
+  /** 輪切り表示中の階（null = 通常表示・断面表示） */
   cutawayLevel(): number | null {
-    return this.cutLevel;
+    return this.cut && 'level' in this.cut ? this.cut.level : null;
+  }
+
+  /** 現在の切断（輪切り／断面）。null = 通常表示 */
+  currentCut(): CutSpec | null {
+    return this.cut;
   }
 
   /** 輪切り模型の部屋名タグの表示／非表示 */
@@ -931,31 +938,49 @@ export class Viewer {
     return this.roomLabels;
   }
 
-  /**
-   * 輪切り（模型）表示: 指定階の壁を腰の高さで水平に切った建物・家具を作り直して見せる。
-   * 切り口は白い断面で閉じ、上の階・天井・屋根は作らない（クリッピングで中身が抜けて見えることが無い）
-   */
+  /** 輪切り（模型）表示: 指定階の壁を腰の高さで切る。null = 通常表示 */
   setCutaway(level: number | null) {
+    this.setCut(level == null ? null : { level });
+  }
+
+  /** 断面表示: 鉛直の面で建物を切る（n の向きの側を取り除く）。null = 通常表示 */
+  setSection(section: SectionSpec | null) {
+    this.setCut(section ? { section } : null);
+  }
+
+  /**
+   * 切断表示: 建物・屋根・扉・家具を切った状態で作り直して見せる。
+   * 切り口は白い断面で閉じる（クリッピングで中身が抜けて見えることが無い）
+   */
+  setCut(spec: CutSpec | null) {
     const model = this.state?.model;
+    const level = spec && 'level' in spec ? spec.level : null;
     const f = level != null && model ? model.floors.find((x) => x.level === level) : undefined;
-    this.cutLevel = f ? level : null;
+    const sec = spec && 'section' in spec ? spec.section : null;
+    const on = !!model && (!!f || !!sec);
+    this.cut = on ? spec : null;
     this.renderer.clippingPlanes = [];
-    const on = !!f;
     this.groups.roof.visible = !on;
     this.groups.building.visible = !on;
     this.groups.furniture.visible = !on && this.design.furniture;
     this.groups.cut.visible = on;
-    if (on && model && f) {
-      const key = [level, this.design.exteriorId, this.design.interiorId, this.design.specId, JSON.stringify(this.design.specPatch ?? null), this.design.furniture, this.design.roofOverride ?? '', this.design.roofPitch ?? ''].join('|');
+    if (on && model) {
+      const key = [JSON.stringify(spec), this.design.exteriorId, this.design.interiorId, this.design.specId, JSON.stringify(this.design.specPatch ?? null), this.design.furniture, this.design.roofOverride ?? '', this.design.roofPitch ?? ''].join('|');
       if (!this.cutBuilt || this.cutBuilt.key !== key) {
         clearGroup(this.groups.cut);
         const ext = exteriorById(this.design.exteriorId);
         const resolve = (k: string) => this.registry.get(k);
-        const cutY = f.elevation * MM + CUT_HEIGHT;
-        const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch), cut: { level: level!, height: CUT_HEIGHT } });
+        const cutY = f ? f.elevation * MM + CUT_HEIGHT : 0;
+        const clip = sec ? verticalClip(sec.nx, sec.nz, sec.d) : topClip(cutY);
+        const { mb, meta } = buildBuilding(model, {
+          exterior: ext,
+          spec: resolveSpec(this.design.specId, this.design.specPatch),
+          cut: f ? { level: level!, height: CUT_HEIGHT } : undefined,
+          clip: sec ? clip : undefined,
+        });
         this.groups.cut.add(mb.build(resolve, { name: 'cut-building' }));
-        // 切断面より低い屋根（下屋・ポーチ屋根）は残す
-        const cutRoof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch, { y: cutY, capKey: 'cut.face' });
+        // 切断面より低い屋根（下屋・ポーチ屋根）／断面では切った屋根を残す
+        const cutRoof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch, clip);
         this.groups.cut.add(cutRoof.mb.build(resolve, { name: 'cut-roof' }));
         // 扉は少し開いた状態で固定（間取りのつながりが見える）
         for (const info of meta.doors) {
@@ -964,22 +989,27 @@ export class Viewer {
           g.add(info.mb.build(resolve, { name: 'door' }));
           g.position.copy(info.origin);
           g.rotation.set(0, info.yaw0, 0);
-          const frac = info.kind === 'swing' ? Math.max(info.staticOpen, 0.35) : info.staticOpen;
+          // 断面では切り口を合わせるため閉じたまま。輪切りでは少し開ける
+          const frac = sec ? 0 : info.kind === 'swing' ? Math.max(info.staticOpen, 0.35) : info.staticOpen;
           if (info.kind === 'swing') g.rotation.y = info.yaw0 + info.openAngle * frac;
           else g.position.addScaledVector(info.slideDir, info.slideDist * frac);
           this.groups.cut.add(g);
         }
         // 部屋名タグ（模型の札のように、切り口の少し上に浮かせる）
-        for (const r of f.rooms) {
-          if (r.type === 'void' || r.area < 1.2) continue;
-          const sp = roomLabelSprite(r);
-          if (!sp) continue;
-          sp.position.set(r.labelPos.x * MM, cutY + 0.22, r.labelPos.y * MM);
-          sp.visible = this.roomLabels;
-          this.groups.cut.add(sp);
+        if (f) {
+          for (const r of f.rooms) {
+            if (r.type === 'void' || r.area < 1.2) continue;
+            const sp = roomLabelSprite(r);
+            if (!sp) continue;
+            sp.position.set(r.labelPos.x * MM, cutY + 0.22, r.labelPos.y * MM);
+            sp.visible = this.roomLabels;
+            this.groups.cut.add(sp);
+          }
         }
+        // 方位（真北）の印を敷地の角に置く（輪切りのみ。断面では壁越しに見えて邪魔になる）
+        if (f) this.groups.cut.add(northMarker(this.state!.meta.bbox, model.northAngleDeg, resolve));
         if (this.design.furniture) {
-          const fur = buildFurniture(model, { cut: { level: level!, y: cutY } });
+          const fur = buildFurniture(model, { cut: f ? { level: level!, y: cutY } : undefined, clip: sec ? clip : undefined });
           this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
           const gen = this.modelGen;
           const built = { key };
@@ -1060,12 +1090,54 @@ export function kelvinToColor(k: number): THREE.Color {
   return new THREE.Color().setRGB(c(r), c(g), c(b), THREE.SRGBColorSpace);
 }
 
+/** 鉛直の切断面: (nx, 0, nz) の向きの側を取り除く。d = 面上の点·n（ワールド m） */
+export interface SectionSpec {
+  nx: number;
+  nz: number;
+  d: number;
+}
+/** 切断の指定: 輪切り（階）か断面 */
+export type CutSpec = { level: number } | { section: SectionSpec };
+
+/** 真北の印（矢印と N）。模型の脇に置く */
+function northMarker(bbox: THREE.Box3, northAngleDeg: number, resolve: (k: string) => THREE.Material): THREE.Group {
+  const g = new THREE.Group();
+  g.name = 'north-marker';
+  const na = (northAngleDeg * Math.PI) / 180;
+  const nv = new THREE.Vector3(Math.sin(na), 0, -Math.cos(na));
+  const pv = new THREE.Vector3(-nv.z, 0, nv.x);
+  const base = new THREE.Vector3(bbox.max.x + 1.6, 0.03, bbox.min.z - 1.0);
+  const mb = new MeshBuilder();
+  const up = new THREE.Vector3(0, 1, 0);
+  const tip = base.clone().addScaledVector(nv, 0.9);
+  const l = base.clone().addScaledVector(nv, -0.45).addScaledVector(pv, -0.32);
+  const r = base.clone().addScaledVector(nv, -0.45).addScaledVector(pv, 0.32);
+  const notch = base.clone().addScaledVector(nv, -0.2);
+  // 上から見て反時計回り（+y が表）
+  mb.polygon('cut.north', [tip, l, notch, r], up);
+  // 細いリング
+  mb.cylinder('cut.north', base.clone().setY(0.02), 0.62, 0.012, 40, true);
+  mb.cylinder('l.ground', base.clone().setY(0.025), 0.57, 0.012, 40, true);
+  g.add(mb.build(resolve, { name: 'north', castShadow: false }));
+  const sp = tagSprite('N', '', 0.55);
+  if (sp) {
+    sp.position.copy(tip).addScaledVector(nv, 0.45).setY(0.3);
+    g.add(sp);
+  }
+  return g;
+}
+
 /** 部屋名と帖数を書いた札（スプライト）。模型に置く名札のように、常にカメラを向く */
 function roomLabelSprite(r: Room): THREE.Sprite | null {
-  if (typeof document === 'undefined') return null;
   const name = r.name.replace(/[（(].*?[)）]/g, '').trim() || r.name;
   const tatami = r.labeledTatami ?? r.area / 1.62;
   const sub = tatami >= 1 ? `${tatami.toFixed(tatami >= 10 ? 0 : 1)}帖` : '';
+  return tagSprite(name, sub, 0.6);
+}
+
+/** 白い札に文字を書いたスプライト（高さ h [m]） */
+function tagSprite(name: string, sub: string, h: number): THREE.Sprite | null {
+  if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
   if (!g) return null;
@@ -1113,8 +1185,6 @@ function roomLabelSprite(r: Room): THREE.Sprite | null {
   tex.anisotropy = 4;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
   const sp = new THREE.Sprite(mat);
-  // 模型を斜め上から見た時に読める大きさ（高さ 0.6m 相当）
-  const h = 0.6;
   sp.scale.set((h * W) / H, h, 1);
   sp.renderOrder = 50;
   sp.userData.roomLabel = true;

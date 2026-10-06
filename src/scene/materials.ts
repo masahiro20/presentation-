@@ -92,6 +92,7 @@ export class MaterialRegistry {
     set('int.wallTop', color('#e9e6e0', 0.9));
     // 輪切り模型の切り口（白い断面）
     set('cut.face', color('#f6f4f0', 0.95));
+    set('cut.north', color('#2a2d33', 0.8));
     set('int.ceiling', M(i.ceiling));
     set('int.floor', M(i.floor));
     set('int.wetFloor', M(i.wetFloor));

@@ -182,6 +182,20 @@ export const sunStep: Step = {
       h('button', { class: 'btn', onclick: () => v.flyTo({ pos: c.clone().add(new THREE.Vector3(26, 30, 38)), target: c.clone().setY(2), fov: 45 }) }, '太陽軌道'),
       h('button', { class: 'btn', onclick: () => v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, R * 4.2, 0.02)), target: c.clone(), fov: 40 }) }, '真上から'),
       h('button', { class: 'btn', onclick: () => v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 }) }, '広域'),
+      // 輪切り模型で、部屋の中までどこに日が入るかを見る
+      ...v.state!.model.floors.map((f) => {
+        const b = h('button', { class: 'btn', title: `${f.level}階の壁を腰の高さで切った模型で、部屋の中の日の入り方を見る` }, `${f.level}階 模型`) as HTMLButtonElement;
+        b.onclick = () => {
+          const on = v.cutawayLevel() === f.level;
+          v.setCutaway(on ? null : f.level);
+          for (const x of Array.from(views.querySelectorAll('button'))) x.classList.toggle('on', !on && x === b);
+          if (!on) {
+            const s = v.shots().find((x) => x.id === `cut-${f.level}`);
+            if (s) v.flyTo(s.view);
+          }
+        };
+        return b;
+      }),
       ...v.shots().filter((s) => s.kind === 'interior').slice(0, 5).map((s) => h('button', { class: 'btn', onclick: () => v.flyTo(s.view) }, s.title.replace(/内観パース|[（）]/g, ''))),
     );
     const attribution = h('div', { class: 'attribution' });

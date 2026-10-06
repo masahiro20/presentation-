@@ -9,7 +9,7 @@ export interface GalleryItem {
   title: string;
   caption: string;
   url: string;
-  kind: 'exterior' | 'interior' | 'aerial' | 'cutaway' | 'sun' | 'other';
+  kind: 'exterior' | 'interior' | 'aerial' | 'cutaway' | 'section' | 'sun' | 'other';
   quality: 'realtime' | 'photoreal';
   shotId?: string;
 }

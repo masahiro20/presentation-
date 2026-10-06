@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import type { BuildingModel } from '../core/types';
 import { insideLoops } from '../core/geometry';
 import { maximalRectCoverMask, type Rect } from '../core/rects';
-import { MeshBuilder, V } from './meshBuilder';
+import { MeshBuilder, type ClipPlane, V } from './meshBuilder';
 import { MM, wallTopOf } from './building';
 import type { ExteriorStyle, RoofType } from '../styles/presets';
 
@@ -34,11 +34,11 @@ export interface RoofInfo {
   eaveY: number;
 }
 
-export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType, pitchOverride?: number, clampTop: MeshBuilder['clampTop'] = null): { mb: MeshBuilder; info: RoofInfo } {
+export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType, pitchOverride?: number, clip: ClipPlane | null = null): { mb: MeshBuilder; info: RoofInfo } {
   seq = 0;
   const mb = new MeshBuilder();
   // 輪切り（模型）: 切断面より上の屋根は作らない（下屋など低い屋根は残る）
-  mb.clampTop = clampTop;
+  mb.clip = clip;
   const type = typeOverride ?? style.roof.type;
   const info: RoofInfo = { maxY: 0, eaveY: 0 };
   const floors = model.floors;

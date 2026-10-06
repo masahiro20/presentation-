@@ -94,7 +94,7 @@ async function yieldUI() {
 export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?: number; spacing?: number; onProgress?: (r: number) => void } = {}): Promise<RoomSunResult[]> {
   const st = viewer.state!;
   const model: BuildingModel = st.model;
-  const occ = buildOccluder(viewer, { context: true, trees: false });
+  const occ = buildOccluder(viewer, { context: true, trees: false, force: true });
   const step = (opts.stepMin ?? 10) / 60;
   const spacing = opts.spacing ?? 0.35;
   const rs = sunriseSunset(day.year, day.month, day.day, day.lat, day.lon);
@@ -166,7 +166,7 @@ export interface GridResult {
 /** 地面の日照時間マップ（指定した時間帯, h 単位） */
 export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?: number; to?: number; stepMin?: number; cell?: number; half?: number; height?: number; onProgress?: (r: number) => void } = {}): Promise<GridResult> {
   const st = viewer.state!;
-  const occ = buildOccluder(viewer, { context: true, trees: true });
+  const occ = buildOccluder(viewer, { context: true, trees: true, force: true });
   const c = st.meta.bbox.getCenter(new THREE.Vector3());
   const half = opts.half ?? 22;
   const cell = opts.cell ?? 0.5;
@@ -333,7 +333,7 @@ function marchingSegments(values: Float32Array, nx: number, nz: number, level: n
  */
 export async function shadowDiagram(viewer: Viewer, loc: { lat: number; lon: number; northAngleDeg: number; year: number }, planeHeight = 1.5, onProgress?: (r: number) => void): Promise<ShadowDiagram> {
   const st = viewer.state!;
-  const occ = buildOccluder(viewer, { buildingOnly: true });
+  const occ = buildOccluder(viewer, { buildingOnly: true, force: true });
   const c = st.meta.bbox.getCenter(new THREE.Vector3());
   const half = 34;
   const cell = 0.3;

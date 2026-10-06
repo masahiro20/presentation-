@@ -27,6 +27,7 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     const pick = [
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
       ...all.filter((s) => s.kind === 'cutaway').slice(0, 3),
+      ...all.filter((s) => s.kind === 'section').slice(0, 1),
       ...all.filter((s) => s.kind === 'interior').slice(0, 4),
     ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === 'photoreal'));
     if (pick.length) {
@@ -146,7 +147,7 @@ export function buildDeck(): HTMLElement[] {
   const exts = extAll.filter((g) => !/夕景|夜景/.test(g.title)).concat(extAll.filter((g) => /夕景|夜景/.test(g.title)));
   const ints = pick('interior');
   const aerial = pick('aerial')[0];
-  const cuts = pick('cutaway');
+  const cuts = [...pick('cutaway'), ...pick('section')];
   const hero = exts[0] ?? aerial ?? ints[0];
   const slides: HTMLElement[] = [];
   const brand = state.company || '';

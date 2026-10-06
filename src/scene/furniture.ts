@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import type { BuildingModel, Floor, Room, FurnitureItem, FurnitureKind } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
-import { MeshBuilder, V } from './meshBuilder';
+import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
 import { MM } from './building';
 
 export type Side = 'n' | 's' | 'e' | 'w';
@@ -244,11 +244,11 @@ export function setModelsAvailable(v: boolean) {
 
 export function buildFurniture(
   model: BuildingModel,
-  opts: { cut?: { level: number; y: number } } = {},
+  opts: { cut?: { level: number; y: number }; clip?: ClipPlane } = {},
 ): { mb: MeshBuilder; lights: LightPoint[]; occupancy: Map<string, Footprint[]>; kitchenSide: Map<string, Side>; models: ModelPlacement[]; items: Map<number, FurnitureItem[]> } {
   const mb = new MeshBuilder();
   // 輪切り（模型）: 切断面より上は作らず、切った階より上の階の家具は置かない
-  mb.clampTop = opts.cut ? { y: opts.cut.y, capKey: 'cut.face' } : null;
+  mb.clip = opts.clip ?? (opts.cut ? topClip(opts.cut.y) : null);
   currentModels = [];
   const lights: LightPoint[] = [];
   const occupancy = new Map<string, Footprint[]>();
@@ -344,7 +344,9 @@ export function buildFurniture(
   }
   currentOcc = null;
   currentItems = null;
-  const models = opts.cut ? currentModels.filter((m) => m.pos.y < opts.cut!.y - 0.3) : currentModels;
+  // 切断で取り除いた側・切断面より上の実物モデル（観葉植物など）は置かない
+  const clip = mb.clip;
+  const models = clip ? currentModels.filter((m) => m.pos.dot(clip.n) - clip.d < (clip.n.y > 0.5 ? -0.3 : 0)) : currentModels;
   return { mb, lights, occupancy, kitchenSide: kitchenSides, models, items };
 }
 

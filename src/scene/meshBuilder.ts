@@ -13,39 +13,90 @@ interface Bucket {
   uv: number[];
 }
 
+/**
+ * 切断面（模型・断面用）: p·n − d > 0 の側（n の向き）を取り除く。
+ * 直方体・円柱は切り口を capKey の仕上げで閉じ、その他の三角形は平面で切る
+ */
+export interface ClipPlane {
+  n: V3;
+  d: number;
+  capKey: string;
+}
+
+/** 水平に切る（この高さより上を取り除く） */
+export function topClip(y: number, capKey = 'cut.face'): ClipPlane {
+  return { n: new THREE.Vector3(0, 1, 0), d: y, capKey };
+}
+
+/** 鉛直の面で切る（n = (nx, 0, nz) の向きの側を取り除く。d = 面上の点·n） */
+export function verticalClip(nx: number, nz: number, d: number, capKey = 'cut.face'): ClipPlane {
+  const l = Math.hypot(nx, nz) || 1;
+  return { n: new THREE.Vector3(nx / l, 0, nz / l), d, capKey };
+}
+
+const BOX_EDGES: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 0],
+  [4, 5], [5, 6], [6, 7], [7, 4],
+  [0, 4], [1, 5], [2, 6], [3, 7],
+];
+
 export class MeshBuilder {
   private buckets = new Map<string, Bucket>();
-  /**
-   * 輪切り（模型）用の高さ制限: この高さより上の形は作らない。
-   * 直方体・円柱は上面を capKey の仕上げ（切り口）で閉じ、その他の三角形は平面で切る
-   */
-  clampTop: { y: number; capKey: string } | null = null;
+  /** 切断面（null = 切らない） */
+  clip: ClipPlane | null = null;
 
-  /** 三角形を clampTop の平面で切って、残った部分（下側）を押し込む */
+  /** 切断面からの符号付き距離（正 = 取り除く側） */
+  private cf(p: V3) {
+    return p.dot(this.clip!.n) - this.clip!.d;
+  }
+
+  private pushTri(key: string, pts: V3[], n: V3, uAxis: V3, vAxis: V3) {
+    const bk = this.bucket(key);
+    for (const p of pts) {
+      bk.pos.push(p.x, p.y, p.z);
+      bk.nor.push(n.x, n.y, n.z);
+      bk.uv.push(p.dot(uAxis), p.dot(vAxis));
+    }
+  }
+
+  /** 多角形を切断面で切って、残った部分を押し込む */
   private pushClipped(key: string, pts: V3[], n: V3, uAxis: V3, vAxis: V3) {
-    const Y = this.clampTop!.y;
-    const inside = (p: V3) => p.y <= Y + 1e-5;
     const out: V3[] = [];
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i];
       const b = pts[(i + 1) % pts.length];
-      const ia = inside(a);
-      const ib = inside(b);
+      const fa = this.cf(a);
+      const fb = this.cf(b);
+      const ia = fa <= 1e-6;
+      const ib = fb <= 1e-6;
       if (ia) out.push(a);
-      if (ia !== ib) {
-        const t = (Y - a.y) / (b.y - a.y);
-        out.push(a.clone().lerp(b, t));
-      }
+      if (ia !== ib) out.push(a.clone().lerp(b, fa / (fa - fb)));
     }
     if (out.length < 3) return;
-    const bk = this.bucket(key);
-    for (let i = 1; i + 1 < out.length; i++) {
-      for (const p of [out[0], out[i], out[i + 1]]) {
-        bk.pos.push(p.x, p.y, p.z);
-        bk.nor.push(n.x, n.y, n.z);
-        bk.uv.push(p.dot(uAxis), p.dot(vAxis));
-      }
+    for (let i = 1; i + 1 < out.length; i++) this.pushTri(key, [out[0], out[i], out[i + 1]], n, uAxis, vAxis);
+  }
+
+  /** 凸な立体（頂点と辺）の切り口を多角形で閉じる */
+  private capPolygon(corners: V3[], edges: [number, number][]) {
+    const clip = this.clip!;
+    const fs = corners.map((c) => this.cf(c));
+    const pts: V3[] = [];
+    for (const [i, j] of edges) {
+      const fi = fs[i];
+      const fj = fs[j];
+      if ((fi < 0 && fj > 0) || (fi > 0 && fj < 0)) pts.push(corners[i].clone().lerp(corners[j], fi / (fi - fj)));
     }
+    if (pts.length < 3) return;
+    const n = clip.n;
+    const a = new THREE.Vector3().crossVectors(n, Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+    const b = new THREE.Vector3().crossVectors(n, a).normalize();
+    const cen = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+    const ang = (p: V3) => {
+      const r = p.clone().sub(cen);
+      return Math.atan2(r.dot(b), r.dot(a));
+    };
+    pts.sort((p, q) => ang(p) - ang(q));
+    for (let i = 1; i + 1 < pts.length; i++) this.pushTri(clip.capKey, [pts[0], pts[i], pts[i + 1]], n, a, b);
   }
 
   private bucket(key: string): Bucket {
@@ -60,22 +111,17 @@ export class MeshBuilder {
   /** 三角形（反時計回りが表） */
   tri(key: string, a: V3, b: V3, c: V3, uAxis: V3, vAxis: V3, normal?: V3) {
     const n = normal ?? new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize();
-    if (this.clampTop) {
-      const Y = this.clampTop.y;
-      const lo = Math.min(a.y, b.y, c.y);
-      const hi = Math.max(a.y, b.y, c.y);
-      if (lo >= Y - 1e-5) return;
-      if (hi > Y + 1e-5) {
+    if (this.clip) {
+      const fa = this.cf(a);
+      const fb = this.cf(b);
+      const fc = this.cf(c);
+      if (Math.min(fa, fb, fc) >= -1e-6) return;
+      if (Math.max(fa, fb, fc) > 1e-6) {
         this.pushClipped(key, [a, b, c], n, uAxis, vAxis);
         return;
       }
     }
-    const bk = this.bucket(key);
-    for (const p of [a, b, c]) {
-      bk.pos.push(p.x, p.y, p.z);
-      bk.nor.push(n.x, n.y, n.z);
-      bk.uv.push(p.dot(uAxis), p.dot(vAxis));
-    }
+    this.pushTri(key, [a, b, c], n, uAxis, vAxis);
   }
 
   /** 四角形 p0→p1→p2→p3（反時計回りが表） */
@@ -116,15 +162,6 @@ export class MeshBuilder {
    */
   box(keys: string | (string | null)[], base: V3, dir: V3, len: number, height: number, depth: number) {
     const k = typeof keys === 'string' ? [keys, keys, keys, keys, keys, keys] : [...keys];
-    if (this.clampTop) {
-      // 切り口より上は作らず、切られた直方体の上面は切り口の仕上げにする
-      const Y = this.clampTop.y;
-      if (base.y >= Y - 1e-4) return;
-      if (base.y + height > Y) {
-        height = Y - base.y;
-        k[2] = this.clampTop.capKey;
-      }
-    }
     const u = dir.clone().setY(0).normalize();
     const up = new THREE.Vector3(0, 1, 0);
     const n = new THREE.Vector3().crossVectors(u, up).normalize(); // 右手側
@@ -142,6 +179,13 @@ export class MeshBuilder {
       P(hl, height, hd),
       P(-hl, height, hd),
     ];
+    let straddles = false;
+    if (this.clip) {
+      // 全部が取り除く側なら作らない。切断面をまたぐなら各面を切り、切り口を閉じる
+      const fs = c.map((p) => this.cf(p));
+      if (Math.min(...fs) >= -1e-6) return;
+      straddles = Math.max(...fs) > 1e-6;
+    }
     // +n 面
     if (k[0]) this.quad(k[0], c[3], c[2], c[6], c[7], u, up);
     // -n 面
@@ -154,6 +198,7 @@ export class MeshBuilder {
     if (k[4]) this.quad(k[4], c[0], c[3], c[7], c[4], n, up);
     // 終端
     if (k[5]) this.quad(k[5], c[2], c[1], c[5], c[6], n, up);
+    if (straddles) this.capPolygon(c, BOX_EDGES);
   }
 
   /** 軸平行の直方体（min/max 指定） */
@@ -167,45 +212,63 @@ export class MeshBuilder {
   /** 円柱（側面＋上下） */
   cylinder(key: string, base: V3, radius: number, height: number, seg = 16, caps = true) {
     const up = new THREE.Vector3(0, 1, 0);
-    let topKey = key;
-    if (this.clampTop) {
-      const Y = this.clampTop.y;
-      if (base.y >= Y - 1e-4) return;
-      if (base.y + height > Y) {
-        height = Y - base.y;
-        topKey = this.clampTop.capKey;
-        caps = true;
-      }
+    const ring = (y: number) => Array.from({ length: seg }, (_, i) => {
+      const a = (i / seg) * Math.PI * 2;
+      return new THREE.Vector3(base.x + Math.cos(a) * radius, y, base.z + Math.sin(a) * radius);
+    });
+    const bot = ring(base.y);
+    const top = ring(base.y + height);
+    let straddles = false;
+    if (this.clip) {
+      const fs = [...bot, ...top].map((p) => this.cf(p));
+      if (Math.min(...fs) >= -1e-6) return;
+      straddles = Math.max(...fs) > 1e-6;
     }
     for (let i = 0; i < seg; i++) {
+      const j = (i + 1) % seg;
       const a0 = (i / seg) * Math.PI * 2;
       const a1 = ((i + 1) / seg) * Math.PI * 2;
-      const p0 = new THREE.Vector3(base.x + Math.cos(a0) * radius, base.y, base.z + Math.sin(a0) * radius);
-      const p1 = new THREE.Vector3(base.x + Math.cos(a1) * radius, base.y, base.z + Math.sin(a1) * radius);
-      const p2 = p1.clone().setY(base.y + height);
-      const p3 = p0.clone().setY(base.y + height);
-      const bk = this.bucket(key);
       const n0 = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
       const n1 = new THREE.Vector3(Math.cos(a1), 0, Math.sin(a1));
-      const push = (p: V3, n: V3, uu: number, vv: number) => {
-        bk.pos.push(p.x, p.y, p.z);
-        bk.nor.push(n.x, n.y, n.z);
-        bk.uv.push(uu, vv);
-      };
       const u0 = a0 * radius;
       const u1 = a1 * radius;
-      push(p0, n0, u0, base.y);
-      push(p3, n0, u0, base.y + height);
-      push(p2, n1, u1, base.y + height);
-      push(p0, n0, u0, base.y);
-      push(p2, n1, u1, base.y + height);
-      push(p1, n1, u1, base.y);
+      const p0 = bot[i];
+      const p1 = bot[j];
+      const p2 = top[j];
+      const p3 = top[i];
+      // 側面（法線は頂点ごとに違うので、切る時だけ平均法線で妥協する）
+      if (this.clip && straddles) {
+        const nm = n0.clone().add(n1).normalize();
+        this.pushClipped(key, [p0, p3, p2], nm, new THREE.Vector3(1, 0, 0), up);
+        this.pushClipped(key, [p0, p2, p1], nm, new THREE.Vector3(1, 0, 0), up);
+      } else {
+        const bk = this.bucket(key);
+        const push = (p: V3, n: V3, uu: number, vv: number) => {
+          bk.pos.push(p.x, p.y, p.z);
+          bk.nor.push(n.x, n.y, n.z);
+          bk.uv.push(uu, vv);
+        };
+        push(p0, n0, u0, base.y);
+        push(p3, n0, u0, base.y + height);
+        push(p2, n1, u1, base.y + height);
+        push(p0, n0, u0, base.y);
+        push(p2, n1, u1, base.y + height);
+        push(p1, n1, u1, base.y);
+      }
       if (caps) {
         const ct = base.clone().setY(base.y + height);
-        this.tri(topKey, ct, p2, p3, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), up);
+        this.tri(key, ct, p2, p3, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), up);
         const cb = base.clone();
         this.tri(key, cb, p0, p1, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), up.clone().negate());
       }
+    }
+    if (straddles) {
+      const edges: [number, number][] = [];
+      for (let i = 0; i < seg; i++) {
+        const j = (i + 1) % seg;
+        edges.push([i, j], [seg + i, seg + j], [i, seg + i]);
+      }
+      this.capPolygon([...bot, ...top], edges);
     }
   }
 
@@ -225,12 +288,15 @@ export class MeshBuilder {
         const b = pt(i + 1, j);
         const cc = pt(i + 1, j + 1);
         const d = pt(i, j + 1);
-        if (this.clampTop && Math.min(a.y, b.y, cc.y, d.y) >= this.clampTop.y) continue;
-        if (this.clampTop && Math.max(a.y, b.y, cc.y, d.y) > this.clampTop.y) {
-          const n = a.clone().add(cc).multiplyScalar(0.5).sub(c).normalize();
-          this.pushClipped(key, [a, b, cc], n, ua, va);
-          this.pushClipped(key, [a, cc, d], n, ua, va);
-          continue;
+        if (this.clip) {
+          const fs = [a, b, cc, d].map((p) => this.cf(p));
+          if (Math.min(...fs) >= -1e-6) continue;
+          if (Math.max(...fs) > 1e-6) {
+            const n = a.clone().add(cc).multiplyScalar(0.5).sub(c).normalize();
+            this.pushClipped(key, [a, b, cc], n, ua, va);
+            this.pushClipped(key, [a, cc, d], n, ua, va);
+            continue;
+          }
         }
         const bk = this.bucket(key);
         for (const p of [a, b, cc, a, cc, d]) {
@@ -251,21 +317,19 @@ export class MeshBuilder {
     const bk = this.bucket(key);
     const p = new THREE.Vector3();
     const n = new THREE.Vector3();
-    if (this.clampTop) {
-      // 三角形ごとに切り口の平面で切る（UV は三平面投影）
-      const Y = this.clampTop.y;
+    if (this.clip) {
+      // 三角形ごとに切断面で切る（UV は三平面投影）
       const tri: V3[] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
       for (let i = 0; i + 2 < pos.count; i += 3) {
         for (let k = 0; k < 3; k++) tri[k].fromBufferAttribute(pos, i + k);
-        const lo = Math.min(tri[0].y, tri[1].y, tri[2].y);
-        if (lo >= Y) continue;
+        const fs = tri.map((t) => this.cf(t));
+        if (Math.min(...fs) >= -1e-6) continue;
         n.fromBufferAttribute(nor, i);
         const ax = Math.abs(n.x);
         const ay = Math.abs(n.y);
         const az = Math.abs(n.z);
         const [ua, va] = ay >= ax && ay >= az ? [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1)] : ax >= az ? [new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0)] : [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0)];
-        const hi = Math.max(tri[0].y, tri[1].y, tri[2].y);
-        if (hi > Y) {
+        if (Math.max(...fs) > 1e-6) {
           this.pushClipped(key, tri.map((t) => t.clone()), n.clone(), ua, va);
           continue;
         }

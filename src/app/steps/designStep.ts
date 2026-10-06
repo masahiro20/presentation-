@@ -305,6 +305,13 @@ export const designStep: Step = {
         }
       }),
       ...v.state!.model.floors.map((f) => toolBtn(`${f.level}階 模型`, () => setCut(f.level))),
+      toolBtn('断面', () => {
+        const s = shots.find((x) => x.id === 'section-1');
+        if (s) {
+          v.applyShot(s, true);
+          active = s;
+        }
+      }),
     );
     {
       // 模型の部屋名タグ
@@ -487,7 +494,7 @@ export const designStep: Step = {
                 active = s;
               },
             },
-            h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' ? 'cut' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : '外観'),
+            h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観'),
             h('div', null, s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title),
           ),
         );
@@ -518,7 +525,20 @@ export const designStep: Step = {
       const currentAsShot = (): Shot => {
         const cur = v.currentView();
         const cutLv = v.cutawayLevel();
-        return { id: active?.id ?? uid('custom'), kind: cutLv != null ? 'cutaway' : (active?.kind ?? 'exterior'), title: active?.title ?? (cutLv != null ? `${cutLv}階 輪切り模型` : 'パース'), caption: active?.caption ?? '', view: cur, sunDir: null, timeOfDay: state.design.timeOfDay, cutaway: cutLv ?? undefined, level: cutLv ?? active?.level };
+        const cc = v.currentCut();
+        const sec = cc && 'section' in cc ? cc.section : undefined;
+        return {
+          id: active?.id ?? uid('custom'),
+          kind: cutLv != null ? 'cutaway' : sec ? 'section' : (active?.kind ?? 'exterior'),
+          title: active?.title ?? (cutLv != null ? `${cutLv}階 輪切り模型` : sec ? '断面パース' : 'パース'),
+          caption: active?.caption ?? '',
+          view: cur,
+          sunDir: null,
+          timeOfDay: state.design.timeOfDay,
+          cutaway: cutLv ?? undefined,
+          section: sec,
+          level: cutLv ?? active?.level,
+        };
       };
       const batch = async (list: Shot[], quality: 'photoreal' | 'realtime' | 'studio') => {
         const pm = progressModal(quality === 'photoreal' ? `提案用パースを写真品質で一括作成中（${list.length}枚）` : quality === 'studio' ? `提案用パースを高品質描画で一括作成中（${list.length}枚）` : 'おすすめパースを下書き作成中');

@@ -10,8 +10,8 @@
  * 地球上の同じ所に留まり、読み込んだだけの建物はピンに付いて動く。測定点は建物と同じだけ動く。
  * 3D の pivot は placement を書き換えた後に必ず applyTransform() で同期する（日照画面が古い位置で描かないように）。
  */
-import { h, clear, toast, progressModal, section, segmented } from '../../app/dom';
-import { geocode, PRECISION_LABEL } from '../../sun/geo';
+import { h, clear, toast, progressModal, section, segmented, field } from '../../app/dom';
+import { geocode, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import type { StudyStep, StudyCtx } from '../shell';
 import { study, emit, on, visibleNeighbors } from '../state';
 import type { GeoFrame, LatLon, NeighborSource } from '../types';
@@ -49,9 +49,33 @@ let drawCount = 0;
 /** 周辺環境を取得（復元）したときのピン位置。ここから ENV_SHIFT_MAX_M 以上離れたら周辺環境を捨てる（ドラッグの積算） */
 let envOrigin: LatLon | null = null;
 
-const fmtDeg = (v: number) => v.toFixed(5);
+const fmtDeg = formatDeg;
 const coordAddress = (p: LatLon) => `緯度 ${fmtDeg(p.lat)}, 経度 ${fmtDeg(p.lon)} 付近`;
 const isCoordAddress = (s: string) => /^緯度 .* 付近$/.test(s);
+
+/**
+ * 「座標で指定」の入力欄を読む（緯度・経度の 2 欄。経度が空なら緯度の欄の「緯度, 経度」の 1 行や Google マップの URL も可）。
+ * 緯度と経度を取り違えていて parseLatLonFields が入れ替えたときは swapped = true（案内を出すため）。読めない・日本国内でなければ null
+ */
+export function readCoordInput(latText: string, lonText = ''): { lat: number; lon: number; swapped: boolean } | null {
+  const r = parseLatLonFields(latText, lonText);
+  if (!r) return null;
+  // 入れ替えの判定: 緯度の欄をそのまま角度として読んだ値が結果の経度と一致していれば取り違えていた（1 行入力は欄を分けたのと同じに扱う）
+  let a = latText;
+  let b = lonText;
+  if (!b.trim()) {
+    const parts = latText.normalize('NFKC').split(/[,，]/);
+    if (parts.length === 2) [a, b] = parts;
+  }
+  const rawLat = b.trim() ? parseDegrees(a) : null;
+  const swapped = rawLat != null && Math.abs(rawLat - r.lon) < 1e-9 && Math.abs(rawLat - r.lat) > 1e-9;
+  return { lat: r.lat, lon: r.lon, swapped };
+}
+
+/** クリップボードに書く文字列（「緯度, 経度」。住所検索の欄や Google マップにそのまま貼れる形） */
+export function coordClipboardText(p: LatLon): string {
+  return `${fmtDeg(p.lat)}, ${fmtDeg(p.lon)}`;
+}
 const signedM = (v: number, d = 1) => `${v < 0 ? '−' : '+'}${Math.abs(v).toFixed(d)}m`;
 const tpText = (v: number) => `T.P.${v < 0 ? '−' : '+'}${Math.abs(v).toFixed(1)} m`;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -397,6 +421,58 @@ export const placeStep: StudyStep = {
       ),
     );
 
+    // 座標で指定（緯度・経度）: 住所の無い分譲地・造成地など、座標が分かっているときに直接ピンを置く。
+    // 欄は編集中でなければいつも今のピンの座標（10 進）を示し、下に度分秒とコピー。住所検索の欄より後ろに置く（自動テストは最初の text 入力を住所欄とみなす）
+    const latIn = h('input', { type: 'text', class: 'coord-lat', placeholder: '例: 35.21058 または 35°12′38.1″', autocomplete: 'off' });
+    const lonIn = h('input', { type: 'text', class: 'coord-lon', placeholder: '例: 136.93831', autocomplete: 'off' });
+    const dmsOut = h('span', { class: 'coord-dms' });
+    const copyBtn = h('button', { class: 'btn sm', title: '今のピンの座標を「緯度, 経度」の形でコピー', onclick: () => void copyCoords() }, 'コピー');
+    const applyCoords = () => {
+      const r = readCoordInput(latIn.value, lonIn.value);
+      if (!r) {
+        toast('緯度・経度を読み取れませんでした。10 進（35.21058）か度分秒（35°12′38.1″）で、日本国内の座標を入力してください', 'error', 8000);
+        return;
+      }
+      if (r.swapped) toast('緯度と経度が逆だったので入れ替えました', 'info');
+      const p: LatLon = { lat: r.lat, lon: r.lon };
+      // 座標の直接指定は番地まで特定した扱い（住所の基準点は外し、住所は座標の文字列にする）
+      anchor = null;
+      setFrame(p, coordAddress(p));
+      // 欄が編集中（Enter で確定）でも、読み取った値を 10 進に揃えて見せる
+      latIn.value = fmtDeg(p.lat);
+      lonIn.value = fmtDeg(p.lon);
+      map?.setCenter(p, 18);
+      map?.setPin(p, true);
+      refreshAll();
+    };
+    const copyCoords = async () => {
+      const f = study.frame;
+      if (!f) return;
+      const text = coordClipboardText(f);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('座標をコピーしました', 'ok');
+      } catch {
+        toast(`コピーできませんでした（この環境ではクリップボードを使えません）。座標: ${text}`, 'error', 8000);
+      }
+    };
+    for (const el of [latIn, lonIn])
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          applyCoords();
+        }
+      });
+    side.appendChild(
+      section(
+        '座標で指定（緯度・経度）',
+        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '住所の無い分譲地・造成地など、座標が分かっているときはここに入力します。10 進（35.21058）でも度分秒（35°12′38.1″・35度12分38.1秒）でも可。「緯度, 経度」の 1 行や Google マップの URL を緯度の欄に貼ってもよいです。欄にはいつも今のピンの座標が表示されます。'),
+        h('div', { class: 'pos-fields' }, field('緯度', latIn), field('経度', lonIn)),
+        h('div', { class: 'coord-row' }, dmsOut, copyBtn),
+        h('div', { class: 'btn-row', style: 'margin:6px 0 0' }, h('button', { class: 'btn', onclick: applyCoords }, 'この座標にピンを置く')),
+      ),
+    );
+
     // 敷地（任意）
     const areaOut = h('div', { class: 'ok-box', style: 'display:none' });
     const polyInfo = h('div', { class: 'info-box' });
@@ -481,6 +557,18 @@ export const placeStep: StudyStep = {
     );
 
     // ---- 表示の更新 ----
+    /** 座標の欄: 編集中（どちらかの欄にフォーカス）でなければ今のピンの座標を示す。度分秒の行とコピーはいつも今のピン */
+    const refreshCoords = () => {
+      const f = study.frame;
+      const editing = document.activeElement === latIn || document.activeElement === lonIn;
+      if (!editing) {
+        latIn.value = f ? fmtDeg(f.lat) : '';
+        lonIn.value = f ? fmtDeg(f.lon) : '';
+      }
+      dmsOut.textContent = f ? `度分秒: ${formatDms(f.lat, 'lat')}　${formatDms(f.lon, 'lon')}` : 'ピンを置くと、ここに座標が表示されます';
+      copyBtn.disabled = !f;
+    };
+    // ピンの移動・住所検索・プロジェクトの読込など frame が変わる経路はすべて refreshStatus を通るので、座標の欄もここで更新する
     const refreshStatus = () => {
       clear(status);
       const f = study.frame;
@@ -491,6 +579,7 @@ export const placeStep: StudyStep = {
       }
       const a = siteArea();
       if (a != null) status.append(h('br'), `敷地面積 ${areaText(a)}`);
+      refreshCoords();
     };
 
     const refreshAttrib = () => {

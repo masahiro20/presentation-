@@ -3,7 +3,7 @@ import { h, clear, toast, progressModal, section, field, modal, download, svgToD
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
 import { SunContext } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL } from '../../sun/geo';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -57,6 +57,40 @@ export const IMAGES_CLEARED_MSG = '位置・向き・建物・周辺が変わっ
  */
 export function clearedSunResults(sun: ProjectState['sun']): { sun: ProjectState['sun']; hadImages: boolean } {
   return { sun: { ...sun, seasons: [], highlights: [], diagramSvg: undefined, images: [] }, hadImages: sun.images.length > 0 };
+}
+
+/** 座標で指定した建設地の住所文字列（住所検索の緯度経度貼り付け parsePoint の題名と同じ形に「付近」を添える） */
+export function coordAddress(lat: number, lon: number): string {
+  return `緯度 ${formatDeg(lat)}／経度 ${formatDeg(lon)} 付近`;
+}
+/** coordAddress で作った住所か（住所欄の初期値には出さない） */
+export function isCoordAddress(address: string): boolean {
+  return /^緯度 -?\d+(\.\d+)?／経度 -?\d+(\.\d+)?( 付近)?$/.test(address);
+}
+/** 「コピー」で書き出す "緯度, 経度"（10 進 5 桁。住所欄にそのまま貼り付けても読める形） */
+export function coordClipText(lat: number, lon: number): string {
+  return `${formatDeg(lat)}, ${formatDeg(lon)}`;
+}
+/** 読み取れなかったときの案内 */
+export const COORD_PARSE_ERROR = '緯度・経度を読み取れませんでした。10 進（35.21058）か度分秒（35°12′38.1″）で、日本国内の座標を入力してください';
+export const COORD_SWAPPED_MSG = '緯度と経度が逆だったので入れ替えました';
+
+/**
+ * 緯度・経度の 2 つの欄を読む（経度が空なら緯度欄の 1 行 "緯度, 経度"／Google マップの URL も受ける）。
+ * swapped: 欄の生の値と比べて、緯度と経度を取り違えていたので入れ替えた
+ */
+export function readCoordInput(latText: string, lonText: string): { lat: number; lon: number; swapped: boolean } | null {
+  const r = parseLatLonFields(latText, lonText);
+  if (!r) return null;
+  // 入れ替えの検出: 緯度欄の生の値（1 行入力ならカンマの前半）が、結果の経度のほうに一致していれば逆だった
+  let a = latText;
+  if (!lonText.normalize('NFKC').trim()) {
+    const m = latText.split(/[,，]/);
+    if (m.length === 2) a = m[0];
+  }
+  const rawLat = parseDegrees(a);
+  const swapped = rawLat != null && Math.abs(rawLat - r.lat) > 1e-9 && Math.abs(rawLat - r.lon) < 1e-9;
+  return { lat: r.lat, lon: r.lon, swapped };
 }
 
 export const sunStep: Step = {
@@ -236,12 +270,26 @@ export const sunStep: Step = {
         }
       },
     }) as HTMLInputElement;
-    const addr = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', value: state.site.address.includes('（仮）') ? '' : state.site.address }) as HTMLInputElement;
+    const addr = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', value: state.site.address.includes('（仮）') || isCoordAddress(state.site.address) ? '' : state.site.address }) as HTMLInputElement;
     const results = h('div');
     const locEl = h('div', { class: 'hint' });
+    // 座標で指定（緯度・経度）: 欄は入力中でなければ今のピンの位置（基準点 + ずらし量）を 10 進で表示し、下に度分秒とコピー
+    const latIn = h('input', { type: 'text', placeholder: '35.21058 または 35°12′38.1″', autocomplete: 'off', spellcheck: false }) as HTMLInputElement;
+    const lonIn = h('input', { type: 'text', placeholder: '136.93831', autocomplete: 'off', spellcheck: false }) as HTMLInputElement;
+    const dmsEl = h('span', { class: 'hint', style: 'margin-top:0' });
+    const showCoords = (force = false) => {
+      const { lat, lon } = siteLatLon(state.site);
+      const focused = document.activeElement;
+      if (force || (focused !== latIn && focused !== lonIn)) {
+        latIn.value = formatDeg(lat);
+        lonIn.value = formatDeg(lon);
+      }
+      dmsEl.textContent = `度分秒: ${formatDms(lat, 'lat')} ${formatDms(lon, 'lon')}`;
+    };
     const showLoc = () => {
       const { lat, lon } = siteLatLon(state.site);
       locEl.textContent = `${state.site.address}（緯度 ${lat.toFixed(5)}／経度 ${lon.toFixed(5)}）`;
+      showCoords();
     };
     showLoc();
     const reloadContext = async () => {
@@ -254,6 +302,19 @@ export const sunStep: Step = {
     // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ・撮影済みの季節比較画像）を捨てる。
     // 位置・方位・3DS・周辺建物が変わった後に古い結果（プレゼン資料にも使われる state.sun）が残らないようにする。実体は解析セクションの後で入れる
     let invalidateResults: () => void = () => {};
+    // 建設地を新しい地点にする（住所検索の結果・座標の直接指定で共通）: 待ち受け中の 2 点合わせを中止し、前の地点の解析結果を捨て、
+    // 航空写真・周辺建物を読み込んで、建物と周りが見渡せる広域の視点へ
+    const setSite = async (lat: number, lon: number, address: string) => {
+      extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
+      state.site = { lat, lon, address, offsetE: 0, offsetN: 0 };
+      clear(results);
+      showLoc();
+      invalidateResults();
+      await reloadContext();
+      if (!sc.state.aerialLoaded) await loadAerial();
+      await loadNeighbors('gsi');
+      v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
+    };
     const search = async () => {
       if (!addr.value.trim()) return;
       clear(results);
@@ -273,19 +334,9 @@ export const sunStep: Step = {
                 class: 'btn sm block',
                 style: 'justify-content:flex-start;margin:3px 0',
                 onclick: async () => {
-                  // 建設地が変わる: 待ち受け中の 2 点合わせを中止し、前の住所の解析結果を捨てる
-                  extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
-                  state.site = { lat: r.lat, lon: r.lon, address: r.title, offsetE: 0, offsetN: 0 };
-                  clear(results);
-                  showLoc();
-                  invalidateResults();
                   if (r.precision === 'town' || r.precision === 'chome')
                     toast('番地までは特定できませんでした。「航空写真の上で敷地をクリック」で建物の位置を合わせてください', 'info', 8000);
-                  await reloadContext();
-                  if (!sc.state.aerialLoaded) await loadAerial();
-                  await loadNeighbors('gsi');
-                  // 周辺を読み込んだら、建物と周りが見渡せる広域の視点へ
-                  v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
+                  await setSite(r.lat, r.lon, r.title);
                 },
               },
               h('span', null, r.title, ' ', h('span', { class: 'hint', style: 'margin-left:6px' }, PRECISION_LABEL[r.precision])),
@@ -297,6 +348,44 @@ export const sunStep: Step = {
       }
     };
     addr.addEventListener('keydown', (e) => e.key === 'Enter' && search());
+    // 座標で指定: 2 つの欄（または緯度欄だけに "緯度, 経度" の 1 行／Google マップの URL）を読んで、その地点を建設地にする
+    const applyCoords = async () => {
+      const r = readCoordInput(latIn.value, lonIn.value);
+      if (!r) {
+        toast(COORD_PARSE_ERROR, 'error', 8000);
+        return;
+      }
+      if (r.swapped) toast(COORD_SWAPPED_MSG, 'info');
+      await setSite(r.lat, r.lon, coordAddress(r.lat, r.lon));
+      showCoords(true);
+    };
+    const onCoordKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      void applyCoords();
+    };
+    latIn.addEventListener('keydown', onCoordKey);
+    lonIn.addEventListener('keydown', onCoordKey);
+    const copyCoords = async () => {
+      const { lat, lon } = siteLatLon(state.site);
+      const text = coordClipText(lat, lon);
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(text);
+        toast('座標をコピーしました', 'ok');
+      } catch {
+        toast(`コピーできませんでした。座標: ${text}`, 'info', 8000);
+      }
+    };
+    const coordBlock = h(
+      'details',
+      { style: 'margin:6px 0' },
+      h('summary', { class: 'hint', style: 'cursor:pointer' }, '座標で指定（緯度・経度）'),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px' }, field('緯度', latIn), field('経度', lonIn)),
+      h('button', { class: 'btn sm block', onclick: applyCoords }, 'この座標を建設地にする'),
+      h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px' }, dmsEl, h('button', { class: 'btn sm ghost', onclick: copyCoords, title: '今の建設地の座標を「緯度, 経度」の形でコピーします' }, 'コピー')),
+      h('span', { class: 'hint' }, '10 進（35.21058）でも度分秒（35°12′38.1″・35度12分38.1秒）でも入力できます。緯度欄に「緯度, 経度」の 1 行や Google マップの URL を貼り付けても読み取ります。欄には今の建設地（ピンの位置）の座標が表示されます'),
+    );
     const nudge = (de: number, dn: number) => {
       extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
       state.site = { ...state.site, offsetE: state.site.offsetE + de, offsetN: state.site.offsetN + dn };
@@ -403,6 +492,7 @@ export const sunStep: Step = {
           googleKeyInput,
           h('span', { class: 'hint' }, 'Google Cloud で「Geocoding API」を有効にしたキーを貼ると、住居表示の無い地域や新しい番地も特定できます。キーはこのパソコンにだけ保存されます'),
         ),
+        coordBlock,
         locEl,
         placeBtn,
         ...twoPointBlock(extPanel),

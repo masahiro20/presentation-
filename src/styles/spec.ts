@@ -41,8 +41,8 @@ export interface BuilderSpec {
 
 export const BUILDER_SPECS: BuilderSpec[] = [
   {
-    id: 'homelandick',
-    name: 'ホームランディック標準',
+    id: 'minimal-lines',
+    name: '線の少ない空間（標準）',
     description: 'KAMIYA フルハイトドア（ステルス枠・扉厚40mm）、サッシ高さ＝天井高、窓は塗り回し、カーテンボックス、ダウンライト。線を減らした統一感のある空間。',
     doors: { fullHeight: true, frame: 'stealth', thickness: 40, topGap: 6, handle: 'slim-lever', handleColor: '#2a2a2a' },
     windows: { headAtCeiling: true, interiorReveal: 'plaster', sillBoard: false },
@@ -64,8 +64,12 @@ export const BUILDER_SPECS: BuilderSpec[] = [
   },
 ];
 
+/** 以前の版で保存したプロジェクトの仕様 id（名前を変えたもの） */
+const LEGACY_SPEC_IDS: Record<string, string> = { homelandick: 'minimal-lines' };
+
 export function specById(id: string | undefined): BuilderSpec {
-  return BUILDER_SPECS.find((s) => s.id === id) ?? BUILDER_SPECS[0];
+  const key = id ? LEGACY_SPEC_IDS[id] ?? id : id;
+  return BUILDER_SPECS.find((s) => s.id === key) ?? BUILDER_SPECS[0];
 }
 
 /** 仕様を反映した開口部の高さ (mm) */

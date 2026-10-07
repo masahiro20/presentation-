@@ -74,7 +74,7 @@ const ext = (s: ExteriorStyle) => s;
 const int = (s: InteriorStyle) => s;
 
 export const EXTERIOR_STYLES: ExteriorStyle[] = [
-  // ---- ホームランディック標準（塗り壁） ----
+  // ---- 線の少ない空間（標準・塗り壁） ----
   ext({
     id: 'hl-white-plaster',
     name: '塗り壁ホワイト',
@@ -409,7 +409,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
 ];
 
 export const INTERIOR_STYLES: InteriorStyle[] = [
-  // ---- ホームランディック標準（淡色・ホテルライク） ----
+  // ---- 線の少ない空間（標準・淡色・ホテルライク） ----
   int({
     id: 'hl-greige-hotel',
     name: 'ホテルライク・グレージュ',
@@ -707,7 +707,7 @@ export interface DesignOptions {
 }
 
 export const DEFAULT_DESIGN: DesignOptions = {
-  specId: 'homelandick',
+  specId: 'minimal-lines',
   exteriorId: 'hl-white-plaster',
   interiorId: 'hl-greige-hotel',
   timeOfDay: 'day',

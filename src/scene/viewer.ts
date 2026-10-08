@@ -140,8 +140,9 @@ export class Viewer {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // 影はカメラを動かしただけでは変わらないので、場面が変わったときだけ描き直す
     this.renderer.shadowMap.autoUpdate = false;
-    this.renderer.toneMapping = THREE.NeutralToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // 写真的なトーン（ハイライトの転び方が自然で、白い壁が飛ばない）
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
     // GPU がリセットされた後は、GPU 上にしか無い空の環境マップを作り直す
@@ -490,6 +491,16 @@ export class Viewer {
       this.camMoved();
     }
     if (this.keys.size || this.walkVel.lengthSq() > 1e-6 || this.walkImpulse.lengthSq() > 1e-6) this.walk(dt);
+    if (this.drift && !this.anim && this.navMode !== 'walk') {
+      // ゆっくり回り込む（高品質描画のまま: 操作扱いにしない）
+      const t = this.controls.target;
+      const p = this.camera.position.clone().sub(t).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.drift * dt).add(t);
+      this.camera.position.copy(p);
+      const look = t.clone();
+      if (this.camera.shiftY !== 0) look.y = p.y;
+      this.camera.lookAt(look);
+      this.dirty = true;
+    }
     const moved = this.navMode === 'walk' ? false : this.controls.update();
     if (moved) this.camMoved();
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
@@ -671,6 +682,8 @@ export class Viewer {
     this.setDoors(null);
     const roof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch);
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
+    this.edgeLines = [];
+    this.rebuildEdges([this.groups.building, this.groups.roof]);
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
     // 実物のモデル（観葉植物・ラウンジチェア）は読み込み後に追加
@@ -738,6 +751,7 @@ export class Viewer {
       return;
     }
     this.registry.apply(this.root);
+    if (prev.clay !== design.clay) this.applyEdgeVisibility();
     this.groups.furniture.visible = design.furniture && this.cut == null;
     if (this.cut && prev.furniture !== design.furniture) this.setCut(this.cut);
     if (prev.timeOfDay !== design.timeOfDay) {
@@ -791,8 +805,113 @@ export class Viewer {
     this.envRT = this.pmrem.fromEquirectangular(this.skyTex);
     this.scene.environment = this.envRT.texture;
     this.scene.background = this.skyTex;
-    this.scene.environmentIntensity = mode === 'night' ? 0.25 : 0.6;
-    this.renderer.toneMappingExposure = mode === 'night' ? 1.3 : mode === 'evening' ? 1.05 : 0.9;
+    this.scene.environmentIntensity = mode === 'night' ? 0.28 : 0.66;
+    this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : 1.0;
+    // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）
+    const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : '#cfd6dc';
+    if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(fogCol, 0.0024);
+    else (this.scene.fog as THREE.FogExp2).color.set(fogCol);
+    this.dirty = true;
+  }
+
+  // ------------------------------------------------------------------
+  // 演出
+  // ------------------------------------------------------------------
+  private revealToken = 0;
+  /** 図面から建物が立ち上がる演出: 地面から屋根まで水平の切断面を持ち上げながら、カメラをゆっくり回し込む */
+  playReveal(dur = 2600) {
+    if (!this.state || this.cut) return;
+    const token = ++this.revealToken;
+    const topY = Math.max(this.state.roof.maxY, this.state.meta.topY) + 0.6;
+    const view = this.currentView();
+    const up = new THREE.Vector3(0, 1, 0);
+    const d = view.pos.clone().sub(view.target).applyAxisAngle(up, -0.32).multiplyScalar(1.08);
+    const from: CameraView = { ...view, pos: view.target.clone().add(d).add(new THREE.Vector3(0, 0.9, 0)) };
+    this.applyView(from);
+    this.flyTo(view, dur + 900);
+    const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -0.4);
+    const t0 = performance.now();
+    const step = () => {
+      if (token !== this.revealToken) return;
+      const t = Math.min(1, (performance.now() - t0) / dur);
+      const k = 1 - Math.pow(1 - t, 3);
+      plane.constant = -0.4 + (topY + 0.4) * k;
+      this.renderer.clippingPlanes = [plane];
+      this.dirty = true;
+      if (t < 1) requestAnimationFrame(step);
+      else {
+        this.renderer.clippingPlanes = [];
+        this.dirty = true;
+      }
+    };
+    requestAnimationFrame(step);
+  }
+
+  /** シネマ用のゆっくりした回り込み（rad/s。0 で停止） */
+  private drift = 0;
+  setDrift(radPerSec: number) {
+    this.drift = radPerSec;
+    if (radPerSec) this.dirty = true;
+  }
+
+  // ------------------------------------------------------------------
+  // 白模型の線（稜線を細い線で重ねる）
+  // ------------------------------------------------------------------
+  private edgeLines: THREE.LineSegments[] = [];
+  private edgeLinesFor(group: THREE.Group): THREE.LineSegments | null {
+    const pos: number[] = [];
+    group.updateMatrixWorld(true);
+    group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || !m.geometry) return;
+      const key = (m.userData.matKey as string | undefined) ?? '';
+      if (!key || key.startsWith('ext.glass') || key.startsWith('f.') || key === 'cut.north' || key === 'int.ceiling') return;
+      let p: THREE.Object3D | null = m.parent;
+      let skip = false;
+      while (p && p !== group) {
+        if (/^(door|cutdoor):/.test(p.name) || p.userData.roomLabel) skip = true;
+        p = p.parent;
+      }
+      if (skip) return;
+      const eg = new THREE.EdgesGeometry(m.geometry, 24);
+      const a = eg.getAttribute('position');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < a.count; i++) {
+        v.fromBufferAttribute(a, i).applyMatrix4(m.matrixWorld);
+        pos.push(v.x, v.y, v.z);
+      }
+      eg.dispose();
+    });
+    if (!pos.length) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    const mat = new THREE.LineBasicMaterial({ color: '#34322f', transparent: true, opacity: 0.55, depthWrite: false });
+    const ls = new THREE.LineSegments(geo, mat);
+    ls.name = 'edges';
+    ls.renderOrder = 3;
+    ls.userData.edges = true;
+    return ls;
+  }
+
+  private rebuildEdges(groups: THREE.Group[]) {
+    for (const g of groups) {
+      for (const old of this.edgeLines.filter((e) => e.parent === g)) {
+        g.remove(old);
+        old.geometry.dispose();
+        (old.material as THREE.Material).dispose();
+      }
+      this.edgeLines = this.edgeLines.filter((e) => e.parent !== null && e.parent !== g);
+      const ls = this.edgeLinesFor(g);
+      if (ls) {
+        ls.visible = !!this.design.clay;
+        g.add(ls);
+        this.edgeLines.push(ls);
+      }
+    }
+  }
+
+  private applyEdgeVisibility() {
+    for (const e of this.edgeLines) e.visible = !!this.design.clay;
     this.dirty = true;
   }
 
@@ -960,6 +1079,7 @@ export class Viewer {
     const sec = spec && 'section' in spec ? spec.section : null;
     const on = !!model && (!!f || !!sec);
     this.cut = on ? spec : null;
+    this.revealToken++;
     this.renderer.clippingPlanes = [];
     this.groups.roof.visible = !on;
     this.groups.building.visible = !on;
@@ -1028,6 +1148,7 @@ export class Viewer {
             m.renderOrder = 2;
           }
         });
+        this.rebuildEdges([this.groups.cut]);
       }
     }
     this.walkOcc = null;

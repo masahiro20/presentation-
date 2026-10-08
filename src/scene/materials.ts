@@ -49,7 +49,8 @@ export class MaterialRegistry {
     // 外装
     set('ext.wall', M(wall));
     set('ext.accent', M(e.accent ?? wall));
-    set('ext.wallTop', color('#d8d6d2', 0.9));
+    // 外壁の天端（笠木）は外壁の色に合わせて少し暗く（黒い家に白い縁が出ないように）
+    set('ext.wallTop', color(`#${new THREE.Color(wall.color).multiplyScalar(0.82).getHexString()}`, 0.9));
     set('ext.foundation', M(e.foundation));
     set('ext.frame', color(e.frame.color, 0.4, e.frame.metalness));
     set('ext.door', M(e.entranceDoor));
@@ -135,7 +136,7 @@ export class MaterialRegistry {
     // 外構
     const L = e.landscape;
     set('l.ground', M(L.ground));
-    set('l.far', M({ pattern: 'grass', color: '#727d5a', color2: '#8b9470', tile: 12 }));
+    set('l.far', M({ pattern: 'grass', color: '#737a64', color2: '#788069', tile: 16 }));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
     set('l.driveway', M(L.driveway));
@@ -162,7 +163,8 @@ export class MaterialRegistry {
     }
     // 白模型（スタディ模型）: ガラス以外を白いクレイに。外構は淡いグレー、植栽の葉はそのまま
     if (this.opts.clay) {
-      const clayM = color('#edebe6', 0.92);
+      // 線を重ねるため面を少し奥へ（polygonOffset）
+      const clayM = color('#edebe6', 0.92, 0, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
       const clayGround = color('#d6d3cd', 1);
       const clayRoad = color('#c9c6c0', 1);
       for (const [k, m] of [...this.map]) {

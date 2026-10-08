@@ -40,8 +40,9 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
     horizon = new THREE.Color(0.03, 0.04, 0.08);
     glowCol = new THREE.Color(0.02, 0.02, 0.04);
   } else {
-    zenith = new THREE.Color(0.22, 0.38, 0.72).lerp(new THREE.Color(0.12, 0.18, 0.45), low * 0.6).multiplyScalar(0.35 + 0.65 * dayF);
-    horizon = new THREE.Color(0.82, 0.86, 0.9).lerp(new THREE.Color(1.0, 0.62, 0.35), low * (p.mode === 'evening' ? 0.95 : 0.55)).multiplyScalar(0.45 + 0.75 * dayF);
+    // 彩度を抑えた青と、靄のかかった地平（写真の空に近い落ち着き）
+    zenith = new THREE.Color(0.2, 0.36, 0.7).lerp(new THREE.Color(0.14, 0.19, 0.42), low * 0.6).multiplyScalar(0.35 + 0.65 * dayF);
+    horizon = new THREE.Color(0.8, 0.85, 0.9).lerp(new THREE.Color(1.0, 0.64, 0.38), low * (p.mode === 'evening' ? 0.95 : 0.5)).multiplyScalar(0.45 + 0.75 * dayF);
     glowCol = new THREE.Color(1.0, 0.85, 0.6).lerp(new THREE.Color(1.0, 0.45, 0.15), low);
   }
   const ground = p.groundColor ?? new THREE.Color(0.3, 0.28, 0.22);

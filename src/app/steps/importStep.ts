@@ -58,7 +58,7 @@ function dropScreen(ctx: StepCtx) {
   const zone = h(
     'div',
     { class: 'dropzone' },
-    h('div', { class: 'big' }, '📐'),
+    h('div', { class: 'big' }, '＋'),
     h('p', null, h('b', null, '平面図の PDF（または CAD の DXF）をここにドロップ'), h('br'), 'または'),
     h('button', { class: 'btn primary', onclick: () => input.click() }, 'PDF / DXF ファイルを選択'),
     h('p', { class: 'hint', style: 'margin:10px 0 0' }, '保存したプロジェクト（.madori.json）もここにドロップ、またはこのボタンから開けます'),
@@ -85,8 +85,8 @@ function dropScreen(ctx: StepCtx) {
     h(
       'div',
       { class: 'drop-card' },
-      h('h1', null, '平面図 PDF から、ワクワクするプレゼンを。'),
-      h('p', null, '間取りの PDF を読み込むだけで、壁・窓・ドア・部屋を自動で認識し、立面図・外観／内観パース・ウォークスルー動画・日照シミュレーションまで一気に作成します。'),
+      h('h1', null, '図面が、そのまま提案になる。'),
+      h('p', null, '平面図の PDF から壁・開口・部屋を読み取り、模型・パース・断面・図面・日照・動画までを、ひとつの流れで。'),
       zone,
       h(
         'div',

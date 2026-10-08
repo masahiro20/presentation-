@@ -9,6 +9,8 @@ import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
 import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 import { exportCuts } from '../cuts';
+import { startCinema } from '../cinema';
+import type { Viewer } from '../../scene/viewer';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -266,6 +268,8 @@ export const designStep: Step = {
       if (first) {
         v.applyShot(first);
         active = first;
+        // 図面から建物が立ち上がる演出
+        window.setTimeout(() => v.playReveal(2600), 120);
       }
     }
 
@@ -312,6 +316,7 @@ export const designStep: Step = {
           active = s;
         }
       }),
+      toolBtn('▶ シネマ', () => startCinema(v, ctx.stage, shots, { start: Math.max(0, shots.findIndex((x) => x === active)) })),
     );
     {
       // 模型の部屋名タグ
@@ -418,13 +423,18 @@ export const designStep: Step = {
         ),
         section(
           '外観のテイスト',
-          h('div', { class: 'style-grid' }, EXTERIOR_STYLES.filter((s) => s.id.startsWith('hl-')).map(extCard)),
-          others(EXTERIOR_STYLES.filter((s) => !s.id.startsWith('hl-')).map(extCard), !state.design.exteriorId.startsWith('hl-')),
+          h('div', { class: 'style-grid' }, EXTERIOR_STYLES.filter((s) => /^(lux|hl)-/.test(s.id)).map(extCard)),
+          others(EXTERIOR_STYLES.filter((s) => !/^(lux|hl)-/.test(s.id)).map(extCard), !state.design.exteriorId.startsWith('hl-')),
         ),
         section(
           '内観のテイスト',
-          h('div', { class: 'style-grid' }, INTERIOR_STYLES.filter((s) => s.id.startsWith('hl-')).map(intCard)),
-          others(INTERIOR_STYLES.filter((s) => !s.id.startsWith('hl-')).map(intCard), !state.design.interiorId.startsWith('hl-')),
+          h('div', { class: 'style-grid' }, INTERIOR_STYLES.filter((s) => /^(lux|hl)-/.test(s.id)).map(intCard)),
+          others(INTERIOR_STYLES.filter((s) => !/^(lux|hl)-/.test(s.id)).map(intCard), !state.design.interiorId.startsWith('hl-')),
+        ),
+        section(
+          'マテリアルボード',
+          materialBoard(v),
+          h('p', { class: 'hint' }, '今の仕上げの組み合わせ。テイストを選び直すと並び替わります。'),
         ),
         section(
           '細かく調整',
@@ -684,4 +694,48 @@ export function showImage(g: GalleryItem) {
     { label: 'ダウンロード', primary: true, onClick: () => download(g.url, `${state.name}_${g.title}.jpg`) },
     { label: '閉じる' },
   ], true);
+}
+
+
+/** いまの仕上げを並べたマテリアルボード（実際のテクスチャから作る） */
+function materialBoard(v: Viewer): HTMLElement {
+  const items: [string, string, string][] = [
+    ['ext.wall', '外壁', 'Exterior'],
+    ['ext.accent', 'アクセント', 'Accent'],
+    ['ext.roof', '屋根', 'Roof'],
+    ['ext.door', '玄関戸', 'Door'],
+    ['int.floor', '床', 'Floor'],
+    ['int.wall', '壁', 'Wall'],
+    ['int.accent', 'アクセント壁', 'Feature'],
+    ['int.door', '建具', 'Joinery'],
+    ['f.counter', 'カウンター', 'Counter'],
+    ['f.cabinet', '収納', 'Cabinet'],
+    ['f.wood', '家具の木', 'Furniture'],
+    ['f.fabric', 'ファブリック', 'Fabric'],
+  ];
+  const board = h('div', { class: 'matboard' });
+  for (const [key, ja, en] of items) {
+    const mat = v.registry.get(key) as THREE.MeshStandardMaterial;
+    const c = document.createElement('canvas');
+    c.width = 96;
+    c.height = 96;
+    const g = c.getContext('2d')!;
+    const img = (mat.map?.image ?? null) as HTMLCanvasElement | null;
+    if (img && img.width) {
+      // 中央を切り出して等倍に近い見え方で
+      const s = Math.min(img.width, img.height);
+      g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 96, 96);
+      if (mat.color && (mat.color.r < 0.98 || mat.color.g < 0.98 || mat.color.b < 0.98)) {
+        g.globalCompositeOperation = 'multiply';
+        g.fillStyle = `#${mat.color.getHexString()}`;
+        g.fillRect(0, 0, 96, 96);
+        g.globalCompositeOperation = 'source-over';
+      }
+    } else {
+      g.fillStyle = mat.color ? `#${mat.color.getHexString()}` : '#cccccc';
+      g.fillRect(0, 0, 96, 96);
+    }
+    board.appendChild(h('div', { class: 'sw' }, c, h('div', { class: 'lb' }, h('b', null, ja), en)));
+  }
+  return board;
 }

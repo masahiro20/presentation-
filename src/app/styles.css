@@ -29,6 +29,8 @@ input, select, textarea { font: inherit; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
 .brand-mark { width: 28px; height: 28px; border-radius: 7px; background: linear-gradient(135deg, #d98a52, #b8683a); display: grid; place-items: center; font-size: 15px; }
 .brand small { font-weight: 400; color: #b9bcc2; font-size: 11px; display: block; letter-spacing: 0; }
+.brand .wordmark { font-family: 'Cormorant Garamond', serif; letter-spacing: 0.3em; text-transform: uppercase; font-size: 18px; line-height: 1; }
+.office { color: #c9ccd2; font-size: 12.5px; white-space: nowrap; }
 .steps { display: flex; gap: 4px; margin-left: 12px; overflow-x: auto; }
 .step { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; border: 0; background: transparent; color: #c9ccd2; font-size: 14px; white-space: nowrap; }
 .step .num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #3a3e45; font-size: 12px; font-weight: 700; }
@@ -350,3 +352,177 @@ body.presenting .main { grid-template-columns: 1fr; }
 .north-cand b { display: block; font-size: 13px; }
 .north-cand .deg { font-weight: 600; white-space: nowrap; }
 .north-cand .hint { display: block; margin-top: 2px; }
+
+/* =====================================================================
+   ATELIER テーマ（設計事務所向け）: チャコールの画面、オフホワイトの文字、細いけい線、明朝の見出し、ブロンズの差し色
+   ===================================================================== */
+body.theme-atelier {
+  --bg: #141413;
+  --panel: #1a1a19;
+  --ink: #ebe6dd;
+  --ink2: #a39d93;
+  --ink3: #6f6a62;
+  --line: #2b2a27;
+  --accent: #b89a6a;
+  --accent2: #8c8a84;
+  --accent-soft: #2a261f;
+  --good: #8fb08a;
+  --warn: #d2a65a;
+  --radius: 4px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --serif: 'Shippori Mincho', 'Noto Serif JP', 'Hiragino Mincho ProN', 'Yu Mincho', serif;
+  --latin: 'Cormorant Garamond', 'Times New Roman', serif;
+  color: var(--ink);
+  background: var(--bg);
+  font-weight: 300;
+}
+body.theme-atelier #app { grid-template-rows: 64px 1fr; }
+body.theme-atelier .topbar { background: #101010; border-bottom: 1px solid #262522; color: var(--ink); padding: 0 26px; gap: 28px; }
+body.theme-atelier .brand { gap: 12px; font-weight: 400; }
+body.theme-atelier .brand-mark { display: none; }
+body.theme-atelier .brand .wordmark { font-family: var(--latin); font-size: 22px; letter-spacing: 0.34em; text-transform: uppercase; color: var(--ink); line-height: 1; }
+body.theme-atelier .brand small { font-family: var(--serif); color: var(--ink2); font-size: 11.5px; letter-spacing: 0.14em; margin-top: 4px; }
+body.theme-atelier .steps { gap: 2px; margin-left: 10px; }
+body.theme-atelier .step { border-radius: 0; padding: 10px 12px; color: var(--ink3); font-size: 13px; letter-spacing: 0.08em; border-bottom: 1px solid transparent; }
+body.theme-atelier .step .num { background: transparent; color: var(--ink3); font-family: var(--latin); font-size: 13px; width: auto; height: auto; }
+body.theme-atelier .step:hover { background: transparent; color: var(--ink); }
+body.theme-atelier .step.on { background: transparent; color: var(--ink); border-bottom-color: var(--accent); }
+body.theme-atelier .step.on .num { background: transparent; color: var(--accent); }
+body.theme-atelier .project-name { background: transparent; border: 0; border-bottom: 1px solid #3a3835; border-radius: 0; color: var(--ink); font-family: var(--serif); font-size: 15px; letter-spacing: 0.06em; padding: 6px 2px; width: 240px; }
+body.theme-atelier .project-name:focus { outline: none; border-bottom-color: var(--accent); }
+body.theme-atelier .office { font-family: var(--serif); color: var(--ink2); font-size: 12.5px; letter-spacing: 0.12em; white-space: nowrap; }
+body.theme-atelier .proj-btns .btn { background: transparent; color: var(--ink2); border-color: #3a3835; }
+body.theme-atelier .proj-btns .btn:hover { color: var(--ink); border-color: var(--ink2); background: transparent; }
+body.theme-atelier .stage { background: #0e0e0d; }
+body.theme-atelier .main { grid-template-columns: 1fr 372px; }
+body.theme-atelier .side { background: var(--panel); border-left: 1px solid var(--line); }
+body.theme-atelier .side-inner { padding: 26px 24px 60px; }
+body.theme-atelier .side h2 { font-family: var(--serif); font-weight: 500; font-size: 20px; letter-spacing: 0.1em; margin: 0 0 8px; }
+body.theme-atelier .side h2::before { content: ''; display: block; width: 28px; height: 1px; background: var(--accent); margin-bottom: 14px; }
+body.theme-atelier .side .lead { color: var(--ink2); font-size: 12.5px; line-height: 1.9; margin-bottom: 22px; }
+body.theme-atelier .panel-section { border-top: 1px solid var(--line); padding: 18px 0 8px; }
+body.theme-atelier .panel-section h4 { font-family: var(--serif); font-weight: 500; color: var(--ink); font-size: 13px; letter-spacing: 0.16em; margin: 0 0 12px; }
+body.theme-atelier .btn { background: transparent; color: var(--ink); border: 1px solid #3b3935; border-radius: 2px; font-weight: 300; letter-spacing: 0.06em; transition: border-color 0.2s, background 0.2s; }
+body.theme-atelier .btn:hover { background: #22211f; border-color: var(--ink2); }
+body.theme-atelier .btn.primary { background: var(--accent); border-color: var(--accent); color: #141413; font-weight: 500; }
+body.theme-atelier .btn.primary:hover { background: #c8aa78; border-color: #c8aa78; }
+body.theme-atelier .btn.dark { background: var(--ink); border-color: var(--ink); color: #141413; }
+body.theme-atelier .btn.dark:hover { background: #fff; }
+body.theme-atelier .btn.ghost { border-color: transparent; color: var(--ink2); }
+body.theme-atelier .btn.sm { font-size: 12px; }
+body.theme-atelier .icon-btn { color: var(--ink2); }
+body.theme-atelier .field-label { color: var(--ink2); letter-spacing: 0.08em; font-size: 11.5px; }
+body.theme-atelier .field input[type='text'], body.theme-atelier .field input[type='number'], body.theme-atelier .field input[type='date'], body.theme-atelier .field select, body.theme-atelier .field textarea { background: #111110; border: 1px solid #333230; color: var(--ink); border-radius: 2px; }
+body.theme-atelier .field input[type='range'] { accent-color: var(--accent); }
+body.theme-atelier .hint { color: var(--ink3); }
+body.theme-atelier .segmented { background: #111110; border: 1px solid var(--line); border-radius: 2px; padding: 2px; }
+body.theme-atelier .segmented button { color: var(--ink3); border-radius: 1px; }
+body.theme-atelier .segmented button.on { background: #2a2926; color: var(--ink); box-shadow: none; font-weight: 400; }
+body.theme-atelier .check { color: var(--ink2); }
+body.theme-atelier .check input { accent-color: var(--accent); }
+body.theme-atelier .style-card { background: #141413; border: 1px solid var(--line); border-radius: 2px; transition: border-color 0.2s; }
+body.theme-atelier .style-card:hover { border-color: #4a4742; transform: none; }
+body.theme-atelier .style-card.on { border-color: var(--accent); box-shadow: none; }
+body.theme-atelier .style-card .nm { font-family: var(--serif); font-weight: 500; font-size: 13px; letter-spacing: 0.06em; color: var(--ink); }
+body.theme-atelier .style-card .ct { color: var(--ink3); }
+body.theme-atelier .shot-list { gap: 6px; }
+body.theme-atelier .shot-btn { background: transparent; border: 1px solid var(--line); color: var(--ink); border-radius: 2px; padding: 9px 10px; letter-spacing: 0.04em; }
+body.theme-atelier .shot-btn:hover { border-color: var(--accent); }
+body.theme-atelier .shot-btn .k { background: transparent; border: 1px solid #3b3935; color: var(--ink3); font-family: var(--latin); letter-spacing: 0.12em; border-radius: 1px; font-size: 10.5px; }
+body.theme-atelier .shot-btn .k.int { background: transparent; border-color: var(--accent); color: var(--accent); }
+body.theme-atelier .shot-btn .k.cut { background: transparent; border-color: #6b7a5c; color: #9fb08c; }
+body.theme-atelier .gallery figure { background: #111110; border-color: var(--line); border-radius: 2px; }
+body.theme-atelier .gallery figcaption { background: #141413; color: var(--ink2); }
+body.theme-atelier .gallery .badge { background: rgba(0, 0, 0, 0.6); }
+body.theme-atelier .gallery .del { background: rgba(20, 20, 19, 0.85); color: var(--ink); }
+body.theme-atelier .view-tools .btn { background: rgba(14, 14, 13, 0.72); color: var(--ink); border-color: rgba(255, 255, 255, 0.14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+body.theme-atelier .view-tools .btn.on { background: var(--accent); color: #141413; border-color: var(--accent); }
+body.theme-atelier .nav-tools { background: rgba(14, 14, 13, 0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; box-shadow: none; }
+body.theme-atelier .nav-btn { color: var(--ink2); border-radius: 2px; }
+body.theme-atelier .nav-btn:hover { background: #26251f; color: var(--ink); }
+body.theme-atelier .nav-btn.on { background: var(--accent); color: #141413; }
+body.theme-atelier .nav-sep { background: #2f2e2a; }
+body.theme-atelier .stats { gap: 6px; }
+body.theme-atelier .stat { background: #111110; border: 1px solid var(--line); border-radius: 2px; }
+body.theme-atelier .stat b { font-family: var(--latin); font-weight: 400; font-size: 26px; color: var(--ink); }
+body.theme-atelier .stat span { color: var(--ink3); letter-spacing: 0.08em; }
+body.theme-atelier .warn { background: #241f16; border-color: #4a3d25; color: #d8b46e; }
+body.theme-atelier .check-card { background: #111110; border-color: var(--line); border-radius: 2px; }
+body.theme-atelier .check-head { background: #171a16; }
+body.theme-atelier .check-card.has-ng .check-head { background: #231e15; }
+body.theme-atelier .check-row { border-top-color: var(--line); }
+body.theme-atelier .check-row .dt { color: var(--ink); }
+body.theme-atelier .check-row.ng .dt { color: #d8b46e; }
+body.theme-atelier .edit-callout { background: #111110; border-color: var(--line); border-radius: 2px; }
+body.theme-atelier .edit-callout p { color: var(--ink2); }
+body.theme-atelier .highlight { background: #111110; border-left-color: var(--ink3); color: var(--ink2); }
+body.theme-atelier .highlight.good { background: #141a14; border-color: var(--good); }
+body.theme-atelier .highlight.caution { background: #1f1a12; border-color: var(--warn); }
+body.theme-atelier .highlight b { color: var(--ink); }
+body.theme-atelier .room-table td { border-bottom-color: var(--line); }
+body.theme-atelier .room-table input, body.theme-atelier .room-table select { color: var(--ink); background: transparent; }
+body.theme-atelier .room-table input:hover, body.theme-atelier .room-table select:hover, body.theme-atelier .room-table input:focus { background: #111110; border-color: var(--line); }
+body.theme-atelier .resume { background: #1b1a17; border-color: #3a3835; }
+body.theme-atelier .north-cand { background: #111110; border-color: var(--line); }
+/* 読み込み画面 */
+body.theme-atelier .drop { background: radial-gradient(900px 500px at 30% 18%, #1c1b19, #0f0f0e); }
+body.theme-atelier .drop-card { background: #151514; border: 1px solid var(--line); box-shadow: none; border-radius: 2px; padding: 48px 44px; }
+body.theme-atelier .drop-card h1 { font-family: var(--serif); font-weight: 500; font-size: 28px; letter-spacing: 0.12em; color: var(--ink); }
+body.theme-atelier .drop-card p { color: var(--ink2); }
+body.theme-atelier .dropzone { background: #111110; border: 1px dashed #3b3935; border-radius: 2px; }
+body.theme-atelier .dropzone.hover { border-color: var(--accent); background: var(--accent-soft); }
+body.theme-atelier .flow div { background: #111110; border: 1px solid var(--line); color: var(--ink2); border-radius: 2px; }
+body.theme-atelier .flow b { color: var(--ink); font-family: var(--serif); font-weight: 500; }
+/* 図面ビュー・日照 */
+body.theme-atelier .plan-view { background: #0e0e0d; }
+body.theme-atelier .plan-view .sheet { box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); border-radius: 0; }
+body.theme-atelier .overlay-bar { background: rgba(12, 12, 11, 0.78); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; }
+body.theme-atelier .overlay-bar .time { font-family: var(--latin); font-weight: 400; font-size: 30px; letter-spacing: 0.04em; }
+body.theme-atelier .chip { border-color: #3b3935; color: var(--ink2); border-radius: 1px; }
+body.theme-atelier .chip.on { background: var(--accent); border-color: var(--accent); color: #141413; }
+body.theme-atelier .play { background: var(--accent); color: #141413; }
+body.theme-atelier .overlay-bar input[type='range'] { accent-color: var(--accent); }
+body.theme-atelier .sun-badge { background: rgba(14, 14, 13, 0.8); color: var(--ink); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; box-shadow: none; }
+body.theme-atelier .legend { color: var(--ink2); }
+/* モーダル・トースト */
+body.theme-atelier .modal { background: #171716; color: var(--ink); border: 1px solid var(--line); border-radius: 2px; }
+body.theme-atelier .modal-head h3, body.theme-atelier .modal.progress h3 { font-family: var(--serif); font-weight: 500; letter-spacing: 0.08em; }
+body.theme-atelier .bar { background: #2a2926; }
+body.theme-atelier .bar-fill { background: var(--accent); }
+body.theme-atelier .progress-msg { color: var(--ink2); }
+body.theme-atelier .toast { background: #ebe6dd; color: #141413; border-radius: 2px; letter-spacing: 0.04em; }
+body.theme-atelier .toast.error { background: #c9654d; color: #fff; }
+body.theme-atelier .toast.ok { background: var(--accent); color: #141413; }
+/* プレゼン資料（デッキ）の背景 */
+body.theme-atelier .deck { background: #0e0e0d; }
+body.theme-atelier .deck-tools .btn { background: rgba(14, 14, 13, 0.85); }
+/* マテリアルボード */
+.matboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 8px; }
+.matboard .sw { display: flex; flex-direction: column; gap: 5px; }
+.matboard canvas { width: 100%; aspect-ratio: 1; border-radius: 2px; border: 1px solid var(--line); display: block; }
+.matboard .lb { font-size: 10.5px; color: var(--ink3); letter-spacing: 0.06em; line-height: 1.3; }
+.matboard .lb b { display: block; color: var(--ink2); font-weight: 400; font-size: 11px; }
+/* シネマ（プレゼン表示） */
+body.cinema .topbar, body.cinema .side, body.cinema .view-tools, body.cinema .nav-tools, body.cinema .attribution { display: none !important; }
+body.cinema #app { grid-template-rows: 1fr; }
+body.cinema .main { grid-template-columns: 1fr; }
+.cinema-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 56px 36px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.55)); color: #f2ede4; pointer-events: none; opacity: 0; transition: opacity 0.9s; }
+.cinema-cap.show { opacity: 1; }
+.cinema-cap .idx { font-family: 'Cormorant Garamond', serif; letter-spacing: 0.3em; font-size: 13px; color: rgba(242, 237, 228, 0.7); margin-bottom: 10px; }
+.cinema-cap h3 { font-family: 'Shippori Mincho', 'Noto Serif JP', serif; font-weight: 500; font-size: 30px; letter-spacing: 0.14em; margin: 0 0 8px; }
+.cinema-cap p { margin: 0; font-size: 14px; letter-spacing: 0.06em; line-height: 1.9; color: rgba(242, 237, 228, 0.85); max-width: 760px; font-weight: 300; }
+.cinema-ui { position: absolute; top: 18px; right: 22px; display: flex; gap: 8px; pointer-events: auto; opacity: 0.55; transition: opacity 0.3s; }
+.cinema-ui:hover { opacity: 1; }
+.cinema-ui .btn { background: rgba(14, 14, 13, 0.6); color: #f2ede4; border-color: rgba(255, 255, 255, 0.18); backdrop-filter: blur(8px); }
+.cinema-prog { position: absolute; left: 0; bottom: 0; height: 2px; background: #b89a6a; width: 0; transition: width 0.3s linear; pointer-events: none; }
+.cinema-brand { position: absolute; top: 22px; left: 28px; font-family: 'Cormorant Garamond', serif; letter-spacing: 0.34em; text-transform: uppercase; font-size: 13px; color: rgba(242, 237, 228, 0.75); pointer-events: none; }
+.cinema-brand small { display: block; font-family: 'Shippori Mincho', serif; letter-spacing: 0.16em; text-transform: none; font-size: 12px; margin-top: 4px; color: rgba(242, 237, 228, 0.6); }
+
+body.theme-atelier .topbar .btn, body.theme-atelier .proj-btns .btn { white-space: nowrap; }
+body.theme-atelier .step { padding: 10px 9px; font-size: 12.5px; }
+body.theme-atelier .project-name { width: 200px; }
+body.theme-atelier .dropzone .big { font-family: 'Cormorant Garamond', serif; font-weight: 300; font-size: 44px; color: var(--ink3); line-height: 1; }
+@media (max-width: 1500px) { body.theme-atelier .brand small { display: none; } body.theme-atelier .office { display: none; } }
+.cinema-cap { background: linear-gradient(transparent, rgba(0, 0, 0, 0.62) 55%, rgba(0, 0, 0, 0.78)); text-shadow: 0 1px 10px rgba(0, 0, 0, 0.6); }
+.cinema-brand, .cinema-brand small { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7); }
+.cinema-ui .btn { background: rgba(10, 10, 9, 0.72); }

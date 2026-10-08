@@ -365,8 +365,9 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
         case 'grass': {
           const blades = noise.fbm(x * 6, y * 6, N * 6, 64, 3);
           const patches = n1;
-          const c = lerp3(base, alt, patches * 0.8 + blades * 0.2);
-          set(i, tint(c, 0.8 + 0.4 * blades), blades, 0.95);
+          // 明暗差を抑えた落ち着いた芝（粒が目立たないように）
+          const c = lerp3(base, alt, patches * 0.7 + blades * 0.3);
+          set(i, tint(c, 0.93 + 0.1 * blades), blades, 0.95);
           break;
         }
         case 'asphalt': {

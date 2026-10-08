@@ -48,14 +48,38 @@ export class App {
         emit('project');
       },
     });
+    // テーマ（アトリエ = 設計事務所向けの新しい見た目。クラシック = 従来）
+    let theme = 'atelier';
+    try {
+      theme = localStorage.getItem('uiTheme') === 'classic' ? 'classic' : 'atelier';
+    } catch {
+      // 保存できない環境
+    }
+    const applyTheme = () => document.body.classList.toggle('theme-atelier', theme === 'atelier');
+    applyTheme();
+    const themeBtn = h('button', { class: 'btn sm', title: '見た目を切り替える（アトリエ／クラシック）' }, theme === 'atelier' ? '◐ クラシック表示' : '◑ アトリエ表示');
+    themeBtn.onclick = () => {
+      theme = theme === 'atelier' ? 'classic' : 'atelier';
+      try {
+        localStorage.setItem('uiTheme', theme);
+      } catch {
+        // 保存できない環境
+      }
+      applyTheme();
+      themeBtn.textContent = theme === 'atelier' ? '◐ クラシック表示' : '◑ アトリエ表示';
+    };
+    const office = h('div', { class: 'office' }, state.company || '');
+    on('project', () => (office.textContent = state.company || ''));
     const top = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'brand' }, h('div', { class: 'brand-mark' }, '家'), h('div', null, '間取りプレゼン', h('small', null, '平面図PDF → パース・動画・日照検討'))),
+      h('div', { class: 'brand' }, h('div', { class: 'brand-mark' }, '家'), h('div', null, h('div', { class: 'wordmark' }, 'Atelier'), h('small', null, '間取りプレゼン ─ 図面から、提案のすべてを'))),
       this.stepBar,
       h('div', { class: 'spacer' }),
+      office,
       nameInput,
       this.buildProjectButtons(),
+      themeBtn,
     );
     this.viewerHost = h('div', { id: 'viewer3d', class: 'view' });
     this.navBar = h('div', { class: 'nav-tools' });

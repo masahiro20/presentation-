@@ -9,7 +9,7 @@
 import { download } from '../app/dom';
 import { formatHM, keyDates } from '../sun/solar';
 import { currentPlaced } from './building';
-import { study, visibleNeighbors } from './state';
+import { hiddenNeighbors, study, visibleNeighbors } from './state';
 import { DEM_LABEL } from './terrain';
 import { NEIGHBOR_SOURCE_LABEL, frameToLocal } from './types';
 import type { MeasurePoint, Neighbor, NeighborSource } from './types';
@@ -84,9 +84,10 @@ export function assumptionItems(): AssumptionItem[] {
     items.push({ key: 'dims', text: '建物なし（土地のみ）' });
   }
   const c = neighborCounts();
+  const hidden = hiddenNeighbors().length;
   items.push({
     key: 'neighbors',
-    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}）`,
+    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}${hidden ? `・隠した ${hidden}` : ''}）`,
     warn: c.estimated > 0,
   });
   items.push({ key: 'terrain', text: `地形 ${demShort(study.grid?.source)}` });
@@ -250,7 +251,7 @@ export function buildReportHtml(): string {
       ['緯度・経度', `${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`],
       ['地盤高', ge != null ? `T.P. ${ge.toFixed(1)} m（${esc(DEM_LABEL[demSrc ?? 'flat'] ?? demSrc ?? '')}）` : '未取得'],
       ['敷地面積', area != null ? `約 ${area.toFixed(1)} m²（約 ${(area / 3.305785).toFixed(1)} 坪）` : ''],
-      ['周辺建物', `${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）`],
+      ['周辺建物', `${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${hiddenNeighbors().length ? `。ほかに隠した建物 ${hiddenNeighbors().length}棟（影・解析に含めていません）` : ''}`],
     ];
     const left = `${dl(rows)}<h3>周辺建物の出典</h3>${srcHtml}${notes}${
       study.horizon ? `<p class="note">周囲の山・丘による日照の遮りを考慮しています（半径約 ${study.horizon.radiusKm} km の地形）。</p>` : ''

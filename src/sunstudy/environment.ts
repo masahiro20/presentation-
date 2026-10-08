@@ -10,7 +10,7 @@ import { fetchAerial } from '../sun/geo';
 import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neighbors';
 import type { StudyScene } from './scene';
 import { clearGroup } from './scene';
-import { emit, study, visibleNeighbors } from './state';
+import { emit, hiddenNeighbors, study, visibleNeighbors } from './state';
 import { buildTerrainMesh, fetchHeightGrid, fetchHorizonProfile, flatGrid, minHeightInRing, sampleHeight } from './terrain';
 import { enToWorld, frameToLocal } from './types';
 import type { Neighbor } from './types';
@@ -160,19 +160,70 @@ function sitePolygonLocal(): { e: number; n: number }[] | null {
   return Math.abs(polygonArea(pts)) > 0 ? pts : null;
 }
 
-/** 敷地内（または建物の足跡に重なる）の自動取得建物を除いた一覧 */
-export function neighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
+/** 敷地内（または建物の足跡に重なる）の自動取得建物を list から除く（手動の隣家はそのまま） */
+function excludeOnSite(list: Neighbor[], footprintEN: { e: number; n: number }[] | null): Neighbor[] {
   const polys: { e: number; n: number }[][] = [];
   const site = sitePolygonEN();
   if (site) polys.push(site);
   if (footprintEN && footprintEN.length >= 3) polys.push(footprintEN);
-  const list = visibleNeighbors();
   if (!polys.length) return list;
   const auto = excludeOverlapping(
     list.filter((n) => n.source !== 'manual'),
     polys,
   );
   return [...list.filter((n) => n.source === 'manual'), ...auto];
+}
+
+/** 敷地内（または建物の足跡に重なる）の自動取得建物と、隠した建物を除いた一覧（3D・影・解析に使う） */
+export function neighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
+  return excludeOnSite(visibleNeighbors(), footprintEN);
+}
+
+/** 隠した建物のうち、表示していれば 3D に出るもの（敷地内で自動的に外れる建物は除く）。半透明の表示に使う */
+export function hiddenNeighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
+  return excludeOnSite(hiddenNeighbors(), footprintEN);
+}
+
+/** 敷地の輪郭・建物の足跡に重なるため自動で外している（隠してはいない）自動取得の建物の数 */
+export function siteExcludedCount(footprintEN: { e: number; n: number }[] | null): number {
+  const vis = visibleNeighbors();
+  return vis.length - excludeOnSite(vis, footprintEN).length;
+}
+
+/** 周辺建物の足元の高さ（ワールド y）。rebuildEnvironment と半透明の表示で同じものを使う */
+const neighborGroundY = (e: number, n: number) => groundY(e, n) - 0.3;
+
+/**
+ * 隠した建物の半透明の表示（選んで隠すモードの間だけ groups.select に入れる）。
+ * 既定は不透明度 25 %・深度を書かない。影を落とさない／受けない。userData: { neighborId, ghost: true, noShadow: true, overlay: true }
+ * （noShadow は bakeWorldTriangles、overlay は studyMeshFilter で除かれるので、どの解析の BVH にも入らない）。
+ * material を渡すと全メッシュで共有し（userData.sharedMaterial = true。clearGroup で解放しない）、無ければ新しく作る
+ */
+export function buildNeighborGhosts(list: Neighbor[], opts: { material?: THREE.Material } = {}): THREE.Group {
+  const group = buildNeighborMeshes(
+    list.map((n) => ({ ...n, hidden: false })),
+    { groundY: neighborGroundY, aerial: null },
+  );
+  group.name = 'neighbor-ghosts';
+  const shared = !!opts.material;
+  const mat = opts.material ?? ghostMaterial();
+  group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const id = m.userData.neighborId as string;
+    // buildNeighborMeshes の屋根・壁のマテリアルは使わない（描画しないので GPU には載っていない）
+    m.material = mat;
+    m.castShadow = false;
+    m.receiveShadow = false;
+    m.renderOrder = 3;
+    m.userData = { neighborId: id, ghost: true, noShadow: true, overlay: true, ...(shared ? { sharedMaterial: true } : {}) };
+  });
+  return group;
+}
+
+/** 隠した建物の半透明のマテリアル（明るい灰色・不透明度 25 %・深度を書かない） */
+export function ghostMaterial(color = '#c9d1da', opacity = 0.25): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, toneMapped: false });
 }
 
 /** state からシーンの地形・周辺建物・敷地を作り直す */
@@ -191,7 +242,7 @@ export function rebuildEnvironment(scene: StudyScene, footprintEN: { e: number; 
   scene.groups.terrain.add(terrain);
   const list = neighborsForScene(footprintEN);
   for (const n of list) n.baseElev = minHeightInRing(g, n.ring);
-  const meshes = buildNeighborMeshes(list, { groundY: (e, n) => groundY(e, n) - 0.3, aerial: study.aerial });
+  const meshes = buildNeighborMeshes(list, { groundY: neighborGroundY, aerial: study.aerial });
   meshes.visible = study.show.neighbors;
   scene.groups.neighbors.add(meshes);
   // 敷地の輪郭（地面に沿った線）とピン

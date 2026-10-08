@@ -7,6 +7,7 @@
 .map-root { position: absolute; inset: 0; background: #e9e6df; }
 .map-root canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab; }
 .map-root canvas.placing { cursor: crosshair; }
+.map-root canvas.picking { cursor: crosshair; }
 .map-root .map-offline-note { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); z-index: 3; width: min(560px, calc(100% - 28px)); box-shadow: 0 6px 24px rgba(0,0,0,.18); line-height: 1.6; }
 .map-root canvas.dragging { cursor: grabbing; }
 .map-tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
@@ -131,3 +132,17 @@ body.presenting .sun-badge b { font-size: 22px; }
 .coord-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink3); margin: 2px 0 0; line-height: 1.5; }
 .coord-row .coord-dms { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
 .coord-row .btn.sm { padding: 3px 9px; font-size: 11.5px; }
+
+/* 周辺建物を選んで隠す（steps/neighborHide.ts）: ステージ上の操作バー・範囲選択の矩形・隠した建物の一覧 */
+.nb-select-bar { background: rgba(24,26,30,0.9); color: #fff; border-radius: 12px; padding: 7px 10px; font-size: 12.5px; box-shadow: var(--shadow); max-width: 520px; box-sizing: border-box; }
+.nb-select-bar .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.nb-select-bar .help { font-size: 11.5px; color: #c4c7cc; margin-top: 5px; line-height: 1.5; }
+.nb-select-bar .count { font-weight: 600; margin-right: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.nb-select-bar .btn.sm:disabled { opacity: 0.45; cursor: default; }
+.nb-select-bar .btn.ghost { color: #fff; border-color: #50555d; }
+.nb-select-rect { position: absolute; border: 1.5px dashed #e5531f; background: rgba(229,83,31,0.12); pointer-events: none; z-index: 4; box-sizing: border-box; }
+details.nb-hidden { margin: 6px 0; }
+details.nb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); margin: 4px 0; }
+.nb-hidden-row { display: flex; align-items: center; gap: 8px; border: 1px dashed #c9c3b8; border-radius: 8px; padding: 5px 8px; margin: 5px 0; font-size: 12.5px; background: #faf8f5; }
+.nb-hidden-row .nb-hidden-name { flex: 1; min-width: 0; }
+.nb-hidden-row .meta { display: block; color: var(--ink3); font-size: 11.5px; }

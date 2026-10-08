@@ -85,7 +85,7 @@ const handlers = new Map<string, Set<Handler>>();
  *  'frame'      ピン位置・住所が変わった
  *  'site'       敷地ポリゴンが変わった
  *  'env'        地形・航空写真・周辺建物の取得状況が変わった（再構築が必要）
- *  'neighbors'  周辺建物の一覧が変わった（手動追加・高さ修正・削除）
+ *  'neighbors'  周辺建物の一覧が変わった（手動追加・高さ修正・隠す／戻す・削除）
  *  'model'      3D データを読み込んだ／差し替えた
  *  'placement'  単位・向き・位置・高さ・表示が変わった
  *  'points'     測定点が変わった
@@ -105,12 +105,65 @@ export function emit(ev: string, payload?: unknown) {
 let idc = 0;
 export const uid = (p = 'id') => `${p}-${Date.now().toString(36)}-${(idc++).toString(36)}`;
 
+/** 上書き（高さ・非表示）を適用した周辺建物（隠したものも含む）。手動の隣家は n.hidden、自動取得の建物は neighborOverrides で隠す */
+export function effectiveNeighbors(): Neighbor[] {
+  return study.neighbors.map((n) => {
+    const o = study.neighborOverrides[n.id];
+    return o ? { ...n, height: o.height ?? n.height, hidden: o.hidden ?? n.hidden, heightKind: o.height != null ? ('manual' as const) : n.heightKind } : n;
+  });
+}
+
 /** 表示中の周辺建物（上書きを適用） */
 export function visibleNeighbors(): Neighbor[] {
-  return study.neighbors
-    .map((n) => {
-      const o = study.neighborOverrides[n.id];
-      return o ? { ...n, height: o.height ?? n.height, hidden: o.hidden ?? n.hidden, heightKind: o.height != null ? ('manual' as const) : n.heightKind } : n;
-    })
-    .filter((n) => !n.hidden);
+  return effectiveNeighbors().filter((n) => !n.hidden);
+}
+
+/** 隠した周辺建物（上書きを適用。手動の隣家で隠したものも含む）。影・解析・地図の表示から外れている */
+export function hiddenNeighbors(): Neighbor[] {
+  return effectiveNeighbors().filter((n) => !!n.hidden);
+}
+
+/**
+ * 周辺建物を隠す／戻す。自動取得の建物は neighborOverrides[id].hidden に、手動の隣家は n.hidden に書く
+ * （手動の隣家も消さずに隠すので「戻す」で戻せる。消すのは別の「削除」）。
+ * 戻すときは上書きの hidden を外し（元データが隠れていなければ）、空になった上書きは消す。
+ * 1 棟でも変わったら 'neighbors' を 1 回だけ発火する（古い解析結果はそこで捨てられる）。変わった棟数を返す
+ */
+export function setNeighborsHidden(ids: string[], hidden: boolean): number {
+  const want = new Set(ids);
+  let changed = 0;
+  for (const n of study.neighbors) {
+    if (!want.has(n.id)) continue;
+    const o = study.neighborOverrides[n.id];
+    const cur = !!(o?.hidden ?? n.hidden);
+    if (n.source === 'manual') {
+      if (hidden) n.hidden = true;
+      else delete n.hidden;
+      // 手動の隣家に上書きの hidden は使わない（古いデータに残っていても外す）
+      if (o && 'hidden' in o) {
+        const rest = { ...o };
+        delete rest.hidden;
+        if (Object.keys(rest).length) study.neighborOverrides[n.id] = rest;
+        else delete study.neighborOverrides[n.id];
+      }
+    } else {
+      const next: { height?: number; hidden?: boolean } = { ...(o ?? {}) };
+      if (hidden) next.hidden = true;
+      else if (n.hidden) next.hidden = false;
+      else delete next.hidden;
+      if (Object.keys(next).length) study.neighborOverrides[n.id] = next;
+      else delete study.neighborOverrides[n.id];
+    }
+    if (cur !== hidden) changed++;
+  }
+  if (changed) emit('neighbors');
+  return changed;
+}
+
+/** 隠した周辺建物をすべて戻す（'neighbors' を 1 回だけ発火）。戻した棟数を返す */
+export function restoreAllNeighbors(): number {
+  return setNeighborsHidden(
+    hiddenNeighbors().map((n) => n.id),
+    false,
+  );
 }

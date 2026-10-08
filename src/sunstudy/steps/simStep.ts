@@ -1,7 +1,8 @@
 /**
  * ステップ 3「日照シミュレーション」
- *  ステージ: 時刻バー（再生・日付チップ）、太陽バッジ、視点ボタン、前提チップ、出典、隣家の編集ポップアップ
- *  サイド: 建設地と建物／表示／周辺建物の修正／日当たりの解析（地面・面の日照時間マップ、測定点、日影図、季節比較の撮影、
+ *  ステージ: 時刻バー（再生・日付チップ）、太陽バッジ、視点ボタン、前提チップ、出典、隣家の編集ポップアップ、
+ *          建物を選んで隠すときの操作バー（neighborHide.ts）
+ *  サイド: 建設地と建物／表示／周辺建物の修正（選んで隠す・隠した建物の一覧・要確認の隣家・手動追加）／日当たりの解析（地面・面の日照時間マップ、測定点、日影図、季節比較の撮影、
  *          タイムラプス動画、レポート・プロジェクト保存）
  *
  * ワールド: X=東, Z=南(-Z=北), Y=上。原点 = ピン、Y=0 = ピン位置の地盤高。太陽方向は sunDirectionWorld(az, elev, 0)。時刻は JST。
@@ -14,18 +15,19 @@ import type { CameraProgram } from '../../video/paths';
 import { recordProgram } from '../../video/recorder';
 import { facadeSunHours, groundHeatmapMesh, groundSunHoursStudy, measureMarker, measurePointHours, shadowDiagramStudy, studyDates } from '../analysis';
 import { buildingCenter, buildingExclusionEN, buildingExtent, buildingFootprintEN, currentPlaced, ensurePlaced } from '../building';
-import { groundYWorld, loadEnvironment, rebuildEnvironment, sitePolygonWorld } from '../environment';
+import { groundYWorld, loadEnvironment, rebuildEnvironment, siteExcludedCount, sitePolygonWorld } from '../environment';
 import { makeManualNeighbor } from '../neighbors';
 import { downloadProject } from '../project';
 import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport } from '../report';
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
-import { emit, on, study, uid, visibleNeighbors } from '../state';
+import { emit, hiddenNeighbors, on, setNeighborsHidden, study, uid, visibleNeighbors } from '../state';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
 import type { Neighbor, NeighborSource } from '../types';
+import { createNeighborHide } from './neighborHide';
 
 // ---------------------------------------------------------------------------
 // モジュールの状態（ステップを出入りしても残す）
@@ -35,8 +37,9 @@ import type { Neighbor, NeighborSource } from '../types';
 let envVersion = 0;
 let builtVersion = -1;
 for (const ev of ['env', 'neighbors', 'site', 'placement', 'model', 'frame']) on(ev, () => envVersion++);
-// 建物の配置・敷地・場所が変わったら、古い解析結果の表示は捨てる（env / neighbors は画面側の処理で捨てる）
-for (const ev of ['site', 'placement', 'model', 'frame']) on(ev, () => dropOverlays());
+// 建物の配置・敷地・場所・周辺建物（隠す／戻す・高さ・追加・削除。建設地の地図で隠したときも）が変わったら、古い解析結果の表示は捨てる
+// （env は読み込み中の途中経過でも発火するので画面側の処理で捨てる）
+for (const ev of ['site', 'placement', 'model', 'frame', 'neighbors']) on(ev, () => dropOverlays());
 
 let raf = 0;
 /** 地面の日照時間マップ・面の日照時間（overlay グループに入れたまま残す） */
@@ -298,10 +301,13 @@ export const simStep: StudyStep = {
       sunPath.setVisible(study.show.sunPath);
       scene.invalidate();
     };
+    /** 周辺建物を作り直した後に呼ぶ（選んで隠すモードの半透明の表示・選択・隠した建物の一覧。下で設定） */
+    let afterEnvRebuild: (() => void) | null = null;
     const rebuildEnv = () => {
       rebuildEnvironment(scene, buildingExclusionEN());
       builtVersion = envVersion;
       applyShow();
+      afterEnvRebuild?.();
     };
     if (!scene.groups.terrain.children.length || builtVersion !== envVersion) rebuildEnv();
     else applyShow();
@@ -611,11 +617,12 @@ export const simStep: StudyStep = {
         }),
         label,
       );
+    const neighborsCheck = showCheck('neighbors', '周辺建物');
     side.appendChild(
       section(
         '表示',
         showCheck('aerial', '航空写真（地面に貼る）', () => rebuildEnv()),
-        showCheck('neighbors', '周辺建物'),
+        neighborsCheck,
         showCheck('sunPath', '太陽の通り道と方位リング'),
         showCheck('site', '敷地の輪郭'),
         showCheck('points', '測定点'),
@@ -625,20 +632,37 @@ export const simStep: StudyStep = {
     );
 
     // ---- サイド 3: 周辺建物の修正 ----
-    const setOverride = (id: string, o: { height?: number; hidden?: boolean }) => {
+    /** 高さの修正（手動の隣家は本体を、自動取得の建物は上書きを書き換える） */
+    const setHeight = (id: string, height: number) => {
       const n = study.neighbors.find((x) => x.id === id);
-      if (!n) return;
+      if (!n || !(height > 0)) return;
       if (n.source === 'manual') {
-        if (o.height != null && o.height > 0) {
-          n.height = o.height;
-          n.heightKind = 'manual';
-        }
-        if (o.hidden) study.neighbors = study.neighbors.filter((x) => x.id !== id);
+        n.height = height;
+        n.heightKind = 'manual';
       } else {
         const cur = study.neighborOverrides[id] ?? {};
-        study.neighborOverrides[id] = { ...cur, ...(o.height != null && o.height > 0 ? { height: Math.round(o.height * 10) / 10 } : {}), ...(o.hidden != null ? { hidden: o.hidden } : {}) };
+        study.neighborOverrides[id] = { ...cur, height: Math.round(height * 10) / 10 };
       }
       emit('neighbors');
+    };
+    /** 隠す（影・解析・地図から外す。「隠した建物」から戻せる） */
+    const hideIds = (ids: string[]) => {
+      const k = setNeighborsHidden(ids, true);
+      if (k) toast(`${k} 棟を隠しました（影・解析からも外しています。「隠した建物」から戻せます）`, 'ok');
+    };
+    /** 手動で追加した隣家を消す（戻せない） */
+    const deleteManual = (id: string) => {
+      study.neighbors = study.neighbors.filter((x) => x.id !== id);
+      delete study.neighborOverrides[id];
+      emit('neighbors');
+      toast('手動で追加した隣家を削除しました', 'ok');
+    };
+    const nameOf = (n: Neighbor) => n.label ?? `${SRC_SHORT[n.source]}の建物`;
+    /** 建物（足跡、無ければピン）からの距離と、建物の中心から見た方向 */
+    const whereOf = (n: Neighbor) => {
+      const fp = buildingFootprintEN();
+      const ref: EN[] = fp && fp.length >= 3 ? fp : [{ e: 0, n: 0 }];
+      return `約 ${Math.round(ringDist(n.ring, ref))} m・${bearingName(bearingEN(worldToEN(center), ringCentroid(n.ring)))}側`;
     };
 
     let pop: HTMLElement | null = null;
@@ -657,6 +681,7 @@ export const simStep: StudyStep = {
         'div',
         { class: 'pop', style: `left:${left}px;top:${top}px` },
         h('h5', null, eff.label ?? '周辺建物', kindTag(eff.heightKind)),
+        h('div', { class: 'hint' }, whereOf(eff)),
         h('div', { class: 'hint' }, `出典: ${SRC_SHORT[eff.source]}${eff.heightKind === 'estimated' ? '（高さは建物の種類からの推定です）' : ''}`),
         h('div', { class: 'row' }, '高さ', hIn, 'm'),
         h('div', { class: 'row', style: 'flex-wrap:wrap' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => (hIn.value = String(v)) }, l))),
@@ -668,7 +693,7 @@ export const simStep: StudyStep = {
             {
               class: 'btn sm dark',
               onclick: () => {
-                setOverride(n.id, { height: +hIn.value });
+                setHeight(n.id, +hIn.value);
                 closePop();
               },
             },
@@ -678,13 +703,28 @@ export const simStep: StudyStep = {
             'button',
             {
               class: 'btn sm',
+              title: '影・解析・地図から外します（「隠した建物」から戻せます）',
               onclick: () => {
-                setOverride(n.id, { hidden: true });
                 closePop();
+                hideIds([n.id]);
               },
             },
-            n.source === 'manual' ? '削除' : '非表示にする',
+            '非表示にする',
           ),
+          n.source === 'manual'
+            ? h(
+                'button',
+                {
+                  class: 'btn sm',
+                  title: '手動で追加した隣家を消します（戻せません）',
+                  onclick: () => {
+                    closePop();
+                    deleteManual(n.id);
+                  },
+                },
+                '削除',
+              )
+            : null,
           h('button', { class: 'btn sm ghost', onclick: closePop }, '閉じる'),
         ),
       );
@@ -699,12 +739,12 @@ export const simStep: StudyStep = {
       const hIn = num(n.height, 1, 300, 0.1);
       const applyH = (v: number) => {
         if (!(v > 0)) return;
-        setOverride(n.id, { height: v });
+        setHeight(n.id, v);
       };
       return h(
         'div',
         { class: `nb-row ${done ? 'done' : ''}` },
-        h('div', null, h('b', null, n.label ?? `${SRC_SHORT[n.source]}の建物`), kindTag(n.heightKind), h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m`)),
+        h('div', null, h('b', null, nameOf(n)), kindTag(n.heightKind), h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m`)),
         h('div', { class: 'btn-row', style: 'margin:4px 0' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => applyH(v) }, l))),
         h(
           'div',
@@ -712,7 +752,7 @@ export const simStep: StudyStep = {
           hIn,
           h('span', { class: 'meta' }, 'm'),
           h('button', { class: 'btn sm', onclick: () => applyH(+hIn.value) }, '適用'),
-          h('button', { class: 'btn sm ghost', onclick: () => setOverride(n.id, { hidden: true }) }, '非表示'),
+          h('button', { class: 'btn sm ghost', title: '影・解析・地図から外します（「隠した建物」から戻せます）', onclick: () => hideIds([n.id]) }, '非表示'),
           h(
             'label',
             { class: 'check', style: 'margin:0 0 0 auto' },
@@ -733,7 +773,9 @@ export const simStep: StudyStep = {
     const renderNeighborList = () => {
       const list = visibleNeighbors();
       const c = neighborCounts(list);
-      nbSummary.textContent = `周辺建物 ${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）`;
+      const hiddenCount = hiddenNeighbors().length;
+      const onSite = siteExcludedCount(buildingExclusionEN());
+      nbSummary.textContent = `周辺建物 ${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${hiddenCount ? `・隠した建物 ${hiddenCount}棟` : ''}${onSite ? `。敷地・建物に重なる ${onSite}棟は自動で外しています` : ''}`;
       clear(nbList);
       const fp = buildingFootprintEN();
       const ref: EN[] = fp && fp.length >= 3 ? fp : [{ e: 0, n: 0 }];
@@ -774,10 +816,38 @@ export const simStep: StudyStep = {
       emit('neighbors');
       toast(`手動で追加した隣家 ${k} 棟を消しました`, 'ok');
     };
+    // 建物を選んで隠す／戻す（取り壊す既存の家・もう無い建物・形の違う建物・比較のために外したい建物）
+    const hide = createNeighborHide({
+      scene,
+      stage,
+      barHost: stageLeft,
+      exclusion: () => buildingExclusionEN(),
+      nameOf,
+      whereOf,
+      onModeChange: (onOff) => {
+        closePop();
+        if (!onOff) return;
+        if (placing) setPlacing(false);
+        // 周辺建物の表示を切っていたら入れる（見えない建物は選べない）
+        if (!study.show.neighbors) {
+          study.show.neighbors = true;
+          const cb = neighborsCheck.querySelector('input');
+          if (cb) cb.checked = true;
+          applyShow();
+        }
+      },
+    });
+    afterEnvRebuild = () => hide.refresh();
+    disposers.push(() => {
+      afterEnvRebuild = null;
+      hide.dispose();
+    });
     neighborSection = section(
       '周辺建物の修正',
-      h('p', { class: 'hint' }, '建物をクリックすると高さを直せます（推定値の建物は薄い茶色）。'),
+      h('p', { class: 'hint' }, '建物をクリックすると高さを直せます（推定値の建物は薄い茶色）。取り壊す既存の家・もう無い建物・形の違う建物は「建物を選んで隠す」で影と解析から外せます。'),
       nbSummary,
+      h('div', { class: 'btn-row' }, hide.button),
+      hide.hiddenList,
       nbList,
       h('div', { class: 'field-label', style: 'margin-top:12px' }, '隣家を手動で追加（建物の中心からの方向・距離）'),
       h('div', { class: 'manual-grid' }, field('方向', dirSel), field('距離 m', distIn), field('幅 m', widIn), field('奥行 m', depIn), field('高さ m', hgtIn)),
@@ -798,10 +868,19 @@ export const simStep: StudyStep = {
       openPop(n, e);
     };
     const onDown = (e: PointerEvent) => {
+      // 建物を選んで隠すモード中はそちらで扱う（Shift＋ドラッグの範囲選択は回転に渡さない）
+      if (hide.onPointerDown(e)) {
+        down = null;
+        return;
+      }
       if (e.button !== 0) return;
       down = { x: e.clientX, y: e.clientY, t: performance.now() };
     };
     const onUp = (e: PointerEvent) => {
+      if (hide.onPointerUp(e)) {
+        down = null;
+        return;
+      }
       if (e.button !== 0 || !down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const dt = performance.now() - down.t;
@@ -947,6 +1026,7 @@ export const simStep: StudyStep = {
     };
     const placeBtn = h('button', { class: 'btn sm' }, '＋ クリックで測定点を置く') as HTMLButtonElement;
     const setPlacing = (p: boolean) => {
+      if (p && hide.active()) hide.setActive(false);
       placing = p;
       placeBtn.classList.toggle('dark', p);
       placeBtn.textContent = p ? '測定点を置くのをやめる（Esc）' : '＋ クリックで測定点を置く';
@@ -1243,6 +1323,8 @@ export const simStep: StudyStep = {
       const label = `日照タイムラプス（${d.label}）`;
       const [w, hh] = tlRes === '1080' ? [1920, 1080] : [1280, 720];
       if (ui.playing) setPlaying(false);
+      // 選択の強調・隠した建物の半透明表示を動画に写さない
+      if (hide.active()) hide.setActive(false);
       const pm = progressModal(`${label}を書き出しています（約${dur}秒の動画）`);
       let lastSlot = -1;
       let result: Awaited<ReturnType<typeof recordProgram>> | null = null;
@@ -1403,6 +1485,7 @@ export const simStep: StudyStep = {
       } else if (e.key === 'Escape') {
         if (isPresenting()) setPresenting(false);
         if (placing) setPlacing(false);
+        if (hide.active()) hide.setActive(false);
         closePop();
       }
     };
@@ -1426,7 +1509,7 @@ export const simStep: StudyStep = {
     });
     disposers.push(
       on('neighbors', () => {
-        dropOverlays();
+        // 古い解析結果はモジュールの 'neighbors' の処理（dropOverlays）で捨てている
         rebuildEnv();
         renderNeighborList();
         renderSite();

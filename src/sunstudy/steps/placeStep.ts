@@ -615,7 +615,7 @@ export const placeStep: StudyStep = {
       areaOut.style.display = a != null ? '' : 'none';
       if (a != null) areaOut.textContent = `敷地面積 ${areaText(a)}（${study.sitePolygon.length} 点の輪郭。地図上で計算した概算です）`;
       polyInfo.style.display = has ? 'none' : '';
-      polyInfo.textContent = mode ? '地図上で敷地の角を順にクリックしてください。' : '敷地の輪郭はまだありません。描かなくても検討はできます（日影図の 5m／10m ラインは建物の外形 +2m の矩形を使います）。';
+      polyInfo.textContent = mode ? '地図上で敷地の角を順にクリックしてください。' : '敷地の輪郭はまだありません。描かなくても検討はできます（ただし日影図に敷地境界と 5m／10m ラインは描かれず、等時間日影線の到達距離は建物の輪郭から測ります）。';
       footprintHint.style.display = study.model ? '' : 'none';
       if (map) {
         try {

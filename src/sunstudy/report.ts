@@ -1,15 +1,20 @@
 /**
  * 印刷用レポート（A4 横・新しいウィンドウ・印刷ダイアログ）
  *  表紙（案件名・お客様・住所・緯度経度・作成日・会社）、建設地（地図画像・敷地・地盤高・データ出典）、
+ *  周辺建物の扱い（計算から除外・表示だけ隠した建物の表: 出典・高さ・理由・方向距離）、
  *  季節×時刻の比較画像、地面の日照時間マップ、建物の面の日照時間、測定点の表（季節別の日照時間と時間帯）、日影図、前提・注意事項
  *
  * 画像は dataURL を埋め込むので、1 ファイルで保存・共有できる。空の項目は省く。
+ * 日照の結果を載せるページ（比較画像・日照時間マップ・測定点・日影図）には、いつも周辺建物の扱いの注記
+ * （計算から除外した建物の理由ごとの数・表示だけ隠した建物の数）を付ける（disclosure.ts）。
  * ここで作る「前提の一行」（assumptionItems）は 3D 画面のチップにも使う。
  */
 import { download } from '../app/dom';
 import { formatHM, keyDates } from '../sun/solar';
 import { currentPlaced } from './building';
-import { hiddenNeighbors, study, visibleNeighbors } from './state';
+import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere } from './disclosure';
+import type { NeighborDisclosure } from './disclosure';
+import { analysisNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { DEM_LABEL } from './terrain';
 import { NEIGHBOR_SOURCE_LABEL, frameToLocal } from './types';
 import type { MeasurePoint, Neighbor, NeighborSource } from './types';
@@ -53,8 +58,8 @@ export function demShort(source: string | undefined | null): string {
   }
 }
 
-/** 表示中の周辺建物を高さの根拠で数える */
-export function neighborCounts(list: Neighbor[] = visibleNeighbors()): { total: number; measured: number; estimated: number; manual: number } {
+/** 周辺建物を高さの根拠で数える（既定は影・解析に入る建物 = 描く建物 + 表示だけ隠した建物） */
+export function neighborCounts(list: Neighbor[] = analysisNeighbors()): { total: number; measured: number; estimated: number; manual: number } {
   let measured = 0;
   let estimated = 0;
   let manual = 0;
@@ -84,10 +89,11 @@ export function assumptionItems(): AssumptionItem[] {
     items.push({ key: 'dims', text: '建物なし（土地のみ）' });
   }
   const c = neighborCounts();
-  const hidden = hiddenNeighbors().length;
+  const excluded = excludedNeighbors().length;
+  const viewOnly = viewOnlyNeighbors().length;
   items.push({
     key: 'neighbors',
-    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}${hidden ? `・隠した ${hidden}` : ''}）`,
+    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}${viewOnly ? `・表示だけ隠す ${viewOnly}` : ''}${excluded ? `・計算から除外 ${excluded}` : ''}）`,
     warn: c.estimated > 0,
   });
   items.push({ key: 'terrain', text: `地形 ${demShort(study.grid?.source)}` });
@@ -205,8 +211,31 @@ li{margin:.5mm 0}
 .toolbar button{font:inherit;font-size:10pt;padding:6px 12px;border-radius:6px;border:1px solid #999;background:#fff;cursor:pointer}
 .toolbar button.primary{background:#c9792f;border-color:#c9792f;color:#fff}
 .foot{position:absolute;left:14mm;right:14mm;bottom:6mm;font-size:8pt;color:#888;display:flex;justify-content:space-between}
+.disclose{font-size:8.5pt;color:#444;border-top:1px solid #ddd;margin-top:3mm;padding-top:1.5mm;line-height:1.5}
+.disclose div{margin:0}
+table.nbhide td.num{white-space:nowrap;text-align:right}
+table.nbhide td.reason{min-width:30mm}
+h3 .cnt{font-weight:400;color:#777;font-size:10pt;margin-left:2mm}
 @media print{body{background:#fff}.page{margin:0;width:auto;min-height:auto;box-shadow:none;padding:0}.toolbar{display:none}}
 `;
+
+/** 周辺建物の扱いの注記（日照の結果を載せるページの下）。neighborsInCalc = false は自建物のみの日影図 */
+function discloseHtml(d: NeighborDisclosure, neighborsInCalc = true): string {
+  return `<div class="disclose" data-role="disclosure">${disclosureLines({ neighborsInCalc, disclosure: d })
+    .map((t) => `<div>${esc(t)}</div>`)
+    .join('')}</div>`;
+}
+
+/** 隠した建物の表（# ・建物・出典・高さ・理由・方向・距離） */
+function hiddenTable(list: Neighbor[], mode: 'exclude' | 'view'): string {
+  const rows = list
+    .map((n, i) => {
+      const k = KIND_TAG[n.heightKind];
+      return `<tr><td class="num">${i + 1}</td><td>${esc(n.label ?? `${SOURCE_SHORT[n.source]}の建物`)}</td><td>${esc(SOURCE_SHORT[n.source])}</td><td class="num">${n.height.toFixed(1)} m<span class="tag ${k.cls}">${k.label}</span></td><td class="reason">${esc(hideReasonText(n))}</td><td>${esc(neighborWhere(n).text)}</td></tr>`;
+    })
+    .join('');
+  return `<table class="nbhide" data-mode="${mode}"><tr><th>#</th><th>建物</th><th>出典</th><th>高さ</th><th>理由</th><th>方向・距離（建物から）</th></tr>${rows}</table>`;
+}
 
 /** レポートの HTML 文字列を作る（画像は dataURL を埋め込む） */
 export function buildReportHtml(): string {
@@ -215,6 +244,9 @@ export function buildReportHtml(): string {
   const pages: string[] = [];
   const assume = assumptionLine();
   const foot = (n: number) => `<div class="foot"><span>${esc(study.name)}　日照検討レポート</span><span>${n}</span></div>`;
+  // 周辺建物の扱い（計算から除外・表示だけ隠した建物）。結果を載せるページに注記として付ける
+  const disc = neighborDisclosure();
+  const disclose = discloseHtml(disc);
 
   // 1) 表紙
   const coverRows: [string, string][] = [
@@ -233,7 +265,7 @@ export function buildReportHtml(): string {
     const ge = f.groundElev;
     const demSrc = study.grid?.source;
     const area = siteAreaM2();
-    const list = visibleNeighbors();
+    const list = analysisNeighbors();
     const srcs: NeighborSource[] = [...study.neighborSources];
     if (list.some((n) => n.source === 'manual') && !srcs.includes('manual')) srcs.push('manual');
     const srcHtml = srcs.length
@@ -251,7 +283,13 @@ export function buildReportHtml(): string {
       ['緯度・経度', `${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`],
       ['地盤高', ge != null ? `T.P. ${ge.toFixed(1)} m（${esc(DEM_LABEL[demSrc ?? 'flat'] ?? demSrc ?? '')}）` : '未取得'],
       ['敷地面積', area != null ? `約 ${area.toFixed(1)} m²（約 ${(area / 3.305785).toFixed(1)} 坪）` : ''],
-      ['周辺建物', `${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${hiddenNeighbors().length ? `。ほかに隠した建物 ${hiddenNeighbors().length}棟（影・解析に含めていません）` : ''}`],
+      [
+        '周辺建物',
+        esc(
+          `影・解析に含めた建物 ${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${disc.viewOnly.length ? `。うち表示だけ隠した建物 ${disc.viewOnly.length}棟（3D には描いていません）` : ''}`,
+        ),
+      ],
+      ['計算から除外', esc(disc.excluded.length ? `${disc.excluded.length}棟（${disc.byReason.map((x) => `${x.label} ${x.count}`).join('・')}）。一覧は「周辺建物の扱い」` : 'なし')],
     ];
     const left = `${dl(rows)}<h3>周辺建物の出典</h3>${srcHtml}${notes}${
       study.horizon ? `<p class="note">周囲の山・丘による日照の遮りを考慮しています（半径約 ${study.horizon.radiusKm} km の地形）。</p>` : ''
@@ -260,11 +298,22 @@ export function buildReportHtml(): string {
     pages.push(`<section class="page"><h2>建設地</h2><div class="grid2"><div>${left}</div><div>${right}</div></div>${foot(pages.length + 1)}</section>`);
   }
 
+  // 2b) 周辺建物の扱い（計算から除外・表示だけ隠した建物の表）
+  if (disc.excluded.length || disc.viewOnly.length) {
+    let body = '';
+    if (disc.excluded.length)
+      body += `<h3>計算から除外した周辺建物<span class="cnt">${disc.excluded.length} 棟（${esc(disc.byReason.map((x) => `${x.label} ${x.count}`).join('・'))}）</span></h3><p class="note">3D の表示・影・日照の解析・日影図のすべてから外しています。</p>${hiddenTable(disc.excluded, 'exclude')}`;
+    if (disc.viewOnly.length)
+      body += `<h3>表示だけ隠した建物<span class="cnt">${disc.viewOnly.length} 棟（影・解析には含む）</span></h3><p class="note">視点の妨げになるなどの理由で 3D には描いていませんが、影・日照の解析・日影図には含めています。</p>${hiddenTable(disc.viewOnly, 'view')}`;
+    if (disc.autoOnSite > 0) body += `<p class="note">ほかに、敷地の輪郭・計画建物の外形に重なる自動取得の建物 ${disc.autoOnSite} 棟は自動で除外しています。</p>`;
+    pages.push(`<section class="page" data-role="neighbor-hide"><h2>周辺建物の扱い</h2>${body}${foot(pages.length + 1)}</section>`);
+  }
+
   // 3) 季節×時刻の比較
   if (res.images.length) {
     const figs = res.images.map((im) => `<figure><img src="${im.url}" alt="${esc(im.label)}"><figcaption>${esc(im.label)}（JST）</figcaption></figure>`).join('');
     const cls = res.images.length <= 4 ? 'grid2' : res.images.length <= 6 ? 'grid3' : 'grid4';
-    pages.push(`<section class="page"><h2>季節×時刻の日当たり比較</h2><div class="${cls}">${figs}</div><div class="assume">${esc(assume)}</div>${foot(pages.length + 1)}</section>`);
+    pages.push(`<section class="page"><h2>季節×時刻の日当たり比較</h2><div class="${cls}">${figs}</div><div class="assume">${esc(assume)}</div>${disclose}${foot(pages.length + 1)}</section>`);
   }
 
   // 4) 日照時間マップ
@@ -273,7 +322,7 @@ export function buildReportHtml(): string {
     if (res.heatmapUrl) figs.push(`<figure><img src="${res.heatmapUrl}" alt="地面の日照時間マップ"><figcaption>地面の日照時間マップ${res.heatmapLabel ? `：${esc(res.heatmapLabel)}` : ''}（青=短い → 赤=長い）</figcaption></figure>`);
     if (res.facadeUrl) figs.push(`<figure><img src="${res.facadeUrl}" alt="建物の面の日照時間"><figcaption>建物の面の日照時間${res.facadeLabel ? `：${esc(res.facadeLabel)}` : ''}（青=短い → 赤=長い）</figcaption></figure>`);
     pages.push(
-      `<section class="page"><h2>日照時間マップ</h2><div class="${figs.length > 1 ? 'grid2' : ''}">${figs.join('')}</div><p class="note">直射日光が当たる時間の合計。地形・周辺建物・自建物の影を計算しています。${esc(assume)}</p>${foot(pages.length + 1)}</section>`,
+      `<section class="page"><h2>日照時間マップ</h2><div class="${figs.length > 1 ? 'grid2' : ''}">${figs.join('')}</div><p class="note">直射日光が当たる時間の合計。地形・周辺建物・自建物の影を計算しています。${esc(assume)}</p>${disclose}${foot(pages.length + 1)}</section>`,
     );
   }
 
@@ -294,16 +343,26 @@ export function buildReportHtml(): string {
       })
       .join('');
     pages.push(
-      `<section class="page"><h2>測定点の日照時間（季節別）</h2><table>${head}${body}</table><p class="note">窓の中心などに置いた点に直射日光が当たる時間の合計と、その時間帯（JST）。時間は 1 分刻みで判定したおよその値です。</p>${foot(pages.length + 1)}</section>`,
+      `<section class="page"><h2>測定点の日照時間（季節別）</h2><table>${head}${body}</table><p class="note">窓の中心などに置いた点に直射日光が当たる時間の合計と、その時間帯（JST）。時間は 1 分刻みで判定したおよその値です。</p>${disclose}${foot(pages.length + 1)}</section>`,
     );
   }
 
   // 6) 日影図
   if (res.diagramSvg) {
     const refLabel = res.diagramRef === 'outline' ? '建物の輪郭から最大' : '敷地境界から最大';
-    const summary = res.diagramSummary?.length ? `<ul>${res.diagramSummary.map((s) => `<li>${s.hour}時間日影: ${refLabel} 約${s.maxDist.toFixed(1)} m</li>`).join('')}</ul>` : '';
+    const role = (r?: 'limitNear' | 'limitFar') => (r === 'limitNear' ? '（5〜10m の規制）' : r === 'limitFar' ? '（10m 超の規制）' : '');
+    const summary = res.diagramSummary?.length ? `<ul>${res.diagramSummary.map((s) => `<li>${s.hour}時間日影${role(s.role)}: ${refLabel} 約${s.maxDist.toFixed(1)} m</li>`).join('')}</ul>` : '';
+    const di = res.diagramInfo;
+    const info = di
+      ? dl([
+          ['測定面', esc(di.plane)],
+          ['規制値', esc(di.regulation ?? 'なし（参考の 2〜5 時間）')],
+          ['時刻日影線', di.halfHour ? '30 分ごと' : '毎正時'],
+          ['周辺建物', di.includeNeighbors ? '含む' : '含まない（自建物のみ）'],
+        ])
+      : '';
     pages.push(
-      `<section class="page"><h2>日影図（冬至日・真太陽時）</h2><div class="grid2" style="grid-template-columns:2fr 1fr"><div class="diagram">${res.diagramSvg}</div><div>${summary}<div class="warnbox">本図は検討用であり、法規上の日影規制の判定・申請図ではありません。</div></div></div>${foot(pages.length + 1)}</section>`,
+      `<section class="page"><h2>日影図（冬至日・真太陽時）</h2><div class="grid2" style="grid-template-columns:2fr 1fr"><div class="diagram">${res.diagramSvg}</div><div>${info}${summary}<div class="warnbox">本図は検討用であり、法規上の日影規制の判定・申請図ではありません。${di?.regulation ? '規制時間の線を描くだけで、規制への適否は判定していません。' : ''}</div></div></div>${discloseHtml(disc, di ? di.includeNeighbors : true)}${foot(pages.length + 1)}</section>`,
     );
   }
 
@@ -318,6 +377,7 @@ export function buildReportHtml(): string {
     `周辺建物は ${study.neighborSources.length ? study.neighborSources.map((s) => NEIGHBOR_SOURCE_LABEL[s]).join('、') : '自動取得していません'}。「推定」と表示した建物の高さは建物の種類などから推定した値で、実際の高さと異なることがあります。隣家の高さが分かる場合は手入力で修正してください。`,
     '建物の寸法・方位・位置・GL は上記「前提」の値を用いています。3D データの単位の設定が違うと縮尺が変わります。',
     '樹木・塀・電柱など、データに無いものの影は含みません。窓ガラスの反射や空の明るさ（天空光）は含まず、直射日光のみを計算しています。',
+    `周辺建物の扱い: ${disclosureLines({ disclosure: disc }).join('。').replace(/^周辺建物の扱い: /, '')}。計算から除外した建物は理由とともに「周辺建物の扱い」に一覧にしています。「表示だけ隠した建物」は 3D の画面・画像には描いていませんが、影・日照の解析・日影図には含めています。`,
     '本資料は検討用であり、法規上の日影規制の判定・申請図ではありません。',
   ];
   pages.push(`<section class="page"><h2>前提・注意</h2><ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul><div class="assume">${esc(assume)}</div>${foot(pages.length + 1)}</section>`);

@@ -3,6 +3,12 @@
  *
  * loadEnvironment(): ピン位置を中心に DEM・航空写真・周辺建物を並行取得して state に入れる
  * rebuildEnvironment(): state からシーンの terrain / neighbors / site グループを作り直す
+ *
+ * 周辺建物の隠し方（state.ts）:
+ *  - 隠していない建物: groups.neighbors に描く（影を落とす・受ける、解析の遮蔽物）
+ *  - 表示だけ隠した建物（hideMode 'view'）: groups.neighbors に影だけのメッシュ（色も深度も書かない・castShadow）を入れる。
+ *    画面には描かないが、実時間の影と解析（groups.neighbors を表示に関わらず焼き込む）には残る
+ *  - 計算から除外した建物（hideMode 'exclude'）: 何も作らない（選んで隠すモードの半透明の表示は groups.select で、影・解析の外）
  */
 import * as THREE from 'three';
 import { polygonArea } from '../sun/align';
@@ -10,7 +16,7 @@ import { fetchAerial } from '../sun/geo';
 import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neighbors';
 import type { StudyScene } from './scene';
 import { clearGroup } from './scene';
-import { emit, hiddenNeighbors, study, visibleNeighbors } from './state';
+import { analysisNeighbors, emit, hiddenNeighbors, study, viewOnlyNeighbors, visibleNeighbors } from './state';
 import { buildTerrainMesh, fetchHeightGrid, fetchHorizonProfile, flatGrid, minHeightInRing, sampleHeight } from './terrain';
 import { enToWorld, frameToLocal } from './types';
 import type { Neighbor } from './types';
@@ -174,20 +180,30 @@ function excludeOnSite(list: Neighbor[], footprintEN: { e: number; n: number }[]
   return [...list.filter((n) => n.source === 'manual'), ...auto];
 }
 
-/** 敷地内（または建物の足跡に重なる）の自動取得建物と、隠した建物を除いた一覧（3D・影・解析に使う） */
+/** 敷地内（または建物の足跡に重なる）の自動取得建物と、隠した建物（隠し方を問わない）を除いた一覧（3D に描く。影・解析にはこれと表示だけ隠した建物が入る） */
 export function neighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
   return excludeOnSite(visibleNeighbors(), footprintEN);
 }
 
-/** 隠した建物のうち、表示していれば 3D に出るもの（敷地内で自動的に外れる建物は除く）。半透明の表示に使う */
+/** 表示だけ隠した建物のうち、敷地内で自動的に外れないもの（描かないが影だけのメッシュにして、実時間の影・解析に残す） */
+export function viewOnlyNeighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
+  return excludeOnSite(viewOnlyNeighbors(), footprintEN);
+}
+
+/** 影・解析に入る周辺建物（描く建物 + 表示だけ隠した建物。敷地内で自動的に外れる建物・計算から除外した建物は入らない） */
+export function analysisNeighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
+  return excludeOnSite(analysisNeighbors(), footprintEN);
+}
+
+/** 隠した建物（隠し方を問わない）のうち、表示していれば 3D に出るもの（敷地内で自動的に外れる建物は除く）。半透明の表示に使う */
 export function hiddenNeighborsForScene(footprintEN: { e: number; n: number }[] | null): Neighbor[] {
   return excludeOnSite(hiddenNeighbors(), footprintEN);
 }
 
-/** 敷地の輪郭・建物の足跡に重なるため自動で外している（隠してはいない）自動取得の建物の数 */
+/** 敷地の輪郭・建物の足跡に重なるため自動で外している（計算から除外してはいない）自動取得の建物の数。表示だけ隠した建物も数える */
 export function siteExcludedCount(footprintEN: { e: number; n: number }[] | null): number {
-  const vis = visibleNeighbors();
-  return vis.length - excludeOnSite(vis, footprintEN).length;
+  const list = analysisNeighbors();
+  return list.length - excludeOnSite(list, footprintEN).length;
 }
 
 /** 周辺建物の足元の高さ（ワールド y）。rebuildEnvironment と半透明の表示で同じものを使う */
@@ -197,9 +213,11 @@ const neighborGroundY = (e: number, n: number) => groundY(e, n) - 0.3;
  * 隠した建物の半透明の表示（選んで隠すモードの間だけ groups.select に入れる）。
  * 既定は不透明度 25 %・深度を書かない。影を落とさない／受けない。userData: { neighborId, ghost: true, noShadow: true, overlay: true }
  * （noShadow は bakeWorldTriangles、overlay は studyMeshFilter で除かれるので、どの解析の BVH にも入らない）。
+ * 表示だけ隠した建物（hideMode 'view'）は userData.viewOnly = true で、viewMaterial があればそれを使う（計算から除外した建物と色を分ける）。
  * material を渡すと全メッシュで共有し（userData.sharedMaterial = true。clearGroup で解放しない）、無ければ新しく作る
  */
-export function buildNeighborGhosts(list: Neighbor[], opts: { material?: THREE.Material } = {}): THREE.Group {
+export function buildNeighborGhosts(list: Neighbor[], opts: { material?: THREE.Material; viewMaterial?: THREE.Material } = {}): THREE.Group {
+  const viewIds = new Set(list.filter((n) => n.hidden && n.hideMode === 'view').map((n) => n.id));
   const group = buildNeighborMeshes(
     list.map((n) => ({ ...n, hidden: false })),
     { groundY: neighborGroundY, aerial: null },
@@ -207,16 +225,51 @@ export function buildNeighborGhosts(list: Neighbor[], opts: { material?: THREE.M
   group.name = 'neighbor-ghosts';
   const shared = !!opts.material;
   const mat = opts.material ?? ghostMaterial();
+  const viewMat = opts.viewMaterial ?? mat;
   group.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh) return;
     const id = m.userData.neighborId as string;
+    const viewOnly = viewIds.has(id);
     // buildNeighborMeshes の屋根・壁のマテリアルは使わない（描画しないので GPU には載っていない）
-    m.material = mat;
+    m.material = viewOnly ? viewMat : mat;
     m.castShadow = false;
     m.receiveShadow = false;
     m.renderOrder = 3;
-    m.userData = { neighborId: id, ghost: true, noShadow: true, overlay: true, ...(shared ? { sharedMaterial: true } : {}) };
+    m.userData = { neighborId: id, ghost: true, noShadow: true, overlay: true, ...(viewOnly ? { viewOnly: true } : {}), ...(shared ? { sharedMaterial: true } : {}) };
+  });
+  return group;
+}
+
+/** 表示だけ隠した建物の影だけのマテリアル: 色も深度も書かない（画面には何も描かない）。影のマップには three が深度のマテリアルで描く */
+export function shadowOnlyMaterial(): THREE.MeshBasicMaterial {
+  const m = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, toneMapped: false });
+  m.name = 'neighbor-shadow-only';
+  return m;
+}
+
+/**
+ * 表示だけ隠した建物の影だけのメッシュ（groups.neighbors に入れる）: castShadow = true（実時間の影のマップに描かれる）、
+ * receiveShadow = false、マテリアルは colorWrite = false・depthWrite = false（画面には描かない）、クリックでは選べない（raycast なし）。
+ * userData: { neighbor: true, neighborId, shadowOnly: true, viewHidden: true, matKey: 'neighbor' } — noShadow / overlay は付けないので、
+ * 解析の遮蔽物（buildStudyOccluder の groups.neighbors。表示を無視して焼き込む）にそのまま入る
+ */
+export function buildNeighborShadowCasters(list: Neighbor[], opts: { groundY?: (e: number, n: number) => number; material?: THREE.Material } = {}): THREE.Group {
+  const group = buildNeighborMeshes(
+    list.map((n) => ({ ...n, hidden: false })),
+    { groundY: opts.groundY ?? neighborGroundY, aerial: null },
+  );
+  group.name = 'neighbor-shadow-only';
+  const mat = opts.material ?? shadowOnlyMaterial();
+  group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const id = m.userData.neighborId as string;
+    m.material = mat;
+    m.castShadow = true;
+    m.receiveShadow = false;
+    m.raycast = () => {};
+    m.userData = { neighbor: true, neighborId: id, heightKind: m.userData.heightKind, matKey: 'neighbor', shadowOnly: true, viewHidden: true };
   });
   return group;
 }
@@ -245,6 +298,14 @@ export function rebuildEnvironment(scene: StudyScene, footprintEN: { e: number; 
   const meshes = buildNeighborMeshes(list, { groundY: neighborGroundY, aerial: study.aerial });
   meshes.visible = study.show.neighbors;
   scene.groups.neighbors.add(meshes);
+  // 表示だけ隠した建物: 描かずに影だけ落とす（解析の遮蔽物にも groups.neighbors から入る）
+  const viewOnly = viewOnlyNeighborsForScene(footprintEN);
+  if (viewOnly.length) {
+    for (const n of viewOnly) n.baseElev = minHeightInRing(g, n.ring);
+    const casters = buildNeighborShadowCasters(viewOnly);
+    casters.visible = study.show.neighbors;
+    scene.groups.neighbors.add(casters);
+  }
   // 敷地の輪郭（地面に沿った線）とピン
   const site = sitePolygonEN();
   if (site) {

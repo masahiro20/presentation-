@@ -41,6 +41,7 @@ import {
   type XZBox,
 } from '../sun/analysis';
 import { keyDates, sunriseSunset } from '../sun/solar';
+import { appendSvgFootnote } from './svgFootnote';
 import { horizonElevation, type HorizonProfile } from './terrain';
 import type { StudyScene } from './scene';
 import type { MeasurePoint, MeasureResult, StudyDate } from './types';
@@ -534,6 +535,8 @@ export async function shadowDiagramStudy(
     sitePolygon: THREE.Vector2[] | null;
     /** 測定面の表記（例 '1.5'）。planeHeight に平均地盤面を足して渡すときに、図には「GL+1.5m」と書くため */
     planeLabel?: string;
+    /** 図の下に足す脚注（周辺建物の扱いの開示: disclosureLines）。1 要素 1 行（長ければ折り返す） */
+    footnote?: string[];
     onProgress?: (r: number) => void;
     signal?: AbortSignal;
   },
@@ -582,7 +585,7 @@ export async function shadowDiagramStudy(
       }));
     }
     const note = (p.includeNeighbors ? '※周辺建物を含みます' : '※周辺建物は含みません') + (p.includeTerrain ? '（地形の影を含む）' : '');
-    return await shadowDiagramCore({
+    const res = await shadowDiagramCore({
       occ,
       lat: p.lat,
       lon: p.lon,
@@ -609,6 +612,7 @@ export async function shadowDiagramStudy(
       onProgress: p.onProgress,
       signal: p.signal,
     });
+    return p.footnote?.length ? { ...res, svg: appendSvgFootnote(res.svg, p.footnote) } : res;
   } finally {
     disposeStudyOccluder(buildingOnly);
     disposeStudyOccluder(occ);

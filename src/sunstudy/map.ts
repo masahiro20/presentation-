@@ -5,7 +5,7 @@
  *  - 敷地の輪郭を描くモード（クリックで頂点追加、最初の頂点か「完了」で閉じる、頂点のドラッグ、右クリック/Backspace で最後の頂点を消す）
  *  - 建物の足跡（e/n）・周辺建物の輪郭・解析半径の円・スケールバー・方位（北が上）の描画
  *  - 周辺建物を選ぶモード（setNeighborPickMode）: クリックした輪郭の id を onNeighborClick に渡す（ピンは動かさない）。
- *    隠した建物の輪郭（hidden）は灰色の破線で描く
+ *    隠した建物の輪郭（hidden）は灰色の破線で描く（表示だけ隠した建物 viewOnly は青の破線。影・解析には残っている）
  *  - 出典（attribution）とボタン類は DOM 側（placeStep）が描く。ここでは文字列を返すだけ
  *
  * 依存ライブラリ無し。純粋な関数（metersPerPixel / polygonAreaM2 / 画素変換）は Node でも読み込める
@@ -72,11 +72,12 @@ export interface MapPickerOptions {
   onNeighborPickModeChange?: (on: boolean) => void;
 }
 
-/** 地図に描く周辺建物の輪郭（ピンからの東・北 m）。hidden = 隠した建物（灰色の破線） */
+/** 地図に描く周辺建物の輪郭（ピンからの東・北 m）。hidden = 隠した建物（灰色の破線）、hidden + viewOnly = 表示だけ隠した建物（青の破線） */
 export interface MapNeighborRing {
   id: string;
   ring: { e: number; n: number }[];
   hidden?: boolean;
+  viewOnly?: boolean;
 }
 
 /** 1 枚も読めないまま何枚失敗したら「地図サーバーに接続できない」と判断するか */
@@ -1067,15 +1068,22 @@ export class MapPicker {
         path(r.ring);
         ctx.stroke();
       }
-      // 隠した建物: 地図の建物を白く消した上に灰色の破線
+      // 計算から除外した建物: 地図の建物を白く消した上に灰色の破線
       ctx.setLineDash([4, 3]);
       ctx.strokeStyle = 'rgba(85,85,85,0.95)';
       ctx.fillStyle = 'rgba(255,255,255,0.6)';
       ctx.lineWidth = 1.5;
       for (const r of this.neighborRings) {
-        if (!r.hidden) continue;
+        if (!r.hidden || r.viewOnly) continue;
         path(r.ring);
         ctx.fill();
+        ctx.stroke();
+      }
+      // 表示だけ隠した建物（影・解析には残る）: 塗らずに青の破線
+      ctx.strokeStyle = 'rgba(40,110,190,0.95)';
+      for (const r of this.neighborRings) {
+        if (!r.hidden || !r.viewOnly) continue;
+        path(r.ring);
         ctx.stroke();
       }
       ctx.setLineDash([]);

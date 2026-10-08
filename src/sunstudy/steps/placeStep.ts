@@ -13,7 +13,8 @@
 import { h, clear, toast, progressModal, section, segmented, field } from '../../app/dom';
 import { geocode, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import type { StudyStep, StudyCtx } from '../shell';
-import { study, emit, on, visibleNeighbors, effectiveNeighbors, hiddenNeighbors, setNeighborsHidden, restoreAllNeighbors } from '../state';
+import { study, emit, on, visibleNeighbors, effectiveNeighbors, hiddenNeighbors, setNeighborsHidden, restoreAllNeighbors, getHideDefaults } from '../state';
+import { hideOptionsControl, hideToastText } from './neighborHide';
 import type { GeoFrame, LatLon, NeighborSource } from '../types';
 import { frameToLocal } from '../types';
 import { MapPicker, MAP_LAYER_LABEL, polygonAreaM2, type MapLayer } from '../map';
@@ -596,7 +597,7 @@ export const placeStep: StudyStep = {
 
     const refreshHint = () => {
       const mode = !!map?.polygonMode;
-      if (pickOn) hint.textContent = '周辺建物の輪郭をクリックすると隠します（灰色の破線 = 隠した建物。もう一度クリックで戻します）。ピンは動きません。Esc で終了';
+      if (pickOn) hint.textContent = '周辺建物の輪郭をクリックすると隠します（右の欄で選んだ隠し方・理由で。灰色の破線 = 計算から除外、青の破線 = 表示だけ隠した建物。もう一度クリックで戻します）。ピンは動きません。Esc で終了';
       else if (mode) hint.textContent = drawCount >= 3 ? `頂点 ${drawCount} 点。最初の点をクリックするか「描き終える（完了）」で輪郭を閉じます。右クリック／Backspace で 1 点戻す` : '敷地の角を順にクリックしてください（3 点以上）。頂点はドラッグで動かせます';
       else if (!study.frame) hint.textContent = '地図をクリックすると建設地のピンを置けます。ドラッグで地図を動かし、ホイールで拡大・縮小';
       else hint.textContent = 'ピンはドラッグで微調整できます。「航空写真」に切り替えると建物や敷地の形が見えます';
@@ -657,8 +658,11 @@ export const placeStep: StudyStep = {
       const auto = vis.filter((n) => n.source !== 'manual');
       const manualCount = vis.length - auto.length;
       const tags = study.neighborSources.filter((s) => s !== 'manual').map((s) => h('span', { class: `src-tag ${SOURCE_TAG[s]?.cls ?? ''}` }, SOURCE_TAG[s]?.label ?? s));
-      const hiddenCount = hiddenNeighbors().length;
-      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenCount ? `・隠した建物 ${hiddenCount}棟` : null));
+      const hiddenList = hiddenNeighbors();
+      const hiddenCount = hiddenList.length;
+      const viewCount = hiddenList.filter((n) => n.hideMode === 'view').length;
+      const hiddenText = hiddenCount ? `・隠した建物 ${hiddenCount}棟（計算から除外 ${hiddenCount - viewCount}・表示だけ ${viewCount}）` : null;
+      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenText));
       envBox.appendChild(rows);
       // 地図で建物を選んで隠す（取り壊す既存の家・もう無い建物・形の違う建物などを影と解析から外す）
       if (study.neighbors.length) {
@@ -682,7 +686,16 @@ export const placeStep: StudyStep = {
               : null,
           ),
         );
-        if (pickOn || hiddenCount) envBox.appendChild(h('p', { class: 'hint', style: 'margin:0 0 6px' }, '隠した建物は灰色の破線で表示し、3D・影・日照の解析・日影図から外します。日照シミュレーションの「周辺建物の修正」でも選んで隠す・戻すができます。'));
+        // 地図のクリックで隠すときの隠し方・理由（選んだものは日照シミュレーションでも既定になる）
+        if (pickOn) envBox.appendChild(hideOptionsControl({ remember: true, compact: true }).el);
+        if (pickOn || hiddenCount)
+          envBox.appendChild(
+            h(
+              'p',
+              { class: 'hint', style: 'margin:0 0 6px' },
+              '計算から除外した建物は灰色の破線で表示し、3D・影・日照の解析・日影図から外します。表示だけ隠した建物は青の破線で、3D には描きませんが影・解析には残します。日照シミュレーションの「周辺建物の修正」でも選んで隠す・戻す・隠し方と理由の変更ができます。',
+            ),
+          );
       }
       for (const n of study.neighborNotes) envBox.appendChild(h('div', { class: 'info-box' }, n));
       if (study.env.error) {
@@ -705,7 +718,7 @@ export const placeStep: StudyStep = {
       if (!map) return;
       try {
         if (study.env.loaded) {
-          map.setNeighborRings(effectiveNeighbors().map((n) => ({ id: n.id, ring: n.ring, hidden: !!n.hidden })));
+          map.setNeighborRings(effectiveNeighbors().map((n) => ({ id: n.id, ring: n.ring, hidden: !!n.hidden, viewOnly: !!n.hidden && n.hideMode === 'view' })));
           map.setRadiusRing(NEIGHBOR_RADIUS);
         } else {
           map.setNeighborRings(null);
@@ -749,8 +762,10 @@ export const placeStep: StudyStep = {
         setNeighborsHidden([id], false);
         toast(`${name}を戻しました`, 'ok');
       } else {
-        setNeighborsHidden([id], true);
-        toast(`${name}を隠しました（影・解析からも外しています。もう一度クリックすると戻せます）`, 'ok');
+        // 直近に選んだ隠し方・理由で（地図の下の欄・日照シミュレーションの操作バーと共通）
+        const info = getHideDefaults();
+        setNeighborsHidden([id], true, info);
+        toast(hideToastText(name, info.mode, 'map'), 'ok');
       }
     };
 

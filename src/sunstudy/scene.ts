@@ -45,7 +45,7 @@ export class StudyScene {
   /**
    * 描画グループ:
    *  terrain   地形（航空写真を貼った面）。影を受ける・落とす
-   *  neighbors 周辺建物（userData.neighborId を持つ Mesh）
+   *  neighbors 周辺建物（userData.neighborId を持つ Mesh）。表示だけ隠した建物は影だけのメッシュ（userData.shadowOnly。色も深度も書かず影だけ落とす）
    *  building  読み込んだ建物（PlacedModel.pivot）
    *  site      敷地の輪郭・ピン
    *  sunpath   太陽の通り道・方位リング・太陽マーカー（影を落とさない）

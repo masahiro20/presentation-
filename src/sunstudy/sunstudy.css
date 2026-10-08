@@ -146,3 +146,26 @@ details.nb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink
 .nb-hidden-row { display: flex; align-items: center; gap: 8px; border: 1px dashed #c9c3b8; border-radius: 8px; padding: 5px 8px; margin: 5px 0; font-size: 12.5px; background: #faf8f5; }
 .nb-hidden-row .nb-hidden-name { flex: 1; min-width: 0; }
 .nb-hidden-row .meta { display: block; color: var(--ink3); font-size: 11.5px; }
+
+/* 隠し方（計算から除外／表示だけ隠す）と理由（steps/neighborHide.ts の hideOptionsControl）: 操作バー・ポップアップ・一覧・建設地 */
+.hide-opts { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; font-size: 12px; margin: 4px 0; }
+.hide-opts label { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
+.hide-opts .k { color: var(--ink3); font-size: 11.5px; white-space: nowrap; }
+.hide-opts select, .hide-opts input { font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; background: #fff; color: var(--ink); max-width: 100%; }
+.hide-opts .hide-note { flex: 1 1 140px; min-width: 110px; }
+.hide-opts.compact { gap: 4px 8px; }
+.hide-opts.compact select, .hide-opts.compact input { font-size: 11.5px; padding: 2px 5px; }
+.nb-select-bar .hide-opts { margin: 5px 0 0; }
+.nb-select-bar .hide-opts .k { color: #c4c7cc; }
+.nb-select-bar .hide-opts select, .nb-select-bar .hide-opts input { background: #2a2d31; color: #fff; border-color: #50555d; }
+.pop .hide-opts { margin: 6px 0; max-width: 300px; }
+/* 隠した建物の一覧: 隠し方ごとのまとまり（表示だけ隠した建物は青） */
+details.nb-hidden summary .meta { color: var(--ink3); font-size: 11.5px; margin-left: 6px; }
+.nb-hidden-head { font-size: 12px; margin: 8px 0 2px; }
+.nb-hidden-head .meta { display: block; color: var(--ink3); font-size: 11px; line-height: 1.45; }
+.nb-hidden-group.view .nb-hidden-row { border-color: #9cc6f0; background: #f3f8fd; }
+.nb-hidden-row .meta.reason { color: var(--ink2); }
+.nb-hidden-row .hide-opts { margin: 4px 0 0; }
+/* 日影図の規制値 */
+.field.diagram-reg { margin: 4px 0 6px; }
+.field.diagram-reg select { padding: 6px 8px; }

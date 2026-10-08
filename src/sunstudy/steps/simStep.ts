@@ -2,8 +2,9 @@
  * ステップ 3「日照シミュレーション」
  *  ステージ: 時刻バー（再生・日付チップ）、太陽バッジ、視点ボタン、前提チップ、出典、隣家の編集ポップアップ、
  *          建物を選んで隠すときの操作バー（neighborHide.ts）
- *  サイド: 建設地と建物／表示／周辺建物の修正（選んで隠す・隠した建物の一覧・要確認の隣家・手動追加）／日当たりの解析（地面・面の日照時間マップ、測定点、日影図、季節比較の撮影、
- *          タイムラプス動画、レポート・プロジェクト保存）
+ *  サイド: 建設地と建物／表示／周辺建物の修正（選んで隠す（計算から除外／表示だけ隠す・理由）・隠した建物の一覧・要確認の隣家・手動追加）／
+ *          日当たりの解析（地面・面の日照時間マップ、測定点、日影図（規制値のプリセット・時刻日影線の 30 分間隔・周辺建物の扱いの脚注）、
+ *          季節比較の撮影、タイムラプス動画、レポート・プロジェクト保存）
  *
  * ワールド: X=東, Z=南(-Z=北), Y=上。原点 = ピン、Y=0 = ピン位置の地盤高。太陽方向は sunDirectionWorld(az, elev, 0)。時刻は JST。
  * 建物の 3D データが無くても（土地だけでも）使える。
@@ -13,21 +14,24 @@ import { clear, download, field, h, modal, progressModal, section, segmented, sv
 import { formatHM, keyDates, localDate, sunDirectionWorld, sunPosition, sunriseSunset, trueSolarToLocal } from '../../sun/solar';
 import type { CameraProgram } from '../../video/paths';
 import { recordProgram } from '../../video/recorder';
+import { SHADOW_REGULATION_PRESETS, shadowRegulationPreset } from '../../sun/shadowRegulation';
 import { facadeSunHours, groundHeatmapMesh, groundSunHoursStudy, measureMarker, measurePointHours, shadowDiagramStudy, studyDates } from '../analysis';
 import { buildingCenter, buildingExclusionEN, buildingExtent, buildingFootprintEN, currentPlaced, ensurePlaced } from '../building';
 import { groundYWorld, loadEnvironment, rebuildEnvironment, siteExcludedCount, sitePolygonWorld } from '../environment';
 import { makeManualNeighbor } from '../neighbors';
 import { downloadProject } from '../project';
+import { diagramHours, presetForRegion } from '../diagramOptions';
+import { SOURCE_SHORT, bearingEN, disclosureLines, neighborDisclosure, neighborWhere, ringDistance, ringMean } from '../disclosure';
 import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport } from '../report';
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
-import { emit, hiddenNeighbors, on, setNeighborsHidden, study, uid, visibleNeighbors } from '../state';
+import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
 import type { Neighbor, NeighborSource } from '../types';
-import { createNeighborHide } from './neighborHide';
+import { createNeighborHide, hideOptionsControl, hideToastText } from './neighborHide';
 
 // ---------------------------------------------------------------------------
 // モジュールの状態（ステップを出入りしても残す）
@@ -51,13 +55,16 @@ let cleanup: (() => void) | null = null;
 const confirmed = new Set<string>();
 /** 太陽の通り道を作ったときの条件 */
 let pathKey = '';
+/** 日影図の規制値のプリセット（SHADOW_REGULATION_PRESETS の id。'' = なし（参考の 2〜5 時間））と時刻日影線の間隔。ステップを出入りしても残す */
+let diagramRegId = '';
+let diagramHalfHour = false;
 
 type ViewKind = 'bird' | 'top' | 'south' | 'east' | 'west' | 'orbit' | 'wide';
 type EN = { e: number; n: number };
 type HorizonLike = { elevDeg: Float32Array; source: string; radiusKm: number };
 
 const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
-const SRC_SHORT: Record<NeighborSource, string> = { plateau: 'PLATEAU', gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手入力' };
+const SRC_SHORT = SOURCE_SHORT;
 const PRESETS: [string, number][] = [
   ['平屋 4m', 4],
   ['2階 7m', 7],
@@ -101,39 +108,6 @@ function pointInPoly(x: number, z: number, poly: THREE.Vector2[]): boolean {
     if (a.y > z !== b.y > z && x < ((b.x - a.x) * (z - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
   return inside;
-}
-
-function segDist(p: EN, a: EN, b: EN): number {
-  const dx = b.e - a.e;
-  const dy = b.n - a.n;
-  const L2 = dx * dx + dy * dy;
-  let t = L2 > 0 ? ((p.e - a.e) * dx + (p.n - a.n) * dy) / L2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(p.e - (a.e + dx * t), p.n - (a.n + dy * t));
-}
-
-/** 2 つの輪郭の最短距離（辺と頂点）。片方が 1 点でもよい */
-function ringDist(a: EN[], b: EN[]): number {
-  let d = Infinity;
-  for (let i = 0; i < a.length; i++)
-    for (let j = 0; j < b.length; j++) d = Math.min(d, segDist(a[i], b[j], b[(j + 1) % b.length]), segDist(b[j], a[i], a[(i + 1) % a.length]));
-  return d;
-}
-
-function ringCentroid(r: EN[]): EN {
-  let e = 0;
-  let n = 0;
-  for (const p of r) {
-    e += p.e;
-    n += p.n;
-  }
-  const k = Math.max(1, r.length);
-  return { e: e / k, n: n / k };
-}
-
-/** from → to の方位（真北から時計回り、度） */
-function bearingEN(from: EN, to: EN): number {
-  return ((Math.atan2(to.e - from.e, to.n - from.n) * 180) / Math.PI + 360) % 360;
 }
 
 /** 山・丘（地平線の仰角）を考慮した日の出・日の入（2 分刻みで走査） */
@@ -227,6 +201,7 @@ function dropOverlays() {
   delete study.results.diagramSvg;
   delete study.results.diagramSummary;
   delete study.results.diagramRef;
+  delete study.results.diagramInfo;
   study.results.images = [];
   for (const p of study.points) delete p.results;
   onResultsDropped?.();
@@ -585,7 +560,8 @@ export const simStep: StudyStep = {
         rows.push(['建物', `${d.w.toFixed(1)}×${d.d.toFixed(1)}×${d.h.toFixed(1)} m／方位 北から${(((p.headingDeg % 360) + 360) % 360).toFixed(0)}°／GL ${fmtSigned(p.baseY)} m`]);
       } else rows.push(['建物', '建物なし（土地だけの日当たりを見ています）']);
       siteBox.appendChild(h('div', { class: 'env-status' }, ...rows.flatMap(([k, v]) => [h('span', { class: 'k' }, k), h('span', null, v)])));
-      const list = visibleNeighbors();
+      // 出典・高さの根拠は影・解析に入る建物（表示だけ隠した建物も含む）で
+      const list = analysisNeighbors();
       const srcs: NeighborSource[] = [...study.neighborSources];
       if (list.some((n) => n.source === 'manual') && !srcs.includes('manual')) srcs.push('manual');
       if (srcs.length) {
@@ -645,10 +621,11 @@ export const simStep: StudyStep = {
       }
       emit('neighbors');
     };
-    /** 隠す（影・解析・地図から外す。「隠した建物」から戻せる） */
-    const hideIds = (ids: string[]) => {
-      const k = setNeighborsHidden(ids, true);
-      if (k) toast(`${k} 棟を隠しました（影・解析からも外しています。「隠した建物」から戻せます）`, 'ok');
+    /** 隠す（直近に選んだ隠し方・理由で。「隠した建物」から戻せる） */
+    const hideIds = (ids: string[], info = getHideDefaults()) => {
+      setHideDefaults(info);
+      const k = setNeighborsHidden(ids, true, info);
+      if (k) toast(hideToastText(k, info.mode), 'ok');
     };
     /** 手動で追加した隣家を消す（戻せない） */
     const deleteManual = (id: string) => {
@@ -659,11 +636,7 @@ export const simStep: StudyStep = {
     };
     const nameOf = (n: Neighbor) => n.label ?? `${SRC_SHORT[n.source]}の建物`;
     /** 建物（足跡、無ければピン）からの距離と、建物の中心から見た方向 */
-    const whereOf = (n: Neighbor) => {
-      const fp = buildingFootprintEN();
-      const ref: EN[] = fp && fp.length >= 3 ? fp : [{ e: 0, n: 0 }];
-      return `約 ${Math.round(ringDist(n.ring, ref))} m・${bearingName(bearingEN(worldToEN(center), ringCentroid(n.ring)))}側`;
-    };
+    const whereOf = (n: Neighbor) => neighborWhere(n, buildingFootprintEN(), worldToEN(center)).text;
 
     let pop: HTMLElement | null = null;
     const closePop = () => {
@@ -674,9 +647,11 @@ export const simStep: StudyStep = {
       closePop();
       const eff = visibleNeighbors().find((x) => x.id === n.id) ?? n;
       const hIn = num(eff.height, 1, 300, 0.1);
+      // 隠し方・理由（「非表示にする」で使う。選んだものは次に隠すときの既定）
+      const popOpts = hideOptionsControl({ remember: true, compact: true });
       const r = stage.getBoundingClientRect();
-      const left = Math.max(8, Math.min(r.width - 260, e.clientX - r.left + 10));
-      const top = Math.max(8, Math.min(r.height - 190, e.clientY - r.top + 10));
+      const left = Math.max(8, Math.min(r.width - 300, e.clientX - r.left + 10));
+      const top = Math.max(8, Math.min(r.height - 250, e.clientY - r.top + 10));
       pop = h(
         'div',
         { class: 'pop', style: `left:${left}px;top:${top}px` },
@@ -685,6 +660,7 @@ export const simStep: StudyStep = {
         h('div', { class: 'hint' }, `出典: ${SRC_SHORT[eff.source]}${eff.heightKind === 'estimated' ? '（高さは建物の種類からの推定です）' : ''}`),
         h('div', { class: 'row' }, '高さ', hIn, 'm'),
         h('div', { class: 'row', style: 'flex-wrap:wrap' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => (hIn.value = String(v)) }, l))),
+        popOpts.el,
         h(
           'div',
           { class: 'row' },
@@ -703,10 +679,11 @@ export const simStep: StudyStep = {
             'button',
             {
               class: 'btn sm',
-              title: '影・解析・地図から外します（「隠した建物」から戻せます）',
+              title: '上で選んだ隠し方（計算から除外 = 影・解析からも外す／表示だけ隠す = 影・解析には残す）と理由で隠します（「隠した建物」から戻せます）',
               onclick: () => {
+                const info = popOpts.get();
                 closePop();
-                hideIds([n.id]);
+                hideIds([n.id], info);
               },
             },
             '非表示にする',
@@ -736,6 +713,8 @@ export const simStep: StudyStep = {
     const nbList = h('div');
     const neighborRow = (n: Neighbor, dist: number, br: number) => {
       const done = confirmed.has(n.id);
+      // 表示だけ隠した建物も影・解析には入るので高さを確かめる（「非表示」は出さない。隠し方は「隠した建物」で直す）
+      const viewOnly = !!n.hidden && n.hideMode === 'view';
       const hIn = num(n.height, 1, 300, 0.1);
       const applyH = (v: number) => {
         if (!(v > 0)) return;
@@ -744,7 +723,13 @@ export const simStep: StudyStep = {
       return h(
         'div',
         { class: `nb-row ${done ? 'done' : ''}` },
-        h('div', null, h('b', null, nameOf(n)), kindTag(n.heightKind), h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m`)),
+        h(
+          'div',
+          null,
+          h('b', null, nameOf(n)),
+          kindTag(n.heightKind),
+          h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m${viewOnly ? '・表示だけ隠した建物（影・解析には含む）' : ''}`),
+        ),
         h('div', { class: 'btn-row', style: 'margin:4px 0' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => applyH(v) }, l))),
         h(
           'div',
@@ -752,7 +737,7 @@ export const simStep: StudyStep = {
           hIn,
           h('span', { class: 'meta' }, 'm'),
           h('button', { class: 'btn sm', onclick: () => applyH(+hIn.value) }, '適用'),
-          h('button', { class: 'btn sm ghost', title: '影・解析・地図から外します（「隠した建物」から戻せます）', onclick: () => hideIds([n.id]) }, '非表示'),
+          viewOnly ? null : h('button', { class: 'btn sm ghost', title: '直近に選んだ隠し方・理由で隠します（「隠した建物」から戻せ、隠し方・理由も直せます）', onclick: () => hideIds([n.id]) }, '非表示'),
           h(
             'label',
             { class: 'check', style: 'margin:0 0 0 auto' },
@@ -773,16 +758,18 @@ export const simStep: StudyStep = {
     const renderNeighborList = () => {
       const list = visibleNeighbors();
       const c = neighborCounts(list);
-      const hiddenCount = hiddenNeighbors().length;
+      const excl = excludedNeighbors().length;
+      const viewOnly = viewOnlyNeighbors().length;
       const onSite = siteExcludedCount(buildingExclusionEN());
-      nbSummary.textContent = `周辺建物 ${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${hiddenCount ? `・隠した建物 ${hiddenCount}棟` : ''}${onSite ? `。敷地・建物に重なる ${onSite}棟は自動で外しています` : ''}`;
+      nbSummary.textContent = `周辺建物 ${c.total}棟（実測の高さ ${c.measured}・推定 ${c.estimated}・手入力 ${c.manual}）${excl ? `・計算から除外 ${excl}棟` : ''}${viewOnly ? `・表示だけ隠した建物 ${viewOnly}棟（影・解析には含む）` : ''}${onSite ? `。敷地・建物に重なる ${onSite}棟は自動で外しています` : ''}`;
       clear(nbList);
       const fp = buildingFootprintEN();
       const ref: EN[] = fp && fp.length >= 3 ? fp : [{ e: 0, n: 0 }];
       const cEN = worldToEN(center);
-      const cands = list
+      // 影・解析に入る建物（表示だけ隠した建物も含む）から
+      const cands = analysisNeighbors()
         .filter((n) => n.source !== 'manual' && n.heightKind === 'estimated')
-        .map((n) => ({ n, dist: ringDist(n.ring, ref), br: bearingEN(cEN, ringCentroid(n.ring)) }))
+        .map((n) => ({ n, dist: ringDistance(n.ring, ref), br: bearingEN(cEN, ringMean(n.ring)) }))
         .filter((x) => x.dist <= 25 && x.br >= 60 && x.br <= 300)
         .sort((a, b) => (confirmed.has(a.n.id) ? 1 : 0) - (confirmed.has(b.n.id) ? 1 : 0) || a.dist - b.dist);
       nbList.appendChild(h('div', { class: 'field-label', style: 'margin-top:8px' }, `要確認の隣家（高さが推定で、建物から 25 m 以内の東〜南〜西側）: ${cands.length}棟`));
@@ -844,7 +831,11 @@ export const simStep: StudyStep = {
     });
     neighborSection = section(
       '周辺建物の修正',
-      h('p', { class: 'hint' }, '建物をクリックすると高さを直せます（推定値の建物は薄い茶色）。取り壊す既存の家・もう無い建物・形の違う建物は「建物を選んで隠す」で影と解析から外せます。'),
+      h(
+        'p',
+        { class: 'hint' },
+        '建物をクリックすると高さを直せます（推定値の建物は薄い茶色）。取り壊す既存の家・もう無い建物・データの誤りは「建物を選んで隠す」で「計算から除外」（影・解析からも外す）、視点の邪魔になる建物は「表示だけ隠す」（影・解析には残す）にできます。外した建物は理由ごとにレポート・日影図に書き出します。',
+      ),
       nbSummary,
       h('div', { class: 'btn-row' }, hide.button),
       hide.hiddenList,
@@ -1151,11 +1142,13 @@ export const simStep: StudyStep = {
 
     // 日影図
     let includeNb = false;
-    let hokkaido = false;
+    // 北海道（真太陽時 9〜15 時）。規制値のプリセットが北海道なら北海道
+    let hokkaido = shadowRegulationPreset(diagramRegId)?.region === 'hokkaido';
+    const regPreset = () => shadowRegulationPreset(diagramRegId) ?? null;
     const glInfo = h('div', { class: 'hint' });
     const solarEl = h('div', { class: 'hint' });
     const solarNote = () => {
-      const [a, b] = hokkaido ? [9, 15] : [8, 16];
+      const [a, b] = diagramHours(regPreset(), hokkaido);
       const w = keyDates(ui.year)[0];
       const la = trueSolarToLocal(ui.year, w.month, w.day, a, f.lon);
       const lb = trueSolarToLocal(ui.year, w.month, w.day, b, f.lon);
@@ -1166,6 +1159,33 @@ export const simStep: StudyStep = {
       glInfo.textContent = `平均地盤面 GL${fmtSigned(avg)} m（測定面 = 平均地盤面 + 1.5／4／6.5 m）`;
       solarEl.textContent = solarNote();
     };
+    // 規制値のプリセット（別表第 4。北海道は真太陽時 9〜15 時に切り替える）と「北海道」のチェック
+    const regSel = h(
+      'select',
+      { class: 'diagram-reg-select', title: '選んだ規制時間の等時間日影線を太く描きます（規制への適否は判定しません）' },
+      h('option', { value: '' }, 'なし（参考の 2〜5 時間）'),
+      ...SHADOW_REGULATION_PRESETS.map((pr) => h('option', { value: pr.id }, pr.title)),
+    ) as HTMLSelectElement;
+    regSel.value = diagramRegId;
+    const hokkaidoCb = h('input', { type: 'checkbox', checked: hokkaido }) as HTMLInputElement;
+    regSel.addEventListener('change', () => {
+      diagramRegId = regSel.value;
+      const pr = regPreset();
+      if (pr) {
+        hokkaido = pr.region === 'hokkaido';
+        hokkaidoCb.checked = hokkaido;
+      }
+      renderDiagramInfo();
+    });
+    hokkaidoCb.addEventListener('change', () => {
+      hokkaido = hokkaidoCb.checked;
+      // 規制値を選んでいれば同じ号の別の地域へ（一般（二） ⇄ 北海道（二））
+      if (diagramRegId) {
+        diagramRegId = presetForRegion(diagramRegId, hokkaido);
+        regSel.value = diagramRegId;
+      }
+      renderDiagramInfo();
+    });
     const runDiagram = async (height: number, label: string) => {
       if (!study.model) {
         toast('日影図には建物の 3D データが必要です');
@@ -1174,6 +1194,10 @@ export const simStep: StudyStep = {
       const pm = progressModal(`日影図（測定面 平均地盤面+${height}m）を作成しています`);
       let res: Awaited<ReturnType<typeof shadowDiagramStudy>> | null = null;
       const plane = Math.round((avgGroundAlongFootprint(center) + height) * 100) / 100;
+      const preset = regPreset();
+      const halfHour = diagramHalfHour;
+      // 周辺建物の扱い（計算から除外・表示だけ隠した建物）を図の下に書く
+      const footnote = disclosureLines({ neighborsInCalc: includeNb, disclosure: neighborDisclosure(buildingExclusionEN()) });
       try {
         res = await shadowDiagramStudy(scene, {
           lat: f.lat,
@@ -1188,7 +1212,10 @@ export const simStep: StudyStep = {
           sitePolygon: sitePolygonWorld(),
           onProgress: (r) => pm.set(r),
           signal: pm.signal,
-          ...({ hours: hokkaido ? [9, 15] : [8, 16] } as object),
+          hours: diagramHours(preset, hokkaido),
+          regulation: preset,
+          timeLineIntervalMin: halfHour ? 30 : 60,
+          footnote,
         });
         if (pm.signal.aborted) res = null;
       } catch (e) {
@@ -1203,16 +1230,23 @@ export const simStep: StudyStep = {
       const out = res;
       study.results.diagramSvg = out.svg;
       study.results.diagramSummary = out.summary;
+      study.results.diagramInfo = { plane: label, regulation: preset ? preset.title : null, halfHour, includeNeighbors: includeNb };
       const hasSite = !!sitePolygonWorld();
       study.results.diagramRef = hasSite ? 'site' : 'outline';
       const refLabel = hasSite ? '敷地境界から最大' : '建物の輪郭から最大';
+      const roleLabel = (r?: 'limitNear' | 'limitFar') => (r === 'limitNear' ? '（5〜10m の規制）' : r === 'limitFar' ? '（10m 超の規制）' : '');
       const body = h(
         'div',
         null,
         h('div', { html: out.svg }),
-        h('p', { class: 'hint' }, `${label}／測定面 平均地盤面+${height} m（GL${fmtSigned(plane)} m）／${solarNote()}／${includeNb ? '周辺建物を含む' : '自建物のみ'}`),
-        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影: ${refLabel} 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
-        h('div', { class: 'warn' }, '検討用であり申請図ではありません。'),
+        h(
+          'p',
+          { class: 'hint' },
+          `${label}／測定面 平均地盤面+${height} m（GL${fmtSigned(plane)} m）／${solarNote()}／${includeNb ? '周辺建物を含む' : '自建物のみ'}／規制値 ${preset ? preset.title : 'なし（参考の 2〜5 時間）'}／時刻日影線 ${halfHour ? '30 分ごと' : '毎正時'}`,
+        ),
+        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影${roleLabel(s.role)}: ${refLabel} 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
+        h('div', { class: 'info-box' }, ...footnote.map((t) => h('div', null, t))),
+        h('div', { class: 'warn' }, preset ? '検討用であり申請図ではありません。規制時間の線を描くだけで、規制への適否は判定していません。' : '検討用であり申請図ではありません。'),
       );
       modal(
         '日影図',
@@ -1385,6 +1419,7 @@ export const simStep: StudyStep = {
       h('div', { class: 'btn-row' }, placeBtn, h('button', { class: 'btn sm primary', onclick: () => void runPoints() }, '☀ 測定点を解析（冬至・春分・夏至・秋分）')),
       ptBox,
       h('div', { class: 'field-label', style: 'margin-top:12px' }, '📐 日影図（冬至日）'),
+      h('label', { class: 'field diagram-reg' }, h('span', { class: 'field-label' }, '規制値（太線で強調）'), regSel),
       h(
         'div',
         { class: 'btn-row' },
@@ -1408,14 +1443,12 @@ export const simStep: StudyStep = {
         { class: 'check' },
         h('input', {
           type: 'checkbox',
-          checked: hokkaido,
-          onchange: (e: Event) => {
-            hokkaido = (e.target as HTMLInputElement).checked;
-            renderDiagramInfo();
-          },
+          checked: diagramHalfHour,
+          onchange: (e: Event) => (diagramHalfHour = (e.target as HTMLInputElement).checked),
         }),
-        '北海道（真太陽時 9〜15時）',
+        '時刻日影線を 30 分ごと',
       ),
+      h('label', { class: 'check' }, hokkaidoCb, '北海道（真太陽時 9〜15時）'),
       glInfo,
       solarEl,
       siteHint,

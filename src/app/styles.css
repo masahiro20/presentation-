@@ -326,3 +326,27 @@ body.presenting .main { grid-template-columns: 1fr; }
 .pe-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .pe-howto { padding-left: 18px; line-height: 1.8; }
 @media (max-width: 900px) { .pe-body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } .pe-panel { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; } }
+
+/* 日照: 周辺建物のクリックで開く案内（高さ・隠す）と「建物を選んで隠す」（日照ツールの .pop と同じ見た目。名前は sunnb- で分ける） */
+.sunnb-pop { position: absolute; z-index: 6; background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 12.5px; min-width: 240px; max-width: 290px; pointer-events: auto; }
+.sunnb-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sunnb-pop h5 { margin: 0; font-size: 13.5px; }
+.sunnb-pop .icon-btn { font-size: 18px; padding: 0 4px; }
+.sunnb-pop .hint { margin: 2px 0; }
+.sunnb-pop .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0 0; }
+.sunnb-pop input[type=number] { width: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.sunnb-bar { position: absolute; left: 50%; top: 60px; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; gap: 4px; background: rgba(24, 26, 30, 0.88); backdrop-filter: blur(6px); color: #fff; border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); pointer-events: auto; max-width: calc(100% - 28px); width: max-content; box-sizing: border-box; }
+.sunnb-bar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sunnb-bar-row b { font-size: 14px; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.sunnb-bar .btn.ghost { color: #fff; border-color: #50555d; }
+.sunnb-bar .btn.ghost:hover { background: rgba(255, 255, 255, 0.08); }
+.sunnb-bar-hint { font-size: 11.5px; color: #c4c7cc; }
+@media (pointer: coarse) { .sunnb-bar-hint { display: none; } }
+.sunnb-rect { position: absolute; z-index: 5; border: 1.5px dashed #e5531f; background: rgba(229, 83, 31, 0.12); pointer-events: none; }
+.sunnb-hidden { margin: 8px 0; }
+.sunnb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); }
+.sunnb-hidden-list { max-height: 240px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #f0ece5; }
+.sunnb-hidden-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 4px; border-bottom: 1px solid #f0ece5; font-size: 12.5px; }
+.sunnb-hidden-row:hover { background: #fdf3ee; }
+.sunnb-hidden-name { min-width: 0; }
+.sunnb-hidden-name .hint { margin-top: 1px; }

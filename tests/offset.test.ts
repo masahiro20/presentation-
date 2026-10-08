@@ -193,3 +193,57 @@ describe('5m/10m ライン（水平距離 d の線）', () => {
     for (const v of circle) expect(Math.hypot(v.x - 3, v.y - 4)).toBeCloseTo(2, 9);
   });
 });
+
+describe('測量図のような、ほぼ一直線に並ぶ頂点（独立検証で見つかった欠陥の回帰テスト）', () => {
+  /** 輪郭上の点の、多角形からの距離の最大の超過（外へのずれ）と、頂点の距離の誤差 */
+  const errors = (poly: Pt2[], d: number) => {
+    let outward = 0;
+    let vertex = 0;
+    for (const loop of offsetRegion(poly, d))
+      for (let i = 0; i < loop.length; i++) {
+        const a = loop[i];
+        const b = loop[(i + 1) % loop.length];
+        vertex = Math.max(vertex, Math.abs(distanceToPolygon(a, poly) - d));
+        for (const t of [0.25, 0.5, 0.75]) outward = Math.max(outward, distanceToPolygon({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, poly) - d);
+      }
+    return { outward, vertex };
+  };
+  it('ほぼ一直線の凹み（0.001 m の折れ）でも、10m ラインが外へ 1 cm 以上ずれない', () => {
+    const poly: Pt2[] = [
+      { x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: -20 }, { x: 9, y: -20 }, { x: 9, y: 0 },
+      { x: 18, y: 0 }, { x: 18, y: 15 }, { x: 9, y: 14.999 }, { x: 0, y: 15 },
+    ];
+    const e = errors(poly, 10);
+    expect(e.outward).toBeLessThan(0.01);
+    expect(e.vertex).toBeLessThan(0.001);
+  });
+  it('辺の途中に数 mm〜数 cm ずれた点が並ぶ矩形（測量の点列）でも、5m/10m ラインが外へ 1 cm 以上ずれない', () => {
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (const amp of [1e-5, 1e-3, 0.02]) {
+      for (let k = 0; k < 10; k++) {
+        const base: Pt2[] = [{ x: 0, y: 0 }, { x: 25, y: 0 }, { x: 25, y: 17.5 }, { x: 0, y: 17.5 }];
+        const pts: Pt2[] = [];
+        for (let i = 0; i < 4; i++) {
+          const a = base[i];
+          const b = base[(i + 1) % 4];
+          pts.push(a);
+          const L = Math.hypot(b.x - a.x, b.y - a.y);
+          for (const t of [0.3 + 0.2 * rnd(), 0.6 + 0.2 * rnd()]) {
+            const j = (rnd() * 2 - 1) * amp;
+            pts.push({ x: a.x + (b.x - a.x) * t - ((b.y - a.y) / L) * j, y: a.y + (b.y - a.y) * t + ((b.x - a.x) / L) * j });
+          }
+        }
+        for (const d of [5, 10]) expect(errors(pts, d).outward).toBeLessThan(0.01);
+      }
+    }
+  });
+  it('切り込みの両側にある同じ直線上の 2 辺を、交差と誤判定しない', () => {
+    for (let k = 0; k < 360; k += 7) {
+      const th = (k * Math.PI) / 180;
+      const base: Pt2[] = [{ x: 0, y: 0 }, { x: 7.3, y: 0 }, { x: 7.3, y: -6.1 }, { x: 10.9, y: -6.1 }, { x: 10.9, y: 0 }, { x: 31.7, y: 0 }, { x: 31.7, y: 22.3 }, { x: 0, y: 22.3 }];
+      const poly = base.map((p) => ({ x: p.x * Math.cos(th) - p.y * Math.sin(th), y: p.x * Math.sin(th) + p.y * Math.cos(th) }));
+      expect(isSimplePolygon(poly)).toBe(true);
+    }
+  });
+});

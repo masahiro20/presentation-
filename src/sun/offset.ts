@@ -55,11 +55,14 @@ export function rectPolygon(minX: number, minY: number, maxX: number, maxY: numb
 
 function segmentsIntersect(a: Pt2, b: Pt2, c: Pt2, d: Pt2): boolean {
   const cross = (o: Pt2, p: Pt2, q: Pt2) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
-  const d1 = cross(c, d, a);
-  const d2 = cross(c, d, b);
-  const d3 = cross(a, b, c);
-  const d4 = cross(a, b, d);
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  // 丸め誤差の範囲の外積は 0（一直線上）とみなす: 切り込みの両側にある同じ直線上の 2 辺などを交差と誤判定しない
+  const tol = 1e-10 * Math.hypot(b.x - a.x, b.y - a.y) * Math.hypot(d.x - c.x, d.y - c.y);
+  const sgn = (v: number) => (v > tol ? 1 : v < -tol ? -1 : 0);
+  const d1 = sgn(cross(c, d, a));
+  const d2 = sgn(cross(c, d, b));
+  const d3 = sgn(cross(a, b, c));
+  const d4 = sgn(cross(a, b, d));
+  return d1 * d2 < 0 && d3 * d4 < 0;
 }
 
 /** 単純多角形か（隣り合わない辺が交差しない） */
@@ -213,12 +216,40 @@ function offsetExact(poly: Pt2[], d: number, step: number, scale: number): Pt2[]
     // 面積が正（反時計回り）の多角形の外向き法線は進行方向の右
     return { x: dy / l, y: -dx / l, dx, dy };
   };
+  // 凹の頂点で、隣り合う 2 辺のオフセット線の交点が両方の辺の範囲に収まるもの: 交点を直接置く（真のオフセットそのもの）。
+  // 頂点を通るつなぎ方だと、ほぼ一直線の凹み（測量の点列など）で交点の先のわずかな重なりが残り、つなぎに失敗する
+  const meet: (Pt2 | null)[] = new Array(n).fill(null); // meet[v]: 頂点 v（辺 v−1 と辺 v の間）の交点
+  for (let v = 0; v < n; v++) {
+    const e = normal((v - 1 + n) % n);
+    const f = normal(v);
+    const le = Math.hypot(e.dx, e.dy);
+    const lf = Math.hypot(f.dx, f.dy);
+    const cr = e.dx * f.dy - e.dy * f.dx;
+    const dt = e.dx * f.dx + e.dy * f.dy;
+    const theta = Math.atan2(cr, dt);
+    if (!(theta < -1e-12) || !(dt > 0)) continue; // 凹で、曲がりが 90° 未満
+    const back = d * Math.tan(-theta / 2); // 交点が頂点から辺に沿って戻る距離
+    if (!(back <= 0.999 * Math.min(le, lf))) continue;
+    const b = poly[v];
+    // 2 本のオフセット線の交点（頂点から外向きの角の二等分線上、距離 d / cos(θ/2)）
+    const bx = e.x + f.x;
+    const by = e.y + f.y;
+    const bl = Math.hypot(bx, by) || 1;
+    const r = d / Math.cos(theta / 2);
+    meet[v] = { x: b.x + (bx / bl) * r, y: b.y + (by / bl) * r };
+  }
   for (let i = 0; i < n; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % n];
     const e = normal(i);
     const f = normal((i + 1) % n);
-    push(a.x + d * e.x, a.y + d * e.y, KIND_EDGE);
+    // 辺 i の始点: 頂点 i を交点で処理したなら、その交点がすでに（または最後に）置かれる
+    if (!meet[i]) push(a.x + d * e.x, a.y + d * e.y, KIND_EDGE);
+    const mv = meet[(i + 1) % n];
+    if (mv) {
+      push(mv.x, mv.y, KIND_EDGE);
+      continue;
+    }
     const cr = e.dx * f.dy - e.dy * f.dx;
     const dt = e.dx * f.dx + e.dy * f.dy;
     // 折り返し（180°。線分の端など）は凸の半円にする（-0 で -180° と判定しないように）

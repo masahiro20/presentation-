@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { effectiveOpening, specById } from '../src/styles/spec';
 
-describe('標準仕様（ホームランディック）', () => {
-  const hl = specById('homelandick');
+describe('標準仕様（線の少ない空間）', () => {
+  const hl = specById('minimal-lines');
   const std = specById('standard');
   it('室内ドアは天井までのフルハイト', () => {
     expect(effectiveOpening({ kind: 'door', sill: 0, height: 2000 }, 2400, hl)).toEqual({ sill: 0, height: 2400 });
@@ -19,5 +19,11 @@ describe('標準仕様（ホームランディック）', () => {
   it('一般仕様では元の高さのまま', () => {
     expect(effectiveOpening({ kind: 'door', sill: 0, height: 2000 }, 2400, std)).toEqual({ sill: 0, height: 2000 });
     expect(effectiveOpening({ kind: 'window', sill: 900, height: 1100, windowStyle: 'koshi' }, 2400, std)).toEqual({ sill: 900, height: 1100 });
+  });
+});
+
+describe('以前の版で保存したプロジェクト', () => {
+  it('古い仕様 id でも同じ標準仕様を使う', () => {
+    expect(specById('homelandick').id).toBe('minimal-lines');
   });
 });

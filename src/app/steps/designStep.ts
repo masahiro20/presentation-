@@ -349,7 +349,7 @@ export const designStep: Step = {
           '標準仕様（納まり）',
           segmented(
             BUILDER_SPECS.map((b) => ({ value: b.id, label: b.name })),
-            state.design.specId,
+            spec.id,
             (val) => update({ specId: val }),
           ),
           h('p', { class: 'hint' }, spec.description),
@@ -455,7 +455,7 @@ export const designStep: Step = {
               oninput: (e: Event) => (label.textContent = `屋根の勾配 ${(e.target as HTMLInputElement).value} 寸`),
               onchange: (e: Event) => update({ roofPitch: +(e.target as HTMLInputElement).value }),
             });
-            return h('label', { class: 'field', style: 'margin-top:10px' }, label, slider, h('span', { class: 'hint' }, '10 に対する立ち上がり。ホームランディック標準は片流れ 0.5 寸。切妻・寄棟にする場合は 3〜5 寸'));
+            return h('label', { class: 'field', style: 'margin-top:10px' }, label, slider, h('span', { class: 'hint' }, '10 に対する立ち上がり。標準は片流れ 0.5 寸。切妻・寄棟にする場合は 3〜5 寸'));
           })(),
           h('div', { class: 'field-label', style: 'margin-top:10px' }, '時間帯'),
           segmented<TimeOfDay>(

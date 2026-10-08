@@ -267,6 +267,15 @@ input, select, textarea { font: inherit; }
 .slide .sungrid .lbl { position: absolute; left: 0; bottom: 0; padding: 0.5cqw 0.9cqw; background: rgba(245,241,234,0.94); font-size: 0.9cqw; letter-spacing: 0.1em; }
 .slide .svgfit { position: relative; min-height: 0; display: grid; place-items: center; background: #fff; border: 1px solid var(--hair); padding: 1cqw; }
 .slide .svgfit svg { max-width: 100%; max-height: 100%; }
+/* 日照のページの注記（周辺建物の扱い）と、計算から除外した周辺建物の表 */
+.slide .sun-note { margin-top: 1.2cqw; padding-top: 0.8cqw; border-top: 1px solid var(--hair); font-size: 0.88cqw; line-height: 1.75; color: var(--ink-3); letter-spacing: 0.03em; }
+.slide .tblbox { min-height: 0; overflow: hidden; background: #fff; border: 1px solid var(--hair); padding: 1.6cqw 1.8cqw; }
+.slide table.excluded { width: 100%; border-collapse: collapse; font-size: 0.92cqw; letter-spacing: 0.04em; }
+.slide table.excluded th { text-align: left; font-weight: 500; color: var(--ink-3); border-bottom: 1px solid var(--ink-3); padding: 0.4cqw 0.6cqw; }
+.slide table.excluded td { padding: 0.45cqw 0.6cqw; border-bottom: 1px solid var(--hair); color: var(--ink-2); vertical-align: top; }
+.slide table.excluded td.n { color: var(--bronze); width: 3cqw; }
+.slide table.excluded td.a { white-space: nowrap; }
+.slide .tblbox .cont { font-size: 0.85cqw; margin: 0.8cqw 0 0; color: var(--ink-3); }
 
 /* 仕様 */
 .slide.details { padding: 6cqw 6cqw; display: grid; grid-template-columns: 26cqw 1fr; gap: 5cqw; }
@@ -340,8 +349,6 @@ body.presenting .main { grid-template-columns: 1fr; }
 .sunnb-bar-row b { font-size: 14px; margin-right: 4px; font-variant-numeric: tabular-nums; }
 .sunnb-bar .btn.ghost { color: #fff; border-color: #50555d; }
 .sunnb-bar .btn.ghost:hover { background: rgba(255, 255, 255, 0.08); }
-.sunnb-bar-hint { font-size: 11.5px; color: #c4c7cc; }
-@media (pointer: coarse) { .sunnb-bar-hint { display: none; } }
 .sunnb-rect { position: absolute; z-index: 5; border: 1.5px dashed #e5531f; background: rgba(229, 83, 31, 0.12); pointer-events: none; }
 .sunnb-hidden { margin: 8px 0; }
 .sunnb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); }
@@ -350,3 +357,28 @@ body.presenting .main { grid-template-columns: 1fr; }
 .sunnb-hidden-row:hover { background: #fdf3ee; }
 .sunnb-hidden-name { min-width: 0; }
 .sunnb-hidden-name .hint { margin-top: 1px; }
+/* 隠し方（計算から除外／表示だけ隠す）と理由の欄（バーと案内で共通） */
+.sunnb-pop { max-width: 320px; }
+.sunnb-choice { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 0; font-size: 12px; }
+.sunnb-modes { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.sunnb-radio { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.sunnb-radio input { accent-color: var(--accent); margin: 0; }
+.sunnb-reason-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sunnb-reason-row select, .sunnb-reason-row input { border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 12px; background: #fff; color: var(--ink); }
+.sunnb-reason-row input { flex: 1; min-width: 120px; }
+.sunnb-bar .sunnb-choice { margin: 0; color: #e8eaed; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.sunnb-bar .sunnb-reason-row input { min-width: 110px; max-width: 170px; }
+.sunnb-bar .sunnb-reason-row select, .sunnb-bar .sunnb-reason-row input { background: #2a2d31; color: #fff; border-color: #50555d; }
+/* 「隠した建物」の一覧: 隠し方ごとのまとまり（表示だけ隠した建物は青の印） */
+.sunnb-hidden-group { margin-top: 6px; }
+.sunnb-hidden-head { display: flex; align-items: baseline; gap: 6px; padding: 4px 4px 2px; font-size: 12px; color: var(--ink); }
+.sunnb-hidden-head .hint { margin: 0; }
+.sunnb-hidden-group.view .sunnb-hidden-head b { color: #2f6ea8; }
+.sunnb-hidden-row.view { border-left: 3px solid #7fb2e5; }
+.sunnb-hidden-row.exclude { border-left: 3px solid #b9c0c8; }
+.sunnb-hidden-acts { display: flex; flex-direction: column; gap: 3px; align-items: stretch; flex: none; }
+.sunnb-hidden-acts .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+/* 日照の結果に添える周辺建物の扱い（除外・表示だけ隠した建物） */
+.sun-disclosure { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--line); background: #faf8f4; font-size: 11.5px; line-height: 1.6; color: var(--ink2); }
+.sun-disclosure div:first-child { color: var(--ink); }
+.sun-diagram-opts .check { font-size: 12.5px; margin: 2px 0 6px; }

@@ -412,6 +412,10 @@ export interface NeighborBuilding {
   height: number;
   source: 'gsi' | 'osm' | 'manual';
   label?: string;
+  /** 一覧の中で一意の番号（取得・追加したときに SunContext が付ける。手動の隣家はこれがキーになる） */
+  id?: string;
+  /** 隠した建物（3D に出さず、影も落とさず、解析にも入れない。SunContext の記録から付け直す） */
+  hidden?: boolean;
 }
 
 /** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */

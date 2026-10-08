@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
+import { SunContext, keysInRect, ringArea, ringCentroid } from '../../sun/context';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -43,7 +43,45 @@ function sunDay(): SunDay {
 }
 
 let cleanupPlace: (() => void) | null = null;
+/** 周辺建物のクリック（案内・選んで隠す）の後始末 */
+let cleanupNeighborUI: (() => void) | null = null;
 let extPanel: ExternalPanel | null = null;
+
+// ---------------------------------------------------------------- 周辺建物を選んで隠す／戻す（文言・表示の純粋な部分）
+
+export const HIDE_MODE_LABEL = '🏠 建物を選んで隠す';
+export const HIDE_MODE_ARMED = '建物をクリックして選んでください（Shift+ドラッグで範囲選択。もう一度押すと終了・Esc でも終了）';
+export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。選んだら画面上の「隠す」を押してください。薄く見えているのは隠した建物で、選んで「戻す」で戻せます';
+export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（国土地理院）」で読み込んでください';
+export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
+const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+
+/** 隠した後の案内 */
+export function hiddenToastText(n: number): string {
+  return `${n} 棟を隠しました（影・解析からも外しています。「隠した建物」から戻せます）`;
+}
+export function restoredToastText(n: number): string {
+  return `${n} 棟を戻しました（影・解析にも戻しています）`;
+}
+/** 「隠した建物」の一覧の見出し */
+export function hiddenListTitle(n: number): string {
+  return `隠した建物（${n} 棟）`;
+}
+/** 選択中の数（隠す対象 = 見えている建物、戻す対象 = 隠した建物） */
+export function selectionText(visible: number, hidden: number): string {
+  const n = visible + hidden;
+  return hidden ? `選択 ${n} 棟（うち隠した建物 ${hidden} 棟）` : `選択 ${n} 棟`;
+}
+/** 建物の名前（OSM の名前・手動の隣家・出典） */
+export function neighborTitle(b: Pick<NeighborBuilding, 'label' | 'source'>): string {
+  return b.label ?? (b.source === 'manual' ? '隣家' : `${NEIGHBOR_SOURCE_LABEL[b.source]}の建物`);
+}
+/** 計画建物（外形の原点 = 建物の中心）から見た方角と距離 */
+export function neighborWhere(b: Pick<NeighborBuilding, 'ring'>): string {
+  const c = ringCentroid(b.ring);
+  const az = ((Math.atan2(c.e, c.n) * 180) / Math.PI + 360) % 360;
+  return `${DIR8[Math.round(az / 45) % 8]} 約 ${Math.round(Math.hypot(c.e, c.n))} m`;
+}
 
 /** 建設地の位置・向きを変えたときに、待ち受け中の 2 点合わせを中止する案内（指した角の座標はワールドなので古くなる） */
 const TWO_POINT_ABORT_SITE = '位置・向きを変えたので 2 点合わせを中止しました';
@@ -103,6 +141,8 @@ export const sunStep: Step = {
     ui.playing = false;
     cleanupPlace?.();
     cleanupPlace = null;
+    cleanupNeighborUI?.();
+    cleanupNeighborUI = null;
     // 3DS の表示・PDF の建物の非表示は日照ステップの間だけ（他のステップは PDF の建物のまま）
     extPanel?.dispose();
     extPanel = null;
@@ -302,6 +342,8 @@ export const sunStep: Step = {
     // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ・撮影済みの季節比較画像）を捨てる。
     // 位置・方位・3DS・周辺建物が変わった後に古い結果（プレゼン資料にも使われる state.sun）が残らないようにする。実体は解析セクションの後で入れる
     let invalidateResults: () => void = () => {};
+    // 「建物を選んで隠す」を終える・建物の案内を閉じる（実体は周辺環境のセクションで入れる。敷地をクリック・2 点合わせと同時に効かせない）
+    let stopNeighborUI: () => void = () => {};
     // 建設地を新しい地点にする（住所検索の結果・座標の直接指定で共通）: 待ち受け中の 2 点合わせを中止し、前の地点の解析結果を捨て、
     // 航空写真・周辺建物を読み込んで、建物と周りが見渡せる広域の視点へ
     const setSite = async (lat: number, lon: number, address: string) => {
@@ -461,8 +503,9 @@ export const sunStep: Step = {
     };
     placeBtn.addEventListener('click', async () => {
       if (!(await ensureAerial())) return;
-      // 2 点合わせと同時に有効にしない（1 クリックが両方に効いてしまう）
+      // 2 点合わせ・建物を選んで隠すと同時に有効にしない（1 クリックが両方に効いてしまう）
       extPanel?.cancelTwoPoint();
+      stopNeighborUI();
       setPlacing(!placing);
       if (placing) v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, 160, 0.02)), target: c.clone(), fov: 45 });
     });
@@ -478,7 +521,10 @@ export const sunStep: Step = {
       applySun: () => apply(true),
       invalidateResults: () => invalidateResults(),
       showLoc,
-      cancelPlacing: () => setPlacing(false),
+      cancelPlacing: () => {
+        setPlacing(false);
+        stopNeighborUI();
+      },
       ensureAerial,
     });
     side.append(
@@ -533,7 +579,8 @@ export const sunStep: Step = {
         const n = await sc.loadNeighbors(src);
         // 周辺建物は影を落とす（部屋の日当たり・日影図・日照時間マップに入る）ので、前の結果は捨てる
         invalidateResults();
-        toast(`周辺の建物を ${n} 棟取得しました`, 'ok');
+        const kept = sc.hiddenList().length;
+        toast(`周辺の建物を ${n} 棟取得しました${kept ? `（隠した ${kept} 棟は隠したままです）` : ''}`, 'ok');
       } catch (e) {
         toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
       } finally {
@@ -543,6 +590,7 @@ export const sunStep: Step = {
     const dirSel = h('select', null, ['北', '北東', '東', '南東', '南', '南西', '西', '北西'].map((d, i) => h('option', { value: i * 45, selected: d === '南' }, d))) as HTMLSelectElement;
     const distIn = h('input', { type: 'number', value: 9, min: 2, max: 60 }) as HTMLInputElement;
     const hIn = h('input', { type: 'number', value: 7, min: 2, max: 60 }) as HTMLInputElement;
+    const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showSunPath', HTMLInputElement>> = {};
     const toggles = h(
       'div',
       null,
@@ -550,7 +598,7 @@ export const sunStep: Step = {
         h(
           'label',
           { class: 'check' },
-          h('input', {
+          (toggleInputs[k] = h('input', {
             type: 'checkbox',
             checked: sc.state[k],
             onchange: (e: Event) => {
@@ -558,11 +606,391 @@ export const sunStep: Step = {
               sc.applyVisibility();
               apply(true);
             },
-          }),
+          }) as HTMLInputElement),
           { showAerial: '航空写真', showNeighbors: '周辺の建物', showSunPath: '太陽の通り道（冬至・春秋分・夏至）' }[k],
         ),
       ),
     );
+
+    // ---- 周辺建物を選んで隠す／戻す・クリックで高さを直す ----
+    // 隠した建物は実体を作らない（3D に出ない・影を落とさない・部屋の日当たり・日照時間マップに入らない）。
+    // 記録はキー（出典 + 重心 + 面積）と外形で残し、周辺建物を取り直しても同じ建物に当て直す（src/sun/context.ts）
+    cleanupNeighborUI?.();
+    const hideBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, HIDE_MODE_LABEL) as HTMLButtonElement;
+    const hiddenBox = h('div');
+    const selInfo = h('b');
+    const barHide = h('button', { class: 'btn sm primary' }, '隠す') as HTMLButtonElement;
+    const barRestore = h('button', { class: 'btn sm' }, '戻す') as HTMLButtonElement;
+    const barClear = h('button', { class: 'btn sm ghost' }, '選択を解除') as HTMLButtonElement;
+    const barExit = h('button', { class: 'btn sm ghost' }, '終了') as HTMLButtonElement;
+    const hideBar = h(
+      'div',
+      { class: 'sunnb-bar', style: 'display:none' },
+      h('div', { class: 'sunnb-bar-row' }, selInfo, barHide, barRestore, barClear, barExit),
+      h('div', { class: 'sunnb-bar-hint' }, 'クリックで選択・Shift+ドラッグで範囲選択・薄い建物は隠した建物（選んで「戻す」）・Esc で終了'),
+    );
+    const selRect = h('div', { class: 'sunnb-rect', style: 'display:none' });
+    ctx.stage.append(hideBar, selRect);
+    let hideMode = false;
+    const selected = new Set<string>();
+    let pop: HTMLElement | null = null;
+    let popKey: string | null = null;
+    let hiddenOpen = false;
+    const syncHighlight = () => sc.setHighlight(popKey ? [...selected, popKey] : selected);
+    const afterEdit = () => {
+      invalidateResults();
+      apply(true);
+    };
+    const hideKeys = (keys: string[]) => {
+      const n = sc.setHidden(keys, true);
+      if (!n) return;
+      afterEdit();
+      toast(hiddenToastText(n), 'ok', 6000);
+    };
+    const restoreKeys = (keys: string[]) => {
+      const n = sc.setHidden(keys, false);
+      if (!n) return;
+      afterEdit();
+      toast(restoredToastText(n), 'ok');
+    };
+    const restoreAllHidden = () => {
+      const n = sc.restoreAll();
+      if (!n) return;
+      afterEdit();
+      toast(restoredToastText(n), 'ok');
+    };
+    const renderBar = () => {
+      hideBar.style.display = hideMode ? '' : 'none';
+      let vis = 0;
+      let hid = 0;
+      for (const k of selected) {
+        const b = sc.findByKey(k);
+        if (!b) continue;
+        if (b.hidden) hid++;
+        else vis++;
+      }
+      selInfo.textContent = selectionText(vis, hid);
+      barHide.disabled = vis === 0;
+      barRestore.disabled = hid === 0;
+      barClear.disabled = selected.size === 0;
+    };
+    const renderHiddenList = () => {
+      // 作り直す行の上にマウスがあっても mouseleave は来ないので、薄い表示の指し示しはここで外す
+      sc.setPreview(null);
+      clear(hiddenBox);
+      const list = sc.hiddenList();
+      if (!list.length) return;
+      const rows = list.map((b) => {
+        const k = sc.keyOf(b);
+        return h(
+          'div',
+          { class: 'sunnb-hidden-row', onmouseenter: () => sc.setPreview(k), onmouseleave: () => sc.setPreview(null) },
+          h('div', { class: 'sunnb-hidden-name' }, h('b', null, neighborTitle(b)), h('span', { class: 'hint' }, `${neighborWhere(b)}・高さ 約 ${sc.heightOf(b).toFixed(1)} m・${NEIGHBOR_SOURCE_LABEL[b.source]}`)),
+          h('button', { class: 'btn sm', title: 'この建物を戻します（影・解析にも戻ります）', onclick: () => restoreKeys([k]) }, '戻す'),
+        );
+      });
+      const det = h(
+        'details',
+        { class: 'sunnb-hidden', open: hiddenOpen },
+        h('summary', null, hiddenListTitle(list.length)),
+        h('div', { class: 'sunnb-hidden-list' }, ...rows),
+        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: restoreAllHidden }, 'すべて戻す')),
+        h('span', { class: 'hint' }, '行に重ねると、その建物を 3D に薄く表示します'),
+      ) as HTMLDetailsElement;
+      det.addEventListener('toggle', () => (hiddenOpen = det.open));
+      hiddenBox.appendChild(det);
+    };
+    const closePop = () => {
+      if (!pop) return;
+      pop.remove();
+      pop = null;
+      popKey = null;
+      syncHighlight();
+    };
+    /** 建物の案内（出典・高さを直す・隠す）。クリックした所の近くに出す */
+    const openPop = (key: string, cx: number, cy: number) => {
+      closePop();
+      const b = sc.findByKey(key);
+      if (!b) return;
+      popKey = key;
+      syncHighlight();
+      const s = ctx.stage.getBoundingClientRect();
+      const left = Math.max(8, Math.min(s.width - 290, cx - s.left + 12));
+      const top = Math.max(8, Math.min(s.height - 240, cy - s.top + 12));
+      const cur = sc.heightOf(b);
+      const overridden = sc.edits.heights.has(key);
+      const hIn = h('input', { type: 'number', min: 1, max: 300, step: 0.1, value: cur.toFixed(1) }) as HTMLInputElement;
+      const applyH = () => {
+        const val = Math.round(+hIn.value * 10) / 10;
+        if (!(val >= 1 && val <= 300)) {
+          toast('高さは 1〜300 m の数字で入力してください', 'error');
+          return;
+        }
+        closePop();
+        if (Math.abs(val - cur) < 1e-9) return;
+        sc.setHeight(key, Math.abs(val - b.height) < 1e-9 ? null : val);
+        afterEdit();
+        toast(`高さを ${val.toFixed(1)} m にしました（影・解析にも使います。周辺建物を取り直しても残ります）`, 'ok');
+      };
+      hIn.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          applyH();
+        }
+      });
+      pop = h(
+        'div',
+        { class: 'pop sunnb-pop', style: `left:${left}px;top:${top}px` },
+        h('div', { class: 'sunnb-pop-head' }, h('h5', null, neighborTitle(b)), h('button', { class: 'icon-btn', title: '閉じる', onclick: closePop }, '×')),
+        h('div', { class: 'hint' }, `出典: ${NEIGHBOR_SOURCE_LABEL[b.source]}${b.source === 'gsi' ? '（高さは建物の種類からの推定）' : ''}`),
+        h('div', { class: 'hint' }, `${neighborWhere(b)}・建築面積 約 ${Math.round(ringArea(b.ring))} m²`),
+        h('div', { class: 'row' }, h('span', null, '高さ (m)'), hIn, h('button', { class: 'btn sm dark', onclick: applyH }, '適用')),
+        overridden
+          ? h(
+              'div',
+              { class: 'row' },
+              h('span', { class: 'hint' }, `元のデータ ${b.height.toFixed(1)} m`),
+              h(
+                'button',
+                {
+                  class: 'btn sm ghost',
+                  onclick: () => {
+                    closePop();
+                    sc.setHeight(key, null);
+                    afterEdit();
+                    toast(`高さを元のデータ（${b.height.toFixed(1)} m）に戻しました`, 'ok');
+                  },
+                },
+                '元に戻す',
+              ),
+            )
+          : null,
+        h(
+          'div',
+          { class: 'row' },
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              title: '解体予定の既存建物・もう無い建物などを外します（影・解析からも外れます）',
+              onclick: () => {
+                closePop();
+                hideKeys([key]);
+              },
+            },
+            'この建物を隠す',
+          ),
+        ),
+      );
+      ctx.stage.appendChild(pop);
+    };
+    const setHideMode = (on: boolean) => {
+      if (on === hideMode) return;
+      if (on) {
+        if (!sc.state.neighbors.length) {
+          toast(NO_NEIGHBORS_MSG, 'info', 8000);
+          return;
+        }
+        // 敷地をクリック・2 点合わせと同時に有効にしない（1 クリックが両方に効いてしまう）
+        setPlacing(false);
+        extPanel?.cancelTwoPoint();
+        closePop();
+        if (!sc.state.showNeighbors) {
+          sc.state.showNeighbors = true;
+          if (toggleInputs.showNeighbors) toggleInputs.showNeighbors.checked = true;
+          sc.applyVisibility();
+        }
+        hideMode = true;
+        selected.clear();
+        sc.setGhosts(true);
+        syncHighlight();
+        hideBtn.classList.add('dark');
+        hideBtn.textContent = HIDE_MODE_ARMED;
+        canvasEl.style.cursor = 'crosshair';
+        toast(HIDE_MODE_GUIDE, 'info', 8000);
+      } else {
+        hideMode = false;
+        cancelRect();
+        selected.clear();
+        sc.setGhosts(false);
+        syncHighlight();
+        hideBtn.classList.remove('dark');
+        hideBtn.textContent = HIDE_MODE_LABEL;
+        canvasEl.style.cursor = '';
+      }
+      renderBar();
+    };
+    stopNeighborUI = () => {
+      setHideMode(false);
+      closePop();
+    };
+    hideBtn.addEventListener('click', () => setHideMode(!hideMode));
+    const toggleSel = (key: string) => {
+      if (selected.has(key)) selected.delete(key);
+      else selected.add(key);
+      syncHighlight();
+      renderBar();
+    };
+    barHide.addEventListener('click', () => {
+      const keys = [...selected].filter((k) => sc.findByKey(k) && !sc.findByKey(k)!.hidden);
+      selected.clear();
+      syncHighlight();
+      hideKeys(keys);
+      renderBar();
+    });
+    barRestore.addEventListener('click', () => {
+      const keys = [...selected].filter((k) => !!sc.findByKey(k)?.hidden);
+      selected.clear();
+      syncHighlight();
+      restoreKeys(keys);
+      renderBar();
+    });
+    barClear.addEventListener('click', () => {
+      selected.clear();
+      syncHighlight();
+      renderBar();
+    });
+    barExit.addEventListener('click', () => setHideMode(false));
+    // 周辺建物を作り直したとき（取り直し・位置の調整・隠す／戻す）: 無くなった建物の選択・案内を外し、一覧を作り直す
+    sc.onNeighborsChange = () => {
+      for (const k of [...selected]) if (!sc.findByKey(k)) selected.delete(k);
+      if (popKey && !sc.findByKey(popKey)) closePop();
+      // 周辺建物が無くなった（すべて消す）ら選ぶものが無いので終える
+      if (hideMode && !sc.state.neighbors.length) setHideMode(false);
+      renderBar();
+      renderHiddenList();
+    };
+    // 3D のクリック: 押した所から動かさずに離したときだけ（ドラッグは視点の操作）。「建物を選んで隠す」の間は Shift+ドラッグで範囲選択
+    let nbDown: { x: number; y: number; busy: boolean } | null = null;
+    let rect: { x0: number; y0: number; x1: number; y1: number; pointerId: number; controls: boolean } | null = null;
+    /** 敷地をクリック・2 点合わせの待ち受け中（そのクリックは建物の選択・案内に使わない） */
+    const otherModeArmed = () => placing || !!extPanel?.twoPointArmed();
+    const ndcAt = (x: number, y: number) => {
+      const r = canvasEl.getBoundingClientRect();
+      return new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
+    };
+    const pickAt = (x: number, y: number) => sc.pickNeighbor(ndcAt(x, y), [v.groups.building, v.groups.roof, v.groups.external]);
+    const drawRect = () => {
+      if (!rect) {
+        selRect.style.display = 'none';
+        return;
+      }
+      const s = ctx.stage.getBoundingClientRect();
+      selRect.style.display = 'block';
+      selRect.style.left = `${Math.min(rect.x0, rect.x1) - s.left}px`;
+      selRect.style.top = `${Math.min(rect.y0, rect.y1) - s.top}px`;
+      selRect.style.width = `${Math.abs(rect.x1 - rect.x0)}px`;
+      selRect.style.height = `${Math.abs(rect.y1 - rect.y0)}px`;
+    };
+    function cancelRect() {
+      if (!rect) return;
+      // 範囲選択を途中でやめた（Esc・モードの終了）後の pointerup をクリックとして扱わない
+      nbDown = null;
+      try {
+        canvasEl.releasePointerCapture(rect.pointerId);
+      } catch {
+        // 既に外れている
+      }
+      v.controls.enabled = rect.controls;
+      rect = null;
+      drawRect();
+    }
+    const selectInRect = (r: { x0: number; y0: number; x1: number; y1: number }) => {
+      const cr = canvasEl.getBoundingClientRect();
+      const pts = sc.selectableCentroids().map((c) => {
+        const p = c.world.clone().project(v.camera);
+        // カメラの後ろ（z > 1）は投影が裏返るので除く
+        if (p.z < -1 || p.z > 1) return { key: c.key, x: NaN, y: NaN };
+        return { key: c.key, x: cr.left + ((p.x + 1) / 2) * cr.width, y: cr.top + ((1 - p.y) / 2) * cr.height };
+      });
+      const keys = keysInRect(pts, { x: r.x0, y: r.y0 }, { x: r.x1, y: r.y1 });
+      for (const k of keys) selected.add(k);
+      syncHighlight();
+      renderBar();
+      if (!keys.length) toast('範囲の中に建物がありません（建物の中心が入るように囲んでください）');
+    };
+    const onNbDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      nbDown = { x: e.clientX, y: e.clientY, busy: otherModeArmed() };
+      if (hideMode && e.shiftKey) {
+        // Shift+ドラッグは範囲選択（視点の移動にしない: OrbitControls はこの後の pointerdown で enabled を見る）
+        rect = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, pointerId: e.pointerId, controls: v.controls.enabled };
+        v.controls.enabled = false;
+        try {
+          canvasEl.setPointerCapture(e.pointerId);
+        } catch {
+          // 合成イベントなど
+        }
+        drawRect();
+      }
+    };
+    const onNbMove = (e: PointerEvent) => {
+      if (!rect || e.pointerId !== rect.pointerId) return;
+      rect.x1 = e.clientX;
+      rect.y1 = e.clientY;
+      drawRect();
+    };
+    const onNbUp = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const d = nbDown;
+      nbDown = null;
+      const up = { x: e.clientX, y: e.clientY };
+      if (rect) {
+        const r = { ...rect, x1: up.x, y1: up.y };
+        cancelRect();
+        if (d && !isClick(d, up)) {
+          selectInRect(r);
+          return;
+        }
+      }
+      if (!d || d.busy || otherModeArmed() || !isClick(d, up)) return;
+      const hit = pickAt(up.x, up.y);
+      if (hideMode) {
+        if (hit) toggleSel(hit.key);
+        return;
+      }
+      if (hit && !hit.hidden) openPop(hit.key, up.x, up.y);
+      else closePop();
+    };
+    const onNbKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      closePop();
+      setHideMode(false);
+    };
+    canvasEl.addEventListener('pointerdown', onNbDown, true);
+    canvasEl.addEventListener('pointermove', onNbMove, true);
+    canvasEl.addEventListener('pointerup', onNbUp, true);
+    canvasEl.addEventListener('pointercancel', cancelRect, true);
+    window.addEventListener('keydown', onNbKey);
+    cleanupNeighborUI = () => {
+      canvasEl.removeEventListener('pointerdown', onNbDown, true);
+      canvasEl.removeEventListener('pointermove', onNbMove, true);
+      canvasEl.removeEventListener('pointerup', onNbUp, true);
+      canvasEl.removeEventListener('pointercancel', cancelRect, true);
+      window.removeEventListener('keydown', onNbKey);
+      cancelRect();
+      closePop();
+      hideMode = false;
+      selected.clear();
+      sc.onNeighborsChange = null;
+      sc.setGhosts(false);
+      sc.setPreview(null);
+      sc.setHighlight([]);
+      hideBar.remove();
+      selRect.remove();
+      canvasEl.style.cursor = '';
+    };
+    // 検証用（E2E）
+    const dbg = (window as unknown as { __sunDebug?: Record<string, unknown> }).__sunDebug;
+    if (dbg)
+      dbg.neighborHide = {
+        armed: () => hideMode,
+        selected: () => [...selected],
+        popKey: () => popKey,
+        pick: (cx: number, cy: number) => pickAt(cx, cy),
+      };
+    renderBar();
+    renderHiddenList();
     side.append(
       section(
         '周辺環境',
@@ -574,6 +1002,9 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm', onclick: () => loadNeighbors('osm') }, '🏘 周辺建物（OSM）'),
         ),
         toggles,
+        hideBtn,
+        h('p', { class: 'hint', style: 'margin:2px 0 0' }, '解体予定の既存建物・もう無い建物・形の違う建物などを選んで隠せます（影を落とさず、日当たりの解析にも入りません。いつでも戻せます）。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
+        hiddenBox,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '隣家を手動で追加'),
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px' }, field('方向', dirSel), field('距離 m', distIn), field('高さ m', hIn)),
         h(
@@ -582,7 +1013,7 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); } }, '＋ 隣家を追加'),
           h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
-        h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は手動で追加してください。'),
+        h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。'),
       ),
     );
     // 3DS のパネルは 建設地 の直後に置く
@@ -696,6 +1127,9 @@ export const sunStep: Step = {
       }
     };
     const captureSeasons = async () => {
+      // 選択のオレンジ・隠した建物の薄い表示を写さない
+      stopNeighborUI();
+      sc.setPreview(null);
       const pm = progressModal('季節ごとの日当たりを撮影しています');
       const prev = { ...ui };
       try {

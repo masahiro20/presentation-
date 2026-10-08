@@ -30,7 +30,7 @@ export interface ExternalPanelDeps {
   invalidateResults: () => void;
   /** 建設地の表示を更新 */
   showLoc: () => void;
-  /** 航空写真をクリックして置くモードを切る（2 点合わせと同時に有効にしない） */
+  /** 航空写真をクリックして置くモードと「建物を選んで隠す」を切る（2 点合わせと同時に有効にしない。Esc でも呼ぶ） */
   cancelPlacing: () => void;
   /** 航空写真が無ければ読み込む。読めなければ false */
   ensureAerial: () => Promise<boolean>;
@@ -41,6 +41,8 @@ export interface ExternalPanel {
   twoPointBtn: HTMLButtonElement;
   /** 2 点合わせの待ち受け中なら中止する。notice があれば（中止したときだけ）その案内を出す。位置・向き・配置を変える前に呼ぶ（指した角の座標はワールドなので古くなる） */
   cancelTwoPoint: (notice?: string) => void;
+  /** 2 点合わせの待ち受け中か（「建物を選んで隠す」・建物のクリックで開く案内と同時に効かせない） */
+  twoPointArmed: () => boolean;
   /** emit('model') の後（方位の回転など）に external を再同期する */
   afterModelRebuilt: () => void;
   dispose: () => void;
@@ -629,6 +631,7 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
     section: panel,
     twoPointBtn,
     cancelTwoPoint,
+    twoPointArmed: () => !!tp,
     afterModelRebuilt: () => {
       ctrl?.sync(v);
       refresh();

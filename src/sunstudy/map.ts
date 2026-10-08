@@ -4,6 +4,8 @@
  *  - ドラッグでパン、ホイール・ボタンでズーム（z 5..18、小数ズーム可）、クリックでピン、ピンのドラッグ、2 本指ピンチ
  *  - 敷地の輪郭を描くモード（クリックで頂点追加、最初の頂点か「完了」で閉じる、頂点のドラッグ、右クリック/Backspace で最後の頂点を消す）
  *  - 建物の足跡（e/n）・周辺建物の輪郭・解析半径の円・スケールバー・方位（北が上）の描画
+ *  - 周辺建物を選ぶモード（setNeighborPickMode）: クリックした輪郭の id を onNeighborClick に渡す（ピンは動かさない）。
+ *    隠した建物の輪郭（hidden）は灰色の破線で描く
  *  - 出典（attribution）とボタン類は DOM 側（placeStep）が描く。ここでは文字列を返すだけ
  *
  * 依存ライブラリ無し。純粋な関数（metersPerPixel / polygonAreaM2 / 画素変換）は Node でも読み込める
@@ -12,6 +14,7 @@
 import type { LatLon } from './types';
 import { frameFromLocal } from './types';
 import { lonLatToTile, tileToLonLat, metersPerDegree } from '../sun/geo';
+import { hitRingAt } from './neighborSelect';
 
 export type MapLayer = 'std' | 'pale' | 'photo';
 
@@ -63,6 +66,17 @@ export interface MapPickerOptions {
   onTilesUnavailable?: () => void;
   /** 地図タイルが読めるようになった（onTilesUnavailable の後） */
   onTilesAvailable?: () => void;
+  /** 周辺建物を選ぶモードで地図をクリックした（輪郭の id。輪郭の外なら null） */
+  onNeighborClick?: (id: string | null) => void;
+  /** 周辺建物を選ぶモードが地図側の操作（Esc）で終わった */
+  onNeighborPickModeChange?: (on: boolean) => void;
+}
+
+/** 地図に描く周辺建物の輪郭（ピンからの東・北 m）。hidden = 隠した建物（灰色の破線） */
+export interface MapNeighborRing {
+  id: string;
+  ring: { e: number; n: number }[];
+  hidden?: boolean;
 }
 
 /** 1 枚も読めないまま何枚失敗したら「地図サーバーに接続できない」と判断するか */
@@ -226,7 +240,12 @@ export class MapPicker {
 
   private footprint: { e: number; n: number }[] | null = null;
   private footprintInner: { e: number; n: number }[] | null = null;
-  private neighborRings: { e: number; n: number }[][] | null = null;
+  private neighborRings: MapNeighborRing[] | null = null;
+  private _neighborPick = false;
+  /** 選ぶモードでカーソルの下にある輪郭の id */
+  private hoverRingId: string | null = null;
+  /** 選ぶモードの直前のクリック（ダブルクリックでの拡大の 2 回目で隠す／戻すを打ち消さない） */
+  private lastPickClick: { x: number; y: number; t: number } | null = null;
   private radiusM: number | null = null;
 
   private readonly cache = new Map<string, TileEntry>();
@@ -339,6 +358,11 @@ export class MapPicker {
    */
   setPolygonMode(on: boolean): void {
     if (on === this._polyMode) return;
+    if (on && this._neighborPick) {
+      // 周辺建物を選ぶモードとは同時に使わない
+      this.setNeighborPickMode(false);
+      this.opts.onNeighborPickModeChange?.(false);
+    }
     if (on) {
       this.setPolyModeInternal(true, false);
     } else if (!this._polyClosed && this._polygon.length >= 3) {
@@ -384,11 +408,39 @@ export class MapPicker {
     this.footprintInner = inner && inner.length >= 3 ? inner.map((q) => ({ e: q.e, n: q.n })) : null;
     this.requestDraw();
   }
-  /** 周辺建物の輪郭（ピンからの東・北 m）を薄く表示 */
-  setNeighborRings(rings: { e: number; n: number }[][] | null): void {
-    this.neighborRings = rings && rings.length ? rings.filter((r) => r.length >= 3) : null;
+  /**
+   * 周辺建物の輪郭（ピンからの東・北 m）を薄く表示。輪郭の配列（id 無し）か、id・hidden 付きの配列を受け取る。
+   * hidden の輪郭は灰色の破線。id は周辺建物を選ぶモードのクリックで返す（id 無しの輪郭は ring0, ring1… になる）
+   */
+  setNeighborRings(rings: ({ e: number; n: number }[] | MapNeighborRing)[] | null): void {
+    const list = (rings ?? []).map((r, i): MapNeighborRing => (Array.isArray(r) ? { id: `ring${i}`, ring: r } : r)).filter((r) => r.ring.length >= 3);
+    this.neighborRings = list.length ? list : null;
+    if (this.hoverRingId && !list.some((r) => r.id === this.hoverRingId)) this.hoverRingId = null;
     this.requestDraw();
   }
+
+  /** 周辺建物を選ぶモード（クリックで onNeighborClick。ピンは動かさず、ピンのドラッグもしない）。輪郭を描くモードとは同時に使わない */
+  get neighborPickMode(): boolean {
+    return this._neighborPick;
+  }
+  setNeighborPickMode(on: boolean): void {
+    if (on === this._neighborPick) return;
+    this._neighborPick = on;
+    if (on && this._polyMode) this.setPolygonMode(false);
+    this.canvas.classList.toggle('picking', on);
+    this.hoverRingId = null;
+    this.canvas.style.cursor = '';
+    this.requestDraw();
+  }
+
+  /** 画面上の点（キャンバス内 px）にある周辺建物の輪郭の id（無ければ null） */
+  neighborAt(x: number, y: number): string | null {
+    const pin = this._pin;
+    if (!pin || !this.neighborRings) return null;
+    const rings = this.neighborRings.map((r) => ({ id: r.id, ring: r.ring.map((q) => this.project(frameFromLocal(pin, q.e, q.n))) }));
+    return hitRingAt({ x, y }, rings, 4);
+  }
+
   /** 解析範囲の円（半径 m）。null で消す */
   setRadiusRing(m: number | null): void {
     this.radiusM = m !== null && isFinite(m) && m > 0 ? m : null;
@@ -544,7 +596,7 @@ export class MapPicker {
       this.drag = { kind: 'vertex', ...base, index: vi, lastFire: 0 };
       return;
     }
-    if (this._pin && !this._polyMode && this.hitPin(pt.x, pt.y)) {
+    if (this._pin && !this._polyMode && !this._neighborPick && this.hitPin(pt.x, pt.y)) {
       const pp = this.project(this._pin);
       this.drag = { kind: 'pin', ...base, offX: pt.x - pp.x, offY: pt.y - pp.y, lastFire: 0 };
       return;
@@ -652,6 +704,10 @@ export class MapPicker {
 
   private onPointerLeave = (): void => {
     this.hover = null;
+    if (this.hoverRingId) {
+      this.hoverRingId = null;
+      this.requestDraw();
+    }
     if (this._polyMode && !this._polyClosed && this._polygon.length) this.requestDraw();
   };
 
@@ -688,9 +744,16 @@ export class MapPicker {
   };
 
   private onKey = (e: KeyboardEvent): void => {
-    if (this.disposed || !this._polyMode) return;
+    if (this.disposed) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (this._neighborPick && e.key === 'Escape') {
+      e.preventDefault();
+      this.setNeighborPickMode(false);
+      this.opts.onNeighborPickModeChange?.(false);
+      return;
+    }
+    if (!this._polyMode) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       this.setPolygonMode(false);
@@ -713,12 +776,33 @@ export class MapPicker {
 
   private updateHoverCursor(pt: { x: number; y: number }): void {
     if (this.drag || this.pinch) return;
+    if (this._neighborPick) {
+      const id = this.neighborAt(pt.x, pt.y);
+      if (id !== this.hoverRingId) {
+        this.hoverRingId = id;
+        this.requestDraw();
+      }
+      this.canvas.style.cursor = id ? 'pointer' : '';
+      return;
+    }
     const over = this.hitVertex(pt.x, pt.y) >= 0 || (!!this._pin && !this._polyMode && this.hitPin(pt.x, pt.y));
     this.canvas.style.cursor = over ? 'pointer' : '';
   }
 
-  /** 左クリック（移動なし）: 輪郭モードなら頂点追加／閉じる、そうでなければピンを置く */
+  /** 左クリック（移動なし）: 周辺建物を選ぶモードなら輪郭の id を返す、輪郭モードなら頂点追加／閉じる、そうでなければピンを置く */
   private handleClick(pt: { x: number; y: number }): void {
+    if (this._neighborPick) {
+      const now = performance.now();
+      const last = this.lastPickClick;
+      if (last && now - last.t < 400 && Math.hypot(pt.x - last.x, pt.y - last.y) <= 6) {
+        // ダブルクリック（拡大）の 2 回目
+        this.lastPickClick = null;
+        return;
+      }
+      this.lastPickClick = { x: pt.x, y: pt.y, t: now };
+      this.opts.onNeighborClick?.(this.neighborAt(pt.x, pt.y));
+      return;
+    }
     const ll = this.unproject(pt.x, pt.y);
     if (this._polyMode) {
       if (this._polyClosed) {
@@ -966,9 +1050,7 @@ export class MapPicker {
     ctx.lineJoin = 'round';
 
     if (this.neighborRings) {
-      ctx.strokeStyle = 'rgba(60,60,60,0.55)';
-      ctx.lineWidth = 1;
-      for (const ring of this.neighborRings) {
+      const path = (ring: { e: number; n: number }[]) => {
         ctx.beginPath();
         ring.forEach((q, i) => {
           const s = toScreen(q);
@@ -976,6 +1058,35 @@ export class MapPicker {
           else ctx.lineTo(s.x, s.y);
         });
         ctx.closePath();
+      };
+      // 表示中の建物（今までどおりの薄い線）
+      ctx.strokeStyle = 'rgba(60,60,60,0.55)';
+      ctx.lineWidth = 1;
+      for (const r of this.neighborRings) {
+        if (r.hidden) continue;
+        path(r.ring);
+        ctx.stroke();
+      }
+      // 隠した建物: 地図の建物を白く消した上に灰色の破線
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = 'rgba(85,85,85,0.95)';
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1.5;
+      for (const r of this.neighborRings) {
+        if (!r.hidden) continue;
+        path(r.ring);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      // 選ぶモード: カーソルの下の建物を強調（隠す／戻す対象）
+      const hov = this._neighborPick && this.hoverRingId ? this.neighborRings.find((r) => r.id === this.hoverRingId) : null;
+      if (hov) {
+        path(hov.ring);
+        ctx.fillStyle = 'rgba(229,83,31,0.18)';
+        ctx.fill();
+        ctx.strokeStyle = '#e5531f';
+        ctx.lineWidth = 2;
         ctx.stroke();
       }
     }

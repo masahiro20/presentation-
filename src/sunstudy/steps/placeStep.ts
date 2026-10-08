@@ -13,7 +13,7 @@
 import { h, clear, toast, progressModal, section, segmented, field } from '../../app/dom';
 import { geocode, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import type { StudyStep, StudyCtx } from '../shell';
-import { study, emit, on, visibleNeighbors } from '../state';
+import { study, emit, on, visibleNeighbors, effectiveNeighbors, hiddenNeighbors, setNeighborsHidden, restoreAllNeighbors } from '../state';
 import type { GeoFrame, LatLon, NeighborSource } from '../types';
 import { frameToLocal } from '../types';
 import { MapPicker, MAP_LAYER_LABEL, polygonAreaM2, type MapLayer } from '../map';
@@ -239,6 +239,8 @@ export const placeStep: StudyStep = {
   mount(ctx: StudyCtx) {
     const { stage, side, shell } = ctx;
     drawCount = 0;
+    /** 「地図で建物を選んで隠す」モード（クリックで輪郭の建物を隠す／戻す。ピンは動かさない） */
+    let pickOn = false;
     // 保存データから周辺環境が復元されている場合は、今のピン位置を取得位置として扱う
     if (study.env.loaded && study.frame && !envOrigin) envOrigin = { lat: study.frame.lat, lon: study.frame.lon };
     if (study.frame && study.frame.address && !isCoordAddress(study.frame.address)) anchor = { lat: study.frame.lat, lon: study.frame.lon, address: study.frame.address };
@@ -594,7 +596,8 @@ export const placeStep: StudyStep = {
 
     const refreshHint = () => {
       const mode = !!map?.polygonMode;
-      if (mode) hint.textContent = drawCount >= 3 ? `頂点 ${drawCount} 点。最初の点をクリックするか「描き終える（完了）」で輪郭を閉じます。右クリック／Backspace で 1 点戻す` : '敷地の角を順にクリックしてください（3 点以上）。頂点はドラッグで動かせます';
+      if (pickOn) hint.textContent = '周辺建物の輪郭をクリックすると隠します（灰色の破線 = 隠した建物。もう一度クリックで戻します）。ピンは動きません。Esc で終了';
+      else if (mode) hint.textContent = drawCount >= 3 ? `頂点 ${drawCount} 点。最初の点をクリックするか「描き終える（完了）」で輪郭を閉じます。右クリック／Backspace で 1 点戻す` : '敷地の角を順にクリックしてください（3 点以上）。頂点はドラッグで動かせます';
       else if (!study.frame) hint.textContent = '地図をクリックすると建設地のピンを置けます。ドラッグで地図を動かし、ホイールで拡大・縮小';
       else hint.textContent = 'ピンはドラッグで微調整できます。「航空写真」に切り替えると建物や敷地の形が見えます';
     };
@@ -654,8 +657,33 @@ export const placeStep: StudyStep = {
       const auto = vis.filter((n) => n.source !== 'manual');
       const manualCount = vis.length - auto.length;
       const tags = study.neighborSources.filter((s) => s !== 'manual').map((s) => h('span', { class: `src-tag ${SOURCE_TAG[s]?.cls ?? ''}` }, SOURCE_TAG[s]?.label ?? s));
-      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, manualCount ? `（手動 ${manualCount}棟）` : null));
+      const hiddenCount = hiddenNeighbors().length;
+      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenCount ? `・隠した建物 ${hiddenCount}棟` : null));
       envBox.appendChild(rows);
+      // 地図で建物を選んで隠す（取り壊す既存の家・もう無い建物・形の違う建物などを影と解析から外す）
+      if (study.neighbors.length) {
+        envBox.appendChild(
+          h(
+            'div',
+            { class: 'btn-row', style: 'margin:4px 0' },
+            h('button', { class: `btn sm${pickOn ? ' dark' : ''}`, onclick: () => setPick(!pickOn) }, pickOn ? '建物の輪郭をクリックで隠す／戻す（Esc で終了）' : '地図で建物を選んで隠す'),
+            hiddenCount
+              ? h(
+                  'button',
+                  {
+                    class: 'btn sm ghost',
+                    onclick: () => {
+                      const k = restoreAllNeighbors();
+                      if (k) toast(`隠した建物 ${k} 棟をすべて戻しました`, 'ok');
+                    },
+                  },
+                  'すべて戻す',
+                )
+              : null,
+          ),
+        );
+        if (pickOn || hiddenCount) envBox.appendChild(h('p', { class: 'hint', style: 'margin:0 0 6px' }, '隠した建物は灰色の破線で表示し、3D・影・日照の解析・日影図から外します。日照シミュレーションの「周辺建物の修正」でも選んで隠す・戻すができます。'));
+      }
       for (const n of study.neighborNotes) envBox.appendChild(h('div', { class: 'info-box' }, n));
       if (study.env.error) {
         for (const line of study.env.error.split('\n').filter(Boolean)) envBox.appendChild(h('div', { class: 'warn' }, line));
@@ -677,7 +705,7 @@ export const placeStep: StudyStep = {
       if (!map) return;
       try {
         if (study.env.loaded) {
-          map.setNeighborRings(visibleNeighbors().map((n) => n.ring));
+          map.setNeighborRings(effectiveNeighbors().map((n) => ({ id: n.id, ring: n.ring, hidden: !!n.hidden })));
           map.setRadiusRing(NEIGHBOR_RADIUS);
         } else {
           map.setNeighborRings(null);
@@ -694,6 +722,36 @@ export const placeStep: StudyStep = {
       refreshEnv();
       refreshHint();
       refreshAttrib();
+    };
+
+    /** 「地図で建物を選んで隠す」の切り替え（輪郭を描くモードとは同時に使わない。MapPicker 側でも排他） */
+    const setPick = (onOff: boolean) => {
+      if (!map) return;
+      if (onOff && map.polygonMode) {
+        if (drawCount >= 3) map.finishPolygon();
+        map.setPolygonMode(false);
+      }
+      pickOn = onOff;
+      map.setNeighborPickMode(onOff);
+      if (onOff) toast('地図の建物の輪郭をクリックすると隠します。隠した建物（灰色の破線）をもう一度クリックすると戻します。Esc で終了', 'info', 8000);
+      refreshAll();
+    };
+    /** 選ぶモードで輪郭をクリックした: その建物を隠す／戻す */
+    const toggleNeighborFromMap = (id: string | null) => {
+      if (!id) {
+        toast('周辺建物の輪郭の内側をクリックしてください（建物の無い所ではピンは動きません）');
+        return;
+      }
+      const n = effectiveNeighbors().find((x) => x.id === id);
+      if (!n) return;
+      const name = n.label ?? '建物';
+      if (n.hidden) {
+        setNeighborsHidden([id], false);
+        toast(`${name}を戻しました`, 'ok');
+      } else {
+        setNeighborsHidden([id], true);
+        toast(`${name}を隠しました（影・解析からも外しています。もう一度クリックすると戻せます）`, 'ok');
+      }
     };
 
     const loadEnv = async () => {
@@ -760,6 +818,11 @@ export const placeStep: StudyStep = {
           drawCount = 0;
           refreshAll();
         },
+        onNeighborClick: (id) => toggleNeighborFromMap(id),
+        onNeighborPickModeChange: (onOff) => {
+          pickOn = onOff;
+          refreshAll();
+        },
         // 地図サーバー（国土地理院）に接続できない環境（社内の制限・オフライン・外部通信を遮断するホスティング）では
         // 地図が灰色のままになる。原因と回避策（同梱デモ／制限のない環境で開く）を地図の上に示す
         onTilesUnavailable: () => {
@@ -803,11 +866,18 @@ export const placeStep: StudyStep = {
     // ---- 他所からの変更に追従 ----
     disposers.push(
       on('env', () => {
+        // 周辺環境を捨てた（ピンを大きく動かした）ら、建物を選ぶモードも終える（選ぶ輪郭が無い）
+        if (pickOn && !study.env.loaded) setPick(false);
         refreshEnv();
         refreshStatus();
         refreshRings();
       }),
       on('frame', refreshStatus),
+      // 隠す／戻す・手動の隣家の追加など: 地図の輪郭（隠した建物は破線）と棟数を更新
+      on('neighbors', () => {
+        refreshRings();
+        refreshEnv();
+      }),
       on('site', refreshPolyUI),
       on('model', refreshPolyUI),
       // 位置合わせ・ピンの移動で建物の外形が変わったら地図の足跡も追従

@@ -52,6 +52,7 @@ export class StudyScene {
    *  overlay   解析結果（日照時間マップ・面の色分け）
    *  markers   測定点
    *  align     位置合わせ中の目印（①②の円盤と対応線。environment.ts は触らない。影を落とさない・解析から除く）
+   *  select    周辺建物を選んで隠すときの表示（選択の強調・隠した建物の半透明表示）。影を落とさない・解析から除く・撮影には写さない
    */
   readonly groups = {
     terrain: new THREE.Group(),
@@ -62,6 +63,7 @@ export class StudyScene {
     overlay: new THREE.Group(),
     markers: new THREE.Group(),
     align: new THREE.Group(),
+    select: new THREE.Group(),
   };
   sunDir = new THREE.Vector3(0.4, 0.7, 0.5).normalize();
   navMode: 'orbit' | 'pan' = 'orbit';
@@ -169,6 +171,7 @@ export class StudyScene {
     this.groups.overlay.name = 'overlay';
     this.groups.markers.name = 'markers';
     this.groups.align.name = 'align';
+    this.groups.select.name = 'select';
 
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
@@ -464,8 +467,19 @@ export class StudyScene {
     this.camMoved();
   }
 
-  /** 指定解像度で書き出し（高品質） */
+  /** 指定解像度で書き出し（高品質）。選択の強調・隠した建物の半透明表示（groups.select）は写さない */
   async capture(width: number, height: number, mime = 'image/jpeg', q = 0.92): Promise<string> {
+    const selVisible = this.groups.select.visible;
+    this.groups.select.visible = false;
+    try {
+      return this.captureFrame(width, height, mime, q);
+    } finally {
+      this.groups.select.visible = selVisible;
+      this.invalidate();
+    }
+  }
+
+  private captureFrame(width: number, height: number, mime: string, q: number): string {
     const prevPR = this.renderer.getPixelRatio();
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(width, height, false);

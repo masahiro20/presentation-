@@ -4,6 +4,7 @@ import { DEFAULT_DESIGN, type DesignOptions } from '../styles/presets';
 import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
 import type { SeasonResult, SunHighlight } from '../sun/report';
 import type { ExternalBuilding } from './externalFit';
+import type { SunDisclosure } from './sunDisclosure';
 
 export interface GalleryItem {
   id: string;
@@ -31,6 +32,11 @@ export interface ProjectState {
     highlights: SunHighlight[];
     diagramSvg?: string;
     images: { label: string; url: string }[];
+    /**
+     * 結果を作った時点の周辺建物の扱い（計算から除外・表示だけ隠した建物）。部屋の日当たり・資料の日照のページの注記に使う。
+     * 結果と一緒に捨てる（clearedSunResults）。無ければ資料を作る時点の扱いで書く
+     */
+    disclosure?: SunDisclosure;
   };
   videos: { title: string; url: string; ext: string }[];
   /** 提案用パース（写真品質）の設定 */

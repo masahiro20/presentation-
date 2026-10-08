@@ -19,6 +19,8 @@ export interface LatLon {
 export const NEIGHBOR_SELECT_COLOR = ALIGN_COLORS.target;
 /** 隠した建物を薄く表示するときの不透明度 */
 export const GHOST_OPACITY = 0.25;
+/** 表示だけ隠した建物の薄い表示の色（計算から除外した建物は灰色） */
+export const GHOST_VIEW_COLOR = '#7fb2e5';
 
 /** リングの面積 (m²)。閉じた点（最後 = 最初）が重なっていても同じ値。座標が大きくても（地点によらない座標）桁落ちしないよう最初の点から測る */
 export function ringArea(ring: EN[]): number {
@@ -104,15 +106,72 @@ export function sameFootprint(a: EN[], b: EN[]): boolean {
   return pointInRing(ringCentroid(a), b) && pointInRing(ringCentroid(b), a);
 }
 
-/** 隠す・高さの記録（キー → 状態）。外形は地点によらない座標（absoluteEN）で、手動の隣家には無い */
+/**
+ * 隠し方:
+ *  - 'view' = 表示だけ隠す（3D には描かないが、影は落とし、部屋の日当たり・日照時間マップにも入れる。プレゼンで視点を遮る建物など）
+ *  - 'exclude' = 計算から除外（描かない・影を落とさない・解析に入れない。解体予定の既存建物など）
+ */
+export type HideMode = 'view' | 'exclude';
+/** 隠した理由: 解体予定／敷地内の既存建物／データの誤り／その他（自由記述は note） */
+export type HideReason = 'demolish' | 'onSite' | 'dataError' | 'other';
+
+/** 隠し方・理由の記録 */
+export interface HideRecord {
+  mode: HideMode;
+  reason: HideReason;
+  /** 理由の自由記述（その他のとき。ほかの理由でも補足として残す） */
+  note?: string;
+}
+
+export const HIDE_MODES: readonly HideMode[] = ['exclude', 'view'];
+export const HIDE_REASONS: readonly HideReason[] = ['demolish', 'onSite', 'dataError', 'other'];
+/** 隠し方の名前（選択肢・一覧の見出し） */
+export const HIDE_MODE_NAME: Readonly<Record<HideMode, string>> = { view: '表示だけ隠す（影・解析には残す）', exclude: '計算から除外' };
+/** 隠し方の短い名前（一覧のボタン・資料の表） */
+export const HIDE_MODE_SHORT: Readonly<Record<HideMode, string>> = { view: '表示だけ隠す', exclude: '計算から除外' };
+/** 理由の名前 */
+export const HIDE_REASON_LABEL: Readonly<Record<HideReason, string>> = { demolish: '解体予定', onSite: '敷地内の既存建物', dataError: 'データの誤り', other: 'その他' };
+/** 記録の無い（古い）隠す記録の扱い: 計算から除外・その他（以前の「隠す」は影・解析からも外していた） */
+export const LEGACY_HIDE_RECORD: Readonly<HideRecord> = { mode: 'exclude', reason: 'other' };
+
+/**
+ * 隠す記録を読む（保存データ・古い記録・欠けた値）。mode・reason が無い／知らない値なら 計算から除外・その他。
+ * note は前後の空白を落とし、空なら付けない（200 文字まで）
+ */
+export function normalizeHideRecord(raw: unknown): HideRecord {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const mode = HIDE_MODES.includes(r.mode as HideMode) ? (r.mode as HideMode) : LEGACY_HIDE_RECORD.mode;
+  const reason = HIDE_REASONS.includes(r.reason as HideReason) ? (r.reason as HideReason) : LEGACY_HIDE_RECORD.reason;
+  const note = typeof r.note === 'string' ? r.note.trim().slice(0, 200) : '';
+  return note ? { mode, reason, note } : { mode, reason };
+}
+
+/** 理由の表示（その他は自由記述を括弧で。例 'その他（車庫の屋根）'） */
+export function hideReasonText(r: Pick<HideRecord, 'reason' | 'note'>): string {
+  const base = HIDE_REASON_LABEL[r.reason];
+  return r.note ? `${base}（${r.note}）` : base;
+}
+
+/**
+ * 隠す・高さの記録（キー → 状態）。外形は地点によらない座標（absoluteEN）で、手動の隣家には無い。
+ * hidden は隠した建物のキー（どちらの隠し方でも）、hideInfo はその隠し方・理由。
+ * hideInfo に無いキー（古い記録）は 計算から除外・その他（LEGACY_HIDE_RECORD）として扱う
+ */
 export interface NeighborEdits {
   hidden: Set<string>;
+  hideInfo: Map<string, HideRecord>;
   heights: Map<string, number>;
   footprints: Map<string, EN[]>;
 }
 
 export function emptyEdits(): NeighborEdits {
-  return { hidden: new Set(), heights: new Map(), footprints: new Map() };
+  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map() };
+}
+
+/** キーの隠す記録（隠していなければ null。隠し方・理由の無い古い記録は 計算から除外・その他） */
+export function hideRecordOf(edits: NeighborEdits, key: string): HideRecord | null {
+  if (!edits.hidden.has(key)) return null;
+  return normalizeHideRecord(edits.hideInfo?.get(key));
 }
 
 /** 記録の付いたキー（隠した・高さを直した） */
@@ -147,11 +206,17 @@ export function reapplyEdits(list: NeighborBuilding[], keyOf: (b: NeighborBuildi
     });
   for (const [from, tos] of moves) {
     for (const to of tos) {
-      if (edits.hidden.has(from)) edits.hidden.add(to);
+      if (edits.hidden.has(from)) {
+        edits.hidden.add(to);
+        // 隠し方・理由も一緒に付け替える（古い記録で無ければ付けない = 計算から除外・その他のまま）
+        const info = edits.hideInfo.get(from);
+        if (info) edits.hideInfo.set(to, { ...info });
+      }
       const hgt = edits.heights.get(from);
       if (hgt != null && !edits.heights.has(to)) edits.heights.set(to, hgt);
     }
     edits.hidden.delete(from);
+    edits.hideInfo.delete(from);
     edits.heights.delete(from);
     edits.footprints.delete(from);
   }
@@ -233,7 +298,10 @@ export class SunContext {
   readonly group = new THREE.Group();
   private aerial = new THREE.Group();
   private neighborsG = new THREE.Group();
-  /** 隠した建物の薄い表示（影を落とさない・解析に入らない: userData.neighbor を付けず noShadow） */
+  /**
+   * 隠した建物の薄い表示（影を落とさない・解析に入らない: userData.neighbor を付けず noShadow）。
+   * 表示だけ隠した建物の影は、別に neighborsG に影だけのメッシュ（userData.shadowOnly）を作る
+   */
   private ghostsG = new THREE.Group();
   private pathG = new THREE.Group();
   private sunMarker = new THREE.Group();
@@ -251,7 +319,15 @@ export class SunContext {
   /** 隠した建物のうち、これだけは薄く表示する（「隠した建物」の一覧で指している行） */
   private previewKey: string | null = null;
   private highlightKeys = new Set<string>();
-  private mats: { ghost: THREE.Material; ghostSel: THREE.Material; sel: THREE.Material; edge: THREE.LineBasicMaterial; edgeSel: THREE.LineBasicMaterial } | null = null;
+  private mats: {
+    ghost: THREE.Material;
+    ghostView: THREE.Material;
+    ghostSel: THREE.Material;
+    sel: THREE.Material;
+    shadowOnly: THREE.Material;
+    edge: THREE.LineBasicMaterial;
+    edgeSel: THREE.LineBasicMaterial;
+  } | null = null;
   /** buildNeighbors の後に呼ぶ（日照ステップの一覧・選択の表示を合わせる。ステップを離れるときは null に戻す） */
   onNeighborsChange: (() => void) | null = null;
 
@@ -265,7 +341,10 @@ export class SunContext {
     viewer.groups.context.add(this.group);
   }
 
-  /** 周辺建物（実体）のグループ。メッシュは userData.neighbor（解析の遮蔽物）と userData.neighborKey を持つ */
+  /**
+   * 周辺建物（実体）のグループ。メッシュは userData.neighbor（解析の遮蔽物）と userData.neighborKey を持つ。
+   * 表示だけ隠した建物は影だけのメッシュ（userData.shadowOnly。色も奥行きも書かず、影と解析にだけ入る）
+   */
   get neighborGroup(): THREE.Group {
     return this.neighborsG;
   }
@@ -273,9 +352,19 @@ export class SunContext {
   get ghostGroup(): THREE.Group {
     return this.ghostsG;
   }
-  /** 隠したキーの集合（今の一覧に無い建物の記録も含む） */
+  /** 隠したキーの集合（どちらの隠し方でも。今の一覧に無い建物の記録も含む） */
   get hiddenKeys(): Set<string> {
     return this.edits.hidden;
+  }
+
+  /** キーの隠し方・理由（隠していなければ null。古い記録は 計算から除外・その他） */
+  hideRecord(key: string): HideRecord | null {
+    return hideRecordOf(this.edits, key);
+  }
+
+  /** 建物の隠し方（隠していなければ null） */
+  hideModeOf(b: NeighborBuilding): HideMode | null {
+    return b.hidden ? (this.hideRecord(this.keyOf(b))?.mode ?? LEGACY_HIDE_RECORD.mode) : null;
   }
 
   /** 建物のキー（neighborKey。国土地理院・OSM は取得した地点から地点によらない座標で測る） */
@@ -305,35 +394,55 @@ export class SunContext {
     return this.edits.heights.get(this.keyOf(b)) ?? b.height;
   }
 
-  /** 隠した建物（今の一覧の中） */
-  hiddenList(): NeighborBuilding[] {
-    return this.state.neighbors.filter((b) => b.hidden);
+  /** 隠した建物（今の一覧の中）。mode を渡すとその隠し方の建物だけ */
+  hiddenList(mode?: HideMode): NeighborBuilding[] {
+    return this.state.neighbors.filter((b) => b.hidden && (!mode || this.hideModeOf(b) === mode));
   }
 
   /**
-   * 建物を隠す／戻す。戻り値: 状態が変わった建物の数。
+   * 建物を隠す／戻す。戻り値: 状態が変わった建物の数（隠し方を変えた建物も数える）。
+   * 隠すときは隠し方・理由（rec。省略時は 計算から除外・その他）を一緒に記録する。
    * 隠す記録は外形と一緒に残し、取り直し（loadNeighbors）の後も同じ建物に当て直す
    */
-  setHidden(keys: Iterable<string>, hidden: boolean): number {
+  setHidden(keys: Iterable<string>, hidden: boolean, rec: Partial<HideRecord> = {}): number {
     const ks = new Set(keys);
+    const info = normalizeHideRecord(rec);
     let n = 0;
     for (const b of this.state.neighbors) {
       const k = this.keyOf(b);
       if (!ks.has(k)) continue;
-      if (!!b.hidden !== hidden) n++;
-      b.hidden = hidden;
       if (hidden) {
+        if (!b.hidden || this.hideRecord(k)?.mode !== info.mode) n++;
+        b.hidden = true;
         this.edits.hidden.add(k);
+        this.edits.hideInfo.set(k, { ...info });
         const fp = this.footprintOf(b);
         if (fp) this.edits.footprints.set(k, fp);
+      } else {
+        if (b.hidden) n++;
+        b.hidden = false;
       }
     }
     if (!hidden)
       for (const k of ks) {
         this.edits.hidden.delete(k);
+        this.edits.hideInfo.delete(k);
         if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
       }
     this.buildNeighbors();
+    return n;
+  }
+
+  /** 隠した建物の隠し方を変える（理由はそのまま）。戻り値: 変えた建物の数 */
+  setHideMode(keys: Iterable<string>, mode: HideMode): number {
+    let n = 0;
+    for (const k of new Set(keys)) {
+      const r = this.hideRecord(k);
+      if (!r || r.mode === mode) continue;
+      this.edits.hideInfo.set(k, { ...r, mode });
+      n += this.state.neighbors.filter((b) => b.hidden && this.keyOf(b) === k).length;
+    }
+    if (n) this.buildNeighbors();
     return n;
   }
 
@@ -342,6 +451,7 @@ export class SunContext {
     const n = this.hiddenList().length;
     for (const k of this.edits.hidden) if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
     this.edits.hidden.clear();
+    this.edits.hideInfo.clear();
     for (const b of this.state.neighbors) b.hidden = false;
     this.buildNeighbors();
     return n;
@@ -383,12 +493,17 @@ export class SunContext {
   private materials() {
     if (!this.mats) {
       const ghost = new THREE.MeshStandardMaterial({ color: '#b9c0c8', roughness: 0.9, transparent: true, opacity: GHOST_OPACITY, depthWrite: false });
+      // 表示だけ隠した建物（影・解析には残る）は青みの薄い表示で、計算から除外した建物（灰色）と見分ける
+      const ghostView = new THREE.MeshStandardMaterial({ color: GHOST_VIEW_COLOR, roughness: 0.9, transparent: true, opacity: GHOST_OPACITY, depthWrite: false });
       const ghostSel = new THREE.MeshStandardMaterial({ color: NEIGHBOR_SELECT_COLOR, roughness: 0.9, transparent: true, opacity: 0.45, depthWrite: false });
       const sel = new THREE.MeshStandardMaterial({ color: NEIGHBOR_SELECT_COLOR, emissive: NEIGHBOR_SELECT_COLOR, emissiveIntensity: 0.25, roughness: 0.85 });
+      // 影だけのメッシュ: 色も奥行きも書かない（画面には何も描かれない）。three.js は castShadow の可視メッシュを
+      // マテリアルの colorWrite によらず影の地図に描くので、実時間の影は落ちる
+      const shadowOnly = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
       // 薄い面だけでは航空写真の上で見分けにくいので、輪郭の線を添える（線は影・解析に入らない）
       const edge = new THREE.LineBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.8, toneMapped: false });
       const edgeSel = new THREE.LineBasicMaterial({ color: NEIGHBOR_SELECT_COLOR, toneMapped: false });
-      this.mats = { ghost, ghostSel, sel, edge, edgeSel };
+      this.mats = { ghost, ghostView, ghostSel, sel, shadowOnly, edge, edgeSel };
     }
     return this.mats;
   }
@@ -408,7 +523,7 @@ export class SunContext {
       const pv = k === this.previewKey;
       const on = this.highlightKeys.has(k) || pv;
       mesh.visible = this.ghostsOn || pv;
-      mesh.material = on ? m.ghostSel : m.ghost;
+      mesh.material = on ? m.ghostSel : mesh.userData.hideMode === 'view' ? m.ghostView : m.ghost;
       for (const c of mesh.children) if ((c as THREE.LineSegments).isLineSegments) (c as THREE.LineSegments).material = on ? m.edgeSel : m.edge;
     }
     this.ghostsG.visible = this.state.showNeighbors;
@@ -443,7 +558,8 @@ export class SunContext {
       return true;
     };
     const hits = rc.intersectObjects([this.neighborsG, this.ghostsG, ...blockers], true);
-    const hit = hits.find((x) => (x.object as THREE.Mesh).isMesh && shown(x.object));
+    // 影だけのメッシュ（表示だけ隠した建物）は画面に見えないので拾わない（薄い表示のほうで拾う）
+    const hit = hits.find((x) => (x.object as THREE.Mesh).isMesh && !x.object.userData.shadowOnly && shown(x.object));
     if (hit) {
       const key = hit.object.userData.neighborKey as string | undefined;
       return key ? { key, hidden: !!hit.object.userData.ghost } : null;
@@ -582,6 +698,7 @@ export class SunContext {
   clearNeighbors() {
     this.state.neighbors = [];
     this.edits.hidden.clear();
+    this.edits.hideInfo.clear();
     this.edits.heights.clear();
     this.edits.footprints.clear();
     this.highlightKeys.clear();
@@ -590,8 +707,11 @@ export class SunContext {
   }
 
   /**
-   * 周辺建物のメッシュを作り直す。隠した建物（b.hidden）は実体を作らない（影・部屋の日当たり・日照時間マップの遮蔽物に入らない）。
-   * 隠した建物は薄い表示（ghostsG）に作り、「建物を選んで隠す」の間だけ見せる: 不透明度 GHOST_OPACITY・depthWrite なし・
+   * 周辺建物のメッシュを作り直す。隠した建物（b.hidden）は見える実体を作らない。
+   *  - 計算から除外: 影・部屋の日当たり・日照時間マップの遮蔽物にも入らない（メッシュを作らない）
+   *  - 表示だけ隠す: 影だけのメッシュ（neighborsG・userData.neighbor・userData.shadowOnly・castShadow・colorWrite/depthWrite なし・
+   *    receiveShadow なし）を作る。画面には描かれないが、実時間の影を落とし、buildOccluder（userData.neighbor）にも入る
+   * どちらも薄い表示（ghostsG）を作り、「建物を選んで隠す」の間だけ見せる: 不透明度 GHOST_OPACITY・depthWrite なし・
    * castShadow なし・userData.noShadow（bakeWorldTriangles が除く）・userData.neighbor なし（buildOccluder の対象外）
    */
   buildNeighbors() {
@@ -620,12 +740,24 @@ export class SunContext {
       const geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
       geo.rotateX(-Math.PI / 2);
       if (b.hidden) {
-        const ghost = new THREE.Mesh(geo, mats.ghost);
+        const mode = this.hideModeOf(b) ?? LEGACY_HIDE_RECORD.mode;
+        if (mode === 'view') {
+          const shadow = new THREE.Mesh(geo.clone(), mats.shadowOnly);
+          shadow.castShadow = true;
+          shadow.receiveShadow = false;
+          shadow.userData.neighbor = true;
+          shadow.userData.shadowOnly = true;
+          shadow.userData.neighborKey = key;
+          shadow.userData.neighborId = b.id;
+          this.neighborsG.add(shadow);
+        }
+        const ghost = new THREE.Mesh(geo, mode === 'view' ? mats.ghostView : mats.ghost);
         ghost.castShadow = false;
         ghost.receiveShadow = false;
         ghost.renderOrder = 5;
         ghost.userData.noShadow = true;
         ghost.userData.ghost = true;
+        ghost.userData.hideMode = mode;
         ghost.userData.neighborKey = key;
         ghost.userData.neighborId = b.id;
         const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 20), mats.edge);

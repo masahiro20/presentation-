@@ -2,16 +2,19 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext, keysInRect, ringArea, ringCentroid } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
+import { SunContext, keysInRect, ringArea, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
-import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
+import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { clearGroup } from '../../scene/viewer';
 import { normDeg180 } from '../../sun/align';
 import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
+import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, neighborTitle, neighborWhere, type SunDisclosure } from '../sunDisclosure';
+
+export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
 interface SunUI {
   year: number;
@@ -25,6 +28,14 @@ interface SunUI {
 const ui: SunUI = { year: new Date().getFullYear(), month: 12, day: 22, hour: 10, playing: false, speed: 1 };
 let raf = 0;
 let heat: THREE.Mesh | null = null;
+/** 日影図の描き方の選択（ステップを出入りしても覚える） */
+const diagramChoice = { regulationId: '', halfHour: false };
+
+/** 最後に使った日照ステップの周辺環境（プレゼン資料の注記用。日照ステップを開いていなければ null） */
+let activeSc: SunContext | null = null;
+export function activeSunContext(): SunContext | null {
+  return activeSc;
+}
 
 function getCtx(ctx: StepCtx): SunContext {
   const v = ctx.app.viewer;
@@ -34,6 +45,7 @@ function getCtx(ctx: StepCtx): SunContext {
     v.userData.sunCtx = sc;
   }
   sc.state.site = state.site;
+  activeSc = sc;
   return sc;
 }
 
@@ -51,17 +63,30 @@ let extPanel: ExternalPanel | null = null;
 
 export const HIDE_MODE_LABEL = '🏠 建物を選んで隠す';
 export const HIDE_MODE_ARMED = '建物をクリックして選んでください（Shift+ドラッグで範囲選択。もう一度押すと終了・Esc でも終了）';
-export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。選んだら画面上の「隠す」を押してください。薄く見えているのは隠した建物で、選んで「戻す」で戻せます';
+export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。隠し方（計算から除外／表示だけ隠す）と理由を選んで、画面上の「隠す」を押してください。薄く見えているのは隠した建物（青は表示だけ隠した建物）で、選んで「戻す」で戻せます';
 export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（国土地理院）」で読み込んでください';
-export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
-const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
-
-/** 隠した後の案内 */
-export function hiddenToastText(n: number): string {
-  return `${n} 棟を隠しました（影・解析からも外しています。「隠した建物」から戻せます）`;
+/** 隠し方の説明（選択肢のツールチップ・一覧の見出し） */
+export const HIDE_MODE_HINT: Readonly<Record<HideMode, string>> = {
+  exclude: '画面に出さず、影も落とさず、部屋の日当たり・日照時間マップにも入れません（解体予定の既存建物・もう無い建物など）',
+  view: '画面には出しませんが、影は落とし、部屋の日当たり・日照時間マップにも入れます（プレゼンで視点を遮る建物など）',
+};
+/** 理由の選択肢の名前（その他は自由記述の欄が出る） */
+export function hideReasonOption(r: HideReason): string {
+  return r === 'other' ? 'その他（自由記述）' : HIDE_REASON_LABEL[r];
 }
-export function restoredToastText(n: number): string {
-  return `${n} 棟を戻しました（影・解析にも戻しています）`;
+
+/** 隠した後の案内（隠し方ごと） */
+export function hiddenToastText(n: number, mode: HideMode = 'exclude'): string {
+  return mode === 'view'
+    ? `${n} 棟を表示だけ隠しました（影・解析には残しています。「隠した建物」から戻せます）`
+    : `${n} 棟を隠しました（影・解析からも外しています。「隠した建物」から戻せます）`;
+}
+/** 隠し方を変えた後の案内 */
+export function modeChangedToastText(n: number, mode: HideMode): string {
+  return mode === 'view' ? `${n} 棟を「表示だけ隠す」にしました（影・解析に戻しています）` : `${n} 棟を「計算から除外」にしました（影・解析から外しています）`;
+}
+export function restoredToastText(n: number, viewOnly = false): string {
+  return viewOnly ? `${n} 棟を戻しました（3D に表示します。影・解析には元から含めています）` : `${n} 棟を戻しました（影・解析にも戻しています）`;
 }
 /** 「隠した建物」の一覧の見出し */
 export function hiddenListTitle(n: number): string {
@@ -72,15 +97,31 @@ export function selectionText(visible: number, hidden: number): string {
   const n = visible + hidden;
   return hidden ? `選択 ${n} 棟（うち隠した建物 ${hidden} 棟）` : `選択 ${n} 棟`;
 }
-/** 建物の名前（OSM の名前・手動の隣家・出典） */
-export function neighborTitle(b: Pick<NeighborBuilding, 'label' | 'source'>): string {
-  return b.label ?? (b.source === 'manual' ? '隣家' : `${NEIGHBOR_SOURCE_LABEL[b.source]}の建物`);
+/** 「隠した建物」の一覧の隠し方ごとの見出し */
+export function hiddenGroupTitle(mode: HideMode, n: number): string {
+  return `${HIDE_MODE_SHORT[mode]}（${n} 棟）`;
 }
-/** 計画建物（外形の原点 = 建物の中心）から見た方角と距離 */
-export function neighborWhere(b: Pick<NeighborBuilding, 'ring'>): string {
-  const c = ringCentroid(b.ring);
-  const az = ((Math.atan2(c.e, c.n) * 180) / Math.PI + 360) % 360;
-  return `${DIR8[Math.round(az / 45) % 8]} 約 ${Math.round(Math.hypot(c.e, c.n))} m`;
+
+/** 日影図の規制値の選択（'' = なし: 参考の 2〜5 時間） */
+export const REGULATION_NONE_LABEL = 'なし（参考の 2〜5 時間）';
+export const HALF_HOUR_LABEL = '時刻日影線を 30 分ごと';
+/**
+ * 日影図の描き方（規制値のプリセット・30 分ごとの時刻日影線）。北海道のプリセットは真太陽時 9〜15 時、ほかは 8〜16 時
+ */
+export function diagramOptions(regulationId: string, halfHour: boolean): ShadowDiagramOptions {
+  const pre = regulationId ? shadowRegulationPreset(regulationId) : undefined;
+  const o: ShadowDiagramOptions = { timeLineIntervalMin: halfHour ? 30 : 60 };
+  if (pre) {
+    o.regulation = pre;
+    o.hours = [...pre.hours] as [number, number];
+  } else o.hours = [...SHADOW_REGION_HOURS.general] as [number, number];
+  return o;
+}
+/** 日影図の下に出す等時間日影線の集計（規制の線は「5〜10m の規制」「10m 超の規制」と添える） */
+export function diagramSummaryText(summary: ShadowDiagramSummary[]): string {
+  return summary
+    .map((s) => `${s.hour}時間日影${s.role === 'limitNear' ? '（5〜10m の規制）' : s.role === 'limitFar' ? '（10m 超の規制）' : ''}: 敷地境界から最大 約${s.maxDist.toFixed(1)}m`)
+    .join('／');
 }
 
 /** 建設地の位置・向きを変えたときに、待ち受け中の 2 点合わせを中止する案内（指した角の座標はワールドなので古くなる） */
@@ -94,7 +135,57 @@ export const IMAGES_CLEARED_MSG = '位置・向き・建物・周辺が変わっ
  * hadImages: 画像を消した（案内を出す）
  */
 export function clearedSunResults(sun: ProjectState['sun']): { sun: ProjectState['sun']; hadImages: boolean } {
-  return { sun: { ...sun, seasons: [], highlights: [], diagramSvg: undefined, images: [] }, hadImages: sun.images.length > 0 };
+  return { sun: { ...sun, seasons: [], highlights: [], diagramSvg: undefined, images: [], disclosure: undefined }, hadImages: sun.images.length > 0 };
+}
+
+/** 注記の行を DOM の段落にする（日照の結果の下に添える） */
+function disclosureBox(d: SunDisclosure, target: 'rooms' | 'heatmap'): HTMLElement {
+  return h('div', { class: 'sun-disclosure', 'data-target': target }, ...disclosureLines(d, target).map((t) => h('div', null, t)));
+}
+
+/** 隠し方・理由の選択（「建物を選んで隠す」のバーと建物の案内で共通。最後に選んだものを覚える） */
+const hideChoice: { mode: HideMode; reason: HideReason; note: string } = { mode: 'exclude', reason: 'other', note: '' };
+let hideChoiceSeq = 0;
+function hideChoiceRecord(): HideRecord {
+  return { mode: hideChoice.mode, reason: hideChoice.reason, note: hideChoice.reason === 'other' ? hideChoice.note.trim() : undefined };
+}
+/**
+ * 隠し方（ラジオ）と理由（選択・その他は自由記述）の欄。選んだ値は hideChoice に書く（バーと案内で共有）。
+ * sync: 欄を hideChoice に合わせ直す（案内で選び直した後にバーを出すとき）
+ */
+function hideChoiceUI(): { el: HTMLElement; sync: () => void } {
+  const name = `sunnb-mode-${++hideChoiceSeq}`;
+  const radios: HTMLInputElement[] = [];
+  const modes = h(
+    'div',
+    { class: 'sunnb-modes', role: 'radiogroup', 'aria-label': '隠し方' },
+    ...HIDE_MODES.map((m) => {
+      const r = h('input', { type: 'radio', name, value: m, checked: hideChoice.mode === m }) as HTMLInputElement;
+      r.addEventListener('change', () => {
+        if (r.checked) hideChoice.mode = m;
+      });
+      radios.push(r);
+      return h('label', { class: `sunnb-radio ${m}`, title: HIDE_MODE_HINT[m] }, r, HIDE_MODE_NAME[m]);
+    }),
+  );
+  const reasonSel = h('select', { class: 'sunnb-reason', title: '隠す理由（日影図・資料の注記に入ります）' }, ...HIDE_REASONS.map((r) => h('option', { value: r, selected: hideChoice.reason === r }, hideReasonOption(r)))) as HTMLSelectElement;
+  const noteIn = h('input', { type: 'text', class: 'sunnb-note', placeholder: '理由を入力（例: 車庫の屋根）', value: hideChoice.note, maxlength: 200 }) as HTMLInputElement;
+  const syncNote = () => (noteIn.style.display = reasonSel.value === 'other' ? '' : 'none');
+  reasonSel.addEventListener('change', () => {
+    hideChoice.reason = reasonSel.value as HideReason;
+    syncNote();
+  });
+  noteIn.addEventListener('input', () => (hideChoice.note = noteIn.value));
+  // 理由の欄で Esc・Enter を押しても 3D の操作（Esc でモード終了）に渡さない
+  noteIn.addEventListener('keydown', (e) => e.stopPropagation());
+  const sync = () => {
+    for (const r of radios) r.checked = r.value === hideChoice.mode;
+    reasonSel.value = hideChoice.reason;
+    noteIn.value = hideChoice.note;
+    syncNote();
+  };
+  sync();
+  return { el: h('div', { class: 'sunnb-choice' }, modes, h('div', { class: 'sunnb-reason-row' }, h('span', null, '理由'), reasonSel, noteIn)), sync };
 }
 
 /** 座標で指定した建設地の住所文字列（住所検索の緯度経度貼り付け parsePoint の題名と同じ形に「付近」を添える） */
@@ -623,12 +714,15 @@ export const sunStep: Step = {
     const barRestore = h('button', { class: 'btn sm' }, '戻す') as HTMLButtonElement;
     const barClear = h('button', { class: 'btn sm ghost' }, '選択を解除') as HTMLButtonElement;
     const barExit = h('button', { class: 'btn sm ghost' }, '終了') as HTMLButtonElement;
+    const barChoice = hideChoiceUI();
     const hideBar = h(
       'div',
       { class: 'sunnb-bar', style: 'display:none' },
       h('div', { class: 'sunnb-bar-row' }, selInfo, barHide, barRestore, barClear, barExit),
-      h('div', { class: 'sunnb-bar-hint' }, 'クリックで選択・Shift+ドラッグで範囲選択・薄い建物は隠した建物（選んで「戻す」）・Esc で終了'),
+      // 隠し方・理由は 1 行に（バーが 3D の建物を覆う高さを増やさないように。操作の説明はバーのツールチップと案内のトーストに）
+      barChoice.el,
     );
+    hideBar.title = 'クリックで選択・Shift+ドラッグで範囲選択・薄い建物は隠した建物（灰色 = 計算から除外、青 = 表示だけ隠す。選んで「戻す」）・Esc で終了';
     const selRect = h('div', { class: 'sunnb-rect', style: 'display:none' });
     ctx.stage.append(hideBar, selRect);
     let hideMode = false;
@@ -642,16 +736,24 @@ export const sunStep: Step = {
       apply(true);
     };
     const hideKeys = (keys: string[]) => {
-      const n = sc.setHidden(keys, true);
+      const rec = hideChoiceRecord();
+      const n = sc.setHidden(keys, true, rec);
       if (!n) return;
       afterEdit();
-      toast(hiddenToastText(n), 'ok', 6000);
+      toast(hiddenToastText(n, rec.mode), 'ok', 6000);
+    };
+    const changeMode = (keys: string[], mode: HideMode) => {
+      const n = sc.setHideMode(keys, mode);
+      if (!n) return;
+      afterEdit();
+      toast(modeChangedToastText(n, mode), 'ok');
     };
     const restoreKeys = (keys: string[]) => {
+      const viewOnly = keys.length > 0 && keys.every((k) => sc.hideRecord(k)?.mode === 'view');
       const n = sc.setHidden(keys, false);
       if (!n) return;
       afterEdit();
-      toast(restoredToastText(n), 'ok');
+      toast(restoredToastText(n, viewOnly), 'ok');
     };
     const restoreAllHidden = () => {
       const n = sc.restoreAll();
@@ -680,22 +782,51 @@ export const sunStep: Step = {
       clear(hiddenBox);
       const list = sc.hiddenList();
       if (!list.length) return;
-      const rows = list.map((b) => {
+      const row = (b: (typeof list)[number]) => {
         const k = sc.keyOf(b);
+        const rec = sc.hideRecord(k);
+        const mode = rec?.mode ?? 'exclude';
+        const other: HideMode = mode === 'view' ? 'exclude' : 'view';
         return h(
           'div',
-          { class: 'sunnb-hidden-row', onmouseenter: () => sc.setPreview(k), onmouseleave: () => sc.setPreview(null) },
-          h('div', { class: 'sunnb-hidden-name' }, h('b', null, neighborTitle(b)), h('span', { class: 'hint' }, `${neighborWhere(b)}・高さ 約 ${sc.heightOf(b).toFixed(1)} m・${NEIGHBOR_SOURCE_LABEL[b.source]}`)),
-          h('button', { class: 'btn sm', title: 'この建物を戻します（影・解析にも戻ります）', onclick: () => restoreKeys([k]) }, '戻す'),
+          { class: `sunnb-hidden-row ${mode}`, 'data-mode': mode, onmouseenter: () => sc.setPreview(k), onmouseleave: () => sc.setPreview(null) },
+          h(
+            'div',
+            { class: 'sunnb-hidden-name' },
+            h('b', null, neighborTitle(b)),
+            h('span', { class: 'hint' }, `${neighborWhere(b)}・高さ 約 ${sc.heightOf(b).toFixed(1)} m・${NEIGHBOR_SOURCE_LABEL[b.source]}`),
+            h('span', { class: 'hint sunnb-hidden-reason' }, `理由: ${rec ? hideReasonText(rec) : HIDE_REASON_LABEL.other}`),
+          ),
+          h(
+            'div',
+            { class: 'sunnb-hidden-acts' },
+            h('button', { class: 'btn sm', title: mode === 'view' ? 'この建物を 3D に戻します' : 'この建物を戻します（影・解析にも戻ります）', onclick: () => restoreKeys([k]) }, '戻す'),
+            h(
+              'button',
+              { class: 'btn sm ghost', title: HIDE_MODE_HINT[other], onclick: () => changeMode([k], other) },
+              other === 'view' ? '表示だけにする' : '除外にする',
+            ),
+          ),
         );
-      });
+      };
+      const groups = (['exclude', 'view'] as const)
+        .map((m) => ({ m, items: list.filter((b) => (sc.hideRecord(sc.keyOf(b))?.mode ?? 'exclude') === m) }))
+        .filter((g) => g.items.length)
+        .map((g) =>
+          h(
+            'div',
+            { class: `sunnb-hidden-group ${g.m}`, 'data-mode': g.m },
+            h('div', { class: 'sunnb-hidden-head' }, h('b', null, hiddenGroupTitle(g.m, g.items.length)), h('span', { class: 'hint' }, g.m === 'view' ? '影・解析には含めています' : '影・解析から外しています')),
+            ...g.items.map(row),
+          ),
+        );
       const det = h(
         'details',
         { class: 'sunnb-hidden', open: hiddenOpen },
         h('summary', null, hiddenListTitle(list.length)),
-        h('div', { class: 'sunnb-hidden-list' }, ...rows),
+        h('div', { class: 'sunnb-hidden-list' }, ...groups),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: restoreAllHidden }, 'すべて戻す')),
-        h('span', { class: 'hint' }, '行に重ねると、その建物を 3D に薄く表示します'),
+        h('span', { class: 'hint' }, '行に重ねると、その建物を 3D に薄く表示します。計算から除外した建物は理由ごとの棟数、表示だけ隠した建物は棟数を、日影図・解析結果・プレゼン資料に注記します'),
       ) as HTMLDetailsElement;
       det.addEventListener('toggle', () => (hiddenOpen = det.open));
       hiddenBox.appendChild(det);
@@ -715,8 +846,8 @@ export const sunStep: Step = {
       popKey = key;
       syncHighlight();
       const s = ctx.stage.getBoundingClientRect();
-      const left = Math.max(8, Math.min(s.width - 290, cx - s.left + 12));
-      const top = Math.max(8, Math.min(s.height - 240, cy - s.top + 12));
+      const left = Math.max(8, Math.min(s.width - 330, cx - s.left + 12));
+      const top = Math.max(8, Math.min(s.height - 340, cy - s.top + 12));
       const cur = sc.heightOf(b);
       const overridden = sc.edits.heights.has(key);
       const hIn = h('input', { type: 'number', min: 1, max: 300, step: 0.1, value: cur.toFixed(1) }) as HTMLInputElement;
@@ -765,6 +896,7 @@ export const sunStep: Step = {
               ),
             )
           : null,
+        hideChoiceUI().el,
         h(
           'div',
           { class: 'row' },
@@ -772,7 +904,7 @@ export const sunStep: Step = {
             'button',
             {
               class: 'btn sm',
-              title: '解体予定の既存建物・もう無い建物などを外します（影・解析からも外れます）',
+              title: '選んだ隠し方で隠します（計算から除外: 影・解析からも外す／表示だけ隠す: 影・解析には残す）',
               onclick: () => {
                 closePop();
                 hideKeys([key]);
@@ -802,6 +934,8 @@ export const sunStep: Step = {
         }
         hideMode = true;
         selected.clear();
+        // 建物の案内で選び直した隠し方・理由をバーにも出す
+        barChoice.sync();
         sc.setGhosts(true);
         syncHighlight();
         hideBtn.classList.add('dark');
@@ -1003,7 +1137,7 @@ export const sunStep: Step = {
         ),
         toggles,
         hideBtn,
-        h('p', { class: 'hint', style: 'margin:2px 0 0' }, '解体予定の既存建物・もう無い建物・形の違う建物などを選んで隠せます（影を落とさず、日当たりの解析にも入りません。いつでも戻せます）。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
+        h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
         hiddenBox,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '隣家を手動で追加'),
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px' }, field('方向', dirSel), field('距離 m', distIn), field('高さ m', hIn)),
@@ -1023,6 +1157,8 @@ export const sunStep: Step = {
 
     // 解析
     const out = h('div');
+    /** 今の周辺建物の扱い（計算から除外・表示だけ隠した建物）。結果を作るときに state.sun.disclosure に写す */
+    const disclosureNow = () => collectDisclosure(sc);
     const renderResults = () => {
       clear(out);
       for (const hl of state.sun.highlights) out.appendChild(h('div', { class: `highlight ${hl.tone}` }, h('b', null, hl.title), hl.body));
@@ -1030,10 +1166,13 @@ export const sunStep: Step = {
         const sel = h('select', null, state.sun.seasons.map((s, i) => h('option', { value: i }, `${s.label}（${s.dateLabel}）`))) as HTMLSelectElement;
         const chart = h('div', { html: sunTimelineSvg(state.sun.seasons[0]) });
         sel.addEventListener('change', () => (chart.innerHTML = sunTimelineSvg(state.sun.seasons[+sel.value])));
-        out.append(field('部屋ごとの日当たり（オレンジが濃いほど床の広い範囲に日が当たる）', sel), chart);
+        // 解析した時点の周辺建物の扱い（除外・表示だけ隠した建物）を必ず添える
+        out.append(field('部屋ごとの日当たり（オレンジが濃いほど床の広い範囲に日が当たる）', sel), chart, disclosureBox(state.sun.disclosure ?? disclosureNow(), 'rooms'));
       }
     };
     const runRooms = async () => {
+      // 選択のオレンジ・薄い表示はそのまま解析に影響しないが、案内は閉じる
+      closePop();
       const pm = progressModal('部屋ごとの日当たりを解析しています');
       // 3DS で置き換え中: 測定点は 3DS 自身の床の上から（PDF の床高と違う 3DS でも床下から測らない）
       const sy = externalSampleY(v);
@@ -1051,6 +1190,7 @@ export const sunStep: Step = {
         seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
         state.sun.seasons = seasons;
         state.sun.highlights = sunHighlights(seasons);
+        state.sun.disclosure = disclosureNow();
         renderResults();
         toast('日当たりの解析が完了しました', 'ok');
         if (sy && seasons.length && seasons.every((s) => s.rooms.every((r) => r.hours <= 0)))
@@ -1069,6 +1209,7 @@ export const sunStep: Step = {
         heat = null;
         v.invalidate();
         heatLegend.style.display = 'none';
+        clear(heatNote);
         return;
       }
       const pm = progressModal(`${ui.month}月${ui.day}日の日照時間マップを計算しています`);
@@ -1089,6 +1230,9 @@ export const sunStep: Step = {
         v.groups.overlay.add(heat);
         heatLegend.style.display = 'flex';
         heatMax.textContent = `${max.toFixed(1)}時間`;
+        // 計算した時点の周辺建物の扱い（除外・表示だけ隠した建物）
+        clear(heatNote);
+        heatNote.appendChild(disclosureBox(disclosureNow(), 'heatmap'));
         v.invalidate();
         toast('日照時間マップを作成しました', 'ok');
       } catch (e) {
@@ -1099,6 +1243,7 @@ export const sunStep: Step = {
     };
     const heatMax = h('span');
     const heatLegend = h('div', { class: 'legend', style: 'display:none;margin:6px 0' }, h('span', null, '0時間'), h('div', { class: 'grad' }), heatMax);
+    const heatNote = h('div');
     const runDiagram = async (height: number) => {
       const pm = progressModal(`日影図（測定面 GL+${height}m）を作成しています`);
       try {
@@ -1112,19 +1257,43 @@ export const sunStep: Step = {
           const pts = poly.map((p) => ({ x: p.x, y: p.y }));
           return { outlines: [poly], insideBuilding: (x: number, z: number) => pointInPolygon({ x, y: z }, pts), center: new THREE.Vector2(cc.x, cc.z), buildingTop: box.max.y };
         })() : {};
-        const res = await shadowDiagram(v, { lat: d.lat, lon: d.lon, northAngleDeg: d.northAngleDeg, year: ui.year }, height, (r) => pm.set(r), over);
-        state.sun.diagramSvg = res.svg;
+        const opts = diagramOptions(diagramChoice.regulationId, diagramChoice.halfHour);
+        const res = await shadowDiagram(v, { lat: d.lat, lon: d.lon, northAngleDeg: d.northAngleDeg, year: ui.year }, height, (r) => pm.set(r), { ...over, ...opts });
+        // 周辺建物の扱い（この版の日影図は計画建物だけ。除外・表示だけ隠した建物は部屋の日当たり・日照時間マップでの扱い）を図に印字する
+        const disc = disclosureNow();
+        const svg = appendSvgFootnote(res.svg, disclosureLines(disc, 'diagram'));
+        state.sun.diagramSvg = svg;
+        if (!state.sun.disclosure) state.sun.disclosure = disc;
         pm.close();
-        const body = h('div', null, h('div', { html: res.svg }), h('p', { class: 'hint' }, res.summary.map((s) => `${s.hour}時間日影: 敷地境界から最大 約${s.maxDist.toFixed(1)}m`).join('／')));
+        const body = h('div', null, h('div', { html: svg }), h('p', { class: 'hint' }, diagramSummaryText(res.summary)));
         modal('日影図', body, [
-          { label: 'SVG で保存', onClick: () => download(svgToDataUrl(res.svg), `${state.name}_日影図.svg`) },
-          { label: 'PNG で保存', onClick: async () => download(await svgToPng(res.svg, 2400), `${state.name}_日影図.png`) },
+          { label: 'SVG で保存', onClick: () => download(svgToDataUrl(svg), `${state.name}_日影図.svg`) },
+          { label: 'PNG で保存', onClick: async () => download(await svgToPng(svg, 2400), `${state.name}_日影図.png`) },
           { label: '閉じる', primary: true },
         ], true);
       } catch (e) {
         pm.close();
         toast(`日影図の作成に失敗しました: ${(e as Error).message}`, 'error');
       }
+    };
+    /** 日影図の規制値（プリセット）と 30 分ごとの時刻日影線 */
+    const diagramControls = () => {
+      const regSel = h(
+        'select',
+        { class: 'sun-reg', title: '日影規制の規制時間（建築基準法 別表第 4）。選ぶと 5〜10m・10m 超の規制時間の等時間日影線を太く描きます（適否の判定はしません）。北海道は真太陽時 9〜15 時' },
+        h('option', { value: '', selected: !diagramChoice.regulationId }, REGULATION_NONE_LABEL),
+        h('optgroup', { label: '一般（真太陽時 8〜16 時）' }, ...SHADOW_REGULATION_PRESETS.filter((p) => p.region === 'general').map((p) => h('option', { value: p.id, selected: diagramChoice.regulationId === p.id }, p.title))),
+        h('optgroup', { label: '北海道（真太陽時 9〜15 時）' }, ...SHADOW_REGULATION_PRESETS.filter((p) => p.region === 'hokkaido').map((p) => h('option', { value: p.id, selected: diagramChoice.regulationId === p.id }, p.title))),
+      ) as HTMLSelectElement;
+      regSel.addEventListener('change', () => (diagramChoice.regulationId = regSel.value));
+      const half = h('input', { type: 'checkbox', class: 'sun-halfhour', checked: diagramChoice.halfHour }) as HTMLInputElement;
+      half.addEventListener('change', () => (diagramChoice.halfHour = half.checked));
+      return h(
+        'div',
+        { class: 'sun-diagram-opts' },
+        h('label', { class: 'field', style: 'margin:6px 0 2px' }, h('span', { class: 'field-label' }, '日影図の規制値'), regSel),
+        h('label', { class: 'check' }, half, HALF_HOUR_LABEL),
+      );
     };
     const captureSeasons = async () => {
       // 選択のオレンジ・隠した建物の薄い表示を写さない
@@ -1150,6 +1319,7 @@ export const sunStep: Step = {
           const url = await v.capture(1600, 900);
           state.sun.images.push({ label: s.label, url });
         }
+        if (!state.sun.disclosure) state.sun.disclosure = disclosureNow();
         toast('日当たりの比較画像を保存しました（プレゼン資料に入ります）', 'ok');
       } finally {
         Object.assign(ui, prev);
@@ -1163,7 +1333,9 @@ export const sunStep: Step = {
         '日当たりの解析',
         h('button', { class: 'btn primary block', onclick: runRooms }, '☀ 部屋ごとの日当たりを解析（冬至・春分・夏至）'),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: runHeat }, '🌡 日照時間マップ（表示中の日付）'), h('button', { class: 'btn sm', onclick: () => runDiagram(1.5) }, '📐 日影図（GL+1.5m）'), h('button', { class: 'btn sm', onclick: () => runDiagram(4) }, '日影図（GL+4m）')),
+        diagramControls(),
         heatLegend,
+        heatNote,
         h('button', { class: 'btn sm block', onclick: captureSeasons }, '📷 季節の日当たり比較を撮影（プレゼン用）'),
         out,
       ),
@@ -1177,6 +1349,7 @@ export const sunStep: Step = {
         v.groups.overlay.remove(heat);
         heat = null;
         heatLegend.style.display = 'none';
+        clear(heatNote);
         v.invalidate();
       }
       renderResults();

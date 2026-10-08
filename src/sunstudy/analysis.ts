@@ -18,24 +18,29 @@ import * as THREE from 'three';
 import {
   bakeWorldTriangles,
   buildOccluderFrom,
+  expandXZBox,
   heatColor,
   isShadedFrom,
   marchingSegments,
+  occluderBounds,
   raycastFirstKind,
   segmentsToPolylines,
   shadowDiagramCore,
   sunHoursGrid,
   sunSamplesForDay,
   throwIfAborted,
+  xzBoxOf,
   yieldUI,
   type GridResult,
   type Occluder,
   type OccluderPart,
   type ShadowDiagram,
+  type ShadowDiagramOptions,
   type ShadowOutline,
   type SunSample,
+  type XZBox,
 } from '../sun/analysis';
-import { localDate, sunPosition, sunriseSunset, trueSolarToLocal } from '../sun/solar';
+import { keyDates, sunriseSunset } from '../sun/solar';
 import { horizonElevation, type HorizonProfile } from './terrain';
 import type { StudyScene } from './scene';
 import type { MeasurePoint, MeasureResult, StudyDate } from './types';
@@ -68,48 +73,12 @@ const DOWN = new THREE.Vector3(0, -1, 0);
 // 解析用の日付（二十四節気）
 // ---------------------------------------------------------------------------
 
-const JST = 9;
-
-/** 赤緯（度）。場所には依存しない */
-function declinationAt(ms: number): number {
-  return sunPosition(new Date(ms), 35, 135).declination;
-}
-
-/** [a, b] (ms) で f の符号が変わる時刻を二分探索（f(a) と f(b) の符号が異なること） */
-function bisectMs(f: (ms: number) => number, a: number, b: number): number {
-  let fa = f(a);
-  for (let i = 0; i < 44; i++) {
-    const m = (a + b) / 2;
-    const fm = f(m);
-    if (fa * fm <= 0) b = m;
-    else {
-      a = m;
-      fa = fm;
-    }
-  }
-  return (a + b) / 2;
-}
-
-function jstMonthDay(ms: number): { month: number; day: number } {
-  const d = new Date(ms + JST * 3600000);
-  return { month: d.getUTCMonth() + 1, day: d.getUTCDate() };
-}
-
 /**
- * 解析用の日付（冬至・春分・夏至・秋分）。赤緯の零点（春分・秋分）と極値（夏至・冬至）を二分探索で求め、
- * JST の日付にする（年によって 1 日ずれる: 例 2027 年の春分は 3/21）。
+ * 解析用の日付（冬至・春分・夏至・秋分）。src/sun/solar.ts の keyDates と同じ（太陽の視黄経が 270°・0°・90°・180° になる
+ * 瞬間の JST の日付。年によって 1 日ずれる: 例 2027 年の春分は 3/21、2024 年の冬至は 12/21）。
  */
 export function studyDates(year: number): StudyDate[] {
-  const utc = (m: number, d: number) => Date.UTC(year, m - 1, d);
-  const h = 3600000;
-  // 極値は赤緯の時間微分（中心差分）の零点
-  const slope = (ms: number) => declinationAt(ms + h) - declinationAt(ms - h);
-  const spring = bisectMs(declinationAt, utc(3, 14), utc(3, 27)); // − → +
-  const summer = bisectMs(slope, utc(6, 14), utc(6, 28)); // 増加 → 減少
-  const autumn = bisectMs(declinationAt, utc(9, 16), utc(9, 29)); // + → −
-  const winter = bisectMs(slope, utc(12, 14), utc(12, 28)); // 減少 → 増加
-  const mk = (id: string, label: string, ms: number): StudyDate => ({ id, label, year, ...jstMonthDay(ms) });
-  return [mk('winter', '冬至', winter), mk('spring', '春分', spring), mk('summer', '夏至', summer), mk('autumn', '秋分', autumn)];
+  return keyDates(year);
 }
 
 // ---------------------------------------------------------------------------
@@ -542,14 +511,18 @@ export async function measurePointHours(
 
 /**
  * 日影図（冬至日・真太陽時 hours（既定 8〜16 時）・測定面 y = planeHeight の水平面。呼び出し側で 平均地盤面 + h を渡す）。
+ * 冬至日はその年の実際の日付（winterSolstice: 年により 12/21 か 12/22）。
  *  - 遮蔽物: 建物（+ includeNeighbors なら周辺建物、+ includeTerrain なら地形）
- *  - 建物の内外は「建物だけの BVH」への真下レイキャストで判定し、その輪郭をマーチングスクエアで描く
- *  - half 省略時: max(34, (建物の最高高さ − 測定面) / tan(時間帯の最低太陽高度) + 6) を 34〜90 に収める。cell は 0.3（half > 60 なら 0.5）
+ *  - 建物の内外は「建物だけの BVH」への真下レイキャスト（建物の箱の範囲の 0.2m 格子）で判定し、その輪郭をマーチングスクエアで描く
+ *  - half 省略時: 建物（建物だけの BVH の箱）の最高高さの影が時間帯の各時刻に届く範囲と敷地の 10m ラインを囲む長方形
+ *    （shadowDiagramExtent。center ± 34m の正方形は必ず含み、center から 400m まで）。half を渡すと center ± half の正方形。
+ *    cell は 0.3（格子数が SHADOW_DIAGRAM_CELL_BUDGET、レイキャスト数の目安が SHADOW_DIAGRAM_RAY_BUDGET を超えるときは粗く）
  *  - 敷地境界: sitePolygon（ワールド XZ）があればその多角形。無ければ描かず、5m/10m ラインも省く
+ *  - levels / regulation / timeLineIntervalMin: shadowDiagramCore と同じ（ShadowDiagramOptions）
  */
 export async function shadowDiagramStudy(
   scene: StudyScene,
-  p: {
+  p: ShadowDiagramOptions & {
     lat: number;
     lon: number;
     year: number;
@@ -559,8 +532,6 @@ export async function shadowDiagramStudy(
     center: THREE.Vector3;
     half?: number;
     sitePolygon: THREE.Vector2[] | null;
-    /** 真太陽時の範囲 (h)。省略時 [8, 16] */
-    hours?: [number, number];
     /** 測定面の表記（例 '1.5'）。planeHeight に平均地盤面を足して渡すときに、図には「GL+1.5m」と書くため */
     planeLabel?: string;
     onProgress?: (r: number) => void;
@@ -568,57 +539,48 @@ export async function shadowDiagramStudy(
   },
 ): Promise<ShadowDiagram> {
   const Y = p.year;
-  const M = 12;
-  const D = 22;
-  const [H0, H1] = p.hours ?? [8, 16];
   const planeHeight = p.planeHeight;
-  // 範囲: 建物の最高高さと時間帯の最低太陽高度から影の長さを見積もる
-  let half = p.half;
-  if (half === undefined) {
-    const box = new THREE.Box3().setFromObject(scene.groups.building);
-    const buildingTop = box.isEmpty() ? planeHeight : box.max.y;
-    let minElev = Infinity;
-    for (let s = H0; s <= H1 + 1e-9; s += 0.5) {
-      const lh = trueSolarToLocal(Y, M, D, s, p.lon);
-      const el = sunPosition(localDate(Y, M, D, lh), p.lat, p.lon).elevation;
-      if (el > 0) minElev = Math.min(minElev, el);
-    }
-    const len = Number.isFinite(minElev) && minElev > 0.5 ? Math.max(0, buildingTop - planeHeight) / Math.tan((minElev * Math.PI) / 180) + 6 : 90;
-    half = Math.min(90, Math.max(34, len));
-  }
-  const cell = half > 60 ? 0.5 : 0.3;
-  const nx = Math.ceil((half * 2) / cell);
-  const nz = nx;
-  const x0 = p.center.x - half;
-  const z0 = p.center.z - half;
+  const site = p.sitePolygon && p.sitePolygon.length >= 3 ? { polygon: p.sitePolygon.map((v) => ({ x: v.x, y: v.y })) } : null;
   const buildingOnly = buildStudyOccluder(scene, { terrain: false, neighbors: false, building: true });
   const occ = buildStudyOccluder(scene, { terrain: !!p.includeTerrain, neighbors: p.includeNeighbors, building: true });
   try {
-    // 建物の内外（真下レイキャスト）
-    const mask = new Float32Array(nx * nz);
-    const o = new THREE.Vector3();
-    for (let j = 0; j < nz; j++) {
-      for (let i = 0; i < nx; i++) {
-        o.set(x0 + (i + 0.5) * cell, DOWN_FROM, z0 + (j + 0.5) * cell);
-        if (raycastFirstKind(buildingOnly, o, DOWN, DOWN_FAR)) mask[j * nx + i] = 1;
+    // 範囲: 建物の箱・最高高さと時間帯の太陽高度から、影の先端が届く範囲（+ 敷地の 10m ライン）
+    const box3 = occluderBounds(buildingOnly);
+    const bbox: XZBox | null = box3.isEmpty() ? null : { minX: box3.min.x, minZ: box3.min.z, maxX: box3.max.x, maxZ: box3.max.z };
+    const siteBox = site ? xzBoxOf(site.polygon) : null;
+    // 建物の内外: 建物の箱の範囲だけの細かい格子（0.2m）で、建物だけの BVH への真下レイキャスト。輪郭はその等値線
+    const MC = 0.2;
+    let insideBuilding = (_x: number, _z: number) => false;
+    let outlines: ShadowOutline[] = [];
+    if (bbox) {
+      const mx0 = bbox.minX - 1;
+      const mz0 = bbox.minZ - 1;
+      const mnx = Math.ceil((bbox.maxX - bbox.minX + 2) / MC);
+      const mnz = Math.ceil((bbox.maxZ - bbox.minZ + 2) / MC);
+      const mask = new Float32Array(mnx * mnz);
+      const o = new THREE.Vector3();
+      for (let j = 0; j < mnz; j++) {
+        for (let i = 0; i < mnx; i++) {
+          o.set(mx0 + (i + 0.5) * MC, DOWN_FROM, mz0 + (j + 0.5) * MC);
+          if (raycastFirstKind(buildingOnly, o, DOWN, DOWN_FAR)) mask[j * mnx + i] = 1;
+        }
+        if (j % 32 === 31) {
+          await yieldUI();
+          throwIfAborted(p.signal);
+        }
       }
-      if (j % 16 === 15) {
-        await yieldUI();
-        throwIfAborted(p.signal);
-      }
+      insideBuilding = (x: number, z: number) => {
+        const i = Math.floor((x - mx0) / MC);
+        const j = Math.floor((z - mz0) / MC);
+        if (i < 0 || j < 0 || i >= mnx || j >= mnz) return false;
+        return mask[j * mnx + i] === 1;
+      };
+      outlines = segmentsToPolylines(marchingSegments(mask, mnx, mnz, 0.5)).map((pl) => ({
+        points: pl.points.map((q) => ({ x: mx0 + (q.x + 0.5) * MC, y: mz0 + (q.y + 0.5) * MC })),
+        closed: pl.closed,
+        fill: true,
+      }));
     }
-    const insideBuilding = (x: number, z: number) => {
-      const i = Math.floor((x - x0) / cell);
-      const j = Math.floor((z - z0) / cell);
-      if (i < 0 || j < 0 || i >= nx || j >= nz) return false;
-      return mask[j * nx + i] === 1;
-    };
-    const outlines: ShadowOutline[] = segmentsToPolylines(marchingSegments(mask, nx, nz, 0.5)).map((pl) => ({
-      points: pl.points.map((q) => ({ x: x0 + (q.x + 0.5) * cell, y: z0 + (q.y + 0.5) * cell })),
-      closed: pl.closed,
-      fill: true,
-    }));
-    const site = p.sitePolygon && p.sitePolygon.length >= 3 ? { polygon: p.sitePolygon.map((v) => ({ x: v.x, y: v.y })) } : null;
     const note = (p.includeNeighbors ? '※周辺建物を含みます' : '※周辺建物は含みません') + (p.includeTerrain ? '（地形の影を含む）' : '');
     return await shadowDiagramCore({
       occ,
@@ -628,12 +590,19 @@ export async function shadowDiagramStudy(
       year: Y,
       planeHeight,
       center: { x: p.center.x, z: p.center.z },
-      half,
-      cell,
+      // half 省略時: 影の届く範囲の長方形（敷地の 10m ラインも入れる）。half 指定時: center ± half の正方形
+      ...(p.half === undefined
+        ? { autoExtent: { buildingTop: bbox ? box3.max.y : planeHeight, bbox, include: siteBox ? [expandXZBox(siteBox, 11)] : [] } }
+        : { half: p.half }),
+      cell: 0.3,
       stepMin: 10,
       hours: p.hours,
+      levels: p.levels,
+      regulation: p.regulation,
+      timeLineIntervalMin: p.timeLineIntervalMin,
       planeLabel: p.planeLabel,
       insideBuilding,
+      buildingBox: bbox,
       outlines,
       site,
       note,

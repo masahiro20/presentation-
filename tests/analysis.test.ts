@@ -180,7 +180,7 @@ describe('日影図', () => {
     // 10m の箱は冬至に北へ 10m 以上の影を落とす: 2 時間線は敷地境界の外に出る
     expect(r.summary[0].maxDist).toBeGreaterThan(0);
     for (let i = 1; i < r.summary.length; i++) expect(r.summary[i].maxDist).toBeLessThanOrEqual(r.summary[i - 1].maxDist + 1e-9);
-    expect(r.extent).toEqual({ x0: -20, z0: -20, half: 20, cell: 0.5 });
+    expect(r.extent).toEqual({ x0: -20, z0: -20, half: 20, cell: 0.5, halfX: 20, halfZ: 20 });
   });
 
   it('敷地なし: 5m/10m ラインを省いて注記する。時間帯の指定が題名に出る', async () => {
@@ -195,22 +195,27 @@ describe('日影図', () => {
 });
 
 describe('多角形のオフセット', () => {
-  it('矩形を 5m 外側へ → 各辺を 5m 広げた矩形', () => {
+  it('矩形を 5m 外側へ → 各辺を 5m 広げ、四隅を半径 5m の円弧で丸めた形（詳しくは offset.test.ts）', () => {
     const out = offsetPolygon(rectPolygon(0, 0, 10, 6), 5);
-    expect(out).toHaveLength(4);
-    const exp = rectPolygon(-5, -5, 15, 11);
-    for (let i = 0; i < 4; i++) {
-      expect(out[i].x).toBeCloseTo(exp[i].x, 9);
-      expect(out[i].y).toBeCloseTo(exp[i].y, 9);
-    }
-    // 逆回り（時計回り）でも外側へ
-    const cw = offsetPolygon(rectPolygon(0, 0, 10, 6).reverse(), 5);
-    const xs = cw.map((p) => p.x);
-    const ys = cw.map((p) => p.y);
+    // 4 辺 + 四隅の 90° の円弧（3° 刻み・各 31 点）
+    expect(out).toHaveLength(124);
+    const xs = out.map((p) => p.x);
+    const ys = out.map((p) => p.y);
     expect(Math.min(...xs)).toBeCloseTo(-5, 9);
     expect(Math.max(...xs)).toBeCloseTo(15, 9);
     expect(Math.min(...ys)).toBeCloseTo(-5, 9);
     expect(Math.max(...ys)).toBeCloseTo(11, 9);
+    // 角の留め継ぎ（-5,-5）は線の外。円弧の点は角から 5m
+    expect(out.some((p) => Math.abs(p.x + 5) < 1e-9 && Math.abs(p.y + 5) < 1e-9)).toBe(false);
+    expect(out.some((p) => Math.abs(p.x + 5 / Math.SQRT2) < 1e-9 && Math.abs(p.y + 5 / Math.SQRT2) < 1e-9)).toBe(true);
+    // 逆回り（時計回り）でも外側へ
+    const cw = offsetPolygon(rectPolygon(0, 0, 10, 6).reverse(), 5);
+    const cxs = cw.map((p) => p.x);
+    const cys = cw.map((p) => p.y);
+    expect(Math.min(...cxs)).toBeCloseTo(-5, 9);
+    expect(Math.max(...cxs)).toBeCloseTo(15, 9);
+    expect(Math.min(...cys)).toBeCloseTo(-5, 9);
+    expect(Math.max(...cys)).toBeCloseTo(11, 9);
   });
 });
 

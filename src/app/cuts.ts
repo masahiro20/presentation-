@@ -91,9 +91,11 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
   const spec = resolveSpec(state.design.specId, state.design.specPatch);
   const tod = shot.timeOfDay ?? state.design.timeOfDay;
   const room = shot.roomId && state.model ? state.model.floors.flatMap((f) => f.rooms).find((r) => r.id === shot.roomId) : undefined;
+  const clayJa = state.design.clay ? '下絵は白い模型（クレイ）なので、材質は次の指定どおりに着彩してください。' : '';
+  const clayEn = state.design.clay ? ' The base image is a white clay model; apply the materials specified below.' : '';
   const common = {
-    ja: '住宅の建築パース（下絵）です。構図・カメラ位置・間取り・壁と窓とドアの位置・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。人物・文字・余計な小物は加えないでください。',
-    en: 'This is an architectural visualization base image of a house. Keep the composition, camera, floor plan, wall/window/door positions and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. No people, no text, no extra props.',
+    ja: '住宅の建築パース（下絵）です。' + clayJa + '構図・カメラ位置・間取り・壁と窓とドアの位置・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。人物・文字・余計な小物は加えないでください。',
+    en: 'This is an architectural visualization base image of a house.' + clayEn + ' Keep the composition, camera, floor plan, wall/window/door positions and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. No people, no text, no extra props.',
   };
   if (shot.kind === 'interior') {
     const name = room ? `${room.name}（${(room.labeledTatami ?? room.area / 1.62).toFixed(1)}帖）` : shot.title;

@@ -25,6 +25,8 @@ export interface ProjectState {
   gallery: GalleryItem[];
   elevations: { dir: string; title: string; svg: string }[];
   plans: { level: number; svg: string }[];
+  /** A3 図面シート（図枠・表題欄付き: 平面図・立面図・断面図） */
+  sheets: { title: string; svg: string }[];
   sun: {
     seasons: SeasonResult[];
     highlights: SunHighlight[];
@@ -46,6 +48,7 @@ export const state: ProjectState = {
   gallery: [],
   elevations: [],
   plans: [],
+  sheets: [],
   sun: { seasons: [], highlights: [], images: [] },
   videos: [],
   render: { samples: 512, width: 1920, height: 1080 },

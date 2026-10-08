@@ -245,7 +245,7 @@ export class Viewer {
     this.sun.shadow.radius = 3;
     this.scene.add(this.sun, this.sun.target, this.hemi);
 
-    this.registry = new MaterialRegistry(exteriorById(design.exteriorId), interiorById(design.interiorId), { night: design.timeOfDay === 'night' });
+    this.registry = new MaterialRegistry(exteriorById(design.exteriorId), interiorById(design.interiorId), { night: design.timeOfDay === 'night', clay: design.clay });
     // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
     void preloadPhotoTextures().then(() => {
       clearMaterialCache();
@@ -726,6 +726,7 @@ export class Viewer {
       wallColor: design.wallColorOverride,
       doorColor: design.specPatch?.doorColor,
       night: design.timeOfDay === 'night',
+      clay: design.clay,
     });
     if (!this.state) return;
     const ext = exteriorById(design.exteriorId);

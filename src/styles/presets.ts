@@ -704,6 +704,8 @@ export interface DesignOptions {
   wallColorOverride?: string;
   timeOfDay: TimeOfDay;
   furniture: boolean;
+  /** 白模型（スタディ模型）表示: 仕上げを白いクレイにする */
+  clay?: boolean;
 }
 
 export const DEFAULT_DESIGN: DesignOptions = {

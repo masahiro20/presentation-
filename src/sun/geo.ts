@@ -2,6 +2,7 @@
  * 地理情報: 住所検索（国土地理院）、航空写真タイル、周辺建物（国土地理院ベクトルタイル / OpenStreetMap）
  */
 import { decodeMvt } from './mvt';
+import type { PlanSide } from '../core/types';
 
 export interface SiteLocation {
   lat: number;
@@ -427,4 +428,152 @@ function dedupe(bs: NeighborBuilding[]): NeighborBuilding[] {
     seen.add(k);
     return true;
   });
+}
+
+/** 国土地理院ベクトルタイルの道路中心線（RdCL） */
+export interface RoadLine {
+  /** 中心からの東・北 (m) の折れ線 */
+  pts: { e: number; n: number }[];
+  /** 幅員 (m)。不明なら undefined */
+  widthM?: number;
+  category?: string;
+}
+
+export async function fetchGsiRoads(lat: number, lon: number, radius = 80): Promise<RoadLine[]> {
+  const z = 16;
+  const { mLat, mLon } = metersPerDegree(lat);
+  const t0 = lonLatToTile(lon - radius / mLon, lat + radius / mLat, z);
+  const t1 = lonLatToTile(lon + radius / mLon, lat - radius / mLat, z);
+  const out: RoadLine[] = [];
+  let tiles = 0;
+  let failed = 0;
+  for (let ty = Math.floor(t0.y); ty <= Math.floor(t1.y); ty++)
+    for (let tx = Math.floor(t0.x); tx <= Math.floor(t1.x); tx++) {
+      tiles++;
+      let layers: ReturnType<typeof decodeMvt>;
+      try {
+        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
+        if (!res.ok) {
+          if (res.status !== 404) failed++;
+          continue;
+        }
+        layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
+      } catch {
+        failed++;
+        continue;
+      }
+      const rd = layers['RdCL'];
+      if (!rd) continue;
+      for (const f of rd.features) {
+        if (f.type !== 2) continue;
+        const w = Number(f.props['vt_width'] ?? 0);
+        const rank = String(f.props['vt_rnkwidth'] ?? '');
+        // vt_width は cm 単位のことが多い。無ければ幅員区分の下限
+        let widthM: number | undefined = w > 0 ? (w > 100 ? w / 100 : w) : undefined;
+        if (widthM == null) {
+          const m = /(\d+(?:\.\d+)?)m/.exec(rank);
+          if (m) widthM = parseFloat(m[1]);
+        }
+        for (const line of f.rings) {
+          if (line.length < 2) continue;
+          const pts = line.map(([px, py]) => {
+            const ll = tileToLonLat(tx + px / rd.extent, ty + py / rd.extent, z);
+            return toLocal(ll.lat, ll.lon, lat, lon);
+          });
+          out.push({ pts, widthM, category: String(f.props['vt_rdctg'] ?? '') });
+        }
+      }
+    }
+  if (tiles && failed === tiles) throw new Error('国土地理院のサーバーに接続できませんでした');
+  return out;
+}
+
+export interface NorthEstimate {
+  /** 道路の向きから（図面に道路側の記載がある場合） */
+  fromRoad?: { northDeg: number; roadBearing: number; distanceM: number; widthM?: number; category?: string; side: PlanSide };
+  /** 敷地上の既存建物の向きから（90° ごとの候補のうち現在値に最も近いもの） */
+  fromBuilding?: { northDeg: number; candidates: number[]; distanceM: number };
+}
+
+const SIDE_PHI: Record<PlanSide, number> = { top: 0, right: 90, bottom: 180, left: 270 };
+
+function norm180(a: number) {
+  let x = ((a + 180) % 360) - 180;
+  if (x <= -180) x += 360;
+  return Math.round(x * 10) / 10;
+}
+
+/**
+ * 座標から真北（図面の上から時計回りの角度）を推定する。
+ * - 道路: 最も近い道路中心線へ向かう方位 β と、図面の道路側 φ（上 0 / 右 90 / 下 180 / 左 270）から N = φ − β
+ * - 建物: 敷地上（最も近い）建物外形の長辺の方位に図面の軸を合わせる（90° ごとの候補）
+ */
+export async function estimateNorth(lat: number, lon: number, roadSide: PlanSide | null, currentNorthDeg: number): Promise<NorthEstimate> {
+  const out: NorthEstimate = {};
+  const [roads, blds] = await Promise.all([fetchGsiRoads(lat, lon, 80).catch(() => [] as RoadLine[]), fetchGsiBuildings(lat, lon, 60).catch(() => [] as NeighborBuilding[])]);
+  // 最も近い道路区間
+  let best: { d: number; e: number; n: number; r: RoadLine; seg: [number, number] } | null = null;
+  for (const r of roads)
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const a = r.pts[i];
+      const b = r.pts[i + 1];
+      const vx = b.e - a.e;
+      const vy = b.n - a.n;
+      const L2 = vx * vx + vy * vy || 1;
+      const t = Math.max(0, Math.min(1, (-a.e * vx + -a.n * vy) / L2));
+      const px = a.e + vx * t;
+      const py = a.n + vy * t;
+      const d = Math.hypot(px, py);
+      if (!best || d < best.d) best = { d, e: px, n: py, r, seg: [i, i + 1] };
+    }
+  if (best && roadSide) {
+    // 敷地中心から道路へ向かう方位（北から時計回り）。道路の向きに直交する向きに揃える
+    const a = best.r.pts[best.seg[0]];
+    const b = best.r.pts[best.seg[1]];
+    const roadDir = Math.atan2(b.e - a.e, b.n - a.n);
+    const toRoad = Math.atan2(best.e, best.n);
+    // 道路に直交する 2 方向のうち、道路へ向かう側
+    const perp = [roadDir + Math.PI / 2, roadDir - Math.PI / 2].sort((p, q) => Math.abs(norm180(((p - toRoad) * 180) / Math.PI)) - Math.abs(norm180(((q - toRoad) * 180) / Math.PI)))[0];
+    const beta = (perp * 180) / Math.PI;
+    out.fromRoad = { northDeg: norm180(SIDE_PHI[roadSide] - beta), roadBearing: norm180((roadDir * 180) / Math.PI), distanceM: best.d, widthM: best.r.widthM, category: best.r.category, side: roadSide };
+  }
+  // 敷地上の建物（点を含む外形、無ければ最も近いもの）
+  const inside = (ring: { e: number; n: number }[]) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i];
+      const b = ring[j];
+      if (a.n > 0 !== b.n > 0 && 0 < ((b.e - a.e) * (0 - a.n)) / (b.n - a.n) + a.e) c = !c;
+    }
+    return c;
+  };
+  let bb: { b: NeighborBuilding; d: number } | null = null;
+  for (const b of blds) {
+    const c = b.ring.reduce((s, p) => ({ e: s.e + p.e / b.ring.length, n: s.n + p.n / b.ring.length }), { e: 0, n: 0 });
+    const d = inside(b.ring) ? 0 : Math.hypot(c.e, c.n);
+    if (d > 30) continue;
+    if (!bb || d < bb.d) bb = { b, d };
+  }
+  if (bb) {
+    // 長さで重み付けした辺の向き（90° 周期）
+    let sx = 0;
+    let sy = 0;
+    const ring = bb.b.ring;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const L = Math.hypot(b.e - a.e, b.n - a.n);
+      if (L < 0.5) continue;
+      const th = Math.atan2(b.e - a.e, b.n - a.n) * 4; // 90° 周期 → 360°
+      sx += Math.cos(th) * L;
+      sy += Math.sin(th) * L;
+    }
+    const axis = (Math.atan2(sy, sx) / 4) * (180 / Math.PI); // 建物の一辺の方位（北から時計回り）
+    // 図面の上方向の方位 = −N。建物の辺の向きに揃える候補: −N ≡ axis + k·90 → N = −axis − k·90
+    const cands = [0, 90, 180, 270].map((k) => norm180(-axis - k));
+    const ref = out.fromRoad ? out.fromRoad.northDeg : currentNorthDeg;
+    cands.sort((p, q) => Math.abs(norm180(p - ref)) - Math.abs(norm180(q - ref)));
+    out.fromBuilding = { northDeg: cands[0], candidates: cands, distanceM: bb.d };
+  }
+  return out;
 }

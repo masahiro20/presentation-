@@ -479,6 +479,12 @@ export const designStep: Step = {
             h('button', { class: 'btn sm ghost', onclick: () => update({ wallColorOverride: undefined }) }, '標準に戻す'),
             h('label', { class: 'check', style: 'margin-left:auto' }, h('input', { type: 'checkbox', checked: state.design.furniture, onchange: (e: Event) => update({ furniture: (e.target as HTMLInputElement).checked }) }), '家具'),
           ),
+          h(
+            'label',
+            { class: 'check', title: '仕上げを白いクレイにして、形・光・空間だけを見るスタディ模型の表現。パース・輪切り・断面・カット集・立面図すべてに効きます' },
+            h('input', { type: 'checkbox', checked: !!state.design.clay, onchange: (e: Event) => update({ clay: (e.target as HTMLInputElement).checked }) }),
+            '白模型（スタディ模型）で見る',
+          ),
         ),
       );
       // 見どころ

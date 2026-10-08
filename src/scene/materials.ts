@@ -12,7 +12,7 @@ export class MaterialRegistry {
   constructor(
     public ext: ExteriorStyle,
     public int: InteriorStyle,
-    public opts: { wallColor?: string; doorColor?: string; night?: boolean } = {},
+    public opts: { wallColor?: string; doorColor?: string; night?: boolean; clay?: boolean } = {},
   ) {
     this.rebuild();
   }
@@ -21,7 +21,7 @@ export class MaterialRegistry {
     return this.map.get(key) ?? this.map.get(key.split(':')[0]) ?? this.fallback;
   }
 
-  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean } = {}) {
+  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean; clay?: boolean } = {}) {
     this.ext = ext;
     this.int = int;
     this.opts = opts;
@@ -158,6 +158,20 @@ export class MaterialRegistry {
       // 室内は空からの環境光が壁で遮られるため弱める（窓からの日射と室内照明で照らす）
       if ((k.startsWith('int.') || k.startsWith('f.')) && 'envMapIntensity' in m && !m.userData.isGlass) {
         (m as THREE.MeshStandardMaterial).envMapIntensity = k === 'f.chrome' || k === 'f.mirror' ? 0.8 : 0.35;
+      }
+    }
+    // 白模型（スタディ模型）: ガラス以外を白いクレイに。外構は淡いグレー、植栽の葉はそのまま
+    if (this.opts.clay) {
+      const clayM = color('#edebe6', 0.92);
+      const clayGround = color('#d6d3cd', 1);
+      const clayRoad = color('#c9c6c0', 1);
+      for (const [k, m] of [...this.map]) {
+        if ((m as THREE.Material).userData?.isGlass) continue;
+        if (k.startsWith('l.leaf') || k === 'l.trunk') continue;
+        if (k === 'l.road' || k === 'l.curb') this.map.set(k, clayRoad);
+        else if (k.startsWith('l.')) this.map.set(k, clayGround);
+        else if (k === 'cut.north' || k === 'int.shadowGap') this.map.set(k, color('#55575b', 0.9));
+        else this.map.set(k, clayM);
       }
     }
   }

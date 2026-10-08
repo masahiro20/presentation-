@@ -346,3 +346,8 @@ body.presenting .main { grid-template-columns: 1fr; }
 .pe-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 .pe-howto { padding-left: 18px; line-height: 1.8; }
 @media (max-width: 900px) { .pe-body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } .pe-panel { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; } }
+
+.north-cand { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px 10px; margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; background: #fbfaf7; font-size: 12.5px; }
+.north-cand b { display: block; font-size: 13px; }
+.north-cand .deg { font-weight: 600; white-space: nowrap; }
+.north-cand .hint { display: block; margin-top: 2px; }

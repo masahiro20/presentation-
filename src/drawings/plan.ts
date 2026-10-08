@@ -9,6 +9,7 @@ import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
 import { buildLandscape, type LandscapePlan } from '../scene/landscape';
 import { EXTERIOR_STYLES } from '../styles/presets';
+import { wrapSheet, svgTable, type SheetInfo } from './sheet';
 
 /** 外構（3D と同じ配置: 駐車場・アプローチ・植栽） */
 const landscapeCache = new WeakMap<BuildingModel, LandscapePlan | null>();
@@ -168,9 +169,136 @@ export interface PlanSvgOptions {
   title?: string;
   /** 接道の表示（既定: 表示） */
   showRoad?: boolean;
+  /** 図枠（A3・表題欄・面積表・建具表）に入れる。省略時は図枠なし */
+  sheet?: SheetInfo;
+  /** 建具記号（W1・D1…）を描く（既定: 図枠ありのとき） */
+  tags?: boolean;
+  /** 断面図の切断線（ワールド m: 法線 (nx, nz)、d = 面上の点·n）。矢印は見る向き（−n） */
+  sectionLines?: { nx: number; nz: number; d: number; label: string }[];
+}
+
+export interface OpeningScheduleEntry {
+  id: string;
+  tag: string;
+  kindJa: string;
+  w: number;
+  h: number;
+  sill: number;
+  /** 記号を置く位置（図面 mm。外壁は外側、内壁は +法線側） */
+  x: number;
+  y: number;
+}
+
+const OPENING_KIND_JA: Record<string, string> = { window: '窓', door: '片開き戸', sliding: '引戸', entrance: '玄関戸', open: '開口' };
+
+/** 建具表: 窓は W1…、戸は D1…、開口は O1… の順に番号を付ける */
+export function openingSchedule(f: Floor): OpeningScheduleEntry[] {
+  const out: OpeningScheduleEntry[] = [];
+  const counters: Record<string, number> = { W: 0, D: 0, O: 0 };
+  const walls = f.walls.slice().sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+  for (const w of walls) {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    if (L < 1) continue;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const nx = -uy;
+    const ny = ux;
+    const sgn = w.exterior ? (w.outsideSign ?? 1) : 1;
+    const ops = f.openings.filter((o) => o.wallId === w.id).sort((a, b) => a.t0 - b.t0);
+    for (const o of ops) {
+      const pre = o.kind === 'window' ? 'W' : o.kind === 'open' ? 'O' : 'D';
+      counters[pre]++;
+      const tm = (o.t0 + o.t1) / 2;
+      const off = w.thickness / 2 + 420;
+      out.push({
+        id: o.id,
+        tag: `${pre}${counters[pre]}`,
+        kindJa: o.windowStyle === 'hakidashi' ? '掃出し窓' : o.windowStyle === 'koshi' ? '腰窓' : o.windowStyle === 'high' ? '高窓' : o.windowStyle === 'small' ? '小窓' : OPENING_KIND_JA[o.kind] ?? o.kind,
+        w: Math.round(o.t1 - o.t0),
+        h: Math.round(o.height),
+        sill: Math.round(o.sill),
+        x: w.a.x + ux * tm + nx * off * sgn,
+        y: w.a.y + uy * tm + ny * off * sgn,
+      });
+    }
+  }
+  return out;
+}
+
+/** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く */
+export function floorArea(f: Floor): number {
+  return f.rooms.filter((r) => r.type !== 'void' && r.type !== 'balcony' && r.type !== 'porch' && r.type !== 'garage').reduce((a, r) => a + r.area, 0);
+}
+
+/** 外形の面積（㎡。穴は引く） */
+function outlineArea(f: Floor): number {
+  const area = (loop: { x: number; y: number }[]) => {
+    let a = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const p = loop[i];
+      const q = loop[(i + 1) % loop.length];
+      a += p.x * q.y - q.x * p.y;
+    }
+    return a / 2;
+  };
+  const vals = f.outline.map(area);
+  const outer = Math.max(...vals.map((v) => Math.abs(v)), 0);
+  // 最大のループを外周、他は穴とみなす
+  let total = outer;
+  for (const v of vals) if (Math.abs(v) !== outer) total -= Math.abs(v);
+  return total / 1e6;
+}
+
+/** 面積表（階別床面積・延床・建築面積・敷地面積・建蔽率・容積率） */
+export function areaTableSvg(model: BuildingModel, x: number, y: number) {
+  const rows: string[][] = [];
+  let total = 0;
+  for (const f of model.floors) {
+    const a = floorArea(f);
+    total += a;
+    rows.push([`${f.level}階 床面積`, `${a.toFixed(2)} ㎡`, `${(a / 3.30579).toFixed(2)} 坪`]);
+  }
+  rows.push(['延床面積', `${total.toFixed(2)} ㎡`, `${(total / 3.30579).toFixed(2)} 坪`]);
+  const bld = Math.max(...model.floors.map(outlineArea), 0);
+  rows.push(['建築面積', `${bld.toFixed(2)} ㎡`, `${(bld / 3.30579).toFixed(2)} 坪`]);
+  const site = model.site?.areaM2;
+  if (site) {
+    rows.push(['敷地面積', `${site.toFixed(2)} ㎡`, `${(site / 3.30579).toFixed(2)} 坪`]);
+    rows.push(['建蔽率', `${((bld / site) * 100).toFixed(1)} %`, '']);
+    rows.push(['容積率', `${((total / site) * 100).toFixed(1)} %`, '']);
+  }
+  return svgTable(x, y, '面積表', [{ label: '項目', w: 2600 }, { label: '㎡', w: 2200, align: 'right' }, { label: '坪', w: 2000, align: 'right' }], rows);
+}
+
+/** 建具表（この階） */
+export function openingTableSvg(f: Floor, x: number, y: number, maxRows = 22) {
+  const sch = openingSchedule(f);
+  const rows = sch.slice(0, maxRows).map((e) => [e.tag, e.kindJa, `${e.w}`, `${e.h}`, e.sill ? `${e.sill}` : '-']);
+  if (sch.length > maxRows) rows.push([`ほか ${sch.length - maxRows}`, '', '', '', '']);
+  return svgTable(x, y, `建具表（${f.level}階）`, [{ label: '記号', w: 1100, align: 'center' }, { label: '種別', w: 2300 }, { label: 'W', w: 1100, align: 'right' }, { label: 'H', w: 1100, align: 'right' }, { label: '腰高', w: 1200, align: 'right' }], rows, { fontSize: 150, rowH: 260 });
+}
+
+export interface PlanParts {
+  inner: string;
+  vb: { x: number; y: number; w: number; h: number };
+  defs: string;
 }
 
 export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOptions = {}): string {
+  const parts = floorPlanParts(model, f, opts);
+  if (opts.sheet) {
+    const at = areaTableSvg(model, 0, 0);
+    const ot = openingTableSvg(f, 0, at.h + 700);
+    const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 700 + ot.h };
+    return wrapSheet(parts.inner, parts.vb, opts.sheet, { right, defs: parts.defs });
+  }
+  const vb = parts.vb;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${parts.defs}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${parts.inner}</svg>`;
+}
+
+/** 平面図の中身（図枠に流し込む用）。図枠に入れる時は外構・道路を描かない（図面としての密度を優先） */
+export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOptions = {}): PlanParts {
+  if (opts.sheet) opts = { showLandscape: false, showRoad: false, ...opts };
   const pts = f.outline.flat().concat(f.walls.flatMap((w) => [w.a, w.b]));
   const minX = Math.min(...pts.map((p) => p.x));
   const maxX = Math.max(...pts.map((p) => p.x));
@@ -457,7 +585,54 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
   s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
   s += scaleBar(tx - 2500, ty + 620);
   vb.h = Math.max(vb.h, ty + 1100 - vb.y);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${PLAN_DEFS}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${s}</svg>`;
+  // 建具記号（建具表と対応）
+  if (opts.tags ?? !!opts.sheet) {
+    for (const e of openingSchedule(f)) {
+      s += `<circle cx="${e.x.toFixed(0)}" cy="${e.y.toFixed(0)}" r="200" fill="#fff" stroke="#333" stroke-width="10"/>`;
+      s += `<text x="${e.x.toFixed(0)}" y="${(e.y + 55).toFixed(0)}" font-size="150" text-anchor="middle" fill="#222">${esc(e.tag)}</text>`;
+    }
+  }
+  // 断面図の切断線（A-A など）
+  if (opts.sectionLines?.length) {
+    const bx0 = minX - 700;
+    const bx1 = maxX + 700;
+    const by0 = minY - 700;
+    const by1 = maxY + 700;
+    for (const sl of opts.sectionLines) {
+      const n = { x: sl.nx, y: sl.nz };
+      const d = sl.d * 1000;
+      const t = { x: -n.y, y: n.x };
+      const p0 = { x: n.x * d, y: n.y * d };
+      // 矩形との交点（パラメータ範囲）
+      let tMin = -Infinity;
+      let tMax = Infinity;
+      for (const [c0, c1, pc, tc] of [
+        [bx0, bx1, p0.x, t.x],
+        [by0, by1, p0.y, t.y],
+      ] as const) {
+        if (Math.abs(tc) < 1e-9) continue;
+        const a = (c0 - pc) / tc;
+        const b = (c1 - pc) / tc;
+        tMin = Math.max(tMin, Math.min(a, b));
+        tMax = Math.min(tMax, Math.max(a, b));
+      }
+      if (!(tMax > tMin)) continue;
+      const A = { x: p0.x + t.x * tMin, y: p0.y + t.y * tMin };
+      const B = { x: p0.x + t.x * tMax, y: p0.y + t.y * tMax };
+      s += `<line x1="${A.x.toFixed(0)}" y1="${A.y.toFixed(0)}" x2="${B.x.toFixed(0)}" y2="${B.y.toFixed(0)}" stroke="#111" stroke-width="22" stroke-dasharray="500 200 80 200"/>`;
+      // 両端に見る向き（−n）の矢印と記号
+      for (const E of [A, B]) {
+        const ex = E.x - n.x * 450;
+        const ey = E.y - n.y * 450;
+        s += `<line x1="${E.x.toFixed(0)}" y1="${E.y.toFixed(0)}" x2="${ex.toFixed(0)}" y2="${ey.toFixed(0)}" stroke="#111" stroke-width="30"/>`;
+        const hx = ex - n.x * 180;
+        const hy = ey - n.y * 180;
+        s += `<polygon points="${(ex - n.x * 60 + t.x * 130).toFixed(0)},${(ey - n.y * 60 + t.y * 130).toFixed(0)} ${(ex - n.x * 60 - t.x * 130).toFixed(0)},${(ey - n.y * 60 - t.y * 130).toFixed(0)} ${hx.toFixed(0)},${hy.toFixed(0)}" fill="#111"/>`;
+        s += `<text x="${(E.x + t.x * 0 + n.x * 330).toFixed(0)}" y="${(E.y + n.y * 330 + 90).toFixed(0)}" font-size="260" font-weight="700" text-anchor="middle" fill="#111">${esc(sl.label)}</text>`;
+      }
+    }
+  }
+  return { inner: s, vb, defs: PLAN_DEFS };
 }
 
 function cross(ax: number, ay: number, bx: number, by: number) {

@@ -3,7 +3,7 @@ import { h, clear, toast, progressModal, section, field, modal, download, svgToD
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { SunContext } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL } from '../../sun/geo';
+import { geocode, siteLatLon, PRECISION_LABEL, estimateNorth } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -289,8 +289,8 @@ export const sunStep: Step = {
       showLoc();
       reloadContext();
     };
-    const rotate = (d: number) => {
-      state.model!.northAngleDeg += d;
+    const setNorth = (deg: number) => {
+      state.model!.northAngleDeg = Math.round(deg * 10) / 10;
       emit('model');
       ctx.app.ensureScene();
       sc.buildSunPath();
@@ -298,6 +298,53 @@ export const sunStep: Step = {
       if (sc.state.aerialLoaded) loadAerial();
       apply(true);
     };
+    const rotate = (d: number) => setNorth(state.model!.northAngleDeg + d);
+    // 座標から真北を判定（道路の向き・敷地の既存建物の向き）
+    const northBox = h('div');
+    const northBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '🧭 座標から真北を判定する（道路・既存建物の向き）') as HTMLButtonElement;
+    northBtn.addEventListener('click', async () => {
+      clear(northBox);
+      northBox.appendChild(h('p', { class: 'hint' }, '国土地理院の地図データ（道路中心線・建物）を取得しています…'));
+      northBtn.disabled = true;
+      try {
+        const { lat, lon } = siteLatLon(state.site);
+        const roadSide = state.model!.site?.roads[0]?.side ?? null;
+        const est = await estimateNorth(lat, lon, roadSide, state.model!.northAngleDeg);
+        clear(northBox);
+        const cur = state.model!.northAngleDeg;
+        const row = (label: string, deg: number, note: string) =>
+          h(
+            'div',
+            { class: 'north-cand' },
+            h('div', null, h('b', null, label), h('span', { class: 'hint' }, note)),
+            h('div', { class: 'deg' }, `真北 ${deg.toFixed(1)}°`, h('span', { class: 'hint' }, `（現在 ${cur.toFixed(1)}°）`)),
+            h('button', { class: 'btn sm primary', onclick: () => { setNorth(deg); toast(`真北を ${deg.toFixed(1)}° にしました`, 'ok'); } }, '適用'),
+          );
+        if (est.fromRoad) {
+          const r = est.fromRoad;
+          const sideJa: Record<string, string> = { top: '上', right: '右', bottom: '下', left: '左' };
+          northBox.appendChild(row('道路の向きから', r.northDeg, `図面の${sideJa[r.side]}側の道路を、約 ${r.distanceM.toFixed(0)}m 先の${r.category || '道路'}${r.widthM ? `（幅員 約${r.widthM.toFixed(1)}m）` : ''}に合わせました`));
+        } else if (!roadSide) {
+          northBox.appendChild(h('p', { class: 'warn' }, '図面に道路側（道路境界線）の記載が読めていないため、道路からは判定できません。読み込み画面の「接道」で道路側を指定すると使えます。'));
+        } else {
+          northBox.appendChild(h('p', { class: 'warn' }, '近くに道路中心線のデータがありませんでした。'));
+        }
+        if (est.fromBuilding) {
+          const b = est.fromBuilding;
+          northBox.appendChild(row('既存建物の向きから', b.northDeg, `${b.distanceM < 0.5 ? '敷地上' : `約 ${b.distanceM.toFixed(0)}m 先`}の建物外形の辺に揃えました（90° ごとの候補: ${b.candidates.map((c) => c.toFixed(1)).join(' / ')}）`));
+        }
+        if (est.fromRoad && est.fromBuilding) {
+          const diff = Math.abs((((est.fromRoad.northDeg - est.fromBuilding.northDeg + 180) % 360) + 360) % 360 - 180);
+          northBox.appendChild(h('p', { class: 'hint' }, diff < 3 ? '✓ 道路と既存建物の向きが一致しています。信頼できる値です。' : `道路と既存建物で ${diff.toFixed(1)}° 違います。航空写真で建物の向きを確かめてから適用してください。`));
+        }
+        northBox.appendChild(h('p', { class: 'hint' }, '真北は「図面の上から時計回り」の角度です。図面の方位記号で読めた値と大きく違う場合は、航空写真の上で敷地の位置が合っているか先に確認してください。'));
+      } catch (e) {
+        clear(northBox);
+        toast((e as Error).message, 'error');
+      } finally {
+        northBtn.disabled = false;
+      }
+    });
     // 航空写真をクリックして、建物を実際の敷地の位置に置く（住所検索は町・丁目の代表点になることが多いため）
     let placing = false;
     const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '📍 航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
@@ -417,6 +464,8 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm', onclick: () => rotate(-2) }, '↺ 2°'),
           h('button', { class: 'btn sm', onclick: () => rotate(2) }, '↻ 2°'),
         ),
+        northBtn,
+        northBox,
       ),
     );
 

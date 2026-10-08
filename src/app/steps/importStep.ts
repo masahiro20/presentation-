@@ -251,6 +251,7 @@ function renderResult(ctx: StepCtx) {
   const drawPlans = () => {
     clear(view);
     state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
+    state.sheets = [];
     for (const p of state.plans) view.appendChild(h('div', { class: 'sheet', html: p.svg }));
   };
   drawPlans();

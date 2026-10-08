@@ -12,11 +12,11 @@
 import { download, toast } from '../app/dom';
 import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
-import { emit, study } from './state';
+import { emit, normalizeHideInfo, study } from './state';
 import { sampleHeight } from './terrain';
 import { polygonAreaM2 } from './map';
 import { DEFAULT_PLACEMENT, UNIT_LABEL } from './types';
-import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
+import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, NeighborOverride, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
 
 /** 同梱する 3D データの上限 (bytes) */
 const MODEL_LIMIT = 40 * 1024 * 1024;
@@ -200,6 +200,49 @@ export function sanitizePlacement(pl: Partial<ModelPlacement> | undefined | null
   return out;
 }
 
+/**
+ * 保存データの周辺建物の上書き（高さ・隠す・隠し方・理由）を整える。
+ * 隠した記録に隠し方・理由が無い（この機能より前の保存データ）・知らない値なら「計算から除外」「その他」として読む。
+ * 高さは正の有限値だけ、hidden は真偽値だけ受け取る。中身が空になった上書きは捨てる
+ */
+export function sanitizeNeighborOverrides(v: unknown): Record<string, NeighborOverride> {
+  const out: Record<string, NeighborOverride> = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const o = raw as Record<string, unknown>;
+    const next: NeighborOverride = {};
+    if (isFiniteNum(o.height) && o.height > 0) next.height = o.height;
+    if (typeof o.hidden === 'boolean') next.hidden = o.hidden;
+    if (next.hidden) {
+      const info = normalizeHideInfo({ mode: o.hideMode, reason: o.hideReason, note: o.hideNote });
+      next.hideMode = info.mode;
+      next.hideReason = info.reason;
+      if (info.note) next.hideNote = info.note;
+    }
+    if (Object.keys(next).length) out[id] = next;
+  }
+  return out;
+}
+
+/** 保存データの周辺建物（手動の隣家・同梱の自動取得分）の隠した記録を整える（隠し方・理由が無ければ計算から除外・その他） */
+export function sanitizeNeighborHide(n: Neighbor): Neighbor {
+  const out: Neighbor = { ...n };
+  if (out.hidden === true) {
+    const info = normalizeHideInfo({ mode: out.hideMode, reason: out.hideReason, note: out.hideNote });
+    out.hideMode = info.mode;
+    out.hideReason = info.reason;
+    if (info.note) out.hideNote = info.note;
+    else delete out.hideNote;
+  } else {
+    delete out.hidden;
+    delete out.hideMode;
+    delete out.hideReason;
+    delete out.hideNote;
+  }
+  return out;
+}
+
 function buildProject(notes: string[]): ProjectJson {
   const m = study.model;
   let model: ProjectJson['model'] = null;
@@ -219,7 +262,7 @@ function buildProject(notes: string[]): ProjectJson {
     placement: { ...study.placement, hiddenObjects: [...(study.placement.hiddenObjects ?? [])] },
     model,
     manualNeighbors: study.neighbors.filter((n) => n.source === 'manual').map((n) => ({ ...n, ring: n.ring.map((q) => ({ e: q.e, n: q.n })) })),
-    neighborOverrides: { ...study.neighborOverrides },
+    neighborOverrides: Object.fromEntries(Object.entries(study.neighborOverrides).map(([id, o]) => [id, { ...o }])),
     points: JSON.parse(JSON.stringify(study.points)) as ProjectJson['points'],
   };
   const autoNeighbors = study.neighbors.filter((n) => n.source !== 'manual');
@@ -288,14 +331,15 @@ export async function applyProject(p: ProjectJson): Promise<void> {
     : null;
   study.sitePolygon = cleanPolygon(p.sitePolygon);
   study.placement = sanitizePlacement(p.placement as Partial<ModelPlacement> | undefined);
-  study.neighborOverrides = p.neighborOverrides && typeof p.neighborOverrides === 'object' ? { ...p.neighborOverrides } : {};
+  // 隠した記録に隠し方・理由が無い古いデータは「計算から除外」「その他」として読む
+  study.neighborOverrides = sanitizeNeighborOverrides(p.neighborOverrides);
   // 測定点は最後に入れる（下の 'placement' などの発火で古い結果を捨てる処理が走り、復元した結果まで消えないように）
   const points = Array.isArray(p.points) ? p.points : [];
   study.points = [];
   study.results = { images: [] };
 
   // 周辺環境
-  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)) : [];
+  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide) : [];
   let auto: Neighbor[] = [];
   study.grid = null;
   study.aerial = null;
@@ -314,7 +358,7 @@ export async function applyProject(p: ProjectJson): Promise<void> {
       }
     }
     if (env.aerial && typeof env.aerial.dataUrl === 'string') study.aerial = await decodeAerial(env.aerial);
-    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)) : [];
+    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide) : [];
     study.neighborSources = Array.isArray(env.neighborSources) ? [...env.neighborSources] : [];
     study.neighborNotes = Array.isArray(env.neighborNotes) ? env.neighborNotes.filter((s) => typeof s === 'string') : [];
     if (env.horizon && Array.isArray(env.horizon.elevDeg) && env.horizon.elevDeg.length === 360) {

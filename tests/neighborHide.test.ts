@@ -161,7 +161,8 @@ describe('隠した建物の状態（state）', () => {
     const k = setNeighborsHidden(['auto1', 'manual1', 'nope'], true);
     expect(k).toBe(2);
     expect(events).toBe(1);
-    expect(study.neighborOverrides.auto1).toEqual({ hidden: true });
+    // 隠し方・理由を省くと「計算から除外」「その他」で書く
+    expect(study.neighborOverrides.auto1).toEqual({ hidden: true, hideMode: 'exclude', hideReason: 'other' });
     // 手動の隣家は消さずに隠す（戻せる）
     const m = study.neighbors.find((n) => n.id === 'manual1')!;
     expect(m.hidden).toBe(true);
@@ -179,7 +180,7 @@ describe('隠した建物の状態（state）', () => {
     study.neighborOverrides.auto2 = { height: 15 };
     setNeighborsHidden(['auto1', 'auto2', 'auto3', 'manual1'], true);
     expect(events).toBe(1);
-    expect(study.neighborOverrides.auto2).toEqual({ height: 15, hidden: true });
+    expect(study.neighborOverrides.auto2).toEqual({ height: 15, hidden: true, hideMode: 'exclude', hideReason: 'other' });
     // 隠した建物も高さの上書きを反映して見せる
     expect(hiddenNeighbors().find((n) => n.id === 'auto2')?.height).toBe(15);
     expect(setNeighborsHidden(['auto3'], false)).toBe(1);
@@ -221,7 +222,7 @@ describe('隠した建物の状態（state）', () => {
     study.horizon = null;
     setNeighborsHidden(['auto2', 'manual1'], true);
     const json = JSON.parse(JSON.stringify(serializeProject()));
-    expect(json.neighborOverrides.auto2).toEqual({ hidden: true });
+    expect(json.neighborOverrides.auto2).toEqual({ hidden: true, hideMode: 'exclude', hideReason: 'other' });
     expect(json.manualNeighbors[0].hidden).toBe(true);
     expect(json.env.neighbors.map((n: Neighbor) => n.id).sort()).toEqual(['auto1', 'auto2', 'auto3']);
     // 別の状態にしてから開く

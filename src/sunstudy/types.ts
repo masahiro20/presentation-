@@ -208,6 +208,50 @@ export interface Neighbor {
   /** 足元の地盤高（T.P. m）。地形から決める */
   baseElev?: number;
   hidden?: boolean;
+  /** 隠し方（hidden のときだけ意味を持つ。無ければ 'exclude' = 計算から除外。古い保存データ） */
+  hideMode?: NeighborHideMode;
+  /** 隠した理由（hidden のときだけ。無ければ 'other'） */
+  hideReason?: NeighborHideReason;
+  /** 理由の補足（「その他」の自由記述など） */
+  hideNote?: string;
+}
+
+/**
+ * 周辺建物の隠し方:
+ *  'view'    表示だけ隠す — 3D に描かないが、影（実時間の影は影だけのメッシュ）・日照の解析・日影図には残す（視点の邪魔になる建物など）
+ *  'exclude' 計算から除外 — 描かない・影を落とさない・解析しない（解体予定・敷地内の既存建物・データの誤りなど）
+ */
+export type NeighborHideMode = 'view' | 'exclude';
+export const HIDE_MODES: readonly NeighborHideMode[] = ['exclude', 'view'];
+export const HIDE_MODE_LABEL: Record<NeighborHideMode, string> = {
+  view: '表示だけ隠す（影・解析には残す）',
+  exclude: '計算から除外',
+};
+
+/** 隠した理由 */
+export type NeighborHideReason = 'demolish' | 'onsite' | 'dataError' | 'other';
+export const HIDE_REASONS: readonly NeighborHideReason[] = ['demolish', 'onsite', 'dataError', 'other'];
+export const HIDE_REASON_LABEL: Record<NeighborHideReason, string> = {
+  demolish: '解体予定',
+  onsite: '敷地内の既存建物',
+  dataError: 'データの誤り',
+  other: 'その他',
+};
+
+/** 隠し方と理由（理由の補足は任意） */
+export interface NeighborHideInfo {
+  mode: NeighborHideMode;
+  reason: NeighborHideReason;
+  note?: string;
+}
+
+/** 自動取得した建物への上書き（高さ修正・隠す）。隠し方・理由は hidden のときだけ */
+export interface NeighborOverride {
+  height?: number;
+  hidden?: boolean;
+  hideMode?: NeighborHideMode;
+  hideReason?: NeighborHideReason;
+  hideNote?: string;
 }
 
 export const NEIGHBOR_SOURCE_LABEL: Record<NeighborSource, string> = {
@@ -272,8 +316,8 @@ export interface ProjectJson {
   /** 3D データ（base64）。大きすぎる場合は省略され、再読み込みを促す */
   model: { name: string; format: ModelFormat; base64: string } | null;
   manualNeighbors: Neighbor[];
-  /** 自動取得した建物への上書き（高さ修正・非表示） */
-  neighborOverrides: Record<string, { height?: number; hidden?: boolean }>;
+  /** 自動取得した建物への上書き（高さ修正・隠す。隠し方・理由を含む。古いデータには隠し方・理由が無い = 計算から除外・その他） */
+  neighborOverrides: Record<string, NeighborOverride>;
   points: MeasurePoint[];
   /** 取得済みの周辺環境（オフラインでも開けるように同梱。省略可） */
   env?: ProjectEnv;

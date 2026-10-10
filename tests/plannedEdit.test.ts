@@ -20,6 +20,7 @@ import {
   nextPlannedLabel,
   nudgePlanned,
   overlapWarning,
+  pitchPatch,
   placePlanned,
   plannedFieldPatch,
   plannedHeightText,
@@ -179,6 +180,20 @@ describe('形を変える', () => {
     expect(plannedFieldPatch(h, 'roof', 'dome')).toBeNull();
     expect(plannedFieldPatch(h, 'eaveHeight', '7')).toEqual({ eaveHeight: 7 });
     expect(plannedFieldPatch(h, 'ridgeHeight', '5')).toEqual({ eaveHeight: 5, ridgeHeight: 5 });
+    // 勾配（寸）: 切妻は奥行の半分 3.65 m が水平距離 → 4 寸で 6 + 1.46
+    expect(plannedFieldPatch(h, 'pitch', '4')).toEqual({ ridgeHeight: 7.46 });
+    expect(plannedFieldPatch(h, 'pitch', '0')).toEqual({ ridgeHeight: 6 });
+    expect(plannedFieldPatch(h, 'pitch', '-1')).toBeNull();
+    expect(plannedFieldPatch(gable({ roof: 'flat', ridgeHeight: 6 }), 'pitch', '4')).toBeNull();
+  });
+
+  it('勾配（寸）: 最高高さ = 軒高 + 水平距離 × 寸 ÷ 10。片流れは奥行 + 軒の出、上限 15 寸、陸屋根は null', () => {
+    const h = gable();
+    expect(pitchPatch(h, 5)).toEqual({ ridgeHeight: Math.round((6 + 3.65 * 0.5) * 100) / 100 });
+    expect(pitchPatch(gable({ roof: 'shed' }), 3)).toEqual({ ridgeHeight: Math.round((6 + (7.3 + PLANNED_EAVE_OVERHANG) * 0.3) * 100) / 100 });
+    expect(pitchPatch(h, 100)).toEqual({ ridgeHeight: Math.round((6 + 3.65 * 1.5) * 100) / 100 });
+    expect(pitchPatch(h, NaN)).toBeNull();
+    expect(pitchPatch(gable({ roof: 'flat', ridgeHeight: 6 }), 4)).toBeNull();
   });
 
   it('計画の建物と同じ形: 幅×奥行×高さの陸屋根の箱、幅は図面の横（真北から headingDeg + 90°）', () => {
@@ -189,7 +204,8 @@ describe('形を変える', () => {
 
   it('寸法・高さ・選択肢の文', () => {
     expect(plannedSizeText(gable())).toBe('9.1×7.3 m');
-    expect(plannedHeightText(gable())).toBe('軒高 6 m／最高 8.5 m');
+    expect(plannedHeightText(gable())).toBe('軒高 6 m／最高 8.5 m・6.8 寸');
+    expect(plannedHeightText(gable({ roof: 'shed', ridgeHeight: 7.5 }))).toBe('軒高 6 m／最高 7.5 m・1.9 寸');
     expect(plannedHeightText(gable({ roof: 'flat', ridgeHeight: 6 }))).toBe('高さ 6 m');
     expect(PLANNED_PRESETS.map(presetOptionText)).toEqual([
       '平屋（切妻）　12×8 m・最高 5 m',

@@ -100,6 +100,35 @@ export const PLANNED_MIN_HEIGHT = 1;
 export const PLANNED_MIN_LOT_HOUSE = 3;
 /** 名前の長さの上限（文字） */
 export const PLANNED_LABEL_MAX = 40;
+/** 屋根の勾配（寸）の上限。15 寸 ≈ 56°（急勾配の屋根の上限として十分） */
+export const PITCH_MAX_SUN = 15;
+
+/**
+ * 勾配の水平距離 [m]（ジオメトリと同じ約束: 切妻・寄棟は棟が中央なので奥行の半分、片流れは高い側の端が最高高さなので 奥行 + 軒の出）。
+ * 陸屋根は null
+ */
+export function pitchRun(h: Pick<PlannedHouse, 'roof' | 'depth'>): number | null {
+  if (h.roof === 'flat') return null;
+  return h.roof === 'shed' ? h.depth + PLANNED_EAVE_OVERHANG : h.depth / 2;
+}
+
+/** 今の屋根の勾配（寸 = 水平 10 に対する立ち上がり。0.1 寸に丸める）。陸屋根は 0 */
+export function pitchSun(h: Pick<PlannedHouse, 'roof' | 'depth' | 'eaveHeight' | 'ridgeHeight'>): number {
+  const run = pitchRun(h);
+  if (run == null || run <= 0) return 0;
+  return Math.max(0, Math.round(((h.ridgeHeight - h.eaveHeight) / run) * 10 * 10) / 10);
+}
+
+/**
+ * 勾配（寸）から最高高さ [m] を決める: 軒高 + 水平距離 × 寸 ÷ 10（0.01 m に丸め、PLANNED_MAX_SIZE まで）。
+ * 陸屋根・負の値・数でなければ null。0 寸は最高高さ = 軒高
+ */
+export function ridgeFromPitch(h: Pick<PlannedHouse, 'roof' | 'depth' | 'eaveHeight'>, sun: number): number | null {
+  const run = pitchRun(h);
+  if (run == null || !Number.isFinite(sun) || sun < 0) return null;
+  const s = Math.min(PITCH_MAX_SUN, sun);
+  return Math.round(Math.min(PLANNED_MAX_SIZE, h.eaveHeight + (run * s) / 10) * 100) / 100;
+}
 
 /** プリセット（知らない id なら既定の 2 階建て・切妻） */
 export function plannedPreset(id: PlannedPresetId | string | undefined | null): PlannedPreset {

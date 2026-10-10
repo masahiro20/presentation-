@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { distPointSegment, pointInPolygon, polygonArea, type EN } from '../src/sun/align';
 import {
+  PITCH_MAX_SUN,
   PLANNED_COLORS,
   PLANNED_EAVE_OVERHANG,
   PLANNED_GROUP_ROOF,
@@ -15,9 +16,12 @@ import {
   houseFromPreset,
   houseInLot,
   mirrorLotAcrossEdge,
+  pitchRun,
+  pitchSun,
   plannedFootprint,
   plannedLocalToEN,
   plannedPreset,
+  ridgeFromPitch,
   syncPlannedHouse,
   translateLotAcrossEdge,
   type PlannedHouse,
@@ -444,5 +448,36 @@ describe('隣の区画（鏡映・平行移動）', () => {
     expect(translateLotAcrossEdge(site, 2)).toEqual(rect(0, 15, 10, 15));
     expect(translateLotAcrossEdge(site, 3)).toEqual(rect(-10, 0, 10, 15));
     expect(translateLotAcrossEdge(site, 0)).toEqual(rect(0, -15, 10, 15));
+  });
+});
+
+describe('屋根の勾配（寸）', () => {
+  it('水平距離: 切妻・寄棟は奥行の半分、片流れは奥行 + 軒の出、陸屋根は null', () => {
+    expect(pitchRun({ roof: 'gable', depth: 7.3 })).toBeCloseTo(3.65);
+    expect(pitchRun({ roof: 'hip', depth: 8 })).toBe(4);
+    expect(pitchRun({ roof: 'shed', depth: 7.3 })).toBeCloseTo(7.3 + PLANNED_EAVE_OVERHANG);
+    expect(pitchRun({ roof: 'flat', depth: 8 })).toBeNull();
+  });
+
+  it('今の勾配（0.1 寸に丸める）とプリセットの勾配', () => {
+    expect(pitchSun(plannedPreset('gable2'))).toBe(6.8); // (8.5 − 6) / 3.65 × 10
+    expect(pitchSun(plannedPreset('hiraya'))).toBe(5); // (5 − 3) / 4 × 10
+    expect(pitchSun(plannedPreset('shed2'))).toBe(2.6); // 2 / 7.75 × 10
+    expect(pitchSun(plannedPreset('flat3'))).toBe(0);
+    expect(pitchSun({ roof: 'gable', depth: 8, eaveHeight: 6, ridgeHeight: 5 })).toBe(0);
+  });
+
+  it('寸 → 最高高さ（軒高 + 水平距離 × 寸 ÷ 10、0.01 m 丸め、15 寸と 300 m が上限、陸屋根・負・NaN は null）', () => {
+    const g = { roof: 'gable' as RoofType, depth: 7.3, eaveHeight: 6 };
+    expect(ridgeFromPitch(g, 4)).toBe(7.46);
+    expect(ridgeFromPitch(g, 0)).toBe(6);
+    expect(ridgeFromPitch(g, 99)).toBe(Math.round((6 + 3.65 * PITCH_MAX_SUN * 0.1) * 100) / 100);
+    expect(ridgeFromPitch({ roof: 'shed', depth: 7.3, eaveHeight: 5.5 }, 2.6)).toBe(Math.round((5.5 + (7.3 + PLANNED_EAVE_OVERHANG) * 0.26) * 100) / 100);
+    expect(ridgeFromPitch({ roof: 'gable', depth: 300, eaveHeight: 299 }, 15)).toBe(300);
+    expect(ridgeFromPitch({ roof: 'flat', depth: 8, eaveHeight: 6 }, 4)).toBeNull();
+    expect(ridgeFromPitch(g, -1)).toBeNull();
+    expect(ridgeFromPitch(g, NaN)).toBeNull();
+    // 往復: 寸 → 最高高さ → 寸
+    expect(pitchSun({ ...g, ridgeHeight: ridgeFromPitch(g, 4.5)! })).toBe(4.5);
   });
 });

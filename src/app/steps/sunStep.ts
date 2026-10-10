@@ -13,7 +13,7 @@ import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
 import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, neighborTitle, neighborWhere, type SunDisclosure } from '../sunDisclosure';
-import { DEFAULT_PLANNED_PRESET, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, plannedAxes, plannedPreset, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
+import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, pitchSun, plannedAxes, plannedPreset, ridgeFromPitch, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
 
@@ -1404,7 +1404,7 @@ export const sunStep: Step = {
       markPlannedRows();
     };
     /**
-     * 想定の家の編集の案内（名前・形・幅・奥行・向き・屋根・軒高・最高高さ・回転・複製・削除）。at の近く（無ければ家の上）に出す。
+     * 想定の家の編集の案内（名前・形・幅・奥行・向き・屋根・軒高・最高高さ・勾配（寸）・回転・複製・削除）。at の近く（無ければ家の上）に出す。
      * 欄は変更（change）で確定し、値は clampHouse で整えて欄に戻す
      */
     const openPlannedEditor = (key: string, at?: { x: number; y: number }) => {
@@ -1429,6 +1429,8 @@ export const sunStep: Step = {
       const rotIn = num('sunpl-rot', 0, 359, 1);
       const eaveIn = num('sunpl-eave', 1, 300, 0.1);
       const ridgeIn = num('sunpl-ridge', 1, 300, 0.1);
+      const pitchIn = num('sunpl-pitch', 0, PITCH_MAX_SUN, 0.5);
+      pitchIn.title = '屋根の勾配（寸 = 水平 10 に対する立ち上がり。4 寸 ≈ 21.8°）。入れると最高高さを計算します（切妻・寄棟は奥行の半分、片流れは奥行＋軒の出が水平距離）';
       const roofSel = h('select', { class: 'sunpl-roof' }, ...ROOF_TYPES.map((r) => h('option', { value: r }, ROOF_LABEL[r]))) as HTMLSelectElement;
       const fill = () => {
         const cur = plannedByKey(key);
@@ -1444,8 +1446,10 @@ export const sunStep: Step = {
         roofSel.value = p.roof;
         eaveIn.value = m1(p.eaveHeight);
         ridgeIn.value = m1(p.ridgeHeight);
-        // 陸屋根は最高高さ = 軒高（軒高の欄で変える）
+        pitchIn.value = String(pitchSun(p));
+        // 陸屋根は最高高さ = 軒高（軒高の欄で変える）。勾配も無い
         ridgeIn.disabled = p.roof === 'flat';
+        pitchIn.disabled = p.roof === 'flat';
       };
       const commitNum = (inp: HTMLInputElement, name: 'width' | 'depth' | 'rotDeg' | 'eaveHeight' | 'ridgeHeight') =>
         inp.addEventListener('change', () => {
@@ -1467,6 +1471,19 @@ export const sunStep: Step = {
       commitNum(rotIn, 'rotDeg');
       commitNum(eaveIn, 'eaveHeight');
       commitNum(ridgeIn, 'ridgeHeight');
+      // 勾配（寸）→ 最高高さ（軒高はそのまま）
+      pitchIn.addEventListener('change', () => {
+        const val = parseFieldNumber(pitchIn.value);
+        const cur = plannedByKey(key)?.planned;
+        if (!cur) return;
+        const ridge = val == null ? null : ridgeFromPitch(cur, val);
+        if (ridge == null) {
+          toast('勾配は 0 以上の数（寸）で入力してください', 'error');
+          fill();
+          return;
+        }
+        editPlanned(key, { ridgeHeight: ridge });
+      });
       nameIn.addEventListener('change', () => editPlanned(key, { label: nameIn.value }));
       presetSel.addEventListener('change', () => {
         if (!isPlannedPresetId(presetSel.value)) {
@@ -1481,7 +1498,7 @@ export const sunStep: Step = {
       });
       // Enter で確定（欄から外れるので change が来る）。Esc は入力中の値を捨てて閉じる（閉じるのは onNbKey）。
       // 欄の中の R・Delete は家に効かせない（onPlannedKey が欄を除く）
-      for (const inp of [nameIn, wIn, dIn, rotIn, eaveIn, ridgeIn])
+      for (const inp of [nameIn, wIn, dIn, rotIn, eaveIn, ridgeIn, pitchIn])
         inp.addEventListener('keydown', (ev) => {
           if (ev.key === 'Enter') {
             ev.preventDefault();
@@ -1495,7 +1512,7 @@ export const sunStep: Step = {
         where,
         field('名前', nameIn),
         field('形（プリセット）', presetSel),
-        h('div', { class: 'sunpl-grid' }, field('幅（棟の向き）m', wIn), field('奥行 m', dIn), field('向き（棟の方位 °）', rotIn), field('屋根', roofSel), field('軒高 m', eaveIn), field('最高高さ m', ridgeIn)),
+        h('div', { class: 'sunpl-grid' }, field('幅（棟の向き）m', wIn), field('奥行 m', dIn), field('向き（棟の方位 °）', rotIn), field('屋根', roofSel), field('軒高 m', eaveIn), field('最高高さ m', ridgeIn), field('勾配 寸', pitchIn)),
         h(
           'div',
           { class: 'row' },

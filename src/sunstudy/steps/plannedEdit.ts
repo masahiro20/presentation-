@@ -24,7 +24,7 @@ import { ALIGN_COLORS, dominantAngleDeg, pointInPolygon } from '../../sun/align'
 import {
   DEFAULT_PLANNED_PRESET,
   PLANNED_DEFAULT_LABEL,
-  PLANNED_EAVE_OVERHANG,
+  PITCH_MAX_SUN,
   PLANNED_LABEL_MAX,
   PLANNED_MAX_SIZE,
   PLANNED_MIN_HEIGHT,
@@ -35,9 +35,12 @@ import {
   houseFromPreset,
   isPlannedPresetId,
   isRoofType,
+  pitchRun,
+  pitchSun,
   plannedAxes,
   plannedFootprint,
   plannedPreset,
+  ridgeFromPitch,
   type PlannedHouse,
   type PlannedPreset,
   type PlannedPresetId,
@@ -153,7 +156,7 @@ export function roofPatch(h: PlannedHouse, roof: RoofType): Partial<PlannedHouse
   if (roof === h.roof) return {};
   if (roof === 'flat') return { roof, ridgeHeight: h.eaveHeight };
   if (h.roof === 'flat' || h.ridgeHeight - h.eaveHeight < 0.05) {
-    const run = roof === 'shed' ? h.depth + PLANNED_EAVE_OVERHANG : h.depth / 2;
+    const run = pitchRun({ roof, depth: h.depth }) ?? h.depth / 2;
     return { roof, ridgeHeight: r2(h.eaveHeight + run * ROOF_PITCH[roof]) };
   }
   return { roof };
@@ -171,8 +174,17 @@ export function heightPatch(h: PlannedHouse, key: 'eaveHeight' | 'ridgeHeight', 
   return x < h.eaveHeight ? { eaveHeight: x, ridgeHeight: x } : { ridgeHeight: x };
 }
 
+/**
+ * 勾配（寸 = 水平 10 に対する立ち上がり）を変える: 最高高さ = 軒高 + 水平距離 × 寸 ÷ 10（切妻・寄棟は奥行の半分、片流れは奥行 + 軒の出）。
+ * 陸屋根・負の値・数でなければ null。0 寸は最高高さ = 軒高
+ */
+export function pitchPatch(h: PlannedHouse, sun: number): Partial<PlannedHouse> | null {
+  const r = ridgeFromPitch(h, sun);
+  return r == null ? null : { ridgeHeight: r };
+}
+
 /** 編集欄の項目 */
-export type PlannedField = 'label' | 'preset' | 'width' | 'depth' | 'rotDeg' | 'eaveHeight' | 'ridgeHeight' | 'roof';
+export type PlannedField = 'label' | 'preset' | 'width' | 'depth' | 'rotDeg' | 'eaveHeight' | 'ridgeHeight' | 'pitch' | 'roof';
 
 /** 入力欄の値（文字列）→ 変更（受け付けない値は null。入力欄は今の値に戻す） */
 export function plannedFieldPatch(h: PlannedHouse, key: PlannedField, raw: string): Partial<PlannedHouse> | null {
@@ -184,6 +196,7 @@ export function plannedFieldPatch(h: PlannedHouse, key: PlannedField, raw: strin
   if (!Number.isFinite(v)) return null;
   if (key === 'width' || key === 'depth') return v > 0 ? { [key]: Math.max(PLANNED_MIN_SIZE, Math.min(PLANNED_MAX_SIZE, v)) } : null;
   if (key === 'rotDeg') return rotatedPatch({ rotDeg: v }, 0);
+  if (key === 'pitch') return pitchPatch(h, v);
   return heightPatch(h, key, v);
 }
 
@@ -198,9 +211,9 @@ export function plannedSizeText(h: Pick<PlannedHouse, 'width' | 'depth'>): strin
   return `${fmtM(h.width)}×${fmtM(h.depth)} m`;
 }
 
-/** 高さの文（「軒高 6 m／最高 8.5 m」、陸屋根は「高さ 9.5 m」） */
-export function plannedHeightText(h: Pick<PlannedHouse, 'roof' | 'eaveHeight' | 'ridgeHeight'>): string {
-  return h.roof === 'flat' ? `高さ ${fmtM(h.ridgeHeight)} m` : `軒高 ${fmtM(h.eaveHeight)} m／最高 ${fmtM(h.ridgeHeight)} m`;
+/** 高さの文（「軒高 6 m／最高 8.5 m・6.8 寸」、陸屋根は「高さ 9.5 m」） */
+export function plannedHeightText(h: Pick<PlannedHouse, 'roof' | 'depth' | 'eaveHeight' | 'ridgeHeight'>): string {
+  return h.roof === 'flat' ? `高さ ${fmtM(h.ridgeHeight)} m` : `軒高 ${fmtM(h.eaveHeight)} m／最高 ${fmtM(h.ridgeHeight)} m・${fmtM(pitchSun(h))} 寸`;
 }
 
 /** プリセットの選択肢の文（「2 階建て（切妻） 9.1×7.3 m・最高 8.5 m」） */
@@ -460,6 +473,7 @@ export function createPlannedEdit(opts: PlannedEditOptions): PlannedEdit {
     const rIn = numIn(0, 359.99, 1, '棟（長手）の方位。真北から時計回り（0 = 南北、90 = 東西）');
     const eIn = numIn(PLANNED_MIN_HEIGHT, PLANNED_MAX_SIZE, 0.1, '壁の線での屋根の上面の高さ（片流れは低い側）');
     const hIn = numIn(PLANNED_MIN_HEIGHT, PLANNED_MAX_SIZE, 0.1, 'いちばん高い所（棟・片流れの高い側）');
+    const pIn = numIn(0, PITCH_MAX_SUN, 0.5, '屋根の勾配（寸 = 水平 10 に対する立ち上がり。4 寸 ≈ 21.8°）。入れると最高高さを計算します');
     const roofSel = h('select', { class: 'planned-roof' }, ...ROOF_TYPES.map((r) => h('option', { value: r }, ROOF_LABEL[r]))) as HTMLSelectElement;
     const inputs: [PlannedField, HTMLInputElement | HTMLSelectElement][] = [
       ['label', nameIn],
@@ -469,6 +483,7 @@ export function createPlannedEdit(opts: PlannedEditOptions): PlannedEdit {
       ['rotDeg', rIn],
       ['eaveHeight', eIn],
       ['ridgeHeight', hIn],
+      ['pitch', pIn],
       ['roof', roofSel],
     ];
     /** 今の値を入力欄に書く（入力中の欄は飛ばす。force の欄は入力中でも書く = 反映した直後・受け付けなかった値を戻す） */
@@ -486,11 +501,13 @@ export function createPlannedEdit(opts: PlannedEditOptions): PlannedEdit {
         rotDeg: fmtM(p.rotDeg),
         eaveHeight: fmtM(p.eaveHeight),
         ridgeHeight: fmtM(p.ridgeHeight),
+        pitch: fmtM(pitchSun(p)),
         roof: p.roof,
       };
       for (const [k, el] of inputs) if (el === force || document.activeElement !== el || k === 'preset' || k === 'roof') el.value = val[k];
       // 陸屋根は軒高 = 最高高さ（軒高は最高高さと同じ値で動く）
       eIn.disabled = p.roof === 'flat';
+      pIn.disabled = p.roof === 'flat';
     };
     for (const [k, el] of inputs)
       el.addEventListener('change', () => {
@@ -511,9 +528,11 @@ export function createPlannedEdit(opts: PlannedEditOptions): PlannedEdit {
         field('幅 m', wIn),
         field('奥行 m', dIn),
         field('向き °', rIn),
+        field('屋根', roofSel),
         field('軒高 m', eIn),
         field('最高高さ m', hIn),
-        field('屋根', roofSel),
+        field('勾配 寸', pIn),
+        h('div', { class: 'hint span-rest' }, '勾配を入れると最高高さを計算します（切妻・寄棟は奥行の半分、片流れは奥行＋軒の出が水平距離）。最高高さを直すと勾配が変わります'),
       ),
       h(
         'div',

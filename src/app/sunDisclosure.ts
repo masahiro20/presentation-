@@ -10,7 +10,7 @@
 import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord } from '../sun/context';
 import type { NeighborBuilding } from '../sun/geo';
 
-export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
+export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { plateau: 'PLATEAU（国土交通省）', gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
 const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
 
 /** 建物の名前（OSM の名前・手動の隣家・出典） */

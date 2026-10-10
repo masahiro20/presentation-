@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { metersPerDegree } from '../sun/geo';
 import type { AerialImage } from '../sun/geo';
 import type { PlannedHouse } from '../sun/plannedHouse';
+import type { NeighborMesh, PlateauAttrs, PlateauDatasetInfo, QuantizedMesh } from '../sun/plateau/types';
 
 export type { AerialImage };
 
@@ -222,7 +223,20 @@ export interface Neighbor {
    * study.plannedEnabled が false の間は 3D・影・解析に入れない（hidden には触らない）
    */
   planned?: PlannedHouse;
+  /** 穴（中庭など）。外周と同じピンからの東・北 (m) */
+  holes?: EN[][];
+  /**
+   * 実形状（PLATEAU）。建物の anchor（plateau.anchor）基準の非インデックス三角形（x=東, y=上, z=−北 [m]。y=0 = 足元）。
+   * ピン移動で頂点は書き換えず、描くとき（buildNeighborMeshes）に frameToLocal(pin, anchor) を足す。保存は meshQ（SavedNeighbor）。
+   * 無ければ ring を押し出して描く
+   */
+  mesh?: NeighborMesh;
+  /** PLATEAU の属性（出典・年度・LOD・実測の最高高さ・地盤 T.P. など。保存される） */
+  plateau?: PlateauAttrs;
 }
+
+/** 保存形の周辺建物: mesh は Int16 cm の meshQ にして同梱する（無ければ ring の押し出しで描く） */
+export type SavedNeighbor = Omit<Neighbor, 'mesh'> & { meshQ?: QuantizedMesh };
 
 /**
  * 周辺建物の隠し方:
@@ -263,7 +277,7 @@ export interface NeighborOverride {
 }
 
 export const NEIGHBOR_SOURCE_LABEL: Record<NeighborSource, string> = {
-  plateau: 'PLATEAU（国土交通省 3D都市モデル・実測の高さ）',
+  plateau: 'PLATEAU（国土交通省 3D都市モデル・実測の高さ・形状）',
   gsi: '国土地理院 地図データ（建物の種類から高さを推定）',
   osm: 'OpenStreetMap',
   manual: '手動で追加',
@@ -341,10 +355,12 @@ export interface ProjectEnv {
   grid: { west: number; east: number; south: number; north: number; nx: number; ny: number; source: string; resolution: number; valuesB64: string } | null;
   /** 航空写真（JPEG dataURL、長辺 2048px 以下）と範囲 */
   aerial: { dataUrl: string; west: number; east: number; south: number; north: number; attribution: string } | null;
-  /** 自動取得した周辺建物 */
-  neighbors: Neighbor[];
+  /** 自動取得した周辺建物（mesh は meshQ に量子化して保存） */
+  neighbors: SavedNeighbor[];
   neighborSources: NeighborSource[];
   neighborNotes: string[];
   /** 遠方の地形による地平線（方位 1° ごとの高度角） */
   horizon?: { elevDeg: number[]; source: string; radiusKm: number } | null;
+  /** PLATEAU の出典（使ったデータセットと索引の生成日時。復元時に再取得せず出典行を再現する） */
+  plateau?: { datasets: PlateauDatasetInfo[]; indexGenerated: string };
 }

@@ -3,6 +3,7 @@
  */
 import { decodeMvt } from './mvt';
 import type { PlannedHouse } from './plannedHouse';
+import type { NeighborMesh, PlateauAttrs } from './plateau/types';
 
 export interface SiteLocation {
   lat: number;
@@ -411,7 +412,9 @@ export interface NeighborBuilding {
   /** 中心からの東・北 (m) のリング */
   ring: { e: number; n: number }[];
   height: number;
-  source: 'gsi' | 'osm' | 'manual';
+  source: 'plateau' | 'gsi' | 'osm' | 'manual';
+  /** 高さの根拠（無ければ source から: plateau = measured, gsi = estimated, osm = height あり measured, manual = manual） */
+  heightKind?: 'measured' | 'estimated' | 'manual';
   label?: string;
   /** 一覧の中で一意の番号（取得・追加したときに SunContext が付ける。手動の隣家はこれがキーになる） */
   id?: string;
@@ -422,6 +425,15 @@ export interface NeighborBuilding {
    * label 既定「想定の家」。SunContext.addPlanned / updatePlanned / removePlanned で扱う
    */
   planned?: PlannedHouse;
+  /** 穴（中庭など）。外周と同じ座標 */
+  holes?: { e: number; n: number }[][];
+  /**
+   * 実形状（PLATEAU）。建物の anchor（plateau.anchor）基準の非インデックス三角形（x=東, y=上, z=−北 [m]。y=0 = 足元）。
+   * buildNeighbors で toLocal(anchor, siteLatLon) の分を平行移動して置く。無ければ ring を押し出す
+   */
+  mesh?: NeighborMesh;
+  /** PLATEAU の属性（出典・年度・LOD・実測の最高高さなど） */
+  plateau?: PlateauAttrs;
 }
 
 /** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */

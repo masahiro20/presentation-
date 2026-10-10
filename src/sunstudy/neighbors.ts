@@ -13,7 +13,7 @@
  * （隣のタイルと同じ建物が二重に出ないように。境界をまたぐ建物は 2 片に分かれるが、合わせると元の形になる）。
  */
 import * as THREE from 'three';
-import { pointInPolygon } from '../core/geometry';
+import { bboxOf, cleanRing, coverageRatio, fillGapsWith, pointInRing, ringArea, ringCenter, samplePoints, type BBoxEN } from '../sun/footprint';
 import { fetchOsmBuildings, lonLatToTile, metersPerDegree, tileToLonLat, toLocal } from '../sun/geo';
 import { decodeMvt } from '../sun/mvt';
 import { PLANNED_COLORS, buildPlannedHouseGeometry, plannedFootprint, syncPlannedHouse } from '../sun/plannedHouse';
@@ -32,8 +32,6 @@ export type EN = { e: number; n: number };
 export type NeighborEx = Neighbor & {
   /** 150 m より遠い建物（高層で冬の朝夕に影が届くので残したもの）。屋上に航空写真は貼らない */
   far?: boolean;
-  /** 穴（中庭など）。外周と同じ e/n 座標 */
-  holes?: EN[][];
 };
 
 export const PLATEAU_TILE_URL = (z: number, x: number, y: number) => `https://indigo-lab.github.io/plateau-lod2-mvt/${z}/${x}/${y}.pbf`;
@@ -54,46 +52,10 @@ export const GSI_OVERLAP_MAX = 0.3;
 const NETWORK_ERROR = '周辺建物を取得できませんでした（インターネット接続を確認してください）';
 
 // ---------------------------------------------------------------------------
-// 幾何のユーティリティ
+// 幾何のユーティリティ（リングの基本は src/sun/footprint.ts に移した。既存の呼び出しのためここから再 export）
 // ---------------------------------------------------------------------------
 
-/** リングの中心（頂点の平均） */
-export function ringCenter(ring: EN[]): EN {
-  if (!ring.length) return { e: 0, n: 0 };
-  let e = 0;
-  let n = 0;
-  for (const p of ring) {
-    e += p.e;
-    n += p.n;
-  }
-  return { e: e / ring.length, n: n / ring.length };
-}
-
-/** 符号付き面積（e/n 座標、反時計回りが正） */
-export function ringArea(ring: EN[]): number {
-  let s = 0;
-  for (let i = 0; i < ring.length; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % ring.length];
-    s += a.e * b.n - b.e * a.n;
-  }
-  return s / 2;
-}
-
-/** 閉じる重複点と 0.05 m 未満で続く点を取り除く */
-export function cleanRing(ring: EN[], minStep = 0.05): EN[] {
-  const out: EN[] = [];
-  for (const p of ring) {
-    const last = out[out.length - 1];
-    if (last && Math.hypot(p.e - last.e, p.n - last.n) < minStep) continue;
-    out.push(p);
-  }
-  while (out.length > 1 && Math.hypot(out[0].e - out[out.length - 1].e, out[0].n - out[out.length - 1].n) < minStep) out.pop();
-  return out;
-}
-
-const toXY = (p: EN) => ({ x: p.e, y: p.n });
-const inRing = (p: EN, ring: EN[]) => pointInPolygon(toXY(p), ring.map(toXY));
+export { bboxOf, cleanRing, coverageRatio, fillGapsWith, ringArea, ringCenter, samplePoints, type BBoxEN };
 
 /** 線分 ab と cd が交わるか（端点を含む） */
 function segmentsCross(a: EN, b: EN, c: EN, d: EN): boolean {
@@ -111,62 +73,14 @@ export function ringsOverlap(a: EN[], b: EN[]): boolean {
   const ba = bboxOf(a);
   const bb = bboxOf(b);
   if (ba.maxE < bb.minE || bb.maxE < ba.minE || ba.maxN < bb.minN || bb.maxN < ba.minN) return false;
-  if (a.some((p) => inRing(p, b)) || b.some((p) => inRing(p, a))) return true;
-  if (inRing(ringCenter(a), b) || inRing(ringCenter(b), a)) return true;
+  if (a.some((p) => pointInRing(p, b)) || b.some((p) => pointInRing(p, a))) return true;
+  if (pointInRing(ringCenter(a), b) || pointInRing(ringCenter(b), a)) return true;
   for (let i = 0; i < a.length; i++) {
     const a0 = a[i];
     const a1 = a[(i + 1) % a.length];
     for (let j = 0; j < b.length; j++) if (segmentsCross(a0, a1, b[j], b[(j + 1) % b.length])) return true;
   }
   return false;
-}
-
-interface BBoxEN {
-  minE: number;
-  maxE: number;
-  minN: number;
-  maxN: number;
-}
-
-function bboxOf(ring: EN[]): BBoxEN {
-  const b = { minE: Infinity, maxE: -Infinity, minN: Infinity, maxN: -Infinity };
-  for (const p of ring) {
-    if (p.e < b.minE) b.minE = p.e;
-    if (p.e > b.maxE) b.maxE = p.e;
-    if (p.n < b.minN) b.minN = p.n;
-    if (p.n > b.maxN) b.maxN = p.n;
-  }
-  return b;
-}
-
-/** 建物の重なり判定に使うサンプル点: 頂点 + 中心 + 内部の格子点 */
-export function samplePoints(ring: EN[], grid = 4): EN[] {
-  const pts: EN[] = [...ring, ringCenter(ring)];
-  const b = bboxOf(ring);
-  for (let i = 0; i < grid; i++)
-    for (let j = 0; j < grid; j++) {
-      const p = { e: b.minE + ((i + 0.5) / grid) * (b.maxE - b.minE), n: b.minN + ((j + 0.5) / grid) * (b.maxN - b.minN) };
-      if (inRing(p, ring)) pts.push(p);
-    }
-  return pts;
-}
-
-/** ring のサンプル点のうち、polys のどれかの内側に入る割合 (0..1) */
-export function coverageRatio(ring: EN[], polys: { ring: EN[]; bbox: BBoxEN }[]): number {
-  const pts = samplePoints(ring);
-  if (!pts.length) return 0;
-  let inside = 0;
-  for (const p of pts) {
-    for (const poly of polys) {
-      const bb = poly.bbox;
-      if (p.e < bb.minE || p.e > bb.maxE || p.n < bb.minN || p.n > bb.maxN) continue;
-      if (inRing(p, poly.ring)) {
-        inside++;
-        break;
-      }
-    }
-  }
-  return inside / pts.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,9 +313,7 @@ function dedupeById<T extends Neighbor>(list: T[]): T[] {
 
 /** PLATEAU のポリゴンと重なる国土地理院の建物を除く（PLATEAU に無い建物 = 新しい建物・LOD0 のみの建物だけ残す） */
 export function fillGapsWithGsi(plateau: Neighbor[], gsi: Neighbor[], maxOverlap = GSI_OVERLAP_MAX): Neighbor[] {
-  if (!plateau.length) return gsi;
-  const polys = plateau.map((p) => ({ ring: p.ring, bbox: bboxOf(p.ring) }));
-  return gsi.filter((g) => coverageRatio(g.ring, polys) < maxOverlap);
+  return fillGapsWith(plateau, gsi, maxOverlap);
 }
 
 /**

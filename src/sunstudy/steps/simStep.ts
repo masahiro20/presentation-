@@ -27,7 +27,7 @@ import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
 import { addPlannedHouse, analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, plannedHouses, removePlannedHouse, setHideDefaults, setNeighborsHidden, setPlannedEnabled, study, uid, updatePlannedHouse, viewOnlyNeighbors, visibleNeighbors } from '../state';
-import { PLANNED_PRESETS, houseFromPreset, isPlannedPresetId, plannedPreset, type PlannedPresetId } from '../../sun/plannedHouse';
+import { PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, clampHouse, isPlannedPresetId, isRoofType, plannedPreset, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
@@ -1022,7 +1022,7 @@ export const simStep: StudyStep = {
     const placeBtn = h('button', { class: 'btn sm' }, '＋ クリックで測定点を置く') as HTMLButtonElement;
     const setPlacing = (p: boolean) => {
       if (p && hide.active()) hide.setActive(false);
-      if (p && plannedArm) setPlannedArm(null);
+      if (p && plannedArm) setPlannedArm(false);
       placing = p;
       placeBtn.classList.toggle('dark', p);
       placeBtn.textContent = p ? '測定点を置くのをやめる（Esc）' : '＋ クリックで測定点を置く';
@@ -1034,26 +1034,74 @@ export const simStep: StudyStep = {
       if (placing) setPlacing(false);
     });
 
-    // ---- 想定の家（未建築の隣家）: プリセットを選び、地面をクリックして置く。分譲地でまだ建っていない隣家の想定 ----
-    const plannedSel = h('select', null, PLANNED_PRESETS.map((pr, i) => h('option', { value: pr.id, selected: i === 1 }, `${pr.label} ${pr.width}×${pr.depth} m・高さ ${pr.ridgeHeight} m`))) as HTMLSelectElement;
-    const plannedBtn = h('button', { class: 'btn sm' }, '＋ クリックで想定の家を置く') as HTMLButtonElement;
-    const plannedList = h('div');
-    const plannedNote = h('p', { class: 'hint' }, '地面をクリックした所に、計画の建物と平行に置きます。置いた家は影・日照の解析・日影図に入ります（注記に「想定」と出ます）。');
-    const setPlannedArm = (id: PlannedPresetId | null) => {
-      if (id && hide.active()) hide.setActive(false);
-      if (id && placing) setPlacing(false);
-      plannedArm = id;
-      plannedBtn.classList.toggle('dark', !!id);
-      plannedBtn.textContent = id ? '想定の家を置くのをやめる（Esc）' : '＋ クリックで想定の家を置く';
-      canvas.style.cursor = id ? 'crosshair' : scene.navMode === 'pan' ? 'grab' : '';
-      setNote(id ? `地面をクリックすると「${plannedPreset(id).label}」を置きます（続けて置けます・Esc で終了）` : null);
+    // ---- 想定の家（未建築の隣家）: 寸法・軒高・屋根の形・勾配を自由に決めて、地面をクリックして置く。分譲地でまだ建っていない隣家の想定 ----
+    /** 勾配（寸: 10 に対する立ち上がり）から最高高さを出す。切妻・寄棟は奥行の半分、片流れは奥行の全体で上がる */
+    const ridgeFrom = (roof: RoofType, depth: number, eave: number, sun: number) => (roof === 'flat' ? eave : roof === 'shed' ? eave + (depth * sun) / 10 : eave + ((depth / 2) * sun) / 10);
+    /** 既存の家の最高高さから勾配（寸）を逆算（0.5 寸刻み） */
+    const sunFrom = (ph: PlannedHouse) => {
+      if (ph.roof === 'flat') return 0;
+      const run = ph.roof === 'shed' ? ph.depth : ph.depth / 2;
+      return Math.max(0, Math.round(((ph.ridgeHeight - ph.eaveHeight) / run) * 10 * 2) / 2);
     };
-    plannedBtn.addEventListener('click', () => setPlannedArm(plannedArm ? null : isPlannedPresetId(plannedSel.value) ? plannedSel.value : 'gable2'));
+    const plannedSel = h('select', null, h('option', { value: '' }, 'プリセットから入れる…'), PLANNED_PRESETS.map((pr) => h('option', { value: pr.id }, `${pr.label} ${pr.width}×${pr.depth} m`))) as HTMLSelectElement;
+    const wIn = num(9.1, 1, 200, 0.1);
+    const dIn = num(7.3, 1, 200, 0.1);
+    const eIn = num(6.0, 0.5, 100, 0.1);
+    const roofSel = h('select', null, ROOF_TYPES.map((r) => h('option', { value: r, selected: r === 'gable' }, ROOF_LABEL[r]))) as HTMLSelectElement;
+    const sunIn = num(4, 0, 15, 0.5);
+    const ridgeOut = h('span', { class: 'meta' });
+    const formValues = (): Partial<PlannedHouse> => {
+      const roof = isRoofType(roofSel.value) ? roofSel.value : 'gable';
+      const width = +wIn.value;
+      const depth = +dIn.value;
+      const eaveHeight = +eIn.value;
+      return { width, depth, eaveHeight, roof, ridgeHeight: ridgeFrom(roof, depth, eaveHeight, +sunIn.value) };
+    };
+    const refreshRidge = () => {
+      const v = clampHouse(formValues());
+      sunIn.disabled = v.roof === 'flat';
+      ridgeOut.textContent = v.roof === 'flat' ? `最高高さ ${v.ridgeHeight.toFixed(2)} m（陸屋根）` : `最高高さ ${v.ridgeHeight.toFixed(2)} m（軒 ${v.eaveHeight.toFixed(1)} m + ${v.roof === 'shed' ? '奥行' : '奥行の半分'} × ${(+sunIn.value).toFixed(1)} 寸）`;
+    };
+    for (const el of [wIn, dIn, eIn, roofSel, sunIn]) el.addEventListener('input', refreshRidge);
+    const fillFromPreset = (id: PlannedPresetId) => {
+      const pr = plannedPreset(id);
+      wIn.value = String(pr.width);
+      dIn.value = String(pr.depth);
+      eIn.value = String(pr.eaveHeight);
+      roofSel.value = pr.roof;
+      sunIn.value = String(sunFrom({ ...pr, id: '', ce: 0, cn: 0, rotDeg: 0 }));
+      refreshRidge();
+    };
     plannedSel.addEventListener('change', () => {
-      if (plannedArm && isPlannedPresetId(plannedSel.value)) setPlannedArm(plannedSel.value);
+      if (isPlannedPresetId(plannedSel.value)) fillFromPreset(plannedSel.value);
     });
+    const fillFromHouse = (ph: PlannedHouse) => {
+      wIn.value = String(ph.width);
+      dIn.value = String(ph.depth);
+      eIn.value = String(ph.eaveHeight);
+      roofSel.value = ph.roof;
+      sunIn.value = String(sunFrom(ph));
+      refreshRidge();
+    };
+    refreshRidge();
+    /** 一覧で「編集」した家の id（「この家に適用」の対象） */
+    let editingId: string | null = null;
+    const plannedBtn = h('button', { class: 'btn sm' }, '＋ クリックで想定の家を置く') as HTMLButtonElement;
+    const applyBtn = h('button', { class: 'btn sm primary', style: 'display:none' }, '編集中の家に適用') as HTMLButtonElement;
+    const plannedList = h('div');
+    const plannedNote = h('p', { class: 'hint' }, '寸法・軒高・屋根の形・勾配を決めて、地面をクリックした所に置きます（計画の建物と平行）。置いた家は影・日照の解析・日影図に入ります（注記に「想定」と出ます）。一覧の「編集」で同じ欄から直せます。');
+    const setPlannedArm = (on: boolean) => {
+      if (on && hide.active()) hide.setActive(false);
+      if (on && placing) setPlacing(false);
+      plannedArm = on ? 'gable2' : null;
+      plannedBtn.classList.toggle('dark', on);
+      plannedBtn.textContent = on ? '想定の家を置くのをやめる（Esc）' : '＋ クリックで想定の家を置く';
+      canvas.style.cursor = on ? 'crosshair' : scene.navMode === 'pan' ? 'grab' : '';
+      setNote(on ? '地面をクリックすると、上の欄の寸法で想定の家を置きます（続けて置けます・Esc で終了）' : null);
+    };
+    plannedBtn.addEventListener('click', () => setPlannedArm(!plannedArm));
     disposers.push(() => {
-      if (plannedArm) setPlannedArm(null);
+      if (plannedArm) setPlannedArm(false);
     });
     const placePlanned = (e: PointerEvent) => {
       if (!plannedArm) return;
@@ -1065,9 +1113,19 @@ export const simStep: StudyStep = {
       const en = worldToEN(hit.point);
       // 計画の建物と平行に（図面の横方向 = 真北から headingDeg + 90°）
       const rot = ((study.placement.headingDeg + 90) % 360 + 360) % 360;
-      const nb = addPlannedHouse(houseFromPreset(plannedArm, en.e, en.n, rot));
-      toast(`想定の家「${nb.planned.label ?? plannedPreset(plannedArm).label}」を置きました（クリックで続けて置けます。一覧で回転・削除）`, 'ok');
+      const v = formValues();
+      const nb = addPlannedHouse({ ...v, ce: en.e, cn: en.n, rotDeg: rot, label: `想定の家（${ROOF_LABEL[v.roof ?? 'gable']}・${(v.width ?? 0).toFixed(1)}×${(v.depth ?? 0).toFixed(1)} m）` });
+      toast(`${nb.planned.label ?? '想定の家'} を置きました（クリックで続けて置けます）`, 'ok');
     };
+    applyBtn.addEventListener('click', () => {
+      if (!editingId) return;
+      const v = formValues();
+      const okUpd = updatePlannedHouse(editingId, { ...v, label: `想定の家（${ROOF_LABEL[v.roof ?? 'gable']}・${(v.width ?? 0).toFixed(1)}×${(v.depth ?? 0).toFixed(1)} m）` });
+      toast(okUpd ? '想定の家を直しました' : 'その家はもうありません', okUpd ? 'ok' : 'error');
+      editingId = null;
+      applyBtn.style.display = 'none';
+      renderPlannedList();
+    });
     const renderPlannedList = () => {
       clear(plannedList);
       const list = plannedHouses();
@@ -1082,20 +1140,48 @@ export const simStep: StudyStep = {
         const dn = ph.cn - cEN.n;
         const dist = Math.hypot(de, dn);
         const br = ((Math.atan2(de, dn) * 180) / Math.PI + 360) % 360;
+        const editing = editingId === n.id;
         plannedList.appendChild(
           h(
             'div',
-            { class: 'nb-row' },
-            h('div', null, h('b', null, ph.label ?? plannedPreset(ph.preset ?? 'gable2').label), h('span', { class: 'meta' }, ` ${ph.width.toFixed(1)}×${ph.depth.toFixed(1)} m・軒 ${ph.eaveHeight.toFixed(1)} m・最高 ${ph.ridgeHeight.toFixed(1)} m・${bearingName(br)}側 約 ${Math.round(dist)} m`)),
+            { class: `nb-row ${editing ? 'done' : ''}` },
+            h('div', null, h('b', null, ph.label ?? '想定の家'), h('span', { class: 'meta' }, ` ${ROOF_LABEL[ph.roof]} ${sunFrom(ph) ? `${sunFrom(ph)} 寸` : ''}・${ph.width.toFixed(1)}×${ph.depth.toFixed(1)} m・軒 ${ph.eaveHeight.toFixed(1)} m・最高 ${ph.ridgeHeight.toFixed(2)} m・${bearingName(br)}側 約 ${Math.round(dist)} m`)),
             h(
               'div',
               { class: 'btn-row', style: 'margin:4px 0' },
+              h(
+                'button',
+                {
+                  class: `btn sm ${editing ? 'dark' : ''}`,
+                  title: '上の欄にこの家の寸法を入れて直す',
+                  onclick: () => {
+                    editingId = n.id;
+                    fillFromHouse(ph);
+                    applyBtn.style.display = '';
+                    renderPlannedList();
+                  },
+                },
+                '編集',
+              ),
               h('button', { class: 'btn sm', title: '上から見て時計回りに 90°', onclick: () => updatePlannedHouse(n.id, { rotDeg: (ph.rotDeg + 90) % 360 }) }, '↻ 90°'),
-              h('button', { class: 'btn sm', title: '左右に 1 m ずらす', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce - 1 }) }, '← 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce + 1 }) }, '→ 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn + 1 }) }, '↑ 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn - 1 }) }, '↓ 1m'),
-              h('button', { class: 'btn sm ghost', onclick: () => removePlannedHouse(n.id) }, '削除'),
+              h('button', { class: 'btn sm', title: '西へ 1 m', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce - 1 }) }, '← 1m'),
+              h('button', { class: 'btn sm', title: '東へ 1 m', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce + 1 }) }, '→ 1m'),
+              h('button', { class: 'btn sm', title: '北へ 1 m', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn + 1 }) }, '↑ 1m'),
+              h('button', { class: 'btn sm', title: '南へ 1 m', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn - 1 }) }, '↓ 1m'),
+              h(
+                'button',
+                {
+                  class: 'btn sm ghost',
+                  onclick: () => {
+                    if (editingId === n.id) {
+                      editingId = null;
+                      applyBtn.style.display = 'none';
+                    }
+                    removePlannedHouse(n.id);
+                  },
+                },
+                '削除',
+              ),
             ),
           ),
         );
@@ -1104,7 +1190,10 @@ export const simStep: StudyStep = {
     const plannedEnabledCb = h('input', { type: 'checkbox', checked: study.plannedEnabled, onchange: (e: Event) => setPlannedEnabled((e.target as HTMLInputElement).checked) });
     neighborSection.appendChild(h('div', { class: 'field-label', style: 'margin-top:12px' }, '想定の家（未建築の隣家）'));
     neighborSection.appendChild(plannedNote);
-    neighborSection.appendChild(h('div', { class: 'btn-row', style: 'align-items:center' }, plannedSel, plannedBtn));
+    neighborSection.appendChild(h('div', { class: 'field', style: 'margin:0 0 6px' }, plannedSel));
+    neighborSection.appendChild(h('div', { class: 'manual-grid' }, field('幅 m', wIn), field('奥行 m', dIn), field('軒高 m', eIn), field('屋根', roofSel), field('勾配 寸', sunIn)));
+    neighborSection.appendChild(h('div', { style: 'margin:4px 0 6px' }, ridgeOut));
+    neighborSection.appendChild(h('div', { class: 'btn-row' }, plannedBtn, applyBtn));
     neighborSection.appendChild(plannedList);
     neighborSection.appendChild(h('label', { class: 'check' }, plannedEnabledCb, '想定の建物を含める（影・解析）'));
     renderPlannedList();
@@ -1599,7 +1688,7 @@ export const simStep: StudyStep = {
       } else if (e.key === 'Escape') {
         if (isPresenting()) setPresenting(false);
         if (placing) setPlacing(false);
-        if (plannedArm) setPlannedArm(null);
+        if (plannedArm) setPlannedArm(false);
         if (hide.active()) hide.setActive(false);
         closePop();
       }

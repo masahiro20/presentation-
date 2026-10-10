@@ -2,7 +2,8 @@
  * ステップ 3「日照シミュレーション」
  *  ステージ: 時刻バー（再生・日付チップ）、太陽バッジ、視点ボタン、前提チップ、出典、隣家の編集ポップアップ、
  *          建物を選んで隠すときの操作バー（neighborHide.ts）
- *  サイド: 建設地と建物／表示／周辺建物の修正（選んで隠す（計算から除外／表示だけ隠す・理由）・隠した建物の一覧・要確認の隣家・手動追加）／
+ *  サイド: 建設地と建物／表示／周辺建物の修正（選んで隠す（計算から除外／表示だけ隠す・理由）・隠した建物の一覧・要確認の隣家・手動追加・
+ *          想定の家（未建築の隣家。plannedEdit.ts: 地面をクリックで置く・ドラッグで移動・クリックで編集欄・R で回転・Delete で削除））／
  *          日当たりの解析（地面・面の日照時間マップ、測定点、日影図（規制値のプリセット・時刻日影線の 30 分間隔・周辺建物の扱いの脚注）、
  *          季節比較の撮影、タイムラプス動画、レポート・プロジェクト保存）
  *
@@ -26,13 +27,13 @@ import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport 
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
-import { addPlannedHouse, analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, plannedHouses, removePlannedHouse, setHideDefaults, setNeighborsHidden, setPlannedEnabled, study, uid, updatePlannedHouse, viewOnlyNeighbors, visibleNeighbors } from '../state';
-import { PLANNED_PRESETS, houseFromPreset, isPlannedPresetId, plannedPreset, type PlannedPresetId } from '../../sun/plannedHouse';
+import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
 import type { Neighbor, NeighborSource } from '../types';
 import { createNeighborHide, hideOptionsControl, hideToastText } from './neighborHide';
+import { createPlannedEdit } from './plannedEdit';
 
 // ---------------------------------------------------------------------------
 // モジュールの状態（ステップを出入りしても残す）
@@ -816,6 +817,7 @@ export const simStep: StudyStep = {
         closePop();
         if (!onOff) return;
         if (placing) setPlacing(false);
+        planned.stop();
         // 周辺建物の表示を切っていたら入れる（見えない建物は選べない）
         if (!study.show.neighbors) {
           study.show.neighbors = true;
@@ -825,10 +827,35 @@ export const simStep: StudyStep = {
         }
       },
     });
-    afterEnvRebuild = () => hide.refresh();
+    // 想定の家（未建築の隣家）: 置く・選んで直す・ドラッグで動かす（建物を選んで隠す・測定点の配置とは排他）
+    const planned = createPlannedEdit({
+      scene,
+      stage,
+      center: () => center,
+      blocked: () => hide.active() || placing,
+      setNote,
+      onSelect: closePop,
+      onArm: () => {
+        closePop();
+        if (hide.active()) hide.setActive(false);
+        if (placing) setPlacing(false);
+        // 周辺建物の表示を切っていたら入れる（置いた家が見えない）
+        if (!study.show.neighbors) {
+          study.show.neighbors = true;
+          const cb = neighborsCheck.querySelector('input');
+          if (cb) cb.checked = true;
+          applyShow();
+        }
+      },
+    });
+    afterEnvRebuild = () => {
+      hide.refresh();
+      planned.refresh();
+    };
     disposers.push(() => {
       afterEnvRebuild = null;
       hide.dispose();
+      planned.dispose();
     });
     neighborSection = section(
       '周辺建物の修正',
@@ -844,16 +871,17 @@ export const simStep: StudyStep = {
       h('div', { class: 'field-label', style: 'margin-top:12px' }, '隣家を手動で追加（建物の中心からの方向・距離）'),
       h('div', { class: 'manual-grid' }, field('方向', dirSel), field('距離 m', distIn), field('幅 m', widIn), field('奥行 m', depIn), field('高さ m', hgtIn)),
       h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: addManual }, '＋ 隣家を追加'), h('button', { class: 'btn sm ghost', onclick: clearManual }, '手動で追加した隣家をすべて消す')),
+      planned.el,
     );
     side.appendChild(neighborSection);
 
     // ---- 3D のクリック（隣家の選択・測定点の配置）。ドラッグ（回転・移動）と区別する ----
     let placing = false;
-    /** 想定の家を置くモード（置くプリセット）。null なら無効 */
-    let plannedArm: PlannedPresetId | null = null;
     let down: { x: number; y: number; t: number } | null = null;
     const pickNeighbor = (e: PointerEvent) => {
       closePop();
+      // 何も無い所・ほかの建物のクリックで想定の家の選択・編集欄を閉じる
+      planned.select(null);
       const hit = scene.pick(scene.ndcFromEvent(e), [scene.groups.neighbors]);
       const id = neighborIdOf(hit?.object);
       if (!id) return;
@@ -867,6 +895,11 @@ export const simStep: StudyStep = {
         down = null;
         return;
       }
+      // 想定の家を掴んだ（ドラッグで移動・クリックで編集欄）・置くモード中のクリックは plannedEdit で扱う
+      if (planned.onPointerDown(e)) {
+        down = null;
+        return;
+      }
       if (e.button !== 0) return;
       down = { x: e.clientX, y: e.clientY, t: performance.now() };
     };
@@ -875,13 +908,16 @@ export const simStep: StudyStep = {
         down = null;
         return;
       }
+      if (planned.onPointerUp(e)) {
+        down = null;
+        return;
+      }
       if (e.button !== 0 || !down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const dt = performance.now() - down.t;
       down = null;
       if (moved > 6 || dt > 700) return;
-      if (plannedArm) placePlanned(e);
-      else if (placing) placePoint(e);
+      if (placing) placePoint(e);
       else pickNeighbor(e);
     };
     canvas.addEventListener('pointerdown', onDown, true);
@@ -1022,7 +1058,7 @@ export const simStep: StudyStep = {
     const placeBtn = h('button', { class: 'btn sm' }, '＋ クリックで測定点を置く') as HTMLButtonElement;
     const setPlacing = (p: boolean) => {
       if (p && hide.active()) hide.setActive(false);
-      if (p && plannedArm) setPlannedArm(null);
+      if (p) planned.stop();
       placing = p;
       placeBtn.classList.toggle('dark', p);
       placeBtn.textContent = p ? '測定点を置くのをやめる（Esc）' : '＋ クリックで測定点を置く';
@@ -1034,81 +1070,6 @@ export const simStep: StudyStep = {
       if (placing) setPlacing(false);
     });
 
-    // ---- 想定の家（未建築の隣家）: プリセットを選び、地面をクリックして置く。分譲地でまだ建っていない隣家の想定 ----
-    const plannedSel = h('select', null, PLANNED_PRESETS.map((pr, i) => h('option', { value: pr.id, selected: i === 1 }, `${pr.label} ${pr.width}×${pr.depth} m・高さ ${pr.ridgeHeight} m`))) as HTMLSelectElement;
-    const plannedBtn = h('button', { class: 'btn sm' }, '＋ クリックで想定の家を置く') as HTMLButtonElement;
-    const plannedList = h('div');
-    const plannedNote = h('p', { class: 'hint' }, '地面をクリックした所に、計画の建物と平行に置きます。置いた家は影・日照の解析・日影図に入ります（注記に「想定」と出ます）。');
-    const setPlannedArm = (id: PlannedPresetId | null) => {
-      if (id && hide.active()) hide.setActive(false);
-      if (id && placing) setPlacing(false);
-      plannedArm = id;
-      plannedBtn.classList.toggle('dark', !!id);
-      plannedBtn.textContent = id ? '想定の家を置くのをやめる（Esc）' : '＋ クリックで想定の家を置く';
-      canvas.style.cursor = id ? 'crosshair' : scene.navMode === 'pan' ? 'grab' : '';
-      setNote(id ? `地面をクリックすると「${plannedPreset(id).label}」を置きます（続けて置けます・Esc で終了）` : null);
-    };
-    plannedBtn.addEventListener('click', () => setPlannedArm(plannedArm ? null : isPlannedPresetId(plannedSel.value) ? plannedSel.value : 'gable2'));
-    plannedSel.addEventListener('change', () => {
-      if (plannedArm && isPlannedPresetId(plannedSel.value)) setPlannedArm(plannedSel.value);
-    });
-    disposers.push(() => {
-      if (plannedArm) setPlannedArm(null);
-    });
-    const placePlanned = (e: PointerEvent) => {
-      if (!plannedArm) return;
-      const hit = scene.pick(scene.ndcFromEvent(e), [scene.groups.terrain]);
-      if (!hit) {
-        toast('地面（航空写真）の上をクリックしてください');
-        return;
-      }
-      const en = worldToEN(hit.point);
-      // 計画の建物と平行に（図面の横方向 = 真北から headingDeg + 90°）
-      const rot = ((study.placement.headingDeg + 90) % 360 + 360) % 360;
-      const nb = addPlannedHouse(houseFromPreset(plannedArm, en.e, en.n, rot));
-      toast(`想定の家「${nb.planned.label ?? plannedPreset(plannedArm).label}」を置きました（クリックで続けて置けます。一覧で回転・削除）`, 'ok');
-    };
-    const renderPlannedList = () => {
-      clear(plannedList);
-      const list = plannedHouses();
-      if (!list.length) {
-        plannedList.appendChild(h('p', { class: 'hint' }, 'まだ置いていません。'));
-        return;
-      }
-      const cEN = worldToEN(center);
-      for (const n of list) {
-        const ph = n.planned;
-        const de = ph.ce - cEN.e;
-        const dn = ph.cn - cEN.n;
-        const dist = Math.hypot(de, dn);
-        const br = ((Math.atan2(de, dn) * 180) / Math.PI + 360) % 360;
-        plannedList.appendChild(
-          h(
-            'div',
-            { class: 'nb-row' },
-            h('div', null, h('b', null, ph.label ?? plannedPreset(ph.preset ?? 'gable2').label), h('span', { class: 'meta' }, ` ${ph.width.toFixed(1)}×${ph.depth.toFixed(1)} m・軒 ${ph.eaveHeight.toFixed(1)} m・最高 ${ph.ridgeHeight.toFixed(1)} m・${bearingName(br)}側 約 ${Math.round(dist)} m`)),
-            h(
-              'div',
-              { class: 'btn-row', style: 'margin:4px 0' },
-              h('button', { class: 'btn sm', title: '上から見て時計回りに 90°', onclick: () => updatePlannedHouse(n.id, { rotDeg: (ph.rotDeg + 90) % 360 }) }, '↻ 90°'),
-              h('button', { class: 'btn sm', title: '左右に 1 m ずらす', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce - 1 }) }, '← 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { ce: ph.ce + 1 }) }, '→ 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn + 1 }) }, '↑ 1m'),
-              h('button', { class: 'btn sm', onclick: () => updatePlannedHouse(n.id, { cn: ph.cn - 1 }) }, '↓ 1m'),
-              h('button', { class: 'btn sm ghost', onclick: () => removePlannedHouse(n.id) }, '削除'),
-            ),
-          ),
-        );
-      }
-    };
-    const plannedEnabledCb = h('input', { type: 'checkbox', checked: study.plannedEnabled, onchange: (e: Event) => setPlannedEnabled((e.target as HTMLInputElement).checked) });
-    neighborSection.appendChild(h('div', { class: 'field-label', style: 'margin-top:12px' }, '想定の家（未建築の隣家）'));
-    neighborSection.appendChild(plannedNote);
-    neighborSection.appendChild(h('div', { class: 'btn-row', style: 'align-items:center' }, plannedSel, plannedBtn));
-    neighborSection.appendChild(plannedList);
-    neighborSection.appendChild(h('label', { class: 'check' }, plannedEnabledCb, '想定の建物を含める（影・解析）'));
-    renderPlannedList();
-    disposers.push(on('neighbors', renderPlannedList));
     const placePoint = (e: PointerEvent) => {
       const hit = scene.pick(scene.ndcFromEvent(e), [scene.groups.building, scene.groups.terrain]);
       if (!hit) {
@@ -1438,8 +1399,9 @@ export const simStep: StudyStep = {
       const label = `日照タイムラプス（${d.label}）`;
       const [w, hh] = tlRes === '1080' ? [1920, 1080] : [1280, 720];
       if (ui.playing) setPlaying(false);
-      // 選択の強調・隠した建物の半透明表示を動画に写さない
+      // 選択の強調・隠した建物の半透明表示・想定の家の選択を動画に写さない
       if (hide.active()) hide.setActive(false);
+      planned.stop();
       const pm = progressModal(`${label}を書き出しています（約${dur}秒の動画）`);
       let lastSlot = -1;
       let result: Awaited<ReturnType<typeof recordProgram>> | null = null;
@@ -1593,13 +1555,18 @@ export const simStep: StudyStep = {
     const typing = (e: KeyboardEvent) => /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName ?? '');
     const onKey = (e: KeyboardEvent) => {
       if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      // 選んでいる想定の家: R / Shift+R で 90° 回転・Delete で削除・矢印キーで移動
+      if (planned.onKey(e)) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         setPresenting(!isPresenting());
       } else if (e.key === 'Escape') {
         if (isPresenting()) setPresenting(false);
         if (placing) setPlacing(false);
-        if (plannedArm) setPlannedArm(null);
+        planned.escape();
         if (hide.active()) hide.setActive(false);
         closePop();
       }

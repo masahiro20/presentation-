@@ -170,40 +170,21 @@ details.nb-hidden summary .meta { color: var(--ink3); font-size: 11.5px; margin-
 .field.diagram-reg { margin: 4px 0 6px; }
 .field.diagram-reg select { padding: 6px 8px; }
 
-/* 地図: 精密な敷地・想定の家（steps/placeStep.ts・map.ts） */
-.map-zoom .map-zoom-level { font-size: 11px; font-weight: 600; color: var(--ink2); text-align: center; font-variant-numeric: tabular-nums; line-height: 1.2; padding: 1px 0; user-select: none; }
-.map-zoom button:disabled { opacity: 0.35; cursor: default; }
-.map-zoom button:disabled:hover { background: transparent; }
-.map-overzoom { position: absolute; right: 64px; top: 50%; transform: translateY(-50%); z-index: 2; max-width: 210px; background: rgba(255,246,232,0.96); color: #7a4f12; border: 1px solid #f1d4a6; border-radius: 10px; padding: 6px 10px; font-size: 12px; line-height: 1.5; box-shadow: var(--shadow); pointer-events: none; }
-/* 辺の長さ（数値で直す） */
-.edge-box { margin: 4px 0 6px; }
-.edge-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.edge-head .field-label { margin: 0; }
-.edge-perimeter { font-size: 11.5px; color: var(--ink3); font-variant-numeric: tabular-nums; }
-.edge-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 4px 8px; margin: 4px 0; }
-.edge-list .field.edge-field { margin: 0; }
-.edge-list .field.edge-field .field-label { margin-bottom: 2px; font-size: 11.5px; }
-.edge-list .field.edge-field input { padding: 5px 7px; font-variant-numeric: tabular-nums; }
-/* 寸法で区画を作る */
-details.lot-dims { margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; background: #faf8f5; }
-details.lot-dims summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); padding: 3px 0; }
-.lot-dims-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 8px; }
-.lot-dims-grid .field { margin: 4px 0; }
-.lot-dims-grid .field input { padding: 6px 7px; }
-/* 想定の家: サイドの欄 */
-.planned-tools { flex-wrap: wrap; }
-.planned-list .planned-row { background: #f3f7fc; border-color: #c7d8ec; }
-.planned-list .planned-row.sel { border-color: #e5531f; box-shadow: 0 0 0 1px #e5531f inset; }
-/* 想定の家: 地図の上の編集欄 */
-.map-planned-pop { position: absolute; z-index: 4; width: 250px; background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 8px 10px 10px; font-size: 12.5px; border: 1px solid #c7d8ec; box-sizing: border-box; }
-.map-planned-pop .pp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
-.map-planned-pop .pp-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.map-planned-pop .pp-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: #3f6a98; color: #fff; white-space: nowrap; }
-.map-planned-pop .pp-close { border: 0; background: transparent; font-size: 16px; line-height: 1; color: var(--ink3); padding: 2px 4px; cursor: pointer; }
-.map-planned-pop .pp-close:hover { color: var(--ink); }
-.map-planned-pop .field { margin: 4px 0; }
-.map-planned-pop .field-label { font-size: 11px; margin-bottom: 2px; }
-.map-planned-pop .field input, .map-planned-pop .field select { padding: 4px 6px; font-size: 12px; }
-.map-planned-pop .pp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
-.map-planned-pop .hint { font-size: 11px; line-height: 1.45; }
-@media (max-width: 720px) { .map-overzoom { right: 60px; max-width: 150px; font-size: 11px; } .map-planned-pop { width: 220px; } }
+/* 3D: 想定の家（未建築の隣家。steps/plannedEdit.ts）: 3D の上の編集欄・サイドの一覧 */
+.src-tag.planned { background: #dfe8f4; color: #2f4f6b; }
+.pop.planned-pop { width: 320px; max-width: calc(100% - 16px); box-sizing: border-box; border-top: 3px solid #6f8fb3; }
+.pop.planned-pop h5 { display: flex; align-items: center; gap: 4px; }
+.planned-pop .planned-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 8px; margin: 4px 0; }
+.planned-pop .planned-grid .span2 { grid-column: span 3; }
+.planned-pop .field { margin: 3px 0; }
+.planned-pop .field-label { font-size: 11px; margin-bottom: 2px; }
+.planned-pop input, .planned-pop select { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: #fff; color: var(--ink); }
+.planned-pop input[type=number] { width: 100%; }
+.planned-pop input:disabled { background: #f3f1ed; color: var(--ink3); }
+.planned-pop .planned-keys { font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
+.planned-section .field { margin: 4px 0; }
+.planned-section .field select { width: 100%; padding: 6px 8px; }
+.planned-row { border-color: #b9c9de; background: #f6f9fd; }
+.planned-row.sel { border-color: #e5531f; box-shadow: 0 0 0 2px rgba(229,83,31,0.18); }
+.planned-row.off { opacity: 0.6; }
+.planned-row .planned-meta { display: block; margin: 2px 0 0; }

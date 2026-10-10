@@ -1,4 +1,5 @@
 /** 日照シミュレーション（3D データ読み込み版）の状態 */
+import { PLANNED_DEFAULT_LABEL, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from '../sun/plannedHouse';
 import type { AerialImage, GeoFrame, HeightGrid, ImportedModel, LatLon, MeasurePoint, ModelPlacement, Neighbor, NeighborHideInfo, NeighborHideMode, NeighborHideReason, NeighborOverride, NeighborSource } from './types';
 import { DEFAULT_PLACEMENT, HIDE_MODES, HIDE_REASONS } from './types';
 
@@ -31,6 +32,11 @@ export interface StudyState {
   neighborNotes: string[];
   /** 自動取得した建物への上書き（高さ修正・隠す。隠し方・理由も）。id → 値 */
   neighborOverrides: Record<string, NeighborOverride>;
+  /**
+   * 想定の家（Neighbor.planned）を 3D・影・解析に含めるか（既定 true）。false の間は計算から除外した建物と同じく
+   * 描かない・影を落とさない・解析しない（hidden には触らない。「隠した建物」の一覧にも出さない）。保存データに残す
+   */
+  plannedEnabled: boolean;
   /** 読み込んだ 3D データと配置 */
   model: ImportedModel | null;
   placement: ModelPlacement;
@@ -70,6 +76,7 @@ export const study: StudyState = {
   neighborSources: [],
   neighborNotes: [],
   neighborOverrides: {},
+  plannedEnabled: true,
   model: null,
   placement: { ...DEFAULT_PLACEMENT },
   points: [],
@@ -87,7 +94,7 @@ const handlers = new Map<string, Set<Handler>>();
  *  'frame'      ピン位置・住所が変わった
  *  'site'       敷地ポリゴンが変わった
  *  'env'        地形・航空写真・周辺建物の取得状況が変わった（再構築が必要）
- *  'neighbors'  周辺建物の一覧が変わった（手動追加・高さ修正・隠す／戻す・削除）
+ *  'neighbors'  周辺建物の一覧が変わった（手動追加・高さ修正・隠す／戻す・削除・想定の家の追加／変更／削除・想定の家を含めるかの切替）
  *  'model'      3D データを読み込んだ／差し替えた
  *  'placement'  単位・向き・位置・高さ・表示が変わった
  *  'points'     測定点が変わった
@@ -176,14 +183,22 @@ export function effectiveNeighbors(): Neighbor[] {
   });
 }
 
-/** 3D に描く周辺建物（隠していないもの。上書きを適用） */
-export function visibleNeighbors(): Neighbor[] {
-  return effectiveNeighbors().filter((n) => !n.hidden);
+/**
+ * 3D・影・解析に入れてよいか: 想定の家（planned）は study.plannedEnabled のときだけ、それ以外はいつも true。
+ * visibleNeighbors / hiddenNeighbors / excludedNeighbors / viewOnlyNeighbors / analysisNeighbors はこれで絞る（effectiveNeighbors は絞らない）
+ */
+export function plannedActive(n: Neighbor): boolean {
+  return !n.planned || study.plannedEnabled;
 }
 
-/** 隠した周辺建物（上書きを適用。手動の隣家で隠したものも含む。隠し方は問わない）。3D には描かない */
+/** 3D に描く周辺建物（隠していないもの。上書きを適用。想定の家は含めるときだけ） */
+export function visibleNeighbors(): Neighbor[] {
+  return effectiveNeighbors().filter((n) => !n.hidden && plannedActive(n));
+}
+
+/** 隠した周辺建物（上書きを適用。手動の隣家で隠したものも含む。隠し方は問わない。想定の家は含めるときだけ）。3D には描かない */
 export function hiddenNeighbors(): Neighbor[] {
-  return effectiveNeighbors().filter((n) => !!n.hidden);
+  return effectiveNeighbors().filter((n) => !!n.hidden && plannedActive(n));
 }
 
 /** 計算から除外した周辺建物（描かない・影を落とさない・解析しない） */
@@ -196,9 +211,9 @@ export function viewOnlyNeighbors(): Neighbor[] {
   return hiddenNeighbors().filter((n) => n.hideMode === 'view');
 }
 
-/** 影・解析に入る周辺建物（隠していないもの + 表示だけ隠したもの。計算から除外したものは入らない） */
+/** 影・解析に入る周辺建物（隠していないもの + 表示だけ隠したもの。計算から除外したもの・含めない想定の家は入らない） */
 export function analysisNeighbors(): Neighbor[] {
-  return effectiveNeighbors().filter((n) => !n.hidden || n.hideMode === 'view');
+  return effectiveNeighbors().filter((n) => (!n.hidden || n.hideMode === 'view') && plannedActive(n));
 }
 
 /** 隠し方・理由が同じか */
@@ -296,4 +311,114 @@ export function restoreAllNeighbors(mode?: NeighborHideMode): number {
       .map((n) => n.id),
     false,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 想定の家（未建築の隣家）
+// ---------------------------------------------------------------------------
+
+/** 想定の家（planned のある周辺建物） */
+export type PlannedNeighbor = Neighbor & { planned: PlannedHouse };
+
+export function isPlannedNeighbor(n: Neighbor | null | undefined): n is PlannedNeighbor {
+  return !!n && !!n.planned;
+}
+
+/**
+ * 想定の家 → 周辺建物（source 'manual'・heightKind 'manual'・ring = 足元・height = 最高高さ・label = 名前か「想定の家」）。
+ * prev を渡すと隠した記録（hidden・隠し方・理由）と baseElev を引き継ぐ
+ */
+export function plannedToNeighbor(h: Partial<PlannedHouse>, prev?: Neighbor): PlannedNeighbor {
+  const p = clampHouse(h);
+  const out: PlannedNeighbor = { id: p.id, ring: plannedFootprint(p), height: p.ridgeHeight, source: 'manual', heightKind: 'manual', label: p.label ?? PLANNED_DEFAULT_LABEL, planned: p };
+  if (prev) {
+    if (prev.baseElev != null) out.baseElev = prev.baseElev;
+    if (prev.hidden) {
+      out.hidden = true;
+      if (prev.hideMode) out.hideMode = prev.hideMode;
+      if (prev.hideReason) out.hideReason = prev.hideReason;
+      if (prev.hideNote) out.hideNote = prev.hideNote;
+    }
+  }
+  return out;
+}
+
+/** 今の形（ring・height を直接変えられていたら、中心・高さをそちらに合わせる） */
+function currentPlanned(n: PlannedNeighbor): PlannedHouse {
+  return syncPlannedHouse(n.planned, n.ring, n.height);
+}
+
+/**
+ * 想定の家の一覧（study.neighbors の中の planned 付き。含めない設定でも全部）。
+ * 返す前に planned を ring・height に合わせ直す（ピンを動かしたときに ring だけずらされても中心が追従する）
+ */
+export function plannedHouses(): PlannedNeighbor[] {
+  const out: PlannedNeighbor[] = [];
+  for (const n of study.neighbors) {
+    if (!isPlannedNeighbor(n)) continue;
+    const cur = currentPlanned(n);
+    if (cur !== n.planned) n.planned = cur;
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * 想定の家を足す（値は clampHouse で整える。id が無い・他の建物と重なれば新しく作る）。'neighbors' を 1 回発火。足した周辺建物を返す
+ */
+export function addPlannedHouse(h: Partial<PlannedHouse>): PlannedNeighbor {
+  const taken = new Set(study.neighbors.map((n) => n.id));
+  const p = clampHouse({ ...h, id: h.id && !taken.has(h.id) ? h.id : undefined });
+  const n = plannedToNeighbor(p);
+  study.neighbors.push(n);
+  emit('neighbors');
+  return n;
+}
+
+/**
+ * 想定の家を変える（patch に無い値は今のまま。label に空文字を渡すと名前を外して「想定の家」に）。
+ * 変わったら 'neighbors' を 1 回発火して true。無い id・変わらなければ false
+ */
+export function updatePlannedHouse(id: string, patch: Partial<Omit<PlannedHouse, 'id'>>): boolean {
+  const i = study.neighbors.findIndex((n) => n.id === id && !!n.planned);
+  if (i < 0) return false;
+  const n = study.neighbors[i] as PlannedNeighbor;
+  const cur = currentPlanned(n);
+  const next = clampHouse({ ...cur, ...patch, id: cur.id });
+  const same = JSON.stringify(next) === JSON.stringify(n.planned) && n.label === (next.label ?? PLANNED_DEFAULT_LABEL);
+  if (same) return false;
+  const nb = plannedToNeighbor(next, n);
+  // 同じオブジェクトを書き換える（一覧・選択が参照を持っていても追従するように）
+  for (const k of Object.keys(n) as (keyof Neighbor)[]) if (!(k in nb)) delete n[k];
+  Object.assign(n, nb);
+  emit('neighbors');
+  return true;
+}
+
+/** 想定の家を消す（上書きの記録も消す）。消したら 'neighbors' を 1 回発火して true */
+export function removePlannedHouse(id: string): boolean {
+  const before = study.neighbors.length;
+  study.neighbors = study.neighbors.filter((n) => !(n.id === id && n.planned));
+  if (study.neighbors.length === before) return false;
+  delete study.neighborOverrides[id];
+  emit('neighbors');
+  return true;
+}
+
+/** 想定の家をすべて消す（'neighbors' を 1 回発火）。消した棟数を返す */
+export function clearPlannedHouses(): number {
+  const gone = study.neighbors.filter((n) => n.planned);
+  if (!gone.length) return 0;
+  study.neighbors = study.neighbors.filter((n) => !n.planned);
+  for (const n of gone) delete study.neighborOverrides[n.id];
+  emit('neighbors');
+  return gone.length;
+}
+
+/** 想定の家を 3D・影・解析に含めるか（変わったら 'neighbors' を 1 回発火して true） */
+export function setPlannedEnabled(on: boolean): boolean {
+  if (study.plannedEnabled === on) return false;
+  study.plannedEnabled = on;
+  emit('neighbors');
+  return true;
 }

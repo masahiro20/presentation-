@@ -26,9 +26,9 @@ describe('地図の幾何（Web メルカトル）', () => {
     expect(lonLatToWorldPx(180, 0, 3).x).toBeCloseTo(256 * 8, 9);
     expect(lonLatToWorldPx(0, 0, 3).y).toBeCloseTo(128 * 8, 9);
   });
-  it('クランプ: ズーム 5..18、緯度 ±85、経度は折り返す', () => {
+  it('クランプ: ズーム 5..22、緯度 ±85、経度は折り返す', () => {
     expect(clampZoom(2)).toBe(5);
-    expect(clampZoom(30)).toBe(18);
+    expect(clampZoom(30)).toBe(22);
     expect(clampZoom(NaN)).toBe(5);
     expect(clampCenter({ lat: 90, lon: 190 }).lat).toBeCloseTo(85.0511, 3);
     expect(clampCenter({ lat: 0, lon: 190 }).lon).toBeCloseTo(-170, 9);

@@ -4,6 +4,7 @@
  * 建物を恣意的に外したと言われないように、計算から除外した周辺建物は理由ごとの棟数
  * （プレゼン資料では 出典・高さ・理由・方向距離 の表）を、表示だけ隠した建物は棟数を、
  * 部屋の日当たり・日照時間マップ・日影図（SVG）・プレゼン資料の日照のページに必ず印字する。
+ * 想定の家（未建築の仮の建物）を置いたときは「想定で置いた建物 N 棟（未建築・仮の形状。…）」の行も同じ所に印字する。
  * 数字は解析した時点の扱い（collectDisclosure の写し）で書く（state.sun.disclosure）。
  */
 import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord } from '../sun/context';
@@ -39,6 +40,8 @@ export interface HiddenEntry {
   note?: string;
   /** 計画建物から見た方角と距離（例 '南 約 12 m'） */
   where: string;
+  /** 想定の家（未建築の仮の建物） */
+  planned?: boolean;
 }
 
 /** 解析した時点の周辺建物の扱い */
@@ -49,6 +52,11 @@ export interface SunDisclosure {
   excluded: HiddenEntry[];
   /** 表示だけ隠した建物（描かないが、影・解析には含む） */
   viewOnly: HiddenEntry[];
+  /**
+   * 想定の家（未建築・仮の形状）: count = 計算から除外していない想定の家の棟数（表示だけ隠したものも数える）、enabled = 影・解析に含めたか。
+   * 想定の家が無ければ省く（古い写しにも無い）。含めたときは included にも入っている
+   */
+  planned?: { count: number; enabled: boolean };
 }
 
 /** 周辺建物が無い（日照ステップで読み込んでいない）ときの扱い */
@@ -61,15 +69,24 @@ export interface DisclosureSource {
   heightOf(b: NeighborBuilding): number;
   hideRecord(key: string): HideRecord | null;
   edits: { heights: Map<string, number> };
+  /** 想定の家を影・解析に含めるか（SunContext.plannedEnabled。無ければ含める） */
+  plannedEnabled?: boolean;
 }
 
 /** 今の周辺建物の扱いを写す（null = 周辺建物を読み込んでいない） */
 export function collectDisclosure(sc: DisclosureSource | null | undefined): SunDisclosure {
   if (!sc) return { included: 0, excluded: [], viewOnly: [] };
   const out: SunDisclosure = { included: 0, excluded: [], viewOnly: [] };
+  const plannedOn = sc.plannedEnabled !== false;
+  let planned = 0;
   for (const b of sc.state.neighbors) {
     const key = sc.keyOf(b);
     const rec = b.hidden ? sc.hideRecord(key) : null;
+    if (b.planned) {
+      if (!rec || rec.mode === 'view') planned++;
+      // 含めていない想定の家は数えない（除外・表示だけ隠した建物の一覧にも出さない。想定の家の行で断る）
+      if (!plannedOn) continue;
+    }
     if (!rec || rec.mode === 'view') out.included++;
     if (!rec) continue;
     const e: HiddenEntry = {
@@ -83,9 +100,18 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
       where: neighborWhere(b),
     };
     if (rec.note) e.note = rec.note;
+    if (b.planned) e.planned = true;
     (rec.mode === 'view' ? out.viewOnly : out.excluded).push(e);
   }
+  if (planned) out.planned = { count: planned, enabled: plannedOn };
   return out;
+}
+
+/** 想定の家の行（あるときだけ）: 「想定で置いた建物 N 棟（未建築・仮の形状。影・解析に含む）」／含めていなければ「…今は含めていません」 */
+export function plannedLine(d: Pick<SunDisclosure, 'planned'>): string | null {
+  const p = d.planned;
+  if (!p || !p.count) return null;
+  return `想定で置いた建物 ${p.count} 棟（未建築・仮の形状。${p.enabled ? '影・解析に含む' : '今は含めていません'}）`;
 }
 
 /** 理由ごとの棟数（理由の並びは HIDE_REASONS の順。例 '解体予定 2・その他 1'） */
@@ -119,10 +145,11 @@ export type DisclosureTarget = 'rooms' | 'heatmap' | 'diagram' | 'deck';
  */
 export function disclosureLines(d: SunDisclosure, target: DisclosureTarget): string[] {
   const hidden = d.excluded.length + d.viewOnly.length;
-  const rest = [excludedLine(d), viewOnlyLine(d)].filter((x): x is string => !!x);
+  const pl = plannedLine(d);
+  const rest = [excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
   if (target === 'diagram') return [DIAGRAM_NEIGHBORS_NOTE, ...rest];
   const what = target === 'rooms' ? '部屋の日当たり' : target === 'heatmap' ? '日照時間マップ' : '日当たりの解析';
-  if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`];
+  if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`, ...(pl ? [pl] : [])];
   return [`※${what}は周辺建物 ${d.included} 棟の影を含めて計算しています`, ...rest];
 }
 
@@ -139,9 +166,13 @@ export interface ExcludedRow {
 export function excludedTableRows(d: Pick<SunDisclosure, 'excluded'>): ExcludedRow[] {
   return d.excluded.map((e, i) => ({
     no: i + 1,
-    // 名前のある建物（OSM の名前・隣家）は出典に添える
-    source: e.title === `${NEIGHBOR_SOURCE_LABEL[e.source]}の建物` ? NEIGHBOR_SOURCE_LABEL[e.source] : `${NEIGHBOR_SOURCE_LABEL[e.source]}（${e.title}）`,
-    height: `${e.height.toFixed(1)} m${e.heightEdited ? '（手入力）' : e.source === 'gsi' ? '（推定）' : ''}`,
+    // 名前のある建物（OSM の名前・隣家）は出典に添える。想定の家は「想定の家（未建築）」と名前
+    source: e.planned
+      ? `想定の家（未建築${e.title && e.title !== '想定の家' ? `・${e.title}` : ''}）`
+      : e.title === `${NEIGHBOR_SOURCE_LABEL[e.source]}の建物`
+        ? NEIGHBOR_SOURCE_LABEL[e.source]
+        : `${NEIGHBOR_SOURCE_LABEL[e.source]}（${e.title}）`,
+    height: `${e.height.toFixed(1)} m${e.planned ? '（想定）' : e.heightEdited ? '（手入力）' : e.source === 'gsi' ? '（推定）' : ''}`,
     reason: hideReasonText(e),
     where: e.where,
   }));

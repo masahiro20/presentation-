@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { metersPerDegree } from '../sun/geo';
 import type { AerialImage } from '../sun/geo';
+import type { PlannedHouse } from '../sun/plannedHouse';
 
 export type { AerialImage };
 
@@ -214,6 +215,13 @@ export interface Neighbor {
   hideReason?: NeighborHideReason;
   /** 理由の補足（「その他」の自由記述など） */
   hideNote?: string;
+  /**
+   * 想定の家（未建築の隣家。分譲地で隣がまだ建っていないときに「建った想定」で置く仮の建物）。座標はピンからの東・北 (m)（ring と同じ）。
+   * 想定の家は source 'manual'・heightKind 'manual'・ring = 足元（plannedFootprint）・height = 最高高さ（ridgeHeight）・label 既定「想定の家」。
+   * 形（屋根）はこれから作る（state.ts の addPlannedHouse / updatePlannedHouse を使う。ring・height を直接変えたら、中心・高さはそちらに合わせる）。
+   * study.plannedEnabled が false の間は 3D・影・解析に入れない（hidden には触らない）
+   */
+  planned?: PlannedHouse;
 }
 
 /**
@@ -315,7 +323,10 @@ export interface ProjectJson {
   placement: ModelPlacement;
   /** 3D データ（base64）。大きすぎる場合は省略され、再読み込みを促す */
   model: { name: string; format: ModelFormat; base64: string } | null;
+  /** 手動の隣家（想定の家 = planned 付きを含む） */
   manualNeighbors: Neighbor[];
+  /** 想定の家を影・解析に含めるか（無ければ true。古いデータ） */
+  plannedEnabled?: boolean;
   /** 自動取得した建物への上書き（高さ修正・隠す。隠し方・理由を含む。古いデータには隠し方・理由が無い = 計算から除外・その他） */
   neighborOverrides: Record<string, NeighborOverride>;
   points: MeasurePoint[];

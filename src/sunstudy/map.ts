@@ -29,7 +29,10 @@ export const MAP_LAYER_ATTRIBUTION: Record<MapLayer, string> = {
 
 export const TILE_SIZE = 256;
 export const MIN_ZOOM = 5;
-export const MAX_ZOOM = 18;
+/** 地図の最大ズーム。タイルの配信は TILE_MAX_ZOOM まで、それより先はタイルを引き伸ばして描く（敷地の角を細かく置けるように） */
+export const MAX_ZOOM = 22;
+/** 地理院タイルの配信上の最大ズーム */
+export const TILE_MAX_ZOOM = 18;
 /** Web メルカトルの緯度の限界 */
 const MAX_LAT = 85.05112878;
 /** タイルキャッシュの上限（枚） */
@@ -995,7 +998,8 @@ export class MapPicker {
   private drawTiles(ctx: CanvasRenderingContext2D): void {
     const W = this.W;
     const H = this.H;
-    const zi = Math.floor(this._zoom);
+    // タイルの取得ズーム（配信上限まで）。それより拡大した分は引き伸ばして描く
+    const zi = Math.min(Math.floor(this._zoom), TILE_MAX_ZOOM);
     const scale = 2 ** (this._zoom - zi);
     const ts = TILE_SIZE * scale;
     const n = 2 ** zi;

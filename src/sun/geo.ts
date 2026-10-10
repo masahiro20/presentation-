@@ -2,6 +2,7 @@
  * 地理情報: 住所検索（国土地理院）、航空写真タイル、周辺建物（国土地理院ベクトルタイル / OpenStreetMap）
  */
 import { decodeMvt } from './mvt';
+import type { PlannedHouse } from './plannedHouse';
 
 export interface SiteLocation {
   lat: number;
@@ -416,6 +417,11 @@ export interface NeighborBuilding {
   id?: string;
   /** 隠した建物（3D に出さず、影も落とさず、解析にも入れない。SunContext の記録から付け直す） */
   hidden?: boolean;
+  /**
+   * 想定の家（未建築の隣家）。座標は ring と同じ建物の中心からの東・北 (m)。source は 'manual'、ring = 足元、height = 最高高さ、
+   * label 既定「想定の家」。SunContext.addPlanned / updatePlanned / removePlanned で扱う
+   */
+  planned?: PlannedHouse;
 }
 
 /** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */

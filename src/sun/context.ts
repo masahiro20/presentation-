@@ -7,6 +7,10 @@ import { clearGroup } from '../scene/viewer';
 import { fetchAerial, fetchGsiBuildings, fetchOsmBuildings, metersPerDegree, siteLatLon, type NeighborBuilding, type SiteLocation } from './geo';
 import { sunPosition, sunDirectionWorld, localDate, keyDates, sunriseSunset } from './solar';
 import { ALIGN_COLORS, type EN } from './align';
+import { PLANNED_COLORS, PLANNED_DEFAULT_LABEL, buildPlannedHouseGeometry, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from './plannedHouse';
+
+/** 想定の家（planned 付きの周辺建物） */
+export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
 
 // ---------------------------------------------------------------- 周辺建物を隠す・高さを直す（純粋な計算。DOM・THREE を使わない）
 
@@ -330,6 +334,8 @@ export class SunContext {
   } | null = null;
   /** buildNeighbors の後に呼ぶ（日照ステップの一覧・選択の表示を合わせる。ステップを離れるときは null に戻す） */
   onNeighborsChange: (() => void) | null = null;
+  /** 想定の家を 3D・影・解析に含めるか（setPlannedEnabled） */
+  private plannedOn = true;
 
   constructor(
     readonly viewer: Viewer,
@@ -396,7 +402,128 @@ export class SunContext {
 
   /** 隠した建物（今の一覧の中）。mode を渡すとその隠し方の建物だけ */
   hiddenList(mode?: HideMode): NeighborBuilding[] {
-    return this.state.neighbors.filter((b) => b.hidden && (!mode || this.hideModeOf(b) === mode));
+    return this.state.neighbors.filter((b) => b.hidden && this.isActive(b) && (!mode || this.hideModeOf(b) === mode));
+  }
+
+  /** 3D・影・解析に入れてよいか（想定の家は plannedEnabled のときだけ。それ以外はいつも true） */
+  isActive(b: NeighborBuilding): boolean {
+    return !b.planned || this.plannedOn;
+  }
+
+  // ---------------------------------------------------------------- 想定の家（未建築の隣家）
+
+  /** 想定の家を 3D・影・解析に含めるか（既定 true） */
+  get plannedEnabled(): boolean {
+    return this.plannedOn;
+  }
+
+  /**
+   * 想定の家を含めるか切り替える。false の間は計算から除外した建物と同じく何も作らない（実体・影だけのメッシュ・薄い表示のどれも。
+   * 隠す記録には触らない。hiddenList・選択・クリックの対象からも外れる）。変わったら作り直して true
+   */
+  setPlannedEnabled(on: boolean): boolean {
+    if (this.plannedOn === on) return false;
+    this.plannedOn = on;
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** キーか id で想定の家を探す */
+  private findPlanned(ref: string): PlannedBuilding | undefined {
+    return this.state.neighbors.find((b): b is PlannedBuilding => !!b.planned && (b.id === ref || this.keyOf(b) === ref));
+  }
+
+  /** 今の形（ring・直した高さ heightOf に合わせた中心・高さ） */
+  private currentPlanned(b: PlannedBuilding): PlannedHouse {
+    return syncPlannedHouse(b.planned, b.ring, this.heightOf(b));
+  }
+
+  /** 想定の家の一覧（含めない設定でも全部。planned は ring・直した高さに合わせ直してから返す） */
+  plannedList(): PlannedBuilding[] {
+    const out: PlannedBuilding[] = [];
+    for (const b of this.state.neighbors) {
+      if (!b.planned) continue;
+      const pb = b as PlannedBuilding;
+      const cur = this.currentPlanned(pb);
+      if (cur !== pb.planned) pb.planned = cur;
+      out.push(pb);
+    }
+    return out;
+  }
+
+  /** 想定の家 → 周辺建物の値（ring = 足元、height = 最高高さ、label = 名前か「想定の家」） */
+  private applyPlanned(b: NeighborBuilding, p: PlannedHouse) {
+    b.planned = p;
+    b.ring = plannedFootprint(p);
+    b.height = p.ridgeHeight;
+    b.label = p.label ?? PLANNED_DEFAULT_LABEL;
+    b.source = 'manual';
+    // キーは id から作るので変わらないが、念のためキャッシュを捨てる
+    this.keyCache.delete(b);
+  }
+
+  /**
+   * 想定の家を足す（値は clampHouse で整える。id は 'planned-<連番>'）。戻り値: 建物のキー（'manual:planned-<連番>'。
+   * setHidden・setHighlight・updatePlanned・removePlanned に使う）
+   */
+  addPlanned(h: Partial<PlannedHouse>): string {
+    const taken = new Set(this.state.neighbors.map((b) => b.id));
+    let id = `planned-${++this.seq}`;
+    while (taken.has(id)) id = `planned-${++this.seq}`;
+    const b: NeighborBuilding = { ring: [], height: 0, source: 'manual', id };
+    this.applyPlanned(b, clampHouse({ ...h, id }));
+    this.state.neighbors.push(b);
+    this.buildNeighbors();
+    return this.keyOf(b);
+  }
+
+  /**
+   * 想定の家を変える（ref = キーか id。patch に無い値は今のまま）。高さを変えたら「高さを直す」の記録（edits.heights）は外す。
+   * 変わったら作り直して true
+   */
+  updatePlanned(ref: string, patch: Partial<Omit<PlannedHouse, 'id'>>): boolean {
+    const b = this.findPlanned(ref);
+    if (!b) return false;
+    const key = this.keyOf(b);
+    const cur = this.currentPlanned(b);
+    const next = clampHouse({ ...cur, ...patch, id: cur.id });
+    if (JSON.stringify(next) === JSON.stringify(b.planned) && !this.edits.heights.has(key)) return false;
+    this.applyPlanned(b, next);
+    this.edits.heights.delete(key);
+    if (!this.edits.hidden.has(key)) this.edits.footprints.delete(key);
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 想定の家を消す（ref = キーか id。隠す・高さの記録も消す）。消したら作り直して true */
+  removePlanned(ref: string): boolean {
+    const b = this.findPlanned(ref);
+    if (!b) return false;
+    const key = this.keyOf(b);
+    this.state.neighbors = this.state.neighbors.filter((x) => x !== b);
+    this.forgetKey(key);
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 想定の家をすべて消す。戻り値: 消した棟数 */
+  clearPlanned(): number {
+    const gone = this.state.neighbors.filter((b) => b.planned);
+    if (!gone.length) return 0;
+    for (const b of gone) this.forgetKey(this.keyOf(b));
+    this.state.neighbors = this.state.neighbors.filter((b) => !b.planned);
+    this.buildNeighbors();
+    return gone.length;
+  }
+
+  /** キーの記録（隠す・高さ・外形・選択）を消す */
+  private forgetKey(key: string) {
+    this.edits.hidden.delete(key);
+    this.edits.hideInfo.delete(key);
+    this.edits.heights.delete(key);
+    this.edits.footprints.delete(key);
+    this.highlightKeys.delete(key);
+    if (this.previewKey === key) this.previewKey = null;
   }
 
   /**
@@ -537,6 +664,7 @@ export class SunContext {
     if (!this.state.showNeighbors) return [];
     const out: { key: string; hidden: boolean; world: THREE.Vector3 }[] = [];
     for (const b of this.state.neighbors) {
+      if (!this.isActive(b)) continue;
       const key = this.keyOf(b);
       if (b.hidden && !this.ghostsOn) continue;
       const c = ringCentroid(b.ring);
@@ -566,7 +694,7 @@ export class SunContext {
     }
     const g = rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
     if (!g) return null;
-    const items = this.state.neighbors.filter((b) => !b.hidden || this.ghostsOn || this.keyOf(b) === this.previewKey).map((b) => ({ key: this.keyOf(b), ring: b.ring }));
+    const items = this.state.neighbors.filter((b) => this.isActive(b) && (!b.hidden || this.ghostsOn || this.keyOf(b) === this.previewKey)).map((b) => ({ key: this.keyOf(b), ring: b.ring }));
     const key = pickRingAt(items, this.fromWorld(g));
     return key ? { key, hidden: !!this.findByKey(key)?.hidden } : null;
   }
@@ -694,15 +822,20 @@ export class SunContext {
     this.buildNeighbors();
   }
 
-  /** 周辺建物をすべて消す（隠す・高さの記録も消す） */
-  clearNeighbors() {
-    this.state.neighbors = [];
-    this.edits.hidden.clear();
-    this.edits.hideInfo.clear();
-    this.edits.heights.clear();
-    this.edits.footprints.clear();
-    this.highlightKeys.clear();
-    this.previewKey = null;
+  /**
+   * 周辺建物をすべて消す（隠す・高さの記録も消す）。想定の家（planned）は既定では残す（その記録も残す）。
+   * opts.includePlanned = true なら想定の家も消す
+   */
+  clearNeighbors(opts: { includePlanned?: boolean } = {}) {
+    const keep = opts.includePlanned ? [] : this.state.neighbors.filter((b) => b.planned);
+    const keepKeys = new Set(keep.map((b) => this.keyOf(b)));
+    this.state.neighbors = keep;
+    for (const k of [...this.edits.hidden]) if (!keepKeys.has(k)) this.edits.hidden.delete(k);
+    for (const k of [...this.edits.hideInfo.keys()]) if (!keepKeys.has(k)) this.edits.hideInfo.delete(k);
+    for (const k of [...this.edits.heights.keys()]) if (!keepKeys.has(k)) this.edits.heights.delete(k);
+    for (const k of [...this.edits.footprints.keys()]) if (!keepKeys.has(k)) this.edits.footprints.delete(k);
+    for (const k of [...this.highlightKeys]) if (!keepKeys.has(k)) this.highlightKeys.delete(k);
+    if (this.previewKey && !keepKeys.has(this.previewKey)) this.previewKey = null;
     this.buildNeighbors();
   }
 
@@ -715,6 +848,8 @@ export class SunContext {
    * castShadow なし・userData.noShadow（bakeWorldTriangles が除く）・userData.neighbor なし（buildOccluder の対象外）
    */
   buildNeighbors() {
+    // 想定の家（planned）: 押し出しではなく屋根付きの形（buildPlannedHouseGeometry、軒の出も影に入る）。壁 #cfdcec・屋根 #6f8fb3（不透明・航空写真なし）、
+    // userData.planned = true。隠し方・薄い表示は他の建物と同じ。plannedEnabled が false の間は何も作らない
     clearGroup(this.neighborsG);
     // 薄い表示の輪郭の線（メッシュの子）は clearGroup が捨てないので、ここで捨てる
     this.ghostsG.traverse((o) => {
@@ -732,13 +867,20 @@ export class SunContext {
     const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
     const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
     const manualMat = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
+    let plannedMats: THREE.Material[] | null = null;
     for (const b of this.state.neighbors) {
+      if (!this.isActive(b)) continue;
       const key = this.keyOf(b);
-      const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
-      // ワールド XZ で Shape を作り、上方向へ押し出す
-      const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
-      geo.rotateX(-Math.PI / 2);
+      const planned = b.planned ? this.currentPlanned(b as PlannedBuilding) : null;
+      let geo: THREE.BufferGeometry;
+      if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });
+      else {
+        const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
+        // ワールド XZ で Shape を作り、上方向へ押し出す
+        const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
+        geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+      }
       if (b.hidden) {
         const mode = this.hideModeOf(b) ?? LEGACY_HIDE_RECORD.mode;
         if (mode === 'view') {
@@ -766,6 +908,22 @@ export class SunContext {
         edges.renderOrder = 6;
         ghost.add(edges);
         this.ghostsG.add(ghost);
+        continue;
+      }
+      if (planned) {
+        // グループ 0 = 屋根、1 = 壁
+        plannedMats ??= [new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.roof, roughness: 0.75 }), new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.wall, roughness: 0.85 })];
+        const mesh = new THREE.Mesh(geo, plannedMats);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.name = b.label ?? PLANNED_DEFAULT_LABEL;
+        mesh.userData.neighbor = true;
+        mesh.userData.neighborKey = key;
+        mesh.userData.neighborId = b.id;
+        mesh.userData.planned = true;
+        mesh.userData.baseMaterial = plannedMats;
+        mesh.userData.matKey = undefined;
+        this.neighborsG.add(mesh);
         continue;
       }
       if (ai) {

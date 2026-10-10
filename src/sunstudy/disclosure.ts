@@ -3,7 +3,7 @@
  *
  * 計算から除外した建物・表示だけ隠した建物・敷地に重なって自動で外した建物を、印刷物にいつも書き出す
  * （「都合の悪い建物を勝手に消した」と言われないように、何を・なぜ外したかを残す）。
- *  - neighborDisclosure(): 数と理由ごとの内訳
+ *  - neighborDisclosure(): 数と理由ごとの内訳（想定の家 = 未建築の仮の建物の棟数と、含めているかも）
  *  - disclosureLines(): 注記の文（日影図の脚注・レポートの各ページ）
  *  - appendSvgFootnote(): 日影図の SVG の下に脚注を足す（viewBox を伸ばす。svgFootnote.ts）
  *  - neighborWhere(): 建物からの方向・距離（「約 12 m・南側」）
@@ -12,7 +12,7 @@
  */
 import { buildingCenter, buildingExclusionEN, buildingFootprintEN } from './building';
 import { siteExcludedCount } from './environment';
-import { excludedNeighbors, viewOnlyNeighbors } from './state';
+import { effectiveNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { HIDE_REASONS, HIDE_REASON_LABEL, bearingName, worldToEN } from './types';
 import type { EN, Neighbor, NeighborHideReason, NeighborSource } from './types';
 
@@ -83,6 +83,11 @@ export interface NeighborDisclosure {
   byReason: { reason: NeighborHideReason; label: string; count: number }[];
   /** 敷地の輪郭・計画建物の外形に重なるため自動で外した自動取得の建物の数 */
   autoOnSite: number;
+  /**
+   * 想定の家（未建築・仮の形状）: count = 計算から除外していない想定の家の棟数（表示だけ隠したものも数える）、
+   * enabled = 影・解析に含めているか（study.plannedEnabled）。古い呼び出し側が作った値には無い
+   */
+  planned?: { count: number; enabled: boolean };
 }
 
 /** 隠した理由の文（「その他（倉庫）」のように補足を付ける） */
@@ -98,7 +103,15 @@ export function neighborDisclosure(exclusion?: EN[] | null): NeighborDisclosure 
   const viewOnly = viewOnlyNeighbors();
   const byReason = HIDE_REASONS.map((reason) => ({ reason, label: HIDE_REASON_LABEL[reason], count: excluded.filter((n) => (n.hideReason ?? 'other') === reason).length })).filter((x) => x.count > 0);
   const autoOnSite = siteExcludedCount(exclusion === undefined ? buildingExclusionEN() : exclusion);
-  return { excluded, viewOnly, byReason, autoOnSite };
+  const planned = { count: effectiveNeighbors().filter((n) => n.planned && (!n.hidden || n.hideMode === 'view')).length, enabled: study.plannedEnabled };
+  return { excluded, viewOnly, byReason, autoOnSite, planned };
+}
+
+/** 「想定で置いた建物 N 棟（未建築・仮の形状。影・解析に含む）」（含めていなければ「…今は含めていません」）。無ければ null */
+export function plannedLine(d: Pick<NeighborDisclosure, 'planned'>): string | null {
+  const p = d.planned;
+  if (!p || !p.count) return null;
+  return `想定で置いた建物 ${p.count} 棟（未建築・仮の形状。${p.enabled ? '影・解析に含む' : '今は含めていません'}）`;
 }
 
 /** 「計算から除外した周辺建物 3 棟（解体予定 2・データの誤り 1）」。無ければ「計算から除外した周辺建物 なし」 */
@@ -116,7 +129,8 @@ export function viewOnlyLine(d: NeighborDisclosure): string | null {
  * 注記の文（日影図の脚注・レポートのページ）。
  *  1. 計算から除外した周辺建物（理由ごとの数。無ければ「なし」）
  *  2. 表示だけ隠した建物（ある時だけ）
- *  3. 敷地・計画建物に重なって自動で外した自動取得の建物（ある時だけ）
+ *  3. 想定で置いた建物（未建築の隣家。ある時だけ。含めていなければその旨）
+ *  4. 敷地・計画建物に重なって自動で外した自動取得の建物（ある時だけ）
  * neighborsInCalc = false（自建物のみの日影図）なら、先頭で「この図は自建物のみで計算」と断る
  */
 export function disclosureLines(opts: { neighborsInCalc?: boolean; disclosure?: NeighborDisclosure } = {}): string[] {
@@ -126,6 +140,8 @@ export function disclosureLines(opts: { neighborsInCalc?: boolean; disclosure?: 
   lines.push(head + excludedLine(d));
   const v = viewOnlyLine(d);
   if (v) lines.push(v);
+  const pl = plannedLine(d);
+  if (pl) lines.push(pl);
   if (d.autoOnSite > 0) lines.push(`敷地・計画建物に重なる自動取得の建物 ${d.autoOnSite} 棟は自動で除外`);
   return lines;
 }

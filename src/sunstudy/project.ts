@@ -12,7 +12,8 @@
 import { download, toast } from '../app/dom';
 import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
-import { emit, normalizeHideInfo, study } from './state';
+import { emit, normalizeHideInfo, plannedToNeighbor, study } from './state';
+import { PLANNED_DEFAULT_LABEL, clampHouse, syncPlannedHouse } from '../sun/plannedHouse';
 import { sampleHeight } from './terrain';
 import { polygonAreaM2 } from './map';
 import { DEFAULT_PLACEMENT, UNIT_LABEL } from './types';
@@ -243,6 +244,27 @@ export function sanitizeNeighborHide(n: Neighbor): Neighbor {
   return out;
 }
 
+/**
+ * 保存データの想定の家（Neighbor.planned）を整える: 手動の隣家で planned がオブジェクトなら clampHouse で整え（数値は有限値・屋根の形とプリセットは
+ * 知っている値だけ）、中心が壊れていれば ring の平均から、ring・height・label・source・heightKind を planned から作り直す（隠した記録は残す）。
+ * planned が壊れている・自動取得の建物に付いているなら planned を外す。planned の無い建物はそのまま
+ */
+export function sanitizePlannedNeighbor(n: Neighbor): Neighbor {
+  if (!('planned' in n)) return n;
+  const raw = n.planned as unknown;
+  if (n.source !== 'manual' || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const out: Neighbor = { ...n };
+    delete out.planned;
+    return out;
+  }
+  const r = raw as Record<string, unknown>;
+  const label = typeof r.label === 'string' && r.label.trim() ? r.label : typeof n.label === 'string' && n.label.trim() && n.label !== PLANNED_DEFAULT_LABEL ? n.label : undefined;
+  let p = clampHouse({ ...r, id: typeof n.id === 'string' && n.id ? n.id : undefined, label });
+  const ring = Array.isArray(n.ring) ? n.ring.filter(isEN) : [];
+  if (!(isFiniteNum(r.ce) && isFiniteNum(r.cn))) p = syncPlannedHouse(p, ring);
+  return plannedToNeighbor(p, n);
+}
+
 function buildProject(notes: string[]): ProjectJson {
   const m = study.model;
   let model: ProjectJson['model'] = null;
@@ -261,7 +283,15 @@ function buildProject(notes: string[]): ProjectJson {
     sitePolygon: study.sitePolygon.filter(isLatLon).map((p) => ({ lat: p.lat, lon: p.lon })),
     placement: { ...study.placement, hiddenObjects: [...(study.placement.hiddenObjects ?? [])] },
     model,
-    manualNeighbors: study.neighbors.filter((n) => n.source === 'manual').map((n) => ({ ...n, ring: n.ring.map((q) => ({ e: q.e, n: q.n })) })),
+    manualNeighbors: study.neighbors
+      .filter((n) => n.source === 'manual')
+      .map((n) => {
+        const out: Neighbor = { ...n, ring: n.ring.map((q) => ({ e: q.e, n: q.n })) };
+        // 想定の家は今の形（ring・height に合わせた中心・高さ）で書く
+        if (n.planned) out.planned = { ...syncPlannedHouse(n.planned, n.ring, n.height) };
+        return out;
+      }),
+    plannedEnabled: study.plannedEnabled,
     neighborOverrides: Object.fromEntries(Object.entries(study.neighborOverrides).map(([id, o]) => [id, { ...o }])),
     points: JSON.parse(JSON.stringify(study.points)) as ProjectJson['points'],
   };
@@ -339,7 +369,9 @@ export async function applyProject(p: ProjectJson): Promise<void> {
   study.results = { images: [] };
 
   // 周辺環境
-  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide) : [];
+  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
+  // 想定の家を影・解析に含めるか（無い古いデータは含める）
+  study.plannedEnabled = p.plannedEnabled !== false;
   let auto: Neighbor[] = [];
   study.grid = null;
   study.aerial = null;
@@ -358,7 +390,7 @@ export async function applyProject(p: ProjectJson): Promise<void> {
       }
     }
     if (env.aerial && typeof env.aerial.dataUrl === 'string') study.aerial = await decodeAerial(env.aerial);
-    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide) : [];
+    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
     study.neighborSources = Array.isArray(env.neighborSources) ? [...env.neighborSources] : [];
     study.neighborNotes = Array.isArray(env.neighborNotes) ? env.neighborNotes.filter((s) => typeof s === 'string') : [];
     if (env.horizon && Array.isArray(env.horizon.elevDeg) && env.horizon.elevDeg.length === 360) {

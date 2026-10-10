@@ -12,7 +12,7 @@
 import { download } from '../app/dom';
 import { formatHM, keyDates } from '../sun/solar';
 import { currentPlaced } from './building';
-import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere } from './disclosure';
+import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere, plannedLine } from './disclosure';
 import type { NeighborDisclosure } from './disclosure';
 import { analysisNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { DEM_LABEL } from './terrain';
@@ -58,17 +58,19 @@ export function demShort(source: string | undefined | null): string {
   }
 }
 
-/** 周辺建物を高さの根拠で数える（既定は影・解析に入る建物 = 描く建物 + 表示だけ隠した建物） */
-export function neighborCounts(list: Neighbor[] = analysisNeighbors()): { total: number; measured: number; estimated: number; manual: number } {
+/** 周辺建物を高さの根拠で数える（既定は影・解析に入る建物 = 描く建物 + 表示だけ隠した建物）。planned = 手入力のうち想定の家（未建築） */
+export function neighborCounts(list: Neighbor[] = analysisNeighbors()): { total: number; measured: number; estimated: number; manual: number; planned: number } {
   let measured = 0;
   let estimated = 0;
   let manual = 0;
+  let planned = 0;
   for (const n of list) {
     if (n.heightKind === 'measured') measured++;
     else if (n.heightKind === 'estimated') estimated++;
     else manual++;
+    if (n.planned) planned++;
   }
-  return { total: list.length, measured, estimated, manual };
+  return { total: list.length, measured, estimated, manual, planned };
 }
 
 /** 前提の項目（単位・寸法・方位・GL・周辺建物・地形・時刻） */
@@ -93,7 +95,7 @@ export function assumptionItems(): AssumptionItem[] {
   const viewOnly = viewOnlyNeighbors().length;
   items.push({
     key: 'neighbors',
-    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}${viewOnly ? `・表示だけ隠す ${viewOnly}` : ''}${excluded ? `・計算から除外 ${excluded}` : ''}）`,
+    text: `周辺建物 ${c.total}棟（実測 ${c.measured}・推定 ${c.estimated}${c.estimated ? '⚠' : ''}${c.manual ? `・手入力 ${c.manual}` : ''}${c.planned ? `（うち想定の家 ${c.planned}）` : ''}${viewOnly ? `・表示だけ隠す ${viewOnly}` : ''}${excluded ? `・計算から除外 ${excluded}` : ''}）`,
     warn: c.estimated > 0,
   });
   items.push({ key: 'terrain', text: `地形 ${demShort(study.grid?.source)}` });
@@ -291,6 +293,9 @@ export function buildReportHtml(): string {
       ],
       ['計算から除外', esc(disc.excluded.length ? `${disc.excluded.length}棟（${disc.byReason.map((x) => `${x.label} ${x.count}`).join('・')}）。一覧は「周辺建物の扱い」` : 'なし')],
     ];
+    // 想定の家（未建築の隣家）: 仮の形状であることを必ず書く
+    const pl = plannedLine(disc);
+    if (pl) rows.push(['想定の家', esc(pl)]);
     const left = `${dl(rows)}<h3>周辺建物の出典</h3>${srcHtml}${notes}${
       study.horizon ? `<p class="note">周囲の山・丘による日照の遮りを考慮しています（半径約 ${study.horizon.radiusKm} km の地形）。</p>` : ''
     }`;

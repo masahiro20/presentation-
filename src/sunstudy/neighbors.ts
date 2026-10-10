@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { pointInPolygon } from '../core/geometry';
 import { fetchOsmBuildings, lonLatToTile, metersPerDegree, tileToLonLat, toLocal } from '../sun/geo';
 import { decodeMvt } from '../sun/mvt';
+import { PLANNED_COLORS, buildPlannedHouseGeometry, plannedFootprint, syncPlannedHouse } from '../sun/plannedHouse';
 import type { AerialImage, Neighbor, NeighborSource } from './types';
 
 export interface FetchNeighborsResult {
@@ -559,10 +560,18 @@ export function makeManualNeighbor(dirDeg: number, distance: number, width: numb
 
 const WALL_COLOR: Record<Neighbor['heightKind'], string> = { measured: '#e8e6e1', estimated: '#ead9c2', manual: '#d9c7a8' };
 
+/** 想定の家の色（壁・屋根。半透明にしない） */
+export const PLANNED_WALL_COLOR = PLANNED_COLORS.wall;
+export const PLANNED_ROOF_COLOR = PLANNED_COLORS.roof;
+
 /**
  * 押し出しメッシュを作る。足元は groundY(e, n)（ワールド y。地形の最低点）、上面は 足元 + height。
  * 屋上に航空写真を貼る（aerial があれば）。壁は明るいグレー、推定は薄いベージュ、手動は薄い茶。
  * 各 Mesh の userData: { neighborId, neighbor: true, heightKind, matKey: 'neighbor' }。castShadow / receiveShadow。
+ *
+ * 想定の家（nb.planned）は押し出しではなく屋根付きの形（buildPlannedHouseGeometry。軒の出も影に入る）で、壁 #cfdcec・屋根 #6f8fb3
+ * （不透明・航空写真は貼らない）。足元は手動の隣家と同じく groundY の最低点 + 0.3（groundY は 0.3 m 下げた地盤を渡す約束）から高さを測り、
+ * 壁は 0.3 m 地面に埋める。userData は同じ + planned: true。マテリアルは [屋根, 壁]（グループ 0 = 屋根、1 = 壁）
  *
  * Shape は (e, n) で作り、+Z へ押し出してから rotateX(-π/2) する: (e, n, d) → (x=e, y=d, z=-n)。これはワールドの (x=東, z=南) に一致する。
  */
@@ -579,9 +588,29 @@ export function buildNeighborMeshes(list: Neighbor[], opts: { groundY: (e: numbe
   const roofAerial = tex ? new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 }) : null;
   const wallMats: Partial<Record<Neighbor['heightKind'], THREE.MeshStandardMaterial>> = {};
   const wallMat = (kind: Neighbor['heightKind']) => (wallMats[kind] ??= new THREE.MeshStandardMaterial({ color: WALL_COLOR[kind] ?? WALL_COLOR.measured, roughness: 0.9 }));
+  let plannedMats: THREE.MeshStandardMaterial[] | null = null;
 
   for (const nb of list as NeighborEx[]) {
     if (nb.hidden) continue;
+    if (nb.planned) {
+      // 想定の家: 屋根付きの形（中心・高さは ring・height に合わせる）
+      const p = syncPlannedHouse(nb.planned, nb.ring, nb.height);
+      let g0 = Infinity;
+      for (const c of plannedFootprint(p)) {
+        const g = opts.groundY(c.e, c.n);
+        if (Number.isFinite(g) && g < g0) g0 = g;
+      }
+      if (!Number.isFinite(g0)) g0 = 0;
+      const geo = buildPlannedHouseGeometry(p, { toWorld: (e, n, y) => new THREE.Vector3(e, y, -n), baseY: g0 + 0.3, sink: 0.3 });
+      plannedMats ??= [new THREE.MeshStandardMaterial({ color: PLANNED_ROOF_COLOR, roughness: 0.75 }), new THREE.MeshStandardMaterial({ color: PLANNED_WALL_COLOR, roughness: 0.85 })];
+      const mesh = new THREE.Mesh(geo, plannedMats);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.name = nb.label ?? '想定の家';
+      mesh.userData = { neighbor: true, neighborId: nb.id, heightKind: nb.heightKind, matKey: 'neighbor', planned: true };
+      group.add(mesh);
+      continue;
+    }
     const ring = cleanRing(nb.ring);
     if (ring.length < 3) continue;
     const shape = new THREE.Shape(ring.map((p) => new THREE.Vector2(p.e, p.n)));

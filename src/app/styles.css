@@ -382,3 +382,33 @@ body.presenting .main { grid-template-columns: 1fr; }
 .sun-disclosure { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--line); background: #faf8f4; font-size: 11.5px; line-height: 1.6; color: var(--ink2); }
 .sun-disclosure div:first-child { color: var(--ink); }
 .sun-diagram-opts .check { font-size: 12.5px; margin: 2px 0 6px; }
+/* 日照: 想定の家（未建築の隣家）のブロック・一覧・クリックで開く編集の案内（名前は sunpl- で分ける） */
+.sunpl-block { margin: 12px 0 6px; padding: 10px 10px 6px; border: 1px solid #d6e1ee; border-radius: 10px; background: #f6f9fd; }
+.sunpl-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.sunpl-block .field { margin: 6px 0; }
+.sunpl-block .field select { padding: 6px 8px; font-size: 12.5px; }
+.sunpl-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.sunpl-sides .check { font-size: 12.5px; margin: 3px 0; }
+.sunpl-side.road { color: var(--ink2); }
+.sunpl-include-row { font-size: 13px; margin: 8px 0 4px; }
+.sunpl-list { margin: 4px 0 2px; }
+.sunpl-empty { margin: 2px 0 4px; }
+.sunpl-list-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 0; flex-wrap: wrap; }
+.sunpl-list-head .hint { margin: 0; }
+.sunpl-list-head .btn { margin-left: auto; padding: 3px 8px; font-size: 11.5px; }
+.sunpl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 4px 5px 7px; border-bottom: 1px solid #e3eaf3; border-left: 3px solid #6f8fb3; font-size: 12.5px; background: #fff; }
+.sunpl-row:hover { background: #fdf3ee; }
+.sunpl-row.on { background: #fdf3ee; border-left-color: #e5531f; }
+.sunpl-row.off { opacity: 0.6; }
+.sunpl-row-name { min-width: 0; }
+.sunpl-row-name .hint { margin-top: 1px; }
+.sunpl-row-acts { display: flex; gap: 4px; flex: none; }
+.sunpl-row-acts .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+.sunpl-pop { width: 300px; max-width: 300px; box-sizing: border-box; }
+.sunpl-pop .field { margin: 5px 0 0; }
+.sunpl-pop .field-label { font-size: 11.5px; margin-bottom: 2px; }
+.sunpl-pop .field input[type=text], .sunpl-pop .field input[type=number], .sunpl-pop .field select { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12.5px; background: #fff; }
+.sunpl-pop .field input:disabled { background: #f3f1ec; color: var(--ink3); }
+.sunpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.sunpl-pop .row { margin-top: 8px; }
+.sunpl-pop .row .btn.sm { padding: 4px 9px; }

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext, keysInRect, ringArea, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { SunContext, keysInRect, ringArea, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
@@ -13,6 +13,9 @@ import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
 import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, neighborTitle, neighborWhere, type SunDisclosure } from '../sunDisclosure';
+import { DEFAULT_PLANNED_PRESET, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, plannedAxes, plannedPreset, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
+import type { EN } from '../../sun/align';
+import type { PlanSide } from '../../core/types';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -30,6 +33,8 @@ let raf = 0;
 let heat: THREE.Mesh | null = null;
 /** 日影図の描き方の選択（ステップを出入りしても覚える） */
 const diagramChoice = { regulationId: '', halfHour: false };
+/** 想定の家の選択（置く形・敷地の隣に並べる辺。ステップを出入りしても覚える。sides が null なら既定 = 道路ではない辺） */
+const plannedChoice: { preset: PlannedPresetId; sides: PlanSide[] | null } = { preset: DEFAULT_PLANNED_PRESET, sides: null };
 
 /** 最後に使った日照ステップの周辺環境（プレゼン資料の注記用。日照ステップを開いていなければ null） */
 let activeSc: SunContext | null = null;
@@ -122,6 +127,218 @@ export function diagramSummaryText(summary: ShadowDiagramSummary[]): string {
   return summary
     .map((s) => `${s.hour}時間日影${s.role === 'limitNear' ? '（5〜10m の規制）' : s.role === 'limitFar' ? '（10m 超の規制）' : ''}: 敷地境界から最大 約${s.maxDist.toFixed(1)}m`)
     .join('／');
+}
+
+// ---------------------------------------------------------------- 想定の家（未建築の隣家）（文言・向き・敷地の隣の区画の純粋な部分）
+// 分譲地などで隣の家がまだ建っていないときに「建った想定」で置く仮の建物。形・区画の計算は src/sun/plannedHouse.ts、
+// 3D・影・解析への出し入れは SunContext（addPlanned など）。ここは日照ステップの操作と文言
+
+export const PLANNED_BLOCK_TITLE = '想定の家（未建築の隣家）';
+export const PLANNED_MODE_LABEL = '＋ 想定の家を置く';
+export const PLANNED_MODE_ARMED = '航空写真の上で、想定の家を置く所をクリックしてください（続けて置けます。もう一度押すと終了・Esc でも終了）';
+export const PLANNED_MODE_GUIDE = 'クリックした所に、選んだ形の想定の家を計画の建物と平行に置きます（続けて置けます）。置いた家をクリックすると大きさ・向き・高さ・屋根を直せます（選んだ家はドラッグで移動、R / Shift+R で 90° 回転、Delete で削除）';
+export const PLANNED_INCLUDE_LABEL = '想定の建物を含める（影・解析）';
+export const PLANNED_SIDES_BUTTON = '敷地の隣に想定の家';
+export const PLANNED_EDITOR_HINT = '選んだ家はドラッグで移動・R / Shift+R で 90° 回転・Delete で削除・Esc で閉じる';
+export const PLANNED_ENABLED_ON_MSG = '「想定の建物を含める」をオンにしました（置いた家は影・解析に入ります）';
+export const PLANNED_NO_SIDES_MSG = '想定の家を置く側（北側・南側など）を選んでください';
+/** 敷地の隣に並べた区画の破線の色（航空写真の上で見える明るい青） */
+export const PLANNED_LOT_COLOR = '#8cc8ff';
+/** クリックで置ける建物の中心からの距離 (m)（航空写真の範囲 220 m の外・空をクリックしたときは置かない） */
+export const PLANNED_MAX_DIST = 400;
+/** 一覧の見出し */
+export function plannedListTitle(n: number): string {
+  return `置いた想定の家（${n} 棟）`;
+}
+
+/** 図面の辺（ワールドの XZ。図面の上 = −Z） */
+export const PLAN_SIDES: readonly PlanSide[] = ['top', 'right', 'bottom', 'left'];
+const SIDE_VEC: Readonly<Record<PlanSide, { x: number; z: number }>> = { top: { x: 0, z: -1 }, right: { x: 1, z: 0 }, bottom: { x: 0, z: 1 }, left: { x: -1, z: 0 } };
+const OPPOSITE_SIDE: Readonly<Record<PlanSide, PlanSide>> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+/** 区画の 4 隅（図面の左上・右上・右下・左下）の辺の番号: 0 = 上、1 = 右、2 = 下、3 = 左 */
+const SIDE_EDGE: Readonly<Record<PlanSide, number>> = { top: 0, right: 1, bottom: 2, left: 3 };
+const DIR8_NAMES = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+/** 幅員が分からない道路の幅 (m)。外構の道路と同じ */
+export const DEFAULT_ROAD_WIDTH = 6;
+
+/** ワールド XZ の向き (dx, dz) の方位（真北から時計回り, 度, [0, 360)）。SunContext.fromWorld と同じ北の取り方 */
+export function worldBearingDeg(dx: number, dz: number, northAngleDeg: number): number {
+  const a = (northAngleDeg * Math.PI) / 180;
+  const e = dx * Math.cos(a) + dz * Math.sin(a);
+  const n = dx * Math.sin(a) - dz * Math.cos(a);
+  const deg = (Math.atan2(e, n) * 180) / Math.PI;
+  return ((Math.round(deg * 1e6) / 1e6) % 360 + 360) % 360;
+}
+
+/** 図面の辺 → 8 方位の名前（北・南東など） */
+export function planSideCompass(side: PlanSide, northAngleDeg: number): string {
+  const v = SIDE_VEC[side];
+  return DIR8_NAMES[Math.round(worldBearingDeg(v.x, v.z, northAngleDeg) / 45) % 8];
+}
+
+/**
+ * 計画の建物と平行に置く向き（PlannedHouse.rotDeg）: 建物（PDF の外形の箱）の長手の方位に棟（width の軸）を合わせる。[0, 180)
+ */
+export function plannedRotForPlan(sizeX: number, sizeZ: number, northAngleDeg: number): number {
+  const b = sizeX >= sizeZ ? worldBearingDeg(1, 0, northAngleDeg) : worldBearingDeg(0, 1, northAngleDeg);
+  const r = b % 180;
+  return r >= 180 - 1e-9 ? 0 : r;
+}
+
+/** 敷地の接道（区画の向きを決める） */
+export interface LotRoads {
+  /** 主な接道の辺（外構の道路 = viewer.state.site.roadDir の側） */
+  primary: PlanSide;
+  /** 道路に面する辺と幅員 (m) */
+  widths: Partial<Record<PlanSide, number>>;
+}
+
+/** 外向きの向き（viewer.state.site.roadDir。軸に丸めたもの）→ 図面の辺 */
+export function sideOfDir(d: { x: number; z: number }): PlanSide {
+  return Math.abs(d.x) > Math.abs(d.z) ? (d.x > 0 ? 'right' : 'left') : d.z < 0 ? 'top' : 'bottom';
+}
+
+/**
+ * 図面の接道（state.model.site.roads。分からなければ空）と外構の道路の向き（roadDir）から、区画に使う道路。
+ * 幅員は図面の値（3〜20 m に丸める）、無ければ 6 m。外構で道路を敷いた側（roadDir）はいつも道路に含める
+ */
+export function lotRoads(roads: readonly { side: PlanSide; widthMm?: number }[] | null | undefined, roadDir: { x: number; z: number }): LotRoads {
+  const w = (mm?: number) => (typeof mm === 'number' && Number.isFinite(mm) && mm > 0 ? Math.max(3, Math.min(20, mm / 1000)) : DEFAULT_ROAD_WIDTH);
+  const widths: Partial<Record<PlanSide, number>> = {};
+  for (const r of roads ?? []) if (PLAN_SIDES.includes(r.side)) widths[r.side] = Math.max(widths[r.side] ?? 0, w(r.widthMm));
+  const primary = sideOfDir(roadDir);
+  if (widths[primary] == null) widths[primary] = w(roads?.[0]?.widthMm);
+  return { primary, widths };
+}
+
+/** 道路から建物を向いたときの辺の呼び名: 道路／裏／右隣／左隣 */
+export type LotRelation = '道路' | '裏' | '右隣' | '左隣';
+export function lotSideRelation(side: PlanSide, roads: LotRoads): LotRelation {
+  if (roads.widths[side] != null) return '道路';
+  if (side === OPPOSITE_SIDE[roads.primary]) return '裏';
+  // 道路に立って建物を向く向き f = −p。上から見て（x 右・z 下）f の右手は (−f.z, f.x) = (p.z, −p.x)
+  const p = SIDE_VEC[roads.primary];
+  const s = SIDE_VEC[side];
+  return s.x * p.z - s.z * p.x > 0 ? '右隣' : '左隣';
+}
+
+/** 辺の選択肢の名前（例 '北側（裏）'・'南側（道路の向かい）'） */
+export function lotSideLabel(side: PlanSide, roads: LotRoads, northAngleDeg: number): string {
+  const rel = lotSideRelation(side, roads);
+  return `${planSideCompass(side, northAngleDeg)}側（${rel === '道路' ? '道路の向かい' : rel}）`;
+}
+
+/** 既定で選ぶ辺: 道路ではない辺（左右の隣・裏） */
+export function defaultLotSides(roads: LotRoads): PlanSide[] {
+  return PLAN_SIDES.filter((s) => roads.widths[s] == null);
+}
+
+/** 敷地の長方形（ワールド。y はワールドの z。viewer.state.site と同じ形） */
+export interface SiteRectWorld {
+  min: { x: number; y: number };
+  max: { x: number; y: number };
+}
+
+/** 敷地の隣の区画 */
+export interface SideLot {
+  side: PlanSide;
+  /** 道路の向かいの区画（道路の幅だけ離す） */
+  acrossRoad: boolean;
+  /** 区画の 4 隅（ワールド XZ）: 図面の左上・右上・右下・左下（辺 0 = 上・1 = 右・2 = 下・3 = 左） */
+  corners: { x: number; z: number }[];
+  /** その区画の道路側の辺（houseInLot の frontEdgeIndex） */
+  frontEdge: number;
+}
+
+/**
+ * 敷地（長方形）の隣に、同じ大きさの区画を選んだ辺の側に並べる（分譲地の区画の想定）。
+ * 道路の辺は道路の幅だけ離した向かいの区画。区画の道路側の辺: 向かいの区画は敷地を向く辺、左右の隣は敷地と同じ道路の側、
+ * 裏は背中合わせ（遠い側）
+ */
+export function siteSideLots(site: SiteRectWorld, sides: readonly PlanSide[], roads: LotRoads): SideLot[] {
+  const w = site.max.x - site.min.x;
+  const d = site.max.y - site.min.y;
+  if (!(w > 0 && d > 0)) return [];
+  const out: SideLot[] = [];
+  for (const side of PLAN_SIDES) {
+    if (!sides.includes(side)) continue;
+    const road = roads.widths[side];
+    const gap = road ?? 0;
+    const v = SIDE_VEC[side];
+    const dx = v.x * (w + gap);
+    const dz = v.z * (d + gap);
+    const x0 = site.min.x + dx;
+    const x1 = site.max.x + dx;
+    const z0 = site.min.y + dz;
+    const z1 = site.max.y + dz;
+    const front: PlanSide = road != null ? OPPOSITE_SIDE[side] : roads.primary === OPPOSITE_SIDE[side] ? side : roads.primary;
+    out.push({
+      side,
+      acrossRoad: road != null,
+      corners: [
+        { x: x0, z: z0 },
+        { x: x1, z: z0 },
+        { x: x1, z: z1 },
+        { x: x0, z: z1 },
+      ],
+      frontEdge: SIDE_EDGE[front],
+    });
+  }
+  return out;
+}
+
+/** 敷地の隣の想定の家の名前（例 '北隣の想定の家'・'南向かいの想定の家'） */
+export function sideLotLabel(lot: Pick<SideLot, 'side' | 'acrossRoad'>, northAngleDeg: number): string {
+  return `${planSideCompass(lot.side, northAngleDeg)}${lot.acrossRoad ? '向かい' : '隣'}の${PLANNED_DEFAULT_LABEL}`;
+}
+
+const m1 = (v: number) => v.toFixed(1);
+/** 一覧・案内の形の説明（例 '切妻・9.1×7.3 m・軒 6.0 m・最高 8.5 m'） */
+export function plannedSummary(p: Pick<PlannedHouse, 'roof' | 'width' | 'depth' | 'eaveHeight' | 'ridgeHeight'>): string {
+  const hgt = p.roof === 'flat' ? `高さ ${m1(p.ridgeHeight)} m` : `軒 ${m1(p.eaveHeight)} m・最高 ${m1(p.ridgeHeight)} m`;
+  return `${ROOF_LABEL[p.roof]}・${m1(p.width)}×${m1(p.depth)} m・${hgt}`;
+}
+
+/** プリセットの選択肢の名前（例 '2 階建て（切妻） 9.1×7.3 m・高さ 8.5 m'） */
+export function plannedPresetOption(id: PlannedPresetId): string {
+  const p = plannedPreset(id);
+  return `${p.label} ${p.width}×${p.depth} m・高さ ${p.ridgeHeight} m`;
+}
+
+/** プリセットに替える値（位置・向き・名前はそのまま） */
+export function presetPatch(id: PlannedPresetId): Partial<PlannedHouse> {
+  const p = plannedPreset(id);
+  return { width: p.width, depth: p.depth, eaveHeight: p.eaveHeight, ridgeHeight: p.ridgeHeight, roof: p.roof, preset: p.id };
+}
+
+/** 陸屋根から勾配屋根にするときに軒から上げる棟の高さ (m) */
+export const ROOF_RISE: Readonly<Record<RoofType, number>> = { gable: 2.5, hip: 2.0, shed: 2.0, flat: 0 };
+/** 屋根の形を替える値: 棟 = 軒（陸屋根だった家）を勾配屋根にするときは棟を軒 + ROOF_RISE に上げる（そのままでは平らに見える） */
+export function roofPatch(cur: Pick<PlannedHouse, 'eaveHeight' | 'ridgeHeight'>, roof: RoofType): Partial<PlannedHouse> {
+  if (roof !== 'flat' && cur.ridgeHeight <= cur.eaveHeight + 0.05) return { roof, ridgeHeight: cur.eaveHeight + ROOF_RISE[roof] };
+  return { roof };
+}
+
+/** 向きを d 度回す（R = +90 = 上から見て時計回り、Shift+R = −90）。[0, 360) */
+export function rotatedDeg(rot: number, d: number): number {
+  const r = (((rot + d) % 360) + 360) % 360;
+  return r >= 360 - 1e-9 ? 0 : r;
+}
+
+/** 複製: 棟の向き（width の軸）に 幅 + gap だけずらした同じ家（分譲地の並び。id は付けない） */
+export function duplicatePlanned(p: PlannedHouse, gap = 1): Partial<PlannedHouse> {
+  const { u } = plannedAxes(p.rotDeg);
+  const s = p.width + gap;
+  const { id: _id, ...rest } = p;
+  return { ...rest, ce: p.ce + u.e * s, cn: p.cn + u.n * s };
+}
+
+/** 数字の欄の値（全角の数字・空白も読む）。読めなければ null */
+export function parseFieldNumber(text: string): number | null {
+  const t = text.normalize('NFKC').trim();
+  if (!t) return null;
+  const v = Number(t);
+  return Number.isFinite(v) ? v : null;
 }
 
 /** 建設地の位置・向きを変えたときに、待ち受け中の 2 点合わせを中止する案内（指した角の座標はワールドなので古くなる） */
@@ -682,6 +899,8 @@ export const sunStep: Step = {
     const distIn = h('input', { type: 'number', value: 9, min: 2, max: 60 }) as HTMLInputElement;
     const hIn = h('input', { type: 'number', value: 7, min: 2, max: 60 }) as HTMLInputElement;
     const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showSunPath', HTMLInputElement>> = {};
+    // 想定の家の区画の破線の表示を合わせる（実体は想定の家のブロックで入れる）
+    let syncPlannedVisual: () => void = () => {};
     const toggles = h(
       'div',
       null,
@@ -695,6 +914,8 @@ export const sunStep: Step = {
             onchange: (e: Event) => {
               sc.state[k] = (e.target as HTMLInputElement).checked;
               sc.applyVisibility();
+              // 想定の家の区画の破線は周辺の建物と一緒に出し入れする
+              syncPlannedVisual();
               apply(true);
             },
           }) as HTMLInputElement),
@@ -730,7 +951,14 @@ export const sunStep: Step = {
     let pop: HTMLElement | null = null;
     let popKey: string | null = null;
     let hiddenOpen = false;
-    const syncHighlight = () => sc.setHighlight(popKey ? [...selected, popKey] : selected);
+    // 想定の家: 編集の案内を開いている家（選択）と、一覧で指している家のキー。どちらもオレンジで表示する
+    let plKey: string | null = null;
+    let plHover: string | null = null;
+    // 想定の家の操作（置くモード・編集の案内・ドラッグ）を終える／一覧と案内を今の値に合わせる（実体は想定の家のブロックで入れる）
+    let stopPlannedUI: () => void = () => {};
+    let refreshPlanned: () => void = () => {};
+    let closePlannedEditor: () => void = () => {};
+    const syncHighlight = () => sc.setHighlight([...selected, ...[popKey, plKey, plHover].filter((k): k is string => !!k)]);
     const afterEdit = () => {
       invalidateResults();
       apply(true);
@@ -841,6 +1069,7 @@ export const sunStep: Step = {
     /** 建物の案内（出典・高さを直す・隠す）。クリックした所の近くに出す */
     const openPop = (key: string, cx: number, cy: number) => {
       closePop();
+      closePlannedEditor();
       const b = sc.findByKey(key);
       if (!b) return;
       popKey = key;
@@ -923,10 +1152,11 @@ export const sunStep: Step = {
           toast(NO_NEIGHBORS_MSG, 'info', 8000);
           return;
         }
-        // 敷地をクリック・2 点合わせと同時に有効にしない（1 クリックが両方に効いてしまう）
+        // 敷地をクリック・2 点合わせ・想定の家を置くと同時に有効にしない（1 クリックが両方に効いてしまう）
         setPlacing(false);
         extPanel?.cancelTwoPoint();
         closePop();
+        stopPlannedUI();
         if (!sc.state.showNeighbors) {
           sc.state.showNeighbors = true;
           if (toggleInputs.showNeighbors) toggleInputs.showNeighbors.checked = true;
@@ -957,6 +1187,7 @@ export const sunStep: Step = {
     stopNeighborUI = () => {
       setHideMode(false);
       closePop();
+      stopPlannedUI();
     };
     hideBtn.addEventListener('click', () => setHideMode(!hideMode));
     const toggleSel = (key: string) => {
@@ -993,6 +1224,7 @@ export const sunStep: Step = {
       if (hideMode && !sc.state.neighbors.length) setHideMode(false);
       renderBar();
       renderHiddenList();
+      refreshPlanned();
     };
     // 3D のクリック: 押した所から動かさずに離したときだけ（ドラッグは視点の操作）。「建物を選んで隠す」の間は Shift+ドラッグで範囲選択
     let nbDown: { x: number; y: number; busy: boolean } | null = null;
@@ -1004,6 +1236,554 @@ export const sunStep: Step = {
       return new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
     };
     const pickAt = (x: number, y: number) => sc.pickNeighbor(ndcAt(x, y), [v.groups.building, v.groups.roof, v.groups.external]);
+
+    // ---- 想定の家（未建築の隣家）: 置くモード・敷地の隣に並べる・一覧・クリックで開く編集の案内・ドラッグで移動・R で回転・Delete で削除 ----
+    // 家の値は SunContext（addPlanned / updatePlanned / removePlanned。座標は建物の中心からの東・北）に持つ。変えるたびに解析結果を捨て（afterEdit）、
+    // 周辺建物を作り直した通知（onNeighborsChange → refreshPlanned）で一覧・案内・区画の破線を合わせる
+    /** 計画の建物と平行に置く向き（PDF の建物の長手に棟を合わせる。真北の角度を変えた後も合う） */
+    const planRot = () => {
+      const b = v.state!.meta.bbox;
+      return plannedRotForPlan(b.max.x - b.min.x, b.max.z - b.min.z, state.model!.northAngleDeg);
+    };
+    const plannedByKey = (k: string): PlannedBuilding | undefined => sc.plannedList().find((b) => sc.keyOf(b) === k);
+    const currentPresetId = (): PlannedPresetId => (isPlannedPresetId(plPresetSel.value) ? plPresetSel.value : DEFAULT_PLANNED_PRESET);
+    // 敷地の隣に並べた区画（家のキー → 区画）。ステップを出入りしても残るよう viewer に持つ（家を消すと区画も消える）
+    const lotStore: Map<string, { side: PlanSide; lot: EN[] }> = (v.userData.plannedLots as Map<string, { side: PlanSide; lot: EN[] }> | undefined) ?? new Map();
+    v.userData.plannedLots = lotStore;
+    const lotsG = new THREE.Group();
+    lotsG.name = 'planned-lots';
+    v.groups.overlay.add(lotsG);
+    const lotMat = new THREE.LineDashedMaterial({ color: PLANNED_LOT_COLOR, dashSize: 1.0, gapSize: 0.6, toneMapped: false });
+    syncPlannedVisual = () => {
+      lotsG.visible = sc.plannedEnabled && sc.state.showNeighbors;
+      v.invalidate();
+    };
+    /** 区画の破線を作り直す（消えた家の区画は捨てる）。地面より少し上に、影を落とさない線で */
+    const drawLots = () => {
+      for (const o of lotsG.children) (o as THREE.Line).geometry.dispose();
+      lotsG.clear();
+      const present = new Set(sc.plannedList().map((b) => sc.keyOf(b)));
+      for (const k of [...lotStore.keys()]) if (!present.has(k)) lotStore.delete(k);
+      for (const [k, { lot }] of lotStore) {
+        if (lot.length < 3) continue;
+        const pts = lot.map((p) => sc.toWorld(p.e, p.n, 0.08));
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([...pts, pts[0]]), lotMat);
+        line.computeLineDistances();
+        line.castShadow = false;
+        line.userData.noShadow = true;
+        line.userData.plannedLot = k;
+        line.renderOrder = 4;
+        lotsG.add(line);
+      }
+      syncPlannedVisual();
+    };
+    const plPresetSel = h(
+      'select',
+      { class: 'sunpl-preset', title: '置く家の形（寸法は一般的な建売・分譲住宅の目安。置いた後で家をクリックすると直せます）' },
+      ...PLANNED_PRESETS.map((p) => h('option', { value: p.id, selected: p.id === plannedChoice.preset }, plannedPresetOption(p.id))),
+    ) as HTMLSelectElement;
+    plPresetSel.addEventListener('change', () => {
+      if (isPlannedPresetId(plPresetSel.value)) plannedChoice.preset = plPresetSel.value;
+    });
+    const plBtn = h('button', { class: 'btn sm block sunpl-arm', style: 'margin-top:2px' }, PLANNED_MODE_LABEL) as HTMLButtonElement;
+    const plIncl = h('input', { type: 'checkbox', class: 'sunpl-include', checked: sc.plannedEnabled }) as HTMLInputElement;
+    const plList = h('div', { class: 'sunpl-list' });
+    let plArmed = false;
+    let plPop: HTMLElement | null = null;
+    let plFill: (() => void) | null = null;
+    /** 想定の家を置く・並べるときは「想定の建物を含める」をオンにする（置いた家が見えないと分からない） */
+    const ensurePlannedOn = () => {
+      if (sc.plannedEnabled) return;
+      sc.setPlannedEnabled(true);
+      plIncl.checked = true;
+      afterEdit();
+      toast(PLANNED_ENABLED_ON_MSG, 'info', 8000);
+    };
+    const ensureNeighborsShown = () => {
+      if (sc.state.showNeighbors) return;
+      sc.state.showNeighbors = true;
+      if (toggleInputs.showNeighbors) toggleInputs.showNeighbors.checked = true;
+      sc.applyVisibility();
+      syncPlannedVisual();
+    };
+    const setPlannedArmed = (on: boolean) => {
+      if (on === plArmed) return;
+      if (on) {
+        // 敷地をクリック・2 点合わせ・建物を選んで隠すと同時に有効にしない（1 クリックが両方に効いてしまう）
+        setPlacing(false);
+        extPanel?.cancelTwoPoint();
+        setHideMode(false);
+        closePop();
+        closePlannedEditor();
+        ensurePlannedOn();
+        ensureNeighborsShown();
+      }
+      plArmed = on;
+      plBtn.classList.toggle('dark', on);
+      plBtn.textContent = on ? PLANNED_MODE_ARMED : PLANNED_MODE_LABEL;
+      canvasEl.style.cursor = on ? 'crosshair' : '';
+      if (on) toast(PLANNED_MODE_GUIDE, 'info', 8000);
+    };
+    plBtn.addEventListener('click', async () => {
+      if (plArmed) {
+        setPlannedArmed(false);
+        return;
+      }
+      // 航空写真の上で置く（読めなくても地面には置ける）
+      if (!sc.state.aerialLoaded) await ensureAerial();
+      setPlannedArmed(true);
+    });
+    /** 画面の点の、水平な面（既定は地面 y = 0）の上の点 */
+    const groundPoint = (x: number, y: number, plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)): THREE.Vector3 | null => {
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(ndcAt(x, y), v.camera);
+      return rc.ray.intersectPlane(plane, new THREE.Vector3());
+    };
+    /** クリックした所（航空写真、無ければ地面）に、選んだ形の家を計画の建物と平行に置く */
+    const placePlannedAt = (x: number, y: number) => {
+      const hit = sc.pickAerial(ndcAt(x, y)) ?? groundPoint(x, y);
+      const en = hit ? sc.fromWorld(hit) : null;
+      if (!en || Math.hypot(en.e, en.n) > PLANNED_MAX_DIST) {
+        toast('建物のまわりの地面（航空写真）の上をクリックしてください');
+        return;
+      }
+      const id = currentPresetId();
+      sc.addPlanned(houseFromPreset(id, en.e, en.n, planRot()));
+      afterEdit();
+      toast(`想定の家「${plannedPreset(id).label}」を置きました（続けて置けます。置いた家をクリックすると直せます）`, 'ok');
+    };
+    const editPlanned = (key: string, patch: Partial<Omit<PlannedHouse, 'id'>>, msg?: string): boolean => {
+      if (!sc.updatePlanned(key, patch)) {
+        plFill?.();
+        return false;
+      }
+      afterEdit();
+      if (msg) toast(msg, 'ok');
+      return true;
+    };
+    const removePlannedKey = (key: string) => {
+      const name = plannedByKey(key)?.label ?? PLANNED_DEFAULT_LABEL;
+      if (key === plKey) closePlannedEditor();
+      if (!sc.removePlanned(key)) return;
+      lotStore.delete(key);
+      drawLots();
+      afterEdit();
+      toast(`「${name}」を削除しました`, 'ok');
+    };
+    const rotatePlanned = (key: string, d: number) => {
+      const p = plannedByKey(key)?.planned;
+      if (p) editPlanned(key, { rotDeg: rotatedDeg(p.rotDeg, d) });
+    };
+    const clearAllPlanned = () => {
+      endDrag(false);
+      closePlannedEditor();
+      const n = sc.clearPlanned();
+      if (!n) return;
+      lotStore.clear();
+      drawLots();
+      afterEdit();
+      toast(`想定の家を ${n} 棟消しました`, 'ok');
+    };
+    /** 家の中ほどの画面の位置（画面の外・カメラの後ろなら null） */
+    const screenOfPlanned = (b: PlannedBuilding): { x: number; y: number } | null => {
+      const p = b.planned;
+      const w = sc.toWorld(p.ce, p.cn, p.ridgeHeight / 2).project(v.camera);
+      if (w.z < -1 || w.z > 1 || Math.abs(w.x) > 1 || Math.abs(w.y) > 1) return null;
+      const r = canvasEl.getBoundingClientRect();
+      return { x: r.left + ((w.x + 1) / 2) * r.width, y: r.top + ((1 - w.y) / 2) * r.height };
+    };
+    const markPlannedRows = () => plList.querySelectorAll<HTMLElement>('.sunpl-row').forEach((r) => r.classList.toggle('on', r.dataset.key === plKey));
+    closePlannedEditor = () => {
+      if (!plPop && !plKey) return;
+      plPop?.remove();
+      plPop = null;
+      plFill = null;
+      plKey = null;
+      if (canvasEl.style.cursor === 'move') canvasEl.style.cursor = '';
+      syncHighlight();
+      markPlannedRows();
+    };
+    /**
+     * 想定の家の編集の案内（名前・形・幅・奥行・向き・屋根・軒高・最高高さ・回転・複製・削除）。at の近く（無ければ家の上）に出す。
+     * 欄は変更（change）で確定し、値は clampHouse で整えて欄に戻す
+     */
+    const openPlannedEditor = (key: string, at?: { x: number; y: number }) => {
+      closePop();
+      closePlannedEditor();
+      const b = plannedByKey(key);
+      if (!b) return;
+      plKey = key;
+      syncHighlight();
+      markPlannedRows();
+      const s = ctx.stage.getBoundingClientRect();
+      const pos = at ?? screenOfPlanned(b) ?? { x: s.left + 16, y: s.top + 64 };
+      const left = Math.max(8, Math.min(s.width - 316, pos.x - s.left + 14));
+      const top = Math.max(8, Math.min(s.height - 470, pos.y - s.top + 14));
+      const title = h('h5');
+      const where = h('div', { class: 'hint' });
+      const nameIn = h('input', { type: 'text', class: 'sunpl-name', maxlength: PLANNED_LABEL_MAX, placeholder: PLANNED_DEFAULT_LABEL }) as HTMLInputElement;
+      const presetSel = h('select', { class: 'sunpl-ed-preset' }, h('option', { value: '' }, '—（手入力）'), ...PLANNED_PRESETS.map((p) => h('option', { value: p.id }, p.label))) as HTMLSelectElement;
+      const num = (cls: string, min: number, max: number, step: number) => h('input', { type: 'number', class: cls, min, max, step }) as HTMLInputElement;
+      const wIn = num('sunpl-w', 1, 300, 0.1);
+      const dIn = num('sunpl-d', 1, 300, 0.1);
+      const rotIn = num('sunpl-rot', 0, 359, 1);
+      const eaveIn = num('sunpl-eave', 1, 300, 0.1);
+      const ridgeIn = num('sunpl-ridge', 1, 300, 0.1);
+      const roofSel = h('select', { class: 'sunpl-roof' }, ...ROOF_TYPES.map((r) => h('option', { value: r }, ROOF_LABEL[r]))) as HTMLSelectElement;
+      const fill = () => {
+        const cur = plannedByKey(key);
+        if (!cur) return;
+        const p = cur.planned;
+        title.textContent = cur.label ?? PLANNED_DEFAULT_LABEL;
+        where.textContent = `${neighborWhere(cur)}・未建築（仮の形状）${sc.plannedEnabled ? '' : '・今は影・解析に含めていません'}`;
+        nameIn.value = p.label ?? '';
+        presetSel.value = p.preset ?? '';
+        wIn.value = m1(p.width);
+        dIn.value = m1(p.depth);
+        rotIn.value = String(Math.round(p.rotDeg * 10) / 10);
+        roofSel.value = p.roof;
+        eaveIn.value = m1(p.eaveHeight);
+        ridgeIn.value = m1(p.ridgeHeight);
+        // 陸屋根は最高高さ = 軒高（軒高の欄で変える）
+        ridgeIn.disabled = p.roof === 'flat';
+      };
+      const commitNum = (inp: HTMLInputElement, name: 'width' | 'depth' | 'rotDeg' | 'eaveHeight' | 'ridgeHeight') =>
+        inp.addEventListener('change', () => {
+          const val = parseFieldNumber(inp.value);
+          const cur = plannedByKey(key)?.planned;
+          if (!cur) return;
+          if (val == null) {
+            toast('数字で入力してください', 'error');
+            fill();
+            return;
+          }
+          const patch: Partial<PlannedHouse> = { [name]: val };
+          // 最高高さを軒より低くしたら、軒も同じ比で下げる（棟 = 軒の勾配屋根は平らに見える）
+          if (name === 'ridgeHeight' && val < cur.eaveHeight && cur.ridgeHeight > 0) patch.eaveHeight = (cur.eaveHeight * val) / cur.ridgeHeight;
+          editPlanned(key, patch);
+        });
+      commitNum(wIn, 'width');
+      commitNum(dIn, 'depth');
+      commitNum(rotIn, 'rotDeg');
+      commitNum(eaveIn, 'eaveHeight');
+      commitNum(ridgeIn, 'ridgeHeight');
+      nameIn.addEventListener('change', () => editPlanned(key, { label: nameIn.value }));
+      presetSel.addEventListener('change', () => {
+        if (!isPlannedPresetId(presetSel.value)) {
+          fill();
+          return;
+        }
+        editPlanned(key, presetPatch(presetSel.value), `「${plannedPreset(presetSel.value).label}」の形にしました`);
+      });
+      roofSel.addEventListener('change', () => {
+        const cur = plannedByKey(key)?.planned;
+        if (cur && isRoofType(roofSel.value)) editPlanned(key, roofPatch(cur, roofSel.value));
+      });
+      // Enter で確定（欄から外れるので change が来る）。Esc は入力中の値を捨てて閉じる（閉じるのは onNbKey）。
+      // 欄の中の R・Delete は家に効かせない（onPlannedKey が欄を除く）
+      for (const inp of [nameIn, wIn, dIn, rotIn, eaveIn, ridgeIn])
+        inp.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            inp.blur();
+          } else if (ev.key === 'Escape') fill();
+        });
+      plPop = h(
+        'div',
+        { class: 'pop sunnb-pop sunpl-pop', style: `left:${left}px;top:${top}px`, 'data-key': key },
+        h('div', { class: 'sunnb-pop-head' }, title, h('button', { class: 'icon-btn', title: '閉じる（Esc）', onclick: () => closePlannedEditor() }, '×')),
+        where,
+        field('名前', nameIn),
+        field('形（プリセット）', presetSel),
+        h('div', { class: 'sunpl-grid' }, field('幅（棟の向き）m', wIn), field('奥行 m', dIn), field('向き（棟の方位 °）', rotIn), field('屋根', roofSel), field('軒高 m', eaveIn), field('最高高さ m', ridgeIn)),
+        h(
+          'div',
+          { class: 'row' },
+          h('button', { class: 'btn sm', title: '上から見て時計回りに 90° 回します（R。Shift+R で反時計回り）', onclick: () => rotatePlanned(key, 90) }, '↻ 90°'),
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              title: '同じ家を棟の向きに隣へ並べて置きます（分譲地の並び）',
+              onclick: () => {
+                const p = plannedByKey(key)?.planned;
+                if (!p) return;
+                const r = plPop?.getBoundingClientRect();
+                const k2 = sc.addPlanned(duplicatePlanned(p));
+                afterEdit();
+                toast('想定の家を複製しました（棟の向きに隣へ並べています）', 'ok');
+                openPlannedEditor(k2, r ? { x: r.left - 14, y: r.top - 14 } : undefined);
+              },
+            },
+            '複製',
+          ),
+          h('button', { class: 'btn sm ghost', title: 'この家を消します（Delete）', onclick: () => removePlannedKey(key) }, '削除'),
+        ),
+        h('div', { class: 'hint' }, PLANNED_EDITOR_HINT),
+      );
+      plFill = fill;
+      fill();
+      ctx.stage.appendChild(plPop);
+    };
+
+    // ---- 選んだ想定の家のドラッグ（地面の上で動かす。押した所から 3 px 動かしたら移動、それまではクリック）
+    let drag: { key: string; pointerId: number; x: number; y: number; plane: THREE.Plane; start: THREE.Vector3; delta: THREE.Vector3; moved: boolean; controls: boolean } | null = null;
+    const plannedMeshes = (key: string) => [...sc.neighborGroup.children, ...sc.ghostGroup.children].filter((o) => o.userData.neighborKey === key);
+    /** つかんだ所の高さ（屋根をつかめば屋根の高さの面で動かすので、カーソルの下の点が付いてくる） */
+    const grabHeight = (key: string, x: number, y: number): number => {
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(ndcAt(x, y), v.camera);
+      const hit = rc.intersectObjects(plannedMeshes(key).filter((o) => !o.userData.shadowOnly), false)[0];
+      return hit ? hit.point.y : 0;
+    };
+    const startDrag = (e: PointerEvent): boolean => {
+      if (!plKey || plArmed || hideMode || otherModeArmed() || e.shiftKey) return false;
+      const hit = pickAt(e.clientX, e.clientY);
+      if (!hit || hit.hidden || hit.key !== plKey) return false;
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -grabHeight(plKey, e.clientX, e.clientY));
+      const start = groundPoint(e.clientX, e.clientY, plane);
+      if (!start) return false;
+      drag = { key: plKey, pointerId: e.pointerId, x: e.clientX, y: e.clientY, plane, start, delta: new THREE.Vector3(), moved: false, controls: v.controls.enabled };
+      // 視点を動かさない（OrbitControls はこの後の pointerdown で enabled を見る）
+      v.controls.enabled = false;
+      try {
+        canvasEl.setPointerCapture(e.pointerId);
+      } catch {
+        // 合成イベントなど
+      }
+      return true;
+    };
+    const moveDrag = (e: PointerEvent): boolean => {
+      if (!drag || e.pointerId !== drag.pointerId) return false;
+      if (!drag.moved && isClick(drag, { x: e.clientX, y: e.clientY })) return true;
+      const p = groundPoint(e.clientX, e.clientY, drag.plane);
+      if (!p) return true;
+      drag.moved = true;
+      drag.delta.copy(p).sub(drag.start).setY(0);
+      // 動かしている間はメッシュだけずらす（離したときに一度だけ作り直す）
+      for (const o of plannedMeshes(drag.key)) o.position.copy(drag.delta);
+      canvasEl.style.cursor = 'move';
+      v.invalidate();
+      return true;
+    };
+    /** ドラッグを終える（commit: 動かしたなら家の位置を確定）。戻り値: ドラッグ中だったか・動かしたか */
+    function endDrag(commit: boolean): { moved: boolean } | null {
+      const dg = drag;
+      if (!dg) return null;
+      drag = null;
+      try {
+        canvasEl.releasePointerCapture(dg.pointerId);
+      } catch {
+        // 既に外れている
+      }
+      v.controls.enabled = dg.controls;
+      for (const o of plannedMeshes(dg.key)) o.position.set(0, 0, 0);
+      v.invalidate();
+      if (dg.moved && commit) {
+        const a = sc.fromWorld(dg.start);
+        const b = sc.fromWorld(dg.start.clone().add(dg.delta));
+        const p = plannedByKey(dg.key)?.planned;
+        if (p) editPlanned(dg.key, { ce: p.ce + b.e - a.e, cn: p.cn + b.n - a.n });
+      }
+      return { moved: dg.moved };
+    }
+    /** 選んだ家の上ではカーソルを「移動」に（他のモードの間は触らない） */
+    let hoverT = 0;
+    const plannedHover = (e: PointerEvent) => {
+      if (!plKey || plArmed || hideMode || otherModeArmed() || drag || e.buttons) return;
+      const now = performance.now();
+      if (now - hoverT < 60) return;
+      hoverT = now;
+      const cur = canvasEl.style.cursor;
+      if (cur !== '' && cur !== 'move') return;
+      const hit = pickAt(e.clientX, e.clientY);
+      canvasEl.style.cursor = hit && hit.key === plKey ? 'move' : '';
+    };
+    // R / Shift+R で 90° 回転・Delete で削除（選んだ想定の家。欄に入力中は効かせない）。3DS の R（sunExternal）より先に受けて止める
+    const onPlannedKey = (e: KeyboardEvent) => {
+      if (!plKey || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!drag) rotatePlanned(plKey, e.shiftKey ? -90 : 90);
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        e.stopPropagation();
+        endDrag(false);
+        removePlannedKey(plKey);
+      }
+    };
+    window.addEventListener('keydown', onPlannedKey, true);
+
+    // ---- 敷地の隣に並べる（PDF の敷地の長方形と同じ大きさの区画を、選んだ辺の側に。道路の辺は道路の向かい）
+    const sideChecks: Partial<Record<PlanSide, HTMLInputElement>> = {};
+    const sideBox = h('div', { class: 'sunpl-sides' });
+    let sidesSig = '';
+    const currentRoads = () => lotRoads(state.model?.site?.roads, v.state!.site.roadDir);
+    /** 辺の選択肢（方位の名前は真北の角度・接道で変わるので、変わったときだけ作り直す） */
+    const renderLotSides = (force = false) => {
+      const roads = currentRoads();
+      const na = state.model!.northAngleDeg;
+      const sig = JSON.stringify([roads, Math.round(na * 100)]);
+      if (!force && sig === sidesSig) return;
+      sidesSig = sig;
+      clear(sideBox);
+      const chosen = plannedChoice.sides ?? defaultLotSides(roads);
+      for (const s of PLAN_SIDES) {
+        const cb = h('input', { type: 'checkbox', checked: chosen.includes(s), 'data-side': s }) as HTMLInputElement;
+        cb.addEventListener('change', () => (plannedChoice.sides = PLAN_SIDES.filter((x) => sideChecks[x]?.checked)));
+        sideChecks[s] = cb;
+        const road = roads.widths[s];
+        sideBox.appendChild(
+          h(
+            'label',
+            { class: `check sunpl-side${road != null ? ' road' : ''}`, title: road != null ? `道路（幅 約 ${road.toFixed(1)} m）の向かいの区画に置きます` : '敷地と同じ大きさの区画を隣に並べて置きます' },
+            cb,
+            lotSideLabel(s, roads, na),
+          ),
+        );
+      }
+    };
+    const sidesBtn = h('button', { class: 'btn sm block sunpl-sides-btn' }, PLANNED_SIDES_BUTTON) as HTMLButtonElement;
+    sidesBtn.addEventListener('click', () => {
+      const sides = PLAN_SIDES.filter((s) => sideChecks[s]?.checked);
+      if (!sides.length) {
+        toast(PLANNED_NO_SIDES_MSG, 'info', 8000);
+        return;
+      }
+      endDrag(false);
+      setPlannedArmed(false);
+      closePlannedEditor();
+      ensurePlannedOn();
+      ensureNeighborsShown();
+      const roads = currentRoads();
+      const na = state.model!.northAngleDeg;
+      const id = currentPresetId();
+      const placed: string[] = [];
+      const failed: string[] = [];
+      let replaced = 0;
+      for (const L of siteSideLots(v.state!.site, sides, roads)) {
+        // 同じ側に前に並べた家は置き直す（2 回押しても重ならない）
+        for (const [k, rec] of [...lotStore]) {
+          if (rec.side !== L.side) continue;
+          if (sc.removePlanned(k)) replaced++;
+          lotStore.delete(k);
+        }
+        const lot = L.corners.map((c) => {
+          const p = sc.fromWorld(new THREE.Vector3(c.x, 0, c.z));
+          return { e: p.e, n: p.n };
+        });
+        const label = sideLotLabel(L, na);
+        const house = houseInLot(lot, { preset: id, frontEdgeIndex: L.frontEdge, label });
+        if (!house) {
+          failed.push(planSideCompass(L.side, na));
+          continue;
+        }
+        lotStore.set(sc.addPlanned(house), { side: L.side, lot });
+        placed.push(label);
+      }
+      drawLots();
+      if (placed.length || replaced) afterEdit();
+      if (placed.length)
+        toast(
+          `${replaced ? '置き直しました' : '敷地の隣に想定の家を置きました'}（${placed.join('・')}。区画は青の破線。家をクリックすると大きさ・向き・高さを直せます）${failed.length ? `。${failed.join('・')}側は区画が小さく置けませんでした` : ''}`,
+          'ok',
+          8000,
+        );
+      else toast(`区画が小さく、想定の家を置けませんでした（${failed.join('・')}側）`, 'error', 8000);
+    });
+
+    // ---- 一覧（編集・削除）と「想定の建物を含める」
+    plIncl.addEventListener('change', () => {
+      const on = plIncl.checked;
+      if (!on) {
+        endDrag(false);
+        setPlannedArmed(false);
+        closePlannedEditor();
+      }
+      if (!sc.setPlannedEnabled(on)) return;
+      afterEdit();
+      toast(on ? '想定の家を影・解析に含めました' : '想定の家を影・解析から外しました（一覧には残しています。チェックで戻せます）', 'ok');
+    });
+    const renderPlannedList = () => {
+      // 作り直す行の上にマウスがあっても mouseleave は来ないので、指し示しはここで外す
+      if (plHover) {
+        plHover = null;
+        syncHighlight();
+      }
+      clear(plList);
+      plIncl.checked = sc.plannedEnabled;
+      const list = sc.plannedList();
+      if (!list.length) {
+        plList.appendChild(h('p', { class: 'hint sunpl-empty' }, 'まだ置いていません。'));
+        return;
+      }
+      const on = sc.plannedEnabled;
+      plList.append(
+        h('div', { class: 'sunpl-list-head' }, h('b', null, plannedListTitle(list.length)), on ? null : h('span', { class: 'hint' }, '今は影・解析に含めていません'), h('button', { class: 'btn sm ghost', onclick: clearAllPlanned }, 'すべて消す')),
+        ...list.map((b) => {
+          const k = sc.keyOf(b);
+          return h(
+            'div',
+            {
+              class: `sunpl-row${k === plKey ? ' on' : ''}${on ? '' : ' off'}`,
+              'data-key': k,
+              onmouseenter: () => {
+                plHover = k;
+                syncHighlight();
+              },
+              onmouseleave: () => {
+                if (plHover !== k) return;
+                plHover = null;
+                syncHighlight();
+              },
+            },
+            h(
+              'div',
+              { class: 'sunpl-row-name' },
+              h('b', null, b.label ?? PLANNED_DEFAULT_LABEL),
+              h('span', { class: 'hint' }, plannedSummary(b.planned)),
+              h('span', { class: 'hint' }, `${neighborWhere(b)}${lotStore.has(k) ? '・区画あり' : ''}${b.hidden ? '・隠しています' : ''}`),
+            ),
+            h(
+              'div',
+              { class: 'sunpl-row-acts' },
+              h('button', { class: 'btn sm', title: '大きさ・向き・高さ・屋根を直します', onclick: () => openPlannedEditor(k) }, '編集'),
+              h('button', { class: 'btn sm ghost', onclick: () => removePlannedKey(k) }, '削除'),
+            ),
+          );
+        }),
+      );
+    };
+    stopPlannedUI = () => {
+      endDrag(false);
+      setPlannedArmed(false);
+      closePlannedEditor();
+    };
+    refreshPlanned = () => {
+      if (plKey && !plannedByKey(plKey)) closePlannedEditor();
+      renderPlannedList();
+      plFill?.();
+      drawLots();
+      renderLotSides();
+    };
+    const plannedBlock = h(
+      'div',
+      { class: 'sunpl-block' },
+      h('div', { class: 'sunpl-title' }, PLANNED_BLOCK_TITLE),
+      h('p', { class: 'hint', style: 'margin:0 0 2px' }, '分譲地などで、まだ建っていない隣の家を「建った想定」で置けます（未建築・仮の形状）。置いた家は影・部屋の日当たり・日照時間マップに入り、結果とプレゼン資料に「想定」と注記します'),
+      field('置く家の形', plPresetSel),
+      plBtn,
+      h('div', { class: 'field-label', style: 'margin-top:10px' }, '敷地の隣に並べる（分譲地の区画を想定）'),
+      sideBox,
+      sidesBtn,
+      h('span', { class: 'hint' }, '図面の敷地と同じ大きさの区画を選んだ側に並べ、それぞれに上の形の家を置きます（隣地側 1 m・道路側 2 m 離し、建ぺい率 50% 以内。余裕があれば北に寄せます）。道路の側は道路の幅だけ離した向かいの区画です。区画は青の破線で表示します'),
+      h('label', { class: 'check sunpl-include-row' }, plIncl, PLANNED_INCLUDE_LABEL),
+      plList,
+    );
+    renderLotSides(true);
     const drawRect = () => {
       if (!rect) {
         selRect.style.display = 'none';
@@ -1046,6 +1826,8 @@ export const sunStep: Step = {
     const onNbDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       nbDown = { x: e.clientX, y: e.clientY, busy: otherModeArmed() };
+      // 選んだ想定の家の上で押したら、動かしたときにドラッグで移動（視点は動かさない）
+      if (startDrag(e)) return;
       if (hideMode && e.shiftKey) {
         // Shift+ドラッグは範囲選択（視点の移動にしない: OrbitControls はこの後の pointerdown で enabled を見る）
         rect = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, pointerId: e.pointerId, controls: v.controls.enabled };
@@ -1059,13 +1841,22 @@ export const sunStep: Step = {
       }
     };
     const onNbMove = (e: PointerEvent) => {
-      if (!rect || e.pointerId !== rect.pointerId) return;
+      if (moveDrag(e)) return;
+      if (!rect || e.pointerId !== rect.pointerId) {
+        plannedHover(e);
+        return;
+      }
       rect.x1 = e.clientX;
       rect.y1 = e.clientY;
       drawRect();
     };
     const onNbUp = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      // 想定の家のドラッグ: 動かしたら位置を確定して終わり。動かさなければふつうのクリック（同じ家の案内を開き直す）
+      if (drag && e.pointerId === drag.pointerId && endDrag(true)?.moved) {
+        nbDown = null;
+        return;
+      }
       const d = nbDown;
       nbDown = null;
       const up = { x: e.clientX, y: e.clientY };
@@ -1077,32 +1868,54 @@ export const sunStep: Step = {
           return;
         }
       }
+      // 想定の家を置くモード: クリックした所に置く（ドラッグは視点の操作）
+      if (plArmed) {
+        if (d && !d.busy && isClick(d, up)) placePlannedAt(up.x, up.y);
+        return;
+      }
       if (!d || d.busy || otherModeArmed() || !isClick(d, up)) return;
       const hit = pickAt(up.x, up.y);
       if (hideMode) {
         if (hit) toggleSel(hit.key);
         return;
       }
-      if (hit && !hit.hidden) openPop(hit.key, up.x, up.y);
-      else closePop();
+      if (hit && !hit.hidden) {
+        // 想定の家は編集の案内（形・大きさ・向き・高さ）、ほかの建物は出典・高さ・隠す の案内
+        if (sc.findByKey(hit.key)?.planned) openPlannedEditor(hit.key, up);
+        else openPop(hit.key, up.x, up.y);
+      } else {
+        closePop();
+        closePlannedEditor();
+      }
+    };
+    const onNbCancel = () => {
+      cancelRect();
+      endDrag(false);
     };
     const onNbKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       closePop();
       setHideMode(false);
+      stopPlannedUI();
     };
     canvasEl.addEventListener('pointerdown', onNbDown, true);
     canvasEl.addEventListener('pointermove', onNbMove, true);
     canvasEl.addEventListener('pointerup', onNbUp, true);
-    canvasEl.addEventListener('pointercancel', cancelRect, true);
+    canvasEl.addEventListener('pointercancel', onNbCancel, true);
     window.addEventListener('keydown', onNbKey);
     cleanupNeighborUI = () => {
       canvasEl.removeEventListener('pointerdown', onNbDown, true);
       canvasEl.removeEventListener('pointermove', onNbMove, true);
       canvasEl.removeEventListener('pointerup', onNbUp, true);
-      canvasEl.removeEventListener('pointercancel', cancelRect, true);
+      canvasEl.removeEventListener('pointercancel', onNbCancel, true);
       window.removeEventListener('keydown', onNbKey);
+      window.removeEventListener('keydown', onPlannedKey, true);
       cancelRect();
+      stopPlannedUI();
+      for (const o of lotsG.children) (o as THREE.Line).geometry.dispose();
+      lotsG.clear();
+      lotsG.removeFromParent();
+      lotMat.dispose();
       closePop();
       hideMode = false;
       selected.clear();
@@ -1123,8 +1936,22 @@ export const sunStep: Step = {
         popKey: () => popKey,
         pick: (cx: number, cy: number) => pickAt(cx, cy),
       };
+    if (dbg)
+      dbg.planned = {
+        armed: () => plArmed,
+        editKey: () => plKey,
+        dragging: () => !!drag,
+        lots: () => [...lotStore.entries()].map(([key, r]) => ({ key, side: r.side, lot: r.lot })),
+        /** 家の中ほどの画面の位置（クリック・ドラッグの検証用） */
+        screen: (key: string) => {
+          const b = plannedByKey(key);
+          return b ? screenOfPlanned(b) : null;
+        },
+      };
     renderBar();
     renderHiddenList();
+    // 想定の家の一覧・区画の破線（ステップを出入りしても SunContext と viewer に残っている）
+    refreshPlanned();
     side.append(
       section(
         '周辺環境',
@@ -1139,6 +1966,7 @@ export const sunStep: Step = {
         hideBtn,
         h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
         hiddenBox,
+        plannedBlock,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '隣家を手動で追加'),
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px' }, field('方向', dirSel), field('距離 m', distIn), field('高さ m', hIn)),
         h(

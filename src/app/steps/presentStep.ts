@@ -13,7 +13,7 @@ import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
 import { resolveSpec } from '../../styles/spec';
 import { activeSunContext } from './sunStep';
-import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, type SunDisclosure } from '../sunDisclosure';
+import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine, type SunDisclosure } from '../sunDisclosure';
 
 /** 日当たりを設計の 3D データ（3DS）で解析しているときに資料に添える注記 */
 export const SUN_EXTERNAL_CAPTION = '日当たりは設計 3D データ（3DS）で解析';
@@ -566,6 +566,11 @@ export const presentStep: Step = {
           (() => {
             const d = deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext()));
             return d.excluded.length || d.viewOnly.length ? h('li', null, `周辺建物: 計算から除外 ${d.excluded.length} 棟・表示だけ隠す ${d.viewOnly.length} 棟（資料の日照のページに注記）`) : null;
+          })(),
+          (() => {
+            // 想定の家（未建築の仮の建物）を置いたときは、その棟数と扱いも（資料の日照のページに同じ行を注記）
+            const pl = plannedLine(deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext())));
+            return pl ? h('li', null, `${pl}（資料の日照のページに注記）`) : null;
           })(),
           h('li', null, `動画 ${state.videos.length} 本`),
         ),

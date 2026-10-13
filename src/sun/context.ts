@@ -1,13 +1,16 @@
 /**
- * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）
+ * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
+ * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
 import * as THREE from 'three';
 import type { Viewer } from '../scene/viewer';
 import { clearGroup } from '../scene/viewer';
-import { fetchAerial, fetchGsiBuildings, fetchOsmBuildings, metersPerDegree, siteLatLon, type NeighborBuilding, type SiteLocation } from './geo';
+import { fetchAerial, fetchGsiBuildings, fetchOsmBuildings, metersPerDegree, siteLatLon, toLocal, type NeighborBuilding, type SiteLocation } from './geo';
 import { sunPosition, sunDirectionWorld, localDate, keyDates, sunriseSunset } from './solar';
 import { ALIGN_COLORS, type EN } from './align';
 import { PLANNED_COLORS, PLANNED_DEFAULT_LABEL, buildPlannedHouseGeometry, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from './plannedHouse';
+import { fillGapsWith } from './footprint';
+import { buildPlateauGeometry, fetchPlateauBuildings, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
 
 /** 想定の家（planned 付きの周辺建物） */
 export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
@@ -17,6 +20,80 @@ export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
 export interface LatLon {
   lat: number;
   lon: number;
+}
+
+// ---------------------------------------------------------------- 周辺建物の取得（PLATEAU → 国土地理院 → OpenStreetMap）
+
+/** 周辺建物の取得元の選択（既定は PLATEAU。未整備・通信エラーなら国土地理院 → OpenStreetMap に落ちる） */
+export type NeighborSourceChoice = 'plateau' | 'gsi' | 'osm';
+
+/** 周辺建物を取る半径 (m)。航空写真（220 m）の中に収まる範囲 */
+export const NEIGHBOR_RADIUS_M = 110;
+
+/** SunContext.loadNeighbors の結果 */
+export interface LoadNeighborsResult {
+  /** 取り込んだ棟数（敷地に重なる建物を除いた後。手動の隣家・想定の家は含まない） */
+  count: number;
+  /** 実際に使った出典（PLATEAU に無い建物を国土地理院で補ったときは ['plateau', 'gsi']） */
+  used: NeighborSourceChoice[];
+  /** 利用者向けの注記（未整備・通信エラー・一部タイルの失敗・データ量の上限・補完の棟数） */
+  notes: string[];
+  /** PLATEAU を試した結果（'plateau' で取得したときだけ。datasets・lodCounts は covered のときだけ入る） */
+  plateau?: { datasets: PlateauDatasetInfo[]; lodCounts: Record<string, number>; status: PlateauFetchResult['status'] };
+}
+
+/** PLATEAU が未整備の地域の注記（§4 のフォールバック表） */
+export const NOTE_PLATEAU_MISSING = 'この地域は PLATEAU（3D都市モデル）が未整備のため、周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。';
+/** PLATEAU を取得できなかった（逆ジオコーダ・索引・tileset・全タイル・復号の失敗）ときの注記 */
+export const NOTE_PLATEAU_ERROR = 'PLATEAU のデータを取得できなかったため（通信エラー）、周辺建物の高さは国土地理院の建物種類から推定しています。「🏘 周辺建物（PLATEAU）」でやり直せます。';
+
+/** 小数 1 桁に丸める（NeighborBuilding.height の約束。PlateauBuilding.height は丸めていない） */
+const round1 = (v: number) => Math.round(v * 10) / 10;
+
+/**
+ * PLATEAU の建物（anchor 基準）→ プレゼン側の周辺建物（ピン基準）。id `plateau:${gmlId}`・source 'plateau'・heightKind 'measured'・
+ * height = round1(zmax − zmin)。ring/holes は toLocal(anchor, pin) の分だけ平行移動した新しい配列（PlateauBuilding は取得側のキャッシュと共有のため書き換えない）。
+ * mesh は anchor 基準のまま持ち、buildNeighbors で同じ量を足して置く。label = 用途（無ければ名称）
+ */
+export function plateauToNeighborBuilding(b: PlateauBuilding, pin: LatLon): NeighborBuilding {
+  const off = toLocal(b.attrs.anchor.lat, b.attrs.anchor.lon, pin.lat, pin.lon);
+  const shift = (ring: EN[]) => ring.map((p) => ({ e: p.e + off.e, n: p.n + off.n }));
+  const nb: NeighborBuilding = {
+    ring: shift(b.ring),
+    height: Math.max(0.1, round1(b.height)),
+    source: 'plateau',
+    heightKind: 'measured',
+    id: `plateau:${b.gmlId}`,
+    mesh: b.mesh,
+    plateau: { ...b.attrs, anchor: { ...b.attrs.anchor } },
+  };
+  if (b.holes.length) nb.holes = b.holes.map(shift);
+  const label = b.attrs.usage || b.attrs.name;
+  if (label) nb.label = label;
+  return nb;
+}
+
+/** 取得の進捗の文: '周辺建物（PLATEAU）: 建物タイル 3/6（8.1 MB）'（統合の段の「周辺建物を統合しています…」などはそのまま） */
+export function plateauProgressText(p: Pick<PlateauProgress, 'message'>): string {
+  return p.message.startsWith('周辺建物') ? p.message : `周辺建物（PLATEAU）: ${p.message}`;
+}
+
+/** PLATEAU で取れたときの注記（一部タイルの失敗・データ量の上限・隣接する未整備の市区・国土地理院で補った棟数） */
+export function plateauCoveredNotes(r: Extract<PlateauFetchResult, { status: 'covered' }>, fill: number): string[] {
+  const notes: string[] = [];
+  if (fill > 0) notes.push(`国土地理院の地図から ${fill} 棟を補いました（高さは建物の種類から推定）。`);
+  if (r.failedTiles > 0) notes.push(`PLATEAU の建物タイル ${r.tiles.length + r.failedTiles} 枚のうち ${r.failedTiles} 枚を取得できなかったため、建物が欠けている可能性があります。`);
+  if (r.truncated) notes.push('遠方の建物の一部は取得していません（データ量の上限）。');
+  // 索引に無い市区は名前が分からない（索引に項目が無い）ので市区町村コードで示す
+  if (r.missingMuniCds.length) notes.push(`隣接する市区（市区町村コード ${r.missingMuniCds.join('・')}）は PLATEAU が未整備のため、その範囲は国土地理院の推定で補いました。`);
+  return notes;
+}
+
+/** PLATEAU の建物のうち屋根形状（LOD2 以上）の棟数（lodCounts のキーは String(lod)） */
+export function roofShapeCount(lodCounts: Record<string, number>): number {
+  let n = 0;
+  for (const [lod, count] of Object.entries(lodCounts)) if (Number(lod) >= 2) n += count;
+  return n;
 }
 
 /** 選んだ建物の色（2 点合わせの航空写真側の印 ALIGN_COLORS.target と同じオレンジ） */
@@ -86,11 +163,13 @@ const half = (v: number) => (Math.round(v * 2) / 2).toFixed(1);
 
 /**
  * 周辺建物の「同じ建物か」を表すキー。
+ *  - PLATEAU: `plateau:${gml_id}`（ピン移動・取り直しで不変。年度更新で変わり得るので、その時は外形で当て直す）
  *  - 国土地理院・OSM: 出典 + 重心（0.5 m 単位）+ 面積（1 m² 単位）。origin（外形を測った地点 = 取得したときのピン）を渡すと
  *    重心を地点によらない座標（absoluteEN）で測るので、ピンを動かして取り直しても同じ建物は同じキーになる
  *  - 手動の隣家: 番号（id）。同じ大きさ・場所に 2 棟足しても別の建物になる（id が無ければ形のキー）
  */
-export function neighborKey(b: Pick<NeighborBuilding, 'ring' | 'source' | 'id'>, origin?: LatLon | null): string {
+export function neighborKey(b: Pick<NeighborBuilding, 'ring' | 'source' | 'id' | 'plateau'>, origin?: LatLon | null): string {
+  if (b.plateau?.gmlId) return `plateau:${b.plateau.gmlId}`;
   if (b.source === 'manual' && b.id) return `manual:${b.id}`;
   const c = ringCentroid(b.ring);
   const p = origin ? absoluteEN(c, origin) : c;
@@ -336,6 +415,10 @@ export class SunContext {
   onNeighborsChange: (() => void) | null = null;
   /** 想定の家を 3D・影・解析に含めるか（setPlannedEnabled） */
   private plannedOn = true;
+  /** 最後に選んだ取得元（建設地の変更・微調整で取り直すときに使う。PLATEAU が未整備で国土地理院に落ちても 'plateau' のまま） */
+  lastSource: NeighborSourceChoice = 'plateau';
+  /** 最後の取得の結果（注記・出典の表示用。まだ取っていなければ null） */
+  lastLoad: LoadNeighborsResult | null = null;
 
   constructor(
     readonly viewer: Viewer,
@@ -760,21 +843,76 @@ export class SunContext {
     return img.attribution;
   }
 
-  async loadNeighbors(source: 'gsi' | 'osm' = 'gsi') {
+  /**
+   * 周辺建物を取り直す（半径 NEIGHBOR_RADIUS_M）。
+   *  - 'plateau'（既定）: PLATEAU（国土交通省 3D都市モデル）の実測の高さ・形状。国土地理院は並列に取り、PLATEAU に無い建物
+   *    （新しい建物・LOD0 のみ）だけを補う（fillGapsWith。失敗しても無視）。未整備（none）・通信エラー（error）なら従来の 国土地理院 → OSM に落ち、notes に理由を書く
+   *  - 'gsi' / 'osm': 従来どおり（取れなければもう一方）
+   * 敷地・計画建物に重なる建物は除外し、PLATEAU は id `plateau:${gml_id}`、国土地理院・OSM は連番の id。手動の隣家・想定の家は残し、
+   * 隠した建物・直した高さは同じ建物（キー、無ければ外形）に当て直す。中止（opts.signal）は signal.reason を投げる
+   */
+  async loadNeighbors(source: NeighborSourceChoice = 'plateau', opts: { signal?: AbortSignal; onProgress?: (msg: string, ratio: number) => void } = {}): Promise<LoadNeighborsResult> {
+    this.lastSource = source;
     const { lat, lon } = siteLatLon(this.state.site);
-    // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）
-    const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? fetchGsiBuildings(lat, lon, 110) : fetchOsmBuildings(lat, lon, 110));
+    const R = NEIGHBOR_RADIUS_M;
+    const notes: string[] = [];
+    const used: NeighborSourceChoice[] = [];
     let list: NeighborBuilding[] = [];
-    let err: Error | null = null;
-    for (const src of source === 'gsi' ? (['gsi', 'osm'] as const) : (['osm', 'gsi'] as const)) {
+    let plateau: LoadNeighborsResult['plateau'];
+    /** PLATEAU で取れた結果（注記は敷地に重なる建物を除いた後の棟数で書くので、ここに控えて最後に足す） */
+    let coveredResult: Extract<PlateauFetchResult, { status: 'covered' }> | null = null;
+    // 国土地理院は PLATEAU と並列に始める（補完と、未整備・通信エラーのときの退路）。失敗は後で（使うときに）扱う
+    let gsiPending: Promise<NeighborBuilding[]> | null = null;
+    if (source === 'plateau') {
+      gsiPending = fetchGsiBuildings(lat, lon, R);
+      gsiPending.catch(() => undefined);
+      opts.onProgress?.('周辺建物（PLATEAU）: 市区町村を調べています', 0);
+      let r: PlateauFetchResult;
       try {
-        list = await fetchFrom(src);
-        if (list.length) break;
+        r = await fetchPlateauBuildings(lat, lon, R, { signal: opts.signal, onProgress: (p) => opts.onProgress?.(plateauProgressText(p), p.ratio) });
       } catch (e) {
-        err = e as Error;
+        if (opts.signal?.aborted) throw e;
+        // 取得側は中止以外を status に畳む約束だが、万一の例外も通信エラー扱いにして国土地理院に落ちる
+        r = { status: 'error', stage: 'tiles', message: (e as Error).message };
+      }
+      plateau = { datasets: r.status === 'covered' ? r.datasets : [], lodCounts: r.status === 'covered' ? r.lodCounts : {}, status: r.status };
+      if (r.status === 'covered' && r.buildings.length) {
+        const fromPlateau = r.buildings.map((b) => plateauToNeighborBuilding(b, { lat, lon }));
+        let gsi: NeighborBuilding[] = [];
+        try {
+          gsi = await gsiPending;
+        } catch {
+          // 補完は任意（国土地理院が落ちていても PLATEAU だけで続ける）
+        }
+        gsiPending = null;
+        list = [...fromPlateau, ...fillGapsWith(fromPlateau, gsi)];
+        used.push('plateau');
+        coveredResult = r;
+      } else {
+        notes.push(r.status === 'none' ? NOTE_PLATEAU_MISSING : NOTE_PLATEAU_ERROR);
+        if (r.status === 'error') console.warn(`PLATEAU の取得に失敗（${r.stage}）: ${r.message}`);
       }
     }
-    if (!list.length && err) throw err;
+    if (!list.length) {
+      if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? new Error('中止しました');
+      // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）。PLATEAU と並列に始めた国土地理院の結果があればそれを使う
+      const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? (gsiPending ?? fetchGsiBuildings(lat, lon, R)) : fetchOsmBuildings(lat, lon, R));
+      let err: Error | null = null;
+      for (const src of source === 'osm' ? (['osm', 'gsi'] as const) : (['gsi', 'osm'] as const)) {
+        opts.onProgress?.(`周辺建物（${src === 'gsi' ? '国土地理院' : 'OpenStreetMap'}）を取得しています…`, src === 'gsi' ? 0.5 : 0.75);
+        try {
+          const got = await fetchFrom(src);
+          if (got.length) {
+            list = got;
+            used.push(src);
+            break;
+          }
+        } catch (e) {
+          err = e as Error;
+        }
+      }
+      if (!list.length && err) throw err;
+    }
     // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
     const st = this.viewer.state!;
     const site = st.site;
@@ -790,14 +928,24 @@ export class SunContext {
     };
     const manual = this.state.neighbors.filter((b) => b.source === 'manual');
     const fresh = list.filter((b) => !inSite(b));
-    for (const b of fresh) b.id = `${b.source}-${++this.seq}`;
+    // PLATEAU は gml_id（ピン移動・取り直しで不変）、国土地理院・OSM は連番
+    for (const b of fresh) b.id = b.plateau?.gmlId ? `plateau:${b.plateau.gmlId}` : `${b.source}-${++this.seq}`;
     // 外形は取得したときのピンから測っている（キー・照合はここから地点によらない座標に直す）
     this.neighborsOrigin = { lat, lon };
     this.state.neighbors = [...manual, ...fresh];
-    // 隠した建物・直した高さを、取り直した一覧の同じ建物に当て直す
+    // 隠した建物・直した高さを、取り直した一覧の同じ建物に当て直す（国土地理院で隠した建物は外形の照合で PLATEAU の同じ建物に引き継がれる）
     reapplyEdits(this.state.neighbors, (b) => this.keyOf(b), (b) => this.footprintOf(b), this.edits);
+    if (coveredResult) {
+      // 国土地理院で補った棟数（敷地に重なる建物を除いた後）
+      const fill = fresh.filter((b) => b.source === 'gsi').length;
+      if (fill) used.push('gsi');
+      notes.push(...plateauCoveredNotes(coveredResult, fill));
+    }
+    const result: LoadNeighborsResult = { count: fresh.length, used, notes };
+    if (plateau) result.plateau = plateau;
+    this.lastLoad = result;
     this.buildNeighbors();
-    return fresh.length;
+    return result;
   }
 
   /** 手動で隣家を追加（方向・距離・大きさ） */
@@ -866,18 +1014,39 @@ export class SunContext {
     const a0 = (st.model.northAngleDeg * Math.PI) / 180;
     const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
     const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
+    // PLATEAU の実形状（anchor 基準の局所座標 x=東, y=上, z=−北）→ ワールド: 列 (east, 上, −north)、平行移動 = anchor の地点（地面 y=0）
+    const upV = new THREE.Vector3(0, 1, 0);
+    const southV = northV.clone().negate();
+    // ring（と PLATEAU の anchor）を測った地点（取得したときのピン。まだ取っていなければ今のピン）
+    const origin = this.neighborsOrigin ?? siteLatLon(this.state.site);
     const manualMat = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
     let plannedMats: THREE.Material[] | null = null;
     for (const b of this.state.neighbors) {
       if (!this.isActive(b)) continue;
       const key = this.keyOf(b);
       const planned = b.planned ? this.currentPlanned(b as PlannedBuilding) : null;
+      // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く。地面は y=0（地盤の高低差は表現しない。計画建物・他の建物と同じ平面）
+      const shaped = !planned && !!b.mesh && !!b.plateau;
       let geo: THREE.BufferGeometry;
       if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });
-      else {
+      else if (shaped) {
+        const pa = b.plateau!;
+        const a = toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon);
+        // 直した高さは足元を固定して縦に伸縮（形状の高さ zmax − zmin に対する比）
+        const span = pa.zmax - pa.zmin;
+        const heightScale = span > 0.01 ? this.heightOf(b) / span : 1;
+        // 航空写真があれば屋根に平面投影の UV（勾配屋根にも貼れる）。写真の範囲は ring と同じピン基準の東・北
+        const roofUV = ai ? { west: ai.west, east: ai.east, south: ai.south, north: ai.north, toEN: (x: number, z: number) => ({ e: a.e + x, n: a.n - z }) } : null;
+        geo = buildPlateauGeometry(b.mesh!, { heightScale, roofUV });
+        geo.applyMatrix4(new THREE.Matrix4().makeBasis(eastV, upV, southV).setPosition(this.toWorld(a.e, a.n, 0)));
+      } else {
         const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
-        // ワールド XZ で Shape を作り、上方向へ押し出す
+        // ワールド XZ で Shape を作り、上方向へ押し出す（中庭などの穴があれば抜く）
         const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
+        for (const hole of b.holes ?? []) {
+          if (hole.length < 3) continue;
+          shape.holes.push(new THREE.Path(hole.map((p) => this.toWorld(p.e, p.n)).map((p) => new THREE.Vector2(p.x, -p.z))));
+        }
         geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
         geo.rotateX(-Math.PI / 2);
       }
@@ -926,8 +1095,8 @@ export class SunContext {
         this.neighborsG.add(mesh);
         continue;
       }
-      if (ai) {
-        // 屋根面（上向き）の UV を航空写真の座標に
+      if (ai && !shaped) {
+        // 押し出した建物: 屋根面（上向き）の UV を航空写真の座標に（PLATEAU の実形状は buildPlateauGeometry で付けている）
         const pos = geo.getAttribute('position');
         const nor = geo.getAttribute('normal');
         const uv = geo.getAttribute('uv');
@@ -941,7 +1110,7 @@ export class SunContext {
         }
         uv.needsUpdate = true;
       }
-      // ExtrudeGeometry のグループ: 0 = 上下面, 1 = 側面
+      // グループ: 0 = 屋根（ExtrudeGeometry は上下面、PLATEAU の実形状は上向きの面）, 1 = 壁（側面）
       const base = [roofMat, b.source === 'manual' ? manualMat : wallMat];
       const mesh = new THREE.Mesh(geo, base);
       mesh.castShadow = true;

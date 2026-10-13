@@ -3,6 +3,7 @@
  *  - 実 tileset（名古屋市東区 LOD2・守山区 LOD1）: 木の形、REPLACE では葉だけ、区境 35.1932,136.9545 ±300 m → data0/7/8/12
  *  - 手書き mini（奥沢の値を模す）: 高さスパン規則・refine の継承・ADD で全 content・box/transform/外部 .json の warnings
  *  - maxTiles 超過で遠い葉から捨て truncated、壊れた tileset の日本語 Error
+ *  - children が warnings で全部捨てられた REPLACE の内部ノードは葉扱いしない（content を読まない）
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -314,6 +315,41 @@ describe('parseTileset: 手作りの JSON（境界・互換・エラー）', () 
     expect(ts.warnings.join('\n')).toMatch(/uri がありません/);
     expect(ts.warnings.join('\n')).toMatch(/implicitTiling/);
     expect(ts.warnings.join('\n')).toMatch(/children\[1\].*region が不正/);
+  });
+
+  it('children が全部捨てられた REPLACE の内部ノードは葉にならず content を読まない（ADD なら読む）', () => {
+    const make = (refine: string) => ({
+      root: {
+        boundingVolume: reg(139, 35, 140, 36),
+        refine,
+        children: [
+          {
+            boundingVolume: reg(139.4, 35.4, 139.6, 35.6),
+            geometricError: 10,
+            content: { uri: 'inner.b3dm' },
+            // 子は box ボリューム 1 つだけ → warnings で捨てられ children は空になる
+            children: [{ boundingVolume: { box: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] }, geometricError: 0, content: { uri: 'leaf.b3dm' } }],
+          },
+          { boundingVolume: reg(139.4, 35.4, 139.6, 35.6), geometricError: 0, content: { uri: 'real-leaf.b3dm' } },
+        ],
+      },
+    });
+    const box = { west: 139, south: 35, east: 140, north: 36 };
+    const o = { lat: 35.5, lon: 139.5, nearM: 1e9, reachFactor: 0, reachMargin: 0, maxTiles: 16 };
+    const ts = parseTileset(make('REPLACE'), 'https://x/tileset.json');
+    expect(ts.warnings).toHaveLength(1);
+    const inner = ts.root.children[0];
+    expect(inner.children).toEqual([]);
+    expect(inner.droppedChildren).toBe(1);
+    expect(ts.root.children[1].droppedChildren).toBe(0);
+    expect(ts.root.droppedChildren).toBe(0);
+    const r = selectContentTiles(ts, box, o);
+    expect(r.tiles.map((t) => t.url)).toEqual(['https://x/real-leaf.b3dm']);
+    expect(r.tiles[0].leaf).toBe(true);
+    // ADD では内部ノードの content も読む（leaf は false）
+    const add = selectContentTiles(parseTileset(make('ADD'), 'https://x/tileset.json'), box, o);
+    expect(add.tiles.map((t) => t.url).sort()).toEqual(['https://x/inner.b3dm', 'https://x/real-leaf.b3dm']);
+    expect(add.tiles.find((t) => t.url.endsWith('inner.b3dm'))!.leaf).toBe(false);
   });
 
   it('同じ content URL が 2 ノードにあっても 1 回だけ、距離が同じなら深い方が先', () => {

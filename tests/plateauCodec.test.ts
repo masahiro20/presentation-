@@ -1,8 +1,8 @@
 /**
  * NeighborMesh の保存形（src/sun/plateau/meshCodec.ts）: quantize → dequantize の往復誤差 ≤ 0.5 cm、roofTriangles 保持、
- * 範囲外は throw、壊れた保存データは throw、サイズの見積り。
+ * 範囲外は clamp して console.warn（throw しない）、壊れた保存データは throw、サイズの見積り。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { dequantizeMesh, quantizeMesh, quantizedBytes } from '../src/sun/plateau/meshCodec';
 import type { NeighborMesh, QuantizedMesh } from '../src/sun/plateau/types';
 
@@ -54,11 +54,24 @@ describe('quantizeMesh / dequantizeMesh', () => {
     expect(back.tris[2]).toBe(300);
   });
 
-  it('|座標| > 327.67 m の頂点があれば throw、tris の長さが 9 の倍数でなければ throw', () => {
-    expect(() => quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 400]), roofTriangles: 0 })).toThrow(/327/);
-    expect(() => quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, -327.68]), roofTriangles: 0 })).toThrow(/327/);
-    expect(() => quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, NaN]), roofTriangles: 0 })).toThrow();
-    expect(() => quantizeMesh({ tris: new Float32Array(8), roofTriangles: 0 })).toThrow(/9 の倍数/);
+  it('|座標| > 327.67 m の頂点は throw せず ±327.67 m に clamp して console.warn（1 回）。NaN は 0。tris の長さが 9 の倍数でなければ throw', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const q = quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 400]), roofTriangles: 0 });
+      expect(dequantizeMesh(q).tris[8]).toBeCloseTo(327.67, 3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/327\.67.*400\.0/);
+      const q2 = quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, -327.68]), roofTriangles: 0 });
+      expect(dequantizeMesh(q2).tris[8]).toBeCloseTo(-327.67, 3);
+      expect(warn).toHaveBeenCalledTimes(2);
+      // 範囲内なら warn しない
+      quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 327.67]), roofTriangles: 0 });
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(dequantizeMesh(quantizeMesh({ tris: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, NaN]), roofTriangles: 0 })).tris[8]).toBe(0);
+      expect(() => quantizeMesh({ tris: new Float32Array(8), roofTriangles: 0 })).toThrow(/9 の倍数/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('roofTriangles は 0..三角形数 に収める（負・超過・小数）', () => {

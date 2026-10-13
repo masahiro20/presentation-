@@ -179,7 +179,7 @@ function conceptCopy(extName: string, intName: string, hasCourt: boolean, hasVoi
   return { lead, body };
 }
 
-/** 資料の日照のページの注記（周辺建物の扱い） */
+/** 資料の日照のページの注記（周辺建物の扱い: 影に入れた棟数・出典（PLATEAU・国土地理院）・除外・表示だけ隠した建物・想定の家） */
 function sunNote(d: SunDisclosure, target: 'deck' | 'diagram') {
   return h('div', { class: 'sun-note', 'data-target': target }, ...disclosureLines(d, target).map((t) => h('div', null, t)));
 }
@@ -566,6 +566,11 @@ export const presentStep: Step = {
           (() => {
             const d = deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext()));
             return d.excluded.length || d.viewOnly.length ? h('li', null, `周辺建物: 計算から除外 ${d.excluded.length} 棟・表示だけ隠す ${d.viewOnly.length} 棟（資料の日照のページに注記）`) : null;
+          })(),
+          (() => {
+            // 周辺建物の出典（PLATEAU・国土地理院の棟数。資料の日照のページに同じ行を注記）
+            const src = deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext())).sources?.[0];
+            return src ? h('li', null, `${src}（資料の日照のページに注記）`) : null;
           })(),
           (() => {
             // 想定の家（未建築の仮の建物）を置いたときは、その棟数と扱いも（資料の日照のページに同じ行を注記）

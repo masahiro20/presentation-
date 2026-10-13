@@ -3,6 +3,8 @@
  *  - 実 fixture 23113 data0（守山区 LOD1 葉・6 棟）: batchTable の _xmin.._ymax・_zmin/_zmax との照合、底面輪郭の面積一致、屋根先頭ソート、ジオイド中央値
  *  - 23102 data1（深さ 2 の内部ノード・底面なし）: 全棟 'hull' + noBottom。data55（root の簡略形状）: baseMismatch・LOD2 5 棟
  *  - 手作りの形（中庭付き・離れた 2 棟・小さすぎる・keep）: 穴・島・tooSmall・kept・gml_id 無しの gmlId
+ *  - 第 1 弾レビューの指摘: 穴が外周と 1 点で接する（次数 4 の頂点）・一部だけ重なる別の高さの底面（島）・重なって外周に含まれる底面（穴にしない）・
+ *    長大な構造物の anchor 取り直し（Int16 cm の範囲）・tileUrl は meta 経由
  * Node では tests/helpers/nodeDraco.ts で実タイルを復号する。
  */
 import { readFileSync } from 'node:fs';
@@ -439,9 +441,72 @@ describe('footprintFromBottomFaces・sortRoofFirst（手作りの形）', () => 
     const fp = footprintFromBottomFaces(tris)!;
     expect(fp.kind).toBe('bottom');
     expect(ringArea(fp.outer)).toBeCloseTo(64, 6);
-    // 許容を 2 m にすると 1 m 上の底面も入り、内側の辺は打ち消されずに「穴」の閉路になるのではなく重なるので外周は変わらない
+    expect(fp.holes).toEqual([]);
+    // 許容を 2 m にすると 1 m 上の底面も入る。平面で外周に含まれる反時計回りの閉路は「別の高さの床」であって穴ではない（引かない）
     const fp2 = footprintFromBottomFaces(tris, { bottomTolM: 2 })!;
+    expect(fp2.kind).toBe('bottom');
+    expect(fp2.islands).toBe(0);
     expect(ringArea(fp2.outer)).toBeCloseTo(64, 6);
+    expect(fp2.holes).toEqual([]);
+  });
+
+  /** (e, n) で反時計回りに与えた三角形を底面（下向き・y=0）の 9 値にする */
+  const bottomTri = (a: EN, b: EN, c: EN): number[] => [a.e, 0, -a.n, c.e, 0, -c.n, b.e, 0, -b.n];
+
+  it('穴が外周と 1 点で接する（次数 4 の頂点）: 外周 100 m²・穴 2 m²・kind bottom（辺を向き付きで歩き 8 の字は切る）', () => {
+    // 10 × 10 の床から三角形 H1(5,0)-H3(3,−1)-H2(3,1) を抜く。H1 は外周の右辺の上にあり、境界辺の次数が 4 になる
+    const A = { e: -5, n: -5 };
+    const B = { e: 5, n: -5 };
+    const C = { e: 5, n: 5 };
+    const D = { e: -5, n: 5 };
+    const H1 = { e: 5, n: 0 };
+    const H2 = { e: 3, n: 1 };
+    const H3 = { e: 3, n: -1 };
+    const tris = new Float32Array([...bottomTri(A, B, H3), ...bottomTri(B, H1, H3), ...bottomTri(H1, C, H2), ...bottomTri(C, D, H2), ...bottomTri(A, H3, H2), ...bottomTri(A, H2, D)]);
+    expect(bottomPlanArea(tris)).toBeCloseTo(98, 6);
+    const fp = footprintFromBottomFaces(tris)!;
+    expect(fp).not.toBeNull();
+    expect(fp.kind).toBe('bottom');
+    expect(fp.islands).toBe(0);
+    // 外周は正方形（接点 H1 が辺上の点として残ることは許す）
+    expect(ringArea(fp.outer)).toBeCloseTo(100, 6);
+    expect(fp.outer.length).toBeGreaterThanOrEqual(4);
+    expect(fp.outer.length).toBeLessThanOrEqual(5);
+    const es = fp.outer.map((p) => p.e);
+    const ns = fp.outer.map((p) => p.n);
+    expect(Math.min(...es)).toBeCloseTo(-5, 6);
+    expect(Math.max(...es)).toBeCloseTo(5, 6);
+    expect(Math.min(...ns)).toBeCloseTo(-5, 6);
+    expect(Math.max(...ns)).toBeCloseTo(5, 6);
+    // 穴は時計回りの三角形
+    expect(fp.holes).toHaveLength(1);
+    expect(fp.holes[0]).toHaveLength(3);
+    expect(ringArea(fp.holes[0])).toBeCloseTo(-2, 6);
+    expect(ringArea(fp.outer) + ringArea(fp.holes[0])).toBeCloseTo(bottomPlanArea(tris), 6);
+    // 外周の頂点は 4 隅と接点だけ（穴の頂点 H2・H3 を通って内側を切っていない）
+    for (const p of fp.outer) expect(Math.abs(p.e) === 5 || Math.abs(p.n) === 5).toBe(true);
+  });
+
+  it('角 1 点で接する 2 棟（次数 4 の頂点）: 1 つの閉路にまとめず kind hull・islands 1', () => {
+    const tris = new Float32Array([...prismTris(square(-2, -2, 2), [], 4), ...prismTris(square(2, 2, 2), [], 4)]);
+    const fp = footprintFromBottomFaces(tris)!;
+    expect(fp.kind).toBe('hull');
+    expect(fp.islands).toBe(1);
+    expect(ringArea(fp.outer)).toBeGreaterThan(32);
+  });
+
+  it('一部だけ平面で重なる別の高さの床（0.3 m 上の 6 × 6 が 1 m だけ重なる）: 穴として引かず島 → kind hull・islands 1', () => {
+    const tris = new Float32Array([...prismTris(square(0, 0, 5), [], 7), ...prismTris(square(7, 0, 3), [], 4, 0.3)]);
+    const fp = footprintFromBottomFaces(tris)!;
+    expect(fp.kind).toBe('hull');
+    expect(fp.islands).toBe(1);
+    expect(fp.holes).toEqual([]);
+    // 凸包は両方の床を含む（e −5..10・n −5..5）
+    const es = fp.outer.map((p) => p.e);
+    expect(Math.min(...es)).toBeCloseTo(-5, 6);
+    expect(Math.max(...es)).toBeCloseTo(10, 6);
+    // 凸包 = (−5,−5)(5,−5)(10,−3)(10,3)(5,5)(−5,5): 100 + 台形 (10+6)/2 × 5 = 140
+    expect(ringArea(fp.outer)).toBeCloseTo(140, 6);
   });
 
   it('sortRoofFirst: 屋根（法線 y ≥ roofUpMin）が先頭に、枚数は roofTriangles。順序以外は変えない', () => {
@@ -487,7 +552,7 @@ describe('splitBuildings（手作りのタイル）', () => {
       },
       3,
     );
-    const res = splitBuildings(tile, b3dm, META_23113, { tileUrl: 'https://example.test/t/data9.b3dm' });
+    const res = splitBuildings(tile, b3dm, { ...META_23113, tileUrl: 'https://example.test/t/data9.b3dm' });
     expect(res.buildings).toHaveLength(2);
     expect(res.skipped).toEqual([{ batchId: 2, reason: 'tooSmall' }]);
 
@@ -519,7 +584,9 @@ describe('splitBuildings（手作りのタイル）', () => {
     expect(maxY).toBeCloseTo(7, 3);
 
     const b = res.buildings.find((x) => x.batchId === 1)!;
-    expect(b.gmlId).toBe('https://example.test/t/data9.b3dm#1');
+    expect(b.gmlId).toBe('tile:https://example.test/t/data9.b3dm#1');
+    // meta.tileUrl が無ければ RTC center で代用
+    expect(splitBuildings(tile, b3dm, META_23113).buildings.find((x) => x.batchId === 1)!.gmlId).toMatch(/^tile:rtc\(-?[\d.]+,-?[\d.]+,-?[\d.]+\)#1$/);
     expect(b.attrs.footprint).toBe('hull');
     expect(b.attrs.warnings).toEqual(['islands']);
     expect(b.holes).toEqual([]);
@@ -569,6 +636,35 @@ describe('splitBuildings（手作りのタイル）', () => {
       else expect(Number.isNaN(d.extentErrM)).toBe(true);
       expect(d.zmaxErrM).toBeLessThan(0.01);
     }
+  });
+
+  it('_x/_y があっても局所座標が ±327 m（Int16 cm）に収まらない長大な構造物は anchor を足元輪郭の重心に取り直す', () => {
+    const { mLon } = metersPerDegree(ANCHOR.lat);
+    // 東西 600 m × 南北 10 m。_x/_y は西端（局所 x が 0..600 になる）
+    const rect: EN[] = [
+      { e: -300, n: -5 },
+      { e: 300, n: -5 },
+      { e: 300, n: 5 },
+      { e: -300, n: 5 },
+    ];
+    const tile = tileFromLocal([{ tris: prismTris(rect, [], 8), zmin: 10 }]);
+    const b3dm = fakeB3dm({ gml_id: ['long'], _x: [ANCHOR.lon - 300 / mLon], _y: [ANCHOR.lat], _zmin: [10], _zmax: [18] }, 1);
+    const res = splitBuildings(tile, b3dm, META_23113);
+    expect(res.buildings).toHaveLength(1);
+    const b = res.buildings[0];
+    // anchor は重心（≈ ANCHOR）に移り、局所座標は ±300 に収まる
+    const off = toLocal(b.attrs.anchor.lat, b.attrs.anchor.lon, ANCHOR.lat, ANCHOR.lon);
+    expect(Math.abs(off.e)).toBeLessThan(0.01);
+    expect(Math.abs(off.n)).toBeLessThan(0.01);
+    let maxAbs = 0;
+    for (let i = 0; i < b.mesh.tris.length; i += 3) maxAbs = Math.max(maxAbs, Math.abs(b.mesh.tris[i]), Math.abs(b.mesh.tris[i + 2]));
+    expect(maxAbs).toBeCloseTo(300, 2);
+    expect(ringArea(b.ring)).toBeCloseTo(6000, 1);
+    expect(b.attrs.footprint).toBe('bottom');
+    // 短い建物（±4 m）では _x/_y のまま
+    const small = splitBuildings(tileFromLocal([{ tris: prismTris(square(50, 0, 4), [], 5), zmin: 10 }]), fakeB3dm({ gml_id: ['s'], _x: [ANCHOR.lon + 46 / mLon], _y: [ANCHOR.lat], _zmin: [10], _zmax: [15] }, 1), META_23113);
+    const offS = toLocal(small.buildings[0].attrs.anchor.lat, small.buildings[0].attrs.anchor.lon, ANCHOR.lat, ANCHOR.lon);
+    expect(offS.e).toBeCloseTo(46, 3);
   });
 
   it('ジオイドが中央値から 0.5 m 超ずれる棟に baseMismatch。_zmin が無い棟は中央値で正標高にする', () => {

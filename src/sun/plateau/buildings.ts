@@ -7,7 +7,8 @@
  * （葉だけ読む設計では起きない。root・深さ 1〜2 の簡略形状（名古屋 data55）で検出する）。
  * 三角形は batch ごとに非インデックス化し sortRoofFirst。足元は footprintFromBottomFaces（§6）。
  * keep が false の batch は復号結果を捨てる（分割・輪郭の計算をしない。ジオイドの中央値も keep した棟だけで取る）。
- * gml_id が無い batch は `${tileUrl}#${batchId}`（tileUrl が無ければ RTC center で代用）を gmlId にする。
+ * gml_id が無い batch は `tile:${meta.tileUrl}#${batchId}`（tileUrl が無ければ RTC center で代用）を gmlId にする。
+ * anchor は _x/_y だが、局所座標が保存形（Int16 cm = ±327 m）に収まらない長大な構造物は足元輪郭の重心に取り直す。
  *
  * 座標の約束（types.ts）: 局所座標は右手系 x=東, y=上, z=−北 [m]。幾何法線は (B−A)×(C−A) で計算する（復号 normal は使わない。
  * 左手系で計算すると下向き判定が全滅するので注意）。実測: PLATEAU の面は 97 % が外向き、頂点共有は無し（faces×3/verts = 1.00）。
@@ -31,9 +32,10 @@ export interface SplitOptions {
   geoidMismatchM?: number;
   /** false を返した batch は分割しない */
   keep?: (b: BuildingRecord) => boolean;
-  /** gml_id の無い batch の gmlId に使うタイルの URL（`${tileUrl}#${batchId}`）。無ければ RTC center で代用 */
-  tileUrl?: string;
 }
+
+/** データセット由来の属性（市区・年度・LOD）＋ gml_id の無い batch の gmlId に使うタイルの URL（`tile:${tileUrl}#${batchId}`。無ければ RTC center で代用） */
+export type SplitMeta = Pick<PlateauAttrs, 'muniCd' | 'pref' | 'city' | 'ward' | 'year' | 'datasetLod'> & { tileUrl?: string };
 
 /** batchTable の 1 棟分（無い列は null） */
 export interface BuildingRecord {
@@ -70,6 +72,8 @@ const MIN_OUTER_AREA = 1;
 const MIN_LOOP_AREA = 0.5;
 /** 辺のキーの丸め（1 mm） */
 const EDGE_KEY_SCALE = 1000;
+/** 局所座標の水平成分がこれを超える建物は anchor を足元輪郭の重心に取り直す [m]（保存形 Int16 cm の ±327.67 m。meshCodec.ts の QUANTIZE_LIMIT_M） */
+const MAX_LOCAL_M = 327;
 
 // ---------------------------------------------------------------------------
 // 記録読み
@@ -261,82 +265,140 @@ function bottomTriangles(tris: Float32Array, bottomDownMax: number, bottomTolM: 
 /** 平面図の点（x, z）→ 1 mm に丸めたキー */
 const vertexKey = (x: number, z: number) => `${Math.round(x * EDGE_KEY_SCALE)},${Math.round(z * EDGE_KEY_SCALE)}`;
 const edgeKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+const directedKey = (a: string, b: string) => `${a}>${b}`;
 
 /**
- * 底面三角形の境界辺（使用回数 1 の辺）を隣接でつないで閉路にする。閉じない鎖は捨てる。
- * 辺のキーは平面図（x, z）の端点（1 mm 丸め）: 高さの違う底面どうしでも平面で重なる辺は内部の辺として消える
+ * prev → cur と入ってきた向きに対して最も左（反時計回り側）に曲がる候補を選ぶ。
+ * 境界辺は底面の領域を左手に見る向きなので、左に曲がる = 領域の内側に沿って曲がる（穴や隣の棟の辺に乗り換えない）。
+ * 真後ろ（折り返し）は最後の候補
+ */
+function leftmostTurn(points: Map<string, EN>, prev: string, cur: string, cands: string[]): string {
+  const p = points.get(prev)!;
+  const c = points.get(cur)!;
+  const dx = c.e - p.e;
+  const dy = c.n - p.n;
+  let best = cands[0];
+  let bestAngle = -Infinity;
+  for (const k of cands) {
+    const q = points.get(k)!;
+    const ex = q.e - c.e;
+    const ey = q.n - c.n;
+    let a = Math.atan2(dx * ey - dy * ex, dx * ex + dy * ey); // 左折が正
+    if (Math.abs(a) >= Math.PI - 1e-9) a = -Math.PI;
+    if (a > bestAngle) {
+      bestAngle = a;
+      best = k;
+    }
+  }
+  return best;
+}
+
+/** 同じ頂点を 2 度通る閉路（8 の字）を、その頂点で切って単純な閉路に分ける */
+function splitAtRepeats(path: string[]): string[][] {
+  const out: string[][] = [];
+  const stack: string[] = [];
+  const at = new Map<string, number>();
+  for (const k of path) {
+    const i = at.get(k);
+    if (i !== undefined) {
+      // k に戻ってきた: stack[i..] が 1 つの閉路。k 自身は残る側の閉路にも属する
+      const sub = stack.splice(i);
+      for (const v of sub) at.delete(v);
+      out.push(sub);
+    }
+    at.set(k, stack.length);
+    stack.push(k);
+  }
+  out.push(stack);
+  return out;
+}
+
+/**
+ * 底面三角形の境界辺（使用回数 1 の辺）を向き付きでつないで閉路にする。閉じない鎖は捨てる。
+ *  - 各三角形を平面図（e, n）で反時計回りに揃えて辺に向きを付ける → 境界辺は常に「底面の領域を左手に見る」向きになる
+ *    （外周は反時計回り・穴は時計回りで出てくる。呼び出し側は符号付き面積で穴と島を区別する）
+ *  - 次数 ≥ 4 の頂点（穴が外周と 1 点で接する・2 棟が角で接する）では、入ってきた向きから最も左（領域側）に曲がる辺を選ぶ
+ *  - 同じ頂点を 2 度通った閉路（8 の字）は、その頂点で切って単純な閉路に分ける
+ *  - 辺のキーは平面図の端点（1 mm 丸め）: 高さの違う底面どうしでも平面で重なる辺は内部の辺として消える
  */
 function boundaryLoops(tris: Float32Array, bottom: number[]): EN[][] {
   const edgeCount = new Map<string, number>();
-  const edgeEnds = new Map<string, [string, string]>();
+  /** 辺 → 向き付きの端点（a → b。底面を左手に見る） */
+  const directed = new Map<string, [string, string]>();
   const points = new Map<string, EN>();
   for (const t of bottom) {
     const o = t * 9;
     const keys: string[] = [];
+    const pts: EN[] = [];
     for (let k = 0; k < 3; k++) {
       const x = tris[o + k * 3];
       const z = tris[o + k * 3 + 2];
       const key = vertexKey(x, z);
       if (!points.has(key)) points.set(key, { e: x, n: -z });
       keys.push(key);
+      pts.push({ e: x, n: -z });
     }
+    // 平面図で時計回りの三角形は逆順にして反時計回りに揃える（底面は下向きなので頂点順はそのままだと時計回り）
+    if (ringArea(pts) < 0) keys.reverse();
     for (let k = 0; k < 3; k++) {
       const a = keys[k];
       const b = keys[(k + 1) % 3];
       if (a === b) continue;
       const ek = edgeKey(a, b);
       edgeCount.set(ek, (edgeCount.get(ek) ?? 0) + 1);
-      if (!edgeEnds.has(ek)) edgeEnds.set(ek, [a, b]);
+      if (!directed.has(ek)) directed.set(ek, [a, b]);
     }
   }
-  // 境界辺の隣接表（頂点 → 相手の頂点）
-  const adj = new Map<string, string[]>();
-  const addAdj = (a: string, b: string) => {
-    const l = adj.get(a);
-    if (l) l.push(b);
-    else adj.set(a, [b]);
-  };
+  // 境界辺の出発表（頂点 → 向き付き辺の相手）
+  const outgoing = new Map<string, string[]>();
   for (const [ek, c] of edgeCount) {
     if (c !== 1) continue;
-    const [a, b] = edgeEnds.get(ek)!;
-    addAdj(a, b);
-    addAdj(b, a);
+    const [a, b] = directed.get(ek)!;
+    const l = outgoing.get(a);
+    if (l) l.push(b);
+    else outgoing.set(a, [b]);
   }
   const used = new Set<string>();
   const loops: EN[][] = [];
-  for (const start of adj.keys()) {
+  for (const start of outgoing.keys()) {
     for (;;) {
-      // start から未使用の辺で出発し、戻ってくるまで歩く
-      const first = (adj.get(start) ?? []).find((b) => !used.has(edgeKey(start, b)));
+      // start から未使用の辺で出発し、start に戻ってくるまで歩く
+      const first = (outgoing.get(start) ?? []).find((b) => !used.has(directedKey(start, b)));
       if (first === undefined) break;
-      const loop = [start];
+      const path = [start];
       let prev = start;
       let cur = first;
-      used.add(edgeKey(start, first));
-      let closed = false;
-      while (true) {
-        if (cur === start) {
-          closed = true;
-          break;
-        }
-        loop.push(cur);
-        const nexts = (adj.get(cur) ?? []).filter((b) => b !== prev && !used.has(edgeKey(cur, b)));
-        // 分岐（頂点で接する輪）では start に戻る辺を優先する
-        const next = nexts.includes(start) ? start : nexts[0];
-        if (next === undefined) break;
-        used.add(edgeKey(cur, next));
+      used.add(directedKey(start, first));
+      while (cur !== start) {
+        path.push(cur);
+        const cands = (outgoing.get(cur) ?? []).filter((b) => !used.has(directedKey(cur, b)));
+        if (cands.length === 0) break;
+        const next = cands.length === 1 ? cands[0] : leftmostTurn(points, prev, cur, cands);
+        used.add(directedKey(cur, next));
         prev = cur;
         cur = next;
       }
-      if (closed && loop.length >= 3) loops.push(loop.map((k) => points.get(k)!));
+      if (cur !== start) continue; // 閉じない鎖
+      for (const sub of splitAtRepeats(path)) if (sub.length >= 3) loops.push(sub.map((k) => points.get(k)!));
     }
   }
   return loops;
 }
 
-/** 反時計回り（面積が正）に揃える */
-function ccw(ring: EN[]): EN[] {
-  return ringArea(ring) < 0 ? [...ring].reverse() : ring;
+/** 点と線分 ab の距離 */
+function distToSegment(p: EN, a: EN, b: EN): number {
+  const dx = b.e - a.e;
+  const dy = b.n - a.n;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.e - a.e) * dx + (p.n - a.n) * dy) / len2)) : 0;
+  return Math.hypot(p.e - (a.e + t * dx), p.n - (a.n + t * dy));
+}
+
+/** 点がリングの内側または辺上（tol 以内）か */
+function pointInOrOnRing(p: EN, ring: EN[], tol: number): boolean {
+  if (pointInRing(p, ring)) return true;
+  for (let i = 0; i < ring.length; i++) if (distToSegment(p, ring[i], ring[(i + 1) % ring.length]) <= tol) return true;
+  return false;
 }
 
 /** 全頂点（x, z）の凸包（東・北）。3 点未満なら [] */
@@ -352,8 +414,12 @@ function hullOfVertices(tris: Float32Array, only?: number[]): EN[] {
 
 /**
  * 底面三角形（幾何法線 y < bottomDownMax かつ最低点 + bottomTolM 以内）の境界辺から閉路を作り、外周・穴・島を決める。
- *  - |面積| 最大の閉路 = 外周（反時計回り・cleanRing(0.05)）。外周の内側の閉路（面積 ≥ 0.5 m²）= 穴（時計回り）
- *  - 外周の外側の閉路（別棟・BuildingPart の島）があれば、全底面頂点の凸包を外周にして kind 'hull'（島を捨てない・穴にしない）
+ *  - |面積| 最大の閉路 = 外周（反時計回り・cleanRing(0.05)）
+ *  - 副閉路（面積 ≥ 0.5 m²）は向きで見分ける（boundaryLoops は底面の領域を左手に見る向きで返す）:
+ *    時計回り かつ 重心が外周の内側 かつ 全頂点が外周の内側または辺上 → 穴（時計回りのまま）。
+ *    反時計回りで全頂点が外周の内側または辺上 → 外周と平面で重なる別の高さの底面（外周に含まれる）なので足しも引きもしない。
+ *    それ以外の反時計回り（外周の外に頂点を持つ）→ 島（別棟・BuildingPart・一部だけ重なる床）
+ *  - 島があれば、全底面頂点の凸包を外周にして kind 'hull'（島を捨てない・穴にしない）
  *  - 底面が無ければ全頂点の凸包（kind 'hull'）。外周 < 1 m² は null
  */
 export function footprintFromBottomFaces(tris: Float32Array, opts?: SplitOptions): { outer: EN[]; holes: EN[][]; kind: FootprintKind; islands: number } | null {
@@ -366,23 +432,29 @@ export function footprintFromBottomFaces(tris: Float32Array, opts?: SplitOptions
   const loops = boundaryLoops(tris, bottom)
     .map((l) => cleanRing(l))
     .filter((l) => l.length >= 3)
-    .map((l) => ({ ring: l, area: Math.abs(ringArea(l)) }))
-    .sort((a, b) => b.area - a.area);
+    .map((l) => ({ ring: l, area: ringArea(l) }))
+    .sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+  // 最大の閉路が時計回り（外周ではなく穴の向き）になるのは辺の向きが壊れているときだけ: 凸包で代用
   if (loops.length === 0 || loops[0].area < MIN_OUTER_AREA) {
     // 底面はあるのに閉路にならない（辺が食い違う）: 底面頂点の凸包で代用
     const hull = cleanRing(hullOfVertices(tris, bottom));
     if (hull.length < 3 || ringArea(hull) < MIN_OUTER_AREA) return null;
     return { outer: hull, holes: [], kind: 'hull', islands: 0 };
   }
-  const outer = ccw(loops[0].ring);
+  const outer = loops[0].ring;
   const holes: EN[][] = [];
   let islands = 0;
+  const tol = 1 / EDGE_KEY_SCALE;
   for (let i = 1; i < loops.length; i++) {
     const { ring, area } = loops[i];
-    if (area < MIN_LOOP_AREA) continue;
-    const inside = pointInRing(ringCenter(ring), outer) || ring.some((p) => pointInRing(p, outer));
-    if (inside) holes.push(ringArea(ring) > 0 ? [...ring].reverse() : ring);
-    else islands++;
+    if (Math.abs(area) < MIN_LOOP_AREA) continue;
+    const contained = ring.every((p) => pointInOrOnRing(p, outer, tol));
+    if (area < 0) {
+      // 時計回り = 領域を左手に見て穴を回っている。外周の内側にあれば穴（外周の外の穴は島の穴なので島側で数える）
+      if (contained && pointInRing(ringCenter(ring), outer)) holes.push(ring);
+    } else if (!contained) {
+      islands++;
+    }
   }
   if (islands > 0) {
     const hull = cleanRing(hullOfVertices(tris, bottom));
@@ -442,11 +514,23 @@ function fromLocal(e: number, n: number, anchorLat: number, anchorLon: number): 
   return { lat: anchorLat + n / mLat, lon: anchorLon + e / mLon };
 }
 
+/** 局所座標の水平成分（|x|・|z|）の最大 [m] */
+function planExtent(tris: Float32Array): number {
+  let m = 0;
+  for (let i = 0; i < tris.length; i += 3) {
+    const ax = Math.abs(tris[i]);
+    const az = Math.abs(tris[i + 2]);
+    if (ax > m) m = ax;
+    if (az > m) m = az;
+  }
+  return m;
+}
+
 /**
  * 復号したタイル 1 枚を建物ごとに分ける（手順はファイル先頭）。
- * meta はデータセット由来の属性（市区・年度・LOD）。opts.keep で半径外の棟を分割しないで済ませる
+ * meta はデータセット由来の属性（市区・年度・LOD）と、gml_id の無い batch の gmlId に使う tileUrl。opts.keep で半径外の棟を分割しないで済ませる
  */
-export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: Pick<PlateauAttrs, 'muniCd' | 'pref' | 'city' | 'ward' | 'year' | 'datasetLod'>, opts?: SplitOptions): SplitResult {
+export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: SplitMeta, opts?: SplitOptions): SplitResult {
   const roofUpMin = opts?.roofUpMin ?? ROOF_UP_MIN;
   const geoidMismatchM = opts?.geoidMismatchM ?? GEOID_MISMATCH_M;
   const records = readBuildingRecords(b3dm.batchTable);
@@ -502,7 +586,8 @@ export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: Pick<Plateau
   const buildings: PlateauBuilding[] = [];
   for (const w of works) {
     const { rec } = w;
-    // anchor: _x/_y → _xmin.._ymax の中心 → 頂点の平均（後で底面輪郭の重心に置き直す）
+    // anchor: _x/_y → _xmin.._ymax の中心 → 頂点の平均（後で底面輪郭の重心に置き直す）。
+    // _x/_y があっても局所座標が ±MAX_LOCAL_M に収まらない長大な構造物は重心に取り直す（保存形 Int16 cm のため）
     let anchorLat: number;
     let anchorLon: number;
     let provisional = false;
@@ -525,8 +610,8 @@ export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: Pick<Plateau
     }
     let tris = localTris(w, anchorLat, anchorLon);
     let fp = footprintFromBottomFaces(tris, opts);
-    if (fp && provisional) {
-      // 仮の anchor → 底面輪郭の重心を anchor にして局所座標を作り直す
+    if (fp && (provisional || planExtent(tris) > MAX_LOCAL_M)) {
+      // 仮の anchor（または範囲外）→ 底面輪郭の重心を anchor にして局所座標を作り直す
       const c = ringCenter(fp.outer);
       const a = fromLocal(c.e, c.n, anchorLat, anchorLon);
       anchorLat = a.lat;
@@ -548,7 +633,7 @@ export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: Pick<Plateau
     if (rec.zmin != null && geoids.length > 1 && Math.abs(w.minH - rec.zmin - geoidMedian) > geoidMismatchM) warnings.push('baseMismatch');
 
     const lod = rec.lod === 1 || rec.lod === 2 || rec.lod === 3 || rec.lod === 4 ? rec.lod : null;
-    const gmlId = rec.gmlId ?? `${opts?.tileUrl ?? `rtc(${cx},${cy},${cz})`}#${rec.batchId}`;
+    const gmlId = rec.gmlId ?? `tile:${meta.tileUrl ?? `rtc(${cx},${cy},${cz})`}#${rec.batchId}`;
     const attrs: PlateauAttrs = {
       gmlId,
       lod,

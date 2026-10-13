@@ -5,17 +5,75 @@
  * （プレゼン資料では 出典・高さ・理由・方向距離 の表）を、表示だけ隠した建物は棟数を、
  * 部屋の日当たり・日照時間マップ・日影図（SVG）・プレゼン資料の日照のページに必ず印字する。
  * 想定の家（未建築の仮の建物）を置いたときは「想定で置いた建物 N 棟（未建築・仮の形状。…）」の行も同じ所に印字する。
+ * 周辺建物の出典（PLATEAU のデータセット・国土地理院（推定）の棟数）と、PLATEAU の共通の開示文（形状・高さの根拠・年度）も sources の行として同じ所に出す。
  * 数字は解析した時点の扱い（collectDisclosure の写し）で書く（state.sun.disclosure）。
  */
 import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord } from '../sun/context';
 import type { NeighborBuilding } from '../sun/geo';
+import type { PlateauAttrs } from '../sun/plateau';
 
 export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { plateau: 'PLATEAU（国土交通省）', gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
 const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
 
+/** 高さの根拠: 実測（PLATEAU・OSM の高さタグ）／推定（国土地理院の建物の種類）／手入力（手動の隣家） */
+export type HeightKind = NonNullable<NeighborBuilding['heightKind']>;
+
+/** 建物の高さの根拠（無ければ出典から: PLATEAU = 実測、国土地理院 = 推定、OSM = 実測、手動 = 手入力） */
+export function heightKindOf(b: Pick<NeighborBuilding, 'source' | 'heightKind'>): HeightKind {
+  return b.heightKind ?? (b.source === 'gsi' ? 'estimated' : b.source === 'manual' ? 'manual' : 'measured');
+}
+
+/** 高さの括弧書き（資料の表・一覧）: 推定 →（推定）、手入力 →（手入力）、実測 → なし */
+export function heightKindSuffix(kind: HeightKind): string {
+  return kind === 'estimated' ? '（推定）' : kind === 'manual' ? '（手入力）' : '';
+}
+
 /** 建物の名前（OSM の名前・手動の隣家・出典） */
 export function neighborTitle(b: Pick<NeighborBuilding, 'label' | 'source'>): string {
   return b.label ?? (b.source === 'manual' ? '隣家' : `${NEIGHBOR_SOURCE_LABEL[b.source]}の建物`);
+}
+
+/** PLATEAU の建物の出典の短い文: 「2025年度・LOD2」（LOD は建物の _lod、無ければデータセットの LOD） */
+export function plateauYearLod(a: Pick<PlateauAttrs, 'year' | 'lod' | 'datasetLod'>): string {
+  return `${a.year}年度・LOD${a.lod ?? a.datasetLod}`;
+}
+
+/**
+ * 周辺建物の出典の行（影・解析に入れた建物。想定の家は除く）:
+ * 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟・国土地理院（推定）3 棟」（PLATEAU の括弧はデータセット = 市区・年度・LOD。区境で 2 つなら「／」）。
+ * PLATEAU の建物があれば 2 行目に共通の開示文（形状・高さの根拠、LOD1 の天端、年度以降の新築・解体）。建物が無ければ []
+ */
+export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind' | 'planned' | 'plateau'>[]): string[] {
+  const order: NeighborBuilding['source'][] = ['plateau', 'gsi', 'osm', 'manual'];
+  const own = list.filter((b) => !b.planned);
+  const datasets = new Map<string, { where: string; year: number; lod: number }>();
+  for (const b of own) {
+    const a = b.plateau;
+    if (!a) continue;
+    if (!datasets.has(a.muniCd)) datasets.set(a.muniCd, { where: a.ward ?? a.city, year: a.year, lod: a.datasetLod });
+  }
+  const ds = [...datasets.values()];
+  const parts = order
+    .map((source) => ({ source, items: own.filter((b) => b.source === source) }))
+    .filter((c) => c.items.length)
+    .map((c) => {
+      let name: string;
+      if (c.source === 'plateau') name = ds.length ? `PLATEAU（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : NEIGHBOR_SOURCE_LABEL.plateau;
+      else {
+        const base = c.source === 'manual' ? '手入力' : NEIGHBOR_SOURCE_LABEL[c.source];
+        name = c.items.some((b) => heightKindOf(b) === 'estimated') ? `${base}（推定）` : base;
+      }
+      // 括弧で終わる名前は詰める（「国土地理院（推定）3 棟」）、そうでなければ空白を入れる（「手入力 1 棟」）
+      return `${name}${name.endsWith('）') ? '' : ' '}${c.items.length} 棟`;
+    });
+  if (!parts.length) return [];
+  const out = [`周辺建物の出典: ${parts.join('・')}`];
+  if (own.some((b) => b.source === 'plateau')) {
+    const where = ds.length ? `（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
+    const lod1 = !ds.length || ds.some((d) => d.lod <= 1);
+    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。' : ''}年度以降の新築・解体は反映されていない場合があります。`);
+  }
+  return out;
 }
 
 /** 計画建物（外形の原点 = 建物の中心）から見た方角と距離 */
@@ -35,6 +93,8 @@ export interface HiddenEntry {
   height: number;
   /** 高さを手で直したか */
   heightEdited: boolean;
+  /** 高さの根拠（実測／推定／手入力。古い写しには無い = 出典から判断） */
+  heightKind?: HeightKind;
   mode: HideMode;
   reason: HideReason;
   note?: string;
@@ -57,6 +117,11 @@ export interface SunDisclosure {
    * 想定の家が無ければ省く（古い写しにも無い）。含めたときは included にも入っている
    */
   planned?: { count: number; enabled: boolean };
+  /**
+   * 周辺建物の出典の行（sourceLines: 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟・国土地理院（推定）3 棟」と、
+   * PLATEAU があればその共通の開示文）。影・解析に入れた建物が無ければ省く（古い写しにも無い）
+   */
+  sources?: string[];
 }
 
 /** 周辺建物が無い（日照ステップで読み込んでいない）ときの扱い */
@@ -79,6 +144,8 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
   const out: SunDisclosure = { included: 0, excluded: [], viewOnly: [] };
   const plannedOn = sc.plannedEnabled !== false;
   let planned = 0;
+  /** 影・解析に入れた建物（出典の行に数える。想定の家は sourceLines が除く） */
+  const included: NeighborBuilding[] = [];
   for (const b of sc.state.neighbors) {
     const key = sc.keyOf(b);
     const rec = b.hidden ? sc.hideRecord(key) : null;
@@ -87,7 +154,10 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
       // 含めていない想定の家は数えない（除外・表示だけ隠した建物の一覧にも出さない。想定の家の行で断る）
       if (!plannedOn) continue;
     }
-    if (!rec || rec.mode === 'view') out.included++;
+    if (!rec || rec.mode === 'view') {
+      out.included++;
+      included.push(b);
+    }
     if (!rec) continue;
     const e: HiddenEntry = {
       key,
@@ -95,6 +165,7 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
       source: b.source,
       height: sc.heightOf(b),
       heightEdited: sc.edits.heights.has(key),
+      heightKind: heightKindOf(b),
       mode: rec.mode,
       reason: rec.reason,
       where: neighborWhere(b),
@@ -104,6 +175,8 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
     (rec.mode === 'view' ? out.viewOnly : out.excluded).push(e);
   }
   if (planned) out.planned = { count: planned, enabled: plannedOn };
+  const sources = sourceLines(included);
+  if (sources.length) out.sources = sources;
   return out;
 }
 
@@ -140,13 +213,13 @@ export type DisclosureTarget = 'rooms' | 'heatmap' | 'diagram' | 'deck';
 
 /**
  * 結果に添える注記の行。
- *  - rooms / heatmap / deck: 周辺建物 N 棟の影を含めたか（読み込んでいなければその旨）＋ 除外・表示だけ隠した建物
- *  - diagram: 周辺建物は日影図に含めていない旨 ＋ 除外・表示だけ隠した建物（部屋の日当たり・日照時間マップでの扱い）
+ *  - rooms / heatmap / deck: 周辺建物 N 棟の影を含めたか（読み込んでいなければその旨）＋ 出典（PLATEAU・国土地理院の棟数）＋ 除外・表示だけ隠した建物
+ *  - diagram: 周辺建物は日影図に含めていない旨 ＋ 出典 ＋ 除外・表示だけ隠した建物（部屋の日当たり・日照時間マップでの扱い）
  */
 export function disclosureLines(d: SunDisclosure, target: DisclosureTarget): string[] {
   const hidden = d.excluded.length + d.viewOnly.length;
   const pl = plannedLine(d);
-  const rest = [excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
+  const rest = [...(d.sources ?? []), excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
   if (target === 'diagram') return [DIAGRAM_NEIGHBORS_NOTE, ...rest];
   const what = target === 'rooms' ? '部屋の日当たり' : target === 'heatmap' ? '日照時間マップ' : '日当たりの解析';
   if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`, ...(pl ? [pl] : [])];
@@ -166,13 +239,14 @@ export interface ExcludedRow {
 export function excludedTableRows(d: Pick<SunDisclosure, 'excluded'>): ExcludedRow[] {
   return d.excluded.map((e, i) => ({
     no: i + 1,
-    // 名前のある建物（OSM の名前・隣家）は出典に添える。想定の家は「想定の家（未建築）」と名前
+    // 名前のある建物（OSM の名前・PLATEAU の用途・隣家）は出典に添える。想定の家は「想定の家（未建築）」と名前
     source: e.planned
       ? `想定の家（未建築${e.title && e.title !== '想定の家' ? `・${e.title}` : ''}）`
       : e.title === `${NEIGHBOR_SOURCE_LABEL[e.source]}の建物`
         ? NEIGHBOR_SOURCE_LABEL[e.source]
         : `${NEIGHBOR_SOURCE_LABEL[e.source]}（${e.title}）`,
-    height: `${e.height.toFixed(1)} m${e.planned ? '（想定）' : e.heightEdited ? '（手入力）' : e.source === 'gsi' ? '（推定）' : ''}`,
+    // 括弧は高さの根拠: 想定の家 →（想定）、手で直した →（手入力）、推定（国土地理院）→（推定）、手入力の隣家 →（手入力）、実測（PLATEAU）→ なし
+    height: `${e.height.toFixed(1)} m${e.planned ? '（想定）' : e.heightEdited ? '（手入力）' : heightKindSuffix(e.heightKind ?? heightKindOf(e))}`,
     reason: hideReasonText(e),
     where: e.where,
   }));

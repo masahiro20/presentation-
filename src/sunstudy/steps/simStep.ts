@@ -22,7 +22,8 @@ import { groundYWorld, loadEnvironment, rebuildEnvironment, siteExcludedCount, s
 import { makeManualNeighbor } from '../neighbors';
 import { downloadProject } from '../project';
 import { diagramHours, presetForRegion } from '../diagramOptions';
-import { SOURCE_SHORT, bearingEN, disclosureLines, neighborDisclosure, neighborWhere, ringDistance, ringMean } from '../disclosure';
+import { SOURCE_SHORT, bearingEN, disclosureLines, measuredHeightPreset, neighborDisclosure, neighborWhere, plateauAttribution, plateauSourceLabels, ringDistance, ringMean } from '../disclosure';
+import { plateauInfoLines } from '../plateauNeighbors';
 import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport } from '../report';
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
@@ -496,7 +497,8 @@ export const simStep: StudyStep = {
       const parts: string[] = [];
       if (study.env.attribution) parts.push(study.env.attribution);
       parts.push(`地形: ${DEM_LABEL[study.grid?.source ?? 'flat'] ?? study.grid?.source ?? ''}`);
-      if (study.neighborSources.includes('plateau')) parts.push('周辺建物: PLATEAU（国土交通省）');
+      // 「周辺建物: PLATEAU（国土交通省 3D都市モデル）東京都世田谷区・2025年度・LOD2」（データセットは study.env.plateau から）
+      if (study.neighborSources.includes('plateau')) parts.push(plateauAttribution());
       attribution.textContent = parts.join(' ／ ');
     };
     const note = h('div', { class: 'stage-note', style: 'display:none' });
@@ -568,7 +570,8 @@ export const simStep: StudyStep = {
       if (list.some((n) => n.source === 'manual') && !srcs.includes('manual')) srcs.push('manual');
       if (srcs.length) {
         siteBox.appendChild(h('div', { class: 'field-label' }, '周辺建物の出典'));
-        for (const s of srcs) siteBox.appendChild(h('div', { style: 'font-size:12.5px;margin:2px 0' }, NEIGHBOR_SOURCE_LABEL[s], kindTag(sourceKind(s, list))));
+        // PLATEAU は使ったデータセット（市区・年度・LOD）ごとに 1 行
+        for (const s of srcs) for (const t of s === 'plateau' ? plateauSourceLabels() : [NEIGHBOR_SOURCE_LABEL[s]]) siteBox.appendChild(h('div', { style: 'font-size:12.5px;margin:2px 0' }, t, kindTag(sourceKind(s, list))));
       }
       for (const n of study.neighborNotes) siteBox.appendChild(h('div', { class: 'info-box' }, n));
       if (study.horizon) siteBox.appendChild(h('div', { class: 'info-box' }, `周囲の山・丘による日照の遮りを考慮しています（半径約 ${study.horizon.radiusKm} km の地形）。`));
@@ -605,7 +608,7 @@ export const simStep: StudyStep = {
         showCheck('site', '敷地の輪郭'),
         showCheck('points', '測定点'),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void loadEnv() }, '🔄 周辺建物を取り直す')),
-        h('p', { class: 'hint' }, '地形・航空写真・周辺建物を国土地理院・PLATEAU から再取得します。手動で追加した隣家と高さの修正は残ります。'),
+        h('p', { class: 'hint' }, '地形・航空写真・周辺建物を国土地理院・PLATEAU（3D都市モデル）から再取得します。手動で追加した隣家と高さの修正・隠した建物は残ります（PLATEAU の建物は gml_id で、無い場合は足元の形で引き継ぎます）。'),
       ),
     );
 
@@ -654,14 +657,23 @@ export const simStep: StudyStep = {
       const r = stage.getBoundingClientRect();
       const left = Math.max(8, Math.min(r.width - 300, e.clientX - r.left + 10));
       const top = Math.max(8, Math.min(r.height - 250, e.clientY - r.top + 10));
+      // PLATEAU の建物: 出典（年度・LOD・箱形／屋根形状）、実測の最高高さ／モデルの高さ、所在、PLATEAU 地盤 T.P.／地形 T.P.、建物 ID の行（plateauInfoLines）。
+      // 属性の無い PLATEAU の建物（旧形式の保存データ）は従来どおり出典の 1 行
+      const info = plateauInfoLines(eff);
+      // 実形状（mesh）は高さを変えると足元を固定して縦に伸縮する。「最高高さに合わせる」は実測の最高高さ（bldg:measuredHeight）が 0.5 m 以上違うときだけ
+      const stretch = !!eff.mesh && !!eff.plateau;
+      const mh = measuredHeightPreset(eff);
+      const presets: [string, number][] = mh ? [[mh.label, mh.value], ...PRESETS] : PRESETS;
       pop = h(
         'div',
-        { class: 'pop', style: `left:${left}px;top:${top}px` },
+        { class: `pop${info.length ? ' plateau-pop' : ''}`, style: `left:${left}px;top:${top}px` },
         h('h5', null, eff.label ?? '周辺建物', kindTag(eff.heightKind)),
         h('div', { class: 'hint' }, whereOf(eff)),
-        h('div', { class: 'hint' }, `出典: ${SRC_SHORT[eff.source]}${eff.heightKind === 'estimated' ? '（高さは建物の種類からの推定です）' : ''}`),
-        h('div', { class: 'row' }, '高さ', hIn, 'm'),
-        h('div', { class: 'row', style: 'flex-wrap:wrap' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => (hIn.value = String(v)) }, l))),
+        info.length
+          ? h('div', { class: 'src-lines' }, ...info.map((t) => h('div', null, t)))
+          : h('div', { class: 'hint' }, `出典: ${SRC_SHORT[eff.source]}${eff.heightKind === 'estimated' ? '（高さは建物の種類からの推定です）' : ''}`),
+        h('div', { class: 'row' }, stretch ? '高さ（形状を縦に伸縮）' : '高さ', hIn, 'm'),
+        h('div', { class: 'row', style: 'flex-wrap:wrap' }, ...presets.map(([l, v]) => h('button', { class: `btn sm${mh && l === mh.label ? ' measured-preset' : ''}`, title: mh && l === mh.label ? 'PLATEAU の実測の最高高さ（bldg:measuredHeight）。LOD1 の形状の天端は点群の中央値で、最高高さより低めです' : undefined, onclick: () => (hIn.value = String(v)) }, l))),
         popOpts.el,
         h(
           'div',

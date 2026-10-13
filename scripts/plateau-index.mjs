@@ -2,16 +2,25 @@
 // 市区町村コード → データセット（LOD・テクスチャ・年・tileset.json の URL）の小さな索引を作って public/plateau-index.json に書く。
 //   node scripts/plateau-index.mjs            … カタログを取得して作る
 //   node scripts/plateau-index.mjs --from catalog.json … 取得済みのカタログ JSON から作る
-// 索引の形（src/sun/plateau3d.ts が読む）:
-//   { generated, source, urlPrefix, areas: { [muniCd]: { pref, city, ward, year, sets: [{ lod, tex, url, size }] } } }
+//   node scripts/plateau-index.mjs --no-region        … region の取得（448 回の -latest 取得）を省く
+// 索引の形（src/sun/plateau/catalog.ts が読む）:
+//   { generated, source, urlPrefix, areas: { [muniCd]: { pref, city, ward, year, sets: [{ lod, tex, url, size }], region? } } }
 //   url は urlPrefix を除いた残り。sets は LOD の大きい順・同じ LOD ではテクスチャ無しを先に（日照計算にはテクスチャ無しで十分・小さい）。
 //   muniCd は国土地理院の逆ジオコーダ（LonLatToAddress）が返す 5 桁の市区町村コードと同じ（政令市は区のコード、東京 23 区は区のコード）。
+//   region は sets[0] の -latest ラッパー（api.plateauview.mlit.go.jp/datacatalog/3dtiles/{muniCd}-bldg-lod{n}-{notexture|texture}-latest/tileset.json）
+//   の root.boundingVolume.region（ラジアン）を度に直した [west, south, east, north]（小数 5 桁 ≈ 1 m）。逆ジオコーダ（国土地理院）が
+//   不通のとき catalog.ts の muniCodesByRegion が市区を引く予備経路に使う。ラッパーが取れない市区は region 無しのまま続ける。
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CATALOG_URL = 'https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets';
 const URL_PREFIX = 'https://assets.cms.plateau.reearth.io/assets/';
+const LATEST_URL = (muniCd, lod, tex) => `https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/${muniCd}-bldg-lod${lod}-${tex ? 'texture' : 'notexture'}-latest/tileset.json`;
+/** -latest ラッパーの同時取得数 */
+const REGION_CONCURRENCY = 8;
+/** 1 回の取得の上限時間 [ms]（API は no-cache で 0.5 KB。詰まったら 1 回だけやり直す） */
+const REGION_TIMEOUT_MS = 15000;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = resolve(root, 'public/plateau-index.json');
 
@@ -48,9 +57,78 @@ for (const d of bldg) {
 }
 for (const a of Object.values(areas)) a.sets.sort((x, y) => y.lod - x.lod || Number(x.tex) - Number(y.tex));
 const sorted = Object.fromEntries(Object.keys(areas).sort().map((k) => [k, areas[k]]));
+
+/**
+ * -latest ラッパーの root.boundingVolume.region（ラジアン [west, south, east, north, minH, maxH]）を度の [west, south, east, north] に。
+ * children 無し（データセットが消えた）のラッパーは root.region が日本全体なので region として使わない（null）。
+ */
+function regionOfWrapper(json) {
+  const root = json?.root;
+  if (!root || !Array.isArray(root.children) || root.children.length === 0) return null;
+  const r = root.boundingVolume?.region;
+  if (!Array.isArray(r) || r.length < 4 || r.slice(0, 4).some((v) => typeof v !== 'number' || !Number.isFinite(v))) return null;
+  const deg = (rad) => Math.round((rad * 180) / Math.PI * 1e5) / 1e5;
+  const box = [deg(r[0]), deg(r[1]), deg(r[2]), deg(r[3])];
+  // 日本の範囲外・西東／南北が逆のものは壊れているとみなす
+  if (box[0] >= box[2] || box[1] >= box[3] || box[0] < 122 || box[2] > 154 || box[1] < 20 || box[3] > 46) return null;
+  return box;
+}
+
+/** 1 市区の region を取る。失敗（非 2xx・JSON でない・タイムアウト）は 1 回やり直し、それでも駄目なら null */
+async function fetchRegion(muniCd, area) {
+  const set = area.sets[0];
+  const url = LATEST_URL(muniCd, set.lod, set.tex);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(REGION_TIMEOUT_MS), cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { region: regionOfWrapper(await res.json()), error: null };
+    } catch (e) {
+      if (attempt === 1) return { region: null, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+  return { region: null, error: null };
+}
+
+/** 全市区の region を並列 REGION_CONCURRENCY で取り area.region に入れる（失敗は region 無しで続行・進捗を表示） */
+async function addRegions(areasByCode) {
+  const codes = Object.keys(areasByCode);
+  let next = 0;
+  let done = 0;
+  let ok = 0;
+  let noChildren = 0;
+  const failed = [];
+  const tick = () => {
+    done++;
+    if (done % 25 === 0 || done === codes.length) process.stderr.write(`\r  region ${done}/${codes.length}（取得 ${ok}・children 無し ${noChildren}・失敗 ${failed.length}）`);
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(REGION_CONCURRENCY, codes.length) }, async () => {
+      while (next < codes.length) {
+        const cd = codes[next++];
+        const { region, error } = await fetchRegion(cd, areasByCode[cd]);
+        if (region) {
+          areasByCode[cd].region = region;
+          ok++;
+        } else if (error) failed.push(`${cd}: ${error}`);
+        else noChildren++;
+        tick();
+      }
+    }),
+  );
+  process.stderr.write('\n');
+  for (const f of failed) console.warn(`  region 取得失敗（region 無しで続行）: ${f}`);
+  return ok;
+}
+
+let regionCount = 0;
+if (!process.argv.includes('--no-region')) {
+  console.log(`-latest ラッパーから ${Object.keys(sorted).length} 市区の region を取得します（並列 ${REGION_CONCURRENCY}）`);
+  regionCount = await addRegions(sorted);
+}
 const index = { generated: new Date().toISOString().slice(0, 10), source: CATALOG_URL, urlPrefix: URL_PREFIX, areas: sorted };
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(index));
 const n = Object.keys(sorted).length;
 const lod2 = Object.values(sorted).filter((a) => a.sets.some((s) => s.lod >= 2)).length;
-console.log(`plateau-index.json: ${n} 市区（LOD2 以上あり ${lod2}）・${bldg.length} データセット（除外 ${skipped}）・${(JSON.stringify(index).length / 1024).toFixed(0)} KB`);
+console.log(`plateau-index.json: ${n} 市区（LOD2 以上あり ${lod2}・region あり ${regionCount}）・${bldg.length} データセット（除外 ${skipped}）・${(JSON.stringify(index).length / 1024).toFixed(0)} KB`);

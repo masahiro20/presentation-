@@ -66,6 +66,7 @@ import { DEM_LABEL, gridStats, sampleHeight } from '../terrain';
 import { buildingEavesOutlineEN, buildingFootprintEN, buildingOutlineEN, currentPlaced, ensurePlacedData } from '../building';
 import { followPinMove } from '../alignment';
 import { downloadProject, loadProjectFile, loadProjectFromUrl, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
+import { plateauShapeCounts, plateauShapeText, plateauSourceTag } from '../disclosure';
 
 /** 初期表示（東京駅付近） */
 const TOKYO: LatLon = { lat: 35.681236, lon: 139.767125 };
@@ -226,12 +227,16 @@ function siteArea(): number | null {
 
 const areaText = (a: number) => `${a.toFixed(1)}㎡（${(a / TSUBO).toFixed(1)}坪）`;
 
+/** 出典タグ。PLATEAU の文は使ったデータセット（study.env.plateau.datasets）から動的に作る（「PLATEAU 2025・世田谷区・実測」。sourceTagLabel） */
 const SOURCE_TAG: Record<NeighborSource, { cls: string; label: string }> = {
   plateau: { cls: 'measured', label: 'PLATEAU・実測の高さ' },
   gsi: { cls: 'estimated', label: '国土地理院・高さは推定' },
   osm: { cls: 'estimated', label: 'OpenStreetMap・高さは推定' },
   manual: { cls: 'manual', label: '手動で追加' },
 };
+const sourceTagLabel = (s: NeighborSource): string => (s === 'plateau' ? plateauSourceTag() : (SOURCE_TAG[s]?.label ?? s));
+/** 周辺環境を取得している間の最新の進捗の文（サイドの欄に出す。取得が終われば空） */
+let envProgress = '';
 
 /** 外部サーバーに届かなかったときの案内（既存アプリと同じ文言） */
 function networkHint(): string {
@@ -897,7 +902,9 @@ export const placeStep: StudyStep = {
       const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
       if (offline) envBox.appendChild(h('div', { class: 'warn' }, 'オフラインです。保存済みのプロジェクトを開けば検討を続けられます'));
       if (study.env.loading) {
-        envBox.appendChild(h('div', { class: 'info-box' }, '地形・航空写真・周辺建物を取得しています…'));
+        // 進捗モーダルと同じ段階の文（「市区町村を調べています」「建物タイル 3/6（8.1 MB）」など）をここにも出す
+        // 欄は loading になった時点で作られる（文はまだ無い）ので、span はいつも作っておき loadEnv の onProgress が書き込む
+        envBox.appendChild(h('div', { class: 'info-box' }, '地形・航空写真・周辺建物を取得しています…', h('br'), h('span', { class: 'env-progress' }, envProgress)));
         return;
       }
       if (!study.env.loaded) {
@@ -918,14 +925,18 @@ export const placeStep: StudyStep = {
       const vis = visibleNeighbors().filter((n) => !n.planned);
       const auto = vis.filter((n) => n.source !== 'manual');
       const manualCount = vis.length - auto.length;
-      const tags = study.neighborSources.filter((s) => s !== 'manual').map((s) => h('span', { class: `src-tag ${SOURCE_TAG[s]?.cls ?? ''}` }, SOURCE_TAG[s]?.label ?? s));
+      const tags = study.neighborSources.filter((s) => s !== 'manual').map((s) => h('span', { class: `src-tag ${SOURCE_TAG[s]?.cls ?? ''}` }, sourceTagLabel(s)));
       const hiddenList = hiddenNeighbors();
       const hiddenCount = hiddenList.length;
       const viewCount = hiddenList.filter((n) => n.hideMode === 'view').length;
       const hiddenText = hiddenCount ? `・隠した建物 ${hiddenCount}棟（計算から除外 ${hiddenCount - viewCount}・表示だけ ${viewCount}）` : null;
       const plannedCount = plannedHouses().length;
       const plannedText = plannedCount ? `・想定の家 ${plannedCount}棟${study.plannedEnabled ? '' : '（含めない）'}` : null;
-      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenText, plannedText));
+      // PLATEAU の内訳: 屋根形状あり（LOD2 以上）・箱形（LOD1。天端は点群の中央値）。国土地理院で補った棟数も添える
+      const shape = plateauShapeText(plateauShapeCounts(auto));
+      const gsiCount = auto.filter((n) => n.source === 'gsi').length;
+      const breakdown = shape ? h('span', { class: 'nb-breakdown' }, `（PLATEAU ${shape}${gsiCount ? `・国土地理院で補った建物 ${gsiCount}` : ''}）`) : null;
+      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, breakdown, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenText, plannedText));
       envBox.appendChild(rows);
       // 地図で建物を選んで隠す（取り壊す既存の家・もう無い建物・形の違う建物などを影と解析から外す）
       if (study.neighbors.length) {
@@ -1553,8 +1564,18 @@ export const placeStep: StudyStep = {
       }
       const pm = progressModal('地形・航空写真・周辺建物を取得しています', false);
       let report: Awaited<ReturnType<typeof loadEnvironment>>;
+      // 段階の文（「市区町村を調べています」→「PLATEAU の索引を読み込み（…）」→「建物タイル 3/6（8.1 MB）」→「建物の形状を復号（1,234 棟）」→
+      // 「周辺建物を統合しています…」）は fetchNeighbors から onProgress でそのまま届くので、モーダルとサイドの欄にそのまま出す
       try {
-        report = await loadEnvironment({ onProgress: (msg, ratio) => pm.set(ratio, msg) });
+        report = await loadEnvironment({
+          onProgress: (msg, ratio) => {
+            pm.set(ratio, msg);
+            envProgress = msg;
+            // 欄は loading になった時点（emit('env')）で作り直されるので、そのたびに探す
+            const box = envBox.querySelector('.env-progress');
+            if (box) box.textContent = msg;
+          },
+        });
         envOrigin = study.frame ? { lat: study.frame.lat, lon: study.frame.lon } : null;
       } catch (e) {
         study.env.loading = false;
@@ -1563,6 +1584,7 @@ export const placeStep: StudyStep = {
         refreshAll();
         return;
       } finally {
+        envProgress = '';
         pm.close();
       }
       fetchedThisSession = true;

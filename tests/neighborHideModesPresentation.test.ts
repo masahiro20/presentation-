@@ -32,8 +32,10 @@ import {
   reapplyEdits,
   neighborKey,
   absoluteEN,
+  plateauToNeighborBuilding,
   type LatLon,
 } from '../src/sun/context';
+import { plateauBox } from './helpers/plateauBox';
 import { buildOccluder, isShaded, SHADOW_REGION_HOURS } from '../src/sun/analysis';
 import { appendSvgFootnote, collectDisclosure, disclosureLines, excludedLine, excludedTableRows, reasonCountsText, viewOnlyLine, DIAGRAM_NEIGHBORS_NOTE, NO_NEIGHBORS_DISCLOSURE, type HiddenEntry } from '../src/app/sunDisclosure';
 import { HALF_HOUR_LABEL, REGULATION_NONE_LABEL, clearedSunResults, diagramOptions, diagramSummaryText, hiddenGroupTitle, hiddenToastText, hideReasonOption, modeChangedToastText, restoredToastText } from '../src/app/steps/sunStep';
@@ -147,7 +149,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('表示だけ隠した建物は影だけのメッシュで遮蔽物に残る。計算から除外した建物は残らない。薄い表示はどちらも遮蔽物に入らない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
-    expect(await sc.loadNeighbors('gsi')).toBe(4);
+    expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
     const tri0 = buildOccluder(v).triangles;
     // 表示だけ隠す
@@ -279,6 +281,58 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
     sc.setGhosts(true);
     expect(sc.pickNeighbor(ndc())).toEqual({ key: k, hidden: true });
     sc.setGhosts(false);
+  });
+
+  it('PLATEAU の実形状の建物（mesh）を 1 棟混ぜる: 表示だけ隠すと影だけのメッシュ（同じ三角形数）で遮蔽物に残り、計算から除外で 12 減る。薄い表示は mesh の高さ。表の高さは括弧なし・出典 PLATEAU（用途）', async () => {
+    const v = fakeViewer();
+    const sc = new SunContext(v, { ...SITE });
+    await sc.loadNeighbors('gsi');
+    // 足元の中心がピンから西 30 m・北 20 m の 10×8×7 m の箱（取得したときのピン基準で置く）
+    const mb = plateauToNeighborBuilding(plateauBox({ gmlId: 'bldg_mix', anchor: ll(-30, 20), w: 10, d: 8, h: 7, zmin: 40, attrs: { muniCd: '13112', pref: '東京都', city: '世田谷区', ward: null, year: 2025, datasetLod: 2, lod: 1, usage: '共同住宅', measuredHeight: 7.9 } }), PIN);
+    sc.state.neighbors.push(mb);
+    sc.buildNeighbors();
+    const key = sc.keyOf(mb);
+    expect(key).toBe('plateau:bldg_mix');
+    expect(neighborMeshes(v)).toBe(5);
+    const all = buildOccluder(v).triangles;
+    const body = (sc.neighborGroup.children as THREE.Mesh[]).find((m) => m.userData.neighborKey === key)!;
+    expect(body.geometry.getAttribute('position').count).toBe(36);
+    expect((body.material as THREE.Material[]).length).toBe(2);
+    body.geometry.computeBoundingBox();
+    expect(body.geometry.boundingBox!.min.y).toBeCloseTo(0, 5);
+    expect(body.geometry.boundingBox!.max.y).toBeCloseTo(7, 5);
+    // 表示だけ隠す: 影だけのメッシュ（同じ 36 頂点）で遮蔽物の三角形数は不変
+    expect(sc.setHidden([key], true, { mode: 'view', reason: 'other', note: '視点の手前' })).toBe(1);
+    expect(buildOccluder(v).triangles).toBe(all);
+    expect(neighborMeshes(v)).toBe(5);
+    const shadow = (sc.neighborGroup.children as THREE.Mesh[]).find((m) => m.userData.neighborKey === key)!;
+    expect(shadow.userData.shadowOnly).toBe(true);
+    expect(shadow.geometry.getAttribute('position').count).toBe(36);
+    expect((shadow.material as THREE.Material).colorWrite).toBe(false);
+    // 計算から除外: 箱の 12 三角形だけ減る。薄い表示は mesh の高さで、遮蔽物に入らない
+    expect(sc.setHideMode([key], 'exclude')).toBe(1);
+    expect(sc.hideRecord(key)).toEqual({ mode: 'exclude', reason: 'other', note: '視点の手前' });
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+    expect(neighborMeshes(v)).toBe(4);
+    sc.setGhosts(true);
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+    const ghost = (sc.ghostGroup.children as THREE.Mesh[]).find((g) => g.userData.neighborKey === key)!;
+    expect(ghost.userData.neighbor).toBeUndefined();
+    ghost.geometry.computeBoundingBox();
+    expect(ghost.geometry.boundingBox!.max.y).toBeCloseTo(7, 4);
+    expect('#' + (ghost.material as THREE.MeshStandardMaterial).color.getHexString()).toBe('#b9c0c8');
+    sc.setGhosts(false);
+    // 開示: 出典 plateau・実測（括弧なし）・用途が名前
+    const d = collectDisclosure(sc);
+    expect(d.included).toBe(4);
+    expect(d.excluded.map((e) => e.key)).toEqual([key]);
+    expect(d.excluded[0]).toMatchObject({ source: 'plateau', height: 7, heightEdited: false, heightKind: 'measured', title: '共同住宅', mode: 'exclude', reason: 'other', note: '視点の手前' });
+    expect(excludedTableRows(d)[0]).toMatchObject({ no: 1, source: 'PLATEAU（国土交通省）（共同住宅）', height: '7.0 m', reason: 'その他（視点の手前）' });
+    expect(d.excluded[0].where).toMatch(/^北西 約 \d+ m$/);
+    // 戻すと遮蔽物も実体も元どおり
+    expect(sc.setHidden([key], false)).toBe(1);
+    expect(buildOccluder(v).triangles).toBe(all);
+    expect(neighborMeshes(v)).toBe(5);
   });
 
   it('collectDisclosure: 影・解析に入れた数（表示だけ隠した建物を含む）・除外・表示だけ隠した建物（出典・高さ・理由・方向距離）', async () => {

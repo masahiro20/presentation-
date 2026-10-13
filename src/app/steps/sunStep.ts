@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext, keysInRect, ringArea, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
+import { SunContext, keysInRect, ringArea, roofShapeCount, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -12,7 +12,7 @@ import { normDeg180 } from '../../sun/align';
 import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
-import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, neighborTitle, neighborWhere, type SunDisclosure } from '../sunDisclosure';
+import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, heightKindOf, neighborTitle, neighborWhere, plateauYearLod, type SunDisclosure } from '../sunDisclosure';
 import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, pitchSun, plannedAxes, plannedPreset, ridgeFromPitch, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
@@ -69,7 +69,47 @@ let extPanel: ExternalPanel | null = null;
 export const HIDE_MODE_LABEL = '🏠 建物を選んで隠す';
 export const HIDE_MODE_ARMED = '建物をクリックして選んでください（Shift+ドラッグで範囲選択。もう一度押すと終了・Esc でも終了）';
 export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。隠し方（計算から除外／表示だけ隠す）と理由を選んで、画面上の「隠す」を押してください。薄く見えているのは隠した建物（青は表示だけ隠した建物）で、選んで「戻す」で戻せます';
-export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（国土地理院）」で読み込んでください';
+export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（PLATEAU）」で読み込んでください';
+
+// ---------------------------------------------------------------- 周辺建物の取得（PLATEAU → 国土地理院 → OSM）の文言
+
+/** 周辺建物の取得元のボタン名 */
+export const NEIGHBOR_SOURCE_BUTTON: Readonly<Record<NeighborSourceChoice, string>> = { plateau: '🏘 周辺建物（PLATEAU）', gsi: '🏘 周辺建物（国土地理院）', osm: '🏘 周辺建物（OSM）' };
+/** 周辺環境の説明（高さ・形状の根拠。地盤の高低差は表現しない） */
+export const NEIGHBORS_HINT =
+  '周辺建物は PLATEAU（国土交通省 3D都市モデル）がある地域では実測の高さ・形状（LOD1 は箱形、LOD2 は屋根形状）、無い地域は国土地理院データの建物の種類から推定（普通建物 約7m）しています。地盤の高低差は表現しません。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。';
+
+/**
+ * 取得後の案内: 「周辺の建物を 38 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 2 棟）」
+ * ／未整備「…国土地理院の建物（高さは推定）を使いました」。kept = 隠したままの建物の数
+ */
+export function neighborsLoadedToast(r: LoadNeighborsResult, kept = 0): string {
+  const keptText = kept ? `（隠した ${kept} 棟は隠したままです）` : '';
+  const p = r.plateau;
+  if (p && p.status === 'covered' && r.used.includes('plateau')) {
+    const ds = p.datasets.length ? `${[...new Set(p.datasets.map((d) => `${d.year}年度`))].join('／')}・${[...new Set(p.datasets.map((d) => d.ward ?? d.city))].join('／')}` : '';
+    const roof = roofShapeCount(p.lodCounts);
+    const fill = r.used.includes('gsi') ? '・国土地理院で補完' : '';
+    return `周辺の建物を ${r.count} 棟取得しました（PLATEAU${ds ? ` ${ds}` : ''}・屋根形状あり ${roof} 棟${fill}）${keptText}`;
+  }
+  const by = r.used[0] === 'osm' ? 'OpenStreetMap の建物' : '国土地理院の建物（高さは推定）';
+  if (p) return `${p.status === 'none' ? 'この地域は PLATEAU 未整備のため' : 'PLATEAU のデータを取得できなかったため（通信エラー）'}${by}を使いました（${r.count} 棟）${keptText}`;
+  return `周辺の建物を ${r.count} 棟取得しました${r.used.length ? `（${by}）` : ''}${keptText}`;
+}
+
+/**
+ * 建物の案内の出典の行: PLATEAU は「出典: PLATEAU（国土交通省）（2025年度・LOD2）実測の最高高さ 7.6 m」、
+ * 国土地理院は「…（高さは建物の種類からの推定）」、OSM・手動は出典だけ
+ */
+export function neighborSourceLine(b: Pick<NeighborBuilding, 'source' | 'heightKind' | 'plateau'>): string {
+  const base = `出典: ${NEIGHBOR_SOURCE_LABEL[b.source]}`;
+  const a = b.plateau;
+  if (a) {
+    const measured = typeof a.measuredHeight === 'number' && Number.isFinite(a.measuredHeight) ? ` 実測の最高高さ ${a.measuredHeight.toFixed(1)} m` : '';
+    return `${base}（${plateauYearLod(a)}）${measured}`.trimEnd();
+  }
+  return heightKindOf(b) === 'estimated' ? `${base}（高さは建物の種類からの推定）` : base;
+}
 /** 隠し方の説明（選択肢のツールチップ・一覧の見出し） */
 export const HIDE_MODE_HINT: Readonly<Record<HideMode, string>> = {
   exclude: '画面に出さず、影も落とさず、部屋の日当たり・日照時間マップにも入れません（解体予定の既存建物・もう無い建物など）',
@@ -645,7 +685,8 @@ export const sunStep: Step = {
       sc.buildSunPath();
       apply(true);
       if (sc.state.aerialLoaded) await loadAerial();
-      if (sc.state.neighbors.some((n) => n.source !== 'manual')) await loadNeighbors('gsi');
+      // 最後に選んだ取得元で取り直す（PLATEAU は anchor 基準のキャッシュがあるので、微調整の 2 m 刻みでは通信・復号なし）
+      if (sc.state.neighbors.some((n) => n.source !== 'manual')) await loadNeighbors(sc.lastSource);
     };
     // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ・撮影済みの季節比較画像）を捨てる。
     // 位置・方位・3DS・周辺建物が変わった後に古い結果（プレゼン資料にも使われる state.sun）が残らないようにする。実体は解析セクションの後で入れる
@@ -662,7 +703,7 @@ export const sunStep: Step = {
       invalidateResults();
       await reloadContext();
       if (!sc.state.aerialLoaded) await loadAerial();
-      await loadNeighbors('gsi');
+      await loadNeighbors(sc.lastSource);
       v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
     };
     const search = async () => {
@@ -881,18 +922,38 @@ export const sunStep: Step = {
       }
       v.invalidate();
     };
-    const loadNeighbors = async (src: 'gsi' | 'osm') => {
-      const pm = progressModal('周辺の建物を取得しています', false);
+    /** 取得の注記（未整備・通信エラー・一部タイルの失敗・補完）。周辺環境のセクションに出す */
+    const nbNotes = h('div', { class: 'sun-src-notes' });
+    const renderNbNotes = () => {
+      clear(nbNotes);
+      const r = sc.lastLoad;
+      if (!r || !sc.state.neighbors.some((n) => n.source !== 'manual')) return;
+      const src = collectDisclosure(sc).sources?.[0];
+      if (src) nbNotes.appendChild(h('div', { class: 'src' }, src));
+      for (const t of r.notes) nbNotes.appendChild(h('div', null, t));
+    };
+    /**
+     * 周辺建物を取り直す。PLATEAU（既定）は数 MB の建物タイルを読むので、進捗（枚数・MB）と中止を出す。
+     * 未整備・通信エラーで国土地理院に落ちたときは、その旨を案内する
+     */
+    const loadNeighbors = async (src: NeighborSourceChoice) => {
+      const pm = progressModal('周辺の建物を取得しています', src === 'plateau');
       try {
-        const n = await sc.loadNeighbors(src);
+        const r = await sc.loadNeighbors(src, { signal: pm.signal, onProgress: (msg, ratio) => pm.set(ratio, msg) });
         // 周辺建物は影を落とす（部屋の日当たり・日影図・日照時間マップに入る）ので、前の結果は捨てる
         invalidateResults();
         const kept = sc.hiddenList().length;
-        toast(`周辺の建物を ${n} 棟取得しました${kept ? `（隠した ${kept} 棟は隠したままです）` : ''}`, 'ok');
+        const fell = !!r.plateau && r.plateau.status !== 'covered';
+        toast(neighborsLoadedToast(r, kept), fell ? 'info' : 'ok', fell ? 8000 : undefined);
+        // 一部タイルの失敗・データ量の上限・補完などの注記（落ちた理由はトーストで案内済み）
+        const extra = r.notes.filter((t) => !/^この地域は PLATEAU|^PLATEAU のデータを取得できなかった/.test(t));
+        if (extra.length) toast(extra.join(' '), 'info', 8000);
       } catch (e) {
-        toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
+        if (pm.signal.aborted) toast('周辺建物の取得を中止しました', 'info');
+        else toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
       } finally {
         pm.close();
+        renderNbNotes();
       }
     };
     const dirSel = h('select', null, ['北', '北東', '東', '南東', '南', '南西', '西', '北西'].map((d, i) => h('option', { value: i * 45, selected: d === '南' }, d))) as HTMLSelectElement;
@@ -1102,8 +1163,8 @@ export const sunStep: Step = {
         'div',
         { class: 'pop sunnb-pop', style: `left:${left}px;top:${top}px` },
         h('div', { class: 'sunnb-pop-head' }, h('h5', null, neighborTitle(b)), h('button', { class: 'icon-btn', title: '閉じる', onclick: closePop }, '×')),
-        h('div', { class: 'hint' }, `出典: ${NEIGHBOR_SOURCE_LABEL[b.source]}${b.source === 'gsi' ? '（高さは建物の種類からの推定）' : ''}`),
-        h('div', { class: 'hint' }, `${neighborWhere(b)}・建築面積 約 ${Math.round(ringArea(b.ring))} m²`),
+        h('div', { class: 'hint' }, neighborSourceLine(b)),
+        h('div', { class: 'hint' }, `${neighborWhere(b)}・建築面積 約 ${Math.round(ringArea(b.ring))} m²${b.plateau?.storeys ? `・${b.plateau.storeys} 階` : ''}${b.plateau?.address ? `・${b.plateau.address}` : ''}`),
         h('div', { class: 'row' }, h('span', null, '高さ (m)'), hIn, h('button', { class: 'btn sm dark', onclick: applyH }, '適用')),
         overridden
           ? h(
@@ -1947,6 +2008,24 @@ export const sunStep: Step = {
     // 検証用（E2E）
     const dbg = (window as unknown as { __sunDebug?: Record<string, unknown> }).__sunDebug;
     if (dbg)
+      dbg.neighbors = {
+        /** 最後に選んだ取得元（建設地の変更・微調整で取り直すときの取得元） */
+        lastSource: () => sc.lastSource,
+        lastLoad: () => sc.lastLoad,
+        lodCounts: () => sc.lastLoad?.plateau?.lodCounts ?? {},
+        datasets: () => sc.lastLoad?.plateau?.datasets ?? [],
+        /** 出典ごとの棟数と、実形状（mesh）を持つ建物の数 */
+        counts: () => {
+          const out: Record<string, number> = { mesh: 0 };
+          for (const b of sc.state.neighbors) {
+            out[b.source] = (out[b.source] ?? 0) + 1;
+            if (b.mesh) out.mesh++;
+          }
+          return out;
+        },
+        load: (src: NeighborSourceChoice) => loadNeighbors(src),
+      };
+    if (dbg)
       dbg.neighborHide = {
         armed: () => hideMode,
         selected: () => [...selected],
@@ -1967,6 +2046,7 @@ export const sunStep: Step = {
       };
     renderBar();
     renderHiddenList();
+    renderNbNotes();
     // 想定の家の一覧・区画の破線（ステップを出入りしても SunContext と viewer に残っている）
     refreshPlanned();
     side.append(
@@ -1975,10 +2055,13 @@ export const sunStep: Step = {
         h(
           'div',
           { class: 'btn-row' },
+          // PLATEAU（実測の高さ・形状）を既定に。国土地理院・OSM は手動で選ぶ退路
+          h('button', { class: 'btn sm primary', title: '国土交通省 PLATEAU 3D都市モデルの実測の高さ・形状。無い地域は国土地理院の建物（高さは推定）に自動で切り替えます', onclick: () => loadNeighbors('plateau') }, NEIGHBOR_SOURCE_BUTTON.plateau),
           h('button', { class: 'btn sm', onclick: loadAerial }, '🛰 航空写真を表示'),
-          h('button', { class: 'btn sm', onclick: () => loadNeighbors('gsi') }, '🏘 周辺建物（国土地理院）'),
-          h('button', { class: 'btn sm', onclick: () => loadNeighbors('osm') }, '🏘 周辺建物（OSM）'),
+          h('button', { class: 'btn sm ghost', title: '国土地理院の地図の建物（高さは建物の種類からの推定）', onclick: () => loadNeighbors('gsi') }, NEIGHBOR_SOURCE_BUTTON.gsi),
+          h('button', { class: 'btn sm ghost', title: 'OpenStreetMap の建物（高さ・階数のタグがあれば使う）', onclick: () => loadNeighbors('osm') }, NEIGHBOR_SOURCE_BUTTON.osm),
         ),
+        nbNotes,
         toggles,
         hideBtn,
         h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
@@ -1992,7 +2075,7 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); } }, '＋ 隣家を追加'),
           h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
-        h('p', { class: 'hint' }, '周辺建物の高さは、国土地理院データでは建物の種類から推定（普通建物 約7m）しています。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。'),
+        h('p', { class: 'hint' }, NEIGHBORS_HINT),
       ),
     );
     // 3DS のパネルは 建設地 の直後に置く

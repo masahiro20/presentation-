@@ -28,6 +28,8 @@ export interface TileNode {
   /** tilesetUrl 基準で絶対化した content の URL（content が無ければ null） */
   contentUri: string | null;
   children: TileNode[];
+  /** 元の children のうち warnings で捨てた数（box/sphere・transform・外部 .json など）。REPLACE では children が全部捨てられても葉にはしない */
+  droppedChildren: number;
   /** root = 0 */
   depth: number;
 }
@@ -40,7 +42,7 @@ export interface ContentTile {
   distanceM: number;
   /** region の maxH − minH [m]（そのタイルで最も高い建物の目安） */
   heightSpanM: number;
-  /** children が空（REPLACE で読む対象） */
+  /** 元から children が無い（REPLACE で読む対象）。children を全部捨てたノードは false */
   leaf: boolean;
 }
 
@@ -148,17 +150,19 @@ export function parseTileset(json: unknown, tilesetUrl: string): ParsedTileset {
     }
 
     const children: TileNode[] = [];
+    let droppedChildren = 0;
     if (t.children !== undefined) {
       if (!Array.isArray(t.children)) warnings.push(`${path}: children が配列ではありません（無視しました）`);
       else {
         t.children.forEach((c, i) => {
           const node = walk(c, refine, depth + 1, `${path}.children[${i}]`);
           if (node) children.push(node);
+          else droppedChildren++;
         });
       }
     }
 
-    return { region, geometricError: isFiniteNum(t.geometricError) ? t.geometricError : 0, refine, contentUri, children, depth };
+    return { region, geometricError: isFiniteNum(t.geometricError) ? t.geometricError : 0, refine, contentUri, children, droppedChildren, depth };
   };
 
   const root = walk(json.root, null, 0, 'root');
@@ -173,7 +177,8 @@ export function parseTileset(json: unknown, tilesetUrl: string): ParsedTileset {
 /**
  * 取得する content を選ぶ。
  *  - 木は全部歩き、content ごとに自分の region が box と交差するかを見る（親の region では刈らない: 上の注のとおり PLATEAU は子が親からはみ出す）
- *  - REPLACE のノードは children があれば自分の content を読まない（葉だけ）。ADD のノードは自分の content も読む
+ *  - REPLACE のノードは children があれば自分の content を読まない（葉だけ）。children が warnings で全部捨てられた内部ノードも
+ *    葉ではない（content は簡略形状・底面なし。§0）ので読まない＝その枝ごと捨てる。ADD のノードは自分の content も読む
  *  - 距離規則: distanceM < nearM または distanceM − heightSpanM × reachFactor < reachMargin（遠くても高い建物の影は届く）
  *  - 近い順（同距離なら深い順 → URL 順）に並べ、maxTiles を超えた分は遠い方から捨てて truncated = true
  */
@@ -187,7 +192,7 @@ export function selectContentTiles(
   const seen = new Set<string>();
 
   const visit = (node: TileNode) => {
-    const leaf = node.children.length === 0;
+    const leaf = node.children.length === 0 && node.droppedChildren === 0;
     const deg = regionToDegBox(node.region);
     if (node.contentUri && (leaf || node.refine === 'ADD') && degBoxIntersects(deg, box) && !seen.has(node.contentUri)) {
       const distanceM = degBoxDistanceM(lat, lon, deg);

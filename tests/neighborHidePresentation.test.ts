@@ -20,7 +20,8 @@ vi.mock('../src/sun/geo', async (importOriginal) => {
   return { ...mod, fetchGsiBuildings: vi.fn(make('gsi')), fetchOsmBuildings: vi.fn(make('osm')) };
 });
 
-import { GHOST_OPACITY, NEIGHBOR_SELECT_COLOR, SunContext, absoluteEN, emptyEdits, keysInRect, neighborKey, pickRingAt, reapplyEdits, ringArea, ringCentroid, sameFootprint, type LatLon } from '../src/sun/context';
+import { GHOST_OPACITY, NEIGHBOR_SELECT_COLOR, SunContext, absoluteEN, emptyEdits, keysInRect, neighborKey, pickRingAt, plateauToNeighborBuilding, reapplyEdits, ringArea, ringCentroid, sameFootprint, type LatLon } from '../src/sun/context';
+import { plateauBox } from './helpers/plateauBox';
 import { buildOccluder } from '../src/sun/analysis';
 import { ALIGN_COLORS } from '../src/sun/align';
 import { hiddenListTitle, hiddenToastText, neighborTitle, neighborWhere, restoredToastText, selectionText } from '../src/app/steps/sunStep';
@@ -256,7 +257,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('隠した建物は実体を作らず、遮蔽物（buildOccluder）にも入らない。薄い表示は影・解析に入らない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
-    expect(await sc.loadNeighbors('gsi')).toBe(4);
+    expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     expect(neighborMeshes(v)).toBe(4);
     const tri0 = buildOccluder(v).triangles;
     const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
@@ -289,6 +290,51 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     expect((sc.neighborGroup.children as THREE.Mesh[]).map((m) => m.userData.neighborKey).sort()).toEqual([keys[1], keys[3]].sort());
   });
 
+  it('PLATEAU の実形状の建物（mesh）を 1 棟混ぜる: 隠すと実体も遮蔽物（12 三角形）も外れ、薄い表示は mesh の高さ。pickNeighbor で中心を拾う。戻せる', async () => {
+    const v = fakeViewer();
+    const sc = new SunContext(v, { ...SITE });
+    await sc.loadNeighbors('gsi');
+    // 足元の中心がピンから西 30 m・北 20 m の 10×8×9 m の箱（取得したときのピン基準）
+    const mb = plateauToNeighborBuilding(plateauBox({ gmlId: 'bldg_pick', anchor: ll(-30, 20), w: 10, d: 8, h: 9, zmin: 40 }), PIN);
+    sc.state.neighbors.push(mb);
+    sc.buildNeighbors();
+    const key = sc.keyOf(mb);
+    expect(key).toBe('plateau:bldg_pick');
+    expect(neighborMeshes(v)).toBe(5);
+    const all = buildOccluder(v).triangles;
+    // 真上から建物の中心をクリック → mesh 建物（キーは gml_id）
+    const c = ringCentroid(mb.ring);
+    const ndc = () => {
+      const p = sc.toWorld(c.e, c.n, sc.heightOf(mb)).project(v.camera);
+      return new THREE.Vector2(p.x, p.y);
+    };
+    expect(sc.pickNeighbor(ndc())).toEqual({ key, hidden: false });
+    expect(neighborTitle(mb)).toBe('PLATEAU（国土交通省）の建物');
+    // 隠す（既定: 計算から除外）: 実体が消え、遮蔽物は箱の 12 三角形だけ減る
+    expect(sc.setHidden([key], true)).toBe(1);
+    expect(neighborMeshes(v)).toBe(4);
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual([key]);
+    expect(sc.pickNeighbor(ndc())).toBeNull();
+    // 薄い表示: mesh の形（高さ 9 m）で、影・解析に入らない。薄い表示の間は隠した建物として拾う
+    sc.setGhosts(true);
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+    const ghost = (sc.ghostGroup.children as THREE.Mesh[]).find((g) => g.userData.neighborKey === key)!;
+    expect(ghost.userData.noShadow).toBe(true);
+    ghost.geometry.computeBoundingBox();
+    expect(ghost.geometry.boundingBox!.max.y).toBeCloseTo(9, 4);
+    expect(sc.pickNeighbor(ndc())).toEqual({ key, hidden: true });
+    sc.setGhosts(false);
+    // 戻す
+    expect(sc.setHidden([key], false)).toBe(1);
+    expect(neighborMeshes(v)).toBe(5);
+    expect(buildOccluder(v).triangles).toBe(all);
+    // 取り直し（国土地理院）では PLATEAU の建物は一覧から消え、記録は残らない（手動の隣家ではない）
+    expect((await sc.loadNeighbors('gsi')).count).toBe(4);
+    expect(sc.state.neighbors.some((b) => b.plateau)).toBe(false);
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+  });
+
   it('選んだ建物はオレンジ（2 点合わせの航空写真側と同じ色）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
@@ -313,7 +359,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     sc.setHeight(sc.keyOf(sc.state.neighbors[3]), 15);
     // 建設地を北へ 2 m（微調整）→ 取り直し
     sc.state.site = { ...site, offsetN: 2 };
-    expect(await sc.loadNeighbors('gsi')).toBe(4);
+    expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     expect(sc.hiddenList().length).toBe(1);
     expect(sc.keyOf(sc.hiddenList()[0])).toBe(k0);
     expect(neighborMeshes(v)).toBe(3);

@@ -25,6 +25,8 @@ import { keyDates, localDate, seasonMoment, sunDirectionWorld, sunPosition, true
 import { clearStudyOccluderCache, shadowDiagramStudy, studyDates } from '../src/sunstudy/analysis';
 import type { StudyScene } from '../src/sunstudy/scene';
 import type { Viewer } from '../src/scene/viewer';
+import { buildNeighborMeshes } from '../src/sunstudy/neighbors';
+import { plateauNeighborAt } from './helpers/plateauBox';
 
 const TOKYO = { lat: 35.68, lon: 139.69 };
 
@@ -487,6 +489,38 @@ describe('日照ツールの shadowDiagramStudy（範囲の自動）', () => {
     // 建物の輪郭（塗り）が描かれ、等時間日影線は建物の内側に出ない
     expect(r.svg).toMatch(/<polygon points="[^"]+" fill="#555"/);
     expect(r.summary[0].maxDist).toBeGreaterThan(5);
+    clearStudyOccluderCache();
+  });
+
+  it('PLATEAU の実形状（mesh）の周辺建物を含める: 建物の北に高い mesh 建物があると 2 時間日影線が遠くまで伸び、注記は「周辺建物を含みます」。含めなければ建物だけ', async () => {
+    const groups = {
+      terrain: new THREE.Group(),
+      neighbors: new THREE.Group(),
+      building: new THREE.Group(),
+      site: new THREE.Group(),
+      sunpath: new THREE.Group(),
+      overlay: new THREE.Group(),
+      markers: new THREE.Group(),
+    };
+    const b = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+    b.position.y = 5;
+    groups.building.add(b);
+    // 建物の北 20 m（ワールド z = −20）に 10×10×20 m の mesh 建物（anchor 基準の局所座標 → ピン基準に配置）
+    const pin = { lat: TOKYO.lat, lon: TOKYO.lon };
+    const nb = plateauNeighborAt(pin, 0, 20, { gmlId: 'bldg_tall', w: 10, d: 10, h: 20, zmin: 30 });
+    groups.neighbors.add(buildNeighborMeshes([nb], { groundY: () => -0.3, pin }));
+    const scene = { groups } as unknown as StudyScene;
+    const base = { ...TOKYO, year: 2026, planeHeight: 1.5, center: new THREE.Vector3(0, 0, 0), sitePolygon: null };
+    const without = await shadowDiagramStudy(scene, { ...base, includeNeighbors: false });
+    clearStudyOccluderCache();
+    const withNb = await shadowDiagramStudy(scene, { ...base, includeNeighbors: true });
+    expect(without.svg).toContain('※周辺建物は含みません');
+    expect(withNb.svg).toContain('※周辺建物を含みます');
+    // 建物の影だけなら 2 時間線は建物から数 m、mesh 建物（高さ 20 m）を含めるとその北側の影の分だけ遠くへ
+    expect(withNb.summary[0].hour).toBe(without.summary[0].hour);
+    expect(withNb.summary[0].maxDist).toBeGreaterThan(without.summary[0].maxDist + 10);
+    // 建物の内外の判定は自建物だけ（mesh 建物の足元は建物の塗りに含めない）
+    expect(withNb.svg.match(/<polygon points="[^"]+" fill="#555"/g)?.length).toBe(without.svg.match(/<polygon points="[^"]+" fill="#555"/g)?.length);
     clearStudyOccluderCache();
   });
 });

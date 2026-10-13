@@ -30,6 +30,8 @@ import {
   shadowDiagramStudy,
 } from '../src/sunstudy/analysis';
 import type { StudyScene } from '../src/sunstudy/scene';
+import { buildNeighborMeshes } from '../src/sunstudy/neighbors';
+import { plateauNeighborAt } from './helpers/plateauBox';
 
 const TOKYO = { lat: 35.6895, lon: 139.6917 };
 const WINTER = { year: 2026, month: 12, day: 22, ...TOKYO, northAngleDeg: 0 };
@@ -312,6 +314,33 @@ describe('sunstudy: 遮蔽物と地面の高さ', () => {
     disposeStudyOccluder(occ3);
     // 地形のキャッシュは生きている
     expect(raycastFirstKind(occ.extra![0], new THREE.Vector3(60, 50, 60), down, 100)?.kind).toBe('terrain');
+    clearStudyOccluderCache();
+  });
+
+  it('PLATEAU の実形状（mesh）の周辺建物を混ぜる: 種別 neighbor の三角形は 箱 12 + 押し出しの分、真下レイキャストは mesh の天端に当たる', () => {
+    clearStudyOccluderCache();
+    const scene = fakeScene();
+    scene.groups.neighbors.clear();
+    const pin = { lat: 35.6, lon: 139.6 };
+    // 西 40 m に 10×10×7 の mesh 建物、東 40 m に国土地理院の押し出し（8×8×7）
+    const list = [plateauNeighborAt(pin, -40, 0, { gmlId: 'bldg_occ', w: 10, d: 10, h: 7, zmin: 10 }), { id: 'g1', ring: [{ e: 36, n: -4 }, { e: 44, n: -4 }, { e: 44, n: 4 }, { e: 36, n: 4 }], height: 7, source: 'gsi' as const, heightKind: 'estimated' as const }];
+    scene.groups.neighbors.add(buildNeighborMeshes(list, { groundY: () => -0.3, pin }));
+    const extruded = buildOccluderFrom([{ root: buildNeighborMeshes([list[1]], { groundY: () => -0.3, pin }), kind: 'neighbor' }]).triangles;
+    expect(extruded).toBeGreaterThan(0);
+    const occ = buildStudyOccluder(scene, { terrain: false, neighbors: true, building: false });
+    expect(occ.triangles).toBe(12 + extruded);
+    const down = new THREE.Vector3(0, -1, 0);
+    const hit = raycastFirstKind(occ, new THREE.Vector3(-40, 50, 0), down, 100);
+    expect(hit?.kind).toBe('neighbor');
+    // 天端 = 地盤（groundY は 0.3 m 下げた値）+ 0.3 + 高さ 7
+    expect(hit!.point.y).toBeCloseTo(7, 5);
+    expect(raycastFirstKind(occ, new THREE.Vector3(40, 50, 0), down, 100)?.kind).toBe('neighbor');
+    expect(raycastFirstKind(occ, new THREE.Vector3(0, 50, 0), down, 100)).toBeNull();
+    // 南に低い太陽: mesh 建物の北側は日影、南側は日向
+    const dir = sunDirectionWorld(180, 20, 0);
+    expect(isShadedStudy(occ, new THREE.Vector3(-40, 0.5, -8), dir)).toBe(true);
+    expect(isShadedStudy(occ, new THREE.Vector3(-40, 0.5, 8), dir)).toBe(false);
+    disposeStudyOccluder(occ);
     clearStudyOccluderCache();
   });
 

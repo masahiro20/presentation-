@@ -10,7 +10,8 @@ vi.mock('../src/sun/geo', async (importOriginal) => {
   return { ...mod, fetchGsiBuildings: vi.fn(make), fetchOsmBuildings: vi.fn(make) };
 });
 
-import { SunContext } from '../src/sun/context';
+import { SunContext, plateauToNeighborBuilding } from '../src/sun/context';
+import { plateauBox } from './helpers/plateauBox';
 import { buildOccluder, isShaded } from '../src/sun/analysis';
 import { PLANNED_COLORS, PLANNED_EAVE_OVERHANG, buildPlannedHouseGeometry, houseFromPreset, plannedFootprint } from '../src/sun/plannedHouse';
 import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine } from '../src/app/sunDisclosure';
@@ -136,6 +137,41 @@ describe('SunContext: 想定の家', () => {
     expect(ghost.userData.neighbor).toBeUndefined();
   });
 
+  it('PLATEAU の実形状の建物（mesh）を 1 棟混ぜる: 遮蔽物 = 国土地理院の押し出し + 箱 12 + 想定の家。想定の家を表示だけ隠しても同数、mesh 建物を計算から除外で 12 減る。注記は想定の家と除外を別に数える', async () => {
+    const v = fakeViewer();
+    const sc = new SunContext(v, { ...SITE });
+    await sc.loadNeighbors('gsi');
+    const gsiTri = buildOccluder(v).triangles;
+    expect(gsiTri).toBeGreaterThan(0);
+    // 足元の中心がピンから西 30 m・北 20 m の 10×8×7 m の箱（取得したときのピン基準）
+    const mb = plateauToNeighborBuilding(plateauBox({ gmlId: 'bldg_pl', anchor: ll(-30, 20), w: 10, d: 8, h: 7, zmin: 40 }), PIN);
+    sc.state.neighbors.push(mb);
+    sc.buildNeighbors();
+    expect(buildOccluder(v).triangles).toBe(gsiTri + 12);
+    const key = sc.addPlanned(houseFromPreset('gable2', 0, -14, 90));
+    const [b] = sc.plannedList();
+    const geo = buildPlannedHouseGeometry(b.planned, { toWorld: (e, n, y) => sc.toWorld(e, n, y), baseY: 0 });
+    const plannedTri = geo.getAttribute('position').count / 3;
+    const all = buildOccluder(v).triangles;
+    expect(all).toBe(gsiTri + 12 + plannedTri);
+    // 想定の家を表示だけ隠す → 影だけのメッシュで同数。mesh 建物を計算から除外 → 12 減る
+    sc.setHidden([key], true, { mode: 'view', reason: 'other' });
+    expect(buildOccluder(v).triangles).toBe(all);
+    sc.setHidden(['plateau:bldg_pl'], true, { mode: 'exclude', reason: 'demolish' });
+    expect(buildOccluder(v).triangles).toBe(all - 12);
+    expect(meshes(sc).filter((m) => m.userData.neighbor && !m.userData.shadowOnly)).toHaveLength(2);
+    // 含めない → 想定の家の分も減る（mesh 建物の除外はそのまま）
+    sc.setPlannedEnabled(false);
+    expect(buildOccluder(v).triangles).toBe(gsiTri);
+    sc.setPlannedEnabled(true);
+    const d = collectDisclosure(sc);
+    expect(d.excluded.map((e) => e.key)).toEqual(['plateau:bldg_pl']);
+    expect(d.excluded[0]).toMatchObject({ source: 'plateau', height: 7, heightKind: 'measured' });
+    expect(d.viewOnly.map((e) => e.key)).toEqual([key]);
+    expect(plannedLine(d)).toBe('想定で置いた建物 1 棟（未建築・仮の形状。影・解析に含む）');
+    expect(excludedTableRows(d)[0]).toMatchObject({ source: 'PLATEAU（国土交通省）', height: '7.0 m' });
+  });
+
   it('setPlannedEnabled(false): 実体・影だけのメッシュ・薄い表示のどれも作らない（隠す記録はそのまま）。一覧・選択の対象からも外す', () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
@@ -205,7 +241,7 @@ describe('SunContext: 想定の家', () => {
     expect(d.included).toBe(2);
     expect(d.excluded).toEqual([]);
     expect(d.planned).toEqual({ count: 1, enabled: false });
-    expect(disclosureLines(d, 'rooms')).toEqual(['※部屋の日当たりは周辺建物 2 棟の影を含めて計算しています', '計算から除外した周辺建物 なし', '想定で置いた建物 1 棟（未建築・仮の形状。今は含めていません）']);
+    expect(disclosureLines(d, 'rooms')).toEqual(['※部屋の日当たりは周辺建物 2 棟の影を含めて計算しています', '周辺建物の出典: 国土地理院（推定）2 棟', '計算から除外した周辺建物 なし', '想定で置いた建物 1 棟（未建築・仮の形状。今は含めていません）']);
     // 周辺建物を読み込まず、想定の家だけ（含めていない）
     sc.clearNeighbors();
     d = collectDisclosure(sc);

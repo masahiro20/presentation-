@@ -12,7 +12,7 @@
 import { download } from '../app/dom';
 import { formatHM, keyDates } from '../sun/solar';
 import { currentPlaced } from './building';
-import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere, plannedLine } from './disclosure';
+import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere, plannedLine, plateauDisclosureText, plateauSourceLabels } from './disclosure';
 import type { NeighborDisclosure } from './disclosure';
 import { analysisNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { DEM_LABEL } from './terrain';
@@ -270,11 +270,13 @@ export function buildReportHtml(): string {
     const list = analysisNeighbors();
     const srcs: NeighborSource[] = [...study.neighborSources];
     if (list.some((n) => n.source === 'manual') && !srcs.includes('manual')) srcs.push('manual');
+    // PLATEAU は使ったデータセット（市区・年度・LOD）ごとに 1 行（plateauDatasetLabel。旧形式の保存データで分からなければ名前だけ）
     const srcHtml = srcs.length
       ? `<ul>${srcs
-          .map((s) => {
+          .flatMap((s) => {
             const k = KIND_TAG[sourceKind(s, list)];
-            return `<li>${esc(NEIGHBOR_SOURCE_LABEL[s])}<span class="tag ${k.cls}">${k.label}</span></li>`;
+            const labels = s === 'plateau' ? plateauSourceLabels() : [NEIGHBOR_SOURCE_LABEL[s]];
+            return labels.map((t) => `<li>${esc(t)}<span class="tag ${k.cls}">${k.label}</span></li>`);
           })
           .join('')}</ul>`
       : '<p class="note">周辺建物は取得していません。</p>';
@@ -379,7 +381,9 @@ export function buildReportHtml(): string {
     !study.grid?.source || study.grid.source === 'flat'
       ? '地形の標高データは取得していない（または取得できなかった）ため、地形は平地（建設地のピン位置の地盤高で水平）として計算しています。周囲の高低差による影は含みません。'
       : `地形の高さは${DEM_LABEL[study.grid.source] ?? `国土地理院の標高タイル（${study.grid.source}）`}を用いています。地盤高は建設地のピン位置の値を GL±0 としています。`,
-    `周辺建物は ${study.neighborSources.length ? study.neighborSources.map((s) => NEIGHBOR_SOURCE_LABEL[s]).join('、') : '自動取得していません'}。「推定」と表示した建物の高さは建物の種類などから推定した値で、実際の高さと異なることがあります。隣家の高さが分かる場合は手入力で修正してください。`,
+    `周辺建物は ${study.neighborSources.length ? study.neighborSources.flatMap((s) => (s === 'plateau' ? plateauSourceLabels() : [NEIGHBOR_SOURCE_LABEL[s]])).join('、') : '自動取得していません'}。「推定」と表示した建物の高さは建物の種類などから推定した値で、実際の高さと異なることがあります。隣家の高さが分かる場合は手入力で修正してください。`,
+    // PLATEAU を使ったときの共通の開示文（LOD1 の天端は点群の中央値・年度以降の新築・解体）
+    ...(study.neighborSources.includes('plateau') ? [plateauDisclosureText()] : []),
     '建物の寸法・方位・位置・GL は上記「前提」の値を用いています。3D データの単位の設定が違うと縮尺が変わります。',
     '樹木・塀・電柱など、データに無いものの影は含みません。窓ガラスの反射や空の明るさ（天空光）は含まず、直射日光のみを計算しています。',
     `周辺建物の扱い: ${disclosureLines({ disclosure: disc }).join('。').replace(/^周辺建物の扱い: /, '')}。計算から除外した建物は理由とともに「周辺建物の扱い」に一覧にしています。「表示だけ隠した建物」は 3D の画面・画像には描いていませんが、影・日照の解析・日影図には含めています。`,

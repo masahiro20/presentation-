@@ -1,6 +1,6 @@
 /** 日照シミュレーション（3D データ読み込み版）の状態 */
 import { PLANNED_DEFAULT_LABEL, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from '../sun/plannedHouse';
-import type { AerialImage, GeoFrame, HeightGrid, ImportedModel, LatLon, MeasurePoint, ModelPlacement, Neighbor, NeighborHideInfo, NeighborHideMode, NeighborHideReason, NeighborOverride, NeighborSource } from './types';
+import type { AerialImage, GeoFrame, HeightGrid, ImportedModel, LatLon, MeasurePoint, ModelPlacement, Neighbor, NeighborHideInfo, NeighborHideMode, NeighborHideReason, NeighborOverride, NeighborSource, PlateauEnvInfo } from './types';
 import { DEFAULT_PLACEMENT, HIDE_MODES, HIDE_REASONS } from './types';
 
 export interface StudyUI {
@@ -44,8 +44,8 @@ export interface StudyState {
   points: MeasurePoint[];
   ui: StudyUI;
   show: { aerial: boolean; neighbors: boolean; terrain: boolean; sunPath: boolean; site: boolean; points: boolean };
-  /** 周辺環境の取得状況 */
-  env: { loaded: boolean; loading: boolean; error: string | null; attribution: string };
+  /** 周辺環境の取得状況。plateau は PLATEAU を使ったときの出典（使ったデータセット・索引の生成日時。開示・保存に使う。使っていなければ無し） */
+  env: { loaded: boolean; loading: boolean; error: string | null; attribution: string; plateau?: PlateauEnvInfo };
   /** 解析結果（レポート用） */
   results: {
     images: { label: string; url: string }[];

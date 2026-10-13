@@ -82,9 +82,30 @@ function validateIndex(json: unknown, url: string): PlateauIndex {
 
 /**
  * 索引のメモ（fetch 関数 → URL → Promise）。fetchImpl ごとに分けるので、テストのスタブどうしは混ざらず、
- * 同じ fetchImpl（本番は defaultFetch）で呼べば 2 回目以降は通信しない。失敗した Promise はメモから外し、取り直せるようにする
+ * 同じ fetchImpl（本番は defaultFetch）で呼べば 2 回目以降は通信しない。失敗した Promise はメモから外し、取り直せるようにする。
+ * メモの Promise は signal 無しで取る（先に始めた呼び出しの中止が、同じ索引を待つ別の呼び出しに伝播しないように。索引は小さいので
+ * 下層の fetch は中止しない）。呼び出し側は raceWithAbort で自分の signal だけで待ちを打ち切る
  */
 const indexMemo = new WeakMap<typeof fetch, Map<string, Promise<PlateauIndex>>>();
+
+/** 共有の Promise を自分の signal で待つ（中止したら自分だけ signal.reason で reject） */
+function raceWithAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject((signal.reason as Error | undefined) ?? new Error('中止しました'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
 
 /** 既定 new URL('plateau-index.json', document.baseURI)。Promise をメモ化 */
 export async function loadPlateauIndex(opts?: NetOpts & { url?: string | URL }): Promise<PlateauIndex> {
@@ -97,9 +118,9 @@ export async function loadPlateauIndex(opts?: NetOpts & { url?: string | URL }):
     indexMemo.set(f, byUrl);
   }
   const hit = byUrl.get(url);
-  if (hit) return hit;
+  if (hit) return raceWithAbort(hit, opts?.signal);
   const p = (async () => {
-    const res = await f(url, { signal: opts?.signal });
+    const res = await f(url);
     if (!res.ok) throw new Error(`PLATEAU の索引を取得できません（HTTP ${res.status}）: ${url}`);
     let json: unknown;
     try {
@@ -111,7 +132,7 @@ export async function loadPlateauIndex(opts?: NetOpts & { url?: string | URL }):
   })();
   byUrl.set(url, p);
   p.catch(() => byUrl!.delete(url));
-  return p;
+  return raceWithAbort(p, opts?.signal);
 }
 
 /** 逆ジオコーダの応答 { results: { muniCd, lv01Nm } }。海上などでは results が null */

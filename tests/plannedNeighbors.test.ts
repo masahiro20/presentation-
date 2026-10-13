@@ -32,6 +32,7 @@ import {
   visibleNeighbors,
 } from '../src/sunstudy/state';
 import type { Neighbor, ProjectJson } from '../src/sunstudy/types';
+import { plateauNeighborAt } from './helpers/plateauBox';
 
 const FRAME = { lat: 35.6, lon: 139.6, address: 'テスト', groundElev: 10 };
 const square = (e0: number, n0: number, size: number) => [
@@ -264,6 +265,21 @@ describe('メッシュと遮蔽物', () => {
     // 屋根の板の厚さの分の面（軒裏）もある
     expect(PLANNED_ROOF_THICKNESS).toBeGreaterThan(0);
   });
+
+  it('PLATEAU の実形状の建物（mesh）を混ぜても、想定の家と一緒に遮蔽物に入る（三角形数 = 想定の家 + 箱 12）。半透明の表示にも両方出る', () => {
+    resetStudy();
+    study.neighbors = [plateauNeighborAt({ lat: FRAME.lat, lon: FRAME.lon }, 30, 0, { gmlId: 'bldg_p', h: 8 })];
+    const p = addPlannedHouse(houseFromPreset('gable2', 0, -20, 90));
+    const scene = fakeScene();
+    rebuildEnvironment(scene, null);
+    const o = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+    const planned = bakeWorldTriangles([{ root: buildNeighborMeshes([p], { groundY: () => -0.3 }), kind: 'neighbor' }], studyMeshFilter, { ignoreVisibility: true }).triangles;
+    expect(o.triangles).toBe(planned + 12);
+    disposeStudyOccluder(o);
+    const ghosts = buildNeighborGhosts(study.neighbors.map((n) => ({ ...n, hidden: true })));
+    expect(meshesOf(ghosts).map((m) => m.userData.neighborId).sort()).toEqual(['plateau:bldg_p', p.id].sort());
+    expect(bakeWorldTriangles([{ root: ghosts, kind: 'neighbor' }], studyMeshFilter, { ignoreVisibility: true }).triangles).toBe(0);
+  });
 });
 
 describe('開示・レポート', () => {
@@ -329,6 +345,49 @@ describe('保存データ', () => {
     delete (json as Partial<ProjectJson>).plannedEnabled;
     await applyProject(json);
     expect(study.plannedEnabled).toBe(true);
+  });
+
+  it('想定の家と PLATEAU の実形状の建物（mesh）を混ぜた往復: meshQ が mesh に戻り、想定の家の形・隠した記録・高さの上書きが残り、遮蔽物の三角形数が同じ', async () => {
+    const pin = { lat: FRAME.lat, lon: FRAME.lon };
+    study.neighbors = [nb('auto1', square(40, 0, 8)), plateauNeighborAt(pin, -30, 0, { gmlId: 'bldg_rt', w: 8, d: 6, h: 9, zmin: 12 })];
+    const p = addPlannedHouse(houseFromPreset('gable2', 0, -20, 90));
+    setNeighborsHidden(['plateau:bldg_rt'], true, { mode: 'view', reason: 'other', note: '視点の手前' });
+    study.neighborOverrides.auto1 = { height: 11 };
+    const scene = fakeScene();
+    const occOf = () => {
+      rebuildEnvironment(scene, null);
+      const o = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+      const t = o.triangles;
+      disposeStudyOccluder(o);
+      return t;
+    };
+    const before = occOf();
+    const planned = bakeWorldTriangles([{ root: buildNeighborMeshes([p], { groundY: () => -0.3 }), kind: 'neighbor' }], studyMeshFilter, { ignoreVisibility: true }).triangles;
+    const gsi = bakeWorldTriangles([{ root: buildNeighborMeshes([study.neighbors[0]], { groundY: () => -0.3 }), kind: 'neighbor' }], studyMeshFilter, { ignoreVisibility: true }).triangles;
+    // 表示だけ隠した mesh 建物は影だけのメッシュ（12 三角形）で残る
+    expect(before).toBe(planned + gsi + 12);
+    const json = JSON.parse(JSON.stringify(serializeProject())) as ProjectJson;
+    const saved = json.env!.neighbors.find((n) => n.id === 'plateau:bldg_rt')!;
+    expect(saved.meshQ).toMatchObject({ v: 1, q: 100, roofTriangles: 2 });
+    expect('mesh' in saved).toBe(false);
+    expect(json.manualNeighbors.filter((n) => n.planned)).toHaveLength(1);
+    study.neighbors = [];
+    study.neighborOverrides = {};
+    await applyProject(json);
+    const back = study.neighbors.find((n) => n.id === 'plateau:bldg_rt')!;
+    expect(back.mesh!.tris).toBeInstanceOf(Float32Array);
+    expect(back.mesh!.tris.length).toBe(12 * 9);
+    expect(back.plateau!.gmlId).toBe('bldg_rt');
+    expect(ids(viewOnlyNeighbors())).toEqual(['plateau:bldg_rt']);
+    expect(viewOnlyNeighbors()[0].hideNote).toBe('視点の手前');
+    expect(plannedHouses().map((n) => n.id)).toEqual([p.id]);
+    expect(effectiveNeighbors().find((n) => n.id === 'auto1')!.height).toBe(11);
+    expect(occOf()).toBe(before);
+    // mesh 建物を計算から除外すると 12 だけ減り、想定の家を含めないとさらに想定の家の分が減る
+    setNeighborsHidden(['plateau:bldg_rt'], true, { mode: 'exclude', reason: 'demolish' });
+    expect(occOf()).toBe(before - 12);
+    setPlannedEnabled(false);
+    expect(occOf()).toBe(before - 12 - planned);
   });
 
   it('壊れた値: 数値・屋根の形を整え、中心が無ければ ring から。planned が壊れていれば外す。自動取得の建物の planned は外す', () => {

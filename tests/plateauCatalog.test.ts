@@ -3,6 +3,7 @@
  *  - loadPlateauIndex: 索引の読み込み・Promise のメモ化（同じ fetchImpl なら 2 回目は通信しない）・失敗は取り直せる・形の検証・Node での既定 URL
  *  - muniCodesAround: 中心＋4 隅の 5 点を allSettled・重複除去・1 件でも成功すれば返す・全滅で throw・中止は signal.reason
  *  - muniCodesByRegion: region を持つ索引で box 交差の市区、無い索引では []
+ *  - public/plateau-index.json（実物。W16 で region を追加）: 全市区に region があり 300 KB 以下、実地点の予備経路が引ける
  *  - pickDataset: LOD 降順・同 LOD はテクスチャ無し先・label・索引に無い市区は null
  *  - resolveTilesetUrl: -latest ラッパー → 実 URL（via 'latest'）、children 無し → missing、失敗 → 索引 URL（via 'index'）
  */
@@ -211,6 +212,45 @@ describe('muniCodesByRegion: 索引の region による予備経路', () => {
     idx.areas['13112'].region = [139.6, 35.5] as unknown as [number, number, number, number];
     idx.areas['23102'].region = [NaN, 35.17, 136.96, 35.2];
     expect(muniCodesByRegion(idx, { west: 100, south: 20, east: 150, north: 50 })).toEqual([]);
+  });
+});
+
+describe('public/plateau-index.json（実物）の region（W16: scripts/plateau-index.mjs が -latest ラッパーから付ける）', () => {
+  const realText = readFileSync(new URL('../public/plateau-index.json', import.meta.url), 'utf8');
+  const real = JSON.parse(realText) as PlateauIndex;
+  const areas = Object.entries(real.areas);
+
+  it('448 市区・300 KB 以下・region は度の [west, south, east, north] で日本の範囲内', () => {
+    expect(areas.length).toBeGreaterThanOrEqual(440);
+    expect(realText.length).toBeLessThanOrEqual(300 * 1024);
+    for (const [cd, a] of areas) {
+      if (!a.region) continue;
+      const [w, s, e, n] = a.region;
+      expect(a.region, cd).toHaveLength(4);
+      expect(w < e && s < n, `${cd} の region の向き`).toBe(true);
+      expect(w >= 122 && e <= 154 && s >= 20 && n <= 46, `${cd} の region が日本の範囲外`).toBe(true);
+    }
+  });
+
+  it('-latest ラッパーが無い市区（浜松市の旧 7 区 22131〜22137）以外はすべて region を持つ', () => {
+    const without = areas.filter(([, a]) => !a.region).map(([cd]) => cd);
+    expect(without.every((cd) => /^2213[1-7]$/.test(cd))).toBe(true);
+    expect(areas.length - without.length).toBeGreaterThanOrEqual(440);
+  });
+
+  it('実地点の予備経路: 奥沢 → 世田谷区、区境 → 守山区と東区、川越・長野の山村 → 索引に無い市区は返さない', () => {
+    // 区の bbox は隣の区と重なるので「含む」で見る（fetch.ts は pickDataset で各市区を試し、葉が箱に掛からない市区は datasets に入らない）
+    expect(muniCodesByRegion(real, degBoxAround(35.6019, 139.6736, 330))).toContain('13112');
+    const border = muniCodesByRegion(real, degBoxAround(35.1932, 136.9545, 330));
+    expect(border).toContain('23113');
+    expect(border).toContain('23102');
+    expect(muniCodesByRegion(real, degBoxAround(35.1835, 136.933, 330))).toContain('23102');
+    expect(muniCodesByRegion(real, degBoxAround(35.9251, 139.4858, 330))).not.toContain('11201');
+    expect(muniCodesByRegion(real, degBoxAround(35.7898, 137.4633, 330))).not.toContain('20429');
+    // 世田谷区の region は奥沢を含み、名古屋の 2 区は含まない
+    const [w, s, e, n] = real.areas['13112'].region!;
+    expect(w < 139.6736 && 139.6736 < e && s < 35.6019 && 35.6019 < n).toBe(true);
+    expect(muniCodesByRegion(real, degBoxAround(35.6019, 139.6736, 330))).not.toContain('23113');
   });
 });
 

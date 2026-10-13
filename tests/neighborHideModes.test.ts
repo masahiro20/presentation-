@@ -39,6 +39,8 @@ import {
 } from '../src/sunstudy/state';
 import { frameFromLocal } from '../src/sunstudy/types';
 import type { Neighbor, ProjectJson } from '../src/sunstudy/types';
+import type { PlateauDatasetInfo } from '../src/sun/plateau';
+import { plateauNeighborAt } from './helpers/plateauBox';
 
 const FRAME = { lat: 35.6, lon: 139.6, address: 'テスト', groundElev: 10 };
 
@@ -389,6 +391,109 @@ describe('開示（日影図の脚注・レポート）', () => {
     expect(html2).not.toContain('data-role="neighbor-hide"');
     expect(html2).toContain('<dt>計算から除外</dt><dd>なし</dd>');
     expect(html2).toContain('計算から除外した周辺建物 なし');
+  });
+});
+
+describe('PLATEAU の実形状の建物（mesh）を 1 棟混ぜた回帰: 影だけのメッシュ・半透明・遮蔽物の等式・開示の出典行', () => {
+  const pin = { lat: FRAME.lat, lon: FRAME.lon };
+  const DATASET: PlateauDatasetInfo = { muniCd: '13112', pref: '東京都', city: '世田谷区', ward: null, year: 2025, lod: 2, tex: false, tilesetUrl: 'https://example.invalid/tileset.json', label: '東京都世田谷区・2025年度・LOD2' };
+  /** ピンから西 30 m・北 5 m に足元の中心、10×8×12 m の箱（屋根 2 + 底面 2 + 壁 8 = 12 三角形） */
+  const meshNb = () => plateauNeighborAt(pin, -30, 5, { gmlId: 'bldg_mix', w: 10, d: 8, h: 12, zmin: 20, attrs: { muniCd: '13112', pref: '東京都', city: '世田谷区', ward: null, year: 2025, datasetLod: 2, lod: 2, usage: '共同住宅', measuredHeight: 12.6 } });
+  const tri = (root: THREE.Object3D) => bakeWorldTriangles([{ root, kind: 'neighbor' }], studyMeshFilter, { ignoreVisibility: true }).triangles;
+  beforeEach(() => {
+    resetStudy();
+    // auto2（PLATEAU・押し出し）を mesh 付きの建物に差し替える（他は国土地理院の押し出しと手動の隣家のまま）
+    study.neighbors[1] = meshNb();
+    study.neighborSources = ['plateau', 'gsi'];
+    study.env.plateau = { datasets: [DATASET], indexGenerated: '2026-10-10' };
+  });
+  afterEach(() => {
+    study.neighborSources = [];
+    delete study.env.plateau;
+    clearStudyOccluderCache();
+  });
+
+  it('影だけのメッシュは描く建物と同じ三角形数（mesh 12 + 押し出し）、半透明の表示は焼き込む三角形 0、userData は他の建物と同じ 4 キー + shadowOnly', () => {
+    const list = visibleNeighbors();
+    // groundY は環境側が 0.3 m 下げた値を渡す約束（平地なら −0.3）。mesh 建物の足元 = 最低点 + 0.3 = 0
+    const normal = buildNeighborMeshes(list, { groundY: () => -0.3, pin });
+    const casters = buildNeighborShadowCasters(list, { groundY: () => -0.3 });
+    const others = buildNeighborMeshes(list.filter((n) => n.id !== 'plateau:bldg_mix'), { groundY: () => -0.3, pin });
+    expect(tri(normal)).toBe(tri(others) + 12);
+    expect(tri(casters)).toBe(tri(normal));
+    expect(tri(buildNeighborGhosts(list.map((n) => ({ ...n, hidden: true }))))).toBe(0);
+    const m = meshesOf(normal).find((x) => x.userData.neighborId === 'plateau:bldg_mix')!;
+    expect(m.userData).toEqual({ neighbor: true, neighborId: 'plateau:bldg_mix', heightKind: 'measured', matKey: 'neighbor' });
+    expect((m.material as THREE.Material[]).length).toBe(2);
+    const c = meshesOf(casters).find((x) => x.userData.neighborId === 'plateau:bldg_mix')!;
+    expect(c.userData.shadowOnly).toBe(true);
+    expect(c.geometry.getAttribute('position').count).toBe(m.geometry.getAttribute('position').count);
+    // 足元はピン基準の ring と同じ位置（西 30 m・北 5 m。ワールドの z = −北）、高さは mesh の 12 m
+    m.geometry.computeBoundingBox();
+    const bb = m.geometry.boundingBox!;
+    expect(bb.min.x).toBeCloseTo(-35, 3);
+    expect(bb.max.x).toBeCloseTo(-25, 3);
+    expect(bb.min.z).toBeCloseTo(-9, 3);
+    expect(bb.max.z).toBeCloseTo(-1, 3);
+    expect(bb.max.y).toBeCloseTo(12, 3);
+    expect(bb.min.y).toBeCloseTo(-0.3, 3);
+  });
+
+  it('rebuildEnvironment の遮蔽物: 全体 = 各建物の三角形の和。mesh 建物を表示だけ隠しても同じ、計算から除外すると 12 減る。高さの上書きは三角形数を変えない', () => {
+    const scene = fakeScene();
+    const triOf = (list: Neighbor[]) => bakeWorldTriangles([{ root: buildNeighborMeshes(list, { groundY: () => 0, pin }), kind: 'neighbor' }]).triangles;
+    rebuildEnvironment(scene, null);
+    const occAll = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+    const all = occAll.triangles;
+    disposeStudyOccluder(occAll);
+    expect(all).toBe(triOf(study.neighbors));
+    expect(all).toBe(study.neighbors.reduce((s, n) => s + triOf([n]), 0));
+    // 表示だけ隠す: 影だけのメッシュで残る（描く一覧からは外れる）
+    setNeighborsHidden(['plateau:bldg_mix'], true, { mode: 'view', reason: 'other' });
+    rebuildEnvironment(scene, null);
+    let occ = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+    expect(occ.triangles).toBe(all);
+    expect(meshesOf(scene.groups.neighbors).filter((m) => m.userData.shadowOnly).map((m) => m.userData.neighborId)).toEqual(['plateau:bldg_mix']);
+    expect(meshesOf(scene.groups.neighbors).filter((m) => !m.userData.shadowOnly).map((m) => m.userData.neighborId)).not.toContain('plateau:bldg_mix');
+    disposeStudyOccluder(occ);
+    // 計算から除外: mesh の 12 三角形だけ減る
+    setNeighborsHidden(['plateau:bldg_mix'], true, { mode: 'exclude', reason: 'demolish' });
+    rebuildEnvironment(scene, null);
+    occ = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+    expect(occ.triangles).toBe(all - 12);
+    disposeStudyOccluder(occ);
+    // 戻して高さを上書き（足元固定の縦伸縮）: 三角形数は不変で天端だけ上がる
+    restoreAllNeighbors();
+    study.neighborOverrides['plateau:bldg_mix'] = { height: 24 };
+    rebuildEnvironment(scene, null);
+    occ = buildStudyOccluder(scene, { neighbors: true, building: false, terrain: false });
+    expect(occ.triangles).toBe(all);
+    disposeStudyOccluder(occ);
+    const m = meshesOf(scene.groups.neighbors).find((x) => x.userData.neighborId === 'plateau:bldg_mix')!;
+    m.geometry.computeBoundingBox();
+    expect(m.geometry.boundingBox!.max.y).toBeCloseTo(24 + (m.geometry.boundingBox!.min.y + 0.3), 3);
+  });
+
+  it('開示: 出典行は「PLATEAU（世田谷区・2025年度・LOD2）N 棟・国土地理院（推定）K 棟」で、計算から除外した建物は数えない。レポートの表に PLATEAU の実測の高さ', () => {
+    setNeighborsHidden(['auto1'], true, { mode: 'exclude', reason: 'demolish' });
+    const d = neighborDisclosure(null);
+    expect(d.sources).toEqual([
+      { source: 'plateau', count: 1, estimated: false },
+      { source: 'gsi', count: 2, estimated: true },
+      { source: 'manual', count: 1, estimated: false },
+    ]);
+    expect(d.plateauDatasets).toEqual([DATASET]);
+    const lines = disclosureLines({ disclosure: d });
+    expect(lines[0]).toBe('周辺建物の扱い: 計算から除外した周辺建物 1 棟（解体予定 1）');
+    expect(lines.at(-1)).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟・国土地理院（推定）2 棟・手入力 1 棟');
+    // mesh 建物を除外すると出典行から PLATEAU が消え、表には実測の高さ（括弧なし）と用途
+    setNeighborsHidden(['plateau:bldg_mix'], true, { mode: 'exclude', reason: 'dataError' });
+    const d2 = neighborDisclosure(null);
+    expect(d2.sources!.map((c) => c.source)).toEqual(['gsi', 'manual']);
+    const html = buildReportHtml();
+    const page = /<section class="page" data-role="neighbor-hide">([\s\S]*?)<\/section>/.exec(html)?.[1] ?? '';
+    expect(page).toMatch(/<table class="nbhide" data-mode="exclude">[\s\S]*PLATEAU[\s\S]*12\.0 m[\s\S]*データの誤り[\s\S]*約 \d+ m・西側/);
+    expect(html).toContain('東京都世田谷区・2025年度・LOD2');
   });
 });
 

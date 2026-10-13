@@ -14,6 +14,7 @@ import * as THREE from 'three';
 import { polygonArea } from '../sun/align';
 import { fetchAerial } from '../sun/geo';
 import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neighbors';
+import { rekeyOverridesByFootprint } from './plateauNeighbors';
 import type { StudyScene } from './scene';
 import { clearGroup } from './scene';
 import { analysisNeighbors, emit, hiddenNeighbors, study, viewOnlyNeighbors, visibleNeighbors } from './state';
@@ -38,7 +39,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
   const f = study.frame;
   if (!f) throw new Error('建設地が指定されていません');
   // 中止されたときに元に戻すための控え
-  const prev = { grid: study.grid, aerial: study.aerial, horizon: study.horizon, neighbors: study.neighbors, sources: study.neighborSources, notes: study.neighborNotes, attribution: study.env.attribution, loaded: study.env.loaded, groundElev: f.groundElev };
+  const prev = { grid: study.grid, aerial: study.aerial, horizon: study.horizon, neighbors: study.neighbors, sources: study.neighborSources, notes: study.neighborNotes, attribution: study.env.attribution, loaded: study.env.loaded, plateau: study.env.plateau, groundElev: f.groundElev };
   const aborted = () => !!opts.signal?.aborted;
   study.env.loading = true;
   study.env.error = null;
@@ -81,9 +82,15 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
   const tNeighbors = fetchNeighbors(f.lat, f.lon, NEIGHBOR_RADIUS, { signal: opts.signal, onProgress: (m) => tick(m) })
     .then((r) => {
       const manual = study.neighbors.filter((n) => n.source === 'manual');
+      // 上書き（高さ修正・隠す）の引き継ぎ: 新しい一覧に無い id（PLATEAU の年度更新・旧 MVT 由来の id）は同じ足元の建物の id へ付け直す
+      const prevAuto = prev.neighbors.filter((n) => n.source !== 'manual');
+      study.neighborOverrides = rekeyOverridesByFootprint(prevAuto, r.list, study.neighborOverrides);
       study.neighbors = [...manual, ...r.list];
       study.neighborSources = r.sourcesUsed;
       study.neighborNotes = r.notes;
+      // PLATEAU の出典（使ったデータセット・索引の生成日時）。開示と保存に使う
+      if (r.plateau) study.env.plateau = { datasets: r.plateau.datasets, indexGenerated: r.plateau.indexGenerated };
+      else delete study.env.plateau;
       report.neighbors = `${r.list.length}`;
     })
     .catch((e: Error) => {
@@ -91,6 +98,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       study.neighbors = study.neighbors.filter((n) => n.source === 'manual');
       study.neighborSources = [];
       study.neighborNotes = [];
+      delete study.env.plateau;
       report.neighbors = 'none';
       report.errors.push(e.message.startsWith('周辺建物を取得できませんでした') ? e.message : `周辺建物を取得できませんでした: ${e.message}`);
     })
@@ -109,6 +117,8 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
     study.neighborNotes = prev.notes;
     study.env.attribution = prev.attribution;
     study.env.loaded = prev.loaded;
+    if (prev.plateau) study.env.plateau = prev.plateau;
+    else delete study.env.plateau;
     study.env.loading = false;
     f.groundElev = prev.groundElev;
     emit('env');
@@ -210,6 +220,12 @@ export function siteExcludedCount(footprintEN: { e: number; n: number }[] | null
 const neighborGroundY = (e: number, n: number) => groundY(e, n) - 0.3;
 
 /**
+ * PLATEAU の実形状（Neighbor.mesh）の配置に使うピン・地形・ピン位置の地盤高（buildNeighborMeshes の接地規則 §5: 格子内は DEM の最低点、
+ * 格子の外は zmin − groundElev）。描く建物・影だけのメッシュ・半透明の表示で同じものを渡す
+ */
+const neighborPlacement = () => ({ pin: study.frame, grid: study.grid, groundElev: study.frame?.groundElev ?? 0 });
+
+/**
  * 隠した建物の半透明の表示（選んで隠すモードの間だけ groups.select に入れる）。
  * 既定は不透明度 25 %・深度を書かない。影を落とさない／受けない。userData: { neighborId, ghost: true, noShadow: true, overlay: true }
  * （noShadow は bakeWorldTriangles、overlay は studyMeshFilter で除かれるので、どの解析の BVH にも入らない）。
@@ -220,7 +236,7 @@ export function buildNeighborGhosts(list: Neighbor[], opts: { material?: THREE.M
   const viewIds = new Set(list.filter((n) => n.hidden && n.hideMode === 'view').map((n) => n.id));
   const group = buildNeighborMeshes(
     list.map((n) => ({ ...n, hidden: false })),
-    { groundY: neighborGroundY, aerial: null },
+    { groundY: neighborGroundY, aerial: null, ...neighborPlacement() },
   );
   group.name = 'neighbor-ghosts';
   const shared = !!opts.material;
@@ -257,7 +273,7 @@ export function shadowOnlyMaterial(): THREE.MeshBasicMaterial {
 export function buildNeighborShadowCasters(list: Neighbor[], opts: { groundY?: (e: number, n: number) => number; material?: THREE.Material } = {}): THREE.Group {
   const group = buildNeighborMeshes(
     list.map((n) => ({ ...n, hidden: false })),
-    { groundY: opts.groundY ?? neighborGroundY, aerial: null },
+    { groundY: opts.groundY ?? neighborGroundY, aerial: null, ...neighborPlacement() },
   );
   group.name = 'neighbor-shadow-only';
   const mat = opts.material ?? shadowOnlyMaterial();
@@ -295,7 +311,7 @@ export function rebuildEnvironment(scene: StudyScene, footprintEN: { e: number; 
   scene.groups.terrain.add(terrain);
   const list = neighborsForScene(footprintEN);
   for (const n of list) n.baseElev = minHeightInRing(g, n.ring);
-  const meshes = buildNeighborMeshes(list, { groundY: neighborGroundY, aerial: study.aerial });
+  const meshes = buildNeighborMeshes(list, { groundY: neighborGroundY, aerial: study.aerial, ...neighborPlacement() });
   meshes.visible = study.show.neighbors;
   scene.groups.neighbors.add(meshes);
   // 表示だけ隠した建物: 描かずに影だけ落とす（解析の遮蔽物にも groups.neighbors から入る）

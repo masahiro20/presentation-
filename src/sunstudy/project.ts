@@ -6,6 +6,8 @@
  *  - 周辺環境 (env): 標高格子は cm 単位の Int16 を base64 に（無効値 -32768）。Int16 の範囲（±327 m）に収めるため、
  *    値は「ピン位置の地盤高（frame.groundElev を整数 m に丸めたもの）からの相対値」で保存し、読込時に同じ基準を足す。
  *    航空写真は JPEG dataURL（長辺 2048px・品質 0.8）、周辺建物は自動取得分のみ（手動は manualNeighbors）、遠方の地平線は number[]。
+ *    PLATEAU の実形状（Neighbor.mesh の Float32Array）は Int16 cm の meshQ（SavedNeighbor）にして同梱し、PLATEAU の出典（使ったデータセット・
+ *    索引の生成日時）は env.plateau に残す（開いたときに再取得せず出典行を再現する）。
  *    JSON 全体が約 60MB を超えそうなときは env を省略する（開いたときに再取得）。
  *  - localStorage 'sunstudy.recent': 直近の場所・敷地・配置・名前（3D データは含まない）。失敗しても何もしない。
  */
@@ -14,10 +16,12 @@ import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
 import { emit, normalizeHideInfo, plannedToNeighbor, study } from './state';
 import { PLANNED_DEFAULT_LABEL, clampHouse, syncPlannedHouse } from '../sun/plannedHouse';
+import { QUANTIZE_LIMIT_M, dequantizeMesh, quantizeMesh } from '../sun/plateau';
+import type { PlateauAttrs, PlateauDatasetInfo } from '../sun/plateau';
 import { sampleHeight } from './terrain';
 import { polygonAreaM2 } from './map';
 import { DEFAULT_PLACEMENT, UNIT_LABEL } from './types';
-import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, NeighborOverride, PlacementAlignment, ProjectEnv, ProjectJson } from './types';
+import type { AerialImage, GeoFrame, HeightGrid, LatLon, LengthUnit, ModelPlacement, Neighbor, NeighborOverride, PlacementAlignment, PlateauEnvInfo, ProjectEnv, ProjectJson, SavedNeighbor } from './types';
 
 /** 同梱する 3D データの上限 (bytes) */
 const MODEL_LIMIT = 40 * 1024 * 1024;
@@ -265,6 +269,141 @@ export function sanitizePlannedNeighbor(n: Neighbor): Neighbor {
   return plannedToNeighbor(p, n);
 }
 
+// ---------------------------------------------------------------------------
+// PLATEAU の実形状と属性（保存形 ↔ 実行時）
+// ---------------------------------------------------------------------------
+
+type PlateauWarning = NonNullable<PlateauAttrs['warnings']>[number];
+const PLATEAU_LODS: readonly number[] = [1, 2, 3, 4];
+const FOOTPRINT_KINDS: readonly PlateauAttrs['footprint'][] = ['bottom', 'hull'];
+const PLATEAU_WARNINGS: readonly PlateauWarning[] = ['noBottom', 'baseMismatch', 'islands'];
+
+/**
+ * 実行時の周辺建物 → 保存形。mesh（Float32Array。JSON.stringify で壊れる）は Int16 cm の meshQ に。
+ * 量子化できない（±327 m を超える巨大な建物など）ときは meshQ 無し（開いたとき ring の押し出しで描く）。ring・holes・plateau は写しを作る
+ */
+export function toSavedNeighbor(n: Neighbor): SavedNeighbor {
+  const { mesh, ...rest } = n;
+  const out: SavedNeighbor = { ...rest, ring: n.ring.map((q) => ({ e: q.e, n: q.n })) };
+  if (n.holes) out.holes = n.holes.map((h) => h.map((q) => ({ e: q.e, n: q.n })));
+  if (n.plateau) {
+    out.plateau = { ...n.plateau, anchor: { ...n.plateau.anchor } };
+    if (n.plateau.warnings) out.plateau.warnings = [...n.plateau.warnings];
+  }
+  if (mesh) {
+    // Int16 cm（±327.67 m）に収まらない形状（電波塔など高さ 327 m 超。横方向は取得側が anchor を取り直すので収まる）は
+    // quantizeMesh が天端を丸めてしまうので meshQ を省き、開いたときは足元の押し出し（ring × height）で描く
+    let worst = 0;
+    for (let i = 0; i < mesh.tris.length; i++) {
+      const a = Math.abs(mesh.tris[i]);
+      if (a > worst) worst = a;
+    }
+    if (worst > QUANTIZE_LIMIT_M) {
+      console.warn(`周辺建物 ${n.id} の形状は保存形（±${QUANTIZE_LIMIT_M} m）に収まらないため保存しません（最大 ${worst.toFixed(1)} m。開いたときは足元の押し出しで描きます）`);
+    } else {
+      try {
+        out.meshQ = quantizeMesh(mesh);
+      } catch (e) {
+        console.warn(`周辺建物 ${n.id} の形状を保存できません（開いたときは足元の押し出しで描きます）`, e);
+      }
+    }
+  }
+  return out;
+}
+
+/** 保存形 → 実行時。meshQ → mesh（壊れていれば mesh 無し = ring の押し出しで描く）。meshQ の無い古い保存データもそのまま開ける */
+export function fromSavedNeighbor(s: SavedNeighbor): Neighbor {
+  const { meshQ, ...rest } = s;
+  const out: Neighbor = { ...rest };
+  if (meshQ != null) {
+    try {
+      out.mesh = dequantizeMesh(meshQ);
+    } catch (e) {
+      console.warn(`周辺建物 ${String(s.id)} の形状（meshQ）を読めません（足元の押し出しで描きます）`, e);
+    }
+  }
+  return out;
+}
+
+/** 保存データの PLATEAU 属性を検査して整える。gmlId・anchor・zmin/zmax（zmax > zmin）が無い・壊れていれば null。任意の項目は型が合うものだけ残す */
+function sanitizePlateauAttrsRaw(raw: unknown): PlateauAttrs | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const a = raw as Record<string, unknown>;
+  if (typeof a.gmlId !== 'string' || !a.gmlId || !isLatLon(a.anchor) || !isFiniteNum(a.zmin) || !isFiniteNum(a.zmax) || a.zmax <= a.zmin) return null;
+  const lod = isFiniteNum(a.lod) && PLATEAU_LODS.includes(a.lod) ? (a.lod as PlateauAttrs['lod']) : null;
+  const out: PlateauAttrs = {
+    gmlId: a.gmlId,
+    lod,
+    datasetLod: isFiniteNum(a.datasetLod) ? a.datasetLod : (lod ?? 1),
+    year: isFiniteNum(a.year) ? a.year : 0,
+    muniCd: typeof a.muniCd === 'string' ? a.muniCd : '',
+    pref: typeof a.pref === 'string' ? a.pref : '',
+    city: typeof a.city === 'string' ? a.city : '',
+    ward: typeof a.ward === 'string' ? a.ward : null,
+    anchor: { lat: +a.anchor.lat, lon: +a.anchor.lon },
+    zmin: a.zmin,
+    zmax: a.zmax,
+    footprint: FOOTPRINT_KINDS.includes(a.footprint as PlateauAttrs['footprint']) ? (a.footprint as PlateauAttrs['footprint']) : 'hull',
+  };
+  for (const k of ['measuredHeight', 'storeys', 'storeysBelow', 'surveyYear'] as const) if (isFiniteNum(a[k])) out[k] = a[k] as number;
+  for (const k of ['usage', 'name', 'address', 'buildingId', 'lod1HeightType'] as const) if (typeof a[k] === 'string' && a[k]) out[k] = a[k] as string;
+  if (Array.isArray(a.warnings)) {
+    const w = (a.warnings as unknown[]).filter((x): x is PlateauWarning => PLATEAU_WARNINGS.includes(x as PlateauWarning));
+    if (w.length) out.warnings = w;
+  }
+  return out;
+}
+
+/**
+ * 保存データの周辺建物の PLATEAU 属性と実形状を検査する。gmlId・anchor・zmin/zmax が不正なら plateau と mesh を外す（ring の押し出しで描く）。
+ * mesh は属性があり tris が Float32Array で 9 の倍数のときだけ残す（plateau 無しの mesh は配置できないので外す）。plateau も mesh も無い建物はそのまま
+ */
+export function sanitizePlateauAttrs(n: Neighbor): Neighbor {
+  if (!('plateau' in n) && !('mesh' in n)) return n;
+  const out: Neighbor = { ...n };
+  const attrs = sanitizePlateauAttrsRaw(out.plateau);
+  if (!attrs) {
+    delete out.plateau;
+    delete out.mesh;
+    return out;
+  }
+  out.plateau = attrs;
+  const m = out.mesh as unknown;
+  const tris = m && typeof m === 'object' ? (m as { tris?: unknown }).tris : undefined;
+  if (tris instanceof Float32Array && tris.length > 0 && tris.length % 9 === 0) {
+    const roof = (m as { roofTriangles?: unknown }).roofTriangles;
+    out.mesh = { tris, roofTriangles: isFiniteNum(roof) ? Math.max(0, Math.min(tris.length / 9, Math.floor(roof))) : 0 };
+  } else delete out.mesh;
+  return out;
+}
+
+/** 保存データの PLATEAU の出典（使ったデータセット・索引の生成日時）。muniCd と label のあるデータセットだけ残し、1 件も無ければ無し */
+function sanitizeEnvPlateau(v: unknown): PlateauEnvInfo | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const x = v as { datasets?: unknown; indexGenerated?: unknown };
+  const datasets: PlateauDatasetInfo[] = [];
+  if (Array.isArray(x.datasets)) {
+    for (const raw of x.datasets as unknown[]) {
+      if (!raw || typeof raw !== 'object') continue;
+      const d = raw as Record<string, unknown>;
+      if (typeof d.muniCd !== 'string' || typeof d.label !== 'string' || !d.label) continue;
+      datasets.push({
+        muniCd: d.muniCd,
+        pref: typeof d.pref === 'string' ? d.pref : '',
+        city: typeof d.city === 'string' ? d.city : '',
+        ward: typeof d.ward === 'string' ? d.ward : null,
+        year: isFiniteNum(d.year) ? d.year : 0,
+        lod: isFiniteNum(d.lod) ? d.lod : 1,
+        tex: d.tex === true,
+        tilesetUrl: typeof d.tilesetUrl === 'string' ? d.tilesetUrl : '',
+        label: d.label,
+      });
+    }
+  }
+  if (!datasets.length) return undefined;
+  return { datasets, indexGenerated: typeof x.indexGenerated === 'string' ? x.indexGenerated : '' };
+}
+
 function buildProject(notes: string[]): ProjectJson {
   const m = study.model;
   let model: ProjectJson['model'] = null;
@@ -302,11 +441,13 @@ function buildProject(notes: string[]): ProjectJson {
       fetchedAt: json.savedAt,
       grid: study.grid ? encodeGrid(study.grid, base) : null,
       aerial: study.aerial ? encodeAerial(study.aerial) : null,
-      neighbors: autoNeighbors.map((n) => ({ ...n, ring: n.ring.map((q) => ({ e: q.e, n: q.n })) })),
+      neighbors: autoNeighbors.map(toSavedNeighbor),
       neighborSources: [...study.neighborSources],
       neighborNotes: [...study.neighborNotes],
       horizon: study.horizon ? { elevDeg: Array.from(study.horizon.elevDeg), source: study.horizon.source, radiusKm: study.horizon.radiusKm } : null,
     };
+    // PLATEAU の出典（使ったデータセット・索引の生成日時）。開いたときに再取得せず出典行を再現する
+    if (study.env.plateau) env.plateau = { datasets: study.env.plateau.datasets.map((d) => ({ ...d })), indexGenerated: study.env.plateau.indexGenerated };
     const approx = (model?.base64.length ?? 0) + (env.grid?.valuesB64.length ?? 0) + (env.aerial?.dataUrl.length ?? 0) + JSON.stringify(env.neighbors).length + 8000;
     if (approx > JSON_LIMIT) notes.push('周辺環境（地形・航空写真・周辺建物）はファイルが大きくなりすぎるため同梱しません。開いたときに「周辺環境を読み込む」で再取得してください');
     else json.env = env;
@@ -369,7 +510,7 @@ export async function applyProject(p: ProjectJson): Promise<void> {
   study.results = { images: [] };
 
   // 周辺環境
-  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
+  const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizePlateauAttrs).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
   // 想定の家を影・解析に含めるか（無い古いデータは含める）
   study.plannedEnabled = p.plannedEnabled !== false;
   let auto: Neighbor[] = [];
@@ -390,7 +531,8 @@ export async function applyProject(p: ProjectJson): Promise<void> {
       }
     }
     if (env.aerial && typeof env.aerial.dataUrl === 'string') study.aerial = await decodeAerial(env.aerial);
-    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
+    // meshQ → mesh（壊れていれば mesh 無し = 押し出しで描く）→ PLATEAU 属性の検査 → 隠した記録 → 想定の家
+    auto = Array.isArray(env.neighbors) ? env.neighbors.filter((n) => n && Array.isArray(n.ring)).map(fromSavedNeighbor).map(sanitizePlateauAttrs).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
     study.neighborSources = Array.isArray(env.neighborSources) ? [...env.neighborSources] : [];
     study.neighborNotes = Array.isArray(env.neighborNotes) ? env.neighborNotes.filter((s) => typeof s === 'string') : [];
     if (env.horizon && Array.isArray(env.horizon.elevDeg) && env.horizon.elevDeg.length === 360) {
@@ -402,6 +544,8 @@ export async function applyProject(p: ProjectJson): Promise<void> {
       study.frame.groundElev = Number.isFinite(h0) ? h0 : 0;
     }
     study.env = { loaded: true, loading: false, error: null, attribution: study.aerial?.attribution ?? '出典: 国土地理院' };
+    const plateauEnv = sanitizeEnvPlateau(env.plateau);
+    if (plateauEnv) study.env.plateau = plateauEnv;
     envFromProject = true;
   } else {
     study.env = { loaded: false, loading: false, error: null, attribution: '' };

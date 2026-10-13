@@ -29,17 +29,30 @@ function fromBase64(b64: string): Uint8Array {
   return u8;
 }
 
-/** Int16 cm。|座標| > 327 m の頂点があれば throw（anchor は建物内なので起きない） */
+/** Int16 cm で表せる座標の上限 [m]（quantizeMesh が clamp する値。buildings.ts は anchor の取り直しでここに収める） */
+export const QUANTIZE_LIMIT_M = LIMIT / Q;
+
+/**
+ * Int16 cm。|座標| > 327.67 m の頂点は throw せず ±327.67 m に clamp して console.warn に 1 回出す
+ * （splitBuildings が anchor を足元輪郭の重心に取り直すので水平方向では起きない。高さ 327 m 超の構造物（電波塔など）だけが残る）。
+ * NaN・無限大は 0 にする（保存データを壊さない）
+ */
 export function quantizeMesh(m: NeighborMesh): QuantizedMesh {
   const n = m.tris.length;
   if (n % 9 !== 0) throw new Error(`NeighborMesh の tris の長さが 9 の倍数ではありません（${n}）`);
   const bytes = new Uint8Array(n * 2);
   const dv = new DataView(bytes.buffer);
+  let worst = 0;
   for (let i = 0; i < n; i++) {
-    const v = Math.round(m.tris[i] * Q);
-    if (!Number.isFinite(v) || Math.abs(v) > LIMIT) throw new Error(`座標が Int16 cm の範囲（±327.67 m）を超えています: ${m.tris[i]} m`);
+    let v = Math.round(m.tris[i] * Q);
+    if (!Number.isFinite(v)) v = 0;
+    else if (Math.abs(v) > LIMIT) {
+      worst = Math.max(worst, Math.abs(m.tris[i]));
+      v = v > 0 ? LIMIT : -LIMIT;
+    }
     dv.setInt16(i * 2, v, true);
   }
+  if (worst > 0) console.warn(`PLATEAU: 座標が Int16 cm の範囲（±${QUANTIZE_LIMIT_M} m）を超えるので丸めました（最大 ${worst.toFixed(1)} m）`);
   const triangles = n / 9;
   return { v: 1, q: Q, posB64: toBase64(bytes), roofTriangles: Math.max(0, Math.min(triangles, Math.floor(m.roofTriangles))) };
 }

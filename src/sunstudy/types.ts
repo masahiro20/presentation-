@@ -348,6 +348,12 @@ export interface ProjectJson {
   env?: ProjectEnv;
 }
 
+/** PLATEAU の出典（使ったデータセットと索引の生成日時）。取得後は study.env.plateau に、保存データでは ProjectEnv.plateau に持つ（復元時に再取得せず出典行を再現する） */
+export interface PlateauEnvInfo {
+  datasets: PlateauDatasetInfo[];
+  indexGenerated: string;
+}
+
 /** プロジェクトに同梱する周辺環境 */
 export interface ProjectEnv {
   fetchedAt: string;
@@ -362,5 +368,5 @@ export interface ProjectEnv {
   /** 遠方の地形による地平線（方位 1° ごとの高度角） */
   horizon?: { elevDeg: number[]; source: string; radiusKm: number } | null;
   /** PLATEAU の出典（使ったデータセットと索引の生成日時。復元時に再取得せず出典行を再現する） */
-  plateau?: { datasets: PlateauDatasetInfo[]; indexGenerated: string };
+  plateau?: PlateauEnvInfo;
 }

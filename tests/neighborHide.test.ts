@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { bakeWorldTriangles } from '../src/sun/analysis';
-import { buildNeighborGhosts, ghostMaterial, hiddenNeighborsForScene, neighborsForScene, siteExcludedCount } from '../src/sunstudy/environment';
+import { buildNeighborGhosts, buildNeighborShadowCasters, ghostMaterial, hiddenNeighborsForScene, neighborsForScene, siteExcludedCount } from '../src/sunstudy/environment';
 import {
   addSelection,
   footprintCentroid,
@@ -16,10 +16,12 @@ import {
   toggleSelection,
 } from '../src/sunstudy/neighborSelect';
 import { buildNeighborMeshes, neighborId } from '../src/sunstudy/neighbors';
+import { rekeyOverridesByFootprint } from '../src/sunstudy/plateauNeighbors';
 import { applyProject, serializeProject } from '../src/sunstudy/project';
 import { effectiveNeighbors, hiddenNeighbors, on, restoreAllNeighbors, setNeighborsHidden, study, visibleNeighbors } from '../src/sunstudy/state';
 import { frameFromLocal } from '../src/sunstudy/types';
 import type { Neighbor } from '../src/sunstudy/types';
+import { plateauNeighborAt } from './helpers/plateauBox';
 
 const FRAME = { lat: 35.6, lon: 139.6, address: 'テスト', groundElev: 10 };
 
@@ -275,5 +277,65 @@ describe('隠した建物の半透明の表示は解析に入らない', () => {
     expect(m.material).toBe(mat);
     expect(m.userData.sharedMaterial).toBe(true);
     expect(m.userData.noShadow).toBe(true);
+  });
+});
+
+describe('PLATEAU の実形状の建物（mesh）を混ぜる: 隠す・影だけのメッシュ・半透明・保存の往復・上書きの引き継ぎ', () => {
+  const pin = { lat: FRAME.lat, lon: FRAME.lon };
+  /** anchor（足元の中心）はピンから東 40 m・北 10 m、8×6×9 m の箱（ring は e 36..44・n 7..13） */
+  const meshNb = () => plateauNeighborAt(pin, 40, 10, { gmlId: 'bldg_m1', w: 8, d: 6, h: 9, zmin: 12, attrs: { usage: '共同住宅', measuredHeight: 9.8 } });
+  const studyFilter = (m: THREE.Mesh) => !m.userData.noShadow && !m.userData.overlay;
+  const tri = (root: THREE.Object3D) => bakeWorldTriangles([{ root, kind: 'neighbor' }], studyFilter, { ignoreVisibility: true }).triangles;
+  beforeEach(() => {
+    study.frame = { ...FRAME };
+    study.sitePolygon = [];
+    study.model = null;
+    study.points = [];
+    study.grid = null;
+    study.aerial = null;
+    study.horizon = null;
+    study.neighborOverrides = {};
+    study.env = { loaded: true, loading: false, error: null, attribution: '' };
+    study.neighbors = [nb('auto1', square(20, 0, 8)), meshNb(), nb('manual1', square(0, -25, 6), { source: 'manual', heightKind: 'manual', label: '隣家（南）' })];
+  });
+
+  it('影だけのメッシュは描く建物と同じ三角形数、半透明の表示は焼き込む三角形 0。隠すと描く一覧から外れる', () => {
+    const list = visibleNeighbors();
+    const normal = buildNeighborMeshes(list, { groundY: () => -0.3, pin });
+    const casters = buildNeighborShadowCasters(list);
+    expect(tri(casters)).toBe(tri(normal));
+    expect(tri(normal)).toBeGreaterThan(12);
+    expect(tri(buildNeighborGhosts(list))).toBe(0);
+    setNeighborsHidden(['plateau:bldg_m1'], true, { mode: 'exclude', reason: 'demolish' });
+    expect(neighborsForScene(null).map((n) => n.id).sort()).toEqual(['auto1', 'manual1']);
+    expect(hiddenNeighborsForScene(null).map((n) => n.id)).toEqual(['plateau:bldg_m1']);
+    expect(study.neighborOverrides['plateau:bldg_m1']).toEqual({ hidden: true, hideMode: 'exclude', hideReason: 'demolish' });
+  });
+
+  it('プロジェクトの往復で meshQ が mesh に戻り、隠した記録と高さの上書きが残る', async () => {
+    setNeighborsHidden(['plateau:bldg_m1'], true, { mode: 'view', reason: 'other' });
+    study.neighborOverrides.auto1 = { height: 11 };
+    const json = JSON.parse(JSON.stringify(serializeProject()));
+    const saved = json.env.neighbors.find((n: { id: string }) => n.id === 'plateau:bldg_m1');
+    expect(saved.meshQ.v).toBe(1);
+    expect(saved.mesh).toBeUndefined();
+    restoreAllNeighbors();
+    study.neighbors = [];
+    study.neighborOverrides = {};
+    await applyProject(json);
+    const back = study.neighbors.find((n) => n.id === 'plateau:bldg_m1')!;
+    expect(back.mesh!.tris).toBeInstanceOf(Float32Array);
+    expect(back.mesh!.tris.length).toBe(12 * 9);
+    expect(back.plateau!.measuredHeight).toBe(9.8);
+    expect(hiddenNeighbors().map((n) => n.id)).toEqual(['plateau:bldg_m1']);
+    expect(hiddenNeighbors()[0].hideMode).toBe('view');
+    expect(effectiveNeighbors().find((n) => n.id === 'auto1')!.height).toBe(11);
+  });
+
+  it('rekeyOverridesByFootprint: 旧 id（旧 MVT・前年度の gml_id）の隠す／高さの上書きが同じ足元の新 id に移る', () => {
+    const prev = [{ id: 'plateau:35.60010:139.60044:48', ring: meshNb().ring }, nb('auto1', square(20, 0, 8))];
+    const next = study.neighbors.filter((n) => n.source !== 'manual');
+    const out = rekeyOverridesByFootprint(prev, next, { 'plateau:35.60010:139.60044:48': { hidden: true, hideMode: 'view', hideReason: 'other' }, auto1: { height: 9 } });
+    expect(out).toEqual({ 'plateau:bldg_m1': { hidden: true, hideMode: 'view', hideReason: 'other' }, auto1: { height: 9 } });
   });
 });

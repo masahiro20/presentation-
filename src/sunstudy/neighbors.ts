@@ -11,9 +11,6 @@
  *
  * タイルには周囲 80 単位ほどの「のりしろ」が入っているので、タイルの範囲でポリゴンを切り取ってから使う
  * （隣のタイルと同じ建物が二重に出ないように。境界をまたぐ建物は 2 片に分かれるが、合わせると元の形になる）。
- *
- * 旧 PLATEAU LOD2 MVT（indigo-lab。東京 23 区・2020 年度のみ）の parsePlateauTile / PLATEAU_TILE_URL は取得経路から外した
- * （W18 で削除予定。テストの互換のため関数だけ残す）。
  */
 import * as THREE from 'three';
 import { bboxOf, cleanRing, coverageRatio, fillGapsWith, pointInRing, ringArea, ringCenter, samplePoints, type BBoxEN } from '../sun/footprint';
@@ -43,13 +40,9 @@ export type NeighborEx = Neighbor & {
   far?: boolean;
 };
 
-/** 旧 PLATEAU LOD2 MVT（取得経路からは外した。W18 で削除） */
-export const PLATEAU_TILE_URL = (z: number, x: number, y: number) => `https://indigo-lab.github.io/plateau-lod2-mvt/${z}/${x}/${y}.pbf`;
 export const GSI_TILE_URL = (z: number, x: number, y: number) => `https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${x}/${y}.pbf`;
-/** 建物タイルのズーム（国土地理院の最適化ベクトルタイル。旧 MVT も z=16） */
+/** 建物タイルのズーム（国土地理院の最適化ベクトルタイル） */
 export const NEIGHBOR_TILE_Z = 16;
-/** 旧 MVT: これより低い屋根面（LOD0 のみの建物 z=0 など）は使わない [m] */
-export const PLATEAU_MIN_HEIGHT = 2;
 /** この距離までは全部残す [m] */
 export const NEIGHBOR_NEAR_M = 150;
 /** 1 / tan(8.2°): 東京の冬至 8 時ごろの太陽高度で、高さ 1 m の建物の影が届く距離 */
@@ -170,7 +163,7 @@ interface ParsedPolygon {
   holes: EN[][];
 }
 
-/** MVT のポリゴン地物のリング列を「外周 + 穴」のまとまりに分ける（タイル範囲で切り取り、m に変換） */
+/** ベクトルタイル（MVT）のポリゴン地物のリング列を「外周 + 穴」のまとまりに分ける（タイル範囲で切り取り、m に変換） */
 function featurePolygons(rings: TilePt[][], tx: number, ty: number, z: number, extent: number, pinLat: number, pinLon: number, minArea = 1): ParsedPolygon[] {
   const out: ParsedPolygon[] = [];
   let cur: ParsedPolygon | null = null;
@@ -195,30 +188,6 @@ function featurePolygons(rings: TilePt[][], tx: number, ty: number, z: number, e
     } else if (cur) {
       // 穴はタイル境界で切られると外周に接してしまうので、切られていないものだけ使う
       if (clipped === raw && Math.abs(ringArea(local)) >= 0.5) cur.holes.push(local);
-    }
-  }
-  return out;
-}
-
-/** PLATEAU LOD2 MVT タイル → 建物（屋根面ごと）。z < 2 m は捨てる */
-export function parsePlateauTile(bytes: Uint8Array, tx: number, ty: number, z: number, pinLat: number, pinLon: number): Neighbor[] {
-  const layer = decodeMvt(bytes)['bldg'];
-  if (!layer) return [];
-  const out: NeighborEx[] = [];
-  for (const f of layer.features) {
-    if (f.type !== 3) continue;
-    const h = Number(f.props['z']);
-    if (!Number.isFinite(h) || h < PLATEAU_MIN_HEIGHT) continue;
-    for (const poly of featurePolygons(f.rings, tx, ty, z, layer.extent, pinLat, pinLon)) {
-      const nb: NeighborEx = {
-        id: neighborId('plateau', poly.outer, pinLat, pinLon),
-        ring: poly.outer,
-        height: Math.round(h * 10) / 10,
-        source: 'plateau',
-        heightKind: 'measured',
-      };
-      if (poly.holes.length) nb.holes = poly.holes;
-      out.push(nb);
     }
   }
   return out;

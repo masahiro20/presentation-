@@ -13,7 +13,6 @@ import {
   fillGapsWithGsi,
   makeManualNeighbor,
   parseGsiTile,
-  parsePlateauTile,
   ringCenter,
 } from '../src/sunstudy/neighbors';
 import { loadEnvironment } from '../src/sunstudy/environment';
@@ -27,7 +26,6 @@ import { plateauNeighborAt } from './helpers/plateauBox';
 const PIN = { lat: 35.681236, lon: 139.767125 };
 const TILE = { x: 58208, y: 25807, z: 16 };
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
-const plateauBytes = fixture('plateau_16_58208_25807.pbf');
 const gsiBytes = fixture('gsi_16_58208_25807.pbf');
 
 const square = (e0: number, n0: number, size: number) => [
@@ -38,22 +36,24 @@ const square = (e0: number, n0: number, size: number) => [
 ];
 const nb = (ring: { e: number; n: number }[], height = 7, extra: Partial<Neighbor> = {}): Neighbor => ({ id: `t:${ring[0].e}:${ring[0].n}`, ring, height, source: 'gsi', heightKind: 'estimated', ...extra });
 
-describe('PLATEAU タイルの読み込み', () => {
-  const list = parsePlateauTile(plateauBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
-  it('屋根面のポリゴンが取れる（2 m 未満は捨てる）', () => {
+describe('国土地理院タイルの読み込み', () => {
+  const list = parseGsiTile(gsiBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
+  it('建物種類から高さを推定する', () => {
     expect(list.length).toBeGreaterThan(0);
+    const allowed = [7, 12, 30, 2.8, 4];
     for (const b of list) {
-      expect(b.height).toBeGreaterThanOrEqual(2);
-      expect(b.source).toBe('plateau');
-      expect(b.heightKind).toBe('measured');
-      expect(b.ring.length).toBeGreaterThanOrEqual(3);
+      expect(allowed).toContain(b.height);
+      expect(b.source).toBe('gsi');
+      expect(b.heightKind).toBe('estimated');
+      expect(b.id.startsWith('gsi:')).toBe(true);
     }
+    expect(list.some((b) => b.height === 2.8 && b.label === 'カーポート等（無壁舎）')).toBe(true);
   });
   it('id は決定的（2 回読んでも同じ）で重複しない', () => {
-    const again = parsePlateauTile(plateauBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
+    const again = parseGsiTile(gsiBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
     expect(again.map((b) => b.id)).toEqual(list.map((b) => b.id));
     expect(new Set(list.map((b) => b.id)).size).toBe(list.length);
-    for (const b of list) expect(b.id).toMatch(/^plateau:\d+\.\d{5}:\d+\.\d{5}:\d+$/);
+    for (const b of list) expect(b.id).toMatch(/^gsi:\d+\.\d{5}:\d+\.\d{5}:\d+$/);
   });
   it('リングは閉じる重複点を持たず、短すぎる辺が無い', () => {
     for (const b of list) {
@@ -79,25 +79,12 @@ describe('PLATEAU タイルの読み込み', () => {
         expect(p.n).toBeGreaterThanOrEqual(b.n - 0.01);
       }
   });
-});
-
-describe('国土地理院タイルの読み込み', () => {
-  const list = parseGsiTile(gsiBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
-  it('建物種類から高さを推定する', () => {
-    expect(list.length).toBeGreaterThan(0);
-    const allowed = [7, 12, 30, 2.8, 4];
-    for (const b of list) {
-      expect(allowed).toContain(b.height);
-      expect(b.source).toBe('gsi');
-      expect(b.heightKind).toBe('estimated');
-      expect(b.id.startsWith('gsi:')).toBe(true);
-    }
-    expect(list.some((b) => b.height === 2.8 && b.label === 'カーポート等（無壁舎）')).toBe(true);
-  });
   it('PLATEAU と重なる建物は補完から除かれる', () => {
-    const plateau = parsePlateauTile(plateauBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
+    // 国土地理院の建物の一部を「PLATEAU の実足元」に見立てる（同じ足元なので完全に重なる）
+    const plateau: Neighbor[] = list.slice(0, 20).map((b, i) => ({ ...b, id: `plateau:bldg_${i}`, source: 'plateau', heightKind: 'measured', height: 9 }));
     const fill = fillGapsWithGsi(plateau, list);
     expect(fill.length).toBeLessThan(list.length);
+    expect(fill.length).toBeLessThanOrEqual(list.length - plateau.length);
     // 完全に重なる同じ形は捨てられ、離れた建物は残る
     const far = nb(square(5000, 5000, 10));
     expect(fillGapsWithGsi(plateau, [far])).toHaveLength(1);

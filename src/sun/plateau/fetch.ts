@@ -545,12 +545,17 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
       if (geocodeError) return { status: 'error', stage: 'geocode', message: `逆ジオコーダと PLATEAU の索引を取得できません（${geocodeError} / ${errorMessage(e)}）` };
       return { status: 'error', stage: 'index', message: errorMessage(e) };
     }
+    const pinBox = { west: lon, east: lon, south: lat, north: lat };
     if (muniCds.length === 0) {
-      // 逆ジオコーダ不通: 索引の region（W16）で市区を引く予備経路。ピンを含む市区を先頭に（datasets[0]・注記の先頭がピンの市区になる。
-      // 逆ジオコーダが中心を先頭に返すのと同じ約束）、続けて箱と交差する市区
-      const inPin = muniCodesByRegion(index, { west: lon, east: lon, south: lat, north: lat });
+      // 逆ジオコーダ不通: 索引の region（W16）で市区を引く予備経路。ピンを含む市区を先頭に、続けて箱と交差する市区
+      const inPin = muniCodesByRegion(index, pinBox);
       muniCds = [...inPin, ...muniCodesByRegion(index, muniBox).filter((cd) => !inPin.includes(cd))];
       if (muniCds.length === 0) return { status: 'error', stage: 'geocode', message: geocodeError ?? '市区町村コードが分かりません' };
+    } else {
+      // 逆ジオコーダは中心を先頭に返すが、中心の 1 点だけ失敗して隅だけ取れたときは隣接市区が先頭になる。
+      // 索引の region でピンを含む市区を先頭に並べ直す（datasets[0]・注記の先頭がピンの市区になる約束を保つ。順序以外は変えない）
+      const inPin = new Set(muniCodesByRegion(index, pinBox));
+      muniCds = [...muniCds.filter((cd) => inPin.has(cd)), ...muniCds.filter((cd) => !inPin.has(cd))];
     }
     let missingMuniCds: string[] = [];
     const candidates: PlateauDatasetInfo[] = [];

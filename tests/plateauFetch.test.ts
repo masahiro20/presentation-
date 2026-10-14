@@ -250,12 +250,31 @@ describe('fetchPlateauBuildings: 対象外・エラー', () => {
     expect(r.datasets[0].muniCd).toBe('23113');
   });
 
+  it('逆ジオコーダが中心の 1 点だけ失敗して隅だけ取れたとき、索引の region でピンを含む市区を先頭に並べ直す', async () => {
+    const { index: base } = stubFetch();
+    const ts23102 = tilesetUrlOf(base, '23102', 2, false);
+    const index = miniIndex();
+    index.areas['23102'].region = [137.0, 35.2, 137.1, 35.3]; // ピンを含む
+    index.areas['23113'].region = [137.056, 35.258, 137.2, 35.4]; // 箱（±約 0.003°）と交差するがピン（35.2565, 137.0545）は含まない
+    // 逆ジオコーダは 中心 → 南西 → 南東 → 北西 → 北東 の順に呼ばれる: 中心は失敗、南の 2 隅は 23113、北の 2 隅は 23102
+    let nth = 0;
+    const { f } = stubFetch((url) => {
+      if (url.includes('LonLatToAddress')) return nth++ === 0 ? null : geocode(nth <= 3 ? '23113' : '23102');
+      if (url === INDEX_URL) return json(index);
+      if (url === ts23102) return json(leafTileset(['data/data0.b3dm']));
+      return undefined;
+    });
+    const r = covered(await run(f));
+    expect(r.datasets.map((d) => d.muniCd)[0]).toBe('23102');
+    expect(r.datasets.map((d) => d.muniCd).sort()).toEqual(['23102', '23113']);
+  });
+
   it('逆ジオコーダ全滅の予備経路は、ピンを含む region の市区を先頭に（箱と交差するだけの市区はその後ろ）', async () => {
     const { index: base } = stubFetch();
     const ts23102 = tilesetUrlOf(base, '23102', 2, false);
     const index = miniIndex();
     index.areas['23102'].region = [137.0, 35.2, 137.1, 35.3]; // ピンを含む（コード順では後）
-    index.areas['13112'].region = [137.054, 35.256, 137.2, 35.4]; // 箱と交差するがピン（35.2565, 137.0545）は含まない
+    index.areas['13112'].region = [137.056, 35.258, 137.2, 35.4]; // 箱（±約 0.003°）と交差するがピン（35.2565, 137.0545）は含まない
     const { f } = stubFetch((url) => {
       if (url.includes('LonLatToAddress')) return geocode(null);
       if (url === INDEX_URL) return json(index);

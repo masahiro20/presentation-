@@ -55,6 +55,8 @@ export const plateauShapeCounts: (list: Pick<NeighborBuilding, 'source' | 'plate
 
 /** LOD1（箱形）の建物があるときの但し書き（共通の開示文の 2 文目） */
 export const LOD1_BOX_NOTE = 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。';
+/** 推定の屋根をかぶせた建物があるときの但し書き */
+export const EST_ROOF_NOTE = '推定の屋根は実測の最高高さを棟とする寄棟の仮定で、実際の屋根の形ではありません。';
 
 /**
  * 周辺建物の出典の行（影・解析に入れた建物。想定の家は除く）:
@@ -82,7 +84,7 @@ export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind'
       if (c.source === 'plateau') {
         name = ds.length ? `PLATEAU（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : NEIGHBOR_SOURCE_LABEL.plateau;
         // 建物単位の LOD の内訳（属性のある建物があるときだけ）
-        if (shapes.box + shapes.roof > 0) detail = `（箱形 ${shapes.box} 棟・屋根形状あり ${shapes.roof} 棟）`;
+        if (shapes.box + shapes.roof > 0) detail = `（箱形 ${shapes.box} 棟${shapes.est ? `（うち推定の屋根 ${shapes.est} 棟）` : ''}・屋根形状あり ${shapes.roof} 棟）`;
       } else {
         const base = c.source === 'manual' ? '手入力' : NEIGHBOR_SOURCE_LABEL[c.source];
         name = c.items.some((b) => heightKindOf(b) === 'estimated') ? `${base}（推定）` : base;
@@ -96,7 +98,7 @@ export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind'
     const where = ds.length ? `（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
     // 但し書きは建物単位: 箱形（_lod=1）の建物が 1 棟でもあれば出す。属性の無い旧データは形が分からないので出す（安全側）
     const lod1 = shapes.box > 0 || shapes.unknown > 0;
-    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? LOD1_BOX_NOTE : ''}年度以降の新築・解体は反映されていない場合があります。`);
+    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? LOD1_BOX_NOTE : ''}${shapes.est ? EST_ROOF_NOTE : ''}年度以降の新築・解体は反映されていない場合があります。`);
   }
   return out;
 }

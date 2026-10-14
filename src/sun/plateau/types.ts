@@ -60,6 +60,11 @@ export interface PlateauAttrs {
   surveyYear?: number;
   footprint: FootprintKind;
   warnings?: ('noBottom' | 'baseMismatch' | 'islands')[];
+  /**
+   * 推定の屋根（LOD1 の箱形の住宅に roofEstimate.ts が寄棟をかぶせた建物。実データの形ではない）。付いているとき mesh は壁 + 寄棟で、
+   * zmax = zmin + ridge（形状の上端）、height = ridge。boxHeight は元の箱の高さ（点群の中央値 = 元の zmax − zmin）
+   */
+  roofEstimate?: { kind: 'hip'; eave: number; ridge: number; boxHeight: number };
 }
 
 /**

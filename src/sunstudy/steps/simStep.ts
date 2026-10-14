@@ -607,6 +607,19 @@ export const simStep: StudyStep = {
         showCheck('sunPath', '太陽の通り道と方位リング'),
         showCheck('site', '敷地の輪郭'),
         showCheck('points', '測定点'),
+        h(
+          'label',
+          { class: 'check', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません。影・解析にも入ります）。切り替えると周辺建物を取り直します' },
+          h('input', {
+            type: 'checkbox',
+            checked: study.roofEstimate,
+            onchange: (e: Event) => {
+              study.roofEstimate = (e.target as HTMLInputElement).checked;
+              void loadEnv();
+            },
+          }),
+          ' 推定の屋根をつける（箱形の低層住宅）',
+        ),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void loadEnv() }, '🔄 周辺建物を取り直す')),
         h('p', { class: 'hint' }, '地形・航空写真・周辺建物を国土地理院・PLATEAU（3D都市モデル）から再取得します。手動で追加した隣家と高さの修正・隠した建物は残ります（PLATEAU の建物は gml_id で、無い場合は足元の形で引き継ぎます）。'),
       ),

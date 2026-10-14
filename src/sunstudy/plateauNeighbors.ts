@@ -59,8 +59,9 @@ export type PlateauNotesNeighbor = Pick<Neighbor, 'source' | 'plateau' | 'mesh'>
  * 屋根形状の判定は disclosure.ts の plateauShapeOf と同じ規則（lod ?? datasetLod が 2 以上で、mesh があれば roofTriangles > 0）。
  * disclosure.ts は state を読み込むのでここからは参照しない（同じ規則をここに書く）
  */
-export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: number; roof: number; box: number; gsi: number } {
+export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: number; roof: number; box: number; gsi: number; est: number } {
   let plateau = 0;
+  let est = 0;
   let roof = 0;
   let gsi = 0;
   for (const n of kept) {
@@ -71,8 +72,9 @@ export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: numb
     if (!a) continue;
     const lod = a.lod ?? a.datasetLod;
     if (lod >= 2 && (!n.mesh || n.mesh.roofTriangles > 0)) roof++;
+    else if (a.roofEstimate) est++;
   }
-  return { plateau, roof, box: plateau - roof, gsi };
+  return { plateau, roof, box: plateau - roof, gsi, est };
 }
 
 /**
@@ -85,11 +87,12 @@ export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: numb
  */
 export function plateauNotes(r: PlateauCovered, kept: PlateauNotesNeighbor[]): string[] {
   const notes: string[] = [];
-  const { plateau: total, roof, box, gsi: fill } = plateauNoteCounts(kept);
+  const { plateau: total, roof, box, gsi: fill, est } = plateauNoteCounts(kept);
   const labels = r.datasets.map((d) => d.label).join('／');
   const head = `PLATEAU（国土交通省 3D都市モデル・${labels}）の実測の高さ・形状を使用`;
   const lod1Only = r.datasets.length > 0 && r.datasets.every((d) => d.lod <= 1);
-  notes.push(lod1Only ? `${head}（${total} 棟を取得。箱形。天端は点群の中央値）。` : `${head}（${total} 棟を取得。屋根形状あり ${roof} 棟・箱形 ${box} 棟）。`);
+  notes.push(lod1Only ? `${head}（${total} 棟を取得。箱形。天端は点群の中央値）。` : `${head}（${total} 棟を取得。屋根形状あり ${roof} 棟・箱形 ${box} 棟${est ? `（うち推定の屋根 ${est} 棟）` : ''}）。`);
+  if (est > 0) notes.push(`推定の屋根: 箱形の低層住宅 ${est} 棟に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせています（軒の高さは点群の中央値から逆算。実際の屋根の形ではありません）。建物クリックで確認、「推定の屋根」のチェックを外すと実データの箱形に戻せます。`);
   if (fill > 0) notes.push(`国土地理院の地図から ${fill} 棟を補いました（高さは建物の種類から推定）。`);
   if (r.failedTiles > 0) {
     const tiles = r.tiles.length + r.failedTiles;
@@ -130,6 +133,7 @@ export function plateauInfoLines(n: Neighbor): string[] {
   if (a.storeys != null && Number.isFinite(a.storeys)) parts.push(`${a.storeys} 階${a.storeysBelow ? `（地下 ${a.storeysBelow} 階）` : ''}`);
   if (a.usage) parts.push(a.usage);
   lines.push(parts.length ? `${parts.join('・')}／${model}` : model);
+  if (a.roofEstimate) lines.push(`推定の屋根（寄棟）: 軒 ${a.roofEstimate.eave.toFixed(1)} m・棟 ${a.roofEstimate.ridge.toFixed(1)} m（元の箱の高さ ${a.roofEstimate.boxHeight.toFixed(1)} m）。実際の屋根の形ではありません`);
   if (a.name && a.name !== a.usage) lines.push(`名称: ${a.name}`);
   if (a.address) lines.push(`所在: ${a.address}`);
   lines.push(n.baseElev != null && Number.isFinite(n.baseElev) ? `PLATEAU 地盤 T.P. ${a.zmin.toFixed(1)} m／地形 T.P. ${n.baseElev.toFixed(1)} m` : `PLATEAU 地盤 T.P. ${a.zmin.toFixed(1)} m`);

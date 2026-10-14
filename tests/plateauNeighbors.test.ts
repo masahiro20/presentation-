@@ -111,10 +111,10 @@ describe('plateauNotes: 注記の固定文', () => {
       '国土地理院の地図から 6 棟を補いました（高さは建物の種類から推定）。',
     ]);
     // 内訳は disclosure.ts の plateauShapeCounts と同じ規則: lod ?? datasetLod が 2 以上で屋根形状。mesh の roofTriangles が 0 なら箱形、mesh が無ければ lod だけで判定
-    expect(plateauNoteCounts(list)).toEqual({ plateau: 386, roof: 2, box: 384, gsi: 6 });
+    expect(plateauNoteCounts(list)).toEqual({ plateau: 386, roof: 2, box: 384, gsi: 6, est: 0 });
     const flatRoof = kept(3, { lod2: 3 }).map((n) => ({ ...n, mesh: { tris: n.mesh!.tris, roofTriangles: 0 } }));
-    expect(plateauNoteCounts(flatRoof)).toEqual({ plateau: 3, roof: 0, box: 3, gsi: 0 });
-    expect(plateauNoteCounts(kept(3, { lod2: 1, mesh: false }))).toEqual({ plateau: 3, roof: 1, box: 2, gsi: 0 });
+    expect(plateauNoteCounts(flatRoof)).toEqual({ plateau: 3, roof: 0, box: 3, gsi: 0, est: 0 });
+    expect(plateauNoteCounts(kept(3, { lod2: 1, mesh: false }))).toEqual({ plateau: 3, roof: 1, box: 2, gsi: 0, est: 0 });
     // lod が無ければデータセットの LOD で判定（旧データ）
     const byDataset = kept(2).map((n) => ({ ...n, plateau: { ...n.plateau!, lod: null, datasetLod: 2 } }));
     expect(plateauNoteCounts(byDataset).roof).toBe(2);
@@ -230,5 +230,20 @@ describe('rekeyOverridesByFootprint: 年度更新で変わった id への上書
     expect(two.c).toEqual({ height: 5 });
     expect(two.a).toBeUndefined();
     expect(two.b).toEqual({ height: 6 });
+  });
+});
+
+describe('推定の屋根（roofEstimate）の注記・情報', () => {
+  const est = { kind: 'hip' as const, eave: 5.8, ridge: 7.8, boxHeight: 6.8 };
+  it('箱形の内数として est を数え、注記に「うち推定の屋根 N 棟」と説明の行が出る', () => {
+    const list = kept(5);
+    for (let i = 0; i < 3; i++) list[i] = { ...list[i], plateau: { ...list[i].plateau!, roofEstimate: est } };
+    expect(plateauNoteCounts(list)).toMatchObject({ plateau: 5, box: 5, est: 3 });
+    const notes = plateauNotes(covered(5, [DS_MORIYAMA]), list);
+    expect(notes.some((t) => /うち推定の屋根 3 棟/.test(t) || t.startsWith('推定の屋根:'))).toBe(true);
+    expect(notes.find((t) => t.startsWith('推定の屋根:'))).toMatch(/3 棟/);
+  });
+  it('推定の屋根が無ければ説明の行は出ない', () => {
+    expect(plateauNotes(covered(5, [DS_MORIYAMA]), kept(5)).some((t) => t.startsWith('推定の屋根'))).toBe(false);
   });
 });

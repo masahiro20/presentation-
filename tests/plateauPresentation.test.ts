@@ -205,7 +205,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     expect(r.count).toBe(3);
     expect(r.used).toEqual(['plateau', 'gsi']);
     expect(r.notes).toEqual(['国土地理院の地図から 1 棟を補いました（高さは建物の種類から推定）。']);
-    expect(r.plateau).toEqual({ datasets: [DATASET], lodCounts: { '1': 1, '2': 1 }, status: 'covered', shapes: { box: 1, roof: 1, unknown: 0 } });
+    expect(r.plateau).toEqual({ datasets: [DATASET], lodCounts: { '1': 1, '2': 1 }, status: 'covered', shapes: { est: 0, box: 1, roof: 1, unknown: 0 } });
     expect(sc.lastSource).toBe('plateau');
     expect(sc.lastLoad).toBe(r);
     expect(progress).toContainEqual(['周辺建物（PLATEAU）: 建物タイル 1/2（1.0 MB）', 0.5]);
@@ -245,7 +245,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     expect(r.used).toEqual(['gsi']);
     expect(r.notes).toEqual([NOTE_PLATEAU_MISSING]);
     expect(r.notes[0]).toMatch(/PLATEAU.*未整備/);
-    expect(r.plateau).toEqual({ datasets: [], lodCounts: {}, status: 'none', shapes: { box: 0, roof: 0, unknown: 0 } });
+    expect(r.plateau).toEqual({ datasets: [], lodCounts: {}, status: 'none', shapes: { est: 0, box: 0, roof: 0, unknown: 0 } });
     expect(sc.state.neighbors.every((b) => b.source === 'gsi' && !b.mesh)).toBe(true);
     // PLATEAU 未整備のまま国土地理院も空 → OSM（従来順）
     fake.gsi = [];
@@ -634,7 +634,7 @@ describe('取得後のトーストの内訳は一覧に残った建物で数え�
     // lodCounts は取得全棟（C を含む）、shapes は残った建物
     expect(r.plateau?.lodCounts).toEqual({ '1': 1, '2': 2 });
     expect(roofShapeCount(r.plateau!.lodCounts)).toBe(2);
-    expect(r.plateau?.shapes).toEqual({ box: 1, roof: 1, unknown: 0 });
+    expect(r.plateau?.shapes).toEqual({ est: 0, box: 1, roof: 1, unknown: 0 });
     // トーストは出典行（sunDisclosure.plateauShapeCounts で数える）と同じ 1 棟
     const toastText = neighborsLoadedToast(r);
     expect(toastText).toBe('周辺の建物を 3 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟・国土地理院で補完）');
@@ -655,10 +655,10 @@ describe('取得後のトーストの内訳は一覧に残った建物で数え�
       { source: 'plateau', plateau: undefined },
       { source: 'gsi', plateau: undefined },
     ];
-    const expected = { box: 2, roof: 2, unknown: 1 };
+    const expected = { est: 0, box: 2, roof: 2, unknown: 1 };
     expect(countPlateauShapes(list)).toEqual(expected);
     expect(plateauShapeCounts(list)).toEqual(expected);
-    expect(countPlateauShapes([])).toEqual({ box: 0, roof: 0, unknown: 0 });
+    expect(countPlateauShapes([])).toEqual({ est: 0, box: 0, roof: 0, unknown: 0 });
   });
 });
 
@@ -708,7 +708,7 @@ describe('開示・文言', () => {
     expect(isPlateauBox({ lod: 2, datasetLod: 1 })).toBe(false);
     expect(isPlateauBox({ lod: null, datasetLod: 1 })).toBe(true);
     expect(isPlateauBox({ lod: null, datasetLod: 2 })).toBe(false);
-    expect(plateauShapeCounts([{ source: 'plateau', plateau: boxA().attrs }, { source: 'plateau', plateau: boxB().attrs }, { source: 'plateau' }, { source: 'gsi' }])).toEqual({ box: 1, roof: 1, unknown: 1 });
+    expect(plateauShapeCounts([{ source: 'plateau', plateau: boxA().attrs }, { source: 'plateau', plateau: boxB().attrs }, { source: 'plateau' }, { source: 'gsi' }])).toEqual({ est: 0, box: 1, roof: 1, unknown: 1 });
     // 区境で 2 データセット・手入力の隣家・想定の家は出典に数えない
     const two = sourceLines([
       { source: 'plateau', plateau: boxA().attrs },
@@ -751,8 +751,8 @@ describe('開示・文言', () => {
     const r = await sc.loadNeighbors('plateau');
     expect(neighborsLoadedToast(r)).toBe('周辺の建物を 3 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟・国土地理院で補完）');
     expect(neighborsLoadedToast({ ...r, used: ['plateau'], count: 2 }, 1)).toBe('周辺の建物を 2 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟）（隠した 1 棟は隠したままです）');
-    expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [NOTE_PLATEAU_MISSING], plateau: { datasets: [], lodCounts: {}, status: 'none', shapes: { box: 0, roof: 0, unknown: 0 } } })).toBe('この地域は PLATEAU 未整備のため国土地理院の建物（高さは推定）を使いました（4 棟）');
-    expect(neighborsLoadedToast({ count: 4, used: ['osm'], notes: [NOTE_PLATEAU_ERROR], plateau: { datasets: [], lodCounts: {}, status: 'error', shapes: { box: 0, roof: 0, unknown: 0 } } })).toBe('PLATEAU のデータを取得できなかったため（通信エラー）OpenStreetMap の建物を使いました（4 棟）');
+    expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [NOTE_PLATEAU_MISSING], plateau: { datasets: [], lodCounts: {}, status: 'none', shapes: { est: 0, box: 0, roof: 0, unknown: 0 } } })).toBe('この地域は PLATEAU 未整備のため国土地理院の建物（高さは推定）を使いました（4 棟）');
+    expect(neighborsLoadedToast({ count: 4, used: ['osm'], notes: [NOTE_PLATEAU_ERROR], plateau: { datasets: [], lodCounts: {}, status: 'error', shapes: { est: 0, box: 0, roof: 0, unknown: 0 } } })).toBe('PLATEAU のデータを取得できなかったため（通信エラー）OpenStreetMap の建物を使いました（4 棟）');
     expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [] })).toBe('周辺の建物を 4 棟取得しました（国土地理院の建物（高さは推定））');
     // 内訳は一覧に残った建物（shapes）で数える: 取得全棟の lodCounts が屋根形状 5 棟でも、残ったのが 1 棟ならトーストは 1 棟
     expect(neighborsLoadedToast({ ...r, used: ['plateau'], count: 2, plateau: { ...r.plateau!, lodCounts: { '1': 1, '2': 5 } } })).toBe('周辺の建物を 2 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟）');

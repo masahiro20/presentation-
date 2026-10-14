@@ -43,7 +43,8 @@ export function plateauShapeOf(n: Pick<Neighbor, 'plateau' | 'mesh'>): 'roof' | 
 }
 
 /** PLATEAU の建物の内訳: plateau = PLATEAU の建物の数、roof = 屋根形状、box = 箱形（旧形式の保存データのように plateau 属性が無い PLATEAU の建物は other） */
-export function plateauShapeCounts(list: Pick<Neighbor, 'source' | 'plateau' | 'mesh'>[]): { plateau: number; roof: number; box: number; other: number } {
+export function plateauShapeCounts(list: Pick<Neighbor, 'source' | 'plateau' | 'mesh'>[]): { plateau: number; roof: number; box: number; other: number; est: number } {
+  let est = 0;
   let roof = 0;
   let box = 0;
   let other = 0;
@@ -51,17 +52,19 @@ export function plateauShapeCounts(list: Pick<Neighbor, 'source' | 'plateau' | '
     if (n.source !== 'plateau') continue;
     const s = plateauShapeOf(n);
     if (s === 'roof') roof++;
-    else if (s === 'box') box++;
-    else other++;
+    else if (s === 'box') {
+      box++;
+      if (n.plateau?.roofEstimate) est++;
+    } else other++;
   }
-  return { plateau: roof + box + other, roof, box, other };
+  return { plateau: roof + box + other, roof, box, other, est };
 }
 
 /** 「屋根形状あり N・箱形 M」（PLATEAU の建物が無ければ null。属性の無い旧データだけなら「実測 N」） */
 export function plateauShapeText(c: ReturnType<typeof plateauShapeCounts>): string | null {
   if (!c.plateau) return null;
   if (!c.roof && !c.box) return `実測 ${c.other}`;
-  return `屋根形状あり ${c.roof}・箱形 ${c.box}`;
+  return `屋根形状あり ${c.roof}・箱形 ${c.box}${c.est ? `（うち推定の屋根 ${c.est}）` : ''}`;
 }
 
 /** 使った PLATEAU のデータセット（study.env.plateau.datasets。無ければ []） */
@@ -107,7 +110,7 @@ export function plateauDisclosureText(datasets: PlateauDatasetInfo[] = plateauDa
   const where = datasets.length ? `（${datasets.map((d) => `${wardName(d)}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
   const c = plateauShapeCounts(list);
   const lod1 = c.plateau > 0 ? c.box > 0 || c.other > 0 : !datasets.length || datasets.some((d) => d.lod <= 1);
-  return `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。' : ''}年度以降の新築・解体は反映されていない場合があります。`;
+  return `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。' : ''}${c.est ? '推定の屋根は実測の最高高さを棟とする寄棟の仮定で、実際の屋根の形ではありません。' : ''}年度以降の新築・解体は反映されていない場合があります。`;
 }
 
 /** 出典ごとの棟数（影・解析に入る建物。想定の家は手入力に含めない） */

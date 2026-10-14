@@ -35,6 +35,7 @@
 import { degBoxAround, degBoxDistanceM } from '../geodesy';
 import { parseB3dm, peekB3dmHeader, type B3dm } from './b3dm';
 import { readBuildingRecords, splitBuildings, type BuildingRecord, type SplitMeta } from './buildings';
+import { withEstimatedRoof } from './roofEstimate';
 import { PLATEAU_TIMEOUTS, loadPlateauIndex, muniCodesAround, muniCodesByRegion, pickDataset, resolveTilesetUrl, timeoutReason, type NetOpts } from './catalog';
 import { ensureDracoReady, getDracoDecoder } from './draco';
 import { decodeTileGlb } from './glb';
@@ -62,6 +63,8 @@ export interface PlateauFetchOptions extends Omit<NetOpts, 'timeoutMs'> {
   maxBytes?: number;
   /** 既定 4 */
   concurrency?: number;
+  /** LOD1（箱形）の低層住宅に推定の屋根をかぶせる（roofEstimate.ts）。既定 true。false なら実データの箱のまま */
+  roofEstimate?: boolean;
 }
 
 export type PlateauFetchResult =
@@ -775,7 +778,7 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
       for (const b of list) {
         if (seen.has(b.gmlId)) continue;
         seen.add(b.gmlId);
-        buildings.push(b);
+        buildings.push(o.roofEstimate === false ? b : withEstimatedRoof(b));
         const key = String(b.attrs.lod ?? b.attrs.datasetLod);
         lodCounts[key] = (lodCounts[key] ?? 0) + 1;
       }

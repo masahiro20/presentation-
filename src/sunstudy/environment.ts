@@ -79,7 +79,7 @@ export async function loadEnvironment(opts: { onProgress?: (msg: string, ratio: 
       done++;
       tick('航空写真を読み込みました');
     });
-  const tNeighbors = fetchNeighbors(f.lat, f.lon, NEIGHBOR_RADIUS, { signal: opts.signal, onProgress: (m) => tick(m) })
+  const tNeighbors = fetchNeighbors(f.lat, f.lon, NEIGHBOR_RADIUS, { signal: opts.signal, onProgress: (m) => tick(m), plateau: { roofEstimate: study.roofEstimate } })
     .then((r) => {
       const manual = study.neighbors.filter((n) => n.source === 'manual');
       // 上書き（高さ修正・隠す）の引き継ぎ: 新しい一覧に無い id（PLATEAU の年度更新・旧形式の id（plateau:緯度:経度:面積））は同じ足元の建物の id へ付け直す

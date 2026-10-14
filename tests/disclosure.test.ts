@@ -84,7 +84,7 @@ describe('plateauShapeOf / plateauShapeCounts: 屋根形状（LOD2 以上）と�
       nb('e', square(40, 0, 5)),
     ];
     const c = plateauShapeCounts(list);
-    expect(c).toEqual({ plateau: 4, roof: 1, box: 2, other: 1 });
+    expect(c).toEqual({ plateau: 4, roof: 1, box: 2, other: 1, est: 0 });
     expect(plateauShapeText(c)).toBe('屋根形状あり 1・箱形 2');
     // 旧形式（属性なし）だけなら「実測 N」、PLATEAU が無ければ null
     expect(plateauShapeText(plateauShapeCounts([list[3]]))).toBe('実測 1');

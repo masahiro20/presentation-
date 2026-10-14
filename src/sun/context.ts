@@ -48,6 +48,8 @@ export interface LoadNeighborsResult {
 
 /** PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown） */
 export interface PlateauShapeCounts {
+  /** うち推定の屋根（roofEstimate.ts）をかぶせた建物の数（box の内数） */
+  est: number;
   box: number;
   roof: number;
   unknown: number;
@@ -179,13 +181,16 @@ export function roofShapeCount(lodCounts: Record<string, number>): number {
  * sunDisclosure.ts の plateauShapeCounts（出典行の内訳）はこの関数の別名なので、トーストと出典行・注記は同じ数になる
  */
 export function countPlateauShapes(list: Pick<NeighborBuilding, 'source' | 'plateau'>[]): PlateauShapeCounts {
-  const c: PlateauShapeCounts = { box: 0, roof: 0, unknown: 0 };
+  const c: PlateauShapeCounts = { est: 0, box: 0, roof: 0, unknown: 0 };
   for (const b of list) {
     if (b.source !== 'plateau') continue;
     const a = b.plateau;
     if (!a) c.unknown++;
     else if ((a.lod ?? a.datasetLod) >= 2) c.roof++;
-    else c.box++;
+    else {
+      c.box++;
+      if (a.roofEstimate) c.est++;
+    }
   }
   return c;
 }
@@ -513,6 +518,8 @@ export class SunContext {
   private plannedOn = true;
   /** 最後に選んだ取得元（建設地の変更・微調整で取り直すときに使う。PLATEAU が未整備で国土地理院に落ちても 'plateau' のまま） */
   lastSource: NeighborSourceChoice = 'plateau';
+  /** 推定の屋根（LOD1 の低層住宅に寄棟をかぶせる）。次に周辺建物を取り直すときから効く */
+  roofEstimate = true;
   /** 最後の取得の結果（注記・出典の表示用。まだ取っていなければ null） */
   lastLoad: LoadNeighborsResult | null = null;
 
@@ -979,7 +986,7 @@ export class SunContext {
       opts.onProgress?.('周辺建物（PLATEAU）: 市区町村を調べています', 0);
       let r: PlateauFetchResult;
       try {
-        r = await fetchPlateauBuildings(lat, lon, R, { signal: opts.signal, onProgress: (p) => opts.onProgress?.(plateauProgressText(p), p.ratio) });
+        r = await fetchPlateauBuildings(lat, lon, R, { signal: opts.signal, roofEstimate: this.roofEstimate, onProgress: (p) => opts.onProgress?.(plateauProgressText(p), p.ratio) });
       } catch (e) {
         if (opts.signal?.aborted) throw e;
         // 取得側は中止以外を status に畳む約束だが、万一の例外も通信エラー扱いにして国土地理院に落ちる

@@ -341,6 +341,8 @@ export interface ProjectJson {
   manualNeighbors: Neighbor[];
   /** 想定の家を影・解析に含めるか（無ければ true。古いデータ） */
   plannedEnabled?: boolean;
+  /** LOD1（箱形）の低層住宅に推定の屋根をかぶせる（既定 true。false のとき実データの箱のまま）。次に周辺建物を取り直すときから効く */
+  roofEstimate?: boolean;
   /** 自動取得した建物への上書き（高さ修正・隠す。隠し方・理由を含む。古いデータには隠し方・理由が無い = 計算から除外・その他） */
   neighborOverrides: Record<string, NeighborOverride>;
   points: MeasurePoint[];

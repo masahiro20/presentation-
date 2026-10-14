@@ -37,6 +37,8 @@ export interface StudyState {
    * 描かない・影を落とさない・解析しない（hidden には触らない。「隠した建物」の一覧にも出さない）。保存データに残す
    */
   plannedEnabled: boolean;
+  /** 推定の屋根（LOD1 の低層住宅に寄棟をかぶせる。周辺建物の取得時に使う設定。既定 true） */
+  roofEstimate: boolean;
   /** 読み込んだ 3D データと配置 */
   model: ImportedModel | null;
   placement: ModelPlacement;
@@ -77,6 +79,7 @@ export const study: StudyState = {
   neighborNotes: [],
   neighborOverrides: {},
   plannedEnabled: true,
+  roofEstimate: true,
   model: null,
   placement: { ...DEFAULT_PLACEMENT },
   points: [],

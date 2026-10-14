@@ -347,6 +347,10 @@ function sanitizePlateauAttrsRaw(raw: unknown): PlateauAttrs | null {
   };
   for (const k of ['measuredHeight', 'storeys', 'storeysBelow', 'surveyYear'] as const) if (isFiniteNum(a[k])) out[k] = a[k] as number;
   for (const k of ['usage', 'name', 'address', 'buildingId', 'lod1HeightType'] as const) if (typeof a[k] === 'string' && a[k]) out[k] = a[k] as string;
+  const re = a.roofEstimate as Record<string, unknown> | undefined;
+  if (re && typeof re === 'object' && re.kind === 'hip' && isFiniteNum(re.eave) && isFiniteNum(re.ridge) && isFiniteNum(re.boxHeight) && re.eave > 0 && re.ridge > re.eave) {
+    out.roofEstimate = { kind: 'hip', eave: re.eave, ridge: re.ridge, boxHeight: re.boxHeight };
+  }
   if (Array.isArray(a.warnings)) {
     const w = (a.warnings as unknown[]).filter((x): x is PlateauWarning => PLATEAU_WARNINGS.includes(x as PlateauWarning));
     if (w.length) out.warnings = w;
@@ -431,6 +435,7 @@ function buildProject(notes: string[]): ProjectJson {
         return out;
       }),
     plannedEnabled: study.plannedEnabled,
+    roofEstimate: study.roofEstimate,
     neighborOverrides: Object.fromEntries(Object.entries(study.neighborOverrides).map(([id, o]) => [id, { ...o }])),
     points: JSON.parse(JSON.stringify(study.points)) as ProjectJson['points'],
   };
@@ -513,6 +518,7 @@ export async function applyProject(p: ProjectJson): Promise<void> {
   const manual: Neighbor[] = Array.isArray(p.manualNeighbors) ? p.manualNeighbors.filter((n) => n && Array.isArray(n.ring)).map(sanitizePlateauAttrs).map(sanitizeNeighborHide).map(sanitizePlannedNeighbor) : [];
   // 想定の家を影・解析に含めるか（無い古いデータは含める）
   study.plannedEnabled = p.plannedEnabled !== false;
+  study.roofEstimate = p.roofEstimate !== false;
   let auto: Neighbor[] = [];
   study.grid = null;
   study.aerial = null;

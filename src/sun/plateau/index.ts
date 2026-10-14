@@ -18,3 +18,4 @@ export { fetchPlateauBuildings, fetchCached, clearPlateauCaches, plateauDatasetL
 export { quantizeMesh, dequantizeMesh, quantizedBytes, QUANTIZE_LIMIT_M } from './meshCodec';
 export type { RoofUVSpec, PlateauGeometryOptions } from './geometry';
 export { buildPlateauGeometry } from './geometry';
+export { ROOF_ESTIMATE, minAreaRect, planRoof, hipRoofMesh, withEstimatedRoof, type EstimatedRoof } from './roofEstimate';

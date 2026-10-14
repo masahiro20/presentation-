@@ -2107,6 +2107,19 @@ export const sunStep: Step = {
           // PLATEAU（実測の高さ・形状）を既定に。国土地理院・OSM は手動で選ぶ退路
           h('button', { class: 'btn sm primary', title: '国土交通省 PLATEAU 3D都市モデルの実測の高さ・形状。無い地域は国土地理院の建物（高さは推定）に自動で切り替えます', onclick: () => loadNeighbors('plateau') }, NEIGHBOR_SOURCE_BUTTON.plateau),
           h('button', { class: 'btn sm', onclick: loadAerial }, '🛰 航空写真を表示'),
+          h(
+            'label',
+            { class: 'check', style: 'font-size:12px', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません）。切り替えると周辺建物を取り直します' },
+            h('input', {
+              type: 'checkbox',
+              checked: sc.roofEstimate,
+              onchange: (e: Event) => {
+                sc.roofEstimate = (e.target as HTMLInputElement).checked;
+                if (sc.state.neighbors.some((n) => n.source !== 'manual')) void loadNeighbors(sc.lastSource);
+              },
+            }),
+            ' 推定の屋根',
+          ),
           h('button', { class: 'btn sm ghost', title: '国土地理院の地図の建物（高さは建物の種類からの推定）', onclick: () => loadNeighbors('gsi') }, NEIGHBOR_SOURCE_BUTTON.gsi),
           h('button', { class: 'btn sm ghost', title: 'OpenStreetMap の建物（高さ・階数のタグがあれば使う）', onclick: () => loadNeighbors('osm') }, NEIGHBOR_SOURCE_BUTTON.osm),
         ),

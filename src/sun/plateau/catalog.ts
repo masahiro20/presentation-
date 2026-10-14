@@ -6,14 +6,19 @@
  *     （区境では複数の市区になる。1 件も取れなければ throw → 索引に region があれば muniCodesByRegion が予備経路）
  *  2. loadPlateauIndex: 索引（市区 → 年度・LOD・tileset.json の URL）。Promise をメモ化し 1 ページ 1 回しか取らない
  *  3. pickDataset: 市区の sets[0]（LOD 降順・同 LOD はテクスチャ無し先）を PlateauDatasetInfo に
- *  4. resolveTilesetUrl: -latest エイリアス（no-cache・ACAO *）から実 tileset.json の絶対 URL を引く。children が無ければ「データセットが消えた」、
- *     通信失敗なら索引の URL に退避（索引が古いと 404 になり得るが、それは fetch.ts が通信エラーとして扱う）
+ *  4. resolveTilesetUrl: -latest エイリアス（no-cache・ACAO *）から実 tileset.json の絶対 URL を引く。children が無ければ「-latest に無い」（missing。
+ *     fetch.ts は索引の URL を試し、4xx なら対象外・取れれば続ける）、通信失敗なら索引の URL に退避（索引が古いと 404 になり得るが、それは
+ *     fetch.ts が通信エラーとして扱う）
  *
  * fetch は fetchImpl で差し替えられる（テストはスタブ、本番は globalThis.fetch）。中止は signal.reason をそのまま throw する。
+ * 期限（第 2 回レビュー）: 各段の fetch には呼び出し側の signal と期限（NetOpts.timeoutMs。省略時は PLATEAU_TIMEOUTS の段の既定）を
+ * deadlineSignal で合成した signal を渡す。期限切れは中止ではなく通信失敗として扱う（throwIfAborted は呼び出し側の signal だけ見る）ので、
+ * 逆ジオコーダの期限切れは muniCodesAround の throw → fetch.ts の region 予備経路へ、-latest の期限切れは索引 URL への退避になる。
+ * signal を無視する fetchImpl（テストのスタブなど）でも待ちが終わるよう、fetch の Promise 自体も raceWithAbort で待つ。
  * 仕様: scratchpad/plateau-spec.md §2.8・§4（W6 が実装）
  */
 import { degBoxAround, degBoxIntersects } from '../geodesy';
-import type { GeoBox, PlateauDatasetInfo } from './types';
+import type { GeoBox, PlateauDatasetInfo, PlateauNetStage } from './types';
 
 export interface PlateauIndexSet {
   lod: number;
@@ -30,7 +35,10 @@ export interface PlateauArea {
   year: number;
   /** LOD 降順・同 LOD はテクスチャ無し先（pickDataset で改めて並べ直すので順序に依存しない） */
   sets: PlateauIndexSet[];
-  /** W16: -latest ラッパーの root.region を度に [west, south, east, north] */
+  /**
+   * W16: -latest ラッパーの root.region（-latest に無い市区は索引の tileset.json の root.region）を度に [west, south, east, north]。
+   * 逆ジオコーダ不通時と、逆ジオコーダのコードが索引に 1 件も無いとき（市区町村コードの改編）の予備経路 muniCodesByRegion に使う
+   */
   region?: [number, number, number, number];
 }
 
@@ -44,7 +52,45 @@ export interface PlateauIndex {
 
 export interface NetOpts {
   fetchImpl?: typeof fetch;
+  /** 呼び出し側の中止。中止は signal.reason を throw する（期限切れとは区別する） */
   signal?: AbortSignal;
+  /** この呼び出し（1 段）の期限 [ms]。省略時は段の既定（PLATEAU_TIMEOUTS）。正の有限数でなければ期限なし */
+  timeoutMs?: number;
+}
+
+/** 段ごとの既定の期限 [ms]（第 2 回レビュー: geocode 8 s・index 10 s・-latest 8 s・tileset 20 s・タイル 1 枚 60 s） */
+export const PLATEAU_TIMEOUTS: Readonly<Record<PlateauNetStage, number>> = { geocode: 8000, index: 10000, latest: 8000, tileset: 20000, tile: 60000 };
+
+/** 期限切れの理由（AbortSignal.timeout と同じ name 'TimeoutError'。呼び出し側の中止（signal.reason）とは別物として扱う） */
+export function timeoutReason(ms: number): Error {
+  return new DOMException(`期限切れ（${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1)} 秒以内に応答がありません）`, 'TimeoutError');
+}
+
+export function isTimeoutError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'TimeoutError';
+}
+
+/**
+ * 呼び出し側の signal と期限を合成した AbortSignal（fetchImpl に渡す用）。
+ *  - 親が中止されたら親の reason で、期限が来たら timeoutReason で abort する（先に来た方）
+ *  - AbortSignal.any / AbortSignal.timeout は使わず自前で合成する: 無い環境でも動き、dispose() でタイマーと listener を確実に外せる
+ *    （AbortSignal.timeout のタイマーは止められない）
+ *  - ms が正の有限数でなければ期限なし（親に連動するだけ）
+ * 使い終わったら必ず dispose() を呼ぶ
+ */
+export function deadlineSignal(parent: AbortSignal | undefined, ms: number | undefined): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort((parent!.reason as Error | undefined) ?? new Error('中止しました'));
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener('abort', onAbort, { once: true });
+  const timer = ms != null && Number.isFinite(ms) && ms > 0 && !controller.signal.aborted ? setTimeout(() => controller.abort(timeoutReason(ms)), ms) : null;
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (timer != null) clearTimeout(timer);
+      parent?.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 /** 国土地理院 逆ジオコーダ（緯度経度 → 市区町村コード muniCd） */
@@ -83,8 +129,8 @@ function validateIndex(json: unknown, url: string): PlateauIndex {
 /**
  * 索引のメモ（fetch 関数 → URL → Promise）。fetchImpl ごとに分けるので、テストのスタブどうしは混ざらず、
  * 同じ fetchImpl（本番は defaultFetch）で呼べば 2 回目以降は通信しない。失敗した Promise はメモから外し、取り直せるようにする。
- * メモの Promise は signal 無しで取る（先に始めた呼び出しの中止が、同じ索引を待つ別の呼び出しに伝播しないように。索引は小さいので
- * 下層の fetch は中止しない）。呼び出し側は raceWithAbort で自分の signal だけで待ちを打ち切る
+ * メモの Promise は呼び出し側の signal 無し・期限だけで取る（先に始めた呼び出しの中止が、同じ索引を待つ別の呼び出しに伝播しないように。
+ * 索引は小さいので下層の fetch は中止しない。期限切れは失敗としてメモから外れる）。呼び出し側は raceWithAbort で自分の signal だけで待ちを打ち切る
  */
 const indexMemo = new WeakMap<typeof fetch, Map<string, Promise<PlateauIndex>>>();
 
@@ -120,15 +166,23 @@ export async function loadPlateauIndex(opts?: NetOpts & { url?: string | URL }):
   const hit = byUrl.get(url);
   if (hit) return raceWithAbort(hit, opts?.signal);
   const p = (async () => {
-    const res = await f(url);
-    if (!res.ok) throw new Error(`PLATEAU の索引を取得できません（HTTP ${res.status}）: ${url}`);
-    let json: unknown;
+    const dl = deadlineSignal(undefined, opts?.timeoutMs ?? PLATEAU_TIMEOUTS.index);
     try {
-      json = await res.json();
+      const res = await raceWithAbort(f(url, { signal: dl.signal }), dl.signal);
+      if (!res.ok) throw new Error(`PLATEAU の索引を取得できません（HTTP ${res.status}）: ${url}`);
+      let json: unknown;
+      try {
+        json = await raceWithAbort(res.json(), dl.signal);
+      } catch (e) {
+        throw new Error(`PLATEAU の索引を読めません（${errorMessage(e)}）: ${url}`);
+      }
+      return validateIndex(json, url);
     } catch (e) {
-      throw new Error(`PLATEAU の索引を読めません（${errorMessage(e)}）: ${url}`);
+      if (isTimeoutError(e)) throw new Error(`PLATEAU の索引を取得できません（${errorMessage(e)}）: ${url}`);
+      throw e;
+    } finally {
+      dl.dispose();
     }
-    return validateIndex(json, url);
   })();
   byUrl.set(url, p);
   p.catch(() => byUrl!.delete(url));
@@ -155,13 +209,20 @@ export async function muniCodesAround(lat: number, lon: number, radiusM: number,
     [box.north, box.west],
     [box.north, box.east],
   ];
-  const settled = await Promise.allSettled(
-    points.map(async ([la, lo]) => {
-      const res = await f(REVERSE_GEOCODER_URL(la, lo), { signal: opts?.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return parseMuniCd(await res.json());
-    }),
-  );
+  // 5 点でひとつの期限（段の期限）。期限切れは失敗に数える（全滅なら throw → fetch.ts の region 予備経路）
+  const dl = deadlineSignal(opts?.signal, opts?.timeoutMs ?? PLATEAU_TIMEOUTS.geocode);
+  let settled: PromiseSettledResult<string | null>[];
+  try {
+    settled = await Promise.allSettled(
+      points.map(async ([la, lo]) => {
+        const res = await raceWithAbort(f(REVERSE_GEOCODER_URL(la, lo), { signal: dl.signal }), dl.signal);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return parseMuniCd(await raceWithAbort(res.json(), dl.signal));
+      }),
+    );
+  } finally {
+    dl.dispose();
+  }
   throwIfAborted(opts?.signal);
   const codes: string[] = [];
   const errors: string[] = [];
@@ -229,23 +290,28 @@ function wrapperContentUri(json: unknown): { uri: string | null; hasChildren: bo
 /**
  * tileset.json の実 URL を解決する。
  *  - -latest が取れ children[0].content.uri があれば それ（絶対 URL に正規化）: via 'latest'
- *  - -latest が取れ children が無ければ データセットが消えた: missing true（url は索引のもの。呼び出し側は「対象外」扱い）
- *  - -latest が取れない（非 2xx・通信失敗・JSON でない）なら 索引の URL に退避: via 'index'
+ *  - -latest が取れ children が無ければ -latest にそのデータセットが無い: missing true（url は索引のもの。呼び出し側（fetch.ts）は索引の URL を
+ *    試し、4xx なら「対象外」扱い、取れるなら index 経由で続ける。浜松市の旧 7 区は -latest に無いが tileset.json の配信は続いている）
+ *  - -latest が取れない（非 2xx・通信失敗・JSON でない・期限切れ）なら 索引の URL に退避: via 'index'
  */
 export async function resolveTilesetUrl(ds: PlateauDatasetInfo, opts?: NetOpts): Promise<{ url: string; via: 'latest' | 'index'; missing: boolean }> {
   throwIfAborted(opts?.signal);
   const f = pickFetch(opts);
   const latestUrl = PLATEAU_LATEST_URL(ds.muniCd, ds.lod, ds.tex);
+  const dl = deadlineSignal(opts?.signal, opts?.timeoutMs ?? PLATEAU_TIMEOUTS.latest);
   try {
-    const res = await f(latestUrl, { signal: opts?.signal, cache: 'no-store' });
+    const res = await raceWithAbort(f(latestUrl, { signal: dl.signal, cache: 'no-store' }), dl.signal);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { uri, hasChildren } = wrapperContentUri(await res.json());
+    const { uri, hasChildren } = wrapperContentUri(await raceWithAbort(res.json(), dl.signal));
     if (!hasChildren) return { url: ds.tilesetUrl, via: 'latest', missing: true };
     if (uri) return { url: new URL(uri, latestUrl).toString(), via: 'latest', missing: false };
     // children はあるが content.uri が無い（形が変わった）: 索引の URL で続ける
     return { url: ds.tilesetUrl, via: 'index', missing: false };
   } catch (e) {
+    // 呼び出し側の中止だけ投げ直す（期限切れは通信失敗と同じく索引 URL に退避）
     if (opts?.signal?.aborted) throw e;
     return { url: ds.tilesetUrl, via: 'index', missing: false };
+  } finally {
+    dl.dispose();
   }
 }

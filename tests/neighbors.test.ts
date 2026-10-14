@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tileToLonLat, toLocal } from '../src/sun/geo';
+import { lonLatToTile, tileToLonLat, toLocal } from '../src/sun/geo';
 import { clearPlateauCaches, setDracoDecoderFactory } from '../src/sun/plateau';
 import type { DracoDecoderLike, PlateauIndex } from '../src/sun/plateau';
 import {
@@ -35,6 +35,37 @@ const square = (e0: number, n0: number, size: number) => [
   { e: e0, n: n0 + size },
 ];
 const nb = (ring: { e: number; n: number }[], height = 7, extra: Partial<Neighbor> = {}): Neighbor => ({ id: `t:${ring[0].e}:${ring[0].n}`, ring, height, source: 'gsi', heightKind: 'estimated', ...extra });
+
+// --- 最小の MVT エンコーダ（テスト用）: BldA 層に vt_code 付きの多角形 1 つ（extent 4096。protobuf の varint を手で書く） ---
+function varint(n: number): number[] {
+  const out: number[] = [];
+  while (n >= 0x80) {
+    out.push((n & 0x7f) | 0x80);
+    n >>>= 7;
+  }
+  out.push(n);
+  return out;
+}
+const zigzag = (n: number) => (n << 1) ^ (n >> 31);
+const pbBytes = (field: number, b: number[]) => [...varint((field << 3) | 2), ...varint(b.length), ...b];
+const pbVarint = (field: number, v: number) => [...varint(field << 3), ...varint(v)];
+const pbStr = (s: string) => [...Buffer.from(s, 'utf8')];
+/** タイル座標（y は下向き。外周は時計回り = MVT の規約）の多角形 1 つを持つ国土地理院風タイル */
+function encodeGsiTile(ring: [number, number][], vtCode = 3101): Uint8Array {
+  const geom: number[] = [9]; // MoveTo ×1
+  let px = 0;
+  let py = 0;
+  ring.forEach(([x, y], i) => {
+    if (i === 1) geom.push(((ring.length - 1) << 3) | 2); // LineTo ×(n−1)
+    geom.push(zigzag(x - px), zigzag(y - py));
+    px = x;
+    py = y;
+  });
+  geom.push(15); // ClosePath
+  const feature = [...pbVarint(3, 3), ...pbBytes(2, [0, 0]), ...pbBytes(4, geom.flatMap(varint))];
+  const layer = [...pbVarint(15, 2), ...pbBytes(1, pbStr('BldA')), ...pbBytes(2, feature), ...pbBytes(3, pbStr('vt_code')), ...pbBytes(4, pbVarint(5, vtCode)), ...pbVarint(5, 4096)];
+  return Uint8Array.from(pbBytes(3, layer));
+}
 
 describe('国土地理院タイルの読み込み', () => {
   const list = parseGsiTile(gsiBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
@@ -342,6 +373,50 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     expect(calls.filter((u) => u.endsWith('.b3dm'))).toHaveLength(1);
   });
 
+  it('注記の棟数は一覧と一致する: PLATEAU の棟数・箱形・補った棟数は距離ルールの後に残った建物で数える（取得全体の 6 棟ではない）', async () => {
+    vi.stubGlobal('fetch', mockFetch());
+    const r = await run();
+    const plateau = r.list.filter((b) => b.source === 'plateau').length;
+    const gsi = r.list.filter((b) => b.source === 'gsi').length;
+    expect(plateau).toBe(4);
+    expect(r.plateau?.lodCounts).toEqual({ '1': 6 });
+    expect(r.notes[0]).toBe(`PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（${plateau} 棟。箱形。天端は点群の中央値）。`);
+    expect(gsi).toBeGreaterThan(0);
+    expect(r.notes[1]).toBe(`国土地理院の地図から ${gsi} 棟を補いました（高さは建物の種類から推定）。`);
+  });
+
+  it('国土地理院の補完が距離ルールで全部落ちたら sourcesUsed は [plateau] だけで、補完の注記も出ない', async () => {
+    // ピンのタイルだけ、ピンから最も遠い角に普通建物（7 m → 影の届く距離 48 m）1 棟の手作りタイルを返す。他のタイルは 404（建物なし）
+    const t = lonLatToTile(PIN_MORIYAMA.lon, PIN_MORIYAMA.lat, 16);
+    const tx = Math.floor(t.x);
+    const ty = Math.floor(t.y);
+    const cx = (t.x - tx) * 4096 < 2048 ? 4000 : 40;
+    const cy = (t.y - ty) * 4096 < 2048 ? 4000 : 40;
+    const bytes = encodeGsiTile([[cx, cy], [cx + 40, cy], [cx + 40, cy + 40], [cx, cy + 40]]);
+    // 前提: その建物は 1 棟に解釈され、150 m より十分遠く低い（距離ルールで落ちる）
+    const parsed = parseGsiTile(bytes, tx, ty, 16, PIN_MORIYAMA.lat, PIN_MORIYAMA.lon);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].height).toBe(7);
+    const c = ringCenter(parsed[0].ring);
+    expect(Math.hypot(c.e, c.n)).toBeGreaterThan(300);
+    expect(applyDistanceRule(parsed)).toHaveLength(0);
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        override: (url) => {
+          if (!url.includes('optimal_bvmap')) return undefined;
+          return url.endsWith(`/16/${tx}/${ty}.pbf`) ? new Response(bytes.buffer as ArrayBuffer, { headers: { 'content-type': 'application/octet-stream' } }) : new Response(null, { status: 404 });
+        },
+      }),
+    );
+    const r = await run();
+    expect(r.list.filter((b) => b.source === 'plateau')).toHaveLength(4);
+    expect(r.list.some((b) => b.source === 'gsi')).toBe(false);
+    expect(r.sourcesUsed).toEqual(['plateau']);
+    expect(r.notes).toHaveLength(1);
+    expect(r.notes[0]).toMatch(/^PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（4 棟/);
+  });
+
   it('ピンを 40 m 動かして取り直しても PLATEAU の建物は同じ id（ring だけずれ、mesh は同じ参照）', async () => {
     vi.stubGlobal('fetch', mockFetch());
     const r1 = await run();
@@ -412,7 +487,7 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     try {
       const first = await run();
       const target = first.list.find((b) => b.source === 'plateau')!;
-      // 前回の一覧（旧 MVT 由来の id）に同じ足元の建物があり、高さの上書きと隠した記録が付いている
+      // 前回の一覧（旧形式の id plateau:緯度:経度:面積）に同じ足元の建物があり、高さの上書きと隠した記録が付いている
       study.frame = { lat: PIN_MORIYAMA.lat, lon: PIN_MORIYAMA.lon, address: '守山区', groundElev: null };
       study.sitePolygon = [];
       study.grid = null;

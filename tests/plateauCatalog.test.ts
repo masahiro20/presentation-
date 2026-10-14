@@ -6,12 +6,16 @@
  *  - public/plateau-index.json（実物。W16 で region を追加）: 全市区に region があり 300 KB 以下、実地点の予備経路が引ける
  *  - pickDataset: LOD 降順・同 LOD はテクスチャ無し先・label・索引に無い市区は null
  *  - resolveTilesetUrl: -latest ラッパー → 実 URL（via 'latest'）、children 無し → missing、失敗 → 索引 URL（via 'index'）
+ *  - 期限（第 2 回レビュー）: deadlineSignal の合成、fetchImpl が永遠に返らないときの timeoutMs（索引は Error・逆ジオコーダは失敗に数える・-latest は索引 URL に退避）
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   PLATEAU_LATEST_URL,
+  PLATEAU_TIMEOUTS,
   REVERSE_GEOCODER_URL,
+  deadlineSignal,
+  isTimeoutError,
   loadPlateauIndex,
   muniCodesAround,
   muniCodesByRegion,
@@ -107,6 +111,27 @@ describe('loadPlateauIndex', () => {
     await expect(loadPlateauIndex({ url: 'https://example.test/other.json', fetchImpl: f, signal: ac.signal })).rejects.toBe(reason);
     expect(calls).toEqual([]);
   });
+
+  it('fetchImpl が永遠に返らない → timeoutMs で「索引を取得できません（期限切れ…）」の Error。失敗はメモに残らず次は取れる', async () => {
+    let hang = true;
+    const signals: AbortSignal[] = [];
+    const { f, calls } = stubFetch((_url, init) => {
+      if (!hang) return json(miniIndex());
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>(() => undefined);
+    });
+    const url = 'https://example.test/hang.json';
+    const t0 = performance.now();
+    await expect(loadPlateauIndex({ url, fetchImpl: f, timeoutMs: 60 })).rejects.toThrow(/索引を取得できません.*期限切れ/);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    // 下層の fetch に渡した signal は TimeoutError で abort されている（本物の fetch なら接続が切れる）
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(true);
+    expect((signals[0].reason as Error).name).toBe('TimeoutError');
+    hang = false;
+    expect(Object.keys((await loadPlateauIndex({ url, fetchImpl: f, timeoutMs: 60 })).areas)).toHaveLength(3);
+    expect(calls).toEqual([url, url]);
+  });
 });
 
 describe('muniCodesAround: 中心＋4 隅の逆ジオコーダ', () => {
@@ -190,6 +215,74 @@ describe('muniCodesAround: 中心＋4 隅の逆ジオコーダ', () => {
   });
 });
 
+describe('muniCodesAround: 期限（timeoutMs。既定 PLATEAU_TIMEOUTS.geocode = 8 s）', () => {
+  const never = () => new Promise<Response>(() => undefined);
+
+  it('5 点とも無応答 → 期限切れを通信失敗に数えて Error（「期限切れ」を含む）。呼び出し側の signal は中止されない', async () => {
+    const { f, calls } = stubFetch(() => never());
+    const ac = new AbortController();
+    const t0 = performance.now();
+    await expect(muniCodesAround(35.6, 139.7, 300, { fetchImpl: f, timeoutMs: 60, signal: ac.signal })).rejects.toThrow(/逆ジオコーダ.*期限切れ/);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(calls).toHaveLength(5);
+    expect(ac.signal.aborted).toBe(false);
+  });
+
+  it('1 点だけ無応答なら、期限の後に残りの 4 点の結果で返る（中心が先頭）', async () => {
+    let n = 0;
+    const { f } = stubFetch((url) => (url.includes('lat=35.6&lon=139.7') ? geocode('13112') : ++n === 1 ? never() : geocode('13111')));
+    expect(await muniCodesAround(35.6, 139.7, 300, { fetchImpl: f, timeoutMs: 60 })).toEqual(['13112', '13111']);
+  });
+
+  it('timeoutMs が Infinity なら期限なし（即応するスタブでは普通に返る）。既定値は PLATEAU_TIMEOUTS.geocode', async () => {
+    const { f } = stubFetch(() => geocode('13112'));
+    expect(await muniCodesAround(35.6, 139.7, 300, { fetchImpl: f, timeoutMs: Infinity })).toEqual(['13112']);
+    expect(PLATEAU_TIMEOUTS.geocode).toBe(8000);
+  });
+});
+
+describe('deadlineSignal: 呼び出し側の signal と期限の合成（AbortSignal.any / timeout に依らない）', () => {
+  it('期限が来たら TimeoutError で abort する（isTimeoutError true）。親は中止されない', async () => {
+    const parent = new AbortController();
+    const dl = deadlineSignal(parent.signal, 30);
+    expect(dl.signal.aborted).toBe(false);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(dl.signal.aborted).toBe(true);
+    expect((dl.signal.reason as Error).name).toBe('TimeoutError');
+    expect(isTimeoutError(dl.signal.reason)).toBe(true);
+    expect(String((dl.signal.reason as Error).message)).toMatch(/期限切れ/);
+    expect(parent.signal.aborted).toBe(false);
+    dl.dispose();
+  });
+
+  it('親が中止されたら親の reason で abort する（期限より先）。中止済みの親なら即 abort', () => {
+    const parent = new AbortController();
+    const reason = new Error('やめた');
+    const dl = deadlineSignal(parent.signal, 10000);
+    parent.abort(reason);
+    expect(dl.signal.aborted).toBe(true);
+    expect(dl.signal.reason).toBe(reason);
+    expect(isTimeoutError(dl.signal.reason)).toBe(false);
+    dl.dispose();
+    const pre = deadlineSignal(parent.signal, 10000);
+    expect(pre.signal.aborted).toBe(true);
+    expect(pre.signal.reason).toBe(reason);
+    pre.dispose();
+  });
+
+  it('dispose でタイマーが止まり、期限を過ぎても abort しない。親なし・期限なし（undefined / Infinity / 0）でも動く', async () => {
+    const dl = deadlineSignal(undefined, 20);
+    dl.dispose();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(dl.signal.aborted).toBe(false);
+    for (const ms of [undefined, Infinity, 0, -1, NaN]) {
+      const d = deadlineSignal(undefined, ms);
+      expect(d.signal.aborted).toBe(false);
+      d.dispose();
+    }
+  });
+});
+
 describe('muniCodesByRegion: 索引の region による予備経路', () => {
   it('region を持たない索引（現行の index.mini.json）では []', () => {
     expect(muniCodesByRegion(miniIndex(), { west: 139.6, south: 35.5, east: 139.7, north: 35.7 })).toEqual([]);
@@ -232,10 +325,19 @@ describe('public/plateau-index.json（実物）の region（W16: scripts/plateau
     }
   });
 
-  it('-latest ラッパーが無い市区（浜松市の旧 7 区 22131〜22137）以外はすべて region を持つ', () => {
+  it('すべての市区が region を持つ（-latest ラッパーに無い浜松市の旧 7 区 22131〜22137 は索引の tileset.json の root.region から）', () => {
     const without = areas.filter(([, a]) => !a.region).map(([cd]) => cd);
-    expect(without.every((cd) => /^2213[1-7]$/.test(cd))).toBe(true);
-    expect(areas.length - without.length).toBeGreaterThanOrEqual(440);
+    expect(without).toEqual([]);
+    for (const cd of ['22131', '22132', '22133', '22134', '22135', '22136', '22137']) expect(real.areas[cd].region, cd).toBeDefined();
+  });
+
+  it('市区町村コードの改編: 浜松駅（34.7108, 137.7261。逆ジオコーダは新コード 22138 を返し索引に無い）の箱 → region で旧 中区 22131 が引ける', () => {
+    expect(real.areas['22138']).toBeUndefined();
+    const codes = muniCodesByRegion(real, degBoxAround(34.7108, 137.7261, 330));
+    expect(codes).toContain('22131');
+    expect(codes.every((cd) => /^2213[1-7]$/.test(cd))).toBe(true);
+    const [w, s, e, n] = real.areas['22131'].region!;
+    expect(w < 137.7261 && 137.7261 < e && s < 34.7108 && 34.7108 < n).toBe(true);
   });
 
   it('実地点の予備経路: 奥沢 → 世田谷区、区境 → 守山区と東区、川越・長野の山村 → 索引に無い市区は返さない', () => {
@@ -391,5 +493,21 @@ describe('resolveTilesetUrl: -latest エイリアス → 索引 URL', () => {
     const pre = stubFetch(() => json({}));
     await expect(resolveTilesetUrl(ds, { fetchImpl: pre.f, signal: ac.signal })).rejects.toBe(reason);
     expect(pre.calls).toEqual([]);
+  });
+
+  it('-latest が無応答 → timeoutMs（既定 PLATEAU_TIMEOUTS.latest = 8 s）で索引 URL に退避（via index・missing false）。呼び出し側の signal は中止されない', async () => {
+    const signals: AbortSignal[] = [];
+    const { f } = stubFetch((_url, init) => {
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>(() => undefined);
+    });
+    const ac = new AbortController();
+    const t0 = performance.now();
+    expect(await resolveTilesetUrl(ds, { fetchImpl: f, timeoutMs: 60, signal: ac.signal })).toEqual({ url: REAL, via: 'index', missing: false });
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(ac.signal.aborted).toBe(false);
+    expect(signals[0].aborted).toBe(true);
+    expect((signals[0].reason as Error).name).toBe('TimeoutError');
+    expect(PLATEAU_TIMEOUTS.latest).toBe(8000);
   });
 });

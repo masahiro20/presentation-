@@ -436,8 +436,8 @@ export interface NeighborBuilding {
   plateau?: PlateauAttrs;
 }
 
-/** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */
-export async function fetchGsiBuildings(lat: number, lon: number, radius = 120): Promise<NeighborBuilding[]> {
+/** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得。中止（opts.signal）は signal.reason を投げる（失敗には数えない） */
+export async function fetchGsiBuildings(lat: number, lon: number, radius = 120, opts: { signal?: AbortSignal } = {}): Promise<NeighborBuilding[]> {
   const z = 16;
   const { mLat, mLon } = metersPerDegree(lat);
   const t0 = lonLatToTile(lon - radius / mLon, lat + radius / mLat, z);
@@ -450,13 +450,15 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
       tiles++;
       let layers: ReturnType<typeof decodeMvt>;
       try {
-        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
+        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`, { signal: opts.signal });
         if (!res.ok) {
           if (res.status !== 404) failed++;
           continue;
         }
         layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
-      } catch {
+      } catch (e) {
+        // 中止は失敗に数えず、そのまま投げる（呼び出し側の signal.reason）
+        if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? e;
         failed++;
         continue;
       }
@@ -492,13 +494,14 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
   return dedupe(out);
 }
 
-/** OpenStreetMap（Overpass API）から建物を取得。高さ・階数タグがあれば利用 */
-export async function fetchOsmBuildings(lat: number, lon: number, radius = 120): Promise<NeighborBuilding[]> {
+/** OpenStreetMap（Overpass API）から建物を取得。高さ・階数タグがあれば利用。中止（opts.signal）は fetch の AbortError */
+export async function fetchOsmBuildings(lat: number, lon: number, radius = 120, opts: { signal?: AbortSignal } = {}): Promise<NeighborBuilding[]> {
   const q = `[out:json][timeout:25];way["building"](around:${radius},${lat},${lon});out geom tags;`;
   const res = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'data=' + encodeURIComponent(q),
+    signal: opts.signal,
   });
   if (!res.ok) throw new Error(`OpenStreetMap の取得に失敗しました (${res.status})`);
   const js = (await res.json()) as { elements: { geometry?: { lat: number; lon: number }[]; tags?: Record<string, string> }[] };

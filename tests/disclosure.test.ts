@@ -92,6 +92,8 @@ describe('plateauShapeOf / plateauShapeCounts: 屋根形状（LOD2 以上）と�
 });
 
 describe('出典の文（データセットから）', () => {
+  beforeEach(resetStudy);
+
   it('タグ・3D 画面の出典行・出典一覧・共通の開示文', () => {
     expect(plateauSourceTag([SETAGAYA])).toBe('PLATEAU 2025・世田谷区・実測');
     expect(plateauSourceTag([MORIYAMA, SETAGAYA])).toBe('PLATEAU 2022／2025・守山区／世田谷区・実測');
@@ -105,6 +107,25 @@ describe('出典の文（データセットから）', () => {
       '周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（守山区・2022年度・LOD1）。LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。年度以降の新築・解体は反映されていない場合があります。',
     );
     expect(plateauDisclosureText([])).toMatch(/^周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル。LOD1 の建物は箱形/);
+  });
+
+  it('共通の開示文の LOD1 の但し書きは建物単位: データセットが LOD2 でも _lod=1 の建物が 1 棟でもあれば出す（東京 23 区 2025 年版）。全棟が屋根形状なら出ない。属性の無い旧データは出す', () => {
+    const box = nb('b', square(0, 0, 5), { source: 'plateau', heightKind: 'measured', plateau: attrs({ lod: 1 }) });
+    const roof = nb('r', square(10, 0, 5), { source: 'plateau', heightKind: 'measured', plateau: attrs({ lod: 2 }), mesh: mesh(4) });
+    const legacy = nb('l', square(20, 0, 5), { source: 'plateau', heightKind: 'measured' });
+    const LOD1 = 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。';
+    expect(plateauDisclosureText([SETAGAYA], [roof, box, nb('g', square(0, 20, 5))])).toContain(LOD1);
+    expect(plateauDisclosureText([SETAGAYA], [roof])).not.toContain(LOD1);
+    expect(plateauDisclosureText([SETAGAYA], [roof, legacy])).toContain(LOD1);
+    // 一覧は既定で解析に入れた建物（計算から除外した箱形は数えない）
+    study.neighbors = [roof, { ...box, hidden: true, hideMode: 'exclude', hideReason: 'demolish' }];
+    expect(plateauDisclosureText([SETAGAYA])).not.toContain(LOD1);
+    study.neighbors = [roof, box];
+    expect(plateauDisclosureText([SETAGAYA])).toContain(LOD1);
+    // レポートの前提・注意にも同じ規則で出る（LOD2 のデータセットだけでも _lod=1 の建物があれば）
+    study.neighborSources = ['plateau'];
+    study.env.plateau = { datasets: [SETAGAYA], indexGenerated: '2026-10-10' };
+    expect(buildReportHtml()).toContain(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。${LOD1}`);
   });
 
   it('sourcesLine: 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）401 棟・国土地理院（推定）6 棟」。想定の家は数えない', () => {

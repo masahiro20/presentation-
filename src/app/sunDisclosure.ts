@@ -39,9 +39,33 @@ export function plateauYearLod(a: Pick<PlateauAttrs, 'year' | 'lod' | 'datasetLo
 }
 
 /**
+ * PLATEAU の建物が箱形（LOD1。天端は点群の中央値）か。建物の _lod、無ければデータセットの LOD で判定する。
+ * 東京 23 区の 2025 年版のようにデータセットは LOD2 でも住宅はほぼ全棟 _lod=1 の箱なので、データセットの LOD では判定しない
+ */
+export function isPlateauBox(a: Pick<PlateauAttrs, 'lod' | 'datasetLod'>): boolean {
+  return !((a.lod ?? a.datasetLod) >= 2);
+}
+
+/** PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown） */
+export function plateauShapeCounts(list: Pick<NeighborBuilding, 'source' | 'plateau'>[]): { box: number; roof: number; unknown: number } {
+  const c = { box: 0, roof: 0, unknown: 0 };
+  for (const b of list) {
+    if (b.source !== 'plateau') continue;
+    if (!b.plateau) c.unknown++;
+    else if (isPlateauBox(b.plateau)) c.box++;
+    else c.roof++;
+  }
+  return c;
+}
+
+/** LOD1（箱形）の建物があるときの但し書き（共通の開示文の 2 文目） */
+export const LOD1_BOX_NOTE = 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。';
+
+/**
  * 周辺建物の出典の行（影・解析に入れた建物。想定の家は除く）:
- * 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟・国土地理院（推定）3 棟」（PLATEAU の括弧はデータセット = 市区・年度・LOD。区境で 2 つなら「／」）。
- * PLATEAU の建物があれば 2 行目に共通の開示文（形状・高さの根拠、LOD1 の天端、年度以降の新築・解体）。建物が無ければ []
+ * 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟（箱形 36 棟・屋根形状あり 2 棟）・国土地理院（推定）3 棟」
+ * （PLATEAU の括弧はデータセット = 市区・年度・LOD。区境で 2 つなら「／」。棟数の後ろに建物単位の LOD の内訳: データセットが LOD2 でも建物は箱形のことが多い）。
+ * PLATEAU の建物があれば 2 行目に共通の開示文（形状・高さの根拠、箱形の建物が 1 棟でもあれば LOD1 の天端の但し書き、年度以降の新築・解体）。建物が無ければ []
  */
 export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind' | 'planned' | 'plateau'>[]): string[] {
   const order: NeighborBuilding['source'][] = ['plateau', 'gsi', 'osm', 'manual'];
@@ -53,25 +77,31 @@ export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind'
     if (!datasets.has(a.muniCd)) datasets.set(a.muniCd, { where: a.ward ?? a.city, year: a.year, lod: a.datasetLod });
   }
   const ds = [...datasets.values()];
+  const shapes = plateauShapeCounts(own);
   const parts = order
     .map((source) => ({ source, items: own.filter((b) => b.source === source) }))
     .filter((c) => c.items.length)
     .map((c) => {
       let name: string;
-      if (c.source === 'plateau') name = ds.length ? `PLATEAU（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : NEIGHBOR_SOURCE_LABEL.plateau;
-      else {
+      let detail = '';
+      if (c.source === 'plateau') {
+        name = ds.length ? `PLATEAU（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : NEIGHBOR_SOURCE_LABEL.plateau;
+        // 建物単位の LOD の内訳（属性のある建物があるときだけ）
+        if (shapes.box + shapes.roof > 0) detail = `（箱形 ${shapes.box} 棟・屋根形状あり ${shapes.roof} 棟）`;
+      } else {
         const base = c.source === 'manual' ? '手入力' : NEIGHBOR_SOURCE_LABEL[c.source];
         name = c.items.some((b) => heightKindOf(b) === 'estimated') ? `${base}（推定）` : base;
       }
       // 括弧で終わる名前は詰める（「国土地理院（推定）3 棟」）、そうでなければ空白を入れる（「手入力 1 棟」）
-      return `${name}${name.endsWith('）') ? '' : ' '}${c.items.length} 棟`;
+      return `${name}${name.endsWith('）') ? '' : ' '}${c.items.length} 棟${detail}`;
     });
   if (!parts.length) return [];
   const out = [`周辺建物の出典: ${parts.join('・')}`];
   if (own.some((b) => b.source === 'plateau')) {
     const where = ds.length ? `（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
-    const lod1 = !ds.length || ds.some((d) => d.lod <= 1);
-    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。' : ''}年度以降の新築・解体は反映されていない場合があります。`);
+    // 但し書きは建物単位: 箱形（_lod=1）の建物が 1 棟でもあれば出す。属性の無い旧データは形が分からないので出す（安全側）
+    const lod1 = shapes.box > 0 || shapes.unknown > 0;
+    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? LOD1_BOX_NOTE : ''}年度以降の新築・解体は反映されていない場合があります。`);
   }
   return out;
 }

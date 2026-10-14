@@ -332,7 +332,7 @@ describe('PLATEAU の実形状の建物（mesh）を混ぜる: 隠す・影だ�
     expect(effectiveNeighbors().find((n) => n.id === 'auto1')!.height).toBe(11);
   });
 
-  it('rekeyOverridesByFootprint: 旧 id（旧 MVT・前年度の gml_id）の隠す／高さの上書きが同じ足元の新 id に移る', () => {
+  it('rekeyOverridesByFootprint: 旧 id（旧形式の plateau:緯度:経度:面積・前年度の gml_id）の隠す／高さの上書きが同じ足元の新 id に移る', () => {
     const prev = [{ id: 'plateau:35.60010:139.60044:48', ring: meshNb().ring }, nb('auto1', square(20, 0, 8))];
     const next = study.neighbors.filter((n) => n.source !== 'manual');
     const out = rekeyOverridesByFootprint(prev, next, { 'plateau:35.60010:139.60044:48': { hidden: true, hideMode: 'view', hideReason: 'other' }, auto1: { height: 9 } });

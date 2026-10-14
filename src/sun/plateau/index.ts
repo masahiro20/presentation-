@@ -12,7 +12,7 @@ export { decodeTileGlb } from './glb';
 export type { SplitOptions, SplitMeta, BuildingRecord, SplitResult } from './buildings';
 export { readBuildingRecords, splitBuildings, footprintFromBottomFaces, sortRoofFirst, compareWithRecord } from './buildings';
 export type { PlateauIndexSet, PlateauArea, PlateauIndex, NetOpts } from './catalog';
-export { REVERSE_GEOCODER_URL, PLATEAU_LATEST_URL, loadPlateauIndex, muniCodesAround, muniCodesByRegion, pickDataset, resolveTilesetUrl } from './catalog';
+export { REVERSE_GEOCODER_URL, PLATEAU_LATEST_URL, PLATEAU_TIMEOUTS, deadlineSignal, isTimeoutError, timeoutReason, loadPlateauIndex, muniCodesAround, muniCodesByRegion, pickDataset, resolveTilesetUrl } from './catalog';
 export type { PlateauFetchOptions, PlateauFetchResult } from './fetch';
 export { fetchPlateauBuildings, fetchCached, clearPlateauCaches, plateauDatasetLabel } from './fetch';
 export { quantizeMesh, dequantizeMesh, quantizedBytes, QUANTIZE_LIMIT_M } from './meshCodec';

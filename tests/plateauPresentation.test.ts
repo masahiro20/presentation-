@@ -19,12 +19,23 @@ const fake = vi.hoisted(() => ({
   osm: [] as { ll: { lat: number; lon: number }[]; height: number }[],
   gsiFail: false,
   osmFail: false,
+  /** 応答が返らない（無応答）を再現する。signal の中止では reject する（本物の fetch と同じ） */
+  hang: { gsi: false, osm: false },
   plateau: null as PlateauFetchResult | null,
   calls: [] as { lat: number; lon: number; radius: number }[],
+  /** fetchPlateauBuildings の呼び出し n 番目（0 始まり）が返るまでの遅延 ms（同時実行の順序を作る） */
+  delays: [] as number[],
 }));
+/** 中止で reject する「返らない」Promise */
+const never = <T,>(signal?: AbortSignal) =>
+  new Promise<T>((_, reject) => {
+    if (signal?.aborted) reject(signal.reason ?? new Error('中止'));
+    signal?.addEventListener('abort', () => reject(signal.reason ?? new Error('中止')), { once: true });
+  });
 vi.mock('../src/sun/geo', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/sun/geo')>();
-  const make = (src: 'gsi' | 'osm') => async (lat: number, lon: number): Promise<NeighborBuilding[]> => {
+  const make = (src: 'gsi' | 'osm') => async (lat: number, lon: number, _radius?: number, opts?: { signal?: AbortSignal }): Promise<NeighborBuilding[]> => {
+    if (fake.hang[src]) return never<NeighborBuilding[]>(opts?.signal);
     if (src === 'gsi' ? fake.gsiFail : fake.osmFail) throw new Error(`${src} に接続できません`);
     return fake[src].map((f) => ({ ring: f.ll.map((p) => mod.toLocal(p.lat, p.lon, lat, lon)), height: f.height, source: src }));
   };
@@ -33,8 +44,14 @@ vi.mock('../src/sun/geo', async (importOriginal) => {
 vi.mock('../src/sun/plateau/fetch', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/sun/plateau/fetch')>();
   const fetchPlateauBuildings = vi.fn(async (lat: number, lon: number, radius: number, opts?: { signal?: AbortSignal; onProgress?: (p: PlateauProgress) => void }): Promise<PlateauFetchResult> => {
+    const i = fake.calls.length;
     fake.calls.push({ lat, lon, radius });
     if (opts?.signal?.aborted) throw opts.signal.reason ?? new Error('中止');
+    const delay = fake.delays[i] ?? 0;
+    if (delay > 0) {
+      // 遅延中の中止も本物と同じく signal.reason で reject
+      await Promise.race([new Promise((r) => setTimeout(r, delay)), never(opts?.signal)]);
+    }
     opts?.onProgress?.({ stage: 'tiles', message: '建物タイル 1/2（1.0 MB）', done: 1, total: 2, bytes: 1e6, totalBytes: null, ratio: 0.5 });
     if (!fake.plateau) throw new Error('fake.plateau が未設定');
     return fake.plateau;
@@ -42,11 +59,12 @@ vi.mock('../src/sun/plateau/fetch', async (importOriginal) => {
   return { ...mod, fetchPlateauBuildings };
 });
 
-import { NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, neighborKey, plateauCoveredNotes, plateauProgressText, plateauToNeighborBuilding, ringCentroid, roofShapeCount } from '../src/sun/context';
+import { NEIGHBOR_FILL_TIMEOUT_MS, NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, isAbortError, neighborKey, plateauCoveredNotes, plateauProgressText, plateauToNeighborBuilding, ringCentroid, roofShapeCount, supersededError, waitWithLimit } from '../src/sun/context';
 import { buildOccluder } from '../src/sun/analysis';
-import { collectDisclosure, disclosureLines, excludedTableRows, heightKindOf, heightKindSuffix, sourceLines } from '../src/app/sunDisclosure';
-import { NEIGHBORS_HINT, NEIGHBOR_SOURCE_BUTTON, NO_NEIGHBORS_MSG, neighborSourceLine, neighborsLoadedToast } from '../src/app/steps/sunStep';
+import { LOD1_BOX_NOTE, collectDisclosure, disclosureLines, excludedTableRows, heightKindOf, heightKindSuffix, isPlateauBox, plateauShapeCounts, sourceLines } from '../src/app/sunDisclosure';
+import { NEIGHBORS_HINT, NEIGHBOR_SOURCE_BUTTON, NO_NEIGHBORS_MSG, neighborSourceLine, neighborsLoadedToast, reloadSurroundings, type SurroundingsDeps } from '../src/app/steps/sunStep';
 import { fetchPlateauBuildings } from '../src/sun/plateau/fetch';
+import { fetchGsiBuildings, fetchOsmBuildings } from '../src/sun/geo';
 import { plateauBox } from './helpers/plateauBox';
 import type { Viewer } from '../src/scene/viewer';
 
@@ -105,8 +123,10 @@ const bboxOf = (m: THREE.Mesh) => {
 beforeEach(() => {
   fake.plateau = covered();
   fake.calls = [];
+  fake.delays = [];
   fake.gsiFail = false;
   fake.osmFail = false;
+  fake.hang = { gsi: false, osm: false };
   // 国土地理院: A と同じ足元（PLATEAU にあるので補完されない）・離れた建物（補完される）・敷地の中（取り込まない）
   fake.gsi = [
     { ll: rectLL(15, -19, 10, 8), height: 6.8 },
@@ -278,6 +298,179 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
   });
 });
 
+describe('SunContext.loadNeighbors: 同時実行（微調整の連打）は後に始めた方が勝つ', () => {
+  it('先に始めた（古いピン）取得が後から終わっても、一覧・neighborsOrigin・lastLoad は後に始めた方（今のピン）。古い方は AbortError で抜ける', async () => {
+    // 1 回目（ピン原点）は 60 ms、2 回目（北へ 2 m）は 5 ms で終わる = 古い方が後に終わる
+    fake.delays = [60, 5];
+    const site = { ...SITE };
+    const sc = new SunContext(fakeViewer(), site);
+    const p1 = sc.loadNeighbors('plateau');
+    sc.state.site = { ...site, offsetN: 2 };
+    const p2 = sc.loadNeighbors('plateau');
+    const [r1, r2] = await Promise.allSettled([p1, p2]);
+    expect(r1.status).toBe('rejected');
+    expect(isAbortError((r1 as PromiseRejectedResult).reason)).toBe(true);
+    expect((r1 as PromiseRejectedResult).reason.message).toBe('新しい取得で置き換えました');
+    expect(r2.status).toBe('fulfilled');
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1].lat).toBeCloseTo(PIN.lat + 2 / mLat, 9);
+    // ring は今のピン（北へ 2 m）基準: A の重心 n = −15 − 2 = −17
+    const a = sc.state.neighbors.find((b) => b.plateau?.gmlId === 'bldg_A')!;
+    expect(ringCentroid(a.ring).n).toBeCloseTo(-17, 2);
+    const origin = (sc as unknown as { neighborsOrigin: LL }).neighborsOrigin;
+    expect(origin.lat).toBeCloseTo(PIN.lat + 2 / mLat, 12);
+    expect(sc.lastLoad).toBe((r2 as PromiseFulfilledResult<unknown>).value);
+    expect(sc.lastSource).toBe('plateau');
+    // 一覧は 1 回分だけ（古い結果が混ざらない）
+    expect(sc.state.neighbors.filter((b) => b.source !== 'manual')).toHaveLength(3);
+  });
+
+  it('後の取得が失敗しても、古い取得の結果で一覧を上書きしない（一覧は前の状態のまま）', async () => {
+    const site = { ...SITE };
+    const sc = new SunContext(fakeViewer(), site);
+    await sc.loadNeighbors('gsi');
+    const before = sc.state.neighbors;
+    fake.delays = [40, 0];
+    const p1 = sc.loadNeighbors('plateau');
+    // 2 回目はすべて失敗
+    fake.plateau = { status: 'error', stage: 'tileset', message: 'x' };
+    fake.gsiFail = true;
+    fake.osmFail = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const p2 = sc.loadNeighbors('plateau');
+    const [r1, r2] = await Promise.allSettled([p1, p2]);
+    warn.mockRestore();
+    expect(r1.status).toBe('rejected');
+    expect(r2.status).toBe('rejected');
+    expect(sc.state.neighbors).toBe(before);
+  });
+
+  it('isAbortError / supersededError: 進捗モーダルの中止（DOMException AbortError）と置き換えを区別できる', () => {
+    expect(isAbortError(supersededError())).toBe(true);
+    expect(supersededError().name).toBe('AbortError');
+    const ac = new AbortController();
+    ac.abort();
+    expect(isAbortError(ac.signal.reason)).toBe(true);
+    expect(isAbortError(new Error('やめた'))).toBe(false);
+    expect(isAbortError('x')).toBe(false);
+  });
+});
+
+describe('SunContext.loadNeighbors: 国土地理院の補完・退路の待ちに上限と中止', () => {
+  it('PLATEAU が covered で国土地理院が無応答でも、上限（fillTimeoutMs）で打ち切って PLATEAU だけで返す。既定の上限は 10 s', async () => {
+    fake.hang.gsi = true;
+    const sc = new SunContext(fakeViewer(), { ...SITE });
+    const t0 = Date.now();
+    const r = await sc.loadNeighbors('plateau', { fillTimeoutMs: 30 });
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(r.used).toEqual(['plateau']);
+    expect(r.count).toBe(2);
+    expect(r.notes).toEqual([]);
+    expect(NEIGHBOR_FILL_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it('国土地理院の補完を待っている間の中止は signal.reason を投げ、一覧を変えない。fetchGsiBuildings / fetchOsmBuildings に signal を渡す', async () => {
+    const sc = new SunContext(fakeViewer(), { ...SITE });
+    await sc.loadNeighbors('gsi');
+    const before = sc.state.neighbors;
+    vi.mocked(fetchGsiBuildings).mockClear();
+    fake.hang.gsi = true;
+    const ac = new AbortController();
+    const p = sc.loadNeighbors('plateau', { signal: ac.signal });
+    // PLATEAU（即応）は終わり、国土地理院の補完を待っている
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort(new Error('やめた'));
+    await expect(p).rejects.toThrow('やめた');
+    expect(sc.state.neighbors).toBe(before);
+    expect(fetchGsiBuildings).toHaveBeenCalledWith(PIN.lat, PIN.lon, 110, { signal: ac.signal });
+    // 退路（PLATEAU 未整備 → 国土地理院が空 → OSM）でも signal が下層まで届く
+    fake.hang.gsi = false;
+    fake.gsi = [];
+    fake.plateau = { status: 'none', reason: 'outside', muniCds: ['11201'] };
+    const ac2 = new AbortController();
+    const sc2 = new SunContext(fakeViewer(), { ...SITE });
+    await sc2.loadNeighbors('plateau', { signal: ac2.signal });
+    expect(fetchOsmBuildings).toHaveBeenLastCalledWith(PIN.lat, PIN.lon, 110, { signal: ac2.signal });
+  });
+
+  it('退路（国土地理院 → OSM）も同じ上限: 国土地理院が無応答なら OSM へ。両方無応答なら時間切れの失敗', async () => {
+    fake.plateau = { status: 'none', reason: 'outside', muniCds: ['11201'] };
+    fake.hang.gsi = true;
+    let sc = new SunContext(fakeViewer(), { ...SITE });
+    const r = await sc.loadNeighbors('plateau', { fillTimeoutMs: 30 });
+    expect(r.used).toEqual(['osm']);
+    expect(r.notes).toEqual([NOTE_PLATEAU_MISSING]);
+    fake.hang.osm = true;
+    sc = new SunContext(fakeViewer(), { ...SITE });
+    await expect(sc.loadNeighbors('gsi', { fillTimeoutMs: 30 })).rejects.toThrow(/応答がありません（時間切れ）/);
+    expect(sc.state.neighbors).toEqual([]);
+  });
+
+  it('waitWithLimit: 値・時間切れ・中止・失敗', async () => {
+    expect(await waitWithLimit(Promise.resolve(1), 50, undefined, () => 0)).toBe(1);
+    expect(await waitWithLimit(new Promise<number>(() => {}), 10, undefined, () => 0)).toBe(0);
+    await expect(
+      waitWithLimit(new Promise<number>(() => {}), 10, undefined, () => {
+        throw new Error('時間切れ');
+      }),
+    ).rejects.toThrow('時間切れ');
+    await expect(waitWithLimit(Promise.reject(new Error('落ちた')), 50, undefined, () => 0)).rejects.toThrow('落ちた');
+    const ac = new AbortController();
+    const p = waitWithLimit(new Promise<number>(() => {}), 1000, ac.signal, () => 0);
+    ac.abort(new Error('やめた'));
+    await expect(p).rejects.toThrow('やめた');
+    const done = new AbortController();
+    done.abort(new Error('先に中止'));
+    await expect(waitWithLimit(Promise.resolve(1), 50, done.signal, () => 0)).rejects.toThrow('先に中止');
+  });
+});
+
+describe('sunStep.reloadSurroundings: 建設地を変えた後の読み直しは周辺建物の取得を 1 回だけ', () => {
+  const deps = (aerialLoaded: boolean, hasAuto: boolean) => {
+    const log: string[] = [];
+    const d: SurroundingsDeps = {
+      aerialLoaded: () => aerialLoaded,
+      hasAutoNeighbors: () => hasAuto,
+      lastSource: () => 'plateau',
+      rebuild: () => log.push('rebuild'),
+      loadAerial: async () => {
+        log.push('aerial');
+        aerialLoaded = true;
+      },
+      loadNeighbors: async (src) => {
+        log.push(`neighbors:${src}`);
+        hasAuto = true;
+      },
+    };
+    return { d, log };
+  };
+  it("'newSite'（住所検索・座標の指定）: 周辺建物が既にあっても取得は 1 回（航空写真は無ければ読み込み、あれば取り直し）", async () => {
+    let t = deps(true, true);
+    await reloadSurroundings(t.d, 'newSite');
+    expect(t.log).toEqual(['rebuild', 'aerial', 'neighbors:plateau']);
+    t = deps(false, false);
+    await reloadSurroundings(t.d, 'newSite');
+    expect(t.log).toEqual(['rebuild', 'aerial', 'neighbors:plateau']);
+  });
+  it("'adjust'（微調整・敷地をクリック・2 点合わせ）: 自動取得の周辺建物があるときだけ取り直し、航空写真は読み込み済みのときだけ", async () => {
+    let t = deps(true, true);
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild', 'aerial', 'neighbors:plateau']);
+    t = deps(false, false);
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild']);
+    t = deps(true, false);
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild', 'aerial']);
+  });
+  it('最後に選んだ取得元で取り直す', async () => {
+    const t = deps(false, true);
+    t.d.lastSource = () => 'gsi';
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild', 'neighbors:gsi']);
+  });
+});
+
 describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方・高さ', () => {
   it('mesh 建物は遮蔽物（userData.neighbor）に入る: 三角形 12・material 2・groups 2。真北 0° なら bbox x 15..25・z 11..19・y 0..7', async () => {
     const v = fakeViewer();
@@ -425,9 +618,10 @@ describe('開示・文言', () => {
     await sc.loadNeighbors('plateau');
     let d = collectDisclosure(sc);
     expect(d.included).toBe(3);
+    // データセットは LOD2 でも A は _lod=1 の箱形 → 出典行に建物単位の内訳、開示文に LOD1 の但し書き（23 区 2025 年版は住宅がほぼ全棟 _lod=1）
     expect(d.sources).toEqual([
-      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟・国土地理院（推定）1 棟',
-      '周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。年度以降の新築・解体は反映されていない場合があります。',
+      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟（箱形 1 棟・屋根形状あり 1 棟）・国土地理院（推定）1 棟',
+      `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。${LOD1_BOX_NOTE}年度以降の新築・解体は反映されていない場合があります。`,
     ]);
     for (const t of ['rooms', 'heatmap', 'deck', 'diagram'] as const) {
       const lines = disclosureLines(d, t);
@@ -435,15 +629,35 @@ describe('開示・文言', () => {
       expect(lines[2]).toBe(d.sources![1]);
       expect(lines[3]).toBe('計算から除外した周辺建物 なし');
     }
-    // 除外した建物は出典の行に数えない。LOD1 のデータセットなら箱形の但し書き
+    // 除外した建物は出典の行に数えない（内訳も残った建物で数える）。箱形の A を除くと屋根形状の B だけ → 但し書きは消える
     sc.setHidden(['plateau:bldg_A'], true, { mode: 'exclude', reason: 'demolish' });
     d = collectDisclosure(sc);
-    expect(d.sources![0]).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟・国土地理院（推定）1 棟');
-    const lod1 = sourceLines([{ source: 'plateau', heightKind: 'measured', plateau: { ...boxA().attrs, datasetLod: 1 } }]);
-    expect(lod1).toEqual([
-      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD1）1 棟',
-      '周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD1）。LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。年度以降の新築・解体は反映されていない場合があります。',
+    expect(d.sources).toEqual([
+      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟（箱形 0 棟・屋根形状あり 1 棟）・国土地理院（推定）1 棟',
+      '周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。年度以降の新築・解体は反映されていない場合があります。',
     ]);
+    // LOD1 のデータセット（建物の _lod 無し）でも但し書き
+    const lod1 = sourceLines([{ source: 'plateau', heightKind: 'measured', plateau: { ...boxA().attrs, lod: null, datasetLod: 1 } }]);
+    expect(lod1).toEqual([
+      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD1）1 棟（箱形 1 棟・屋根形状あり 0 棟）',
+      `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD1）。${LOD1_BOX_NOTE}年度以降の新築・解体は反映されていない場合があります。`,
+    ]);
+    // 23 区 2025 年版の形: データセット LOD2・全棟 _lod=1 → 但し書きあり、内訳は箱形だけ
+    const tokyo = sourceLines([
+      { source: 'plateau', plateau: boxA().attrs },
+      { source: 'plateau', plateau: { ...boxB().attrs, lod: 1 } },
+    ]);
+    expect(tokyo[0]).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟（箱形 2 棟・屋根形状あり 0 棟）');
+    expect(tokyo[1]).toContain(LOD1_BOX_NOTE);
+    // 属性の無い旧データ（形が分からない）は安全側で但し書きを出し、内訳は添えない
+    const legacy = sourceLines([{ source: 'plateau', heightKind: 'measured' }]);
+    expect(legacy[0]).toBe('周辺建物の出典: PLATEAU（国土交通省）1 棟');
+    expect(legacy[1]).toContain(LOD1_BOX_NOTE);
+    expect(isPlateauBox({ lod: 1, datasetLod: 2 })).toBe(true);
+    expect(isPlateauBox({ lod: 2, datasetLod: 1 })).toBe(false);
+    expect(isPlateauBox({ lod: null, datasetLod: 1 })).toBe(true);
+    expect(isPlateauBox({ lod: null, datasetLod: 2 })).toBe(false);
+    expect(plateauShapeCounts([{ source: 'plateau', plateau: boxA().attrs }, { source: 'plateau', plateau: boxB().attrs }, { source: 'plateau' }, { source: 'gsi' }])).toEqual({ box: 1, roof: 1, unknown: 1 });
     // 区境で 2 データセット・手入力の隣家・想定の家は出典に数えない
     const two = sourceLines([
       { source: 'plateau', plateau: boxA().attrs },
@@ -452,7 +666,7 @@ describe('開示・文言', () => {
       { source: 'manual', planned: { id: 'p' } as never },
       { source: 'osm', heightKind: 'measured' },
     ]);
-    expect(two[0]).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2／大田区・2023年度・LOD1）2 棟・OpenStreetMap 1 棟・手入力 1 棟');
+    expect(two[0]).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2／大田区・2023年度・LOD1）2 棟（箱形 1 棟・屋根形状あり 1 棟）・OpenStreetMap 1 棟・手入力 1 棟');
     expect(sourceLines([])).toEqual([]);
     expect(collectDisclosure(null).sources).toBeUndefined();
   });

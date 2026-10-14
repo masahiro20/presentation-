@@ -396,9 +396,8 @@ export async function fetchNeighbors(
     const fill = fillGapsWithGsi(plateau, gsi);
     list = [...plateau, ...fill];
     sourcesUsed.push('plateau');
-    if (fill.length) sourcesUsed.push('gsi');
-    // 注記（plateauNotes）は距離ルールの後に先頭へ入れる: 国土地理院のタイルは半径より広い範囲（z16 のタイル全体）を覆うので、
-    // 補った棟数は実際に一覧へ残った棟数で書く（タイル全体の数だと実態の 10 倍以上になる）
+    // 'gsi' を sourcesUsed に足すか・注記（plateauNotes）の棟数は距離ルールの後に kept で決める: 国土地理院のタイルは半径より広い範囲
+    // （z16 のタイル全体）を覆うので、補った棟数はタイル全体の数だと実態の 10 倍以上になり、補完が全部落ちても出典に「国土地理院」が出てしまう
     if (gsiFailed) notes.push('国土地理院の地図データは取得できませんでした。');
     plateauInfo = { datasets: covered.datasets, indexGenerated: await plateauIndexGenerated(opts.plateau, signal), lodCounts: covered.lodCounts };
   } else if (gsiOk) {
@@ -445,7 +444,11 @@ export async function fetchNeighbors(
   }
   // 影の到達判定は PLATEAU の実測の最高高さも見る（LOD1 の形状の高さは点群の中央値で低め）
   const kept = applyDistanceRule(list, NEIGHBOR_NEAR_M, reachHeight);
-  if (covered) notes.unshift(...plateauNotes(covered, kept.filter((n) => n.source === 'gsi').length));
+  if (covered) {
+    // 出典の 'gsi' と注記の棟数（PLATEAU の棟数・屋根形状あり／箱形・補った棟数）はどちらも一覧に残った建物で数える（棟数行・脚注・レポートと一致）
+    if (kept.some((n) => n.source === 'gsi')) sourcesUsed.push('gsi');
+    notes.unshift(...plateauNotes(covered, kept));
+  }
   if (!kept.length && !notes.length) notes.push('周辺に建物データが見つかりませんでした。必要なら「隣家を追加」で手動で置いてください。');
 
   const out: FetchNeighborsResult = { list: kept, sourcesUsed, notes };

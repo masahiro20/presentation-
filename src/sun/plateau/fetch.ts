@@ -3,8 +3,11 @@
  *
  * fetchPlateauBuildings の段階（PlateauStage。進捗もこの順に出る）:
  *  1. geocode: muniCodesAround（中心＋±(radius+marginM) の 4 隅）。全滅 → 索引に region があれば muniCodesByRegion、それも無ければ error
- *  2. index:   loadPlateauIndex → pickDataset。索引に無い市区は missingMuniCds に。全部無ければ none/outside
- *  3. tileset: データセットごとに resolveTilesetUrl（-latest → 索引 URL）→ fetchCached → parseTileset。missing は対象外側に、
+ *  2. index:   loadPlateauIndex → pickDataset。索引に無い市区は missingMuniCds に。1 件も索引に無ければ（市区町村コードの改編:
+ *              浜松市 2024 年の区再編で逆ジオコーダは新コード 22138 を返すが索引は旧 22131〜22137）索引の region で市区を引き直し、
+ *              それでも無ければ none/outside。region で引けたときは逆ジオコーダのコードを missingMuniCds に入れない（未整備ではなく改編）
+ *  3. tileset: データセットごとに resolveTilesetUrl（-latest → 索引 URL）→ fetchCached → parseTileset。-latest に無い（missing）データセットは
+ *              索引の tileset.json を試し、それが 4xx なら対象外側（missingMuniCds）に、取れるなら index 経由で続ける（浜松市の旧 7 区）。
  *              取得失敗はそのデータセットだけ落とす（全滅で error/tileset）。葉の選択（selectContentTiles）もここで行い、
  *              複数データセットの葉を合わせて近い順に並べ、maxTiles を超えた分は遠い方から捨てる（truncated）。
  *              葉を選ぶ箱は半径そのもの（radiusM）で、region までの距離が radiusM を超える葉は読まない: keep（棟の矩形までの距離 ≤ radiusM）
@@ -22,19 +25,25 @@
  * 分割は棟ごとに増やす: 前回 keep に入らなかった棟だけを次回 splitBuildings に掛ける（keep は半径に依るため）。
  * 生バイトは fetchCached（Cache API 'plateau-tiles-v1' 30 日 ＋ メモリ LRU 80 MB）。200 でも中身（.b3dm の magic・.json の構文）を検証してから書く。
  * 中止は signal.reason を throw、それ以外の失敗は status に畳む。
+ * 期限（第 2 回レビュー）: 段ごとの期限（PLATEAU_TIMEOUTS。opts.timeouts で上書き）を呼び出し側の signal と合成して fetchImpl に渡す
+ * （geocode/index/-latest は catalog.ts の NetOpts.timeoutMs、tileset/タイルは linkedController のタイマー）。期限切れは中止ではなく
+ * 失敗: rethrowIfAborted は呼び出し側の signal だけ見るので、逆ジオコーダの期限切れは region 予備経路へ、tileset は error/tileset、
+ * タイルは failedTiles に落ちる（無応答のサーバで fetchPlateauBuildings が永遠に返らないことはない）
  * 仕様: scratchpad/plateau-spec.md §2.9・§4（W7 が実装）
  */
 import { degBoxAround, degBoxDistanceM } from '../geodesy';
 import { parseB3dm, peekB3dmHeader, type B3dm } from './b3dm';
 import { readBuildingRecords, splitBuildings, type BuildingRecord, type SplitMeta } from './buildings';
-import { loadPlateauIndex, muniCodesAround, muniCodesByRegion, pickDataset, resolveTilesetUrl, type NetOpts } from './catalog';
+import { PLATEAU_TIMEOUTS, loadPlateauIndex, muniCodesAround, muniCodesByRegion, pickDataset, resolveTilesetUrl, timeoutReason, type NetOpts } from './catalog';
 import { ensureDracoReady, getDracoDecoder } from './draco';
 import { decodeTileGlb } from './glb';
 import { parseTileset, selectContentTiles, type ContentTile } from './tileset';
-import type { DecodedTile, DracoDecoderLike, PlateauBuilding, PlateauDatasetInfo, PlateauProgress, PlateauStage } from './types';
+import type { DecodedTile, DracoDecoderLike, PlateauBuilding, PlateauDatasetInfo, PlateauNetStage, PlateauProgress, PlateauStage, PlateauTimeouts } from './types';
 
-export interface PlateauFetchOptions extends NetOpts {
+export interface PlateauFetchOptions extends Omit<NetOpts, 'timeoutMs'> {
   onProgress?: (p: PlateauProgress) => void;
+  /** 段ごとの期限 [ms]。省略した段は PLATEAU_TIMEOUTS（geocode 8 s・index 10 s・latest 8 s・tileset 20 s・tile 60 s）。テストでは短くする */
+  timeouts?: PlateauTimeouts;
   /** 省略時は getDracoDecoder() */
   draco?: DracoDecoderLike;
   indexUrl?: string | URL;
@@ -447,14 +456,23 @@ function withinRadius(r: BuildingRecord, lat: number, lon: number, radiusM: numb
 
 const fmtMB = (bytes: number) => (bytes / 1048576).toFixed(1);
 
-/** 親の signal に連動する AbortController（タイル 1 枚ごとの中止用） */
-function linkedController(parent?: AbortSignal): { controller: AbortController; dispose: () => void } {
+/**
+ * 親の signal に連動する AbortController（tileset.json・タイル 1 枚ごとの中止用）。timeoutMs（正の有限数）を渡すと期限で abort する
+ * （理由は timeoutReason。親の中止とは区別され、呼び出し側は rethrowIfAborted(e, 親) で失敗として扱える）。使い終わったら dispose()
+ */
+function linkedController(parent?: AbortSignal, timeoutMs?: number): { controller: AbortController; dispose: () => void } {
   const controller = new AbortController();
-  if (!parent) return { controller, dispose: () => undefined };
-  const onAbort = () => controller.abort(abortReason(parent));
-  if (parent.aborted) onAbort();
-  else parent.addEventListener('abort', onAbort, { once: true });
-  return { controller, dispose: () => parent.removeEventListener('abort', onAbort) };
+  const onAbort = () => controller.abort(abortReason(parent!));
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener('abort', onAbort, { once: true });
+  const timer = timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0 && !controller.signal.aborted ? setTimeout(() => controller.abort(timeoutReason(timeoutMs)), timeoutMs) : null;
+  return {
+    controller,
+    dispose: () => {
+      if (timer != null) clearTimeout(timer);
+      parent?.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 /** 中止は signal.reason を throw。他は status に畳む */
@@ -462,6 +480,8 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
   const o = opts ?? {};
   const signal = o.signal;
   const net: NetOpts = { fetchImpl: o.fetchImpl, signal };
+  /** 段の期限 [ms]（opts.timeouts → 既定） */
+  const timeoutOf = (s: PlateauNetStage): number => o.timeouts?.[s] ?? PLATEAU_TIMEOUTS[s];
   const nearM = o.nearM ?? DEFAULTS.nearM;
   const reachFactor = o.reachFactor ?? DEFAULTS.reachFactor;
   const reachMargin = o.reachMargin ?? DEFAULTS.reachMargin;
@@ -501,8 +521,9 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
     let muniCds: string[];
     let geocodeError: string | null = null;
     try {
-      muniCds = await muniCodesAround(lat, lon, radiusM + marginM, net);
+      muniCds = await muniCodesAround(lat, lon, radiusM + marginM, { ...net, timeoutMs: timeoutOf('geocode') });
     } catch (e) {
+      // 期限切れもここ（中止は呼び出し側の signal だけ）: region の予備経路へ
       rethrowIfAborted(e, signal);
       geocodeError = errorMessage(e);
       muniCds = [];
@@ -514,7 +535,7 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
     progress({ message: 'PLATEAU の索引を読み込んでいます', done: 0, total: 1, bytes: 0, totalBytes: null, ratio: 0.06 });
     let index;
     try {
-      index = await loadPlateauIndex({ ...net, url: o.indexUrl });
+      index = await loadPlateauIndex({ ...net, url: o.indexUrl, timeoutMs: timeoutOf('index') });
     } catch (e) {
       rethrowIfAborted(e, signal);
       // 逆ジオコーダも索引も取れない: 原因は通信（最初に失敗した段で報告）
@@ -526,14 +547,24 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
       muniCds = muniCodesByRegion(index, muniBox);
       if (muniCds.length === 0) return { status: 'error', stage: 'geocode', message: geocodeError ?? '市区町村コードが分かりません' };
     }
-    const missingMuniCds: string[] = [];
+    let missingMuniCds: string[] = [];
     const candidates: PlateauDatasetInfo[] = [];
     for (const cd of muniCds) {
       const ds = pickDataset(index, cd);
       if (ds) candidates.push(ds);
       else missingMuniCds.push(cd);
     }
-    if (candidates.length === 0) return { status: 'none', reason: 'outside', muniCds };
+    if (candidates.length === 0) {
+      // 逆ジオコーダのコードが 1 件も索引に無い: 市区町村コードの改編（浜松市 2024: 22138 ↔ 索引 22131〜22137）か本当に未整備か。
+      // 索引の region（索引生成時に -latest または tileset.json の root.region から付ける）で市区を引き直し、引けたらそれで続ける。
+      // この場合の逆ジオコーダのコードは「未整備の隣接市区」ではないので missingMuniCds には入れない
+      for (const cd of muniCodesByRegion(index, muniBox)) {
+        const ds = pickDataset(index, cd);
+        if (ds && !candidates.some((c) => c.muniCd === cd)) candidates.push(ds);
+      }
+      if (candidates.length === 0) return { status: 'none', reason: 'outside', muniCds };
+      missingMuniCds = [];
+    }
 
     // 3. tileset（解決 → 取得 → 解釈 → 葉の選択）
     stage = 'tileset';
@@ -545,15 +576,25 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
     const usable: PlateauDatasetInfo[] = [];
     await Promise.all(
       candidates.map(async (ds0) => {
+        // tileset.json の期限（-latest の期限は resolveTilesetUrl の中）。期限切れは中止ではなくそのデータセットの失敗
+        const { controller, dispose } = linkedController(signal, timeoutOf('tileset'));
         try {
-          const r = await resolveTilesetUrl(ds0, net);
-          if (r.missing) {
-            // -latest が「データセット無し」: 索引が古い。未整備側に寄せる
-            missingMuniCds.push(ds0.muniCd);
-            return;
-          }
+          const r = await resolveTilesetUrl(ds0, { ...net, timeoutMs: timeoutOf('latest') });
           const ds: PlateauDatasetInfo = r.url === ds0.tilesetUrl ? ds0 : { ...ds0, tilesetUrl: r.url };
-          const buf = await fetchCached(ds.tilesetUrl, net);
+          let buf: ArrayBuffer;
+          try {
+            buf = await fetchCached(ds.tilesetUrl, { fetchImpl: o.fetchImpl, signal: controller.signal });
+          } catch (e) {
+            rethrowIfAborted(e, signal);
+            // -latest が「データセット無し」（r.missing。索引の URL で試している）で、その索引の URL も 4xx: データセットが消えた → 未整備側に寄せる。
+            // 索引の URL が取れる限りは index 経由で続ける（浜松市の旧 7 区: -latest には無いが tileset.json の配信は続いている）。
+            // 通信エラー・期限切れ・5xx はデータセットの失敗（tilesetErrors → 全滅なら error/tileset）
+            if (r.missing && /HTTP 4\d\d/.test(errorMessage(e))) {
+              missingMuniCds.push(ds0.muniCd);
+              return;
+            }
+            throw e;
+          }
           const json: unknown = JSON.parse(new TextDecoder().decode(new Uint8Array(buf)));
           const ts = parseTileset(json, ds.tilesetUrl);
           const sel = selectContentTiles(ts, selectBox, { lat, lon, nearM, reachFactor, reachMargin, maxTiles });
@@ -564,6 +605,8 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
         } catch (e) {
           rethrowIfAborted(e, signal);
           tilesetErrors.push(`${ds0.label}: ${errorMessage(e)}`);
+        } finally {
+          dispose();
         }
       }),
     );
@@ -616,7 +659,8 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
         throwIfAborted(signal);
         if (decoderError || next >= total) return;
         const i = next++;
-        const { controller, dispose } = linkedController(signal);
+        // 1 枚ごとの期限（予算で捨てるときの中止もこの controller）。期限切れは failedTiles（中止は親 signal だけ）
+        const { controller, dispose } = linkedController(signal, timeoutOf('tile'));
         let resolveSize: (n: number) => void = () => undefined;
         sizeOf[i] = new Promise<number>((r) => {
           resolveSize = r;

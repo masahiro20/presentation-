@@ -98,11 +98,14 @@ export function plateauSourceLabels(datasets: PlateauDatasetInfo[] = plateauData
 /**
  * 共通の開示文（レポートの前提・注意）: 「周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。LOD1 の建物は箱形で
  * 天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。年度以降の新築・解体は反映されていない場合があります。」
- * データセットが分からなければ括弧を省く。LOD1 の文はデータセットに LOD1 があるとき（分からなければ出す）
+ * データセットが分からなければ括弧を省く。LOD1 の文は建物単位（list = 解析に入れた建物。箱形 = _lod ?? datasetLod ≤ 1 の建物が 1 棟でもあれば出す。
+ * 東京 23 区の 2025 年版のようにデータセットは LOD2 でも住宅はほぼ全棟 _lod=1 の箱なので、データセットの LOD だけでは判定しない。
+ * 属性の無い旧データは形が分からないので出す（安全側）。list に PLATEAU の建物が無ければデータセットで判定（LOD1 があるとき。分からなければ出す）
  */
-export function plateauDisclosureText(datasets: PlateauDatasetInfo[] = plateauDatasets()): string {
+export function plateauDisclosureText(datasets: PlateauDatasetInfo[] = plateauDatasets(), list: Pick<Neighbor, 'source' | 'plateau' | 'mesh'>[] = analysisNeighbors()): string {
   const where = datasets.length ? `（${datasets.map((d) => `${wardName(d)}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
-  const lod1 = !datasets.length || datasets.some((d) => d.lod <= 1);
+  const c = plateauShapeCounts(list);
+  const lod1 = c.plateau > 0 ? c.box > 0 || c.other > 0 : !datasets.length || datasets.some((d) => d.lod <= 1);
   return `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。' : ''}年度以降の新築・解体は反映されていない場合があります。`;
 }
 

@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlateauDatasetInfo, PlateauFetchResult } from '../src/sun/plateau';
 import { ringCenter } from '../src/sun/footprint';
-import { plateauInfoLines, plateauNotes, plateauOffset, plateauProgressText, plateauToNeighbor, reachHeight, rekeyOverridesByFootprint } from '../src/sunstudy/plateauNeighbors';
+import { plateauInfoLines, plateauNoteCounts, plateauNotes, plateauOffset, plateauProgressText, plateauToNeighbor, reachHeight, rekeyOverridesByFootprint } from '../src/sunstudy/plateauNeighbors';
 import { frameFromLocal, frameToLocal } from '../src/sunstudy/types';
 import type { Neighbor, NeighborOverride } from '../src/sunstudy/types';
 import { plateauBox, plateauNeighborAt } from './helpers/plateauBox';
@@ -76,22 +76,53 @@ describe('plateauToNeighbor: anchor 基準 → ピン基準', () => {
   });
 });
 
+/** 一覧に残った建物（注記の棟数はこれで数える）: PLATEAU n 棟（lod2 棟は LOD2・屋根あり）＋ 国土地理院 gsi 棟 */
+function kept(n: number, o: { lod2?: number; gsi?: number; mesh?: boolean } = {}): Neighbor[] {
+  const list: Neighbor[] = Array.from({ length: n }, (_, i) => {
+    const lod: 1 | 2 = i < (o.lod2 ?? 0) ? 2 : 1;
+    const nb = plateauNeighborAt(PIN, 20 * i, 0, { gmlId: `k_${i}`, attrs: { lod, datasetLod: lod } });
+    if (o.mesh === false) delete nb.mesh;
+    return nb;
+  });
+  for (let i = 0; i < (o.gsi ?? 0); i++) list.push({ id: `gsi:${i}`, ring: square(-30 - 10 * i, 0, 6), height: 7, source: 'gsi', heightKind: 'estimated' });
+  return list;
+}
+
 describe('plateauNotes: 注記の固定文', () => {
   it('LOD1 のデータセット: 「箱形。天端は点群の中央値」', () => {
-    const notes = plateauNotes(covered(6, [DS_MORIYAMA]), 0);
+    const notes = plateauNotes(covered(6, [DS_MORIYAMA]), kept(6));
     expect(notes).toEqual(['PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（6 棟。箱形。天端は点群の中央値）。']);
     expect(notes[0]).toMatch(/^PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（\d+ 棟/);
   });
   it('LOD2 のデータセット: 屋根形状あり（lod ≥ 2）と箱形の内訳。国土地理院で補った棟数の行', () => {
-    const notes = plateauNotes(covered(5, [DS_SETAGAYA], { lodCounts: { '1': 3, '2': 2 } }), 3);
+    const notes = plateauNotes(covered(5, [DS_SETAGAYA], { lodCounts: { '1': 3, '2': 2 } }), kept(5, { lod2: 2, gsi: 3 }));
     expect(notes).toEqual([
       'PLATEAU（国土交通省 3D都市モデル・東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（5 棟。屋根形状あり 2 棟・箱形 3 棟）。',
       '国土地理院の地図から 3 棟を補いました（高さは建物の種類から推定）。',
     ]);
   });
+  it('距離ルールで落ちた棟は注記に数えない: 棟数・屋根形状あり／箱形・補った棟数はすべて一覧に残った建物で数える（取得全体の lodCounts ではない）', () => {
+    // 取得は 1509 棟（うち LOD2 が 10 棟）だが、一覧に残ったのは PLATEAU 386 棟（屋根形状あり 2）＋ 国土地理院 6 棟
+    const r = covered(1509, [DS_SETAGAYA], { lodCounts: { '1': 1499, '2': 10 } });
+    const list = kept(386, { lod2: 2, gsi: 6 });
+    expect(plateauNotes(r, list)).toEqual([
+      'PLATEAU（国土交通省 3D都市モデル・東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（386 棟。屋根形状あり 2 棟・箱形 384 棟）。',
+      '国土地理院の地図から 6 棟を補いました（高さは建物の種類から推定）。',
+    ]);
+    // 内訳は disclosure.ts の plateauShapeCounts と同じ規則: lod ?? datasetLod が 2 以上で屋根形状。mesh の roofTriangles が 0 なら箱形、mesh が無ければ lod だけで判定
+    expect(plateauNoteCounts(list)).toEqual({ plateau: 386, roof: 2, box: 384, gsi: 6 });
+    const flatRoof = kept(3, { lod2: 3 }).map((n) => ({ ...n, mesh: { tris: n.mesh!.tris, roofTriangles: 0 } }));
+    expect(plateauNoteCounts(flatRoof)).toEqual({ plateau: 3, roof: 0, box: 3, gsi: 0 });
+    expect(plateauNoteCounts(kept(3, { lod2: 1, mesh: false }))).toEqual({ plateau: 3, roof: 1, box: 2, gsi: 0 });
+    // lod が無ければデータセットの LOD で判定（旧データ）
+    const byDataset = kept(2).map((n) => ({ ...n, plateau: { ...n.plateau!, lod: null, datasetLod: 2 } }));
+    expect(plateauNoteCounts(byDataset).roof).toBe(2);
+    // 一覧に PLATEAU が 1 棟も残らなければ 0 棟（補完だけ）
+    expect(plateauNotes(covered(6, [DS_MORIYAMA]), kept(0, { gsi: 2 }))[0]).toContain('使用（0 棟。箱形');
+  });
   it('一部のタイル失敗・上限で捨てた・隣の市区が未整備の行。区境の 2 データセットは名前を「／」でつなぐ', () => {
     const r = covered(4, [DS_MORIYAMA, DS_SETAGAYA], { failedTiles: 2, truncated: true, missingMuniCds: ['11201'], tiles: [{ url: 'a', bytes: 1, buildings: 2, ms: 1 }, { url: 'b', bytes: 1, buildings: 2, ms: 1 }], lodCounts: { '1': 4 } });
-    const notes = plateauNotes(r, 0);
+    const notes = plateauNotes(r, kept(4));
     expect(notes[0]).toBe('PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1／東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（4 棟。屋根形状あり 0 棟・箱形 4 棟）。');
     expect(notes[1]).toBe('PLATEAU の建物タイル 4 枚のうち 2 枚を取得できなかったため、建物が欠けている可能性があります。');
     expect(notes[2]).toBe('遠方の建物の一部は取得していません（データ量の上限）。');

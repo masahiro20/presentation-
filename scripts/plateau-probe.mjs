@@ -7,8 +7,8 @@
  * Draco は tests/helpers/nodeDraco.ts（three の draco_wasm_wrapper.js）を注入する。表示:
  *  - 状態・データセット（市区・年度・LOD）・葉の枚数・転送 MB・所要時間
  *  - 棟数・LOD 分布・足元の種類（bottom / hull）・warnings の内訳・_xmin.._ymax との照合誤差（compareWithRecord の最大）
- *  - |_zmin − DEM| の目安: 国土地理院 標高 API（getelevation.php。DEM5A/5B/10B）で先頭数棟の anchor の標高を引き、_zmin との差を表示
- *    （spec §0: 世田谷で中央値 +0.02 m・p95 ±0.4 m）。API は 1 点ずつなので 8 棟だけ照合する
+ *  - DEM との照合（spec §0 と同じ定義）: 「足元輪郭の頂点＋重心の DEM 最小値 − _zmin」。国土地理院 標高 API（getelevation.php。DEM5A/5B/10B）
+ *    は 1 点ずつなので、ピンに近い 8 棟・1 棟あたり重心＋頂点（12 点に間引く）だけ照合する（spec §0: 世田谷で中央値 +0.02 m・p95 ±0.4 m）
  * 索引は public/plateau-index.json（ローカルのファイルを file: 相当で読む。ネットは PLATEAU・国土地理院のみ）。
  */
 import { readFileSync } from 'node:fs';
@@ -58,6 +58,34 @@ const pct = (a, p) => {
 };
 const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '-');
 
+/** 1 棟あたり DEM を引く足元の頂点数の上限（API は 1 点ずつ） */
+const DEM_POINTS_MAX = 12;
+
+/**
+ * 足元輪郭の重心（面積重心。退化していれば頂点の平均）＋頂点（DEM_POINTS_MAX 点に等間隔で間引く）を経緯度で返す。
+ * ring は anchor 基準の東・北 [m]（src/sun/plateau/types.ts）。m → 度は metersPerDegree（toLocal と同じ換算）
+ */
+function footPoints(b, metersPerDegree) {
+  const ring = b.ring;
+  const { mLat, mLon } = metersPerDegree(b.attrs.anchor.lat);
+  let a2 = 0;
+  let ce = 0;
+  let cn = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    const q = ring[(i + 1) % ring.length];
+    const cross = p.e * q.n - q.e * p.n;
+    a2 += cross;
+    ce += (p.e + q.e) * cross;
+    cn += (p.n + q.n) * cross;
+  }
+  const centroid = Math.abs(a2) > 1e-6 ? { e: ce / (3 * a2), n: cn / (3 * a2) } : { e: ring.reduce((s, p) => s + p.e, 0) / ring.length, n: ring.reduce((s, p) => s + p.n, 0) / ring.length };
+  const step = Math.max(1, Math.ceil(ring.length / DEM_POINTS_MAX));
+  const pts = [centroid];
+  for (let i = 0; i < ring.length; i += step) pts.push(ring[i]);
+  return pts.map((p) => ({ lat: b.attrs.anchor.lat + p.n / mLat, lon: b.attrs.anchor.lon + p.e / mLon }));
+}
+
 const server = await createServer({
   root,
   configFile: false,
@@ -72,6 +100,7 @@ try {
   const { parseB3dm } = await server.ssrLoadModule('/src/sun/plateau/b3dm.ts');
   const { fetchCached } = await server.ssrLoadModule('/src/sun/plateau/fetch.ts');
   const { nodeDracoDecoder } = await server.ssrLoadModule('/tests/helpers/nodeDraco.ts');
+  const { metersPerDegree } = await server.ssrLoadModule('/src/sun/geo.ts');
   const draco = await nodeDracoDecoder();
 
   console.log(`PLATEAU プローブ: lat ${lat} lon ${lon} 半径 ${radiusM} m`);
@@ -130,21 +159,23 @@ try {
       `_xmin.._ymax 照合 extentErr 最大 ${fmt(Math.max(...errs.map((e) => e.extentErrM)), 4)} m・zmaxErr 中央値 ${fmt(median(errs.map((e) => e.zmaxErrM)), 3)} m（最大 ${fmt(Math.max(...errs.map((e) => e.zmaxErrM)), 3)}）（${errs.length} 棟）`,
     );
 
-    // DEM との照合（先頭 8 棟。ピンに近い順）
+    // DEM との照合（先頭 8 棟。ピンに近い順）。§0 と同じ定義: 足元輪郭の頂点＋重心の DEM 最小値 − _zmin
     const sample = [...r.buildings]
       .sort((a, b) => Math.hypot(a.attrs.anchor.lat - lat, a.attrs.anchor.lon - lon) - Math.hypot(b.attrs.anchor.lat - lat, b.attrs.anchor.lon - lon))
       .slice(0, 8);
     const diffs = [];
-    console.log('|_zmin − DEM|（国土地理院 標高 API。anchor の 1 点）:');
+    console.log(`DEM 最小値 − _zmin（国土地理院 標高 API。足元輪郭の頂点（最大 ${DEM_POINTS_MAX} 点）＋重心）:`);
     for (const b of sample) {
-      const dem = await demElevation(b.attrs.anchor.lat, b.attrs.anchor.lon);
-      if (!dem || dem.elev == null) {
+      const pts = footPoints(b, metersPerDegree);
+      const dems = (await Promise.all(pts.map((p) => demElevation(p.lat, p.lon)))).filter((d) => d && d.elev != null);
+      if (dems.length === 0) {
         console.log(`  ${b.gmlId}: DEM 取得不可`);
         continue;
       }
-      const d = b.attrs.zmin - dem.elev;
+      const min = dems.reduce((m, d) => (d.elev < m.elev ? d : m));
+      const d = min.elev - b.attrs.zmin;
       diffs.push(d);
-      console.log(`  ${b.gmlId}: _zmin ${b.attrs.zmin.toFixed(2)} / DEM ${dem.elev.toFixed(2)}（${dem.source}）/ 差 ${d >= 0 ? '+' : ''}${d.toFixed(2)} m・高さ ${b.height.toFixed(1)} m・${b.attrs.footprint}${b.attrs.lod ? `・LOD${b.attrs.lod}` : ''}`);
+      console.log(`  ${b.gmlId}: DEM 最小 ${min.elev.toFixed(2)}（${dems.length} 点・${min.source}）/ _zmin ${b.attrs.zmin.toFixed(2)} / 差 ${d >= 0 ? '+' : ''}${d.toFixed(2)} m・高さ ${b.height.toFixed(1)} m・${b.attrs.footprint}${b.attrs.lod ? `・LOD${b.attrs.lod}` : ''}`);
     }
     if (diffs.length) console.log(`  → 中央値 ${fmt(median(diffs))} m・|差| 最大 ${fmt(Math.max(...diffs.map(Math.abs)))} m（${diffs.length} 棟）`);
   }

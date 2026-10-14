@@ -47,6 +47,61 @@ export const NOTE_PLATEAU_MISSING = 'この地域は PLATEAU（3D都市モデル
 /** PLATEAU を取得できなかった（逆ジオコーダ・索引・tileset・全タイル・復号の失敗）ときの注記 */
 export const NOTE_PLATEAU_ERROR = 'PLATEAU のデータを取得できなかったため（通信エラー）、周辺建物の高さは国土地理院の建物種類から推定しています。「🏘 周辺建物（PLATEAU）」でやり直せます。';
 
+/**
+ * PLATEAU で取れたときの国土地理院の補完と、未整備・通信エラーの退路（国土地理院 → OSM）を待つ上限 (ms)。
+ * 補完は任意なので期限切れは []（PLATEAU だけで続ける）。退路では期限切れを失敗と同じに扱い次の取得元へ
+ */
+export const NEIGHBOR_FILL_TIMEOUT_MS = 10_000;
+
+/** 中止（AbortError。進捗モーダルの「中止」・新しい取得による置き換え）か */
+export function isAbortError(e: unknown): boolean {
+  return (e instanceof DOMException || e instanceof Error) && e.name === 'AbortError';
+}
+
+/** 新しい取得（連打・建設地の変更）で置き換えられた古い取得が投げる中止 */
+export function supersededError(): DOMException {
+  return new DOMException('新しい取得で置き換えました', 'AbortError');
+}
+
+/**
+ * p を待つ。signal の中止は signal.reason を投げ、ms を過ぎたら onTimeout() の値で抜ける（onTimeout が投げればその失敗）。
+ * どちらで抜けても p 自体は止めない（下層の fetch は signal で止まる）
+ */
+export function waitWithLimit<T>(p: Promise<T>, ms: number, signal: AbortSignal | undefined, onTimeout: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onAbort = () => finish(() => reject((signal?.reason as Error | undefined) ?? new Error('中止しました')));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(
+      () =>
+        finish(() => {
+          try {
+            resolve(onTimeout());
+          } catch (e) {
+            reject(e);
+          }
+        }),
+      ms,
+    );
+    p.then(
+      (v) => finish(() => resolve(v)),
+      (e) => finish(() => reject(e)),
+    );
+  });
+}
+
 /** 小数 1 桁に丸める（NeighborBuilding.height の約束。PlateauBuilding.height は丸めていない） */
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
@@ -397,6 +452,8 @@ export class SunContext {
   private neighborsOrigin: LatLon | null = null;
   private keyCache = new WeakMap<NeighborBuilding, string>();
   private seq = 0;
+  /** loadNeighbors の世代番号（同時に 2 本走ったとき、後に始めた方だけが一覧を書く。古い方は AbortError で抜ける） */
+  private loadSeq = 0;
   /** 隠した建物をすべて薄く表示する（「建物を選んで隠す」の間。薄い建物をクリックして戻せる） */
   private ghostsOn = false;
   /** 隠した建物のうち、これだけは薄く表示する（「隠した建物」の一覧で指している行） */
@@ -849,9 +906,23 @@ export class SunContext {
    *    （新しい建物・LOD0 のみ）だけを補う（fillGapsWith。失敗しても無視）。未整備（none）・通信エラー（error）なら従来の 国土地理院 → OSM に落ち、notes に理由を書く
    *  - 'gsi' / 'osm': 従来どおり（取れなければもう一方）
    * 敷地・計画建物に重なる建物は除外し、PLATEAU は id `plateau:${gml_id}`、国土地理院・OSM は連番の id。手動の隣家・想定の家は残し、
-   * 隠した建物・直した高さは同じ建物（キー、無ければ外形）に当て直す。中止（opts.signal）は signal.reason を投げる
+   * 隠した建物・直した高さは同じ建物（キー、無ければ外形）に当て直す。中止（opts.signal）は signal.reason を投げる。
+   * 同時に 2 本走ったとき（微調整の連打など）は後に始めた方だけが一覧を書き、古い方は AbortError（supersededError）で抜ける。
+   * 国土地理院の補完・退路の待ちは opts.fillTimeoutMs（既定 NEIGHBOR_FILL_TIMEOUT_MS）で打ち切る（補完は任意なので期限切れは []）
    */
-  async loadNeighbors(source: NeighborSourceChoice = 'plateau', opts: { signal?: AbortSignal; onProgress?: (msg: string, ratio: number) => void } = {}): Promise<LoadNeighborsResult> {
+  async loadNeighbors(
+    source: NeighborSourceChoice = 'plateau',
+    opts: { signal?: AbortSignal; onProgress?: (msg: string, ratio: number) => void; fillTimeoutMs?: number } = {},
+  ): Promise<LoadNeighborsResult> {
+    const seq = ++this.loadSeq;
+    /** 後から始まった取得があれば、この取得の結果は捨てる */
+    const throwIfSuperseded = () => {
+      if (seq !== this.loadSeq) throw supersededError();
+    };
+    const throwIfAborted = () => {
+      if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? new Error('中止しました');
+    };
+    const limitMs = opts.fillTimeoutMs ?? NEIGHBOR_FILL_TIMEOUT_MS;
     this.lastSource = source;
     const { lat, lon } = siteLatLon(this.state.site);
     const R = NEIGHBOR_RADIUS_M;
@@ -861,10 +932,10 @@ export class SunContext {
     let plateau: LoadNeighborsResult['plateau'];
     /** PLATEAU で取れた結果（注記は敷地に重なる建物を除いた後の棟数で書くので、ここに控えて最後に足す） */
     let coveredResult: Extract<PlateauFetchResult, { status: 'covered' }> | null = null;
-    // 国土地理院は PLATEAU と並列に始める（補完と、未整備・通信エラーのときの退路）。失敗は後で（使うときに）扱う
+    // 国土地理院は PLATEAU と並列に始める（補完と、未整備・通信エラーのときの退路）。失敗は後で（使うときに）扱う。中止は下層の fetch まで通す
     let gsiPending: Promise<NeighborBuilding[]> | null = null;
     if (source === 'plateau') {
-      gsiPending = fetchGsiBuildings(lat, lon, R);
+      gsiPending = fetchGsiBuildings(lat, lon, R, { signal: opts.signal });
       gsiPending.catch(() => undefined);
       opts.onProgress?.('周辺建物（PLATEAU）: 市区町村を調べています', 0);
       let r: PlateauFetchResult;
@@ -875,13 +946,16 @@ export class SunContext {
         // 取得側は中止以外を status に畳む約束だが、万一の例外も通信エラー扱いにして国土地理院に落ちる
         r = { status: 'error', stage: 'tiles', message: (e as Error).message };
       }
+      throwIfSuperseded();
       plateau = { datasets: r.status === 'covered' ? r.datasets : [], lodCounts: r.status === 'covered' ? r.lodCounts : {}, status: r.status };
       if (r.status === 'covered' && r.buildings.length) {
         const fromPlateau = r.buildings.map((b) => plateauToNeighborBuilding(b, { lat, lon }));
         let gsi: NeighborBuilding[] = [];
         try {
-          gsi = await gsiPending;
-        } catch {
+          // 補完は任意: 国土地理院が応答しなくても上限で打ち切って PLATEAU だけで続ける。中止はここでも効く
+          gsi = await waitWithLimit(gsiPending, limitMs, opts.signal, () => []);
+        } catch (e) {
+          if (opts.signal?.aborted) throw e;
           // 補完は任意（国土地理院が落ちていても PLATEAU だけで続ける）
         }
         gsiPending = null;
@@ -894,25 +968,33 @@ export class SunContext {
       }
     }
     if (!list.length) {
-      if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? new Error('中止しました');
+      throwIfAborted();
       // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）。PLATEAU と並列に始めた国土地理院の結果があればそれを使う
-      const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? (gsiPending ?? fetchGsiBuildings(lat, lon, R)) : fetchOsmBuildings(lat, lon, R));
+      const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? (gsiPending ?? fetchGsiBuildings(lat, lon, R, { signal: opts.signal })) : fetchOsmBuildings(lat, lon, R, { signal: opts.signal }));
       let err: Error | null = null;
       for (const src of source === 'osm' ? (['osm', 'gsi'] as const) : (['gsi', 'osm'] as const)) {
-        opts.onProgress?.(`周辺建物（${src === 'gsi' ? '国土地理院' : 'OpenStreetMap'}）を取得しています…`, src === 'gsi' ? 0.5 : 0.75);
+        const name = src === 'gsi' ? '国土地理院' : 'OpenStreetMap';
+        opts.onProgress?.(`周辺建物（${name}）を取得しています…`, src === 'gsi' ? 0.5 : 0.75);
         try {
-          const got = await fetchFrom(src);
+          // 退路も同じ上限で待つ（応答が無ければ失敗と同じに扱い、次の取得元へ）
+          const got = await waitWithLimit(fetchFrom(src), limitMs, opts.signal, () => {
+            throw new Error(`${name}の応答がありません（時間切れ）`);
+          });
           if (got.length) {
             list = got;
             used.push(src);
             break;
           }
         } catch (e) {
+          if (opts.signal?.aborted) throw e;
           err = e as Error;
         }
       }
       if (!list.length && err) throw err;
     }
+    // ここから先は待たない。後から始まった取得があれば、その方が今のピンの結果を書くのでこの結果は捨てる
+    throwIfSuperseded();
+    throwIfAborted();
     // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
     const st = this.viewer.state!;
     const site = st.site;

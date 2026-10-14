@@ -141,6 +141,16 @@ export interface QuantizedMesh {
 
 export type PlateauStage = 'geocode' | 'index' | 'tileset' | 'tiles' | 'decode' | 'merge';
 
+/** 通信の段（期限を付ける単位）: 逆ジオコーダ・索引・-latest ラッパー・tileset.json・タイル 1 枚 */
+export type PlateauNetStage = 'geocode' | 'index' | 'latest' | 'tileset' | 'tile';
+
+/**
+ * 段ごとの期限 [ms]（省略した段は既定 PLATEAU_TIMEOUTS: geocode 8 s・index 10 s・latest 8 s・tileset 20 s・tile 60 s）。
+ * 期限切れは「中止」ではなく「失敗」として扱う（逆ジオコーダは region の予備経路へ、tileset/タイルは error/failedTiles へ）。
+ * 正の有限数でない値（Infinity など）は期限なし
+ */
+export type PlateauTimeouts = Partial<Record<PlateauNetStage, number>>;
+
 export interface PlateauProgress {
   stage: PlateauStage;
   message: string;

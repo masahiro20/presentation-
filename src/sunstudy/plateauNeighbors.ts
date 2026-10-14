@@ -50,18 +50,40 @@ export function plateauToNeighbor(b: PlateauBuilding, pin: LatLon): Neighbor {
   return nb;
 }
 
+/** 注記の棟数を数える一覧の要素（Neighbor の必要な欄だけ） */
+export type PlateauNotesNeighbor = Pick<Neighbor, 'source' | 'plateau' | 'mesh'>;
+
 /**
- * 利用者向けの注記（§4 のフォールバック表・§8 の固定文）。fill = 国土地理院で補った棟数。
+ * 注記の棟数（距離ルールの後に一覧へ残った建物で数える）: plateau = PLATEAU の棟数、roof = 屋根形状（LOD2 以上）、box = 箱形、gsi = 国土地理院で補った棟数。
+ * 屋根形状の判定は disclosure.ts の plateauShapeOf と同じ規則（lod ?? datasetLod が 2 以上で、mesh があれば roofTriangles > 0）。
+ * disclosure.ts は state を読み込むのでここからは参照しない（同じ規則をここに書く）
+ */
+export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: number; roof: number; box: number; gsi: number } {
+  let plateau = 0;
+  let roof = 0;
+  let gsi = 0;
+  for (const n of kept) {
+    if (n.source === 'gsi') gsi++;
+    if (n.source !== 'plateau') continue;
+    plateau++;
+    const a = n.plateau;
+    if (!a) continue;
+    const lod = a.lod ?? a.datasetLod;
+    if (lod >= 2 && (!n.mesh || n.mesh.roofTriangles > 0)) roof++;
+  }
+  return { plateau, roof, box: plateau - roof, gsi };
+}
+
+/**
+ * 利用者向けの注記（§4 のフォールバック表・§8 の固定文）。kept = 距離ルール（applyDistanceRule）の後に一覧へ残った建物。
+ * 棟数・屋根形状あり／箱形・国土地理院で補った棟数はすべて kept で数える（取得した全棟数 r.buildings ではない）ので、
+ * 同じ画面の棟数行（disclosure.ts の plateauShapeCounts）・日影図の脚注・レポートの出典行と一致する。
  * 先頭は出典の行: 「PLATEAU（国土交通省 3D都市モデル・東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（N 棟。屋根形状あり M 棟・箱形 K 棟）。」
  * （LOD1 だけのデータセットでは「（N 棟。箱形。天端は点群の中央値）」）。区境で 2 データセットなら名前を「／」でつなぐ
  */
-export function plateauNotes(r: PlateauCovered, fill: number): string[] {
+export function plateauNotes(r: PlateauCovered, kept: PlateauNotesNeighbor[]): string[] {
   const notes: string[] = [];
-  const total = r.buildings.length;
-  // lodCounts のキーは String(attrs.lod ?? datasetLod)。2 以上が屋根形状
-  let roof = 0;
-  for (const [lod, count] of Object.entries(r.lodCounts)) if (Number(lod) >= 2) roof += count;
-  const box = Math.max(0, total - roof);
+  const { plateau: total, roof, box, gsi: fill } = plateauNoteCounts(kept);
   const labels = r.datasets.map((d) => d.label).join('／');
   const head = `PLATEAU（国土交通省 3D都市モデル・${labels}）の実測の高さ・形状を使用`;
   const lod1Only = r.datasets.length > 0 && r.datasets.every((d) => d.lod <= 1);
@@ -133,7 +155,7 @@ function sameFootprint(a: EN[], b: EN[]): boolean {
 
 /**
  * 新一覧（next）に無い id の上書き（高さ修正・隠す）を、旧一覧（prev）の同じ id の足元と sameFootprint（面積比 0.6〜1/0.6・重心が互いの内側）の
- * 新しい建物の id へ移す（gml_id は年度更新で変わり得る。旧 MVT 由来の id も同じ経路で移行）。
+ * 新しい建物の id へ移す（gml_id は年度更新で変わり得る。旧形式の id（plateau:緯度:経度:面積）も同じ経路で移行）。
  * 新一覧にある id の上書きと、prev に無い id（手動の隣家・想定の家など）の上書きはそのまま。移す先が既に上書きを持つ・別の旧 id の移し先になった建物には移さない。
  * 移せなかった上書きは残す（建物が戻ってきたときのため）。元の overrides は変えず、新しいオブジェクトを返す
  */

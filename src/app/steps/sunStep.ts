@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng } from '../dom';
+import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext, keysInRect, ringArea, roofShapeCount, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { SunContext, isAbortError, keysInRect, ringArea, roofShapeCount, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
@@ -70,6 +70,35 @@ export const HIDE_MODE_LABEL = '🏠 建物を選んで隠す';
 export const HIDE_MODE_ARMED = '建物をクリックして選んでください（Shift+ドラッグで範囲選択。もう一度押すと終了・Esc でも終了）';
 export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。隠し方（計算から除外／表示だけ隠す）と理由を選んで、画面上の「隠す」を押してください。薄く見えているのは隠した建物（青は表示だけ隠した建物）で、選んで「戻す」で戻せます';
 export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（PLATEAU）」で読み込んでください';
+
+// ---------------------------------------------------------------- 建設地を変えた後の読み直し（DOM 無しの手順。テストで固定する）
+
+/** reloadSurroundings に渡すもの（日照ステップの実体。テストでは記録するだけの偽物を渡す） */
+export interface SurroundingsDeps {
+  /** 航空写真を読み込み済みか */
+  aerialLoaded: () => boolean;
+  /** 自動取得した周辺建物（手動の隣家・想定の家以外）があるか */
+  hasAutoNeighbors: () => boolean;
+  /** 最後に選んだ取得元（SunContext.lastSource） */
+  lastSource: () => NeighborSourceChoice;
+  /** 太陽軌道・影の向きなど、通信なしで作り直せるもの */
+  rebuild: () => void;
+  loadAerial: () => Promise<void>;
+  loadNeighbors: (src: NeighborSourceChoice) => Promise<void>;
+}
+
+/**
+ * 建設地を変えた後に周りを読み直す手順。
+ *  - 'adjust'（微調整・敷地をクリック・2 点合わせ）: 航空写真は読み込み済みなら取り直し、自動取得の周辺建物があれば最後の取得元で取り直す
+ *  - 'newSite'（住所検索の結果・座標の指定）: 航空写真は（まだ無ければ読み込んで）取り直し、周辺建物は有無にかかわらず最後の取得元で取り直す
+ * どちらも周辺建物の取得は 1 回だけ（'newSite' で 'adjust' の取り直しと重ねて 2 回走らせない: 進捗モーダル・トーストが 2 回出て待ち時間が 2 倍になる）
+ */
+export async function reloadSurroundings(deps: SurroundingsDeps, mode: 'adjust' | 'newSite'): Promise<void> {
+  deps.rebuild();
+  if (mode === 'newSite' || deps.aerialLoaded()) await deps.loadAerial();
+  // 最後に選んだ取得元で取り直す（PLATEAU は anchor 基準のキャッシュがあるので、微調整の 2 m 刻みでは通信・復号なし）
+  if (mode === 'newSite' || deps.hasAutoNeighbors()) await deps.loadNeighbors(deps.lastSource());
+}
 
 // ---------------------------------------------------------------- 周辺建物の取得（PLATEAU → 国土地理院 → OSM）の文言
 
@@ -680,14 +709,20 @@ export const sunStep: Step = {
       showCoords();
     };
     showLoc();
-    const reloadContext = async () => {
-      sc.state.site = state.site;
-      sc.buildSunPath();
-      apply(true);
-      if (sc.state.aerialLoaded) await loadAerial();
-      // 最後に選んだ取得元で取り直す（PLATEAU は anchor 基準のキャッシュがあるので、微調整の 2 m 刻みでは通信・復号なし）
-      if (sc.state.neighbors.some((n) => n.source !== 'manual')) await loadNeighbors(sc.lastSource);
+    const surroundingsDeps: SurroundingsDeps = {
+      aerialLoaded: () => sc.state.aerialLoaded,
+      hasAutoNeighbors: () => sc.state.neighbors.some((n) => n.source !== 'manual'),
+      lastSource: () => sc.lastSource,
+      rebuild: () => {
+        sc.state.site = state.site;
+        sc.buildSunPath();
+        apply(true);
+      },
+      loadAerial: () => loadAerial(),
+      loadNeighbors: (src) => loadNeighbors(src),
     };
+    /** 微調整・敷地をクリック・2 点合わせの後の読み直し（周辺建物は自動取得の建物があるときだけ取り直す） */
+    const reloadContext = () => reloadSurroundings(surroundingsDeps, 'adjust');
     // 建物に依存する解析結果（部屋の日当たり・日影図・日照時間マップ・撮影済みの季節比較画像）を捨てる。
     // 位置・方位・3DS・周辺建物が変わった後に古い結果（プレゼン資料にも使われる state.sun）が残らないようにする。実体は解析セクションの後で入れる
     let invalidateResults: () => void = () => {};
@@ -701,9 +736,8 @@ export const sunStep: Step = {
       clear(results);
       showLoc();
       invalidateResults();
-      await reloadContext();
-      if (!sc.state.aerialLoaded) await loadAerial();
-      await loadNeighbors(sc.lastSource);
+      // 航空写真と周辺建物を 1 回ずつ読み直す（reloadContext と重ねて周辺建物の取得を 2 回走らせない）
+      await reloadSurroundings(surroundingsDeps, 'newSite');
       v.flyTo({ pos: c.clone().add(new THREE.Vector3(R * 3.5, R * 2.2, R * 4.5)), target: c.clone(), fov: 45 });
     };
     const search = async () => {
@@ -932,14 +966,26 @@ export const sunStep: Step = {
       if (src) nbNotes.appendChild(h('div', { class: 'src' }, src));
       for (const t of r.notes) nbNotes.appendChild(h('div', null, t));
     };
+    /** 進行中の周辺建物の取得（微調整の連打・建設地の変更で次が始まったら中止して置き換える。同時に 2 本走らせない） */
+    let nbCurrent: { ac: AbortController; pm: ProgressHandle } | null = null;
     /**
      * 周辺建物を取り直す。PLATEAU（既定）は数 MB の建物タイルを読むので、進捗（枚数・MB）と中止を出す。
-     * 未整備・通信エラーで国土地理院に落ちたときは、その旨を案内する
+     * 未整備・通信エラーで国土地理院に落ちたときは、その旨を案内する。
+     * 前の取得が進行中なら中止して置き換える（古いピンで始めた取得が後から終わって一覧を上書きしないように。置き換えの中止は案内を出さない）
      */
     const loadNeighbors = async (src: NeighborSourceChoice) => {
+      if (nbCurrent) {
+        nbCurrent.pm.close();
+        nbCurrent.ac.abort(supersededError());
+      }
+      const ac = new AbortController();
       const pm = progressModal('周辺の建物を取得しています', src === 'plateau');
+      // 進捗モーダルの「中止」も同じ signal に束ねる
+      pm.signal.addEventListener('abort', () => ac.abort(pm.signal.reason), { once: true });
+      const me = { ac, pm };
+      nbCurrent = me;
       try {
-        const r = await sc.loadNeighbors(src, { signal: pm.signal, onProgress: (msg, ratio) => pm.set(ratio, msg) });
+        const r = await sc.loadNeighbors(src, { signal: ac.signal, onProgress: (msg, ratio) => pm.set(ratio, msg) });
         // 周辺建物は影を落とす（部屋の日当たり・日影図・日照時間マップに入る）ので、前の結果は捨てる
         invalidateResults();
         const kept = sc.hiddenList().length;
@@ -950,9 +996,11 @@ export const sunStep: Step = {
         if (extra.length) toast(extra.join(' '), 'info', 8000);
       } catch (e) {
         if (pm.signal.aborted) toast('周辺建物の取得を中止しました', 'info');
-        else toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
+        else if (!ac.signal.aborted && !isAbortError(e)) toast(`周辺建物の取得に失敗しました: ${(e as Error).message}`, 'error');
+        // 新しい取得で置き換えた中止（ac.abort(supersededError()) / SunContext の世代番号）は何も出さない
       } finally {
         pm.close();
+        if (nbCurrent === me) nbCurrent = null;
         renderNbNotes();
       }
     };

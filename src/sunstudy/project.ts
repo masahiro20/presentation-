@@ -218,6 +218,7 @@ export function sanitizeNeighborOverrides(v: unknown): Record<string, NeighborOv
     const o = raw as Record<string, unknown>;
     const next: NeighborOverride = {};
     if (isFiniteNum(o.height) && o.height > 0) next.height = o.height;
+    if (o.confirmed === true) next.confirmed = true;
     if (typeof o.hidden === 'boolean') next.hidden = o.hidden;
     if (next.hidden) {
       const info = normalizeHideInfo({ mode: o.hideMode, reason: o.hideReason, note: o.hideNote });

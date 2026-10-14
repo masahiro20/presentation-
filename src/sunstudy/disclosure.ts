@@ -223,6 +223,8 @@ export interface NeighborDisclosure {
   byReason: { reason: NeighborHideReason; label: string; count: number }[];
   /** 敷地の輪郭・計画建物の外形に重なるため自動で外した自動取得の建物の数 */
   autoOnSite: number;
+  /** 高さを現地で測って確定した建物の数（影・解析に入る建物のうち。無い古い呼び出し側の値には無い） */
+  confirmed?: number;
   /**
    * 想定の家（未建築・仮の形状）: count = 計算から除外していない想定の家の棟数（表示だけ隠したものも数える）、
    * enabled = 影・解析に含めているか（study.plannedEnabled）。古い呼び出し側が作った値には無い
@@ -255,7 +257,7 @@ export function neighborDisclosure(exclusion?: EN[] | null): NeighborDisclosure 
   const footprint = exclusion === undefined ? buildingExclusionEN() : exclusion;
   const autoOnSite = siteExcludedCount(footprint);
   const planned = { count: effectiveNeighbors().filter((n) => n.planned && (!n.hidden || n.hideMode === 'view')).length, enabled: study.plannedEnabled };
-  const d: NeighborDisclosure = { excluded, viewOnly, byReason, autoOnSite, planned };
+  const d: NeighborDisclosure = { excluded, viewOnly, byReason, autoOnSite, planned, confirmed: analysisNeighborsForScene(footprint).filter((n) => n.confirmed && !n.planned).length };
   // 出典の行は自動取得をしたときだけ（手動の隣家だけの検討では出典を問わない）
   if (study.neighborSources.length) {
     d.sources = countBySource(analysisNeighborsForScene(footprint));
@@ -303,6 +305,7 @@ export function disclosureLines(opts: { neighborsInCalc?: boolean; disclosure?: 
   if (d.autoOnSite > 0) lines.push(`敷地・計画建物に重なる自動取得の建物 ${d.autoOnSite} 棟は自動で除外`);
   const src = d.sources ? sourcesLine(d.sources, d.plateauDatasets ?? []) : null;
   if (src) lines.push(src);
+  if (d.confirmed) lines.push(`実測で確定した建物 ${d.confirmed} 棟（現地で測った高さ。それ以外の建物の高さは公開データの値・推定）`);
   return lines;
 }
 

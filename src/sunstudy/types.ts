@@ -205,6 +205,8 @@ export interface Neighbor {
   height: number;
   source: NeighborSource;
   /** 高さの根拠: 実測（PLATEAU・OSM の height）/ 推定（建物種類・階数）/ 手入力 */
+  /** 高さを現地で測って確定した建物（上書き neighborOverrides[id].confirmed。手動の隣家は本体に持つ） */
+  confirmed?: boolean;
   heightKind: 'measured' | 'estimated' | 'manual';
   label?: string;
   /** 足元の地盤高（T.P. m）。地形から決める */
@@ -270,6 +272,8 @@ export interface NeighborHideInfo {
 /** 自動取得した建物への上書き（高さ修正・隠す）。隠し方・理由は hidden のときだけ */
 export interface NeighborOverride {
   height?: number;
+  /** 高さを現地で測って確定した（要確認の建物で確定。日影図の脚注・レポートに「実測で確定した建物 N 棟」と出す） */
+  confirmed?: boolean;
   hidden?: boolean;
   hideMode?: NeighborHideMode;
   hideReason?: NeighborHideReason;

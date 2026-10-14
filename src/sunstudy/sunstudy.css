@@ -197,3 +197,8 @@ details.nb-hidden summary .meta { color: var(--ink3); font-size: 11.5px; margin-
 .planned-row.sel { border-color: #e5531f; box-shadow: 0 0 0 2px rgba(229,83,31,0.18); }
 .planned-row.off { opacity: 0.6; }
 .planned-row .planned-meta { display: block; margin: 2px 0 0; }
+.acc-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 9px; font-size: 10.5px; line-height: 1.5; background: #eee; color: #444; }
+.acc-tag.acc-confirmed { background: #d9f0dc; color: #1d5b2a; }
+.acc-tag.acc-measured { background: #e3eefb; color: #1f4a80; }
+.acc-tag.acc-est-roof, .acc-tag.acc-box { background: #fdf0d5; color: #7a5200; }
+.acc-tag.acc-estimated { background: #fbe0dc; color: #8a2a1c; }

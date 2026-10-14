@@ -18,7 +18,7 @@ import { recordProgram } from '../../video/recorder';
 import { SHADOW_REGULATION_PRESETS, shadowRegulationPreset } from '../../sun/shadowRegulation';
 import { facadeSunHours, groundHeatmapMesh, groundSunHoursStudy, measureMarker, measurePointHours, shadowDiagramStudy, studyDates } from '../analysis';
 import { buildingCenter, buildingExclusionEN, buildingExtent, buildingFootprintEN, currentPlaced, ensurePlaced } from '../building';
-import { groundYWorld, loadEnvironment, rebuildEnvironment, siteExcludedCount, sitePolygonWorld } from '../environment';
+import { analysisNeighborsForScene, groundYWorld, loadEnvironment, rebuildEnvironment, siteExcludedCount, sitePolygonEN, sitePolygonWorld } from '../environment';
 import { makeManualNeighbor } from '../neighbors';
 import { downloadProject } from '../project';
 import { diagramHours, presetForRegion } from '../diagramOptions';
@@ -28,7 +28,8 @@ import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport 
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
-import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
+import { ACCURACY_LABEL, accuracyOf, rankShadowCasters } from '../keyNeighbors';
+import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborConfirmed, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
@@ -54,8 +55,6 @@ let heat: THREE.Mesh | null = null;
 let facade: THREE.Mesh | null = null;
 let firstMount = true;
 let cleanup: (() => void) | null = null;
-/** 「確認済」にした隣家 */
-const confirmed = new Set<string>();
 /** 太陽の通り道を作ったときの条件 */
 let pathKey = '';
 /** 日影図の規制値のプリセット（SHADOW_REGULATION_PRESETS の id。'' = なし（参考の 2〜5 時間））と時刻日影線の間隔。ステップを出入りしても残す */
@@ -738,8 +737,8 @@ export const simStep: StudyStep = {
 
     const nbSummary = h('div', { class: 'info-box' });
     const nbList = h('div');
-    const neighborRow = (n: Neighbor, dist: number, br: number) => {
-      const done = confirmed.has(n.id);
+    const neighborRow = (n: Neighbor, dist: number, br: number, hours?: number) => {
+      const done = !!n.confirmed;
       // 表示だけ隠した建物も影・解析には入るので高さを確かめる（「非表示」は出さない。隠し方は「隠した建物」で直す）
       const viewOnly = !!n.hidden && n.hideMode === 'view';
       const hIn = num(n.height, 1, 300, 0.1);
@@ -755,7 +754,8 @@ export const simStep: StudyStep = {
           null,
           h('b', null, nameOf(n)),
           kindTag(n.heightKind),
-          h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m${viewOnly ? '・表示だけ隠した建物（影・解析には含む）' : ''}`),
+          h('span', { class: `acc-tag acc-${accuracyOf(n)}` }, ACCURACY_LABEL[accuracyOf(n)]),
+          h('span', { class: 'meta' }, `約 ${Math.round(dist)} m・${bearingName(br)}側・高さ 約 ${n.height.toFixed(1)} m${hours != null ? `・冬至の日影 ${hours} 時間` : ''}${viewOnly ? '・表示だけ隠した建物（影・解析には含む）' : ''}`),
         ),
         h('div', { class: 'btn-row', style: 'margin:4px 0' }, ...PRESETS.map(([l, v]) => h('button', { class: 'btn sm', onclick: () => applyH(v) }, l))),
         h(
@@ -764,6 +764,19 @@ export const simStep: StudyStep = {
           hIn,
           h('span', { class: 'meta' }, 'm'),
           h('button', { class: 'btn sm', onclick: () => applyH(+hIn.value) }, '適用'),
+          h(
+            'button',
+            {
+              class: 'btn sm dark',
+              title: '現地で測った高さとして確定します（日影図の脚注・レポートに「実測で確定した建物 N 棟」と出ます）',
+              onclick: () => {
+                if (!(+hIn.value > 0)) return;
+                setNeighborConfirmed(n.id, true);
+                applyH(+hIn.value);
+              },
+            },
+            '実測で確定',
+          ),
           viewOnly ? null : h('button', { class: 'btn sm ghost', title: '直近に選んだ隠し方・理由で隠します（「隠した建物」から戻せ、隠し方・理由も直せます）', onclick: () => hideIds([n.id]) }, '非表示'),
           h(
             'label',
@@ -772,12 +785,11 @@ export const simStep: StudyStep = {
               type: 'checkbox',
               checked: done,
               onchange: (e: Event) => {
-                if ((e.target as HTMLInputElement).checked) confirmed.add(n.id);
-                else confirmed.delete(n.id);
+                setNeighborConfirmed(n.id, (e.target as HTMLInputElement).checked);
                 renderNeighborList();
               },
             }),
-            '確認済',
+            '確認済（高さを確かめた）',
           ),
         ),
       );
@@ -793,15 +805,19 @@ export const simStep: StudyStep = {
       const fp = buildingFootprintEN();
       const ref: EN[] = fp && fp.length >= 3 ? fp : [{ e: 0, n: 0 }];
       const cEN = worldToEN(center);
-      // 影・解析に入る建物（表示だけ隠した建物も含む）から
-      const cands = analysisNeighbors()
-        .filter((n) => n.source !== 'manual' && n.heightKind === 'estimated')
-        .map((n) => ({ n, dist: ringDistance(n.ring, ref), br: bearingEN(cEN, ringMean(n.ring)) }))
-        .filter((x) => x.dist <= 25 && x.br >= 60 && x.br <= 300)
-        .sort((a, b) => (confirmed.has(a.n.id) ? 1 : 0) - (confirmed.has(b.n.id) ? 1 : 0) || a.dist - b.dist);
-      nbList.appendChild(h('div', { class: 'field-label', style: 'margin-top:8px' }, `要確認の隣家（高さが推定で、建物から 25 m 以内の東〜南〜西側）: ${cands.length}棟`));
-      if (!cands.length) nbList.appendChild(h('p', { class: 'hint' }, '該当なし'));
-      for (const x of cands) nbList.appendChild(neighborRow(x.n, x.dist, x.br));
+      // 影・解析に入る建物（表示だけ隠した建物も含む）のうち、冬至の 8〜16 時に敷地（無ければ建物）へ影を落とす建物を、影の時間の長い順に。
+      // 現地で高さを測って確定する対象の絞り込み（確定済みは後ろ）
+      const f = study.frame;
+      const target = sitePolygonEN() ?? fp;
+      const ranked = f ? rankShadowCasters(analysisNeighborsForScene(buildingExclusionEN()), target, f.lat, f.lon, new Date().getFullYear()) : [];
+      const cands = ranked
+        .map((x) => ({ n: x.n, hours: x.hours, dist: ringDistance(x.n.ring, ref), br: bearingEN(cEN, ringMean(x.n.ring)) }))
+        .sort((a, b) => (a.n.confirmed ? 1 : 0) - (b.n.confirmed ? 1 : 0) || b.hours - a.hours);
+      const open = cands.filter((x) => !x.n.confirmed).length;
+      nbList.appendChild(h('div', { class: 'field-label', style: 'margin-top:8px' }, `要確認の建物（冬至の 8〜16 時に敷地へ影を落とす建物。影の長い順）: ${cands.length}棟${cands.length ? `（未確定 ${open}）` : ''}`));
+      nbList.appendChild(h('p', { class: 'hint' }, '上の棟ほど影への効きが大きい建物です。現地で高さを測れたら「実測で確定」を押してください（確定した棟は日影図の脚注・レポートに明記されます）。高さの確からしさはバッジで分かります。'));
+      if (!cands.length) nbList.appendChild(h('p', { class: 'hint' }, target ? '該当なし' : '敷地の輪郭か建物を置くと、影を落とす建物を抽出します'));
+      for (const x of cands) nbList.appendChild(neighborRow(x.n, x.dist, x.br, x.hours));
     };
 
     const dirSel = h('select', null, DIR8.map((d, i) => h('option', { value: i * 45, selected: d === '南' }, d))) as HTMLSelectElement;

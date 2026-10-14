@@ -169,6 +169,7 @@ export function effectiveNeighbors(): Neighbor[] {
           hideReason: o.hideReason ?? n.hideReason,
           hideNote: o.hideNote ?? n.hideNote,
           heightKind: o.height != null ? ('manual' as const) : n.heightKind,
+          ...(o.confirmed ? { confirmed: true } : {}),
         }
       : { ...n };
     if (e.hidden) {
@@ -217,6 +218,24 @@ export function viewOnlyNeighbors(): Neighbor[] {
 /** 影・解析に入る周辺建物（隠していないもの + 表示だけ隠したもの。計算から除外したもの・含めない想定の家は入らない） */
 export function analysisNeighbors(): Neighbor[] {
   return effectiveNeighbors().filter((n) => (!n.hidden || n.hideMode === 'view') && plannedActive(n));
+}
+
+/** 高さを現地で測って確定した印を付ける／外す（自動取得の建物は neighborOverrides、手動の隣家は本体）。印だけなので 'neighbors' は発火しない（影・解析は変わらない） */
+export function setNeighborConfirmed(id: string, on: boolean): boolean {
+  const n = study.neighbors.find((x) => x.id === id);
+  if (!n) return false;
+  if (n.source === 'manual') {
+    if (on) n.confirmed = true;
+    else delete n.confirmed;
+    return true;
+  }
+  const cur = study.neighborOverrides[id] ?? {};
+  const next: typeof cur = { ...cur };
+  if (on) next.confirmed = true;
+  else delete next.confirmed;
+  if (Object.keys(next).length) study.neighborOverrides[id] = next;
+  else delete study.neighborOverrides[id];
+  return true;
 }
 
 /** 隠し方・理由が同じか */

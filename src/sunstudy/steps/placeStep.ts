@@ -61,9 +61,9 @@ import {
   type RoofType,
 } from '../../sun/plannedHouse';
 import { dominantAngleDeg, polygonArea } from '../../sun/align';
-import { loadEnvironment, NEIGHBOR_RADIUS } from '../environment';
+import { loadEnvironment, NEIGHBOR_RADIUS, siteExcludedCount } from '../environment';
 import { DEM_LABEL, gridStats, sampleHeight } from '../terrain';
-import { buildingEavesOutlineEN, buildingFootprintEN, buildingOutlineEN, currentPlaced, ensurePlacedData } from '../building';
+import { buildingEavesOutlineEN, buildingExclusionEN, buildingFootprintEN, buildingOutlineEN, currentPlaced, ensurePlacedData } from '../building';
 import { followPinMove } from '../alignment';
 import { downloadProject, loadProjectFile, loadProjectFromUrl, saveRecent, readRecent, envIsFromSavedProject, markEnvFetched } from '../project';
 import { plateauShapeCounts, plateauShapeText, plateauSourceTag } from '../disclosure';
@@ -936,7 +936,10 @@ export const placeStep: StudyStep = {
       const shape = plateauShapeText(plateauShapeCounts(auto));
       const gsiCount = auto.filter((n) => n.source === 'gsi').length;
       const breakdown = shape ? h('span', { class: 'nb-breakdown' }, `（PLATEAU ${shape}${gsiCount ? `・国土地理院で補った建物 ${gsiCount}` : ''}）`) : null;
-      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, breakdown, manualCount ? `（手動 ${manualCount}棟）` : null, hiddenText, plannedText));
+      // 取得した棟数。敷地・計画建物に重なる建物は影・解析から自動で外すので、その数を添える（レポート・日影図の脚注は自動除外後の数）
+      const autoExcluded = siteExcludedCount(buildingExclusionEN());
+      const excludedText = autoExcluded ? `・うち敷地・計画建物に重なる ${autoExcluded}棟は自動で除外` : null;
+      rows.append(h('span', { class: 'k' }, '周辺建物'), h('span', null, `${auto.length}棟`, ...tags, breakdown, manualCount ? `（手動 ${manualCount}棟）` : null, excludedText, hiddenText, plannedText));
       envBox.appendChild(rows);
       // 地図で建物を選んで隠す（取り壊す既存の家・もう無い建物・形の違う建物などを影と解析から外す）
       if (study.neighbors.length) {

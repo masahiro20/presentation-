@@ -31,7 +31,7 @@ function resetStudy() {
   study.results = { images: [] };
   study.env = { loaded: true, loading: false, error: null, attribution: '', plateau: { datasets: PLATEAU_ENV.datasets.map((d) => ({ ...d })), indexGenerated: PLATEAU_ENV.indexGenerated } };
   study.neighborSources = ['plateau', 'gsi'];
-  study.neighborNotes = ['PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（1 棟。箱形。天端は点群の中央値）。'];
+  study.neighborNotes = ['PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（1 棟を取得。箱形。天端は点群の中央値）。'];
   study.neighbors = [
     plateauNeighborAt(PIN, 20, 0, { gmlId: 'bldg_a', w: 10, d: 8, h: 6.66, zmin: 57.2, holes: [square(-1, -1, 1)], attrs: { usage: '住宅', measuredHeight: 7.6, storeys: 2, warnings: ['islands'] } }),
     gsi('gsi:1', square(-30, 0, 8)),

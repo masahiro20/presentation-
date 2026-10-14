@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
-import { SunContext, isAbortError, keysInRect, ringArea, roofShapeCount, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { SunContext, isAbortError, keysInRect, ringArea, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
@@ -110,14 +110,15 @@ export const NEIGHBORS_HINT =
 
 /**
  * 取得後の案内: 「周辺の建物を 38 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 2 棟）」
- * ／未整備「…国土地理院の建物（高さは推定）を使いました」。kept = 隠したままの建物の数
+ * ／未整備「…国土地理院の建物（高さは推定）を使いました」。kept = 隠したままの建物の数。
+ * 屋根形状ありの棟数は一覧に残った建物の内訳（plateau.shapes）で数え、出典行・注記と揃える（取得全棟の lodCounts ではない）
  */
 export function neighborsLoadedToast(r: LoadNeighborsResult, kept = 0): string {
   const keptText = kept ? `（隠した ${kept} 棟は隠したままです）` : '';
   const p = r.plateau;
   if (p && p.status === 'covered' && r.used.includes('plateau')) {
     const ds = p.datasets.length ? `${[...new Set(p.datasets.map((d) => `${d.year}年度`))].join('／')}・${[...new Set(p.datasets.map((d) => d.ward ?? d.city))].join('／')}` : '';
-    const roof = roofShapeCount(p.lodCounts);
+    const roof = p.shapes.roof;
     const fill = r.used.includes('gsi') ? '・国土地理院で補完' : '';
     return `周辺の建物を ${r.count} 棟取得しました（PLATEAU${ds ? ` ${ds}` : ''}・屋根形状あり ${roof} 棟${fill}）${keptText}`;
   }

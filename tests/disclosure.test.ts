@@ -17,6 +17,7 @@ import {
 } from '../src/sunstudy/disclosure';
 import { buildReportHtml } from '../src/sunstudy/report';
 import { study } from '../src/sunstudy/state';
+import { frameFromLocal } from '../src/sunstudy/types';
 import type { Neighbor } from '../src/sunstudy/types';
 
 const square = (e0: number, n0: number, size: number) => [
@@ -177,6 +178,39 @@ describe('disclosureLines / レポート: 出典の行', () => {
     // 旧形式の保存データ（env.plateau が無い）でも崩れない
     delete study.env.plateau;
     expect(disclosureLines({ disclosure: neighborDisclosure(null) })[1]).toBe('周辺建物の出典: PLATEAU（国土交通省）1 棟・国土地理院（推定）1 棟');
+  });
+
+  it('敷地・計画建物に重なって自動で外した PLATEAU の建物は出典の棟数に入らない（「自動で除外」の行と整合。共通の開示文の LOD1 判定も同じ一覧）', () => {
+    // p1（箱形・LOD1）は計画建物の外形 square(0, 0, 5) に重なる → 自動で除外。p2（屋根形状）と g1 は残る
+    study.neighbors = [
+      nb('p1', square(0, 0, 5), { source: 'plateau', heightKind: 'measured', plateau: attrs({ lod: 1 }) }),
+      nb('p2', square(20, 0, 5), { source: 'plateau', heightKind: 'measured', plateau: attrs({ lod: 2 }), mesh: mesh(2) }),
+      nb('g1', square(0, 20, 5)),
+    ];
+    study.neighborSources = ['plateau', 'gsi'];
+    study.env.plateau = { datasets: [SETAGAYA], indexGenerated: '2026-10-10' };
+    // 自動除外なし（exclusion = null・敷地なし）: PLATEAU 2 棟、箱形があるので LOD1 の文が出る
+    expect(disclosureLines({ disclosure: neighborDisclosure(null) })).toEqual(['周辺建物の扱い: 計算から除外した周辺建物 なし', '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟・国土地理院（推定）1 棟']);
+    expect(plateauDisclosureText([SETAGAYA], [study.neighbors[0], study.neighbors[1]])).toContain('LOD1 の建物は箱形');
+    // 計画建物に p1 が重なる: 出典の PLATEAU は 1 棟に減り、「自動で除外 1 棟」と足して元の 2 棟になる
+    const d = neighborDisclosure(square(1, 1, 3));
+    expect(d.autoOnSite).toBe(1);
+    expect(d.sources).toEqual([
+      { source: 'plateau', count: 1, estimated: false },
+      { source: 'gsi', count: 1, estimated: true },
+    ]);
+    expect(disclosureLines({ disclosure: d })).toEqual([
+      '周辺建物の扱い: 計算から除外した周辺建物 なし',
+      '敷地・計画建物に重なる自動取得の建物 1 棟は自動で除外',
+      '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟・国土地理院（推定）1 棟',
+    ]);
+    // 敷地の輪郭に p1 が重なるときも同じ（plateauDisclosureText の既定の一覧も自動除外後 → 残る p2 は屋根形状なので LOD1 の文は出ない）
+    study.sitePolygon = square(1, 1, 3).map((p) => frameFromLocal(study.frame!, p.e, p.n));
+    expect(neighborDisclosure(null).sources?.[0]).toEqual({ source: 'plateau', count: 1, estimated: false });
+    expect(plateauDisclosureText()).toBe('周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。年度以降の新築・解体は反映されていない場合があります。');
+    const html = buildReportHtml();
+    expect(html).toContain('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟・国土地理院（推定）1 棟');
+    expect(html).toContain('敷地・計画建物に重なる自動取得の建物 1 棟は自動で除外');
   });
 
   it('レポート: 出典の ul に plateauDatasetLabel の行、前提・注意に共通の開示文、結果のページの注記に出典の行', () => {

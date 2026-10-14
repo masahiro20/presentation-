@@ -17,8 +17,8 @@
 import type { PlateauDatasetInfo } from '../sun/plateau';
 import { plateauDatasetLabel } from '../sun/plateau';
 import { buildingCenter, buildingExclusionEN, buildingFootprintEN } from './building';
-import { siteExcludedCount } from './environment';
-import { analysisNeighbors, effectiveNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
+import { analysisNeighborsForScene, siteExcludedCount } from './environment';
+import { effectiveNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { HIDE_REASONS, HIDE_REASON_LABEL, bearingName, worldToEN } from './types';
 import type { EN, Neighbor, NeighborHideReason, NeighborSource } from './types';
 
@@ -100,9 +100,10 @@ export function plateauSourceLabels(datasets: PlateauDatasetInfo[] = plateauData
  * 天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。年度以降の新築・解体は反映されていない場合があります。」
  * データセットが分からなければ括弧を省く。LOD1 の文は建物単位（list = 解析に入れた建物。箱形 = _lod ?? datasetLod ≤ 1 の建物が 1 棟でもあれば出す。
  * 東京 23 区の 2025 年版のようにデータセットは LOD2 でも住宅はほぼ全棟 _lod=1 の箱なので、データセットの LOD だけでは判定しない。
- * 属性の無い旧データは形が分からないので出す（安全側）。list に PLATEAU の建物が無ければデータセットで判定（LOD1 があるとき。分からなければ出す）
+ * 属性の無い旧データは形が分からないので出す（安全側）。list に PLATEAU の建物が無ければデータセットで判定（LOD1 があるとき。分からなければ出す）。
+ * list の既定は敷地・計画建物に重なって自動で外した建物を除いた解析対象（出典の棟数と同じ数え方。neighborDisclosure と揃える）
  */
-export function plateauDisclosureText(datasets: PlateauDatasetInfo[] = plateauDatasets(), list: Pick<Neighbor, 'source' | 'plateau' | 'mesh'>[] = analysisNeighbors()): string {
+export function plateauDisclosureText(datasets: PlateauDatasetInfo[] = plateauDatasets(), list: Pick<Neighbor, 'source' | 'plateau' | 'mesh'>[] = analysisNeighborsForScene(buildingExclusionEN())): string {
   const where = datasets.length ? `（${datasets.map((d) => `${wardName(d)}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
   const c = plateauShapeCounts(list);
   const lod1 = c.plateau > 0 ? c.box > 0 || c.other > 0 : !datasets.length || datasets.some((d) => d.lod <= 1);
@@ -240,17 +241,21 @@ export function hideReasonText(n: Neighbor): string {
   return n.hideNote ? `${label}（${n.hideNote}）` : label;
 }
 
-/** 今の状態の開示（exclusion は敷地内の自動除外の判定に使う計画建物の外形。省略時は今の配置済み建物） */
+/**
+ * 今の状態の開示（exclusion は敷地内の自動除外の判定に使う計画建物の外形。省略時は今の配置済み建物）。
+ * 出典の棟数（sources）も同じ exclusion で自動除外した建物を除いて数える（「自動で除外 N 棟」の行と足し合わせが合うように）
+ */
 export function neighborDisclosure(exclusion?: EN[] | null): NeighborDisclosure {
   const excluded = excludedNeighbors();
   const viewOnly = viewOnlyNeighbors();
   const byReason = HIDE_REASONS.map((reason) => ({ reason, label: HIDE_REASON_LABEL[reason], count: excluded.filter((n) => (n.hideReason ?? 'other') === reason).length })).filter((x) => x.count > 0);
-  const autoOnSite = siteExcludedCount(exclusion === undefined ? buildingExclusionEN() : exclusion);
+  const footprint = exclusion === undefined ? buildingExclusionEN() : exclusion;
+  const autoOnSite = siteExcludedCount(footprint);
   const planned = { count: effectiveNeighbors().filter((n) => n.planned && (!n.hidden || n.hideMode === 'view')).length, enabled: study.plannedEnabled };
   const d: NeighborDisclosure = { excluded, viewOnly, byReason, autoOnSite, planned };
   // 出典の行は自動取得をしたときだけ（手動の隣家だけの検討では出典を問わない）
   if (study.neighborSources.length) {
-    d.sources = countBySource(analysisNeighbors());
+    d.sources = countBySource(analysisNeighborsForScene(footprint));
     d.plateauDatasets = plateauDatasets();
   }
   return d;

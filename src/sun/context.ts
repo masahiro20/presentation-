@@ -38,8 +38,19 @@ export interface LoadNeighborsResult {
   used: NeighborSourceChoice[];
   /** 利用者向けの注記（未整備・通信エラー・一部タイルの失敗・データ量の上限・補完の棟数） */
   notes: string[];
-  /** PLATEAU を試した結果（'plateau' で取得したときだけ。datasets・lodCounts は covered のときだけ入る） */
-  plateau?: { datasets: PlateauDatasetInfo[]; lodCounts: Record<string, number>; status: PlateauFetchResult['status'] };
+  /**
+   * PLATEAU を試した結果（'plateau' で取得したときだけ。datasets・lodCounts は covered のときだけ入る）。
+   * lodCounts は取得した全棟（敷地に重なる建物を除く前）、shapes は一覧に残った建物（count に数えた棟）の内訳。
+   * 利用者向けの文（トースト）は出典行・注記と揃うように shapes で数える
+   */
+  plateau?: { datasets: PlateauDatasetInfo[]; lodCounts: Record<string, number>; status: PlateauFetchResult['status']; shapes: PlateauShapeCounts };
+}
+
+/** PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown） */
+export interface PlateauShapeCounts {
+  box: number;
+  roof: number;
+  unknown: number;
 }
 
 /** PLATEAU が未整備の地域の注記（§4 のフォールバック表） */
@@ -133,7 +144,7 @@ export function plateauProgressText(p: Pick<PlateauProgress, 'message'>): string
   return p.message.startsWith('周辺建物') ? p.message : `周辺建物（PLATEAU）: ${p.message}`;
 }
 
-/** PLATEAU で取れたときの注記（一部タイルの失敗・データ量の上限・隣接する未整備の市区・国土地理院で補った棟数） */
+/** PLATEAU で取れたときの注記（一部タイルの失敗・データ量の上限・隣接する未整備の市区・市区町村コードの改編の救済・国土地理院で補った棟数） */
 export function plateauCoveredNotes(r: Extract<PlateauFetchResult, { status: 'covered' }>, fill: number): string[] {
   const notes: string[] = [];
   if (fill > 0) notes.push(`国土地理院の地図から ${fill} 棟を補いました（高さは建物の種類から推定）。`);
@@ -141,14 +152,42 @@ export function plateauCoveredNotes(r: Extract<PlateauFetchResult, { status: 'co
   if (r.truncated) notes.push('遠方の建物の一部は取得していません（データ量の上限）。');
   // 索引に無い市区は名前が分からない（索引に項目が無い）ので市区町村コードで示す
   if (r.missingMuniCds.length) notes.push(`隣接する市区（市区町村コード ${r.missingMuniCds.join('・')}）は PLATEAU が未整備のため、その範囲は国土地理院の推定で補いました。`);
+  if (r.regionAdded?.length) notes.push(plateauRegionAddedNote(r.datasets, r.regionAdded));
   return notes;
 }
 
-/** PLATEAU の建物のうち屋根形状（LOD2 以上）の棟数（lodCounts のキーは String(lod)） */
+/**
+ * 市区町村コードの改編（浜松市 2024 年の区再編など）で逆ジオコーダのコードが索引に無く、索引の区域（region）で市区を補ったときの注記。
+ * 「市区町村コードの改編のため、位置の重なる PLATEAU（愛知県名古屋市守山区・2022年度・LOD1）で補いました。」
+ * データセット名は使ったデータセット（datasets）から引き、無ければ（tileset が取れずに落ちた）市区町村コードで示す
+ */
+export function plateauRegionAddedNote(datasets: readonly PlateauDatasetInfo[], regionAdded: readonly string[]): string {
+  const names = regionAdded.map((cd) => datasets.find((d) => d.muniCd === cd)?.label ?? `市区町村コード ${cd}`);
+  return `市区町村コードの改編のため、位置の重なる PLATEAU（${names.join('／')}）で補いました。`;
+}
+
+/** PLATEAU の建物のうち屋根形状（LOD2 以上）の棟数（lodCounts のキーは String(lod)）。取得全棟の数なので利用者向けの文には使わない（shapes を使う） */
 export function roofShapeCount(lodCounts: Record<string, number>): number {
   let n = 0;
   for (const [lod, count] of Object.entries(lodCounts)) if (Number(lod) >= 2) n += count;
   return n;
+}
+
+/**
+ * 一覧に残った PLATEAU の建物の内訳（箱形 / 屋根形状あり / 属性の無い旧データ）。
+ * 判定は src/app/sunDisclosure.ts の isPlateauBox と同じ規則（建物の _lod、無ければデータセットの LOD が 2 以上なら屋根形状あり）。
+ * sunDisclosure.ts の plateauShapeCounts（出典行の内訳）はこの関数の別名なので、トーストと出典行・注記は同じ数になる
+ */
+export function countPlateauShapes(list: Pick<NeighborBuilding, 'source' | 'plateau'>[]): PlateauShapeCounts {
+  const c: PlateauShapeCounts = { box: 0, roof: 0, unknown: 0 };
+  for (const b of list) {
+    if (b.source !== 'plateau') continue;
+    const a = b.plateau;
+    if (!a) c.unknown++;
+    else if ((a.lod ?? a.datasetLod) >= 2) c.roof++;
+    else c.box++;
+  }
+  return c;
 }
 
 /** 選んだ建物の色（2 点合わせの航空写真側の印 ALIGN_COLORS.target と同じオレンジ） */
@@ -947,7 +986,8 @@ export class SunContext {
         r = { status: 'error', stage: 'tiles', message: (e as Error).message };
       }
       throwIfSuperseded();
-      plateau = { datasets: r.status === 'covered' ? r.datasets : [], lodCounts: r.status === 'covered' ? r.lodCounts : {}, status: r.status };
+      // shapes は敷地に重なる建物を除いた後（fresh）で数えるので、ここでは空にしておき最後に入れる
+      plateau = { datasets: r.status === 'covered' ? r.datasets : [], lodCounts: r.status === 'covered' ? r.lodCounts : {}, status: r.status, shapes: countPlateauShapes([]) };
       if (r.status === 'covered' && r.buildings.length) {
         const fromPlateau = r.buildings.map((b) => plateauToNeighborBuilding(b, { lat, lon }));
         let gsi: NeighborBuilding[] = [];
@@ -1024,7 +1064,8 @@ export class SunContext {
       notes.push(...plateauCoveredNotes(coveredResult, fill));
     }
     const result: LoadNeighborsResult = { count: fresh.length, used, notes };
-    if (plateau) result.plateau = plateau;
+    // 内訳（箱形 / 屋根形状あり）は一覧に残った建物で数える（取得全棟の lodCounts とは敷地に重なる建物の分だけずれる）
+    if (plateau) result.plateau = { ...plateau, shapes: countPlateauShapes(fresh) };
     this.lastLoad = result;
     this.buildNeighbors();
     return result;

@@ -3,9 +3,10 @@
  *
  * fetchPlateauBuildings の段階（PlateauStage。進捗もこの順に出る）:
  *  1. geocode: muniCodesAround（中心＋±(radius+marginM) の 4 隅）。全滅 → 索引に region があれば muniCodesByRegion、それも無ければ error
- *  2. index:   loadPlateauIndex → pickDataset。索引に無い市区は missingMuniCds に。1 件も索引に無ければ（市区町村コードの改編:
- *              浜松市 2024 年の区再編で逆ジオコーダは新コード 22138 を返すが索引は旧 22131〜22137）索引の region で市区を引き直し、
- *              それでも無ければ none/outside。region で引けたときは逆ジオコーダのコードを missingMuniCds に入れない（未整備ではなく改編）
+ *  2. index:   loadPlateauIndex → pickDataset。索引に無い市区は missingMuniCds に。ピンの市区のコードが索引に無ければ（市区町村コードの改編:
+ *              浜松市 2024 年の区再編で逆ジオコーダは新コード 22138 を返すが索引は旧 22131〜22137）索引の region のうちピンを含む市区を
+ *              候補に足す（regionAdded。注記用）。救済できたらピンのコードだけ missingMuniCds から外す（隅の未整備な隣接市区は残す）。
+ *              隅のコードが索引に無いだけなら未整備の隣接市区（救済しない）。候補が 1 件も無ければ none/outside
  *  3. tileset: データセットごとに resolveTilesetUrl（-latest → 索引 URL）→ fetchCached → parseTileset。-latest に無い（missing）データセットは
  *              索引の tileset.json を試し、それが 4xx なら対象外側（missingMuniCds）に、取れるなら index 経由で続ける（浜松市の旧 7 区）。
  *              取得失敗はそのデータセットだけ落とす（全滅で error/tileset）。葉の選択（selectContentTiles）もここで行い、
@@ -72,8 +73,10 @@ export type PlateauFetchResult =
       failedTiles: number;
       truncated: boolean;
       lodCounts: Record<string, number>;
-      /** 索引に無い市区（注記用） */
+      /** 索引に無い市区（注記用。改編の救済で region から市区を足せたときは空） */
       missingMuniCds: string[];
+      /** 逆ジオコーダのコードが索引に無く、索引の region で足した市区（市区町村コードの改編の救済。注記用） */
+      regionAdded?: string[];
     }
   | { status: 'none'; reason: 'outside' | 'noTiles'; muniCds: string[] }
   | { status: 'error'; stage: PlateauStage; message: string };
@@ -543,8 +546,10 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
       return { status: 'error', stage: 'index', message: errorMessage(e) };
     }
     if (muniCds.length === 0) {
-      // 逆ジオコーダ不通: 索引の region（W16）で市区を引く予備経路
-      muniCds = muniCodesByRegion(index, muniBox);
+      // 逆ジオコーダ不通: 索引の region（W16）で市区を引く予備経路。ピンを含む市区を先頭に（datasets[0]・注記の先頭がピンの市区になる。
+      // 逆ジオコーダが中心を先頭に返すのと同じ約束）、続けて箱と交差する市区
+      const inPin = muniCodesByRegion(index, { west: lon, east: lon, south: lat, north: lat });
+      muniCds = [...inPin, ...muniCodesByRegion(index, muniBox).filter((cd) => !inPin.includes(cd))];
       if (muniCds.length === 0) return { status: 'error', stage: 'geocode', message: geocodeError ?? '市区町村コードが分かりません' };
     }
     let missingMuniCds: string[] = [];
@@ -554,17 +559,25 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
       if (ds) candidates.push(ds);
       else missingMuniCds.push(cd);
     }
-    if (candidates.length === 0) {
-      // 逆ジオコーダのコードが 1 件も索引に無い: 市区町村コードの改編（浜松市 2024: 22138 ↔ 索引 22131〜22137）か本当に未整備か。
-      // 索引の region（索引生成時に -latest または tileset.json の root.region から付ける）で市区を引き直し、引けたらそれで続ける。
-      // この場合の逆ジオコーダのコードは「未整備の隣接市区」ではないので missingMuniCds には入れない
-      for (const cd of muniCodesByRegion(index, muniBox)) {
+    /** 索引の region で足した市区（注記用。市区町村コードの改編の救済） */
+    const regionAdded: string[] = [];
+    const centerCd = muniCds[0];
+    if (centerCd !== undefined && missingMuniCds.includes(centerCd)) {
+      // ピン（中心）の市区のコードが索引に無い: 市区町村コードの改編（浜松市 2024: 22138 ↔ 索引 22131〜22137）か本当に未整備か。
+      // 索引の region（索引生成時に -latest または tileset.json の root.region から付ける）のうち **ピンを含む** 市区だけ候補に足す
+      // （箱と交差するだけの無関係な隣接市区は足さない。隅のコードが索引に無いだけなら未整備の隣接市区なので救済しない）。
+      // 救済できたらピンのコードだけを missingMuniCds から外す（隅の未整備な隣接市区の注記は残す）
+      const pinBox = { west: lon, east: lon, south: lat, north: lat };
+      for (const cd of muniCodesByRegion(index, pinBox)) {
+        if (candidates.some((c) => c.muniCd === cd)) continue;
         const ds = pickDataset(index, cd);
-        if (ds && !candidates.some((c) => c.muniCd === cd)) candidates.push(ds);
+        if (!ds) continue;
+        candidates.push(ds);
+        regionAdded.push(cd);
       }
-      if (candidates.length === 0) return { status: 'none', reason: 'outside', muniCds };
-      missingMuniCds = [];
+      if (regionAdded.length > 0) missingMuniCds = missingMuniCds.filter((cd) => cd !== centerCd);
     }
+    if (candidates.length === 0) return { status: 'none', reason: 'outside', muniCds };
 
     // 3. tileset（解決 → 取得 → 解釈 → 葉の選択）
     stage = 'tileset';
@@ -576,14 +589,16 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
     const usable: PlateauDatasetInfo[] = [];
     await Promise.all(
       candidates.map(async (ds0) => {
-        // tileset.json の期限（-latest の期限は resolveTilesetUrl の中）。期限切れは中止ではなくそのデータセットの失敗
-        const { controller, dispose } = linkedController(signal, timeoutOf('tileset'));
+        /** tileset.json の期限。-latest の期限は resolveTilesetUrl の中なので、計時は -latest の解決が終わってから始める（tileset.json が 20 s を丸ごと使える） */
+        let linked: ReturnType<typeof linkedController> | null = null;
         try {
           const r = await resolveTilesetUrl(ds0, { ...net, timeoutMs: timeoutOf('latest') });
           const ds: PlateauDatasetInfo = r.url === ds0.tilesetUrl ? ds0 : { ...ds0, tilesetUrl: r.url };
+          // 期限切れは中止ではなくそのデータセットの失敗
+          linked = linkedController(signal, timeoutOf('tileset'));
           let buf: ArrayBuffer;
           try {
-            buf = await fetchCached(ds.tilesetUrl, { fetchImpl: o.fetchImpl, signal: controller.signal });
+            buf = await fetchCached(ds.tilesetUrl, { fetchImpl: o.fetchImpl, signal: linked.controller.signal });
           } catch (e) {
             rethrowIfAborted(e, signal);
             // -latest が「データセット無し」（r.missing。索引の URL で試している）で、その索引の URL も 4xx: データセットが消えた → 未整備側に寄せる。
@@ -606,7 +621,7 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
           rethrowIfAborted(e, signal);
           tilesetErrors.push(`${ds0.label}: ${errorMessage(e)}`);
         } finally {
-          dispose();
+          linked?.dispose();
         }
       }),
     );
@@ -765,7 +780,7 @@ export async function fetchPlateauBuildings(lat: number, lon: number, radiusM: n
     const usedCds = new Set(attempted.map((s) => s.ds.muniCd));
     const datasets = usable.filter((d) => usedCds.has(d.muniCd)).sort((a, b) => candidates.findIndex((c) => c.muniCd === a.muniCd) - candidates.findIndex((c) => c.muniCd === b.muniCd));
     progress({ message: `周辺建物 ${buildings.length.toLocaleString('ja-JP')} 棟`, done: 1, total: 1, bytes, totalBytes: bytes, ratio: 1 });
-    return { status: 'covered', buildings, datasets, tiles: tileStats, failedTiles, truncated, lodCounts, missingMuniCds };
+    return { status: 'covered', buildings, datasets, tiles: tileStats, failedTiles, truncated, lodCounts, missingMuniCds, regionAdded };
   } catch (e) {
     rethrowIfAborted(e, signal);
     return { status: 'error', stage, message: errorMessage(e) };

@@ -11,9 +11,10 @@
  */
 import { download } from '../app/dom';
 import { formatHM, keyDates } from '../sun/solar';
-import { currentPlaced } from './building';
+import { buildingExclusionEN, currentPlaced } from './building';
 import { SOURCE_SHORT, disclosureLines, hideReasonText, neighborDisclosure, neighborWhere, plannedLine, plateauDisclosureText, plateauSourceLabels } from './disclosure';
 import type { NeighborDisclosure } from './disclosure';
+import { analysisNeighborsForScene } from './environment';
 import { analysisNeighbors, excludedNeighbors, study, viewOnlyNeighbors } from './state';
 import { DEM_LABEL } from './terrain';
 import { NEIGHBOR_SOURCE_LABEL, frameToLocal } from './types';
@@ -90,7 +91,8 @@ export function assumptionItems(): AssumptionItem[] {
   } else {
     items.push({ key: 'dims', text: '建物なし（土地のみ）' });
   }
-  const c = neighborCounts();
+  // 敷地・計画建物に重なって自動で外した建物は数えない（disclosure.ts の出典行と同じ範囲）
+  const c = neighborCounts(analysisNeighborsForScene(buildingExclusionEN()));
   const excluded = excludedNeighbors().length;
   const viewOnly = viewOnlyNeighbors().length;
   items.push({
@@ -267,7 +269,8 @@ export function buildReportHtml(): string {
     const ge = f.groundElev;
     const demSrc = study.grid?.source;
     const area = siteAreaM2();
-    const list = analysisNeighbors();
+    // 影・解析に実際に入る建物（敷地・計画建物に重なる自動取得の建物は自動除外済み）。出典行（neighborDisclosure）と同じ範囲
+    const list = analysisNeighborsForScene(buildingExclusionEN());
     const srcs: NeighborSource[] = [...study.neighborSources];
     if (list.some((n) => n.source === 'manual') && !srcs.includes('manual')) srcs.push('manual');
     // PLATEAU は使ったデータセット（市区・年度・LOD）ごとに 1 行（plateauDatasetLabel。旧形式の保存データで分からなければ名前だけ）

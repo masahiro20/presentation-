@@ -59,7 +59,7 @@ vi.mock('../src/sun/plateau/fetch', async (importOriginal) => {
   return { ...mod, fetchPlateauBuildings };
 });
 
-import { NEIGHBOR_FILL_TIMEOUT_MS, NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, isAbortError, neighborKey, plateauCoveredNotes, plateauProgressText, plateauToNeighborBuilding, ringCentroid, roofShapeCount, supersededError, waitWithLimit } from '../src/sun/context';
+import { NEIGHBOR_FILL_TIMEOUT_MS, NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, countPlateauShapes, isAbortError, neighborKey, plateauCoveredNotes, plateauProgressText, plateauRegionAddedNote, plateauToNeighborBuilding, ringCentroid, roofShapeCount, supersededError, waitWithLimit } from '../src/sun/context';
 import { buildOccluder } from '../src/sun/analysis';
 import { LOD1_BOX_NOTE, collectDisclosure, disclosureLines, excludedTableRows, heightKindOf, heightKindSuffix, isPlateauBox, plateauShapeCounts, sourceLines } from '../src/app/sunDisclosure';
 import { NEIGHBORS_HINT, NEIGHBOR_SOURCE_BUTTON, NO_NEIGHBORS_MSG, neighborSourceLine, neighborsLoadedToast, reloadSurroundings, type SurroundingsDeps } from '../src/app/steps/sunStep';
@@ -183,6 +183,16 @@ describe('plateauToNeighborBuilding: anchor 基準 → ピン基準', () => {
     expect(roofShapeCount({ '1': 5, '2': 2, '3': 1 })).toBe(3);
     expect(NEIGHBOR_RADIUS_M).toBe(110);
   });
+  it('市区町村コードの改編の救済（regionAdded）の注記: データセット名で示し、使えなかった市区は市区町村コードで示す', () => {
+    const r = covered();
+    // 浜松市 2024: 逆ジオコーダは 22138、索引は旧 22131〜22137。region で足した市区のデータセット名を出し、missingMuniCds は空なので未整備の行は出ない
+    const hamamatsu: PlateauDatasetInfo = { ...DATASET, muniCd: '22131', pref: '静岡県', city: '浜松市', ward: '中区', year: 2023, lod: 1, label: '静岡県浜松市中区・2023年度・LOD1' };
+    expect(plateauCoveredNotes({ ...r, datasets: [hamamatsu], missingMuniCds: [], regionAdded: ['22131'] }, 0)).toEqual(['市区町村コードの改編のため、位置の重なる PLATEAU（静岡県浜松市中区・2023年度・LOD1）で補いました。']);
+    // 足した市区の tileset が取れずに datasets から落ちたときは名前が分からないので市区町村コードで示す。区境で足したデータセットは「／」でつなぐ
+    expect(plateauRegionAddedNote([hamamatsu], ['22131', '22132'])).toBe('市区町村コードの改編のため、位置の重なる PLATEAU（静岡県浜松市中区・2023年度・LOD1／市区町村コード 22132）で補いました。');
+    // regionAdded が無い（旧い結果・空）なら行は出ない
+    expect(plateauCoveredNotes({ ...r, regionAdded: [] }, 0)).toEqual([]);
+  });
 });
 
 describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM', () => {
@@ -195,7 +205,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     expect(r.count).toBe(3);
     expect(r.used).toEqual(['plateau', 'gsi']);
     expect(r.notes).toEqual(['国土地理院の地図から 1 棟を補いました（高さは建物の種類から推定）。']);
-    expect(r.plateau).toEqual({ datasets: [DATASET], lodCounts: { '1': 1, '2': 1 }, status: 'covered' });
+    expect(r.plateau).toEqual({ datasets: [DATASET], lodCounts: { '1': 1, '2': 1 }, status: 'covered', shapes: { box: 1, roof: 1, unknown: 0 } });
     expect(sc.lastSource).toBe('plateau');
     expect(sc.lastLoad).toBe(r);
     expect(progress).toContainEqual(['周辺建物（PLATEAU）: 建物タイル 1/2（1.0 MB）', 0.5]);
@@ -235,7 +245,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     expect(r.used).toEqual(['gsi']);
     expect(r.notes).toEqual([NOTE_PLATEAU_MISSING]);
     expect(r.notes[0]).toMatch(/PLATEAU.*未整備/);
-    expect(r.plateau).toEqual({ datasets: [], lodCounts: {}, status: 'none' });
+    expect(r.plateau).toEqual({ datasets: [], lodCounts: {}, status: 'none', shapes: { box: 0, roof: 0, unknown: 0 } });
     expect(sc.state.neighbors.every((b) => b.source === 'gsi' && !b.mesh)).toBe(true);
     // PLATEAU 未整備のまま国土地理院も空 → OSM（従来順）
     fake.gsi = [];
@@ -611,6 +621,47 @@ describe('国土地理院で隠した・直した記録は、外形の照合で 
   });
 });
 
+describe('取得後のトーストの内訳は一覧に残った建物で数える（取得全棟の lodCounts ではない）', () => {
+  it('敷地に重なる LOD2 の 1 棟が除外されたとき、トーストの「屋根形状あり」の数 = 出典行の数（lodCounts の 2 棟ではなく 1 棟）', async () => {
+    // C = 屋根形状（LOD2）6×6×8、足元の中心がピン（敷地の中。建て替え前の既存建物）→ inSite で除外される
+    const boxC = plateauBox({ gmlId: 'bldg_C', anchor: ll(0, 0), w: 6, d: 6, h: 8, zmin: 40, attrs: { ...dsAttrs(), lod: 2 } });
+    fake.plateau = { ...covered(), buildings: [boxA(), boxB(), boxC], lodCounts: { '1': 1, '2': 2 } };
+    const sc = new SunContext(fakeViewer(), { ...SITE });
+    const r = await sc.loadNeighbors('plateau');
+    // 一覧: A（箱形）・B（屋根形状）・国土地理院 1 棟。C は敷地に重なるので無い
+    expect(sc.state.neighbors.map((b) => b.id)).toEqual(['plateau:bldg_A', 'plateau:bldg_B', 'gsi-1']);
+    expect(r.count).toBe(3);
+    // lodCounts は取得全棟（C を含む）、shapes は残った建物
+    expect(r.plateau?.lodCounts).toEqual({ '1': 1, '2': 2 });
+    expect(roofShapeCount(r.plateau!.lodCounts)).toBe(2);
+    expect(r.plateau?.shapes).toEqual({ box: 1, roof: 1, unknown: 0 });
+    // トーストは出典行（sunDisclosure.plateauShapeCounts で数える）と同じ 1 棟
+    const toastText = neighborsLoadedToast(r);
+    expect(toastText).toBe('周辺の建物を 3 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟・国土地理院で補完）');
+    const d = collectDisclosure(sc);
+    expect(d.sources?.[0]).toBe('周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟（箱形 1 棟・屋根形状あり 1 棟）・国土地理院（推定）1 棟');
+    const roofInToast = Number(/屋根形状あり (\d+) 棟/.exec(toastText)![1]);
+    const roofInSource = Number(/屋根形状あり (\d+) 棟/.exec(d.sources![0])![1]);
+    expect(roofInToast).toBe(roofInSource);
+    expect(roofInToast).toBe(1);
+  });
+
+  it('countPlateauShapes は sunDisclosure.plateauShapeCounts と同じ規則（建物の _lod、無ければデータセットの LOD。属性無しは unknown。PLATEAU 以外は数えない）', () => {
+    const list: Pick<NeighborBuilding, 'source' | 'plateau'>[] = [
+      { source: 'plateau', plateau: { ...boxA().attrs, lod: 1, datasetLod: 2 } },
+      { source: 'plateau', plateau: { ...boxB().attrs, lod: 2, datasetLod: 1 } },
+      { source: 'plateau', plateau: { ...boxA().attrs, lod: null, datasetLod: 1 } },
+      { source: 'plateau', plateau: { ...boxA().attrs, lod: null, datasetLod: 2 } },
+      { source: 'plateau', plateau: undefined },
+      { source: 'gsi', plateau: undefined },
+    ];
+    const expected = { box: 2, roof: 2, unknown: 1 };
+    expect(countPlateauShapes(list)).toEqual(expected);
+    expect(plateauShapeCounts(list)).toEqual(expected);
+    expect(countPlateauShapes([])).toEqual({ box: 0, roof: 0, unknown: 0 });
+  });
+});
+
 describe('開示・文言', () => {
   it('collectDisclosure.sources: 出典の行（PLATEAU のデータセット・国土地理院（推定））と共通の開示文。rooms/heatmap/deck/diagram の注記に出る', async () => {
     const v = fakeViewer();
@@ -700,9 +751,11 @@ describe('開示・文言', () => {
     const r = await sc.loadNeighbors('plateau');
     expect(neighborsLoadedToast(r)).toBe('周辺の建物を 3 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟・国土地理院で補完）');
     expect(neighborsLoadedToast({ ...r, used: ['plateau'], count: 2 }, 1)).toBe('周辺の建物を 2 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟）（隠した 1 棟は隠したままです）');
-    expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [NOTE_PLATEAU_MISSING], plateau: { datasets: [], lodCounts: {}, status: 'none' } })).toBe('この地域は PLATEAU 未整備のため国土地理院の建物（高さは推定）を使いました（4 棟）');
-    expect(neighborsLoadedToast({ count: 4, used: ['osm'], notes: [NOTE_PLATEAU_ERROR], plateau: { datasets: [], lodCounts: {}, status: 'error' } })).toBe('PLATEAU のデータを取得できなかったため（通信エラー）OpenStreetMap の建物を使いました（4 棟）');
+    expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [NOTE_PLATEAU_MISSING], plateau: { datasets: [], lodCounts: {}, status: 'none', shapes: { box: 0, roof: 0, unknown: 0 } } })).toBe('この地域は PLATEAU 未整備のため国土地理院の建物（高さは推定）を使いました（4 棟）');
+    expect(neighborsLoadedToast({ count: 4, used: ['osm'], notes: [NOTE_PLATEAU_ERROR], plateau: { datasets: [], lodCounts: {}, status: 'error', shapes: { box: 0, roof: 0, unknown: 0 } } })).toBe('PLATEAU のデータを取得できなかったため（通信エラー）OpenStreetMap の建物を使いました（4 棟）');
     expect(neighborsLoadedToast({ count: 4, used: ['gsi'], notes: [] })).toBe('周辺の建物を 4 棟取得しました（国土地理院の建物（高さは推定））');
+    // 内訳は一覧に残った建物（shapes）で数える: 取得全棟の lodCounts が屋根形状 5 棟でも、残ったのが 1 棟ならトーストは 1 棟
+    expect(neighborsLoadedToast({ ...r, used: ['plateau'], count: 2, plateau: { ...r.plateau!, lodCounts: { '1': 1, '2': 5 } } })).toBe('周辺の建物を 2 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟）');
     const [a, b, g] = sc.state.neighbors;
     expect(neighborSourceLine(a)).toBe('出典: PLATEAU（国土交通省）（2025年度・LOD1）');
     expect(neighborSourceLine(b)).toBe('出典: PLATEAU（国土交通省）（2025年度・LOD2） 実測の最高高さ 9.8 m');

@@ -7,6 +7,7 @@
  * PlateauBuilding は fetch.ts の分割キャッシュと共有のオブジェクトなので ring/mesh/attrs は書き換えず、平行移動は新しい配列に作る。
  * 仕様: scratchpad/plateau-spec.md §2.11・§4（フォールバック表）・§8（固定文）（W8 が実装）
  */
+import { plateauRegionAddedNote } from '../sun/context';
 import { bboxOf, pointInRing, ringArea, ringCenter, type BBoxEN } from '../sun/footprint';
 import type { EN, PlateauAttrs, PlateauBuilding, PlateauFetchResult, PlateauProgress } from '../sun/plateau';
 import { frameToLocal } from './types';
@@ -76,10 +77,11 @@ export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: numb
 
 /**
  * 利用者向けの注記（§4 のフォールバック表・§8 の固定文）。kept = 距離ルール（applyDistanceRule）の後に一覧へ残った建物。
- * 棟数・屋根形状あり／箱形・国土地理院で補った棟数はすべて kept で数える（取得した全棟数 r.buildings ではない）ので、
- * 同じ画面の棟数行（disclosure.ts の plateauShapeCounts）・日影図の脚注・レポートの出典行と一致する。
- * 先頭は出典の行: 「PLATEAU（国土交通省 3D都市モデル・東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（N 棟。屋根形状あり M 棟・箱形 K 棟）。」
- * （LOD1 だけのデータセットでは「（N 棟。箱形。天端は点群の中央値）」）。区境で 2 データセットなら名前を「／」でつなぐ
+ * 棟数・屋根形状あり／箱形・国土地理院で補った棟数はすべて kept で数える（取得した全棟数 r.buildings ではない）。
+ * これは取得時（距離ルール後・敷地内の自動除外前）の数で、注記は env.neighborNotes に保存される固定文。計画建物を後から置いて
+ * 重なる建物が自動除外されると出典行（disclosure.ts: 自動除外後）の数より多くなり得るので、「N 棟を取得」と取得時の数であることを明示する。
+ * 先頭は出典の行: 「PLATEAU（国土交通省 3D都市モデル・東京都世田谷区・2025年度・LOD2）の実測の高さ・形状を使用（N 棟を取得。屋根形状あり M 棟・箱形 K 棟）。」
+ * （LOD1 だけのデータセットでは「（N 棟を取得。箱形。天端は点群の中央値）」）。区境で 2 データセットなら名前を「／」でつなぐ
  */
 export function plateauNotes(r: PlateauCovered, kept: PlateauNotesNeighbor[]): string[] {
   const notes: string[] = [];
@@ -87,7 +89,7 @@ export function plateauNotes(r: PlateauCovered, kept: PlateauNotesNeighbor[]): s
   const labels = r.datasets.map((d) => d.label).join('／');
   const head = `PLATEAU（国土交通省 3D都市モデル・${labels}）の実測の高さ・形状を使用`;
   const lod1Only = r.datasets.length > 0 && r.datasets.every((d) => d.lod <= 1);
-  notes.push(lod1Only ? `${head}（${total} 棟。箱形。天端は点群の中央値）。` : `${head}（${total} 棟。屋根形状あり ${roof} 棟・箱形 ${box} 棟）。`);
+  notes.push(lod1Only ? `${head}（${total} 棟を取得。箱形。天端は点群の中央値）。` : `${head}（${total} 棟を取得。屋根形状あり ${roof} 棟・箱形 ${box} 棟）。`);
   if (fill > 0) notes.push(`国土地理院の地図から ${fill} 棟を補いました（高さは建物の種類から推定）。`);
   if (r.failedTiles > 0) {
     const tiles = r.tiles.length + r.failedTiles;
@@ -98,6 +100,8 @@ export function plateauNotes(r: PlateauCovered, kept: PlateauNotesNeighbor[]): s
     // 索引に無い市区は名前が分からない（索引に項目が無い）ので市区町村コードで示す
     notes.push(`隣接する市区（市区町村コード ${r.missingMuniCds.join('・')}）は PLATEAU が未整備のため、その範囲は国土地理院の推定で補いました。`);
   }
+  // 市区町村コードの改編の救済（索引の region で市区を足した）。文はプレゼン側（context.ts）と共通
+  if (r.regionAdded?.length) notes.push(plateauRegionAddedNote(r.datasets, r.regionAdded));
   return notes;
 }
 

@@ -380,7 +380,7 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     const gsi = r.list.filter((b) => b.source === 'gsi').length;
     expect(plateau).toBe(4);
     expect(r.plateau?.lodCounts).toEqual({ '1': 6 });
-    expect(r.notes[0]).toBe(`PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（${plateau} 棟。箱形。天端は点群の中央値）。`);
+    expect(r.notes[0]).toBe(`PLATEAU（国土交通省 3D都市モデル・愛知県名古屋市守山区・2022年度・LOD1）の実測の高さ・形状を使用（${plateau} 棟を取得。箱形。天端は点群の中央値）。`);
     expect(gsi).toBeGreaterThan(0);
     expect(r.notes[1]).toBe(`国土地理院の地図から ${gsi} 棟を補いました（高さは建物の種類から推定）。`);
   });

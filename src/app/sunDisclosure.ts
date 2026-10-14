@@ -8,7 +8,7 @@
  * 周辺建物の出典（PLATEAU のデータセット・国土地理院（推定）の棟数）と、PLATEAU の共通の開示文（形状・高さの根拠・年度）も sources の行として同じ所に出す。
  * 数字は解析した時点の扱い（collectDisclosure の写し）で書く（state.sun.disclosure）。
  */
-import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord } from '../sun/context';
+import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, countPlateauShapes, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord, type PlateauShapeCounts } from '../sun/context';
 import type { NeighborBuilding } from '../sun/geo';
 import type { PlateauAttrs } from '../sun/plateau';
 
@@ -46,17 +46,12 @@ export function isPlateauBox(a: Pick<PlateauAttrs, 'lod' | 'datasetLod'>): boole
   return !((a.lod ?? a.datasetLod) >= 2);
 }
 
-/** PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown） */
-export function plateauShapeCounts(list: Pick<NeighborBuilding, 'source' | 'plateau'>[]): { box: number; roof: number; unknown: number } {
-  const c = { box: 0, roof: 0, unknown: 0 };
-  for (const b of list) {
-    if (b.source !== 'plateau') continue;
-    if (!b.plateau) c.unknown++;
-    else if (isPlateauBox(b.plateau)) c.box++;
-    else c.roof++;
-  }
-  return c;
-}
+/**
+ * PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown）。
+ * 取得側（context.ts の countPlateauShapes。トーストの「屋根形状あり N 棟」）と同じ関数なので、出典行とトーストの数は必ず一致する。
+ * isPlateauBox と同じ規則（建物の _lod、無ければデータセットの LOD）
+ */
+export const plateauShapeCounts: (list: Pick<NeighborBuilding, 'source' | 'plateau'>[]) => PlateauShapeCounts = countPlateauShapes;
 
 /** LOD1（箱形）の建物があるときの但し書き（共通の開示文の 2 文目） */
 export const LOD1_BOX_NOTE = 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。';

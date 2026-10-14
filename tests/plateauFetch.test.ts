@@ -5,7 +5,8 @@
  *  - covered（lodCounts・datasets・tiles）、2 回目は fetch 0 回（メモリ LRU ＋ 索引のメモ）
  *  - 索引に無い → none/outside、-latest children 無し → 索引の tileset.json を試す（404 なら none・200 なら covered）、-latest 失敗 → 索引 URL に退避、tileset 500 → error/tileset
  *  - 第 2 回レビュー: 段ごとの期限（fetchImpl が永遠に返らない → 期限切れは失敗: geocode は region 予備経路・tileset は error・タイルは failedTiles）、
- *    市区町村コードの改編（逆ジオコーダのコードが索引に 1 件も無い → 索引の region で引き直す。浜松市 22138 ↔ 22131〜22137）
+ *    市区町村コードの改編（逆ジオコーダのコードが索引に無い → 索引の region でも引いて候補を足す。浜松市 22138 ↔ 22131〜22137。
+ *    中心が新コード・隅が索引にある隣接コードでも両方が候補になる）、tileset の期限の計時は -latest の解決後に始まる（-latest が遅くても tileset.json は 20 s 使える）
  *  - 1 枚 500 → covered かつ failedTiles 1、maxTiles で truncated、AbortSignal は reason を throw、進捗の段階順
  *  - 区境 2 コード → datasets 2 件、gml_id が重複する 2 葉でも buildings は 1 棟ずつ
  *  - fetchCached: Cache API 無し（Node）でもメモリ LRU で動き、失敗は残さない
@@ -54,11 +55,11 @@ const leafTileset = (uris: string[], region = DATA0_REGION) => ({
   root: { boundingVolume: { region }, geometricError: 100, refine: 'REPLACE', children: uris.map((uri) => ({ boundingVolume: { region }, geometricError: 0, content: { uri } })) },
 });
 
-type Route = (url: string, init?: RequestInit) => Response | Promise<Response> | undefined | null;
+type Route = (url: string, init?: RequestInit) => Response | undefined | null | Promise<Response | undefined | null>;
 
 /**
  * 既定のルーティング（守山区 23113 が covered になる一式）に、先に試す override を重ねる。
- * override が undefined を返したら既定へ、null を返したら「通信失敗」（TypeError）
+ * override が undefined を返したら既定へ、null を返したら「通信失敗」（TypeError）。Promise で返してもよい（遅らせてから既定へ、など）
  */
 function stubFetch(override?: Route) {
   const calls: string[] = [];
@@ -247,6 +248,22 @@ describe('fetchPlateauBuildings: 対象外・エラー', () => {
     const r = covered(await run(f));
     expect(r.buildings).toHaveLength(6);
     expect(r.datasets[0].muniCd).toBe('23113');
+  });
+
+  it('逆ジオコーダ全滅の予備経路は、ピンを含む region の市区を先頭に（箱と交差するだけの市区はその後ろ）', async () => {
+    const { index: base } = stubFetch();
+    const ts23102 = tilesetUrlOf(base, '23102', 2, false);
+    const index = miniIndex();
+    index.areas['23102'].region = [137.0, 35.2, 137.1, 35.3]; // ピンを含む（コード順では後）
+    index.areas['13112'].region = [137.054, 35.256, 137.2, 35.4]; // 箱と交差するがピン（35.2565, 137.0545）は含まない
+    const { f } = stubFetch((url) => {
+      if (url.includes('LonLatToAddress')) return geocode(null);
+      if (url === INDEX_URL) return json(index);
+      if (url === ts23102) return json(leafTileset(['data/data0.b3dm']));
+      return undefined;
+    });
+    const r = covered(await run(f));
+    expect(r.datasets[0].muniCd).toBe('23102');
   });
 
   it('逆ジオコーダ全滅 + 実物の索引（public/plateau-index.json）の region → 守山区だけが引けて covered（東区の region はピンを含まない）', async () => {
@@ -829,6 +846,23 @@ describe('fetchPlateauBuildings: 段ごとの期限（第 2 回レビュー）�
     expect((signals[0].reason as Error).name).toBe('TimeoutError');
   });
 
+  it('tileset の期限の計時は -latest の解決後に始まる: -latest が期限（tileset）より遅くても tileset.json が即返れば covered', async () => {
+    // -latest を 150 ms 遅らせ（-latest の期限 8 s 以内）、tileset.json の期限を 100 ms にする。旧実装は -latest の待ち時間も tileset の期限に数えて error/tileset になった
+    const { f, calls } = stubFetch((url) => (url.includes('-latest') ? sleep(150).then(() => undefined) : undefined));
+    const r = covered(await run(f, { timeouts: { tileset: 100 } }));
+    expect(r.buildings).toHaveLength(6);
+    // -latest 経由（索引 URL への退避ではない）
+    expect(calls.filter((u) => u.includes('-latest'))).toHaveLength(1);
+    expect(r.datasets[0].tilesetUrl).toBe(tilesetUrlOf(stubFetch().index, '23113', 1, true));
+  });
+
+  it('tileset.json 自体が期限を超えればやはり error/tileset（-latest が遅くても期限は tileset.json の分だけ）', async () => {
+    const { f } = stubFetch((url, init) => (url.includes('-latest') ? sleep(50).then(() => undefined) : url.endsWith('tileset.json') ? never()(url, init) : undefined));
+    const r = await run(f, { timeouts: { tileset: 60 } });
+    expect(r).toMatchObject({ status: 'error', stage: 'tileset' });
+    expect((r as { message: string }).message).toMatch(/期限切れ/);
+  });
+
   it('呼び出し側の中止は期限と区別される: 無応答の逆ジオコーダを待つ間に中止 → signal.reason を throw（期限を待たない）', async () => {
     const { f } = stubFetch((url, init) => (url.includes('LonLatToAddress') ? never()(url, init) : undefined));
     const ac = new AbortController();
@@ -840,7 +874,7 @@ describe('fetchPlateauBuildings: 段ごとの期限（第 2 回レビュー）�
   });
 });
 
-describe('fetchPlateauBuildings: 市区町村コードの改編（逆ジオコーダのコードが索引に 1 件も無い → 索引の region で引き直す）', () => {
+describe('fetchPlateauBuildings: 市区町村コードの改編（ピンの市区のコードが索引に無い → ピンを含む索引の region で引き直す）', () => {
   /** 浜松市中央区（2024 年の区再編後のコード。索引は旧 22131〜22137 しか持たない）を模す: 全点 22138 */
   const newCode = '22138';
 
@@ -866,10 +900,60 @@ describe('fetchPlateauBuildings: 市区町村コードの改編（逆ジオコ�
     expect(await run(far.f)).toEqual({ status: 'none', reason: 'outside', muniCds: [newCode] });
   });
 
-  it('一部が索引にあれば（中心 23113・隅 22138）従来どおり: region は使わず、22138 は missingMuniCds に残る', async () => {
+  it('中心が索引に無い新コード（22138）・隅が索引にある隣接コード（23102）→ region でも引いて 23113 を候補に足す: 両方のデータセットが候補・regionAdded ["23113"]・missingMuniCds []', async () => {
+    const { index: base } = stubFetch();
+    const ts23102 = tilesetUrlOf(base, '23102', 2, false);
+    const index = miniIndex();
+    index.areas['23113'].region = [137.0, 35.2, 137.1, 35.3]; // 新コードの実体（守山区 fixture で模す）
+    const { f, calls } = stubFetch((url) => {
+      if (url.includes('LonLatToAddress')) return geocode(url.includes(`lat=${PIN.lat}&lon=${PIN.lon}`) ? newCode : '23102');
+      if (url === INDEX_URL) return json(index);
+      // 東区の tileset を data0 と同じ region の葉 1 枚にし、その b3dm は data0 の中身（重複除去で 6 棟）
+      if (url === ts23102) return json(leafTileset(['data/data0.b3dm']));
+      return undefined;
+    });
+    const r = covered(await run(f));
+    expect(r.datasets.map((d) => d.muniCd).sort()).toEqual(['23102', '23113']);
+    expect(r.regionAdded).toEqual(['23113']);
+    expect(r.missingMuniCds).toEqual([]);
+    expect(r.buildings).toHaveLength(6);
+    expect(calls.filter((u) => u.includes('-latest')).sort()).toEqual([PLATEAU_LATEST_URL('23102', 2, false), PLATEAU_LATEST_URL('23113', 1, true)].sort());
+  });
+
+  it('中心 23113 が索引にあれば救済しない: 隅の未整備コード（11201）は missingMuniCds に残り、箱と交差するだけの無関係な市区（23102）は足さない', async () => {
     const index = miniIndex();
     index.areas['23113'].region = [137.0, 35.2, 137.1, 35.3];
-    index.areas['23102'].region = [137.0, 35.2, 137.1, 35.3]; // region なら東区も引けてしまう範囲
+    index.areas['23102'].region = [137.0, 35.2, 137.1, 35.3]; // 箱と交差する（ピンも含む）が、中心のコードが索引にあるので救済は動かない
+    const { f, calls } = stubFetch((url) => {
+      if (url.includes('LonLatToAddress')) return geocode(url.includes(`lat=${PIN.lat}&lon=${PIN.lon}`) ? '23113' : '11201');
+      if (url === INDEX_URL) return json(index);
+      return undefined;
+    });
+    const r = covered(await run(f));
+    expect(r.datasets.map((d) => d.muniCd)).toEqual(['23113']);
+    expect(r.missingMuniCds).toEqual(['11201']);
+    expect(r.regionAdded).toEqual([]);
+    expect(calls.filter((u) => u.includes('-latest'))).toEqual([PLATEAU_LATEST_URL('23113', 1, true)]);
+  });
+
+  it('中心 22138（改編）が救済されても、隅の未整備コード（11201）は missingMuniCds に残る', async () => {
+    const index = miniIndex();
+    index.areas['23113'].region = [137.0, 35.2, 137.1, 35.3];
+    const { f } = stubFetch((url) => {
+      if (url.includes('LonLatToAddress')) return geocode(url.includes(`lat=${PIN.lat}&lon=${PIN.lon}`) ? newCode : '11201');
+      if (url === INDEX_URL) return json(index);
+      return undefined;
+    });
+    const r = covered(await run(f));
+    expect(r.datasets.map((d) => d.muniCd)).toEqual(['23113']);
+    expect(r.regionAdded).toEqual(['23113']);
+    expect(r.missingMuniCds).toEqual(['11201']);
+  });
+
+  it('一部が索引にあり（中心 23113・隅 22138）region で足せる市区が無ければ 22138 は未整備として missingMuniCds に残る（regionAdded []）', async () => {
+    const index = miniIndex();
+    index.areas['23113'].region = [137.0, 35.2, 137.1, 35.3]; // 既に候補
+    index.areas['23102'].region = [139.6, 35.58, 139.69, 35.66]; // ピンの箱と交差しない
     const { f, calls } = stubFetch((url) => {
       if (url.includes('LonLatToAddress')) return geocode(url.includes(`lat=${PIN.lat}&lon=${PIN.lon}`) ? '23113' : newCode);
       if (url === INDEX_URL) return json(index);
@@ -878,6 +962,7 @@ describe('fetchPlateauBuildings: 市区町村コードの改編（逆ジオコ�
     const r = covered(await run(f));
     expect(r.datasets.map((d) => d.muniCd)).toEqual(['23113']);
     expect(r.missingMuniCds).toEqual([newCode]);
+    expect(r.regionAdded).toEqual([]);
     expect(calls.filter((u) => u.includes('-latest'))).toEqual([PLATEAU_LATEST_URL('23113', 1, true)]);
   });
 });

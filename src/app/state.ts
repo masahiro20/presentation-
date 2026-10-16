@@ -18,6 +18,8 @@ export interface ProjectState {
   name: string;
   customer: string;
   company: string;
+  /** 事務所ロゴ（dataURL。図面の表題欄・ヘッダー・シネマに使う） */
+  logo?: string;
   pdfName?: string;
   model: BuildingModel | null;
   design: DesignOptions;

@@ -10,6 +10,7 @@ import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 import { exportCuts } from '../cuts';
 import { startCinema } from '../cinema';
+import { aiSettingsUi, runAiFinish } from '../aiFinish';
 import type { Viewer } from '../../scene/viewer';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
@@ -582,6 +583,13 @@ export const designStep: Step = {
         }
       };
       side.append(
+        section(
+          'AI 仕上げ（無料枠・ワンクリック）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '今の構図を、下絵と線画を添えて Google の画像生成 AI に渡し、形を変えないよう指示して写真に仕上げます。仕上がりはギャラリー（プレゼン資料）に入ります。'),
+          ...aiSettingsUi(),
+          h('button', { class: 'btn primary block', onclick: () => void runAiFinish(ctx, currentAsShot()) }, '✨ この構図を AI で仕上げる'),
+          h('p', { class: 'hint' }, '注意: 図面から作った画像が Google に送られます。守秘のある案件では使う前にご確認ください。AI は窓や家具の位置を変えることがあるので、仕上がりは必ず下絵と見比べてください。'),
+        ),
         section(
           'AI 仕上げ用カット集',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめます。構図と間取りはそのまま、質感だけを写真のように仕上げてもらう使い方です。'),

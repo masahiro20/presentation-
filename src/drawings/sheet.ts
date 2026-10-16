@@ -13,6 +13,8 @@ export interface SheetInfo {
   designer: string;
   /** 図面番号 */
   no?: string;
+  /** 事務所ロゴ（dataURL） */
+  logo?: string;
 }
 
 export interface Vb {
@@ -158,7 +160,10 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
     const cw = bw * c.w;
     s += `<line x1="${x}" y1="${by}" x2="${x}" y2="${by + titleH}" stroke="#111" stroke-width="${sw * 0.8}"/>`;
     s += `<text x="${x + fs * 0.6}" y="${by + fs * 1.3}" font-size="${fs * 0.75}" fill="#666" letter-spacing="${fs * 0.08}">${esc(c.label)}</text>`;
-    s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.75}" font-size="${c.big ? fs * 1.25 : fs}" font-weight="${c.big ? 600 : 400}" fill="#111">${esc(c.value)}</text>`;
+    if (c.label === '設計' && info.logo) {
+      s += `<image href="${info.logo}" x="${x + fs * 0.6}" y="${by + fs * 1.7}" width="${cw - fs * 1.2}" height="${titleH * 0.34}" preserveAspectRatio="xMinYMid meet"/>`;
+      s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.5}" font-size="${fs * 0.8}" fill="#111">${esc(c.value)}</text>`;
+    } else s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.75}" font-size="${c.big ? fs * 1.25 : fs}" font-weight="${c.big ? 600 : 400}" fill="#111">${esc(c.value)}</text>`;
     x += cw;
   }
   s += `</svg>`;

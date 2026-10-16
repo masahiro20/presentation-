@@ -68,8 +68,15 @@ export class App {
       applyTheme();
       themeBtn.textContent = theme === 'atelier' ? '◐ クラシック表示' : '◑ アトリエ表示';
     };
-    const office = h('div', { class: 'office' }, state.company || '');
-    on('project', () => (office.textContent = state.company || ''));
+    const office = h('div', { class: 'office' });
+    const paintOffice = () => {
+      clear(office);
+      if (state.logo) office.appendChild(h('img', { src: state.logo, style: 'height:26px;max-width:120px;object-fit:contain;vertical-align:middle;margin-right:10px' }));
+      office.appendChild(document.createTextNode(state.company || ''));
+    };
+    paintOffice();
+    on('project', paintOffice);
+    on('project-loaded', paintOffice);
     const top = h(
       'header',
       { class: 'topbar' },

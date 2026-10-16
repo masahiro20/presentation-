@@ -27,7 +27,7 @@ export function startCinema(viewer: Viewer, stage: HTMLElement, shots: Shot[], o
   let t0 = 0;
   const cap = h('div', { class: 'cinema-cap' });
   const prog = h('div', { class: 'cinema-prog' });
-  const brand = h('div', { class: 'cinema-brand' }, state.company || 'Atelier', h('small', null, state.name || ''));
+  const brand = h('div', { class: 'cinema-brand' }, state.logo ? h('img', { src: state.logo, style: 'height:30px;max-width:180px;object-fit:contain;display:block;margin-bottom:6px' }) : null, state.logo ? null : state.company || 'Atelier', h('small', null, state.name || ''));
   const ui = h('div', { class: 'cinema-ui' });
   const playBtn = h('button', { class: 'btn sm' }, '❚❚ 一時停止');
   const prevBtn = h('button', { class: 'btn sm', onclick: () => go(i - 1) }, '‹');

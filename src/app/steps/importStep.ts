@@ -137,6 +137,7 @@ export const importStep: Step = {
           'お客様情報',
           field('プロジェクト名', h('input', { type: 'text', value: state.name, oninput: (e: Event) => (state.name = (e.target as HTMLInputElement).value) })),
           field('お客様名', h('input', { type: 'text', value: state.customer, oninput: (e: Event) => (state.customer = (e.target as HTMLInputElement).value) })),
+          field('事務所ロゴ（図面の表題欄・ヘッダー・シネマに入ります）', logoInput()),
           field('会社名・担当者', h('input', { type: 'text', value: state.company, placeholder: '〇〇ホーム 設計担当 〇〇', oninput: (e: Event) => (state.company = (e.target as HTMLInputElement).value) })),
         ),
       );
@@ -486,4 +487,40 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ),
   );
   return h('div', { class: `check-card ${ng ? 'has-ng' : ''}` }, head, list);
+}
+
+
+/** ロゴ画像の選択（縮小して保存。透過 PNG 推奨） */
+function logoInput(): HTMLElement {
+  const prev = h('img', { style: `max-height:40px;max-width:160px;display:${state.logo ? 'block' : 'none'};margin:6px 0;background:#888;padding:4px;border-radius:2px` }) as HTMLImageElement;
+  if (state.logo) prev.src = state.logo;
+  const inp = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/svg+xml,image/webp' }) as HTMLInputElement;
+  inp.addEventListener('change', async () => {
+    const f = inp.files?.[0];
+    if (!f) return;
+    try {
+      const url = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result));
+        r.onerror = () => rej(new Error('読み込めませんでした'));
+        r.readAsDataURL(f);
+      });
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const k = Math.min(1, 600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * k));
+      c.height = Math.max(1, Math.round(img.height * k));
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+      state.logo = c.toDataURL('image/png');
+      prev.src = state.logo;
+      prev.style.display = 'block';
+      emit('project');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  });
+  const clearBtn = h('button', { class: 'btn sm ghost', onclick: () => { state.logo = undefined; prev.style.display = 'none'; emit('project'); } }, 'ロゴを外す');
+  return h('div', null, inp, prev, clearBtn);
 }

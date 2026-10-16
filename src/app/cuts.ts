@@ -5,6 +5,7 @@
  * 高解像度に一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめる。
  * 構図・間取り・家具の位置はこの画像のとおりに、質感だけを写真らしく仕上げてもらう使い方を想定。
  */
+import { renderPass, segmentLegend, type PassKind } from '../scene/passes';
 import type { StepCtx } from './app';
 import { state } from './state';
 import { progressModal, toast, download } from './dom';
@@ -123,7 +124,7 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
 const safe = (s: string) => s.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim();
 
 /** 見どころカメラを高品質描画で一括保存して ZIP にする */
-export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: number; height: number }) {
+export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: number; height: number; passes?: boolean }) {
   const v = ctx.app.viewer;
   if (!shots.length) {
     toast('カットがありません');
@@ -147,8 +148,13 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
       await new Promise((r) => setTimeout(r, 40));
       try {
         const url = await renderStudio(v, { width: opts.width, height: opts.height, interior: shot.kind === 'interior', exposure: shot.kind === 'interior' ? 1.9 : 1.0 });
-        const name = `${String(i + 1).padStart(2, '0')}_${safe(shot.title)}.jpg`;
+        const base = `${String(i + 1).padStart(2, '0')}_${safe(shot.title)}`;
+        const name = `${base}.jpg`;
         entries.push({ name, data: dataUrlToBytes(url) });
+        if (opts.passes) {
+          // 同じ構図の条件画像（深度・法線・線画・素材ID）。AI に形を固定して渡す
+          for (const k of ['depth', 'normal', 'lines', 'segment'] as PassKind[]) entries.push({ name: `パス/${base}_${k}.png`, data: dataUrlToBytes(renderPass(v, k, opts.width, opts.height)) });
+        }
         const p = cutPrompt(shot, i);
         lines.push(`■ ${name}`, shot.caption ? `（${shot.caption}）` : '', '【日本語】', p.ja, '', '【English】', p.en, '');
         n++;
@@ -160,6 +166,7 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
       toast('カットを描画できませんでした', 'error');
       return;
     }
+    if (opts.passes) entries.push({ name: 'パス/素材IDの色凡例.txt', data: new TextEncoder().encode(`素材ID画像の塗り分け（色コード → 意味）\n\n${segmentLegend()}\n\n使い方: depth=ControlNet の Depth、normal=Normal、lines=Lineart／Canny の代わり、segment=領域ごとの素材指定（Segmentation）。同じファイル名の .jpg（白模型または仕上げ済みの下絵）と組で使います。`) });
     entries.push({ name: 'カット一覧と説明文.txt', data: new TextEncoder().encode(lines.join('\n')) });
     const zip = makeZip(entries);
     const url = URL.createObjectURL(zip);

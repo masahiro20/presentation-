@@ -14,7 +14,7 @@
  *   手で動かした（ドラッグ・ボタン・数値・回転）ら自動の記録は外し、pivot の緯度経度だけ残す。
  */
 import * as THREE from 'three';
-import { h, clear, toast, progressModal, section, field, segmented, modal } from '../../app/dom';
+import { h, clear, toast, progressModal, section, field, segmented, modal, fold } from '../../app/dom';
 import { localDate, sunDirectionWorld, sunPosition } from '../../sun/solar';
 import type { StudyStep, StudyCtx } from '../shell';
 import { emit, study } from '../state';
@@ -892,7 +892,7 @@ export const modelStep: StudyStep = {
 
       side.append(
         h('h2', null, '建物の確認と配置'),
-        h('p', { class: 'lead' }, '読み込んだ 3D データの大きさ（単位）と向きを確認し、航空写真の上で敷地に合わせます。寸法が実際の建物と合っているか、必ずお確かめください。'),
+        h('p', { class: 'lead' }, '航空写真の上で建物をドラッグして敷地に合わせます。下の寸法が実際の建物と合っているか確認してください。'),
         h(
           'div',
           { class: 'info-box model-info' },
@@ -902,7 +902,12 @@ export const modelStep: StudyStep = {
         ),
         fileIn,
       );
-      for (const n of m.notes) side.appendChild(h('div', { class: 'info-box' }, n));
+      if (m.notes.length) side.appendChild(h('details', { class: 'model-notes' }, h('summary', { class: 'hint', style: 'cursor:pointer' }, `読み込みの注記（${m.notes.length} 件）`), ...m.notes.map((n) => h('div', { class: 'info-box' }, n))));
+      // 区画は作った順ではなく、使う順（寸法 → 位置 → 方位 → 正確な位置 → 高さ → 表示 → 詳細）に最後に並べる
+      const parts: Record<string, HTMLElement> = {};
+      const put = (k: string, el: HTMLElement) => {
+        parts[k] = el;
+      };
 
       // ---- 単位（縮尺） ----
       const rawSize = m.rawBox.getSize(new THREE.Vector3());
@@ -966,15 +971,17 @@ export const modelStep: StudyStep = {
       };
       refreshDims();
       refreshers.push(refreshDims);
-      side.appendChild(
+      put(
+        'dims',
+        section('建物の寸法', dimsBox, dimWarn, h('p', { class: 'hint', style: 'margin:0 0 6px' }, '実寸（m）。実際の建物と合っているか確認してください。違うときは下の「詳細設定」で単位を直します。')),
+      );
+      put(
+        'unit',
         section(
           '単位（縮尺）',
           field('元データの長さの単位', unitSel, `寸法から自動判定: ${UNIT_LABEL[m.guessedUnit]}`),
           h('p', { class: 'hint', style: 'margin:0 0 6px' }, `寸法 ${fmtRaw(rawSize.x)} × ${fmtRaw(rawSize.y)} × ${fmtRaw(rawSize.z)}（元データの単位）→ ${UNIT_SHORT[m.guessedUnit]} と判定`),
           customRow,
-          dimsBox,
-          h('p', { class: 'hint', style: 'margin:0 0 6px' }, '回転する前の寸法（図面の横 × 縦 × 高さ）。m 単位の実寸です'),
-          dimWarn,
           field('実際の建物の幅（長い方の辺, m）を入力して合わせる', h('div', { class: 'btn-row', style: 'margin:0' }, h('div', { style: 'flex:1' }, widthIn), fitBtn), '図面の寸法が分かるときは、ここで合わせるのが確実です'),
         ),
       );
@@ -985,7 +992,8 @@ export const modelStep: StudyStep = {
         pl.mirror = mirrorCb.checked;
         afterRebuild();
       });
-      side.appendChild(
+      put(
+        'updown',
         section(
           '上方向・反転',
           segmented<UpAxis>(
@@ -1029,7 +1037,7 @@ export const modelStep: StudyStep = {
       refreshObjects();
       refreshers.push(refreshObjects);
       const objBody = [h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'チェックを外したオブジェクトは表示・解析から除きます。地面の板・敷地・ダミーは自動で外しています（戻せます）'), objList];
-      side.appendChild(section('オブジェクト', m.objects.length > 12 ? h('details', { class: 'obj-details' }, h('summary', null, `オブジェクト一覧（${m.objects.length} 件）`), ...objBody) : h('div', null, ...objBody)));
+      put('objects', section('オブジェクト', ...objBody));
 
       // ---- 方位（真北） ----
       const nIn = h('input', { type: 'number', step: 'any', value: fmt(northInput(), 1).replace(/\.0$/, '') });
@@ -1048,7 +1056,8 @@ export const modelStep: StudyStep = {
       };
       refreshHeading();
       refreshers.push(refreshHeading);
-      side.appendChild(
+      put(
+        'heading',
         section(
           '方位（真北）',
           h('p', { style: 'margin:0 0 6px;font-size:13px;line-height:1.7' }, '配置図（モデル）の真北は、図面の上から時計回りに'),
@@ -1061,7 +1070,7 @@ export const modelStep: StudyStep = {
             h('span', { class: 'hint', style: 'margin:0' }, '図面が横向きに描かれているときに'),
           ),
           headingOut,
-          h('p', { class: 'hint', style: 'margin:0' }, '地図の上＝真北です。図面の北矢印が磁北の場合は補正してください（関東 約+7°、札幌 約+9.5°）。正確に合わせるには下の「正確な位置合わせ」を使います。'),
+          h('p', { class: 'hint', style: 'margin:0' }, '地図の上＝真北。図面の北矢印が磁北なら補正してください（関東 約+7°）。'),
         ),
       );
 
@@ -1155,12 +1164,13 @@ export const modelStep: StudyStep = {
       };
       refreshAlign();
       refreshers.push(refreshAlign);
-      side.appendChild(
+      put(
+        'align',
         section(
           '正確な位置合わせ',
           alignStatus,
           twoPtBtn,
-          h('p', { class: 'hint', style: 'margin:4px 0 8px' }, '真上からの視点で、建物の角 → 航空写真に写っているその角、を 2 組クリックします（軒先なら軒先どうし）。角の近くをクリックすると自動で角に吸着します。方位と位置が決まり、寸法のずれも分かります。'),
+          h('p', { class: 'hint', style: 'margin:4px 0 8px' }, '建物の角 → 航空写真のその角、を 2 組クリック（軒先どうし）。方位・位置が決まり、寸法のずれも分かります。'),
           scaleWarn,
           siteBtn,
           siteHint,
@@ -1191,8 +1201,21 @@ export const modelStep: StudyStep = {
           afterTransform(true);
         },
       }, 'ピンの位置に戻す') as HTMLButtonElement;
-      const nudgeRow = (label: string, de: number, dn: number) =>
-        [h('span', { class: 'k' }, label), h('button', { class: 'btn sm', onclick: () => nudge(de * 0.1, dn * 0.1) }, '0.1 m'), h('button', { class: 'btn sm', onclick: () => nudge(de * 0.5, dn * 0.5) }, '0.5 m'), h('button', { class: 'btn sm', onclick: () => nudge(de * 2, dn * 2) }, '2 m')];
+      // 微調整: 十字キー + 1 回の移動量（0.1／0.5／2 m）。矢印キー（0.1 m、Shift で 1 m）も使える
+      let nudgeStep = 0.1;
+      const stepSeg = segmented<'0.1' | '0.5' | '2'>(
+        [
+          { value: '0.1', label: '0.1 m' },
+          { value: '0.5', label: '0.5 m' },
+          { value: '2', label: '2 m' },
+        ],
+        '0.1',
+        (v) => {
+          nudgeStep = Number(v);
+        },
+      );
+      const arrow = (cls: string, label: string, title: string, de: number, dn: number) => h('button', { class: `btn dpad-btn ${cls}`, title, onclick: () => nudge(de * nudgeStep, dn * nudgeStep) }, label);
+      const dpad = h('div', { class: 'dpad' }, arrow('n', '↑', '北へ', 0, 1), arrow('w', '←', '西へ', -1, 0), h('span', { class: 'dpad-c' }, '1回'), arrow('e', '→', '東へ', 1, 0), arrow('s', '↓', '南へ', 0, -1));
       refreshPos = () => {
         clear(posOut);
         posOut.append(`ピンから 東へ ${signed(pl.offsetE)} m／北へ ${signed(pl.offsetN)} m`);
@@ -1204,15 +1227,17 @@ export const modelStep: StudyStep = {
       };
       refreshPos();
       refreshers.push(refreshPos);
-      side.appendChild(
+      const numFold = fold('数値で指定', { meta: 'ピンからの東西・南北 m' }, h('div', { class: 'pos-fields' }, field('東へ (m)', eIn), field('北へ (m)', nIn2)), h('div', { class: 'btn-row' }, resetBtn));
+      numFold.classList.add('inner-fold');
+      put(
+        'pos',
         section(
           '位置',
-          h('p', { class: 'hint', style: 'margin:0 0 6px' }, '真上から見た航空写真の上で、建物をドラッグして敷地に合わせます。細かい調整はボタン・矢印キー（0.1 m、Shift で 1 m）・数値で。'),
+          h('p', { class: 'hint', style: 'margin:0 0 6px' }, '航空写真の上で建物をドラッグして敷地に合わせます。'),
           h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => flyTop(scene, p) }, '真上から見る'), h('button', { class: 'btn', onclick: () => flyQuarter(scene, p) }, '斜めから見る')),
-          h('div', { class: 'nudge' }, ...nudgeRow('北へ', 0, 1), ...nudgeRow('南へ', 0, -1), ...nudgeRow('東へ', 1, 0), ...nudgeRow('西へ', -1, 0)),
-          h('div', { class: 'pos-fields' }, field('東へ (m)', eIn), field('北へ (m)', nIn2)),
-          h('div', { class: 'btn-row' }, resetBtn),
+          h('div', { class: 'nudge-box' }, dpad, h('div', { class: 'nudge-side' }, h('span', { class: 'hint', style: 'margin:0 0 4px' }, '細かく動かす'), stepSeg, h('span', { class: 'hint', style: 'margin:4px 0 0' }, '矢印キー 0.1 m・Shift で 1 m'))),
           posOut,
+          numFold,
         ),
       );
 
@@ -1220,13 +1245,32 @@ export const modelStep: StudyStep = {
       const followCb = h('input', { type: 'checkbox', checked: ui.follow });
       const glIn = h('input', { type: 'number', step: 0.05, value: fmt(ui.designGL) });
       const baseIn = h('input', { type: 'number', step: 0.05, value: fmt(pl.baseY) });
-      const glRow = field('設計 GL は周辺地盤より（m）', glIn, '＋で盛土、−で切土。造成計画の GL が分かるときに入れます');
+      const glRow = field('造成による盛土（＋）・切土（−）m', glIn, '造成計画の GL が分かるときに入れます。0 ならそのまま地形に載せます');
       const baseRow = field('建物の底面の高さ（GL からの m）', baseIn, 'GL = ピン位置の地盤高');
+      const bump = (input: HTMLInputElement, d: number) => {
+        input.value = fmt(r2(num(input, 0) + d));
+        input.dispatchEvent(new Event('change'));
+      };
+      const stepper = (input: HTMLInputElement) =>
+        h('div', { class: 'btn-row gl-step', style: 'margin:0 0 6px' }, ...[-0.5, -0.1, 0.1, 0.5].map((d) => h('button', { class: 'btn sm', onclick: () => bump(input, d) }, `${d > 0 ? '+' : '−'}${Math.abs(d)}`)));
+      const glBox = h('div', null, glRow, stepper(glIn));
+      const baseBox = h('div', null, baseRow, stepper(baseIn));
+      const glMode = segmented<'follow' | 'manual'>(
+        [
+          { value: 'follow', label: '地形に合わせる' },
+          { value: 'manual', label: '高さを数値で指定' },
+        ],
+        ui.follow ? 'follow' : 'manual',
+        (v) => {
+          followCb.checked = v === 'follow';
+          followCb.dispatchEvent(new Event('change'));
+        },
+      );
       const glOut = h('div', { class: 'info-box' });
       const glWarn = h('div', { class: 'warn', style: 'display:none' });
       const syncGLRows = () => {
-        glRow.style.display = ui.follow ? '' : 'none';
-        baseRow.style.display = ui.follow ? 'none' : '';
+        glBox.style.display = ui.follow ? '' : 'none';
+        baseBox.style.display = ui.follow ? 'none' : '';
       };
       followCb.addEventListener('change', () => {
         ui.follow = followCb.checked;
@@ -1258,22 +1302,24 @@ export const modelStep: StudyStep = {
       syncGLRows();
       refreshGL();
       refreshers.push(refreshGL);
-      side.appendChild(
+      put(
+        'gl',
         section(
-          '高さ（地盤）',
-          h('label', { class: 'check' }, followCb, '地形に接地（建物の足元の地盤の平均に合わせる）'),
-          glRow,
-          baseRow,
+          '高さ（地盤 GL）',
           glOut,
           glWarn,
-          h('p', { class: 'hint', style: 'margin:0' }, 'GL = ピン位置の地盤高（国土地理院の標高データ）、建物の足元は足跡の地形平均。周辺建物の高さの比較や影の長さに影響します。'),
+          glMode,
+          glBox,
+          baseBox,
+          h('details', { class: 'gl-help' }, h('summary', { class: 'hint', style: 'cursor:pointer' }, 'GL とは'), h('p', { class: 'hint', style: 'margin:4px 0 0' }, 'GL = ピン位置の地盤高（国土地理院の標高データ）。「地形に合わせる」は建物の足元の地盤の平均に底面を合わせます。周辺建物の高さの比較や影の長さに影響します。')),
         ),
       );
 
       // ---- 表示 ----
-      side.appendChild(
+      put(
+        'display',
         section(
-          '表示',
+          '表示モデル',
           segmented<'white' | 'original'>(
             [
               { value: 'white', label: '白モデル' },
@@ -1288,6 +1334,10 @@ export const modelStep: StudyStep = {
           h('p', { class: 'hint', style: 'margin:0' }, '白モデルは影の形が見やすく、お客様への説明向きです'),
         ),
       );
+
+      // ---- 並べる（使う順。普段触らないものは「詳細設定」に畳む）----
+      const more = fold('詳細設定（単位・上方向・オブジェクト）', { meta: '普段は触りません', cls: 'more-fold' }, parts.unit, parts.updown, parts.objects);
+      side.append(parts.dims, parts.pos, parts.heading, parts.align, parts.gl, parts.display, more);
 
       // ---- 進む ----
       const confirmAndGo = () => {

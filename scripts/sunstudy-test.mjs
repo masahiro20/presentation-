@@ -7,7 +7,10 @@ import { mkdirSync } from 'node:fs';
 const base = process.argv[2] ?? 'http://localhost:5173';
 mkdirSync('test-output', { recursive: true });
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--ignore-certificate-errors'] });
+// 折りたたみ（details.fold）は自動テストでは常に開く（普段は閉じている区画の中の操作を試すため）
+const openFoldsInit = () => { const open = () => document.querySelectorAll('details.fold').forEach((d) => { if (!d.dataset.t) { d.dataset.t = '1'; d.open = true; } }); new MutationObserver(open).observe(document, { childList: true, subtree: true }); };
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+await page.addInitScript(openFoldsInit);
 const errors = [];
 page.on('pageerror', (e) => { console.log('[pageerror]', e.message); errors.push(e.message); });
 page.on('console', (m) => { if (m.type() === 'error' && !/404|CERT|ERR_/.test(m.text())) console.log('[console]', m.text()); });

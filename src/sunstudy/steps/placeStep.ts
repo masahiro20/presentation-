@@ -17,7 +17,7 @@
  * 「区画を描いて家を置く」。どれも state の addPlannedHouse / updatePlannedHouse / removePlannedHouse を通す。地図で選んでドラッグ・R で回転・
  * 小さな編集欄で寸法・高さ・屋根を直す。生成した区画は地図に破線で出す（この画面だけの表示。保存はしない）。
  */
-import { h, clear, toast, progressModal, section, segmented, field } from '../../app/dom';
+import { h, clear, toast, progressModal, section, segmented, field, fold } from '../../app/dom';
 import { geocode, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms } from '../../sun/geo';
 import type { StudyStep, StudyCtx } from '../shell';
 import {
@@ -415,11 +415,11 @@ export const placeStep: StudyStep = {
     // 地図レイヤー
     const layerSeg = segmented<MapLayer>(
       [
-        { value: 'std', label: MAP_LAYER_LABEL.std },
         { value: 'photo', label: MAP_LAYER_LABEL.photo },
+        { value: 'std', label: MAP_LAYER_LABEL.std },
         { value: 'pale', label: MAP_LAYER_LABEL.pale },
       ],
-      'std',
+      'photo',
       (v) => {
         map?.setLayer(v);
         refreshAttrib();
@@ -499,7 +499,7 @@ export const placeStep: StudyStep = {
     toolbar.append(layerSeg, ...makePolyButtons(), locateBtn);
 
     // ---- サイド ----
-    side.append(h('h2', null, '建設地を指定'), h('p', { class: 'lead' }, '住所で探すか、地図をクリックして建設地にピンを置きます。ピンの位置が 3D の原点（建物を置く場所・地盤高の基準）になります。「建物を置く」で位置を合わせた建物は、ピンを動かしても地球上の同じ所に留まります。航空写真に切り替えると敷地の形がよく分かります。'));
+    side.append(h('h2', null, '建設地を指定'), h('p', { class: 'lead' }, '住所で探すか、地図（航空写真）をクリックしてピンを置きます。ピンが 3D の原点になります。'));
 
     // 住所で探す
     const q = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', autocomplete: 'off' });
@@ -631,9 +631,10 @@ export const placeStep: StudyStep = {
         }
       });
     side.appendChild(
-      section(
+      fold(
         '座標で指定（緯度・経度）',
-        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '住所の無い分譲地・造成地など、座標が分かっているときはここに入力します。10 進（35.21058）でも度分秒（35°12′38.1″・35度12分38.1秒）でも可。「緯度, 経度」の 1 行や Google マップの URL を緯度の欄に貼ってもよいです。欄にはいつも今のピンの座標が表示されます。'),
+        { meta: '住所が無い分譲地など' },
+        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '10 進でも度分秒でも可。「緯度, 経度」の 1 行や Google マップの URL を緯度の欄に貼ってもよいです。'),
         h('div', { class: 'pos-fields' }, field('緯度', latIn), field('経度', lonIn)),
         h('div', { class: 'coord-row' }, dmsOut, copyBtn),
         h('div', { class: 'btn-row', style: 'margin:6px 0 0' }, h('button', { class: 'btn', onclick: applyCoords }, 'この座標にピンを置く')),
@@ -663,10 +664,10 @@ export const placeStep: StudyStep = {
       h('div', { class: 'lot-dims-grid' }, field('間口 (m)', lotWIn), field('奥行 (m)', lotDIn), field('向き (°)', lotDirIn)),
       h('div', { class: 'btn-row', style: 'margin:4px 0' }, frontPickBtn, makeLotBtn),
     );
-    side.appendChild(
-      section(
-        '敷地（任意）',
-        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '敷地の輪郭を描いておくと、日影図の 5m／10m ラインの基準になり、敷地内にある既存の建物（取り壊す家など）を周辺建物から自動で除外できます。「建物を置く」の「敷地の輪郭に合わせる」でも使います。地図は 22 まで拡大でき、角を細かく置けます（Shift で直前の辺に直角・平行）。'),
+    const siteFold = fold(
+        '敷地の輪郭（任意）',
+        { meta: '日影図・既存建物の除外に使う', cls: 'site-fold' },
+        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '日影図の 5m／10m ラインの基準になり、敷地内の既存の建物（取り壊す家など）を周辺から自動で除外します。地図は 22 まで拡大でき、Shift で直角・平行にそろえられます。'),
         areaOut,
         polyInfo,
         h('div', { class: 'btn-row' }, ...makePolyButtons()),
@@ -674,8 +675,8 @@ export const placeStep: StudyStep = {
         edgeBox,
         dimsBox,
         footprintHint,
-      ),
-    );
+      );
+    side.appendChild(siteFold);
 
     // 周辺環境
     const envBox = h('div');
@@ -715,9 +716,10 @@ export const placeStep: StudyStep = {
       '想定の家をすべて消す',
     );
     side.appendChild(
-      section(
+      fold(
         '想定の家（未建築の隣家）',
-        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '分譲地などで、隣の家がまだ建っていないときに「建った想定」で仮の家を置きます。置いた家は影・日照の解析・日影図に入り、注記とレポートに「想定」と出ます。地図で選んでドラッグで移動・R で回転、編集欄で寸法・高さ・屋根を直せます。'),
+        { meta: '分譲地で隣がまだ空き地のとき', cls: 'planned-section' },
+        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '隣の家が未建築のとき「建った想定」で仮の家を置きます。影・日照・日影図に入り、レポートに「想定」と出ます。地図で選んでドラッグ移動・R で回転、編集欄で寸法・屋根を直せます。'),
         field('置く家の形', plannedSel),
         h('div', { class: 'btn-row planned-tools', style: 'margin:4px 0' }, plannedPlaceBtn, plannedEdgeBtn, plannedLotBtn),
         plannedRule,
@@ -748,8 +750,9 @@ export const placeStep: StudyStep = {
       }
     });
     side.appendChild(
-      section(
-        'プロジェクト',
+      fold(
+        '保存・開く',
+        { open: true, meta: 'JSON・デモ' },
         h(
           'div',
           { class: 'btn-row' },
@@ -878,6 +881,8 @@ export const placeStep: StudyStep = {
       frontPickBtn.disabled = !map || !study.frame;
       makeLotBtn.disabled = !map || !study.frame;
       const a = siteArea();
+      siteFold.setMeta(a != null ? `敷地面積 ${areaText(a)}` : '日影図・既存建物の除外に使う');
+      if (mode) siteFold.open = true;
       areaOut.style.display = a != null ? '' : 'none';
       if (a != null) areaOut.textContent = `敷地面積 ${areaText(a)}（${study.sitePolygon.length} 点の輪郭。地図上で計算した概算です）`;
       polyInfo.style.display = has ? 'none' : '';
@@ -970,11 +975,12 @@ export const placeStep: StudyStep = {
             h(
               'p',
               { class: 'hint', style: 'margin:0 0 6px' },
-              '計算から除外した建物は灰色の破線で表示し、3D・影・日照の解析・日影図から外します。表示だけ隠した建物は青の破線で、3D には描きませんが影・解析には残します。日照シミュレーションの「周辺建物の修正」でも選んで隠す・戻す・隠し方と理由の変更ができます。',
+              '灰の破線＝計算から除外、青の破線＝表示だけ隠す（影・解析には残す）。',
             ),
           );
       }
-      for (const n of study.neighborNotes) envBox.appendChild(h('div', { class: 'info-box' }, n));
+      if (study.neighborNotes.length)
+        envBox.appendChild(h('details', { class: 'env-notes' }, h('summary', { class: 'hint', style: 'cursor:pointer' }, `取得データの注記（${study.neighborNotes.length} 件）`), ...study.neighborNotes.map((n) => h('div', { class: 'info-box' }, n))));
       if (study.env.error) {
         for (const line of study.env.error.split('\n').filter(Boolean)) envBox.appendChild(h('div', { class: 'warn' }, line));
         envBox.appendChild(h('p', { class: 'hint', style: 'margin:0 0 6px' }, networkHint()));
@@ -1617,7 +1623,7 @@ export const placeStep: StudyStep = {
       map = new MapPicker(root, {
         initial: { lat: initial.lat, lon: initial.lon },
         zoom: study.frame ? 17 : 16,
-        layer: 'std',
+        layer: 'photo',
         onPin: (p) => {
           pinFromMap(p);
           refreshAll();

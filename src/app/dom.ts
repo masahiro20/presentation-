@@ -154,6 +154,20 @@ export function section(title: string, ...children: Child[]) {
   return h('section', { class: 'panel-section' }, h('h4', null, title), ...children);
 }
 
+/**
+ * 折りたたみの区画（普段は閉じておき、必要なときだけ開く）。summary には見出しと、閉じていても分かる要点（meta）を出す。
+ * 戻り値の `.setMeta()` で要点を更新できる
+ */
+export function fold(title: string, opts: { open?: boolean; meta?: string; cls?: string }, ...children: Child[]) {
+  const meta = h('span', { class: 'fold-meta' }, opts.meta ?? '');
+  const el = h('details', { class: `panel-section fold ${opts.cls ?? ''}`, open: !!opts.open }, h('summary', null, h('span', { class: 'fold-title' }, title), meta), h('div', { class: 'fold-body' }, ...children));
+  return Object.assign(el, {
+    setMeta(t: string) {
+      meta.textContent = t;
+    },
+  });
+}
+
 export function field(label: string, input: Node, hint?: string) {
   return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
 }

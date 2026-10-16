@@ -57,6 +57,15 @@ input, select, textarea { font: inherit; }
 .side .lead { color: var(--ink2); font-size: 13px; margin: 0 0 16px; line-height: 1.7; }
 
 .panel-section { border-top: 1px solid var(--line); padding: 14px 0 6px; }
+.panel-section.fold { padding: 0; }
+.panel-section.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 8px; padding: 11px 0; font-size: 13px; color: var(--ink2); letter-spacing: 0.05em; font-weight: 600; }
+.panel-section.fold > summary::-webkit-details-marker { display: none; }
+.panel-section.fold > summary::before { content: '▸'; font-size: 11px; color: var(--ink3); transition: transform .12s; flex: none; }
+.panel-section.fold[open] > summary::before { transform: rotate(90deg); }
+.panel-section.fold > summary:hover { color: var(--ink); }
+.panel-section.fold .fold-meta { font-weight: 400; font-size: 11.5px; color: var(--ink3); letter-spacing: 0; margin-left: auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-section.fold[open] .fold-meta { display: none; }
+.panel-section.fold > .fold-body { padding: 0 0 8px; }
 .panel-section h4 { margin: 0 0 10px; font-size: 13px; color: var(--ink2); letter-spacing: 0.05em; }
 
 /* ボタン */

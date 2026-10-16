@@ -9,6 +9,9 @@
 import { chromium } from 'playwright-core';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
+// 折りたたみ（details.fold）は自動テストでは常に開く
+const openFoldsInit = () => { const open = () => document.querySelectorAll('details.fold').forEach((d) => { if (!d.dataset.t) { d.dataset.t = '1'; d.open = true; } }); new MutationObserver(open).observe(document, { childList: true, subtree: true }); };
+
 const base = process.argv[2] ?? 'http://localhost:5199';
 const only = process.argv[3] ? new Set(process.argv[3].split(',')) : null;
 mkdirSync('test-output', { recursive: true });
@@ -48,6 +51,7 @@ const median = (xs) => {
 /** 1 地点の計測。失敗しても他の地点を続けるため、例外は result.error に畳む */
 async function runSite(site) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript(openFoldsInit);
   const result = { name: site.name, label: site.label, lat: site.lat, lon: site.lon, pageErrors: [], consoleErrors: [], net: { tiles: [], tilesets: [], latest: 0, geocoder: 0, index: 0 }, progress: [] };
   page.on('pageerror', (e) => {
     console.log(`[${site.name}] [pageerror]`, e.message);

@@ -11,7 +11,7 @@
  * 建物の 3D データが無くても（土地だけでも）使える。
  */
 import * as THREE from 'three';
-import { clear, download, field, h, modal, progressModal, section, segmented, svgToDataUrl, svgToPng, toast } from '../../app/dom';
+import { clear, download, field, h, modal, progressModal, section, segmented, svgToDataUrl, svgToPng, toast, fold } from '../../app/dom';
 import { formatHM, keyDates, localDate, sunDirectionWorld, sunPosition, sunriseSunset, trueSolarToLocal } from '../../sun/solar';
 import type { CameraProgram } from '../../video/paths';
 import { recordProgram } from '../../video/recorder';
@@ -485,7 +485,7 @@ export const simStep: StudyStep = {
       clear(chipsLine);
       for (const it of assumptionItems()) {
         const toModel = it.key === 'unit' || it.key === 'dims' || it.key === 'heading' || it.key === 'gl';
-        const act = toModel && study.model ? () => void shell.go('model') : it.key === 'neighbors' ? () => neighborSection?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : null;
+        const act = toModel && study.model ? () => void shell.go('model') : it.key === 'neighbors' ? () => { if (neighborSection) (neighborSection as HTMLDetailsElement).open = true; neighborSection?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } : null;
         const cls = `chip light ${it.warn ? 'caution' : ''}`;
         chipsLine.appendChild(
           act ? h('button', { class: cls, title: it.key === 'neighbors' ? '周辺建物の修正へ' : '「建物」のステップで調整します', onclick: act }, it.text) : h('span', { class: cls }, it.text),
@@ -543,7 +543,7 @@ export const simStep: StudyStep = {
     // ---- サイド: 見出し ----
     side.append(
       h('h2', null, '日照シミュレーション'),
-      h('p', { class: 'lead' }, '実在の場所に置いた建物で、季節・時刻ごとの太陽の動きと影を確認できます。地面や建物の面の日照時間、測定点の季節別の日照時間、日影図、季節比較の撮影、タイムラプス動画、印刷用レポートが作れます。'),
+      h('p', { class: 'lead' }, '日付と時刻を動かして影を確認し、必要な解析・日影図・撮影を下から実行します。'),
     );
     const envWarnSide = h('div');
     side.appendChild(envWarnSide);
@@ -579,7 +579,8 @@ export const simStep: StudyStep = {
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void shell.go('place') }, '場所を変える'), h('button', { class: 'btn sm', onclick: () => void shell.go('model') }, '建物を調整する')),
       );
     };
-    side.appendChild(section('建設地と建物', siteBox));
+    const siteFold = fold('建設地と建物', { meta: f.address }, siteBox);
+    side.appendChild(siteFold);
 
     // ---- サイド 2: 表示 ----
     type ShowKey = keyof typeof study.show;
@@ -609,7 +610,7 @@ export const simStep: StudyStep = {
         showCheck('points', '測定点'),
         h(
           'label',
-          { class: 'check', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません。影・解析にも入ります）。切り替えると周辺建物を取り直します' },
+          { class: 'check', title: 'PLATEAU の箱形（LOD1）の低層住宅に、最高高さから推定した屋根をかぶせます（実際の屋根の形ではありません。影・解析にも入ります）。切り替えると周辺建物を取り直します' },
           h('input', {
             type: 'checkbox',
             checked: study.roofEstimate,
@@ -618,10 +619,9 @@ export const simStep: StudyStep = {
               void loadEnv();
             },
           }),
-          ' 推定の屋根をつける（箱形の低層住宅）',
+          ' 推定の屋根をつける',
         ),
-        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void loadEnv() }, '🔄 周辺建物を取り直す')),
-        h('p', { class: 'hint' }, '地形・航空写真・周辺建物を国土地理院・PLATEAU（3D都市モデル）から再取得します。手動で追加した隣家と高さの修正・隠した建物は残ります（PLATEAU の建物は gml_id で、無い場合は足元の形で引き継ぎます）。'),
+        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', title: '地形・航空写真・周辺建物を国土地理院・PLATEAU から再取得します。手動で追加した隣家・高さの修正・隠した建物は残ります', onclick: () => void loadEnv() }, '🔄 周辺建物を取り直す')),
       ),
     );
 
@@ -829,8 +829,8 @@ export const simStep: StudyStep = {
         .map((x) => ({ n: x.n, hours: x.hours, dist: ringDistance(x.n.ring, ref), br: bearingEN(cEN, ringMean(x.n.ring)) }))
         .sort((a, b) => (a.n.confirmed ? 1 : 0) - (b.n.confirmed ? 1 : 0) || b.hours - a.hours);
       const open = cands.filter((x) => !x.n.confirmed).length;
-      nbList.appendChild(h('div', { class: 'field-label', style: 'margin-top:8px' }, `要確認の建物（冬至の 8〜16 時に敷地へ影を落とす建物。影の長い順）: ${cands.length}棟${cands.length ? `（未確定 ${open}）` : ''}`));
-      nbList.appendChild(h('p', { class: 'hint' }, '上の棟ほど影への効きが大きい建物です。現地で高さを測れたら「実測で確定」を押してください（確定した棟は日影図の脚注・レポートに明記されます）。高さの確からしさはバッジで分かります。'));
+      nbList.appendChild(h('div', { class: 'field-label', style: 'margin-top:8px' }, `要確認の建物（冬至に敷地へ影を落とす順）: ${cands.length}棟${cands.length ? `（未確定 ${open}）` : ''}`));
+      nbList.appendChild(h('p', { class: 'hint' }, '現地で高さを測れたら「実測で確定」。確定した棟は日影図の脚注・レポートに明記されます。'));
       if (!cands.length) nbList.appendChild(h('p', { class: 'hint' }, target ? '該当なし' : '敷地の輪郭か建物を置くと、影を落とす建物を抽出します'));
       for (const x of cands) nbList.appendChild(neighborRow(x.n, x.dist, x.br, x.hours));
     };
@@ -913,13 +913,10 @@ export const simStep: StudyStep = {
       hide.dispose();
       planned.dispose();
     });
-    neighborSection = section(
+    neighborSection = fold(
       '周辺建物の修正',
-      h(
-        'p',
-        { class: 'hint' },
-        '建物をクリックすると高さを直せます（推定値の建物は薄い茶色）。取り壊す既存の家・もう無い建物・データの誤りは「建物を選んで隠す」で「計算から除外」（影・解析からも外す）、視点の邪魔になる建物は「表示だけ隠す」（影・解析には残す）にできます。外した建物は理由ごとにレポート・日影図に書き出します。',
-      ),
+      { meta: '高さ・隠す・隣家の追加' },
+      h('p', { class: 'hint' }, '建物をクリックすると高さを直せます（推定値は薄い茶色）。取り壊す家・データの誤りは「建物を選んで隠す」で除外できます。'),
       nbSummary,
       h('div', { class: 'btn-row' }, hide.button),
       hide.hiddenList,
@@ -1337,13 +1334,15 @@ export const simStep: StudyStep = {
         'div',
         null,
         h('div', { html: out.svg }),
+        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影${roleLabel(s.role)}: ${refLabel} 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
+        h('details', { class: 'diagram-cond' }, h('summary', { class: 'hint', style: 'cursor:pointer' }, '計算条件・脚注（図にも印字されます）'),
         h(
           'p',
           { class: 'hint' },
           `${label}／測定面 平均地盤面+${height} m（GL${fmtSigned(plane)} m）／${solarNote()}／${includeNb ? '周辺建物を含む' : '自建物のみ'}／規制値 ${preset ? preset.title : 'なし（参考の 2〜5 時間）'}／時刻日影線 ${halfHour ? '30 分ごと' : '毎正時'}`,
         ),
-        h('p', { class: 'hint' }, out.summary.length ? out.summary.map((s) => `${s.hour}時間日影${roleLabel(s.role)}: ${refLabel} 約${s.maxDist.toFixed(1)} m`).join('／') : ''),
         h('div', { class: 'info-box' }, ...footnote.map((t) => h('div', null, t))),
+        ),
         h('div', { class: 'warn' }, preset ? '検討用であり申請図ではありません。規制時間の線を描くだけで、規制への適否は判定していません。' : '検討用であり申請図ではありません。'),
       );
       modal(
@@ -1506,18 +1505,25 @@ export const simStep: StudyStep = {
       );
     };
 
-    const analysis = section(
+    const analysis = fold(
       '日当たりの解析',
+      { open: true, meta: '地面・壁の日照時間' },
       heatBtn,
       heatLegend,
       h('div', { style: 'height:6px' }),
       facadeBtn,
       facadeLegend,
-      h('p', { class: 'hint' }, '直射日光が当たる時間の合計（青=短い → 赤=長い）。地形・周辺建物・自建物の影を計算します。'),
-      h('div', { class: 'field-label', style: 'margin-top:12px' }, '📍 測定点（窓の中心など）'),
+      h('p', { class: 'hint' }, '直射日光の合計時間（青=短い → 赤=長い）')
+    );
+    const pointsFold = fold(
+      '測定点（窓の中心など）',
+      { meta: '季節ごとの日照時間' },
       h('div', { class: 'btn-row' }, placeBtn, h('button', { class: 'btn sm primary', onclick: () => void runPoints() }, '☀ 測定点を解析（冬至・春分・夏至・秋分）')),
       ptBox,
-      h('div', { class: 'field-label', style: 'margin-top:12px' }, '📐 日影図（冬至日）'),
+    );
+    const diagramFold = fold(
+      '日影図（冬至日）',
+      { meta: '規制値・測定面の高さ' },
       h('label', { class: 'field diagram-reg' }, h('span', { class: 'field-label' }, '規制値（太線で強調）'), regSel),
       h(
         'div',
@@ -1534,9 +1540,8 @@ export const simStep: StudyStep = {
           checked: includeNb,
           onchange: (e: Event) => (includeNb = (e.target as HTMLInputElement).checked),
         }),
-        '周辺建物を含める',
+        '周辺建物を含める（法規の日影図は自建物のみ）',
       ),
-      h('p', { class: 'hint' }, '法規の日影図は自建物のみで作成します。実際の日当たりの確認には周辺建物を含めてください。'),
       h(
         'label',
         { class: 'check' },
@@ -1551,10 +1556,12 @@ export const simStep: StudyStep = {
       glInfo,
       solarEl,
       siteHint,
-      h('p', { class: 'hint' }, landOnly ? '日影図には建物の 3D データが必要です。' : '検討用であり申請図ではありません。'),
-      h('div', { class: 'field-label', style: 'margin-top:12px' }, '📷 撮影・動画'),
-      h('button', { class: 'btn sm block', onclick: () => void captureSeasons() }, '📷 季節の日当たり比較を撮影（冬至 9/12/15時・春分 12時・夏至 9/12/15時）'),
-      h('p', { class: 'hint' }, '今の視点で撮影します。先に「鳥瞰」などで見せたい角度にしてください。'),
+      landOnly ? h('p', { class: 'hint' }, '日影図には建物の 3D データが必要です。') : null,
+    );
+    const captureFold = fold(
+      '撮影・動画',
+      { meta: '季節比較・タイムラプス' },
+      h('button', { class: 'btn sm block', onclick: () => void captureSeasons() }, '📷 季節の日当たり比較を撮影（今の視点で）'),
       imgBox,
       h('div', { class: 'field-label', style: 'margin-top:10px' }, '🎬 タイムラプス動画（MP4）'),
       segmented<'winter' | 'summer'>(
@@ -1575,9 +1582,9 @@ export const simStep: StudyStep = {
         (v) => (tlRes = v),
       ),
       h('button', { class: 'btn sm block', style: 'margin-top:8px', onclick: () => void recordTimelapse() }, '🎬 タイムラプスを書き出す（約12秒・日の出〜日の入）'),
-      h('p', { class: 'hint' }, '今の視点のまま 1 コマずつ描いて書き出します。パソコンの性能により数分かかります。MP4 に未対応のブラウザでは WebM になります。'),
+      h('p', { class: 'hint' }, '今の視点のまま書き出します（数分かかります）。'),
     );
-    side.appendChild(analysis);
+    side.append(analysis, pointsFold, diagramFold, captureFold);
 
     // ---- サイド 5: レポート・保存 ----
     side.appendChild(
@@ -1603,7 +1610,7 @@ export const simStep: StudyStep = {
             '💾 プロジェクトを保存',
           ),
         ),
-        h('p', { class: 'hint' }, 'レポートには撮影した比較画像・日照時間マップ・測定点の表・日影図のうち、作成済みのものが入ります。本資料は検討用であり、法規上の日影規制の判定・申請図ではありません。'),
+        h('p', { class: 'hint' }, '作成済みの解析がレポートに入ります。検討用であり申請図ではありません。'),
       ),
     );
 

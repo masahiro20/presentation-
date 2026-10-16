@@ -136,7 +136,12 @@ export class MaterialRegistry {
     // 外構
     const L = e.landscape;
     set('l.ground', M(L.ground));
-    set('l.far', M({ pattern: 'grass', color: '#737a64', color2: '#788069', tile: 16 }));
+    // 周囲の地面は芝ではなく、住宅地のアスファルト・コンクリート舗装の中間色
+    set('l.far', M({ pattern: 'concrete', color: '#9b9994', tile: 8 }));
+    set('l.nbWallA', color('#d8d3ca', 0.95));
+    set('l.nbWallB', color('#b9b6b0', 0.95));
+    set('l.nbWallC', color('#e4e0d8', 0.95));
+    set('l.nbRoof', color('#3b3c3f', 0.7));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
     set('l.driveway', M(L.driveway));

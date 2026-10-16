@@ -115,6 +115,7 @@ export class Viewer {
   eyeHeight = 1.5;
   private lastTick = performance.now();
   private camMoved() {
+    this.cullTown();
     this._dirty = true;
     this.lastMove = performance.now();
   }
@@ -695,6 +696,13 @@ export class Viewer {
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
+    this.town = [];
+    for (const t of land.town) {
+      const g = t.mb.build(resolve, { name: 'town', castShadow: true });
+      this.groups.landscape.add(g);
+      this.town.push({ g, box: t.box });
+    }
+    this.cullTown();
     // 遠景の木立（地平線まで何もない地面にしない）
     this.groups.landscape.add(distantTreeBand((land.site.min.x + land.site.max.x) / 2, (land.site.min.y + land.site.max.y) / 2));
     // ガラスは影を落とさない
@@ -818,6 +826,37 @@ export class Viewer {
   // 演出
   // ------------------------------------------------------------------
   private revealToken = 0;
+  private town: { g: THREE.Group; box: THREE.Box3 }[] = [];
+  private townVisible = true;
+  /** 隣家（想定の街並み）の表示。日照では実際の周辺建物を使うので消す */
+  setTownVisible(on: boolean) {
+    this.townVisible = on;
+    this.cullTown();
+    this.dirty = true;
+  }
+  /** カメラと建物の間に入る隣家、カメラに近すぎる隣家は隠す（視界を塞がない） */
+  private cullTown() {
+    if (!this.town.length) return;
+    const cam = this.camera.position;
+    const tgt = this.controls.target;
+    const ray = new THREE.Ray(cam.clone(), tgt.clone().sub(cam).normalize());
+    const dist = cam.distanceTo(tgt);
+    const hit = new THREE.Vector3();
+    for (const t of this.town) {
+      let show = this.townVisible;
+      if (show) {
+        const grown = t.box.clone().expandByScalar(2.5);
+        if (grown.containsPoint(cam)) show = false;
+        else if (ray.intersectBox(t.box.clone().expandByScalar(3.2), hit) && hit.distanceTo(cam) < dist - 1) show = false;
+        // 高い視点（鳥瞰）では、カメラより手前に張り出す隣家は隠す
+        else if (cam.y > 7 && t.box.distanceToPoint(new THREE.Vector3(cam.x, 0, cam.z)) < 10) show = false;
+      }
+      if (t.g.visible !== show) {
+        t.g.visible = show;
+        this.dirty = true;
+      }
+    }
+  }
   /** 図面から建物が立ち上がる演出: 地面から屋根まで水平の切断面を持ち上げながら、カメラをゆっくり回し込む */
   playReveal(dur = 2600) {
     if (!this.state || this.cut) return;

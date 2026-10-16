@@ -74,6 +74,67 @@ const ext = (s: ExteriorStyle) => s;
 const int = (s: InteriorStyle) => s;
 
 export const EXTERIOR_STYLES: ExteriorStyle[] = [
+  // ---- ホームランディック事例から（実際の施工写真の素材感に合わせる） ----
+  ext({
+    id: 'hl-grey-box',
+    name: 'グレーの箱 × 縦スリット',
+    catch: '中間グレーの吹付け、黒い薄い庇',
+    description: '中間グレーの吹付け塗装の箱に、縦長のスリットと細い黒の庇。砂利に飛び石、細い樹形の木を 2 本だけ。窓は目立たせず、陰影と素材の肌理で見せる外観です。',
+    swatch: ['#8f8e8a', '#a9aaa8', '#26272a', '#1f1f1f'],
+    roof: {
+      type: 'flat',
+      pitch: 0.3,
+      eaves: 60,
+      verge: 40,
+      material: { pattern: 'standingSeam', color: '#2a2b2d', roughness: 0.5, metalness: 0.4 },
+      fascia: '#262729',
+      soffit: { pattern: 'paint', color: '#8f8e8a', roughness: 0.95 },
+      gutter: false,
+    },
+    wall: { pattern: 'stucco', color: '#8f8e8a', color2: '#85847f', roughness: 0.97, normalStrength: 0.45 },
+    accent: { pattern: 'lapSiding', color: '#a9aaa8', color2: '#9a9b99', roughness: 0.85 },
+    accentRule: 'entrance',
+    foundation: { pattern: 'concrete', color: '#9b9993', roughness: 0.9 },
+    frame: { color: '#202020', metalness: 0.4 },
+    entranceDoor: { pattern: 'paint', color: '#3a3a3a', roughness: 0.55 },
+    landscape: {
+      ground: { pattern: 'gravel', color: '#b0aca3', color2: '#9a968d' },
+      approach: { pattern: 'stone', color: '#8f8c86', color2: '#7d7a74', roughness: 0.85, size: 0.8, size2: 0.5 },
+      driveway: { pattern: 'concrete', color: '#aeaba5', roughness: 0.9 },
+      fence: 'none',
+      trees: 'modern',
+    },
+  }),
+  ext({
+    id: 'hl-dark-tile',
+    name: '黒ガルバ × 炭色タイル基壇',
+    catch: '漆黒の量塊、石の足元、コンクリートの塀',
+    description: '深い黒の縦張りガルバリウムの量塊を、炭色のタイルの基壇で受けた外観。道路側にはライトグレーのコンクリートの塀。シャープな黒と素材の違いで品を出します。',
+    swatch: ['#303133', '#4a4b4d', '#2a2b2d', '#1c1c1c'],
+    roof: {
+      type: 'flat',
+      pitch: 0.3,
+      eaves: 80,
+      verge: 50,
+      material: { pattern: 'standingSeam', color: '#262729', roughness: 0.5, metalness: 0.45 },
+      fascia: '#232426',
+      soffit: { pattern: 'paint', color: '#2e2f31', roughness: 0.9 },
+      gutter: false,
+    },
+    wall: { pattern: 'galvalume', color: '#303133', color2: '#28292b', roughness: 0.6, metalness: 0.45 },
+    accent: { pattern: 'stone', color: '#4a4b4d', color2: '#3d3e40', roughness: 0.8, size: 0.6, size2: 0.3 },
+    accentRule: 'lower',
+    foundation: { pattern: 'concrete', color: '#8a8883', roughness: 0.9 },
+    frame: { color: '#1a1a1a', metalness: 0.4 },
+    entranceDoor: { pattern: 'paint', color: '#2a2a2a', roughness: 0.5 },
+    landscape: {
+      ground: { pattern: 'gravel', color: '#a9a69e', color2: '#93908a' },
+      approach: { pattern: 'concrete', color: '#aaa7a1', roughness: 0.85 },
+      driveway: { pattern: 'concrete', color: '#b0ada7', roughness: 0.9 },
+      fence: 'block',
+      trees: 'modern',
+    },
+  }),
   // ---- アトリエ（設計事務所向けの素材構成） ----
   ext({
     id: 'lux-sumi-yakisugi',
@@ -500,6 +561,57 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
 ];
 
 export const INTERIOR_STYLES: InteriorStyle[] = [
+  // ---- ホームランディック事例から（実際の施工写真の素材感に合わせる） ----
+  int({
+    id: 'hl-grey-oak',
+    name: 'グレー壁 × オーク × 木の天井',
+    catch: '中間グレーの壁、オークの床、杢の天井',
+    description: '中間グレーの壁に、幅広のオークの床と木の天井。黒の細い建具とトラック照明、線状の間接光で陰影をつくる、落ち着いた LDK。',
+    swatch: ['#9c9a95', '#b08a5c', '#c9a272', '#2b2b2b'],
+    floor: { pattern: 'woodFloor', color: '#b08a5c', color2: '#9d7a4e', roughness: 0.5, size: 0.19 },
+    wetFloor: { pattern: 'tileFloor', color: '#8d8b87', roughness: 0.4, size: 0.6, size2: 0.6, tile: 1.2 },
+    entranceFloor: { pattern: 'tileFloor', color: '#7d7b78', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
+    wall: { pattern: 'plaster', color: '#9c9a95', color2: '#929089', roughness: 0.95, normalStrength: 0.2 },
+    accentWall: { pattern: 'concrete', color: '#7f7d79', color2: '#74726e', roughness: 0.85 },
+    ceiling: { pattern: 'woodSiding', color: '#c9a272', color2: '#b8905f', roughness: 0.65, size: 0.12 },
+    door: { pattern: 'paint', color: '#4a4947', roughness: 0.55 },
+    trim: '#2b2b2b',
+    furniture: {
+      wood: { pattern: 'wood', color: '#b08a5c', color2: '#9d7a4e', roughness: 0.5 },
+      fabric: { pattern: 'fabric', color: '#8f8f84', roughness: 0.95 },
+      fabric2: { pattern: 'fabric', color: '#6f6e66', roughness: 0.95 },
+      metal: '#242424',
+      counter: { pattern: 'concrete', color: '#6f6e6b', roughness: 0.55 },
+      cabinet: { pattern: 'paint', color: '#5a5957', roughness: 0.5 },
+      rug: { pattern: 'fabric', color: '#8a3a2e', roughness: 1 },
+    },
+    lightKelvin: 2700,
+  }),
+  int({
+    id: 'hl-dark-stone',
+    name: 'ダークグレーの石目タイル',
+    catch: '深いグレーの壁と、大判の石目の床',
+    description: '深いグレーの壁と天井に、大判の石目調タイルの床。細い黒サッシの大開口と、床・天井の間接光だけで見せる、陰影の強い上質な空間。',
+    swatch: ['#5d5c5a', '#4b4b4d', '#3a3a3c', '#b08a5c'],
+    floor: { pattern: 'tileFloor', color: '#4b4b4d', roughness: 0.35, size: 0.6, size2: 1.2, tile: 2.4 },
+    wetFloor: { pattern: 'tileFloor', color: '#4f4f51', roughness: 0.4, size: 0.3, size2: 0.6, tile: 1.2 },
+    entranceFloor: { pattern: 'stone', color: '#444446', color2: '#3a3a3c', roughness: 0.6, size: 0.6, size2: 0.6 },
+    wall: { pattern: 'plaster', color: '#5d5c5a', color2: '#555452', roughness: 0.95, normalStrength: 0.25 },
+    accentWall: { pattern: 'stone', color: '#4d4d4f', color2: '#424244', roughness: 0.7, size: 0.6, size2: 0.3 },
+    ceiling: { pattern: 'paint', color: '#3f3f41' },
+    door: { pattern: 'paint', color: '#323234', roughness: 0.5 },
+    trim: '#1f1f20',
+    furniture: {
+      wood: { pattern: 'wood', color: '#6d5a48', color2: '#5b4a3a', roughness: 0.5 },
+      fabric: { pattern: 'fabric', color: '#8f8c84', roughness: 0.95 },
+      fabric2: { pattern: 'fabric', color: '#5d5b57', roughness: 0.95 },
+      metal: '#1f1f1f',
+      counter: { pattern: 'stone', color: '#3d3d3f', color2: '#333335', roughness: 0.4, size: 3.2 },
+      cabinet: { pattern: 'paint', color: '#48484a', roughness: 0.45 },
+      rug: { pattern: 'fabric', color: '#2f2f31', roughness: 1 },
+    },
+    lightKelvin: 2600,
+  }),
   // ---- アトリエ（設計事務所向けの素材構成） ----
   int({
     id: 'lux-mortex-oak',
@@ -877,8 +989,8 @@ export interface DesignOptions {
 
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
-  exteriorId: 'hl-white-plaster',
-  interiorId: 'hl-greige-hotel',
+  exteriorId: 'hl-grey-box',
+  interiorId: 'hl-grey-oak',
   timeOfDay: 'day',
   furniture: true,
 };

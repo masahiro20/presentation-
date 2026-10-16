@@ -49,7 +49,7 @@ export interface LandscapePlan {
   cars: { x: number; z: number; dirX: number; dirZ: number }[];
 }
 
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan } {
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
   const mb = new MeshBuilder();
   const trees = new MeshBuilder();
   const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [] };
@@ -346,10 +346,62 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     shrub(best.p.clone().add(V(0.9, 0, 0.5)), 0.35);
   }
 
+  // 隣家（住宅地の中の敷地に見せる: 道路以外の 3 辺のすぐ外に、淡い色の箱型住宅を並べる）
+  const town: { mb: MeshBuilder; box: THREE.Box3 }[] = [];
+  {
+    let seed = 7;
+    const r2 = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    const sides: { n: THREE.Vector3; ok: boolean }[] = [
+      { n: V(1, 0, 0), ok: !(road.x > 0) },
+      { n: V(-1, 0, 0), ok: !(road.x < 0) },
+      { n: V(0, 0, 1), ok: !(road.z > 0) },
+      { n: V(0, 0, -1), ok: !(road.z < 0) },
+    ];
+    for (const s of sides) {
+      if (!s.ok) continue;
+      const alongV = V(-s.n.z, 0, s.n.x);
+      const edge = s.n.x !== 0 ? (s.n.x > 0 ? max.x : min.x) : s.n.z > 0 ? max.y : min.y;
+      const span = s.n.x !== 0 ? [min.y, max.y] : [min.x, max.x];
+      let t = span[0] - 4 - r2() * 3;
+      while (t < span[1] + 4) {
+        const w = 6 + r2() * 3;
+        const d = 6.5 + r2() * 2.5;
+        const hh = r2() > 0.3 ? 6.0 : 3.2;
+        const gap = 1.6 + r2() * 1.6;
+        const cA = (s.n.x !== 0 ? 0 : 1) * 0;
+        void cA;
+        const center = V(0, 0, 0);
+        if (s.n.x !== 0) center.set(edge + s.n.x * (gap + d / 2), 0, t + w / 2);
+        else center.set(t + w / 2, 0, edge + s.n.z * (gap + d / 2));
+        const dir = s.n.x !== 0 ? V(0, 0, 1) : V(1, 0, 0);
+        const len = w;
+        const depth = d;
+        // 躯体と、薄い片流れの屋根（色は 3 種からばらつかせる）
+        const key = r2() > 0.66 ? 'l.nbWallB' : r2() > 0.4 ? 'l.nbWallA' : 'l.nbWallC';
+        const one = new MeshBuilder();
+        mb_box(one, key, center, dir, len, hh, depth);
+        mb_box(one, 'l.nbRoof', center.clone().setY(hh), dir, len + 0.5, 0.35, depth + 0.5);
+        const ex = dir.x !== 0 ? len : depth;
+        const ez = dir.x !== 0 ? depth : len;
+        town.push({ mb: one, box: new THREE.Box3(V(center.x - ex / 2, 0, center.z - ez / 2), V(center.x + ex / 2, hh + 0.4, center.z + ez / 2)) });
+        t += w + 0.4 + r2() * 1.2;
+        void alongV;
+      }
+    }
+  }
+
   return {
     mb,
     trees,
+    town,
     site: { min, max, roadDir: road, roadCenter, parking },
     plan,
   };
+}
+
+function mb_box(m: MeshBuilder, key: string, base: THREE.Vector3, dir: THREE.Vector3, len: number, height: number, depth: number) {
+  m.box(key, base, dir, len, height, depth);
 }

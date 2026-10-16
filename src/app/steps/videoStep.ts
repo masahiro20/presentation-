@@ -65,6 +65,7 @@ export const videoStep: Step = {
   mount(ctx) {
     const v = ctx.app.viewer;
     v.setCutaway(null);
+    v.setTownVisible(true);
     let kind: Kind = 'walk';
     let res: '720' | '1080' = '1080';
     const capEl = h('div', { style: 'position:absolute;left:50%;bottom:8%;transform:translateX(-50%);background:rgba(0,0,0,0.5);color:#fff;padding:6px 16px;border-radius:8px;font-size:18px;display:none' });

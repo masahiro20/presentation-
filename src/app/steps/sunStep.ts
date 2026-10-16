@@ -59,6 +59,7 @@ export const sunStep: Step = {
       v.setDesign(state.design);
     }
     v.setCutaway(null);
+    v.setTownVisible(false);
     v.groups.context.visible = true;
     const sc = getCtx(ctx);
     sc.year = ui.year;

@@ -18,4 +18,5 @@ export { fetchPlateauBuildings, fetchCached, clearPlateauCaches, plateauDatasetL
 export { quantizeMesh, dequantizeMesh, quantizedBytes, QUANTIZE_LIMIT_M } from './meshCodec';
 export type { RoofUVSpec, PlateauGeometryOptions } from './geometry';
 export { buildPlateauGeometry } from './geometry';
-export { ROOF_ESTIMATE, minAreaRect, planRoof, hipRoofMesh, withEstimatedRoof, type EstimatedRoof } from './roofEstimate';
+export { ROOF_ESTIMATE, minAreaRect, planRoof, hipRoofMesh, withEstimatedRoof, estimateEave, normalizeSpec, specMesh, specTop, usageClass, type EstimatedRoof, type UsageClass } from './roofEstimate';
+export { ROOF_KINDS, ROOF_KIND_LABEL, HIGH_SIDES, HIGH_SIDE_LABEL, meshFromSpec, flatMesh, gableMesh, hipMesh, shedMesh, earClip, type RoofKind, type HighSide, type RoofSpec } from './roofSpec';

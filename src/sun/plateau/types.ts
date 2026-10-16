@@ -64,7 +64,19 @@ export interface PlateauAttrs {
    * 推定の屋根（LOD1 の箱形の住宅に roofEstimate.ts が寄棟をかぶせた建物。実データの形ではない）。付いているとき mesh は壁 + 寄棟で、
    * zmax = zmin + ridge（形状の上端）、height = ridge。boxHeight は元の箱の高さ（点群の中央値 = 元の zmax − zmin）
    */
-  roofEstimate?: { kind: 'hip'; eave: number; ridge: number; boxHeight: number };
+  roofEstimate?: {
+    kind: 'hip' | 'gable' | 'shed' | 'flat';
+    eave: number;
+    ridge: number;
+    boxHeight: number;
+    ridgeDir?: 'long' | 'short';
+    highSide?: 'N' | 'E' | 'S' | 'W';
+    storeys?: number;
+    floorH?: number;
+    parapet?: number;
+    /** 利用者が直した（推定ではなく手入力） */
+    user?: boolean;
+  };
 }
 
 /**

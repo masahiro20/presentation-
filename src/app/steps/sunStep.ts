@@ -13,6 +13,8 @@ import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
 import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, heightKindOf, neighborTitle, neighborWhere, plateauYearLod, type SunDisclosure } from '../sunDisclosure';
+import { ACCURACY_LABEL, accuracyOf } from '../../sun/keyNeighbors';
+import { createRoofEditor } from '../roofEditor';
 import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, pitchSun, plannedAxes, plannedPreset, ridgeFromPitch, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
@@ -992,6 +994,7 @@ export const sunStep: Step = {
         const kept = sc.hiddenList().length;
         const fell = !!r.plateau && r.plateau.status !== 'covered';
         toast(neighborsLoadedToast(r, kept), fell ? 'info' : 'ok', fell ? 8000 : undefined);
+        renderKeyList();
         // 一部タイルの失敗・データ量の上限・補完などの注記（落ちた理由はトーストで案内済み）
         const extra = r.notes.filter((t) => !/^この地域は PLATEAU|^PLATEAU のデータを取得できなかった/.test(t));
         if (extra.length) toast(extra.join(' '), 'info', 8000);
@@ -1067,11 +1070,14 @@ export const sunStep: Step = {
     // 想定の家の操作（置くモード・編集の案内・ドラッグ）を終える／一覧と案内を今の値に合わせる（実体は想定の家のブロックで入れる）
     let stopPlannedUI: () => void = () => {};
     let refreshPlanned: () => void = () => {};
+    // 要確認の建物の一覧を今の値に合わせる（実体は要確認のブロックで入れる）
+    let renderKeyList: () => void = () => {};
     let closePlannedEditor: () => void = () => {};
     const syncHighlight = () => sc.setHighlight([...selected, ...[popKey, plKey, plHover].filter((k): k is string => !!k)]);
     const afterEdit = () => {
       invalidateResults();
       apply(true);
+      renderKeyList();
     };
     const hideKeys = (keys: string[]) => {
       const rec = hideChoiceRecord();
@@ -1186,9 +1192,28 @@ export const sunStep: Step = {
       syncHighlight();
       const s = ctx.stage.getBoundingClientRect();
       const left = Math.max(8, Math.min(s.width - 330, cx - s.left + 12));
-      const top = Math.max(8, Math.min(s.height - 340, cy - s.top + 12));
+      const top = Math.max(8, Math.min(s.height - (b.plateau && b.mesh ? 640 : 340), cy - s.top + 12));
       const cur = sc.heightOf(b);
       const overridden = sc.edits.heights.has(key);
+      // 屋根・階高の編集欄（PLATEAU の建物のみ。適用で mesh・高さを入力値で作り直す）
+      const roofEd = createRoofEditor(
+        b,
+        !!sc.roofOf(b),
+        (spec) => {
+          closePop();
+          if (sc.setRoof(key, spec)) {
+            afterEdit();
+            toast('屋根を入力値にしました（影・解析にも使います）', 'ok');
+          }
+        },
+        () => {
+          closePop();
+          if (sc.setRoof(key, null)) {
+            afterEdit();
+            toast('屋根を自動の推定に戻しました', 'ok');
+          }
+        },
+      );
       const hIn = h('input', { type: 'number', min: 1, max: 300, step: 0.1, value: cur.toFixed(1) }) as HTMLInputElement;
       const applyH = () => {
         const val = Math.round(+hIn.value * 10) / 10;
@@ -1214,7 +1239,36 @@ export const sunStep: Step = {
         h('div', { class: 'sunnb-pop-head' }, h('h5', null, neighborTitle(b)), h('button', { class: 'icon-btn', title: '閉じる', onclick: closePop }, '×')),
         h('div', { class: 'hint' }, neighborSourceLine(b)),
         h('div', { class: 'hint' }, `${neighborWhere(b)}・建築面積 約 ${Math.round(ringArea(b.ring))} m²${b.plateau?.storeys ? `・${b.plateau.storeys} 階` : ''}${b.plateau?.address ? `・${b.plateau.address}` : ''}`),
+        h('div', { class: 'hint' }, h('span', { class: `acc-tag acc-${accuracyOf(sc.effective(b))}` }, ACCURACY_LABEL[accuracyOf(sc.effective(b))])),
         h('div', { class: 'row' }, h('span', null, '高さ (m)'), hIn, h('button', { class: 'btn sm dark', onclick: applyH }, '適用')),
+        h(
+          'div',
+          { class: 'row' },
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              title: '現地で測った高さとして確定します（資料・日影図の脚注に「実測で確定した建物 N 棟」と出ます）',
+              onclick: () => {
+                const val = Math.round(+hIn.value * 10) / 10;
+                if (!(val >= 1 && val <= 300)) {
+                  toast('高さは 1〜300 m の数字で入力してください', 'error');
+                  return;
+                }
+                closePop();
+                if (Math.abs(val - cur) > 1e-9) sc.setHeight(key, Math.abs(val - b.height) < 1e-9 ? null : val);
+                sc.setConfirmed(key, true);
+                afterEdit();
+                toast(`高さ ${val.toFixed(1)} m を実測で確定しました`, 'ok');
+              },
+            },
+            '実測で確定',
+          ),
+          sc.isConfirmed(b)
+            ? h('button', { class: 'btn sm ghost', onclick: () => { closePop(); sc.setConfirmed(key, false); afterEdit(); } }, '確定を外す')
+            : null,
+        ),
+        roofEd ? roofEd.el : null,
         overridden
           ? h(
               'div',
@@ -1896,6 +1950,50 @@ export const sunStep: Step = {
       drawLots();
       renderLotSides();
     };
+    // ---- 要確認の建物（冬至の日影で敷地にかかる近隣を影の長い順に。現地で高さを測って確定する） ----
+    const keyList = h('div', { class: 'sunkey-list' });
+    renderKeyList = () => {
+      clear(keyList);
+      if (!sc.state.neighbors.length) {
+        keyList.appendChild(h('p', { class: 'hint' }, '周辺建物を読み込むと、敷地に影を落とす建物を影の長い順に出します'));
+        return;
+      }
+      const rows = sc.keyNeighbors().slice(0, 12);
+      if (!rows.length) {
+        keyList.appendChild(h('p', { class: 'hint' }, '冬至の 8〜16 時に敷地へ影を落とす建物はありません'));
+        return;
+      }
+      const open = rows.filter((r) => !sc.isConfirmed(r.b)).length;
+      keyList.appendChild(h('div', { class: 'hint' }, `影を落とす建物 ${rows.length} 棟（未確定 ${open}）`));
+      for (const r of rows) {
+        const eff = sc.effective(r.b);
+        const key = sc.keyOf(r.b);
+        keyList.appendChild(
+          h(
+            'button',
+            {
+              class: `sunkey-row${sc.isConfirmed(r.b) ? ' done' : ''}`,
+              title: 'クリックで高さ・屋根を直す・確定する',
+              onclick: () => {
+                const sr = ctx.stage.getBoundingClientRect();
+                openPop(key, sr.left + sr.width / 2, sr.top + 80);
+              },
+            },
+            h('b', null, neighborTitle(r.b)),
+            h('span', { class: `acc-tag acc-${accuracyOf(eff)}` }, ACCURACY_LABEL[accuracyOf(eff)]),
+            h('span', { class: 'meta' }, `${neighborWhere(r.b)}・高さ ${sc.heightOf(r.b).toFixed(1)} m・冬至の日影 ${r.hours} 時間`),
+          ),
+        );
+      }
+    };
+    const keyBlock = h(
+      'div',
+      { class: 'sunkey-block' },
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '要確認の建物（冬至の日影の長い順）'),
+      h('p', { class: 'hint', style: 'margin:0 0 2px' }, '上の建物ほど影への効きが大きい建物です。現地で高さを測れたら、クリックして「実測で確定」を押してください（資料・日影図の脚注に明記されます）。'),
+      keyList,
+    );
+    renderKeyList();
     const plannedBlock = h(
       'div',
       { class: 'sunpl-block' },
@@ -2128,6 +2226,7 @@ export const sunStep: Step = {
         hideBtn,
         h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
         hiddenBox,
+        keyBlock,
         plannedBlock,
         h('div', { class: 'field-label', style: 'margin-top:8px' }, '隣家を手動で追加'),
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px' }, field('方向', dirSel), field('距離 m', distIn), field('高さ m', hIn)),

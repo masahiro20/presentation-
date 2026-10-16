@@ -7,6 +7,7 @@
  * PlateauBuilding は fetch.ts の分割キャッシュと共有のオブジェクトなので ring/mesh/attrs は書き換えず、平行移動は新しい配列に作る。
  * 仕様: scratchpad/plateau-spec.md §2.11・§4（フォールバック表）・§8（固定文）（W8 が実装）
  */
+import { ROOF_KIND_LABEL } from '../sun/plateau';
 import { plateauRegionAddedNote } from '../sun/context';
 import { bboxOf, pointInRing, ringArea, ringCenter, type BBoxEN } from '../sun/footprint';
 import type { EN, PlateauAttrs, PlateauBuilding, PlateauFetchResult, PlateauProgress } from '../sun/plateau';
@@ -72,7 +73,7 @@ export function plateauNoteCounts(kept: PlateauNotesNeighbor[]): { plateau: numb
     if (!a) continue;
     const lod = a.lod ?? a.datasetLod;
     if (lod >= 2 && (!n.mesh || n.mesh.roofTriangles > 0)) roof++;
-    else if (a.roofEstimate) est++;
+    else if (a.roofEstimate && !a.roofEstimate.user) est++;
   }
   return { plateau, roof, box: plateau - roof, gsi, est };
 }
@@ -133,7 +134,13 @@ export function plateauInfoLines(n: Neighbor): string[] {
   if (a.storeys != null && Number.isFinite(a.storeys)) parts.push(`${a.storeys} 階${a.storeysBelow ? `（地下 ${a.storeysBelow} 階）` : ''}`);
   if (a.usage) parts.push(a.usage);
   lines.push(parts.length ? `${parts.join('・')}／${model}` : model);
-  if (a.roofEstimate) lines.push(`推定の屋根（寄棟）: 軒 ${a.roofEstimate.eave.toFixed(1)} m・棟 ${a.roofEstimate.ridge.toFixed(1)} m（元の箱の高さ ${a.roofEstimate.boxHeight.toFixed(1)} m）。実際の屋根の形ではありません`);
+  if (a.roofEstimate) {
+    const r = a.roofEstimate;
+    const kind = ROOF_KIND_LABEL[r.kind];
+    const dims = r.kind === 'flat' ? `屋上 ${r.eave.toFixed(1)} m・パラペット ${(r.parapet ?? r.ridge - r.eave).toFixed(1)} m` : `軒 ${r.eave.toFixed(1)} m・棟 ${r.ridge.toFixed(1)} m`;
+    const fl = r.storeys && r.floorH ? `・${r.storeys} 階 × 階高 ${r.floorH.toFixed(2)} m` : '';
+    lines.push(r.user ? `屋根（手入力・${kind}）: ${dims}${fl}` : `推定の屋根（${kind}）: ${dims}${fl}（元の箱の高さ ${r.boxHeight.toFixed(1)} m）。実際の屋根の形ではありません`);
+  }
   if (a.name && a.name !== a.usage) lines.push(`名称: ${a.name}`);
   if (a.address) lines.push(`所在: ${a.address}`);
   lines.push(n.baseElev != null && Number.isFinite(n.baseElev) ? `PLATEAU 地盤 T.P. ${a.zmin.toFixed(1)} m／地形 T.P. ${n.baseElev.toFixed(1)} m` : `PLATEAU 地盤 T.P. ${a.zmin.toFixed(1)} m`);

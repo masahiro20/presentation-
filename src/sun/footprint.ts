@@ -109,3 +109,30 @@ export function fillGapsWith<T extends { ring: EN[] }>(primary: { ring: EN[] }[]
   const polys = primary.map((p) => ({ ring: p.ring, bbox: bboxOf(p.ring) }));
   return secondary.filter((g) => coverageRatio(g.ring, polys) < maxOverlap);
 }
+
+/** 線分 ab と cd が交わるか（端点を含む） */
+function segmentsCross(a: EN, b: EN, c: EN, d: EN): boolean {
+  const o = (p: EN, q: EN, r: EN) => Math.sign((q.e - p.e) * (r.n - p.n) - (q.n - p.n) * (r.e - p.e));
+  const o1 = o(a, b, c);
+  const o2 = o(a, b, d);
+  const o3 = o(c, d, a);
+  const o4 = o(c, d, b);
+  return o1 !== o2 && o3 !== o4 && o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0;
+}
+
+/** 2 つの多角形が重なるか（頂点が相手の内側・中心が相手の内側・辺が交わる） */
+export function ringsOverlap(a: EN[], b: EN[]): boolean {
+  if (a.length < 3 || b.length < 3) return false;
+  const ba = bboxOf(a);
+  const bb = bboxOf(b);
+  if (ba.maxE < bb.minE || bb.maxE < ba.minE || ba.maxN < bb.minN || bb.maxN < ba.minN) return false;
+  if (a.some((p) => pointInRing(p, b)) || b.some((p) => pointInRing(p, a))) return true;
+  if (pointInRing(ringCenter(a), b) || pointInRing(ringCenter(b), a)) return true;
+  for (let i = 0; i < a.length; i++) {
+    const a0 = a[i];
+    const a1 = a[(i + 1) % a.length];
+    for (let j = 0; j < b.length; j++) if (segmentsCross(a0, a1, b[j], b[(j + 1) % b.length])) return true;
+  }
+  return false;
+}
+

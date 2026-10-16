@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QuantizedMesh } from '../src/sun/plateau';
 import { buildNeighborMeshes } from '../src/sunstudy/neighbors';
+import { effectiveNeighbors, setNeighborConfirmed, setNeighborRoof } from '../src/sunstudy/state';
 import { applyProject, fromSavedNeighbor, sanitizePlateauAttrs, serializeProject, toSavedNeighbor } from '../src/sunstudy/project';
 import { hiddenNeighbors, setNeighborsHidden, study, visibleNeighbors } from '../src/sunstudy/state';
 import type { Neighbor, ProjectJson, SavedNeighbor } from '../src/sunstudy/types';
@@ -142,6 +143,23 @@ describe('sanitizePlateauAttrs', () => {
 
 describe('プロジェクト JSON の往復（PLATEAU の実形状・属性・出典・隠す／高さの上書き）', () => {
   beforeEach(resetStudy);
+
+  it('利用者の屋根・確定が往復で残り、復元後の effectiveNeighbors が仕様どおりの形・高さ・印になる', async () => {
+    const n = study.neighbors[0];
+    expect(setNeighborRoof(n.id, { kind: 'gable', eave: 5.6, ridge: 7.9, boxHeight: 6, storeys: 2, floorH: 2.8, ridgeDir: 'short' })).toBe(true);
+    setNeighborConfirmed(n.id, true);
+    const json = JSON.parse(JSON.stringify(serializeProject())) as ProjectJson;
+    expect(json.neighborOverrides[n.id]).toMatchObject({ confirmed: true, roof: { kind: 'gable', eave: 5.6, ridge: 7.9, ridgeDir: 'short', storeys: 2, user: true } });
+    study.neighbors = [];
+    study.neighborOverrides = {};
+    study.env = { loaded: false, loading: false, error: null, attribution: '' };
+    await applyProject(json);
+    const eff = effectiveNeighbors().find((x) => x.id === n.id)!;
+    expect(eff.confirmed).toBe(true);
+    expect(eff.height).toBe(7.9);
+    expect(eff.plateau?.roofEstimate).toMatchObject({ kind: 'gable', user: true });
+    expect(eff.mesh!.tris.length).toBeGreaterThan(9 * 8);
+  });
 
   it('serializeProject → applyProject: meshQ が mesh に戻り（±0.5 cm）、hidden/override/plateau 属性と env.plateau が残る', async () => {
     const n = study.neighbors[0];

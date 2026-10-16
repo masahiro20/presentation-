@@ -54,7 +54,7 @@ export function plateauShapeCounts(list: Pick<Neighbor, 'source' | 'plateau' | '
     if (s === 'roof') roof++;
     else if (s === 'box') {
       box++;
-      if (n.plateau?.roofEstimate) est++;
+      if (n.plateau?.roofEstimate && !n.plateau.roofEstimate.user) est++;
     } else other++;
   }
   return { plateau: roof + box + other, roof, box, other, est };

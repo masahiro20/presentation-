@@ -64,7 +64,7 @@ export const EST_ROOF_NOTE = '推定の屋根は実測の最高高さを棟と�
  * （PLATEAU の括弧はデータセット = 市区・年度・LOD。区境で 2 つなら「／」。棟数の後ろに建物単位の LOD の内訳: データセットが LOD2 でも建物は箱形のことが多い）。
  * PLATEAU の建物があれば 2 行目に共通の開示文（形状・高さの根拠、箱形の建物が 1 棟でもあれば LOD1 の天端の但し書き、年度以降の新築・解体）。建物が無ければ []
  */
-export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind' | 'planned' | 'plateau'>[]): string[] {
+export function sourceLines(list: (Pick<NeighborBuilding, 'source' | 'heightKind' | 'planned' | 'plateau'> & { confirmed?: boolean })[]): string[] {
   const order: NeighborBuilding['source'][] = ['plateau', 'gsi', 'osm', 'manual'];
   const own = list.filter((b) => !b.planned);
   const datasets = new Map<string, { where: string; year: number; lod: number }>();
@@ -100,6 +100,8 @@ export function sourceLines(list: Pick<NeighborBuilding, 'source' | 'heightKind'
     const lod1 = shapes.box > 0 || shapes.unknown > 0;
     out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? LOD1_BOX_NOTE : ''}${shapes.est ? EST_ROOF_NOTE : ''}年度以降の新築・解体は反映されていない場合があります。`);
   }
+  const confirmed = own.filter((b) => b.confirmed).length;
+  if (confirmed) out.push(`実測で確定した建物 ${confirmed} 棟（現地で測った高さ。それ以外の建物の高さは公開データの値・推定）`);
   return out;
 }
 
@@ -161,6 +163,8 @@ export interface DisclosureSource {
   heightOf(b: NeighborBuilding): number;
   hideRecord(key: string): HideRecord | null;
   edits: { heights: Map<string, number> };
+  /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物。無ければ元の建物（テストの偽物用） */
+  effective?(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean };
   /** 想定の家を影・解析に含めるか（SunContext.plannedEnabled。無ければ含める） */
   plannedEnabled?: boolean;
 }
@@ -183,7 +187,7 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
     }
     if (!rec || rec.mode === 'view') {
       out.included++;
-      included.push(b);
+      included.push(sc.effective ? sc.effective(b) : b);
     }
     if (!rec) continue;
     const e: HiddenEntry = {

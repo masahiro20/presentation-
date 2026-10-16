@@ -312,7 +312,7 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     await clearPlateauCaches();
   });
   afterEach(() => vi.unstubAllGlobals());
-  const run = (opts: Parameters<typeof fetchNeighbors>[3] = {}, pin = PIN_MORIYAMA) => fetchNeighbors(pin.lat, pin.lon, RADIUS, { ...opts, plateau: { draco, ...opts.plateau } });
+  const run = (opts: Parameters<typeof fetchNeighbors>[3] = {}, pin = PIN_MORIYAMA) => fetchNeighbors(pin.lat, pin.lon, RADIUS, { ...opts, plateau: { draco, roofEstimate: false, ...opts.plateau } });
 
   it('PLATEAU の整備地域: PLATEAU（実測の高さ・形状）を使い、国土地理院は隙間だけ補う。id は plateau:gml_id、注記は固定文', async () => {
     const f = mockFetch();

@@ -274,6 +274,8 @@ export interface NeighborOverride {
   height?: number;
   /** 高さを現地で測って確定した（要確認の建物で確定。日影図の脚注・レポートに「実測で確定した建物 N 棟」と出す） */
   confirmed?: boolean;
+  /** 利用者が直した屋根（形・軒高・棟高・向き・階数・階高）。PLATEAU の建物の mesh・高さ・属性をこの仕様で作り直す */
+  roof?: NonNullable<PlateauAttrs['roofEstimate']>;
   hidden?: boolean;
   hideMode?: NeighborHideMode;
   hideReason?: NeighborHideReason;

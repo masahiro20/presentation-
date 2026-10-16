@@ -10,7 +10,8 @@ import { sunPosition, sunDirectionWorld, localDate, keyDates, sunriseSunset } fr
 import { ALIGN_COLORS, type EN } from './align';
 import { PLANNED_COLORS, PLANNED_DEFAULT_LABEL, buildPlannedHouseGeometry, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from './plannedHouse';
 import { fillGapsWith } from './footprint';
-import { buildPlateauGeometry, fetchPlateauBuildings, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
+import { rankShadowCasters } from './keyNeighbors';
+import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
 
 /** 想定の家（planned 付きの周辺建物） */
 export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
@@ -189,7 +190,7 @@ export function countPlateauShapes(list: Pick<NeighborBuilding, 'source' | 'plat
     else if ((a.lod ?? a.datasetLod) >= 2) c.roof++;
     else {
       c.box++;
-      if (a.roofEstimate) c.est++;
+      if (a.roofEstimate && !a.roofEstimate.user) c.est++;
     }
   }
   return c;
@@ -344,10 +345,14 @@ export interface NeighborEdits {
   hideInfo: Map<string, HideRecord>;
   heights: Map<string, number>;
   footprints: Map<string, EN[]>;
+  /** 利用者が直した屋根（形・軒高・棟高・向き・階数・階高）。PLATEAU の建物の mesh・高さをこの仕様で作り直す */
+  roofs: Map<string, RoofSpec>;
+  /** 高さを現地で測って確定した建物 */
+  confirmed: Set<string>;
 }
 
 export function emptyEdits(): NeighborEdits {
-  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map() };
+  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map(), roofs: new Map(), confirmed: new Set() };
 }
 
 /** キーの隠す記録（隠していなければ null。隠し方・理由の無い古い記録は 計算から除外・その他） */
@@ -358,7 +363,7 @@ export function hideRecordOf(edits: NeighborEdits, key: string): HideRecord | nu
 
 /** 記録の付いたキー（隠した・高さを直した） */
 function editedKeys(edits: NeighborEdits): Set<string> {
-  return new Set([...edits.hidden, ...edits.heights.keys()]);
+  return new Set([...edits.hidden, ...edits.heights.keys(), ...edits.roofs.keys(), ...edits.confirmed]);
 }
 
 /**
@@ -396,10 +401,15 @@ export function reapplyEdits(list: NeighborBuilding[], keyOf: (b: NeighborBuildi
       }
       const hgt = edits.heights.get(from);
       if (hgt != null && !edits.heights.has(to)) edits.heights.set(to, hgt);
+      const roof = edits.roofs.get(from);
+      if (roof && !edits.roofs.has(to)) edits.roofs.set(to, roof);
+      if (edits.confirmed.has(from)) edits.confirmed.add(to);
     }
     edits.hidden.delete(from);
     edits.hideInfo.delete(from);
     edits.heights.delete(from);
+    edits.roofs.delete(from);
+    edits.confirmed.delete(from);
     edits.footprints.delete(from);
   }
   let n = 0;
@@ -583,7 +593,83 @@ export class SunContext {
 
   /** 影・解析に使う高さ（直した高さがあればそれ） */
   heightOf(b: NeighborBuilding): number {
-    return this.edits.heights.get(this.keyOf(b)) ?? b.height;
+    const key = this.keyOf(b);
+    const roof = this.edits.roofs.get(key);
+    if (roof && b.plateau && b.mesh) return specTop(roof);
+    return this.edits.heights.get(key) ?? b.height;
+  }
+
+  /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物（開示・出典の数え方用。元のオブジェクトは変えない） */
+  effective(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean } {
+    const key = this.keyOf(b);
+    const roof = this.edits.roofs.get(key);
+    const out: NeighborBuilding & { confirmed?: boolean } = { ...b };
+    if (this.edits.heights.has(key) || (roof && b.plateau && b.mesh)) out.heightKind = 'manual';
+    if (roof && b.plateau && b.mesh) out.plateau = { ...b.plateau, roofEstimate: roof };
+    if (this.edits.confirmed.has(key)) out.confirmed = true;
+    return out;
+  }
+
+  /** 利用者が直した屋根（PLATEAU の建物のみ） */
+  roofOf(b: NeighborBuilding): RoofSpec | null {
+    return b.plateau && b.mesh ? (this.edits.roofs.get(this.keyOf(b)) ?? null) : null;
+  }
+
+  /** 屋根を利用者の仕様にする（null で自動の推定に戻す）。直した高さの記録は外す。取り直しの後も同じ建物に当て直す */
+  setRoof(key: string, spec: RoofSpec | null): boolean {
+    const b = this.findByKey(key);
+    if (!b || !b.plateau || !b.mesh) return false;
+    if (spec) {
+      this.edits.roofs.set(key, normalizeSpec({ ...spec, user: true }));
+      this.edits.heights.delete(key);
+      const fp = this.footprintOf(b);
+      if (fp) this.edits.footprints.set(key, fp);
+    } else {
+      this.edits.roofs.delete(key);
+      if (!this.edits.hidden.has(key) && !this.edits.heights.has(key) && !this.edits.confirmed.has(key)) this.edits.footprints.delete(key);
+    }
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 高さを現地で測って確定した印（影・解析は変わらないので作り直さない） */
+  setConfirmed(key: string, on: boolean): boolean {
+    const b = this.findByKey(key);
+    if (!b) return false;
+    if (on) {
+      this.edits.confirmed.add(key);
+      const fp = this.footprintOf(b);
+      if (fp) this.edits.footprints.set(key, fp);
+    } else {
+      this.edits.confirmed.delete(key);
+      if (!this.edits.hidden.has(key) && !this.edits.heights.has(key) && !this.edits.roofs.has(key)) this.edits.footprints.delete(key);
+    }
+    return true;
+  }
+
+  isConfirmed(b: NeighborBuilding): boolean {
+    return this.edits.confirmed.has(this.keyOf(b));
+  }
+
+  /** 敷地（無ければ建物）の輪郭（東・北。ring と同じ座標）。要確認の建物の影の判定に使う */
+  targetRing(): EN[] | null {
+    const st = this.viewer.state;
+    if (!st) return null;
+    const r = st.site ?? null;
+    const bb = st.meta.bbox;
+    const [x0, x1, z0, z1] = r ? [r.min.x, r.max.x, r.min.y, r.max.y] : [bb.min.x, bb.max.x, bb.min.z, bb.max.z];
+    return ([[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as const).map(([x, z]) => this.fromWorld(new THREE.Vector3(x, 0, z)));
+  }
+
+  /** 要確認の建物: 冬至の 8〜16 時に敷地へ影を落とす建物（影の長い順）。確定済みは後ろ */
+  keyNeighbors(): { b: NeighborBuilding; hours: number }[] {
+    const target = this.targetRing();
+    const { lat, lon } = siteLatLon(this.state.site);
+    const cands = this.state.neighbors
+      .filter((b) => this.isActive(b) && !b.planned && (!b.hidden || this.hideModeOf(b) === 'view'))
+      .map((b) => ({ ring: b.ring, height: this.heightOf(b), source: b.source as string, heightKind: b.heightKind, plateau: b.plateau, mesh: b.mesh, confirmed: this.isConfirmed(b), b }));
+    const ranked = rankShadowCasters(cands, target, lat, lon, new Date().getFullYear());
+    return ranked.map((r) => ({ b: r.n.b, hours: r.hours })).sort((x, y) => Number(this.isConfirmed(x.b)) - Number(this.isConfirmed(y.b)) || y.hours - x.hours);
   }
 
   /** 隠した建物（今の一覧の中）。mode を渡すとその隠し方の建物だけ */
@@ -707,6 +793,8 @@ export class SunContext {
     this.edits.hidden.delete(key);
     this.edits.hideInfo.delete(key);
     this.edits.heights.delete(key);
+    this.edits.roofs.delete(key);
+    this.edits.confirmed.delete(key);
     this.edits.footprints.delete(key);
     this.highlightKeys.delete(key);
     if (this.previewKey === key) this.previewKey = null;
@@ -777,6 +865,7 @@ export class SunContext {
       this.edits.heights.delete(key);
       if (!this.edits.hidden.has(key)) this.edits.footprints.delete(key);
     } else {
+      this.edits.roofs.delete(key);
       this.edits.heights.set(key, height);
       const fp = b ? this.footprintOf(b) : null;
       if (fp) this.edits.footprints.set(key, fp);
@@ -1163,11 +1252,14 @@ export class SunContext {
         const pa = b.plateau!;
         const a = toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon);
         // 直した高さは足元を固定して縦に伸縮（形状の高さ zmax − zmin に対する比）
-        const span = pa.zmax - pa.zmin;
+        // 利用者が直した屋根: anchor 基準の輪郭から仕様どおりに作り直す（高さは仕様の最高点なので伸縮しない）
+        const roofSpec = this.edits.roofs.get(key);
+        const specM = roofSpec ? specMesh(b.ring.map((p) => ({ e: p.e - a.e, n: p.n - a.n })), roofSpec) : null;
+        const span = specM ? 0 : pa.zmax - pa.zmin;
         const heightScale = span > 0.01 ? this.heightOf(b) / span : 1;
         // 航空写真があれば屋根に平面投影の UV（勾配屋根にも貼れる）。写真の範囲は ring と同じピン基準の東・北
         const roofUV = ai ? { west: ai.west, east: ai.east, south: ai.south, north: ai.north, toEN: (x: number, z: number) => ({ e: a.e + x, n: a.n - z }) } : null;
-        geo = buildPlateauGeometry(b.mesh!, { heightScale, roofUV });
+        geo = buildPlateauGeometry(specM ?? b.mesh!, { heightScale, roofUV });
         geo.applyMatrix4(new THREE.Matrix4().makeBasis(eastV, upV, southV).setPosition(this.toWorld(a.e, a.n, 0)));
       } else {
         const pts = b.ring.map((p) => this.toWorld(p.e, p.n));

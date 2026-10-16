@@ -28,8 +28,9 @@ import { assumptionItems, downloadReport, fmtSigned, neighborCounts, openReport 
 import { clearGroup } from '../scene';
 import type { CameraView } from '../scene';
 import type { StudyStep } from '../shell';
+import { createRoofEditor } from '../../app/roofEditor';
 import { ACCURACY_LABEL, accuracyOf, rankShadowCasters } from '../keyNeighbors';
-import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborConfirmed, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
+import { analysisNeighbors, emit, excludedNeighbors, getHideDefaults, on, setHideDefaults, setNeighborConfirmed, setNeighborRoof, setNeighborsHidden, study, uid, viewOnlyNeighbors, visibleNeighbors } from '../state';
 import { SunPath } from '../sunpath';
 import { DEM_LABEL, horizonElevation } from '../terrain';
 import { NEIGHBOR_SOURCE_LABEL, bearingName, worldToEN } from '../types';
@@ -668,17 +669,30 @@ export const simStep: StudyStep = {
       const popOpts = hideOptionsControl({ remember: true, compact: true });
       const r = stage.getBoundingClientRect();
       const left = Math.max(8, Math.min(r.width - 300, e.clientX - r.left + 10));
-      const top = Math.max(8, Math.min(r.height - 250, e.clientY - r.top + 10));
+      const top = Math.max(8, Math.min(r.height - (eff.plateau && eff.mesh ? 620 : 250), e.clientY - r.top + 10));
       // PLATEAU の建物: 出典（年度・LOD・箱形／屋根形状）、実測の最高高さ／モデルの高さ、所在、PLATEAU 地盤 T.P.／地形 T.P.、建物 ID の行（plateauInfoLines）。
       // 属性の無い PLATEAU の建物（旧形式の保存データ）は従来どおり出典の 1 行
       const info = plateauInfoLines(eff);
       // 実形状（mesh）は高さを変えると足元を固定して縦に伸縮する。「最高高さに合わせる」は実測の最高高さ（bldg:measuredHeight）が 0.5 m 以上違うときだけ
       const stretch = !!eff.mesh && !!eff.plateau;
+      // 屋根・階高の編集欄（PLATEAU の建物のみ。適用で mesh・高さ・属性を入力値で作り直す）
+      const roofEd = createRoofEditor(
+        eff,
+        !!study.neighborOverrides[n.id]?.roof,
+        (spec) => {
+          closePop();
+          if (setNeighborRoof(n.id, spec)) toast('屋根を入力値にしました（影・解析を作り直します）', 'ok');
+        },
+        () => {
+          closePop();
+          if (setNeighborRoof(n.id, null)) toast('屋根を自動の推定に戻しました', 'ok');
+        },
+      );
       const mh = measuredHeightPreset(eff);
       const presets: [string, number][] = mh ? [[mh.label, mh.value], ...PRESETS] : PRESETS;
       pop = h(
         'div',
-        { class: `pop${info.length ? ' plateau-pop' : ''}`, style: `left:${left}px;top:${top}px` },
+        { class: `pop${info.length ? ' plateau-pop' : ''}`, style: `left:${left}px;top:${top}px;max-height:calc(100% - 16px);overflow:auto` },
         h('h5', null, eff.label ?? '周辺建物', kindTag(eff.heightKind)),
         h('div', { class: 'hint' }, whereOf(eff)),
         info.length
@@ -686,6 +700,7 @@ export const simStep: StudyStep = {
           : h('div', { class: 'hint' }, `出典: ${SRC_SHORT[eff.source]}${eff.heightKind === 'estimated' ? '（高さは建物の種類からの推定です）' : ''}`),
         h('div', { class: 'row' }, stretch ? '高さ（形状を縦に伸縮）' : '高さ', hIn, 'm'),
         h('div', { class: 'row', style: 'flex-wrap:wrap' }, ...presets.map(([l, v]) => h('button', { class: `btn sm${mh && l === mh.label ? ' measured-preset' : ''}`, title: mh && l === mh.label ? 'PLATEAU の実測の最高高さ（bldg:measuredHeight）。LOD1 の形状の天端は点群の中央値で、最高高さより低めです' : undefined, onclick: () => (hIn.value = String(v)) }, l))),
+        roofEd ? roofEd.el : null,
         popOpts.el,
         h(
           'div',

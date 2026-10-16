@@ -11,6 +11,7 @@
  *    JSON 全体が約 60MB を超えそうなときは env を省略する（開いたときに再取得）。
  *  - localStorage 'sunstudy.recent': 直近の場所・敷地・配置・名前（3D データは含まない）。失敗しても何もしない。
  */
+import { sanitizeUserRoof } from './roofOverride';
 import { download, toast } from '../app/dom';
 import { base64ToArrayBuffer, importModelFile } from './importModel';
 import { resetPlaced } from './building';
@@ -219,6 +220,8 @@ export function sanitizeNeighborOverrides(v: unknown): Record<string, NeighborOv
     const next: NeighborOverride = {};
     if (isFiniteNum(o.height) && o.height > 0) next.height = o.height;
     if (o.confirmed === true) next.confirmed = true;
+    const roof = sanitizeUserRoof(o.roof);
+    if (roof) next.roof = roof;
     if (typeof o.hidden === 'boolean') next.hidden = o.hidden;
     if (next.hidden) {
       const info = normalizeHideInfo({ mode: o.hideMode, reason: o.hideReason, note: o.hideNote });

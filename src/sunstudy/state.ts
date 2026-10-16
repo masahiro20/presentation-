@@ -1,4 +1,6 @@
 /** 日照シミュレーション（3D データ読み込み版）の状態 */
+import { normalizeSpec } from '../sun/plateau';
+import { applyUserRoof } from './roofOverride';
 import { PLANNED_DEFAULT_LABEL, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from '../sun/plannedHouse';
 import type { AerialImage, GeoFrame, HeightGrid, ImportedModel, LatLon, MeasurePoint, ModelPlacement, Neighbor, NeighborHideInfo, NeighborHideMode, NeighborHideReason, NeighborOverride, NeighborSource, PlateauEnvInfo } from './types';
 import { DEFAULT_PLACEMENT, HIDE_MODES, HIDE_REASONS } from './types';
@@ -150,8 +152,10 @@ export function setHideDefaults(info: Partial<NeighborHideInfo>): void {
  * 自動取得の建物は neighborOverrides で隠す。隠した建物の hideMode・hideReason はいつも入っている（古いデータは計算から除外・その他）
  */
 export function effectiveNeighbors(): Neighbor[] {
-  return study.neighbors.map((n) => {
-    const o = study.neighborOverrides[n.id];
+  return study.neighbors.map((n0) => {
+    const o = study.neighborOverrides[n0.id];
+    // 利用者が直した屋根は、PLATEAU の建物の mesh・高さ・属性を作り直した建物にしてから上書きを重ねる
+    const n = o?.roof ? applyUserRoof(n0, o.roof, study.frame) : n0;
     // 上書きが無く、隠し方・理由も整っていれば元のオブジェクトをそのまま返す（今までどおり。rebuildEnvironment の baseElev など）
     if (!o) {
       const info = hideInfoOf(n);
@@ -163,12 +167,12 @@ export function effectiveNeighbors(): Neighbor[] {
     const e: Neighbor = o
       ? {
           ...n,
-          height: o.height ?? n.height,
+          height: o.roof ? n.height : (o.height ?? n.height),
           hidden: o.hidden ?? n.hidden,
           hideMode: o.hideMode ?? n.hideMode,
           hideReason: o.hideReason ?? n.hideReason,
           hideNote: o.hideNote ?? n.hideNote,
-          heightKind: o.height != null ? ('manual' as const) : n.heightKind,
+          heightKind: o.height != null && !o.roof ? ('manual' as const) : n.heightKind,
           ...(o.confirmed ? { confirmed: true } : {}),
         }
       : { ...n };
@@ -218,6 +222,21 @@ export function viewOnlyNeighbors(): Neighbor[] {
 /** 影・解析に入る周辺建物（隠していないもの + 表示だけ隠したもの。計算から除外したもの・含めない想定の家は入らない） */
 export function analysisNeighbors(): Neighbor[] {
   return effectiveNeighbors().filter((n) => (!n.hidden || n.hideMode === 'view') && plannedActive(n));
+}
+
+/** 屋根を利用者の仕様にする（null で推定に戻す）。PLATEAU の建物（mesh と属性がある）だけ。'neighbors' を 1 回発火して影・解析を作り直す */
+export function setNeighborRoof(id: string, roof: NonNullable<Neighbor['plateau']>['roofEstimate'] | null): boolean {
+  const n = study.neighbors.find((x) => x.id === id);
+  if (!n || !n.plateau || !n.mesh) return false;
+  const cur = { ...(study.neighborOverrides[id] ?? {}) };
+  if (roof) {
+    cur.roof = { ...normalizeSpec(roof), user: true };
+    delete cur.height;
+  } else delete cur.roof;
+  if (Object.keys(cur).length) study.neighborOverrides[id] = cur;
+  else delete study.neighborOverrides[id];
+  emit('neighbors');
+  return true;
 }
 
 /** 高さを現地で測って確定した印を付ける／外す（自動取得の建物は neighborOverrides、手動の隣家は本体）。印だけなので 'neighbors' は発火しない（影・解析は変わらない） */

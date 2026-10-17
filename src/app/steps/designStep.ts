@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, segmented, modal, download } from '../dom';
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
-import { EXTERIOR_STYLES, INTERIOR_STYLES, exteriorById, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
+import { EXTERIOR_STYLES, INTERIOR_STYLES, MAIN_EXTERIOR_IDS, MAIN_INTERIOR_IDS, exteriorById, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
 import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
@@ -10,7 +10,6 @@ import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 import { exportCuts } from '../cuts';
 import { startCinema } from '../cinema';
-import { aiSettingsUi, runAiFinish } from '../aiFinish';
 import type { Viewer } from '../../scene/viewer';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
@@ -346,7 +345,7 @@ export const designStep: Step = {
         h('h2', null, '外観・内観パース'),
         h('p', { class: 'lead' }, '「こういうイメージ」を選ぶだけで、外壁・屋根・床・家具まで一式の仕上げが切り替わります。見どころのカメラは自動で用意しています。'),
       );
-      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined }));
+      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined, eaves: undefined }));
       const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id }));
       const others = (cards: HTMLElement[], open: boolean) =>
         h('details', { open, style: 'margin-top:8px' }, h('summary', { style: 'font-size:12.5px;color:#8b9098;cursor:pointer' }, 'その他のテイスト（比較用）'), h('div', { class: 'style-grid', style: 'margin-top:8px' }, cards));
@@ -425,18 +424,13 @@ export const designStep: Step = {
         ),
         section(
           '外観のテイスト',
-          h('div', { class: 'style-grid' }, EXTERIOR_STYLES.filter((s) => /^(lux|hl)-/.test(s.id)).map(extCard)),
-          others(EXTERIOR_STYLES.filter((s) => !/^(lux|hl)-/.test(s.id)).map(extCard), !state.design.exteriorId.startsWith('hl-')),
+          h('div', { class: 'style-grid' }, MAIN_EXTERIOR_IDS.map((id) => EXTERIOR_STYLES.find((s) => s.id === id)!).filter(Boolean).map(extCard)),
+          others(EXTERIOR_STYLES.filter((s) => !MAIN_EXTERIOR_IDS.includes(s.id)).map(extCard), !state.design.exteriorId.startsWith('hl-')),
         ),
         section(
           '内観のテイスト',
-          h('div', { class: 'style-grid' }, INTERIOR_STYLES.filter((s) => /^(lux|hl)-/.test(s.id)).map(intCard)),
-          others(INTERIOR_STYLES.filter((s) => !/^(lux|hl)-/.test(s.id)).map(intCard), !state.design.interiorId.startsWith('hl-')),
-        ),
-        section(
-          'マテリアルボード',
-          materialBoard(v),
-          h('p', { class: 'hint' }, '今の仕上げの組み合わせ。テイストを選び直すと並び替わります。'),
+          h('div', { class: 'style-grid' }, MAIN_INTERIOR_IDS.map((id) => INTERIOR_STYLES.find((s) => s.id === id)!).filter(Boolean).map(intCard)),
+          others(INTERIOR_STYLES.filter((s) => !MAIN_INTERIOR_IDS.includes(s.id)).map(intCard), !state.design.interiorId.startsWith('hl-')),
         ),
         section(
           '細かく調整',
@@ -468,6 +462,21 @@ export const designStep: Step = {
               onchange: (e: Event) => update({ roofPitch: +(e.target as HTMLInputElement).value }),
             });
             return h('label', { class: 'field', style: 'margin-top:10px' }, label, slider, h('span', { class: 'hint' }, '10 に対する立ち上がり。標準は片流れ 0.5 寸。切妻・寄棟にする場合は 3〜5 寸'));
+          })(),
+          (() => {
+            const ext = exteriorById(state.design.exteriorId);
+            const cur = state.design.eaves ?? ext.roof.eaves;
+            const label = h('span', { class: 'field-label' }, `軒の出 ${cur} mm`);
+            const slider = h('input', {
+              type: 'range',
+              min: 0,
+              max: 1500,
+              step: 50,
+              value: cur,
+              oninput: (e: Event) => (label.textContent = `軒の出 ${(e.target as HTMLInputElement).value} mm`),
+              onchange: (e: Event) => update({ eaves: +(e.target as HTMLInputElement).value }),
+            });
+            return h('label', { class: 'field', style: 'margin-top:10px' }, label, slider, h('span', { class: 'hint' }, '0〜150mm で軒の無い箱、450〜900mm で深い軒（夏の日射を遮ります）'));
           })(),
           h('div', { class: 'field-label', style: 'margin-top:10px' }, '時間帯'),
           segmented<TimeOfDay>(
@@ -585,14 +594,7 @@ export const designStep: Step = {
       };
       side.append(
         section(
-          'AI 仕上げ（無料枠・ワンクリック）',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '今の構図を、下絵と線画を添えて Google の画像生成 AI に渡し、形を変えないよう指示して写真に仕上げます。仕上がりはギャラリー（プレゼン資料）に入ります。'),
-          ...aiSettingsUi(),
-          h('button', { class: 'btn primary block', onclick: () => void runAiFinish(ctx, currentAsShot()) }, '✨ この構図を AI で仕上げる'),
-          h('p', { class: 'hint' }, '注意: 図面から作った画像が Google に送られます。守秘のある案件では使う前にご確認ください。AI は窓や家具の位置を変えることがあるので、仕上がりは必ず下絵と見比べてください。'),
-        ),
-        section(
-          'AI 仕上げ用カット集',
+          'カット集（別の AI・Blender に渡す用）',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめます。構図と間取りはそのまま、質感だけを写真のように仕上げてもらう使い方です。'),
           h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `📦 カット集を保存（${shots.length}枚・ZIP）`),
           h('button', { class: 'btn block', title: '各カットに、深度・法線・線画・素材IDの4枚を添えます（AI・Blender に形を固定して渡す条件画像）', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height, passes: true }) }, '🧩 パス付きカット集（AI 用 4 枚セット）'),
@@ -707,45 +709,3 @@ export function showImage(g: GalleryItem) {
 }
 
 
-/** いまの仕上げを並べたマテリアルボード（実際のテクスチャから作る） */
-function materialBoard(v: Viewer): HTMLElement {
-  const items: [string, string, string][] = [
-    ['ext.wall', '外壁', 'Exterior'],
-    ['ext.accent', 'アクセント', 'Accent'],
-    ['ext.roof', '屋根', 'Roof'],
-    ['ext.door', '玄関戸', 'Door'],
-    ['int.floor', '床', 'Floor'],
-    ['int.wall', '壁', 'Wall'],
-    ['int.accent', 'アクセント壁', 'Feature'],
-    ['int.door', '建具', 'Joinery'],
-    ['f.counter', 'カウンター', 'Counter'],
-    ['f.cabinet', '収納', 'Cabinet'],
-    ['f.wood', '家具の木', 'Furniture'],
-    ['f.fabric', 'ファブリック', 'Fabric'],
-  ];
-  const board = h('div', { class: 'matboard' });
-  for (const [key, ja, en] of items) {
-    const mat = v.registry.get(key) as THREE.MeshStandardMaterial;
-    const c = document.createElement('canvas');
-    c.width = 96;
-    c.height = 96;
-    const g = c.getContext('2d')!;
-    const img = (mat.map?.image ?? null) as HTMLCanvasElement | null;
-    if (img && img.width) {
-      // 中央を切り出して等倍に近い見え方で
-      const s = Math.min(img.width, img.height);
-      g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 96, 96);
-      if (mat.color && (mat.color.r < 0.98 || mat.color.g < 0.98 || mat.color.b < 0.98)) {
-        g.globalCompositeOperation = 'multiply';
-        g.fillStyle = `#${mat.color.getHexString()}`;
-        g.fillRect(0, 0, 96, 96);
-        g.globalCompositeOperation = 'source-over';
-      }
-    } else {
-      g.fillStyle = mat.color ? `#${mat.color.getHexString()}` : '#cccccc';
-      g.fillRect(0, 0, 96, 96);
-    }
-    board.appendChild(h('div', { class: 'sw' }, c, h('div', { class: 'lb' }, h('b', null, ja), en)));
-  }
-  return board;
-}

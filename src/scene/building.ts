@@ -116,7 +116,95 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
   return out;
 }
 
+/**
+ * 上下階の外壁の面を揃える（図面の読み取りで芯が数 cm ずれると、外壁に段差の帯ができるため）。
+ * 上階の外壁が、下階の外壁とほぼ同じ線（面のずれ 18cm 以内・平行・重なりあり）にあれば、外面を下階に合わせて平行移動する。
+ * その線上にある他の壁の端点も一緒に動かし、開口の位置は壁の始点の移動分だけ補正する。
+ */
+export function alignUpperWalls(model: BuildingModel): BuildingModel {
+  const floors = model.floors.map((f) => ({ ...f, walls: f.walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } })), openings: f.openings.map((o) => ({ ...o })), outline: f.outline.map((l) => l.map((p) => ({ ...p }))) }));
+  for (let i = 1; i < floors.length; i++) {
+    const up = floors[i];
+    const low = floors[i - 1].walls.filter((w) => w.exterior);
+    for (const w of up.walls) {
+      if (!w.exterior || w.outsideSign == null) continue;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      if (L < 300) continue;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      const nx = -uy * w.outsideSign;
+      const ny = ux * w.outsideSign;
+      const face = (w.a.x + w.b.x) / 2 * nx + (w.a.y + w.b.y) / 2 * ny + w.thickness / 2;
+      let best: number | null = null;
+      for (const q of low) {
+        const ql = Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y);
+        if (ql < 300 || q.outsideSign == null) continue;
+        const qx = (q.b.x - q.a.x) / ql;
+        const qy = (q.b.y - q.a.y) / ql;
+        if (Math.abs(qx * uy - qy * ux) > 0.02) continue;
+        const qnx = -qy * q.outsideSign;
+        const qny = qx * q.outsideSign;
+        if (qnx * nx + qny * ny < 0.9) continue;
+        // 重なり
+        const t = (p: { x: number; y: number }) => p.x * ux + p.y * uy;
+        const ov = Math.min(Math.max(t(w.a), t(w.b)), Math.max(t(q.a), t(q.b))) - Math.max(Math.min(t(w.a), t(w.b)), Math.min(t(q.a), t(q.b)));
+        if (ov < 300) continue;
+        const qface = (q.a.x + q.b.x) / 2 * nx + (q.a.y + q.b.y) / 2 * ny + q.thickness / 2;
+        const d = qface - face;
+        if (Math.abs(d) < 3 || Math.abs(d) > 180) continue;
+        if (best == null || Math.abs(d) < Math.abs(best)) best = d;
+      }
+      if (best == null) continue;
+      const dx = nx * best;
+      const dy = ny * best;
+      // 旧い線の上にある端点（この壁と、ここに取り付く壁）を同じだけ動かす
+      const onLine = (p: { x: number; y: number }) => {
+        const rx = p.x - w.a.x;
+        const ry = p.y - w.a.y;
+        const along = rx * ux + ry * uy;
+        const off = Math.abs(rx * -uy + ry * ux);
+        return off < w.thickness / 2 + 30 && along > -w.thickness && along < L + w.thickness;
+      };
+      // 外形線（床スラブ・屋根の元）のうち、外壁の外面の線上にある点も動かす
+      const onFace = (p: { x: number; y: number }) => {
+        const rx = p.x - w.a.x;
+        const ry = p.y - w.a.y;
+        const along = rx * ux + ry * uy;
+        const off = rx * nx + ry * ny;
+        return Math.abs(off - w.thickness / 2) < 40 || Math.abs(off) < 40 ? along > -w.thickness - 50 && along < L + w.thickness + 50 : false;
+      };
+      for (const loop of up.outline) for (const p of loop) if (onFace(p)) {
+        p.x += dx;
+        p.y += dy;
+      }
+      for (const o of up.walls) {
+        const moveA = o === w || onLine(o.a);
+        const moveB = o === w || onLine(o.b);
+        if (!moveA && !moveB) continue;
+        if (moveA && o !== w) {
+          const ol = Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y) || 1;
+          const shiftT = (dx * (o.b.x - o.a.x) + dy * (o.b.y - o.a.y)) / ol;
+          for (const op of up.openings) if (op.wallId === o.id) {
+            op.t0 -= shiftT;
+            op.t1 -= shiftT;
+          }
+        }
+        if (moveA) {
+          o.a.x += dx;
+          o.a.y += dy;
+        }
+        if (moveB) {
+          o.b.x += dx;
+          o.b.y += dy;
+        }
+      }
+    }
+  }
+  return { ...model, floors };
+}
+
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
+  model = alignUpperWalls(model);
   const mb = new MeshBuilder();
   const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [] };
   const ext = opts.exterior;

@@ -71,9 +71,134 @@ export interface InteriorStyle {
 }
 
 const ext = (s: ExteriorStyle) => s;
+
+/** ホームランディックの標準的な外観: 塗り壁の箱、低い片流れ（ほぼ陸屋根に見える）、薄い黒の鼻隠し、アクセントは SOLIDO */
+function plasterBox(o: {
+  id: string;
+  name: string;
+  catch: string;
+  description: string;
+  wall: string;
+  wall2?: string;
+  coarse?: number;
+  accent?: string | null;
+  frame?: string;
+}): ExteriorStyle {
+  const accent = o.accent === undefined ? '#5d5c59' : o.accent;
+  return {
+    id: o.id,
+    name: o.name,
+    catch: o.catch,
+    description: o.description,
+    swatch: [o.wall, accent ?? o.wall2 ?? o.wall, '#2a2b2d', o.frame ?? '#1f1f1f'],
+    roof: {
+      type: 'shed',
+      pitch: 0.5,
+      eaves: 100,
+      verge: 60,
+      material: { pattern: 'standingSeam', color: '#2a2b2d', roughness: 0.5, metalness: 0.4 },
+      fascia: '#2a2b2d',
+      soffit: { pattern: 'paint', color: o.wall, roughness: 0.95 },
+      gutter: false,
+    },
+    wall: { pattern: 'stucco', color: o.wall, color2: o.wall2 ?? o.wall, roughness: 0.97, normalStrength: o.coarse ?? 0.35 },
+    accent: accent ? { pattern: 'solido', color: accent, roughness: 0.92, normalStrength: 0.6 } : undefined,
+    accentRule: accent ? 'entrance' : 'none',
+    foundation: { pattern: 'concrete', color: '#9b9993', roughness: 0.9 },
+    frame: { color: o.frame ?? '#1f1f1f', metalness: 0.4 },
+    entranceDoor: { pattern: 'paint', color: '#3a3a3a', roughness: 0.55 },
+    landscape: {
+      ground: { pattern: 'gravel', color: '#b0aca3', color2: '#9a968d' },
+      approach: { pattern: 'stone', color: '#8f8c86', color2: '#7d7a74', roughness: 0.85, size: 0.8, size2: 0.5 },
+      driveway: { pattern: 'concrete', color: '#aeaba5', roughness: 0.9 },
+      fence: 'none',
+      trees: 'modern',
+    },
+  };
+}
+
+/** 外観テイスト画面の主な選択肢（ホームランディックで実際に使う構成） */
+export const MAIN_EXTERIOR_IDS = ['hl-jolypat-grey', 'hl-jolypat-greige', 'hl-jolypat-beige', 'hl-soton-grey', 'hl-sto-lightgrey', 'hl-galva-black'];
+export const MAIN_INTERIOR_IDS = ['hl-grey-oak', 'hl-dark-stone', 'hl-greige-hotel', 'hl-pale-beige', 'hl-light-gray', 'hl-greige-walnut'];
 const int = (s: InteriorStyle) => s;
 
 export const EXTERIOR_STYLES: ExteriorStyle[] = [
+  // ---- ホームランディックの標準構成（塗り壁が主、アクセントは SOLIDO、ガルバ） ----
+  plasterBox({
+    id: 'hl-jolypat-grey',
+    name: 'ジョリパット グレー',
+    catch: '中間グレーの塗り壁 × SOLIDO',
+    description: 'ジョリパットの中間グレーの塗り壁の箱に、玄関まわりだけ SOLIDO（セメント板）を貼ったホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。',
+    wall: '#8f8e8a',
+    wall2: '#86857f',
+  }),
+  plasterBox({
+    id: 'hl-jolypat-greige',
+    name: 'ジョリパット グレージュ',
+    catch: 'やわらかなグレージュ × 炭色 SOLIDO',
+    description: 'グレージュのジョリパットに、炭色の SOLIDO を玄関まわりに。陰影がやわらかく、植栽が映える外観です。',
+    wall: '#a99f93',
+    wall2: '#a1978b',
+    accent: '#4e4d4a',
+  }),
+  plasterBox({
+    id: 'hl-jolypat-beige',
+    name: 'ジョリパット ベージュ',
+    catch: '明るいベージュ × グレーの SOLIDO',
+    description: '明るいベージュの塗り壁に、グレーの SOLIDO を合わせた穏やかな外観。',
+    wall: '#c4b8a6',
+    wall2: '#bcb09e',
+    accent: '#7b7a76',
+  }),
+  plasterBox({
+    id: 'hl-soton-grey',
+    name: 'そとん壁 グレー',
+    catch: '粗い掻き落としの陰影',
+    description: 'シラスの「そとん壁」の掻き落とし仕上げ。粗い肌理が光で陰影をつくり、塗り壁だけで表情が出ます。アクセントなしの潔い箱。',
+    wall: '#8a8781',
+    wall2: '#7f7c76',
+    coarse: 0.8,
+    accent: null,
+  }),
+  plasterBox({
+    id: 'hl-sto-lightgrey',
+    name: 'Sto 塗り壁 ライトグレー',
+    catch: '明るいグレーの塗り壁 × 黒い SOLIDO',
+    description: 'Sto の明るいグレーの塗り壁に、黒に近い SOLIDO を一面だけ。軽やかでシャープな外観です。',
+    wall: '#b3b2ae',
+    wall2: '#abaaa6',
+    accent: '#3e3e3c',
+  }),
+  ext({
+    id: 'hl-galva-black',
+    name: 'ガルバ ブラック × 塗り壁',
+    catch: '黒のガルバの量塊と、グレーの塗り壁',
+    description: '黒の縦張りガルバリウムを主に、1 階の一部をグレーの塗り壁で切り替えた構成。ガルバの陰影と塗り壁の柔らかさの対比です。',
+    swatch: ['#2e2f31', '#8f8e8a', '#2a2b2d', '#1c1c1c'],
+    roof: {
+      type: 'shed',
+      pitch: 0.5,
+      eaves: 100,
+      verge: 60,
+      material: { pattern: 'standingSeam', color: '#262729', roughness: 0.5, metalness: 0.45 },
+      fascia: '#232426',
+      soffit: { pattern: 'paint', color: '#2e2f31', roughness: 0.9 },
+      gutter: false,
+    },
+    wall: { pattern: 'galvalume', color: '#2e2f31', color2: '#28292b', roughness: 0.6, metalness: 0.45 },
+    accent: { pattern: 'stucco', color: '#8f8e8a', color2: '#86857f', roughness: 0.97, normalStrength: 0.35 },
+    accentRule: 'lower',
+    foundation: { pattern: 'concrete', color: '#8a8883', roughness: 0.9 },
+    frame: { color: '#1a1a1a', metalness: 0.4 },
+    entranceDoor: { pattern: 'paint', color: '#2a2a2a', roughness: 0.5 },
+    landscape: {
+      ground: { pattern: 'gravel', color: '#a9a69e', color2: '#93908a' },
+      approach: { pattern: 'concrete', color: '#aaa7a1', roughness: 0.85 },
+      driveway: { pattern: 'concrete', color: '#b0ada7', roughness: 0.9 },
+      fence: 'none',
+      trees: 'modern',
+    },
+  }),
   // ---- ホームランディック事例から（実際の施工写真の素材感に合わせる） ----
   ext({
     id: 'hl-grey-box',
@@ -92,7 +217,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
       gutter: false,
     },
     wall: { pattern: 'stucco', color: '#8f8e8a', color2: '#85847f', roughness: 0.97, normalStrength: 0.45 },
-    accent: { pattern: 'lapSiding', color: '#a9aaa8', color2: '#9a9b99', roughness: 0.85 },
+    accent: { pattern: 'solido', color: '#5d5c59', roughness: 0.92, normalStrength: 0.6 },
     accentRule: 'entrance',
     foundation: { pattern: 'concrete', color: '#9b9993', roughness: 0.9 },
     frame: { color: '#202020', metalness: 0.4 },
@@ -240,7 +365,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
       verge: 80,
       material: { pattern: 'standingSeam', color: '#2b2c2e', roughness: 0.5, metalness: 0.45 },
       fascia: '#2b2c2e',
-      soffit: { pattern: 'woodSiding', color: '#a8825c', color2: '#94704c', roughness: 0.7 },
+      soffit: { pattern: 'paint', color: '#e8e4dc', roughness: 0.95 },
       gutter: false,
     },
     wall: { pattern: 'stucco', color: '#e8e4dc', roughness: 0.95, normalStrength: 0.35 },
@@ -983,13 +1108,15 @@ export interface DesignOptions {
   wallColorOverride?: string;
   timeOfDay: TimeOfDay;
   furniture: boolean;
+  /** 軒の出の上書き (mm)。0 で軒なし */
+  eaves?: number;
   /** 白模型（スタディ模型）表示: 仕上げを白いクレイにする */
   clay?: boolean;
 }
 
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
-  exteriorId: 'hl-grey-box',
+  exteriorId: 'hl-jolypat-grey',
   interiorId: 'hl-grey-oak',
   timeOfDay: 'day',
   furniture: true,

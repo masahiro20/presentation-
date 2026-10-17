@@ -96,8 +96,6 @@ export class Viewer {
   /** 最後にカメラが動いた時刻（操作中は軽い描画にする） */
   private lastMove = 0;
   private hqPending = false;
-  private renderMode: 'fast' | 'hq' = 'hq';
-  private fastPR = 1;
   private keys = new Set<string>();
   private walkOcc: { state: SceneState; cut: string; occ: ReturnType<typeof buildOccluder> } | null = null;
   /** 切断表示（輪切り／断面）の状態（null = 通常表示） */
@@ -136,7 +134,7 @@ export class Viewer {
     (globalThis as any).__viewer = this;
     (globalThis as any).__THREE = THREE;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // 影はカメラを動かしただけでは変わらないので、場面が変わったときだけ描き直す
@@ -241,7 +239,7 @@ export class Viewer {
     this.scene.add(this.root);
     for (const g of Object.values(this.groups)) this.root.add(g);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
+    this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.bias = -0.0002;
     this.sun.shadow.normalBias = 0.03;
     this.sun.shadow.radius = 3;
@@ -505,38 +503,26 @@ export class Viewer {
     const moved = this.navMode === 'walk' ? false : this.controls.update();
     if (moved) this.camMoved();
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
-    const moving = now - this.lastMove < 200 && this.quality === 'high';
+    // 操作中（直近 0.35 秒以内にカメラが動いた）は後処理なしで素早く描き、止まったら後処理込みで 1 枚描く。
+    // 解像度は切り替えない（切り替えるたびに後処理のバッファを作り直してカクつくため）
+    const moving = now - this.lastMove < 350 && this.quality === 'high';
     if (moving) {
       if (!this._dirty) return;
       this._dirty = false;
-      if (this.renderMode !== 'fast') {
-        this.renderMode = 'fast';
-        this.applyPixelRatio(this.fastPR);
-      }
-      const t0 = performance.now();
       this.renderer.render(this.scene, this.camera);
       this.onAfterRender?.();
-      // 描画が重ければ解像度をさらに下げ、軽ければ戻す
-      const ms = performance.now() - t0;
-      if (ms > 28 && this.fastPR > 0.5) {
-        this.fastPR = Math.max(0.5, this.fastPR * 0.85);
-        this.applyPixelRatio(this.fastPR);
-      } else if (ms < 10 && this.fastPR < this.fullPR()) this.fastPR = Math.min(this.fullPR(), this.fastPR * 1.1);
       this.hqPending = true;
       return;
     }
     if (!this._dirty && !this.hqPending) return;
     this._dirty = false;
     this.hqPending = false;
-    if (this.renderMode !== 'hq') {
-      this.renderMode = 'hq';
-      this.applyPixelRatio(this.fullPR());
-    }
     this.renderFrame();
   };
 
+  /** 画面の解像度（高精細ディスプレイでも 1.5 倍まで。2 倍は描画量が 1.8 倍になり重い） */
   private fullPR() {
-    return Math.min(window.devicePixelRatio || 1, 2);
+    return Math.min(window.devicePixelRatio || 1, 1.5);
   }
 
   private applyPixelRatio(pr: number) {
@@ -662,7 +648,7 @@ export class Viewer {
   // ------------------------------------------------------------------
 
   setModel(model: BuildingModel) {
-    const ext = exteriorById(this.design.exteriorId);
+    const ext = this.extStyle();
     for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape, this.groups.lights, this.groups.cut]) clearGroup(g);
     this.cutBuilt = null;
     // 天井高の上書き（仕様の調整）
@@ -740,6 +726,13 @@ export class Viewer {
   }
 
   /** テイスト変更（屋根形状の変更時のみ屋根を再生成） */
+  /** 現在の外観テイスト（軒の出の上書きを反映） */
+  extStyle() {
+    const e = exteriorById(this.design.exteriorId);
+    const ev = this.design.eaves;
+    return ev == null ? e : { ...e, roof: { ...e.roof, eaves: ev, verge: Math.min(e.roof.verge, ev) } };
+  }
+
   setDesign(design: DesignOptions) {
     const prev = this.design;
     this.design = design;
@@ -752,7 +745,7 @@ export class Viewer {
     if (!this.state) return;
     const ext = exteriorById(design.exteriorId);
     const roofChanged =
-      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch);
+      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.eaves !== design.eaves || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch);
     if (roofChanged || prev.exteriorId !== design.exteriorId) {
       // 外構・アクセント位置も変わるので建物以外を再構築
       this.setModel(this.state.model);
@@ -1125,10 +1118,10 @@ export class Viewer {
     this.groups.furniture.visible = !on && this.design.furniture;
     this.groups.cut.visible = on;
     if (on && model) {
-      const key = [JSON.stringify(spec), this.design.exteriorId, this.design.interiorId, this.design.specId, JSON.stringify(this.design.specPatch ?? null), this.design.furniture, this.design.roofOverride ?? '', this.design.roofPitch ?? ''].join('|');
+      const key = [JSON.stringify(spec), this.design.exteriorId, this.design.interiorId, this.design.specId, JSON.stringify(this.design.specPatch ?? null), this.design.furniture, this.design.roofOverride ?? '', this.design.roofPitch ?? '', this.design.eaves ?? ''].join('|');
       if (!this.cutBuilt || this.cutBuilt.key !== key) {
         clearGroup(this.groups.cut);
-        const ext = exteriorById(this.design.exteriorId);
+        const ext = this.extStyle();
         const resolve = (k: string) => this.registry.get(k);
         const cutY = f ? f.elevation * MM + CUT_HEIGHT : 0;
         const clip = sec ? verticalClip(sec.nx, sec.nz, sec.d) : topClip(cutY);

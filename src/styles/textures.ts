@@ -9,6 +9,7 @@ import { photoSet } from './photoTextures';
 export type Pattern =
   | 'plaster'
   | 'stucco'
+  | 'solido'
   | 'paint'
   | 'siding'
   | 'lapSiding'
@@ -54,6 +55,7 @@ export interface MatSpec {
 const DEFAULT_TILE: Record<Pattern, number> = {
   plaster: 2,
   stucco: 3,
+  solido: 1.82,
   paint: 2,
   siding: 1.82,
   lapSiding: 1.8,
@@ -166,6 +168,17 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           const fine = noise.fbm(x * 3, y * 3, N * 3, 48, 2);
           const k = 0.965 + 0.045 * trowel + 0.02 * fine;
           set(i, tint(base, k), trowel * 0.25 + fine * 0.08, baseRough - 0.03 + 0.06 * fine);
+          break;
+        }
+        case 'solido': {
+          // ケイミュー SOLIDO 風: 幅 455mm の縦張りのセメント板。ざらついた素地と、板ごとの微妙な色むら
+          const pw = 0.455;
+          const col = Math.floor(mx / pw);
+          const g = groove((mx / pw) % 1, 0.006);
+          const grain = noise.fbm(x * 5, y * 1.2, N * 5, 64, 3);
+          const pits = noise.fbm(x * 9, y * 9, N * 9, 96, 2);
+          const k = (0.9 + 0.12 * cellRand(col, 3)) * (0.93 + 0.1 * grain) * (pits > 0.78 ? 0.9 : 1) * (g < 0.5 ? 0.72 : 1);
+          set(i, tint(base, k), grain * 0.5 + pits * 0.3 + (g < 0.5 ? -0.6 : 0), baseRough);
           break;
         }
         case 'paint': {

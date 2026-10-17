@@ -50,7 +50,7 @@ export class MaterialRegistry {
     set('ext.wall', M(wall));
     set('ext.accent', M(e.accent ?? wall));
     // 外壁の天端（笠木）は外壁の色に合わせて少し暗く（黒い家に白い縁が出ないように）
-    set('ext.wallTop', color(`#${new THREE.Color(wall.color).multiplyScalar(0.82).getHexString()}`, 0.9));
+    set('ext.wallTop', M(wall));
     set('ext.foundation', M(e.foundation));
     set('ext.frame', color(e.frame.color, 0.4, e.frame.metalness));
     set('ext.door', M(e.entranceDoor));

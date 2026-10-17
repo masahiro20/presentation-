@@ -26,6 +26,8 @@ export interface Arc {
   p3: Vec2;
   /** 線幅（分かる場合） */
   width?: number;
+  /** 短い直線の連なり（折れ線）から復元した円弧 */
+  poly?: boolean;
 }
 
 /** 角度グループ内での線（オフセット・区間表現） */
@@ -696,6 +698,119 @@ function bez(a: Arc, t: number): Vec2 {
   };
 }
 
+/**
+ * 円弧を短い直線の連なりで書き出す CAD（ARCHITREND など）向けに、折れ線から円弧を復元する。
+ * 端点でつながる短い線を、同じ向きに少しずつ曲がる限りたどり、1 つの円に乗っていれば
+ * 90°以下ずつのベジェ円弧にして返す（開き戸の軌跡の検出に使う）。
+ */
+export function polylineArcs(segs: Seg[], minR = 300, maxR = 1600): Arc[] {
+  const cand = segs.filter((s) => !s.dashed && segLen(s) >= 3 && segLen(s) <= 260);
+  const key = (p: Vec2) => `${Math.round(p.x / 3)},${Math.round(p.y / 3)}`;
+  const at = new Map<string, number[]>();
+  cand.forEach((s, i) => {
+    for (const p of [s.a, s.b]) {
+      const k = key(p);
+      if (!at.has(k)) at.set(k, []);
+      at.get(k)!.push(i);
+    }
+  });
+  const near = (p: Vec2) => {
+    const out = new Set<number>();
+    const kx = Math.round(p.x / 3);
+    const ky = Math.round(p.y / 3);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const i of at.get(`${kx + dx},${ky + dy}`) ?? []) out.add(i);
+    return [...out].filter((i) => Math.min(Math.hypot(cand[i].a.x - p.x, cand[i].a.y - p.y), Math.hypot(cand[i].b.x - p.x, cand[i].b.y - p.y)) < 4);
+  };
+  const used = new Uint8Array(cand.length);
+  const out: Arc[] = [];
+  const turn = (a: Vec2, b: Vec2, c: Vec2) => {
+    const a1 = Math.atan2(b.y - a.y, b.x - a.x);
+    let d = Math.atan2(c.y - b.y, c.x - b.x) - a1;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+  };
+  for (let i0 = 0; i0 < cand.length; i0++) {
+    if (used[i0]) continue;
+    used[i0] = 1;
+    const pts: Vec2[] = [cand[i0].a, cand[i0].b];
+    const w = cand[i0].width;
+    // 両方向へ伸ばす
+    for (const dir of [1, -1]) {
+      if (dir === -1) pts.reverse();
+      for (;;) {
+        const end = pts[pts.length - 1];
+        const prev = pts[pts.length - 2];
+        // 交わる線がある頂点でも、いちばん滑らかにつながる線をたどる
+        // 座標の丸めで 1 区間ごとの曲がりは揺れるので、直近 3 区間の合計で曲がる向きを見る
+        let t0 = 0;
+        for (let k = Math.max(1, pts.length - 4); k + 1 < pts.length; k++) t0 += turn(pts[k - 1], pts[k], pts[k + 1]);
+        let best = -1;
+        let bestNxt: Vec2 | null = null;
+        let bestT = Infinity;
+        for (const j of near(end)) {
+          if (used[j]) continue;
+          const s = cand[j];
+          const nxt = Math.hypot(s.a.x - end.x, s.a.y - end.y) < 4 ? s.b : s.a;
+          const t = turn(prev, end, nxt);
+          if (Math.abs(t) > (25 * Math.PI) / 180) continue;
+          if (Math.abs(t0) > (6 * Math.PI) / 180 && Math.sign(t0) !== Math.sign(t + t0)) continue;
+          const dev = Math.abs(t - t0 / 3);
+          if (dev < bestT) {
+            bestT = dev;
+            best = j;
+            bestNxt = nxt;
+          }
+        }
+        if (best < 0 || !bestNxt) break;
+        used[best] = 1;
+        pts.push(bestNxt);
+      }
+    }
+    if (pts.length < 5) continue;
+    // 円に乗る区間を探す（端に直線などが混ざっていれば少しずつ削る）
+    let circ: { c: Vec2; r: number } | null = null;
+    trim: for (let cut = 0; cut <= Math.floor(pts.length * 0.3); cut++)
+      for (let lo = 0; lo <= cut; lo++) {
+        const sub = pts.slice(lo, pts.length - (cut - lo));
+        if (sub.length < 5) break trim;
+        const c = circleOf(sub[0], sub[Math.floor(sub.length / 2)], sub[sub.length - 1]);
+        if (!c || c.r < minR || c.r > maxR) continue;
+        if (sub.some((p) => Math.abs(Math.hypot(p.x - c.c.x, p.y - c.c.y) - c.r) > Math.max(6, c.r * 0.03))) continue;
+        circ = c;
+        pts.splice(0, pts.length, ...sub);
+        break trim;
+      }
+    if (!circ) continue;
+    let sweep = 0;
+    for (let k = 1; k + 1 < pts.length; k++) sweep += turn(pts[k - 1], pts[k], pts[k + 1]);
+    // 折れ線の頂点での曲がりの合計は (n-1)/n 分しか数えないので、両端の半分ずつを足す
+    sweep *= (pts.length - 1) / Math.max(1, pts.length - 2);
+    if (Math.abs(sweep) < (20 * Math.PI) / 180) continue;
+    const a0 = Math.atan2(pts[0].y - circ.c.y, pts[0].x - circ.c.x);
+    const n = Math.ceil(Math.abs(sweep) / (Math.PI / 2) - 1e-6);
+    const step = sweep / n;
+    const P = (a: number) => ({ x: circ.c.x + Math.cos(a) * circ.r, y: circ.c.y + Math.sin(a) * circ.r });
+    const kk = (4 / 3) * Math.tan(Math.abs(step) / 4) * circ.r;
+    for (let k = 0; k < n; k++) {
+      const s0 = a0 + step * k;
+      const s1 = s0 + step;
+      const sg = Math.sign(step);
+      const p0 = P(s0);
+      const p3 = P(s1);
+      out.push({
+        p0,
+        p1: { x: p0.x - Math.sin(s0) * kk * sg, y: p0.y + Math.cos(s0) * kk * sg },
+        p2: { x: p3.x + Math.sin(s1) * kk * sg, y: p3.y - Math.cos(s1) * kk * sg },
+        p3,
+        width: w,
+        poly: true,
+      });
+    }
+  }
+  return out;
+}
+
 interface DoorSym {
   g: number;
   o: number;
@@ -736,6 +851,7 @@ export function curvedWallChords(arcs: Arc[], segs: Seg[], heavyT: number | null
   }
   const parts: A[] = [];
   for (const a of arcs) {
+    if (a.poly) continue;
     const circ = circleOf(a.p0, bez(a, 0.5), a.p3);
     if (!circ || circ.r < 300 || circ.r > 8000) continue;
     const q = bez(a, 0.25);
@@ -836,6 +952,7 @@ export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]
     r: number;
     e0: Vec2;
     e1: Vec2;
+    poly: boolean;
   }
   const parts: A[] = [];
   for (const a of arcs) {
@@ -860,8 +977,11 @@ export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]
         }
       m.e0 = best[0];
       m.e1 = best[1];
-    } else parts.push({ c: circ.c, r: circ.r, e0: a.p0, e1: a.p3 });
+    } else parts.push({ c: circ.c, r: circ.r, e0: a.p0, e1: a.p3, poly: !!a.poly });
   }
+  // 折れ線から復元した円弧のうち、同心でわずかに半径の違う相手があるもの（R の壁の内外の線）は扉ではない
+  const wallArc = (p: (typeof parts)[number]) =>
+    p.poly && parts.some((q) => q !== p && Math.hypot(q.c.x - p.c.x, q.c.y - p.c.y) < 150 && Math.abs(q.r - p.r) > 40 && Math.abs(q.r - p.r) < 300);
   const out: DoorSym[] = [];
   for (const p of parts) {
     const v0 = { x: p.e0.x - p.c.x, y: p.e0.y - p.c.y };
@@ -875,8 +995,11 @@ export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]
           (Math.hypot(s.a.x - p.c.x, s.a.y - p.c.y) < 40 && Math.hypot(s.b.x - e.x, s.b.y - e.y) < 60) ||
           (Math.hypot(s.b.x - p.c.x, s.b.y - p.c.y) < 40 && Math.hypot(s.a.x - e.x, s.a.y - e.y) < 60),
       );
+    if (wallArc(p)) continue;
     const l0 = hasLeaf(p.e0);
     const l1 = hasLeaf(p.e1);
+    // 折れ線の円弧は家具・設備の曲線も多いので、扉の線（吊元→戸先）があるものだけ
+    if (p.poly && !l0 && !l1) continue;
     const candidates: [Vec2, Vec2][] = l0 && !l1 ? [[p.e1, p.e0]] : l1 && !l0 ? [[p.e0, p.e1]] : [[p.e0, p.e1], [p.e1, p.e0]];
     for (const [S, T] of candidates) {
       const dir = Math.atan2(S.y - p.c.y, S.x - p.c.x);
@@ -885,7 +1008,8 @@ export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]
       const gi = groups.findIndex((g) => {
         let d = Math.abs(g.theta - th) % Math.PI;
         if (d > Math.PI / 2) d = Math.PI - d;
-        return d < (3 * Math.PI) / 180;
+        // 折れ線から復元した円弧は端点が数 mm ずれるので少し甘く
+        return d < ((p.poly ? 6 : 3) * Math.PI) / 180;
       });
       if (gi < 0) continue;
       const g = groups[gi];

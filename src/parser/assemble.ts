@@ -4,7 +4,7 @@
 import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
-import { detectWalls, heavyWidthThreshold, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
+import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
@@ -35,13 +35,16 @@ export interface PageMm {
 
 export function pageToMm(p: PageVectors, k: number): PageMm {
   const sc = (q: Vec2) => ({ x: q.x * k, y: q.y * k });
+  const segs: Seg[] = p.segments
+    // 白い塗り（隠蔽用マスク）の輪郭は除外
+    .filter((s) => !(s.source === 'fill' && /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(s.color)))
+    .map((s) => ({ a: sc(s.a), b: sc(s.b), width: s.width, dashed: s.dashed, source: s.source }));
+  const curves: Arc[] = p.curves.filter((c) => !c.dashed).map((c) => ({ p0: sc(c.p0), p1: sc(c.p1), p2: sc(c.p2), p3: sc(c.p3), width: c.width }));
   return {
     pageIndex: p.pageIndex,
-    segs: p.segments
-      // 白い塗り（隠蔽用マスク）の輪郭は除外
-      .filter((s) => !(s.source === 'fill' && /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(s.color)))
-      .map((s) => ({ a: sc(s.a), b: sc(s.b), width: s.width, dashed: s.dashed, source: s.source })),
-    arcs: p.curves.filter((c) => !c.dashed).map((c) => ({ p0: sc(c.p0), p1: sc(c.p1), p2: sc(c.p2), p3: sc(c.p3), width: c.width })),
+    segs,
+    // 曲線を折れ線で書き出す図面では、折れ線から円弧（開き戸の軌跡）を復元する
+    arcs: curves.length < 8 ? [...curves, ...polylineArcs(segs.filter((s) => s.source !== 'fill'))] : curves,
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
     masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 8).map((f) => f.polygon.map(sc)),

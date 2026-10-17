@@ -169,6 +169,19 @@ export class Viewer {
       this.camMoved();
     });
     const el = this.renderer.domElement;
+    // クリック（ほとんど動かさずに離した）で扉を開閉
+    let downAt: { x: number; y: number; t: number } | null = null;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button === 0) downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+    });
+    el.addEventListener('pointerup', (e) => {
+      const d0 = downAt;
+      downAt = null;
+      if (!d0 || e.button !== 0 || this.cut) return;
+      if (Math.hypot(e.clientX - d0.x, e.clientY - d0.y) > 5 || performance.now() - d0.t > 400) return;
+      const r = el.getBoundingClientRect();
+      this.toggleDoorAt(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1));
+    });
     el.addEventListener('pointerdown', (e) => {
       if (this.navMode === 'pan') el.style.cursor = 'grabbing';
       if (this.navMode === 'walk') {
@@ -490,6 +503,7 @@ export class Viewer {
       this.camMoved();
     }
     if (this.keys.size || this.walkVel.lengthSq() > 1e-6 || this.walkImpulse.lengthSq() > 1e-6) this.walk(dt);
+    this.stepDoors(dt);
     if (this.drift && !this.anim && this.navMode !== 'walk') {
       // ゆっくり回り込む（高品質描画のまま: 操作扱いにしない）
       const t = this.controls.target;
@@ -710,14 +724,66 @@ export class Viewer {
 
   /** 扉の開き具合を設定（null = 通常表示の状態に戻す）。map に無い扉は閉じる */
   setDoors(open: Map<string, number> | null) {
+    this.doorAnim.clear();
     for (const { info, group } of this.doors) {
       const frac = open ? Math.max(0, Math.min(1, open.get(info.id) ?? 0)) : info.staticOpen;
-      group.position.copy(info.origin);
-      group.rotation.set(0, info.yaw0, 0);
-      if (info.kind === 'swing') group.rotation.y = info.yaw0 + info.openAngle * frac;
-      else group.position.addScaledVector(info.slideDir, info.slideDist * frac);
+      this.poseDoor(info, group, frac);
     }
     if (this.doors.length) this.camMoved();
+  }
+
+  private poseDoor(info: DoorInfo, group: THREE.Group, frac: number) {
+    group.position.copy(info.origin);
+    group.rotation.set(0, info.yaw0, 0);
+    if (info.kind === 'swing') group.rotation.y = info.yaw0 + info.openAngle * frac;
+    else group.position.addScaledVector(info.slideDir, info.slideDist * frac);
+    group.userData.frac = frac;
+  }
+
+  /** クリックで扉を開け閉めする（アニメーション中の扉: id → 目標の開き具合） */
+  private doorAnim = new Map<string, number>();
+  /** 画面上の点にある扉を開閉する。扉に当たれば true */
+  toggleDoorAt(ndc: THREE.Vector2): boolean {
+    if (!this.doors.length) return false;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    // 見えている面（Mesh）だけを対象にする（稜線の線や非表示の物に当たらないように）
+    const shown = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+      return (o as THREE.Mesh).isMesh === true;
+    };
+    const vis = this.doors.filter((d) => shown(d.group) || d.group.visible);
+    const hits = rc.intersectObjects(vis.map((d) => d.group), true).filter((x) => shown(x.object));
+    if (!hits.length) return false;
+    // 扉より手前に壁があれば無視
+    const wall = rc.intersectObjects([this.groups.building], true).filter((x) => shown(x.object) && !String(x.object.userData.matKey ?? '').startsWith('ext.glass')).find((x) => !this.doors.some((d) => d.group === x.object.parent?.parent || d.group === x.object.parent));
+    if (wall && wall.distance < hits[0].distance - 0.05) return false;
+    let o: THREE.Object3D | null = hits[0].object;
+    while (o && !this.doors.some((d) => d.group === o)) o = o.parent;
+    const d = this.doors.find((x) => x.group === o);
+    if (!d) return false;
+    const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
+    this.doorAnim.set(d.info.id, cur > 0.5 ? 0 : 1);
+    this.dirty = true;
+    return true;
+  }
+
+  private stepDoors(dt: number) {
+    if (!this.doorAnim.size) return;
+    for (const [id, target] of [...this.doorAnim]) {
+      const d = this.doors.find((x) => x.info.id === id);
+      if (!d) {
+        this.doorAnim.delete(id);
+        continue;
+      }
+      const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
+      const step = dt * 1.6;
+      const next = Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step;
+      this.poseDoor(d.info, d.group, next);
+      if (next === target) this.doorAnim.delete(id);
+    }
+    this.walkOcc = null;
+    this.camMoved();
   }
 
   /** 扉の一覧（経路の計画用） */

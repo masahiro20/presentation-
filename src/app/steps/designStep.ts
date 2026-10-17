@@ -392,7 +392,8 @@ export const designStep: Step = {
               'div',
               { class: 'btn-row' },
               ...[
-                ['', 'テイスト標準'],
+                ['', '壁になじませる'],
+                ['preset', 'テイスト標準'],
                 ['#f2f0ec', 'ホワイト'],
                 ['#d8d1c6', 'グレージュ'],
                 ['#bfbfbc', 'グレー'],

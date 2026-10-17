@@ -388,7 +388,7 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
       const P = (t: number, off: number) => ({ x: a.x + ux * t + nx * off, y: a.y + uy * t + ny * off });
       const leaf = (t0: number, t1: number, off: number, th: number) => {
         const q = [P(t0, off - th / 2), P(t1, off - th / 2), P(t1, off + th / 2), P(t0, off + th / 2)];
-        return `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#333" stroke-width="9"/>`;
+        return `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="10"/>`;
       };
       if (o.kind === 'window') {
         // 枠（壁の内外面）とガラス
@@ -411,13 +411,29 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         const strike = hingeAtStart ? b : a;
         const side = o.swingSide ?? 1;
         const tip = { x: hinge.x + nx * len * side, y: hinge.y + ny * len * side };
-        s += `<line x1="${hinge.x}" y1="${hinge.y}" x2="${tip.x}" y2="${tip.y}" stroke="#333" stroke-width="${o.kind === 'entrance' ? 40 : 30}" stroke-linecap="butt"/>`;
+        // 扉の板（厚みのある細い長方形。吊元側を壁の面にそろえる）と、戸先の軌跡（細線の 1/4 円）
+        const tk = o.kind === 'entrance' ? 50 : 40;
+        const dirU = hingeAtStart ? 1 : -1;
+        const hb = { x: hinge.x + nx * h * side, y: hinge.y + ny * h * side };
+        const lp = [
+          hb,
+          { x: hb.x + ux * dirU * tk, y: hb.y + uy * dirU * tk },
+          { x: tip.x + ux * dirU * tk, y: tip.y + uy * dirU * tk },
+          tip,
+        ];
         const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-        s += `<path d="M${tip.x} ${tip.y} A${len} ${len} 0 0 ${sweep} ${strike.x} ${strike.y}" fill="none" stroke="#777" stroke-width="7"/>`;
+        s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="#555" stroke-width="6"/>`;
+        s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="9"/>`;
       } else if (o.kind === 'sliding') {
+        // 開口の両端の枠（壁の厚みを横切る細線）
+        for (const t of [0, len]) {
+          const e0 = P(t, -h);
+          const e1 = P(t, h);
+          s += `<line x1="${e0.x.toFixed(0)}" y1="${e0.y.toFixed(0)}" x2="${e1.x.toFixed(0)}" y2="${e1.y.toFixed(0)}" stroke="#333" stroke-width="9"/>`;
+        }
         // 引違い（幅 1.2m 以上）は2枚、狭いものは片引きの1枚
-        const th = 32;
-        const off = Math.min(h * 0.55, 30);
+        const th = 36;
+        const off = Math.min(h * 0.5, 28);
         if (len >= 1200) {
           s += leaf(0, len * 0.53, -off, th);
           s += leaf(len * 0.47, len, off, th);

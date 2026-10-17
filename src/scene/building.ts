@@ -787,6 +787,30 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       mbx.box('f.metal', base.clone().addScaledVector(nrm, -doorT / 2 - 0.02), along, 0.12, 0.02, 0.02);
     }
   };
+  // LDK とホール・廊下・玄関の間の扉は、黒の細框のガラス戸（ホームランディックの定番）
+  const glassEntry = (() => {
+    if (w.exterior) return false;
+    const side = (sg: number) => roomAt(f, (mid.x + nW.x * sg * (t / 2 + 0.3)) / MM, (mid.z + nW.z * sg * (t / 2 + 0.3)) / MM);
+    const a = side(1)?.type;
+    const b = side(-1)?.type;
+    const ldk = (x?: string) => x === 'ldk' || x === 'living' || x === 'dining';
+    const pass = (x?: string) => x === 'hall' || x === 'entrance' || x === 'stairs';
+    return (ldk(a) && pass(b)) || (ldk(b) && pass(a));
+  })();
+  /** 扉の板: 通常は壁になじむフラット扉、LDK の入口は框（30mm の黒）＋ガラス */
+  const leaf = (m: MeshBuilder, center: THREE.Vector3, len: number, hgt: number, th: number) => {
+    if (!glassEntry) {
+      m.box('int.door', center, V(1, 0, 0), len, hgt, th);
+      return;
+    }
+    const fwid = 0.03;
+    const fk = 'ext.frame';
+    m.box(fk, center.clone().add(V(-len / 2 + fwid / 2, 0, 0)), V(1, 0, 0), fwid, hgt, th);
+    m.box(fk, center.clone().add(V(len / 2 - fwid / 2, 0, 0)), V(1, 0, 0), fwid, hgt, th);
+    m.box(fk, center.clone(), V(1, 0, 0), len - fwid * 2, fwid * 2, th);
+    m.box(fk, center.clone().add(V(0, hgt - fwid, 0)), V(1, 0, 0), len - fwid * 2, fwid, th);
+    m.box('ext.glass', center.clone().add(V(0, fwid * 2, 0)), V(1, 0, 0), len - fwid * 2, hgt - fwid * 3, 0.006);
+  };
   if (o.kind === 'door') {
     const hingeS = o.hingeAtStart !== false ? s0 : s1;
     const towards = o.hingeAtStart !== false ? 1 : -1; // ヒンジから戸先方向
@@ -814,7 +838,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const fullOpen = dir.clone().multiplyScalar(towards * Math.cos(1.396)).addScaledVector(nW, side * Math.sin(1.396)).normalize();
     const dmb = new MeshBuilder();
     dmb.clip = localClip(hinge.clone().setY(0), Math.atan2(-closedDir.z, closedDir.x));
-    dmb.box('int.door', V(lw / 2, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT);
+    leaf(dmb, V(lw / 2, fl + 0.008, 0), lw, H - 0.008 - topGap, doorT);
     handle(dmb, V(lw - 0.075, fl + 1.0, 0), V(-1, 0, 0), V(0, 0, 1));
     meta.doors.push({
       id: o.id,
@@ -864,7 +888,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const staticOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
     const dmb = new MeshBuilder();
     dmb.clip = localClip(face.clone().setY(0), Math.atan2(-dir.z, dir.x));
-    dmb.box('int.door', V(0, fl + 0.008, 0), V(1, 0, 0), lw, H - 0.008 - topGap, doorT * 0.9);
+    leaf(dmb, V(0, fl + 0.008, 0), lw, H - 0.008 - topGap, doorT * 0.9);
     // 引手（細い縦長の彫り込みを暗い線で表現。引き込む側と反対の端）
     dmb.box('f.handle', V(-(pick?.sd ?? 1) * (lw / 2 - 0.05), fl + 0.85, fc * (doorT * 0.45 + 0.001)), V(1, 0, 0), 0.012, 0.35, 0.002);
     meta.doors.push({

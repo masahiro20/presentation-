@@ -99,7 +99,8 @@ export class MaterialRegistry {
     set('int.wetFloor', M(i.wetFloor));
     set('int.entranceFloor', M(i.entranceFloor));
     set('int.tatami', M(TATAMI));
-    set('int.door', M(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : i.door));
+    // 既定: 室内の壁と同じ色のフラット扉（KAMIYA フルハイトドアをクロスになじませる納まり）
+    set('int.door', M(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 }));
     set('int.trim', color(i.trim, 0.5));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
     set('int.slab', color('#b9b5ae', 0.95));

@@ -1,7 +1,7 @@
 import { h, clear, section, segmented, download, svgToDataUrl, svgToPng, toast } from '../dom';
 import { state } from '../state';
 import type { Step, StepCtx } from '../app';
-import { renderElevation, renderSection, type ElevationDir } from '../../drawings/elevation';
+import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg, openingTableSvg } from '../../drawings/plan';
 import { composeSheet } from '../../drawings/sheet';
 import { modelToDxf } from '../../drawings/dxf';
@@ -17,22 +17,10 @@ function generate(ctx: StepCtx, color: boolean) {
   // 立面図（4 面）: プレゼン用の単体図と、A3 シート
   const elevs = DIRS.map((d) => renderElevation(v, d, { color }));
   state.elevations = elevs.map((r) => ({ dir: r.dir, title: r.title, svg: r.svg }));
-  // 断面図（断面パースと同じ切断面 A-A・B-B）
-  const secs = v.shots().filter((s) => s.kind === 'section' && s.section);
-  const labels = ['A', 'B'];
+  // 断面図は提案の水準に届くまで出さない（切断線も描かない）
   const sectionLines: { nx: number; nz: number; d: number; label: string }[] = [];
-  const sections = secs.slice(0, 2).flatMap((s, i) => {
-    try {
-      const r = renderSection(v, s.section!, labels[i], { color });
-      sectionLines.push({ ...s.section!, label: labels[i] });
-      return [r];
-    } catch (e) {
-      console.error(e);
-      return [];
-    }
-  });
   state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
-  // A3 シート: 平面図（階ごと・面積表・建具表・切断線）→ 立面図（4 面を 1 枚）→ 断面図（1 枚）
+  // A3 シート: 平面図（階ごと・面積表・建具表）→ 立面図（4 面を 1 枚）
   let no = 1;
   const sheets: { title: string; svg: string }[] = [];
   for (const f of model.floors) {
@@ -42,8 +30,12 @@ function generate(ctx: StepCtx, color: boolean) {
     const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 700 + ot.h };
     sheets.push({ title: `${f.level}階平面図`, svg: composeSheet([parts], sheetInfo(`${f.level}階平面図`, `A-${no++}`), { right, defs: parts.defs }) });
   }
-  sheets.push({ title: '立面図（4 面）', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`)) });
-  if (sections.length) sheets.push({ title: '断面図 A-A・B-B', svg: composeSheet(sections.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('断面図', `A-${no++}`)) });
+  // 立面図は 2 面ずつ（1/100 で大きく。仕上げの引き出し線が読める大きさに）
+  for (let i = 0; i < elevs.length; i += 2) {
+    const pair = elevs.slice(i, i + 2);
+    const t = `立面図（${pair.map((r) => r.title.replace('立面図', '')).join('・')}）`;
+    sheets.push({ title: t, svg: composeSheet(pair.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo(t, `A-${no++}`)) });
+  }
   state.sheets = sheets;
 }
 
@@ -77,7 +69,7 @@ export const elevationStep: Step = {
     };
     ctx.side.append(
       h('h2', null, '立面図'),
-      h('p', { class: 'lead' }, '3D モデルから東西南北の立面図と断面図（A-A・B-B）を、A3 の図枠・表題欄付きで自動作成します。平面図には建具記号と建具表・面積表・切断線が入ります。隠れ線を処理したベクター図面なので、拡大しても線がきれいです。'),
+      h('p', { class: 'lead' }, '3D モデルから東西南北の立面図を、A3 の図枠・表題欄付きで自動作成します。外形線・段差・開口まわり・目地で線の太さを描き分け、軒の影と外壁・屋根・サッシの仕上げの引き出し線を入れます。平面図には建具記号と建具表・面積表が入ります。'),
       section(
         '表示',
         segmented(

@@ -142,7 +142,7 @@ function doorProfile(dt: number): number {
 export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, site: SiteInfo, shots: Shot[]): CameraProgram {
   const links = buildLinks(model);
   const eye = 1.5;
-  const speed = 1.0; // m/s
+  const speed = 0.85; // m/s（住宅の中をゆっくり歩く速さ）
   const rooms = new Map(meta.rooms.map((r) => [r.room.id, r]));
   const segs: Segment[] = [];
   let cur: THREE.Vector3;
@@ -185,7 +185,9 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
   const moveTo = (pts: THREE.Vector3[], doors: { id: string; point: THREE.Vector3 }[] = []) => {
     const path = new Path([cur, ...pts]);
     if (path.length < 0.1) return;
-    const seg: Segment = { kind: 'move', dur: Math.max(1.0, path.length / speed), path };
+    // 加減速の分だけ少し長く（平均の速さを保つ）
+    const base = Math.max(1.0, path.length / speed);
+    const seg: Segment = { kind: 'move', dur: base + Math.min(0.7, base * 0.3), path };
     if (doors.length) seg.doors = doors.map((d) => ({ id: d.id, u: path.nearest(d.point) }));
     segs.push(seg);
     cur = pts[pts.length - 1];
@@ -426,9 +428,22 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
       let target: THREE.Vector3;
       let fade = 0;
       if (s.kind === 'move') {
-        const e = u; // 等速
-        pos = s.path!.at(e);
-        target = lookAhead(s, e);
+        // 歩き出しと立ち止まりは 0.7 秒かけて加減速（等速だとロボットのように見える）
+        const r = Math.min(0.3, 0.7 / s.dur);
+        const vmax = 1 / (1 - r);
+        const e = u < r ? (vmax * u * u) / (2 * r) : u > 1 - r ? 1 - (vmax * (1 - u) * (1 - u)) / (2 * r) : vmax * (u - r / 2);
+        pos = s.path!.at(Math.max(0, Math.min(1, e)));
+        // 人の目線: 足取りに合わせたごくわずかな上下（±1cm）と左右の揺れ（速さに比例）
+        const gait = u < r ? u / r : u > 1 - r ? (1 - u) / r : 1;
+        const ph = t * Math.PI * 2 * 0.9;
+        pos.y += Math.sin(ph * 2) * 0.01 * gait;
+        const fw = s.path!.at(Math.min(1, e + 0.02)).sub(s.path!.at(Math.max(0, e - 0.02)));
+        if (fw.lengthSq() > 1e-6) {
+          fw.normalize();
+          pos.x += -fw.z * Math.sin(ph) * 0.006 * gait;
+          pos.z += fw.x * Math.sin(ph) * 0.006 * gait;
+        }
+        target = lookAhead(s, Math.max(0, Math.min(1, e)));
         // 前後の hold と視線をなめらかにつなぐ
         const idx = timed.indexOf(s);
         const prev = timed[idx - 1];
@@ -459,7 +474,7 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
         const f = t < pk.t0 - 1.0 ? 0 : t < pk.t0 ? ease((t - (pk.t0 - 1.0)) / 1.0) : t <= pk.t1 ? 1 : t < pk.t1 + 1.2 ? 1 - ease((t - pk.t1) / 1.2) : 0;
         if (f > 0) doors.set(pk.id, Math.max(doors.get(pk.id) ?? 0, f));
       }
-      return { pos, target, fov: 62, fade, caption: cap?.text, doors };
+      return { pos, target, fov: 55, fade, caption: cap?.text, doors };
     },
   };
 }

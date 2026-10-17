@@ -45,12 +45,16 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
   try {
     // パース
     // 提案用パース（写真品質）: まだ写真品質のないショットだけ
+    // パース背景の想像の家並みは資料には写さない（白い箱が主役を食うので、遠景の木立だけにする）
+    v.setTownVisible(false);
     const all = currentShots(ctx);
+    // 内観は暮らしの中心（LDK）→ 迎える場所（玄関・ホール・階段）→ 水まわり → 個室の順に。何もない個室の角は資料に向かない
+    const roomRank = (t: string) => (/LDK|ＬＤＫ|リビング|ダイニング|キッチン/.test(t) ? 0 : /玄関|ホール|階段|吹抜/.test(t) ? 1 : /洗面|浴室|脱衣/.test(t) ? 2 : 3);
+    const interiors = all.filter((s) => s.kind === 'interior').sort((a, b) => roomRank(a.title) - roomRank(b.title));
     const pick = [
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
-      ...all.filter((s) => s.kind === 'cutaway').slice(0, 3),
-      ...all.filter((s) => s.kind === 'section').slice(0, 1),
-      ...all.filter((s) => s.kind === 'interior').slice(0, 4),
+      ...all.filter((s) => s.kind === 'cutaway').slice(0, 2),
+      ...interiors.filter((s, i) => i < 2 || roomRank(s.title) < 3).slice(0, 4),
     ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === 'photoreal'));
     if (pick.length) {
       const shots = pick;
@@ -144,6 +148,7 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     }
     toast('プレゼン資料の素材がそろいました', 'ok');
   } finally {
+    v.setTownVisible(true);
     v.applyView(prevView);
     pm.close();
   }
@@ -198,7 +203,8 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   const exts = extAll.filter((g) => !/夕景|夜景/.test(g.title)).concat(extAll.filter((g) => /夕景|夜景/.test(g.title)));
   const ints = pick('interior');
   const aerial = pick('aerial')[0];
-  const cuts = [...pick('cutaway'), ...pick('section')];
+  // 輪切りの模型だけ（断面パースは資料の水準に届かないので載せない）
+  const cuts = pick('cutaway').slice(0, 2);
   const hero = exts[0] ?? aerial ?? ints[0];
   const slides: HTMLElement[] = [];
   const brand = state.company || '';
@@ -219,7 +225,6 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   if (cuts.length) chapters.push({ en: 'Model', ja: '間取り模型' });
   if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
   if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
-  if (state.elevations.length) chapters.push({ en: 'Elevation', ja: '立面' });
   if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
   chapters.push({ en: 'Details', ja: '上質を支える納まり' });
   const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
@@ -363,35 +368,28 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       );
     }
   }
-  // 間取り
+  // 間取り: 1 階ずつ 1 枚に、図面を大きく。左に階の部屋と広さ
+  // （立面図は資料の水準に届くまで載せない）
   if (state.plans.length) {
-    const sched = model.floors.flatMap((f) =>
-      f.rooms.filter((r) => r.area > 2 && !['void', 'stairs'].includes(r.type)).map((r) => h('tr', null, h('td', { class: 'f' }, `${f.level}F`), h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))),
-    );
-    slides.push(
-      slide(
-        'drawing',
-        h(
-          'div',
-          { style: 'min-height:0;overflow:hidden' },
-          head(no('Floor Plan'), 'Floor Plan', '間取り'),
-          h('p', null, `家族の動線と、光の入り方を丁寧に読み解いた ${model.floors.length > 1 ? `${model.floors.length}層` : 'ワンフロア'}の構成です。`),
-          h('table', { class: 'schedule' }, h('tbody', null, ...sched.slice(0, 16))),
+    const n = no('Floor Plan');
+    model.floors.forEach((f, fi) => {
+      const list = f.rooms.filter((r) => r.area > 2 && !['void', 'stairs'].includes(r.type)).sort((a, b) => b.area - a.area);
+      const area = f.rooms.filter((r) => !['balcony', 'porch', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0);
+      slides.push(
+        slide(
+          'drawing plan-one',
+          h(
+            'div',
+            { style: 'min-height:0;overflow:hidden' },
+            head(n, 'Floor Plan', `${f.level}階 間取り`),
+            fi === 0 ? h('p', null, `家族の動線と、光の入り方を丁寧に読み解いた ${model.floors.length > 1 ? `${model.floors.length}層` : 'ワンフロア'}の構成です。`) : null,
+            h('div', { class: 'floor-area serif' }, `${f.level}F　約 ${area.toFixed(1)}㎡`),
+            h('table', { class: 'schedule' }, h('tbody', null, ...list.slice(0, 12).map((r) => h('tr', null, h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))))),
+          ),
+          h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) })),
         ),
-        // 資料では敷地全体ではなく建物まわりを大きく見せる
-        h('div', { class: 'sheet', style: `grid-template-columns:repeat(${Math.min(2, model.floors.length)},1fr)` }, ...model.floors.slice(0, 2).map((f) => h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) }))),
-      ),
-    );
-  }
-  // 立面
-  if (state.elevations.length) {
-    slides.push(
-      slide(
-        'drawing',
-        h('div', null, head(no('Elevation'), 'Elevation', '立面'), h('p', null, `${ext.name}の外壁と、深い軒の水平線で、四方どこから見ても整ったプロポーションに。`)),
-        h('div', { class: 'sheet', style: 'grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr' }, ...state.elevations.slice(0, 4).map((e) => h('div', { class: 'svgbox', html: e.svg }))),
-      ),
-    );
+      );
+    });
   }
   // 光と日当たり
   if (state.sun.seasons.length || state.sun.images.length) {

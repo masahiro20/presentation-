@@ -8,6 +8,8 @@
 import * as THREE from 'three';
 import type { Viewer, SectionSpec } from '../scene/viewer';
 import { wrapSheet, type SheetInfo, type Vb } from './sheet';
+import { exteriorById } from '../styles/presets';
+import type { MatSpec } from '../styles/textures';
 
 export type ElevationDir = 'south' | 'north' | 'east' | 'west';
 
@@ -102,12 +104,34 @@ interface OrthoParams {
 
 interface OrthoResult {
   lines: string[];
+  /** 線の太さの階層: 外形線（空との境）・見え掛かりの段差・開口まわり・目地などの細線 */
+  weighted: { outline: string[]; step: string[]; opening: string[]; fine: string[] };
+  /** 仕上げの引き出し線を付ける位置（図面 mm）。材料の種類ごと */
+  anchors: Partial<Record<MatCat, { x: number; y: number }>>;
   fillUrl: string;
   Wmm: number;
   Hmm: number;
   yMax: number;
   box: THREE.Box3;
 }
+
+/** 立面の材料の種類（引き出し線の注記・線の太さに使う） */
+type MatCat = 'wall' | 'accent' | 'roof' | 'glass' | 'frame' | 'foundation' | 'door';
+const CAT_KEYS: [MatCat, RegExp][] = [
+  ['accent', /^ext\.accent/],
+  ['wall', /^ext\.wall/],
+  ['roof', /^ext\.(roof|fascia)/],
+  ['glass', /^ext\.glass/],
+  ['frame', /^ext\.(frame|gutter)/],
+  ['foundation', /^ext\.foundation/],
+  ['door', /^ext\.door/],
+];
+const CAT_ID: Record<MatCat, number> = { wall: 1, accent: 2, roof: 3, glass: 4, frame: 5, foundation: 6, door: 7 };
+const catOf = (key: string | undefined): MatCat | null => {
+  if (!key) return null;
+  for (const [c, re] of CAT_KEYS) if (re.test(key)) return c;
+  return null;
+};
 
 /** 正投影の線画＋塗り（立面図・断面図の共通部分） */
 function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
@@ -178,6 +202,43 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
   renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
   renderer.setRenderTarget(null);
   scene.overrideMaterial = prevOverride;
+  // ---- 材料の種類の画像（引き出し線の位置・開口まわりの線の判定） ----
+  const idBuf = new Uint8Array(W * H * 4);
+  {
+    const swapped: [THREE.Mesh, THREE.Material | THREE.Material[]][] = [];
+    const mats = new Map<number, THREE.MeshBasicMaterial>();
+    const matFor = (id: number) => {
+      if (!mats.has(id)) mats.set(id, new THREE.MeshBasicMaterial({ color: new THREE.Color(id / 255, 0, 0), toneMapped: false, side: THREE.DoubleSide }));
+      return mats.get(id)!;
+    };
+    for (const r of roots)
+      r.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const c = catOf(m.userData.matKey as string | undefined);
+        swapped.push([m, m.material]);
+        m.material = matFor(c ? CAT_ID[c] : 0);
+      });
+    const prevTM = renderer.toneMapping;
+    const prevCS = renderer.outputColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+    renderer.setRenderTarget(rt);
+    renderer.setClearColor(0x000000, 1);
+    renderer.clear();
+    renderer.render(scene, cam);
+    renderer.readRenderTargetPixels(rt, 0, 0, W, H, idBuf);
+    renderer.setRenderTarget(null);
+    renderer.setClearColor(0xffffff, 1);
+    renderer.toneMapping = prevTM;
+    renderer.outputColorSpace = prevCS;
+    for (const [m, mat] of swapped) m.material = mat;
+    for (const mm of mats.values()) mm.dispose();
+  }
+  const idAt = (px: number, py: number) => {
+    if (px < 0 || py < 0 || px >= W || py >= H) return 0;
+    return idBuf[((H - 1 - py) * W + px) * 4];
+  };
   const unpack = (i: number) => {
     const r = buf[i] / 255;
     const g = buf[i + 1] / 255;
@@ -195,9 +256,9 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
     const prevEnvI = scene.environmentIntensity;
     const sunVis = viewer.sun.visible;
     const sunPos = viewer.sun.position.clone();
-    // 図面の塗りは影を落とさない均一な光で（影の有無で面の明るさが変わらないように）
+    // 立面の塗りは、左上 45° の光で軒・庇・凹凸の影を落とす（プレゼン立面の慣例。奥行きが読める）
     const prevCast = viewer.sun.castShadow;
-    viewer.sun.castShadow = false;
+    viewer.sun.castShadow = true;
     renderer.setPixelRatio(1);
     const scale = Math.min(1, 2400 / Math.max(W, H));
     renderer.setSize(Math.round(W * scale * 1.0), Math.round(H * scale), false);
@@ -205,13 +266,16 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
     // 左上から柔らかい光
     viewer.sun.visible = true;
     const c0 = box.getCenter(new THREE.Vector3());
-    viewer.sun.position.copy(c0).addScaledVector(viewDir, -40).addScaledVector(right, -25).add(new THREE.Vector3(0, 45, 0));
+    viewer.sun.position.copy(c0).addScaledVector(viewDir, -30).addScaledVector(right, -22).add(new THREE.Vector3(0, 30, 0));
     viewer.sun.target.position.copy(c0);
     viewer.sun.target.updateMatrixWorld();
     scene.environmentIntensity = 0.9;
     renderer.toneMappingExposure = 1.05;
     renderer.setRenderTarget(null);
+    // 影の地図は普段は動かしたときだけ作り直すので、この光の向きで作り直させる
+    renderer.shadowMap.needsUpdate = true;
     renderer.render(scene, cam);
+    renderer.shadowMap.needsUpdate = true;
     fillUrl = renderer.domElement.toDataURL('image/png');
     renderer.setSize(prevSize.x, prevSize.y, false);
     renderer.setPixelRatio(prevPR);
@@ -250,6 +314,65 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
     return depth <= best + 0.0035;
   };
   const lines: string[] = [];
+  const weighted: OrthoResult['weighted'] = { outline: [], step: [], opening: [], fine: [] };
+  const BG = 0.9995;
+  const depthAt = (px: number, py: number) => (px < 0 || py < 0 || px >= W || py >= H ? 1 : unpack(((H - 1 - py) * W + px) * 4));
+  // 線の両側（法線方向に 3px）の奥行き・材料を見て、太さを決める
+  const classify = (A: { x: number; y: number }, B: { x: number; y: number }, t0: number, t1: number): keyof OrthoResult['weighted'] | null => {
+    const L = Math.hypot(B.x - A.x, B.y - A.y) || 1;
+    const nx = -(B.y - A.y) / L;
+    const ny = (B.x - A.x) / L;
+    let bg = 0;
+    let jump = 0;
+    let open = 0;
+    let seam = 0;
+    const N = 5;
+    for (let k = 0; k < N; k++) {
+      const t = t0 + ((t1 - t0) * (k + 0.5)) / N;
+      const x = A.x + (B.x - A.x) * t;
+      const y = A.y + (B.y - A.y) * t;
+      const pa = [Math.round(x + nx * 3), Math.round(y + ny * 3)];
+      const pb = [Math.round(x - nx * 3), Math.round(y - ny * 3)];
+      const da = depthAt(pa[0], pa[1]);
+      const db = depthAt(pb[0], pb[1]);
+      if (da >= BG || db >= BG) bg++;
+      else if (Math.abs(da - db) * (dMax - dMin + 2) > 0.12) jump++;
+      const ia = idAt(pa[0], pa[1]);
+      const ib = idAt(pb[0], pb[1]);
+      if ([ia, ib].some((i) => i === CAT_ID.glass || i === CAT_ID.frame || i === CAT_ID.door)) open++;
+      // 同じ塗り壁の同じ面の中の線（モデルの継ぎ目）は描かない（塗り壁に目地は無い）
+      if (ia === ib && (ia === CAT_ID.wall || ia === CAT_ID.accent || ia === CAT_ID.foundation) && Math.abs(da - db) * (dMax - dMin + 2) < 0.02) seam++;
+    }
+    if (seam >= 4) return null;
+    if (bg >= 2) return 'outline';
+    if (jump >= 2) return 'step';
+    if (open >= 2) return 'opening';
+    return 'fine';
+  };
+  // 材料ごとに、その材料の面のいちばん内側の点（引き出し線の起点）
+  const anchors: OrthoResult['anchors'] = {};
+  {
+    const stride = 4;
+    const best: Partial<Record<MatCat, { x: number; y: number; r: number }>> = {};
+    const rs = [64, 44, 30, 20, 12, 6];
+    for (let py = stride; py < H - stride; py += stride)
+      for (let px = stride; px < W - stride; px += stride) {
+        const id = idAt(px, py);
+        if (!id) continue;
+        const cat = (Object.keys(CAT_ID) as MatCat[]).find((c) => CAT_ID[c] === id);
+        if (!cat) continue;
+        const cur = best[cat]?.r ?? 0;
+        for (const r of rs) {
+          if (r <= cur) break;
+          const ok = [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]].every(([dx, dy]) => idAt(Math.round(px + dx), Math.round(py + dy)) === id);
+          if (ok) {
+            best[cat] = { x: px, y: py, r };
+            break;
+          }
+        }
+      }
+    for (const [c, b] of Object.entries(best) as [MatCat, { x: number; y: number; r: number }][]) anchors[c] = { x: b.x * mmPerPx, y: b.y * mmPerPx };
+  }
   for (const e of edges) {
     const A = toPx(e.a);
     const B = toPx(e.b);
@@ -271,13 +394,16 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
           const y0 = (A.y + (B.y - A.y) * runStart) * mmPerPx;
           const x1 = (A.x + (B.x - A.x) * tEnd) * mmPerPx;
           const y1 = (A.y + (B.y - A.y) * tEnd) * mmPerPx;
-          lines.push(`M${x0.toFixed(0)} ${y0.toFixed(0)}L${x1.toFixed(0)} ${y1.toFixed(0)}`);
+          const seg = `M${x0.toFixed(0)} ${y0.toFixed(0)}L${x1.toFixed(0)} ${y1.toFixed(0)}`;
+          lines.push(seg);
+          const cls = classify(A, B, runStart, tEnd);
+          if (cls) weighted[cls].push(seg);
         }
         runStart = null;
       }
     }
   }
-  return { lines, fillUrl, Wmm: (uMax - uMin) * 1000, Hmm: (yMax - yMin) * 1000, yMax, box };
+  return { lines, weighted, anchors, fillUrl, Wmm: (uMax - uMin) * 1000, Hmm: (yMax - yMin) * 1000, yMax, box };
 }
 
 interface LevelMark {
@@ -288,14 +414,65 @@ interface LevelMark {
 }
 
 /** 注記（GL 線・レベル・高さ寸法・図面名）と SVG の組み立て */
-function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: string, sheet?: SheetInfo): { svg: string; vb: Vb; inner: string } {
+/** 仕上げの名前（引き出し線の注記） */
+function finishName(m: MatSpec | undefined): string {
+  switch (m?.pattern) {
+    case 'stucco':
+    case 'plaster':
+      return '塗り壁（左官仕上げ）';
+    case 'solido':
+      return 'SOLIDO（セメント板）張り';
+    case 'standingSeam':
+      return 'ガルバリウム鋼板 立平葺き';
+    case 'paint':
+      return '塗装仕上げ';
+    case 'concrete':
+      return 'コンクリート 化粧仕上げ';
+    case 'stone':
+    case 'brick':
+      return 'タイル張り';
+    case 'galvalume':
+      return 'ガルバリウム鋼板 張り';
+    case 'woodSiding':
+    case 'wood':
+      return '木板張り';
+    case 'siding':
+    case 'lapSiding':
+      return '窯業系サイディング';
+    case 'slate':
+      return 'スレート葺き';
+    case 'roofTile':
+      return '瓦葺き';
+    default:
+      return m?.pattern && /galva|metal|seam/i.test(m.pattern) ? 'ガルバリウム鋼板 張り' : m?.pattern && /siding|lap|board|cedar|wood/i.test(m.pattern) ? '外装材 張り' : '仕上げ';
+  }
+}
+
+/** 立面図の材料の注記（外壁・アクセント・屋根・サッシ・基礎） */
+function finishNotes(exteriorId: string): { cat: MatCat; text: string }[] {
+  const st = exteriorById(exteriorId);
+  const isPlaster = (m?: MatSpec) => m?.pattern === 'stucco' || m?.pattern === 'plaster';
+  // テイスト名が塗り材の商品名（ジョリパット・そとん壁・Sto）なら、それを外壁の名前に使う
+  const wallName = isPlaster(st.wall) && /ジョリパット|そとん|Sto|塗り壁/.test(st.name) ? `${st.name.replace(/\s*×.*$/, '')}（塗り壁）` : finishName(st.wall);
+  const notes: { cat: MatCat; text: string }[] = [{ cat: 'wall', text: `外壁　${wallName}` }];
+  if (st.accent) notes.push({ cat: 'accent', text: `外壁（アクセント）　${finishName(st.accent)}` });
+  notes.push({ cat: 'roof', text: `屋根　${finishName(st.roof.material)}` });
+  const dark = new THREE.Color(st.frame.color).getHSL({ h: 0, s: 0, l: 0 }).l < 0.3;
+  notes.push({ cat: 'frame', text: `サッシ　アルミ樹脂複合（${dark ? 'ブラック' : 'シルバー'}）` });
+  notes.push({ cat: 'foundation', text: '基礎　コンクリート 化粧モルタル' });
+  return notes;
+}
+
+function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: string, sheet?: SheetInfo, notes: { cat: MatCat; text: string }[] = []): { svg: string; vb: Vb; inner: string } {
   const yOf = (worldY: number) => (o.yMax - worldY) * 1000;
   const glY = yOf(0);
-  const pad = 2600;
-  const vb: Vb = { x: -pad, y: -1400, w: o.Wmm + pad * 2 + 3600, h: o.Hmm + 1400 + (sheet ? 600 : 1800) };
+  const pad = notes.length ? 4600 : 2600;
+  const vb: Vb = { x: -pad, y: -1400, w: o.Wmm + pad + 2600 + 3600, h: o.Hmm + 1400 + (sheet ? 900 : 1900) };
   const dimX = o.Wmm + 700;
   let ann = '';
-  ann += `<line x1="${-1500}" y1="${glY}" x2="${o.Wmm + 1500}" y2="${glY}" stroke="#111" stroke-width="45"/>`;
+  // GL: 太い地盤線と、その下の斜線（地面）
+  ann += `<line x1="${-1500}" y1="${glY}" x2="${o.Wmm + 1500}" y2="${glY}" stroke="#111" stroke-width="55"/>`;
+  for (let x = -1400; x < o.Wmm + 1500; x += 220) ann += `<line x1="${x}" y1="${glY + 30}" x2="${x - 160}" y2="${glY + 190}" stroke="#777" stroke-width="9"/>`;
   for (const lv of levels) {
     const y = yOf(lv.y);
     ann += `<line x1="${o.Wmm + 100}" y1="${y}" x2="${dimX + 300}" y2="${y}" stroke="#555" stroke-width="10" stroke-dasharray="60 30"/>`;
@@ -310,11 +487,31 @@ function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: s
     for (const y of [y0, y1]) ann += `<line x1="${dimX - 60}" y1="${y + 60}" x2="${dimX + 60}" y2="${y - 60}" stroke="#333" stroke-width="16"/>`;
     ann += `<text x="${dimX - 90}" y="${(y0 + y1) / 2}" font-size="150" fill="#333" text-anchor="middle" transform="rotate(-90 ${dimX - 90} ${(y0 + y1) / 2})">${Math.round(Math.abs(y0 - y1))}</text>`;
   }
-  // 図面名（縮尺はシートの表題欄に書く）
-  ann += `<text x="${o.Wmm / 2}" y="${glY + 1200}" font-size="330" text-anchor="middle" fill="#111" font-weight="bold">${title}</text>`;
+  // 仕上げの引き出し線: 材料の面の内側に点、左の余白へ水平に引き出して名前を書く（重ならないよう上から順に詰める）
+  const placed = notes
+    .map((n) => ({ ...n, a: o.anchors[n.cat] }))
+    .filter((n): n is { cat: MatCat; text: string; a: { x: number; y: number } } => !!n.a)
+    .sort((a, b) => a.a.y - b.a.y);
+  let lastY = -Infinity;
+  const tx = -350;
+  for (const n of placed) {
+    const ly = Math.max(n.a.y, lastY + 420);
+    lastY = ly;
+    ann += `<circle cx="${n.a.x.toFixed(0)}" cy="${n.a.y.toFixed(0)}" r="45" fill="#111"/>`;
+    ann += `<polyline points="${n.a.x.toFixed(0)},${n.a.y.toFixed(0)} ${Math.min(n.a.x, 250).toFixed(0)},${ly.toFixed(0)} ${tx},${ly.toFixed(0)}" fill="none" stroke="#111" stroke-width="10"/>`;
+    ann += `<text x="${tx - 60}" y="${(ly + 55).toFixed(0)}" font-size="150" text-anchor="end" fill="#111">${n.text}</text>`;
+  }
+  // 図面名と縮尺（下線つき）
+  const ty = glY + 1150;
+  ann += `<text x="${o.Wmm / 2}" y="${ty}" font-size="300" text-anchor="middle" fill="#111" font-weight="bold" letter-spacing="40">${title}</text>`;
+  ann += `<line x1="${o.Wmm / 2 - 1300}" y1="${ty + 110}" x2="${o.Wmm / 2 + 1300}" y2="${ty + 110}" stroke="#111" stroke-width="18"/>`;
+  // 縮尺はシートの表題欄に書く（並べる枚数で縮尺が変わるため）
   void subtitle;
-  const img = o.fillUrl ? `<image href="${o.fillUrl}" x="0" y="0" width="${o.Wmm}" height="${o.Hmm}" preserveAspectRatio="none" opacity="0.92"/>` : '';
-  const inner = img + `<path d="${o.lines.join('')}" stroke="#1a1a1a" stroke-width="20" fill="none" stroke-linecap="round"/>` + ann;
+  const img = o.fillUrl ? `<image href="${o.fillUrl}" x="0" y="0" width="${o.Wmm}" height="${o.Hmm}" preserveAspectRatio="none" opacity="0.8"/>` : '';
+  // 線の太さの階層（1/100 で 0.5 / 0.35 / 0.18 / 0.1 mm 相当）
+  const W8 = o.weighted;
+  const path = (d: string[], w: number, c = '#111') => (d.length ? `<path d="${d.join('')}" stroke="${c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : '');
+  const inner = img + path(W8.fine, 9, '#333') + path(W8.opening, 16, '#222') + path(W8.step, 26) + path(W8.outline, 45) + ann;
   if (sheet) return { svg: wrapSheet(inner, vb, sheet), vb, inner };
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">` +
@@ -336,7 +533,7 @@ export function renderElevation(viewer: Viewer, dir: ElevationDir, opts: Elevati
   const maxY = Math.max(st.roof.maxY, st.meta.topY);
   levels.push({ label: `▽最高高さ +${Math.round(maxY * 1000)}`, y: maxY });
   const title = `${JP[dir]}立面図`;
-  const { svg, vb, inner } = compose(o, levels, title, 'S=1/100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined);
+  const { svg, vb, inner } = compose(o, levels, title, 'S = 1 / 100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined, finishNotes(viewer.design.exteriorId));
   return { dir, title, svg, widthMm: vb.w, heightMm: vb.h, inner, vb };
 }
 

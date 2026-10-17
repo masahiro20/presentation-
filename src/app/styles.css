@@ -267,6 +267,11 @@ input, select, textarea { font: inherit; }
 .slide.drawing .sheet { position: relative; background: #fff; border: 1px solid var(--hair); min-width: 0; min-height: 0; display: grid; gap: 1px; }
 .slide.drawing .sheet .svgbox { position: relative; display: grid; place-items: center; padding: 1.2cqw; min-height: 0; background: #fff; }
 .slide.drawing .sheet .svgbox svg { width: 100%; height: 100%; }
+.slide.drawing.plan-one { grid-template-columns: 19cqw 1fr; gap: 2.4cqw; padding: 3.6cqw 3.2cqw 4.2cqw 4.2cqw; }
+.slide.drawing.plan-one .sheet { background: transparent; border: 0; }
+.slide.drawing.plan-one .sheet .svgbox { background: transparent; padding: 0; }
+.slide.drawing.plan-one .sheet .svgbox svg { mix-blend-mode: multiply; }
+.slide.drawing.plan-one .floor-area { margin: 1.6cqw 0 0.6cqw; font-size: 1.15cqw; letter-spacing: 0.12em; color: var(--ink-2, #555); }
 .slide .schedule { width: 100%; border-collapse: collapse; font-size: 0.95cqw; margin-top: 1.2cqw; letter-spacing: 0.06em; }
 .slide .schedule td { padding: 0.45cqw 0; border-bottom: 1px solid var(--hair); }
 .slide .schedule td.f { color: var(--bronze); font-family: 'Cormorant Garamond', serif; width: 2.6cqw; }

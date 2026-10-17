@@ -129,12 +129,102 @@ export function formatHM(h: number) {
   return `${hh + (mm === 60 ? 1 : 0)}:${String(mm === 60 ? 0 : mm).padStart(2, '0')}`;
 }
 
-/** 二十四節気の主な日付 */
-export function keyDates(year: number) {
-  return [
-    { id: 'winter', label: '冬至', month: 12, day: 22 },
-    { id: 'spring', label: '春分', month: 3, day: 20 },
-    { id: 'summer', label: '夏至', month: 6, day: 21 },
-    { id: 'autumn', label: '秋分', month: 9, day: 23 },
-  ].map((d) => ({ ...d, year }));
+// ---------------------------------------------------------------------------
+// 冬至・春分・夏至・秋分（年ごとの日付）
+// ---------------------------------------------------------------------------
+
+export type SeasonId = 'winter' | 'spring' | 'summer' | 'autumn';
+
+/** 二十四節気の主な日（JST の日付） */
+export interface SeasonDate {
+  id: SeasonId;
+  label: string;
+  year: number;
+  month: number;
+  day: number;
+}
+
+/** J. Meeus『Astronomical Algorithms』27 章 表 27.B（西暦 1000〜3000 年）: 春分・夏至・秋分・冬至の JDE0 の係数 */
+const SEASON_JDE0: Record<'spring' | 'summer' | 'autumn' | 'winter', [number, number, number, number, number]> = {
+  spring: [2451623.80984, 365242.37404, 0.05169, -0.00411, -0.00057],
+  summer: [2451716.56767, 365241.62603, 0.00325, 0.00888, -0.0003],
+  autumn: [2451810.21715, 365242.01767, -0.11575, 0.00337, 0.00078],
+  winter: [2451900.05952, 365242.74049, -0.06223, -0.00823, 0.00032],
+};
+
+/** 表 27.C の周期項 [A, B (度), C (度/世紀)] */
+const SEASON_TERMS: [number, number, number][] = [
+  [485, 324.96, 1934.136],
+  [203, 337.23, 32964.467],
+  [199, 342.08, 20.186],
+  [182, 27.85, 445267.112],
+  [156, 73.14, 45036.886],
+  [136, 171.52, 22518.443],
+  [77, 222.54, 65928.934],
+  [74, 296.72, 3034.906],
+  [70, 243.58, 9037.513],
+  [58, 119.81, 33718.147],
+  [52, 297.17, 150.678],
+  [50, 21.02, 2281.226],
+  [45, 247.54, 29929.562],
+  [44, 325.15, 31555.956],
+  [29, 60.93, 4443.417],
+  [18, 155.12, 67555.328],
+  [17, 288.79, 4562.452],
+  [16, 198.04, 62894.029],
+  [14, 199.76, 31436.921],
+  [12, 95.39, 14577.848],
+  [12, 287.11, 31931.756],
+  [12, 320.81, 34777.259],
+  [9, 227.73, 1222.114],
+  [8, 15.45, 16859.074],
+];
+
+/** 地球時（TT）と世界時（UT）の差 ΔT (秒)。2000〜2050 年の近似（年 1 秒未満の変化なので日付には効かない） */
+function deltaTSeconds(year: number): number {
+  const t = year - 2000;
+  if (t >= 0 && t <= 50) return 64 + 0.25 * Math.min(t, 24) + 0.1 * Math.max(0, t - 24);
+  return 69;
+}
+
+/**
+ * 春分・夏至・秋分・冬至の瞬間（UTC のミリ秒）。太陽の視黄経が 0°・90°・180°・270° になる時刻
+ * （Meeus 27 章の式。国立天文台の暦要項と 1〜2 分以内で一致する）。
+ */
+export function seasonMoment(year: number, id: SeasonId): number {
+  const c = SEASON_JDE0[id];
+  const Y = (year - 2000) / 1000;
+  const jde0 = c[0] + Y * (c[1] + Y * (c[2] + Y * (c[3] + Y * c[4])));
+  const T = (jde0 - 2451545) / 36525;
+  const W = (35999.373 * T - 2.47) * rad;
+  const dl = 1 + 0.0334 * Math.cos(W) + 0.0007 * Math.cos(2 * W);
+  let S = 0;
+  for (const [A, B, C] of SEASON_TERMS) S += A * Math.cos((B + C * T) * rad);
+  const jde = jde0 + (0.00001 * S) / dl;
+  return (jde - 2440587.5) * 86400000 - deltaTSeconds(year) * 1000;
+}
+
+/** UTC のミリ秒 → 日本時間（JST）の月・日 */
+function jstMonthDay(ms: number): { month: number; day: number } {
+  const d = new Date(ms + 9 * 3600000);
+  return { month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+const SEASON_LABEL: Record<SeasonId, string> = { winter: '冬至', spring: '春分', summer: '夏至', autumn: '秋分' };
+
+/** その年の冬至・春分・夏至・秋分（JST の日付）。日付は年により 1 日ずれる（例: 2024 年の冬至は 12/21、2026 年は 12/22） */
+export function seasonDate(year: number, id: SeasonId): SeasonDate {
+  return { id, label: SEASON_LABEL[id], year, ...jstMonthDay(seasonMoment(year, id)) };
+}
+
+/** その年の冬至日（JST）。日影図の日付 */
+export function winterSolstice(year: number): SeasonDate {
+  return seasonDate(year, 'winter');
+}
+
+/**
+ * 二十四節気の主な日付（冬至・春分・夏至・秋分の順、JST）。年ごとに計算する（sunstudy の studyDates と同じ日付）
+ */
+export function keyDates(year: number): SeasonDate[] {
+  return (['winter', 'spring', 'summer', 'autumn'] as const).map((id) => seasonDate(year, id));
 }

@@ -1,0 +1,321 @@
+/**
+ * 日照の結果に添える「周辺建物の扱い」の開示（DOM を使わない純粋な部分）。
+ *
+ * 建物を恣意的に外したと言われないように、計算から除外した周辺建物は理由ごとの棟数
+ * （プレゼン資料では 出典・高さ・理由・方向距離 の表）を、表示だけ隠した建物は棟数を、
+ * 部屋の日当たり・日照時間マップ・日影図（SVG）・プレゼン資料の日照のページに必ず印字する。
+ * 想定の家（未建築の仮の建物）を置いたときは「想定で置いた建物 N 棟（未建築・仮の形状。…）」の行も同じ所に印字する。
+ * 周辺建物の出典（PLATEAU のデータセット・国土地理院（推定）の棟数）と、PLATEAU の共通の開示文（形状・高さの根拠・年度）も sources の行として同じ所に出す。
+ * 数字は解析した時点の扱い（collectDisclosure の写し）で書く（state.sun.disclosure）。
+ */
+import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, countPlateauShapes, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord, type PlateauShapeCounts } from '../sun/context';
+import type { NeighborBuilding } from '../sun/geo';
+import type { PlateauAttrs } from '../sun/plateau';
+
+export const NEIGHBOR_SOURCE_LABEL: Record<NeighborBuilding['source'], string> = { plateau: 'PLATEAU（国土交通省）', gsi: '国土地理院', osm: 'OpenStreetMap', manual: '手動で追加' };
+const DIR8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+
+/** 高さの根拠: 実測（PLATEAU・OSM の高さタグ）／推定（国土地理院の建物の種類）／手入力（手動の隣家） */
+export type HeightKind = NonNullable<NeighborBuilding['heightKind']>;
+
+/** 建物の高さの根拠（無ければ出典から: PLATEAU = 実測、国土地理院 = 推定、OSM = 実測、手動 = 手入力） */
+export function heightKindOf(b: Pick<NeighborBuilding, 'source' | 'heightKind'>): HeightKind {
+  return b.heightKind ?? (b.source === 'gsi' ? 'estimated' : b.source === 'manual' ? 'manual' : 'measured');
+}
+
+/** 高さの括弧書き（資料の表・一覧）: 推定 →（推定）、手入力 →（手入力）、実測 → なし */
+export function heightKindSuffix(kind: HeightKind): string {
+  return kind === 'estimated' ? '（推定）' : kind === 'manual' ? '（手入力）' : '';
+}
+
+/** 建物の名前（OSM の名前・手動の隣家・出典） */
+export function neighborTitle(b: Pick<NeighborBuilding, 'label' | 'source'>): string {
+  return b.label ?? (b.source === 'manual' ? '隣家' : `${NEIGHBOR_SOURCE_LABEL[b.source]}の建物`);
+}
+
+/** PLATEAU の建物の出典の短い文: 「2025年度・LOD2」（LOD は建物の _lod、無ければデータセットの LOD） */
+export function plateauYearLod(a: Pick<PlateauAttrs, 'year' | 'lod' | 'datasetLod'>): string {
+  return `${a.year}年度・LOD${a.lod ?? a.datasetLod}`;
+}
+
+/**
+ * PLATEAU の建物が箱形（LOD1。天端は点群の中央値）か。建物の _lod、無ければデータセットの LOD で判定する。
+ * 東京 23 区の 2025 年版のようにデータセットは LOD2 でも住宅はほぼ全棟 _lod=1 の箱なので、データセットの LOD では判定しない
+ */
+export function isPlateauBox(a: Pick<PlateauAttrs, 'lod' | 'datasetLod'>): boolean {
+  return !((a.lod ?? a.datasetLod) >= 2);
+}
+
+/**
+ * PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown）。
+ * 取得側（context.ts の countPlateauShapes。トーストの「屋根形状あり N 棟」）と同じ関数なので、出典行とトーストの数は必ず一致する。
+ * isPlateauBox と同じ規則（建物の _lod、無ければデータセットの LOD）
+ */
+export const plateauShapeCounts: (list: Pick<NeighborBuilding, 'source' | 'plateau'>[]) => PlateauShapeCounts = countPlateauShapes;
+
+/** LOD1（箱形）の建物があるときの但し書き（共通の開示文の 2 文目） */
+export const LOD1_BOX_NOTE = 'LOD1 の建物は箱形で天端は点群の中央値（最高高さは建物クリックで確認・適用できます）。';
+/** 推定の屋根をかぶせた建物があるときの但し書き */
+export const EST_ROOF_NOTE = '推定の屋根は実測の最高高さを棟とする寄棟の仮定で、実際の屋根の形ではありません。';
+
+/**
+ * 周辺建物の出典の行（影・解析に入れた建物。想定の家は除く）:
+ * 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟（箱形 36 棟・屋根形状あり 2 棟）・国土地理院（推定）3 棟」
+ * （PLATEAU の括弧はデータセット = 市区・年度・LOD。区境で 2 つなら「／」。棟数の後ろに建物単位の LOD の内訳: データセットが LOD2 でも建物は箱形のことが多い）。
+ * PLATEAU の建物があれば 2 行目に共通の開示文（形状・高さの根拠、箱形の建物が 1 棟でもあれば LOD1 の天端の但し書き、年度以降の新築・解体）。建物が無ければ []
+ */
+export function sourceLines(list: (Pick<NeighborBuilding, 'source' | 'heightKind' | 'planned' | 'plateau'> & { confirmed?: boolean })[]): string[] {
+  const order: NeighborBuilding['source'][] = ['plateau', 'gsi', 'osm', 'manual'];
+  const own = list.filter((b) => !b.planned);
+  const datasets = new Map<string, { where: string; year: number; lod: number }>();
+  for (const b of own) {
+    const a = b.plateau;
+    if (!a) continue;
+    if (!datasets.has(a.muniCd)) datasets.set(a.muniCd, { where: a.ward ?? a.city, year: a.year, lod: a.datasetLod });
+  }
+  const ds = [...datasets.values()];
+  const shapes = plateauShapeCounts(own);
+  const parts = order
+    .map((source) => ({ source, items: own.filter((b) => b.source === source) }))
+    .filter((c) => c.items.length)
+    .map((c) => {
+      let name: string;
+      let detail = '';
+      if (c.source === 'plateau') {
+        name = ds.length ? `PLATEAU（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : NEIGHBOR_SOURCE_LABEL.plateau;
+        // 建物単位の LOD の内訳（属性のある建物があるときだけ）
+        if (shapes.box + shapes.roof > 0) detail = `（箱形 ${shapes.box} 棟${shapes.est ? `（うち推定の屋根 ${shapes.est} 棟）` : ''}・屋根形状あり ${shapes.roof} 棟）`;
+      } else {
+        const base = c.source === 'manual' ? '手入力' : NEIGHBOR_SOURCE_LABEL[c.source];
+        name = c.items.some((b) => heightKindOf(b) === 'estimated') ? `${base}（推定）` : base;
+      }
+      // 括弧で終わる名前は詰める（「国土地理院（推定）3 棟」）、そうでなければ空白を入れる（「手入力 1 棟」）
+      return `${name}${name.endsWith('）') ? '' : ' '}${c.items.length} 棟${detail}`;
+    });
+  if (!parts.length) return [];
+  const out = [`周辺建物の出典: ${parts.join('・')}`];
+  if (own.some((b) => b.source === 'plateau')) {
+    const where = ds.length ? `（${ds.map((d) => `${d.where}・${d.year}年度・LOD${d.lod}`).join('／')}）` : '';
+    // 但し書きは建物単位: 箱形（_lod=1）の建物が 1 棟でもあれば出す。属性の無い旧データは形が分からないので出す（安全側）
+    const lod1 = shapes.box > 0 || shapes.unknown > 0;
+    out.push(`周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル${where}。${lod1 ? LOD1_BOX_NOTE : ''}${shapes.est ? EST_ROOF_NOTE : ''}年度以降の新築・解体は反映されていない場合があります。`);
+  }
+  const confirmed = own.filter((b) => b.confirmed).length;
+  if (confirmed) out.push(`実測で確定した建物 ${confirmed} 棟（現地で測った高さ。それ以外の建物の高さは公開データの値・推定）`);
+  return out;
+}
+
+/** 計画建物（外形の原点 = 建物の中心）から見た方角と距離 */
+export function neighborWhere(b: Pick<NeighborBuilding, 'ring'>): string {
+  const c = ringCentroid(b.ring);
+  const az = ((Math.atan2(c.e, c.n) * 180) / Math.PI + 360) % 360;
+  return `${DIR8[Math.round(az / 45) % 8]} 約 ${Math.round(Math.hypot(c.e, c.n))} m`;
+}
+
+/** 隠した建物 1 棟の記録（資料に書く分） */
+export interface HiddenEntry {
+  key: string;
+  /** 建物の名前（OSM の名前・隣家・「国土地理院の建物」） */
+  title: string;
+  source: NeighborBuilding['source'];
+  /** 影・解析に使う高さ (m)。直した高さがあればそれ */
+  height: number;
+  /** 高さを手で直したか */
+  heightEdited: boolean;
+  /** 高さの根拠（実測／推定／手入力。古い写しには無い = 出典から判断） */
+  heightKind?: HeightKind;
+  mode: HideMode;
+  reason: HideReason;
+  note?: string;
+  /** 計画建物から見た方角と距離（例 '南 約 12 m'） */
+  where: string;
+  /** 想定の家（未建築の仮の建物） */
+  planned?: boolean;
+}
+
+/** 解析した時点の周辺建物の扱い */
+export interface SunDisclosure {
+  /** 影・解析に入れた周辺建物の数（表示だけ隠した建物を含む。計算から除外した建物は含まない） */
+  included: number;
+  /** 計算から除外した建物（描かない・影を落とさない・解析に入れない） */
+  excluded: HiddenEntry[];
+  /** 表示だけ隠した建物（描かないが、影・解析には含む） */
+  viewOnly: HiddenEntry[];
+  /**
+   * 想定の家（未建築・仮の形状）: count = 計算から除外していない想定の家の棟数（表示だけ隠したものも数える）、enabled = 影・解析に含めたか。
+   * 想定の家が無ければ省く（古い写しにも無い）。含めたときは included にも入っている
+   */
+  planned?: { count: number; enabled: boolean };
+  /**
+   * 周辺建物の出典の行（sourceLines: 「周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）38 棟・国土地理院（推定）3 棟」と、
+   * PLATEAU があればその共通の開示文）。影・解析に入れた建物が無ければ省く（古い写しにも無い）
+   */
+  sources?: string[];
+}
+
+/** 周辺建物が無い（日照ステップで読み込んでいない）ときの扱い */
+export const NO_NEIGHBORS_DISCLOSURE: Readonly<SunDisclosure> = { included: 0, excluded: [], viewOnly: [] };
+
+/** collectDisclosure に渡すもの（SunContext。テストでは偽物を渡せるよう、使う所だけの型） */
+export interface DisclosureSource {
+  state: { neighbors: NeighborBuilding[] };
+  keyOf(b: NeighborBuilding): string;
+  heightOf(b: NeighborBuilding): number;
+  hideRecord(key: string): HideRecord | null;
+  edits: { heights: Map<string, number> };
+  /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物。無ければ元の建物（テストの偽物用） */
+  effective?(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean };
+  /** 想定の家を影・解析に含めるか（SunContext.plannedEnabled。無ければ含める） */
+  plannedEnabled?: boolean;
+}
+
+/** 今の周辺建物の扱いを写す（null = 周辺建物を読み込んでいない） */
+export function collectDisclosure(sc: DisclosureSource | null | undefined): SunDisclosure {
+  if (!sc) return { included: 0, excluded: [], viewOnly: [] };
+  const out: SunDisclosure = { included: 0, excluded: [], viewOnly: [] };
+  const plannedOn = sc.plannedEnabled !== false;
+  let planned = 0;
+  /** 影・解析に入れた建物（出典の行に数える。想定の家は sourceLines が除く） */
+  const included: NeighborBuilding[] = [];
+  for (const b of sc.state.neighbors) {
+    const key = sc.keyOf(b);
+    const rec = b.hidden ? sc.hideRecord(key) : null;
+    if (b.planned) {
+      if (!rec || rec.mode === 'view') planned++;
+      // 含めていない想定の家は数えない（除外・表示だけ隠した建物の一覧にも出さない。想定の家の行で断る）
+      if (!plannedOn) continue;
+    }
+    if (!rec || rec.mode === 'view') {
+      out.included++;
+      included.push(sc.effective ? sc.effective(b) : b);
+    }
+    if (!rec) continue;
+    const e: HiddenEntry = {
+      key,
+      title: neighborTitle(b),
+      source: b.source,
+      height: sc.heightOf(b),
+      heightEdited: sc.edits.heights.has(key),
+      heightKind: heightKindOf(b),
+      mode: rec.mode,
+      reason: rec.reason,
+      where: neighborWhere(b),
+    };
+    if (rec.note) e.note = rec.note;
+    if (b.planned) e.planned = true;
+    (rec.mode === 'view' ? out.viewOnly : out.excluded).push(e);
+  }
+  if (planned) out.planned = { count: planned, enabled: plannedOn };
+  const sources = sourceLines(included);
+  if (sources.length) out.sources = sources;
+  return out;
+}
+
+/** 想定の家の行（あるときだけ）: 「想定で置いた建物 N 棟（未建築・仮の形状。影・解析に含む）」／含めていなければ「…今は含めていません」 */
+export function plannedLine(d: Pick<SunDisclosure, 'planned'>): string | null {
+  const p = d.planned;
+  if (!p || !p.count) return null;
+  return `想定で置いた建物 ${p.count} 棟（未建築・仮の形状。${p.enabled ? '影・解析に含む' : '今は含めていません'}）`;
+}
+
+/** 理由ごとの棟数（理由の並びは HIDE_REASONS の順。例 '解体予定 2・その他 1'） */
+export function reasonCountsText(entries: Pick<HiddenEntry, 'reason'>[]): string {
+  const n = new Map<HideReason, number>();
+  for (const e of entries) n.set(e.reason, (n.get(e.reason) ?? 0) + 1);
+  return HIDE_REASONS.filter((r) => n.has(r))
+    .map((r) => `${HIDE_REASON_LABEL[r]} ${n.get(r)}`)
+    .join('・');
+}
+
+/** 計算から除外した建物の行（いつも出す。無ければ「なし」） */
+export function excludedLine(d: Pick<SunDisclosure, 'excluded'>): string {
+  return d.excluded.length ? `計算から除外した周辺建物 ${d.excluded.length} 棟（${reasonCountsText(d.excluded)}）` : '計算から除外した周辺建物 なし';
+}
+
+/** 表示だけ隠した建物の行（あるときだけ） */
+export function viewOnlyLine(d: Pick<SunDisclosure, 'viewOnly'>): string | null {
+  return d.viewOnly.length ? `表示だけ隠した建物 ${d.viewOnly.length} 棟（影・解析には含む）` : null;
+}
+
+/** 日影図の注記の 1 行目（この版の日影図は計画建物だけの影） */
+export const DIAGRAM_NEIGHBORS_NOTE = '※周辺建物は日影図に含めていません（計画建物の影のみ）。部屋の日当たり・日照時間マップでの周辺建物の扱い:';
+
+export type DisclosureTarget = 'rooms' | 'heatmap' | 'diagram' | 'deck';
+
+/**
+ * 結果に添える注記の行。
+ *  - rooms / heatmap / deck: 周辺建物 N 棟の影を含めたか（読み込んでいなければその旨）＋ 出典（PLATEAU・国土地理院の棟数）＋ 除外・表示だけ隠した建物
+ *  - diagram: 周辺建物は日影図に含めていない旨 ＋ 出典 ＋ 除外・表示だけ隠した建物（部屋の日当たり・日照時間マップでの扱い）
+ */
+export function disclosureLines(d: SunDisclosure, target: DisclosureTarget): string[] {
+  const hidden = d.excluded.length + d.viewOnly.length;
+  const pl = plannedLine(d);
+  const rest = [...(d.sources ?? []), excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
+  if (target === 'diagram') return [DIAGRAM_NEIGHBORS_NOTE, ...rest];
+  const what = target === 'rooms' ? '部屋の日当たり' : target === 'heatmap' ? '日照時間マップ' : '日当たりの解析';
+  if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`, ...(pl ? [pl] : [])];
+  return [`※${what}は周辺建物 ${d.included} 棟の影を含めて計算しています`, ...rest];
+}
+
+/** 資料の表の 1 行（No.・出典・高さ・理由・方向・距離） */
+export interface ExcludedRow {
+  no: number;
+  source: string;
+  height: string;
+  reason: string;
+  where: string;
+}
+
+/** 計算から除外した建物の表（資料用） */
+export function excludedTableRows(d: Pick<SunDisclosure, 'excluded'>): ExcludedRow[] {
+  return d.excluded.map((e, i) => ({
+    no: i + 1,
+    // 名前のある建物（OSM の名前・PLATEAU の用途・隣家）は出典に添える。想定の家は「想定の家（未建築）」と名前
+    source: e.planned
+      ? `想定の家（未建築${e.title && e.title !== '想定の家' ? `・${e.title}` : ''}）`
+      : e.title === `${NEIGHBOR_SOURCE_LABEL[e.source]}の建物`
+        ? NEIGHBOR_SOURCE_LABEL[e.source]
+        : `${NEIGHBOR_SOURCE_LABEL[e.source]}（${e.title}）`,
+    // 括弧は高さの根拠: 想定の家 →（想定）、手で直した →（手入力）、推定（国土地理院）→（推定）、手入力の隣家 →（手入力）、実測（PLATEAU）→ なし
+    height: `${e.height.toFixed(1)} m${e.planned ? '（想定）' : e.heightEdited ? '（手入力）' : heightKindSuffix(e.heightKind ?? heightKindOf(e))}`,
+    reason: hideReasonText(e),
+    where: e.where,
+  }));
+}
+
+/** 隠し方の短い名前（一覧の見出しなど） */
+export function hideModeShort(mode: HideMode): string {
+  return HIDE_MODE_SHORT[mode];
+}
+
+const escXml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * SVG（日影図）の下に注記の行を足す: viewBox の高さを伸ばし、白地の上に左寄せで書く。
+ * 文字の大きさは凡例の文字（fill="#555" の最後の text）に合わせる（無ければ図の幅の 1/90）。
+ * data-disclosure の g にまとめる（2 回足さないように、既にあれば作り直す）
+ */
+export function appendSvgFootnote(svg: string, lines: string[]): string {
+  if (!lines.length) return svg;
+  // 先に足した注記があれば外して、その分を除いた高さから測る
+  const prev = /<g data-disclosure="1" data-disclosure-h="([\d.]+)">[\s\S]*?<\/g>/.exec(svg);
+  const src = prev ? svg.replace(prev[0], '') : svg;
+  const open = /<svg\b[^>]*>/.exec(src);
+  if (!open) return svg;
+  const vbm = /viewBox="([^"]+)"/.exec(open[0]);
+  const nums = vbm ? vbm[1].trim().split(/[\s,]+/).map(Number) : [];
+  if (nums.length !== 4 || nums.some((x) => !Number.isFinite(x))) return svg;
+  const [x, y, w, hgt] = nums;
+  const h0 = prev ? hgt - Number(prev[1]) : hgt;
+  const legendFs = [...src.matchAll(/<text\b[^>]*font-size="([\d.]+)"[^>]*fill="#555"/g)].map((m) => Number(m[1])).filter((v) => v > 0);
+  const fs = legendFs.length ? legendFs[legendFs.length - 1] : w / 90;
+  const lh = fs * 1.6;
+  const add = lh * lines.length + fs * 0.9;
+  const r = (v: number) => (Math.round(v * 100) / 100).toString();
+  const bottom = y + h0;
+  const texts = lines.map((t, i) => `<text x="${r(x + fs * 0.8)}" y="${r(bottom + lh * (i + 0.85))}" font-size="${r(fs)}" fill="#333"${i === 0 ? ' font-weight="bold"' : ''}>${escXml(t)}</text>`).join('');
+  const g = `<g data-disclosure="1" data-disclosure-h="${r(add)}"><rect x="${r(x)}" y="${r(bottom)}" width="${r(w)}" height="${r(add)}" fill="#fff"/>${texts}</g>`;
+  const head = open[0].replace(/viewBox="[^"]+"/, `viewBox="${r(x)} ${r(y)} ${r(w)} ${r(h0 + add)}"`);
+  const body = src.slice(open.index + open[0].length).replace(/<\/svg>\s*$/, '');
+  return `${src.slice(0, open.index)}${head}${body}${g}</svg>`;
+}

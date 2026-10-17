@@ -4,8 +4,19 @@
  */
 import * as THREE from 'three';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
-import type { Viewer } from '../scene/viewer';
 import type { CameraProgram } from './paths';
+
+/** 書き出し元（間取りプレゼンの Viewer と、日照シミュレーションの StudyScene の両方が満たす） */
+export interface RecordTarget {
+  renderer: THREE.WebGLRenderer;
+  camera: THREE.PerspectiveCamera & { shiftY?: number };
+  composer: { setPixelRatio(pr: number): void; setSize(w: number, h: number): void };
+  pause(p: boolean): void;
+  renderFrame(): void;
+  resize(): void;
+  /** 扉の開き具合（間取りプレゼンの Viewer だけ） */
+  setDoors?(open: Map<string, number> | null): void;
+}
 
 export interface RecordOptions {
   width: number;
@@ -90,7 +101,7 @@ class Compositor {
   }
 }
 
-export async function recordProgram(viewer: Viewer, program: CameraProgram, opts: RecordOptions): Promise<RecordResult> {
+export async function recordProgram(viewer: RecordTarget, program: CameraProgram, opts: RecordOptions): Promise<RecordResult> {
   const { width, height, fps } = opts;
   const renderer = viewer.renderer;
   const camera = viewer.camera;
@@ -111,7 +122,7 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
     const t = i / fps;
     const s = program.sample(t);
     opts.beforeFrame?.(t, s);
-    viewer.setDoors(s.doors ?? null);
+    viewer.setDoors?.(s.doors ?? null);
     camera.fov = s.fov;
     camera.position.copy(s.pos);
     camera.lookAt(s.target);
@@ -133,21 +144,26 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
         output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
         error: (e) => (encErr = e),
       });
-      enc.configure({ codec: codec.codec, width, height, bitrate: Math.round(width * height * fps * 0.18), framerate: fps });
-      for (let i = 0; i < frames; i++) {
-        if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
-        if (encErr) throw encErr;
-        renderAt(i);
-        const vf = new VideoFrame(comp.canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
-        enc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
-        vf.close();
-        while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1));
-        if (i % 5 === 0) {
-          opts.onProgress?.(i / frames, i % 30 === 0 ? comp.canvas.toDataURL('image/jpeg', 0.6) : undefined);
-          await new Promise((r) => setTimeout(r, 0));
+      try {
+        enc.configure({ codec: codec.codec, width, height, bitrate: Math.round(width * height * fps * 0.18), framerate: fps });
+        for (let i = 0; i < frames; i++) {
+          if (opts.signal?.aborted) throw new DOMException('中止しました', 'AbortError');
+          if (encErr) throw encErr;
+          renderAt(i);
+          const vf = new VideoFrame(comp.canvas, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+          enc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
+          vf.close();
+          while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1));
+          if (i % 5 === 0) {
+            opts.onProgress?.(i / frames, i % 30 === 0 ? comp.canvas.toDataURL('image/jpeg', 0.6) : undefined);
+            await new Promise((r) => setTimeout(r, 0));
+          }
         }
+        await enc.flush();
+      } finally {
+        // エンコーダーを必ず解放する（エラー後は既に closed なので再 close しない）
+        if (enc.state !== 'closed') enc.close();
       }
-      await enc.flush();
       muxer.finalize();
       const buf = (muxer.target as ArrayBufferTarget).buffer;
       return { blob: new Blob([buf], { type: 'video/mp4' }), mime: 'video/mp4', ext: 'mp4' };
@@ -161,8 +177,12 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     const done = new Promise<void>((r) => (rec.onstop = () => r()));
     rec.start();
+    let aborted = false;
     for (let i = 0; i < frames; i++) {
-      if (opts.signal?.aborted) break;
+      if (opts.signal?.aborted) {
+        aborted = true;
+        break;
+      }
       const t0 = performance.now();
       renderAt(i);
       track.requestFrame();
@@ -172,9 +192,10 @@ export async function recordProgram(viewer: Viewer, program: CameraProgram, opts
     }
     rec.stop();
     await done;
+    if (aborted) throw new DOMException('中止しました', 'AbortError');
     return { blob: new Blob(chunks, { type: 'video/webm' }), mime: 'video/webm', ext: 'webm' };
   } finally {
-    viewer.setDoors(null);
+    viewer.setDoors?.(null);
     renderer.setPixelRatio(prevPR);
     renderer.setSize(prevSize.x, prevSize.y, false);
     viewer.pause(false);

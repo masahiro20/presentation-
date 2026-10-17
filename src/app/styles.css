@@ -62,6 +62,15 @@ input, select, textarea { font: inherit; }
 .side .lead { color: var(--ink2); font-size: 13px; margin: 0 0 16px; line-height: 1.7; }
 
 .panel-section { border-top: 1px solid var(--line); padding: 14px 0 6px; }
+.panel-section.fold { padding: 0; }
+.panel-section.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 8px; padding: 11px 0; font-size: 13px; color: var(--ink2); letter-spacing: 0.05em; font-weight: 600; }
+.panel-section.fold > summary::-webkit-details-marker { display: none; }
+.panel-section.fold > summary::before { content: '▸'; font-size: 11px; color: var(--ink3); transition: transform .12s; flex: none; }
+.panel-section.fold[open] > summary::before { transform: rotate(90deg); }
+.panel-section.fold > summary:hover { color: var(--ink); }
+.panel-section.fold .fold-meta { font-weight: 400; font-size: 11.5px; color: var(--ink3); letter-spacing: 0; margin-left: auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-section.fold[open] .fold-meta { display: none; }
+.panel-section.fold > .fold-body { padding: 0 0 8px; }
 .panel-section h4 { margin: 0 0 10px; font-size: 13px; color: var(--ink2); letter-spacing: 0.05em; }
 
 /* ボタン */
@@ -80,7 +89,7 @@ input, select, textarea { font: inherit; }
 /* フォーム */
 .field { display: block; margin: 8px 0; }
 .field-label { display: block; font-size: 12px; color: var(--ink2); margin-bottom: 4px; }
-.field input[type=text], .field input[type=number], .field input[type=date], .field select, .field textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
+.field input[type=text], .field input[type=password], .field input[type=number], .field input[type=date], .field select, .field textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
 .field input[type=range] { width: 100%; accent-color: var(--accent); }
 .hint { display: block; font-size: 11.5px; color: var(--ink3); margin-top: 3px; }
 .segmented { display: flex; background: #f1efea; border-radius: 9px; padding: 3px; gap: 2px; }
@@ -273,6 +282,15 @@ input, select, textarea { font: inherit; }
 .slide .sungrid .lbl { position: absolute; left: 0; bottom: 0; padding: 0.5cqw 0.9cqw; background: rgba(245,241,234,0.94); font-size: 0.9cqw; letter-spacing: 0.1em; }
 .slide .svgfit { position: relative; min-height: 0; display: grid; place-items: center; background: #fff; border: 1px solid var(--hair); padding: 1cqw; }
 .slide .svgfit svg { max-width: 100%; max-height: 100%; }
+/* 日照のページの注記（周辺建物の扱い）と、計算から除外した周辺建物の表 */
+.slide .sun-note { margin-top: 1.2cqw; padding-top: 0.8cqw; border-top: 1px solid var(--hair); font-size: 0.88cqw; line-height: 1.75; color: var(--ink-3); letter-spacing: 0.03em; }
+.slide .tblbox { min-height: 0; overflow: hidden; background: #fff; border: 1px solid var(--hair); padding: 1.6cqw 1.8cqw; }
+.slide table.excluded { width: 100%; border-collapse: collapse; font-size: 0.92cqw; letter-spacing: 0.04em; }
+.slide table.excluded th { text-align: left; font-weight: 500; color: var(--ink-3); border-bottom: 1px solid var(--ink-3); padding: 0.4cqw 0.6cqw; }
+.slide table.excluded td { padding: 0.45cqw 0.6cqw; border-bottom: 1px solid var(--hair); color: var(--ink-2); vertical-align: top; }
+.slide table.excluded td.n { color: var(--bronze); width: 3cqw; }
+.slide table.excluded td.a { white-space: nowrap; }
+.slide .tblbox .cont { font-size: 0.85cqw; margin: 0.8cqw 0 0; color: var(--ink-3); }
 
 /* 仕様 */
 .slide.details { padding: 6cqw 6cqw; display: grid; grid-template-columns: 26cqw 1fr; gap: 5cqw; }
@@ -526,3 +544,94 @@ body.theme-atelier .dropzone .big { font-family: 'Cormorant Garamond', serif; fo
 .cinema-cap { background: linear-gradient(transparent, rgba(0, 0, 0, 0.62) 55%, rgba(0, 0, 0, 0.78)); text-shadow: 0 1px 10px rgba(0, 0, 0, 0.6); }
 .cinema-brand, .cinema-brand small { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7); }
 .cinema-ui .btn { background: rgba(10, 10, 9, 0.72); }
+/* 日照: 周辺建物のクリックで開く案内（高さ・隠す）と「建物を選んで隠す」（日照ツールの .pop と同じ見た目。名前は sunnb- で分ける） */
+.sunnb-pop { position: absolute; z-index: 6; background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 12.5px; min-width: 240px; max-width: 290px; pointer-events: auto; }
+.sunnb-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sunnb-pop h5 { margin: 0; font-size: 13.5px; }
+.sunnb-pop .icon-btn { font-size: 18px; padding: 0 4px; }
+.sunnb-pop .hint { margin: 2px 0; }
+.sunnb-pop .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0 0; }
+.sunnb-pop input[type=number] { width: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.sunnb-bar { position: absolute; left: 50%; top: 60px; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; gap: 4px; background: rgba(24, 26, 30, 0.88); backdrop-filter: blur(6px); color: #fff; border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); pointer-events: auto; max-width: calc(100% - 28px); width: max-content; box-sizing: border-box; }
+.sunnb-bar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sunnb-bar-row b { font-size: 14px; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.sunnb-bar .btn.ghost { color: #fff; border-color: #50555d; }
+.sunnb-bar .btn.ghost:hover { background: rgba(255, 255, 255, 0.08); }
+.sunnb-rect { position: absolute; z-index: 5; border: 1.5px dashed #e5531f; background: rgba(229, 83, 31, 0.12); pointer-events: none; }
+.sunnb-hidden { margin: 8px 0; }
+.sunnb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); }
+.sunnb-hidden-list { max-height: 240px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #f0ece5; }
+.sunnb-hidden-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 4px; border-bottom: 1px solid #f0ece5; font-size: 12.5px; }
+.sunnb-hidden-row:hover { background: #fdf3ee; }
+.sunnb-hidden-name { min-width: 0; }
+.sunnb-hidden-name .hint { margin-top: 1px; }
+/* 隠し方（計算から除外／表示だけ隠す）と理由の欄（バーと案内で共通） */
+.sunnb-pop { max-width: 320px; }
+.sunnb-choice { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 0; font-size: 12px; }
+.sunnb-modes { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.sunnb-radio { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.sunnb-radio input { accent-color: var(--accent); margin: 0; }
+.sunnb-reason-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sunnb-reason-row select, .sunnb-reason-row input { border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 12px; background: #fff; color: var(--ink); }
+.sunnb-reason-row input { flex: 1; min-width: 120px; }
+.sunnb-bar .sunnb-choice { margin: 0; color: #e8eaed; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.sunnb-bar .sunnb-reason-row input { min-width: 110px; max-width: 170px; }
+.sunnb-bar .sunnb-reason-row select, .sunnb-bar .sunnb-reason-row input { background: #2a2d31; color: #fff; border-color: #50555d; }
+/* 「隠した建物」の一覧: 隠し方ごとのまとまり（表示だけ隠した建物は青の印） */
+.sunnb-hidden-group { margin-top: 6px; }
+.sunnb-hidden-head { display: flex; align-items: baseline; gap: 6px; padding: 4px 4px 2px; font-size: 12px; color: var(--ink); }
+.sunnb-hidden-head .hint { margin: 0; }
+.sunnb-hidden-group.view .sunnb-hidden-head b { color: #2f6ea8; }
+.sunnb-hidden-row.view { border-left: 3px solid #7fb2e5; }
+.sunnb-hidden-row.exclude { border-left: 3px solid #b9c0c8; }
+.sunnb-hidden-acts { display: flex; flex-direction: column; gap: 3px; align-items: stretch; flex: none; }
+.sunnb-hidden-acts .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+/* 日照の結果に添える周辺建物の扱い（出典・除外・表示だけ隠した建物） */
+.sun-disclosure { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--line); background: #faf8f4; font-size: 11.5px; line-height: 1.6; color: var(--ink2); }
+.sun-disclosure div:first-child { color: var(--ink); }
+/* 周辺建物の取得の注記（出典の行は濃く、未整備・通信エラー・一部タイルの失敗などは薄く）。取っていなければ空 */
+.sun-src-notes { font-size: 11.5px; line-height: 1.55; color: var(--ink3); margin: 4px 0 2px; }
+.sun-src-notes:empty { display: none; }
+.sun-src-notes .src { color: var(--ink2); }
+.sun-diagram-opts .check { font-size: 12.5px; margin: 2px 0 6px; }
+/* 日照: 想定の家（未建築の隣家）のブロック・一覧・クリックで開く編集の案内（名前は sunpl- で分ける） */
+.sunpl-block { margin: 12px 0 6px; padding: 10px 10px 6px; border: 1px solid #d6e1ee; border-radius: 10px; background: #f6f9fd; }
+.sunpl-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.sunpl-block .field { margin: 6px 0; }
+.sunpl-block .field select { padding: 6px 8px; font-size: 12.5px; }
+.sunpl-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.sunpl-sides .check { font-size: 12.5px; margin: 3px 0; }
+.sunpl-side.road { color: var(--ink2); }
+.sunpl-include-row { font-size: 13px; margin: 8px 0 4px; }
+.sunpl-list { margin: 4px 0 2px; }
+.sunpl-empty { margin: 2px 0 4px; }
+.sunpl-list-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 0; flex-wrap: wrap; }
+.sunpl-list-head .hint { margin: 0; }
+.sunpl-list-head .btn { margin-left: auto; padding: 3px 8px; font-size: 11.5px; }
+.sunpl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 4px 5px 7px; border-bottom: 1px solid #e3eaf3; border-left: 3px solid #6f8fb3; font-size: 12.5px; background: #fff; }
+.sunpl-row:hover { background: #fdf3ee; }
+.sunpl-row.on { background: #fdf3ee; border-left-color: #e5531f; }
+.sunpl-row.off { opacity: 0.6; }
+.sunpl-row-name { min-width: 0; }
+.sunpl-row-name .hint { margin-top: 1px; }
+.sunpl-row-acts { display: flex; gap: 4px; flex: none; }
+.sunpl-row-acts .btn.sm { padding: 3px 8px; font-size: 11.5px; }
+.sunpl-pop { width: 300px; max-width: 300px; box-sizing: border-box; }
+.sunpl-pop .field { margin: 5px 0 0; }
+.sunpl-pop .field-label { font-size: 11.5px; margin-bottom: 2px; }
+.sunpl-pop .field input[type=text], .sunpl-pop .field input[type=number], .sunpl-pop .field select { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12.5px; background: #fff; }
+.sunpl-pop .field input:disabled { background: #f3f1ec; color: var(--ink3); }
+.sunpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.sunpl-pop .row { margin-top: 8px; }
+.sunpl-pop .row .btn.sm { padding: 4px 9px; }
+.acc-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 9px; font-size: 10.5px; line-height: 1.5; background: #eee; color: #444; }
+.acc-tag.acc-confirmed { background: #d9f0dc; color: #1d5b2a; }
+.acc-tag.acc-measured { background: #e3eefb; color: #1f4a80; }
+.acc-tag.acc-est-roof, .acc-tag.acc-box { background: #fdf0d5; color: #7a5200; }
+.acc-tag.acc-estimated { background: #fbe0dc; color: #8a2a1c; }
+.sunkey-row { display: block; width: 100%; text-align: left; margin: 3px 0; padding: 5px 8px; border: 1px solid var(--line, #ddd); border-radius: 8px; background: #fff; font-size: 12px; cursor: pointer; }
+.sunkey-row.done { opacity: .65; }
+.sunkey-row .meta { display: block; color: var(--ink3, #777); font-size: 11px; margin-top: 2px; }
+.roof-editor .field { margin: 3px 0; }
+.roof-editor .field-label { font-size: 11.5px; }
+.roof-editor input, .roof-editor select { width: 100%; box-sizing: border-box; padding: 3px 5px; font-size: 12.5px; }

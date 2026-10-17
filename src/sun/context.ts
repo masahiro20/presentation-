@@ -1,11 +1,450 @@
 /**
- * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）
+ * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
+ * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
 import * as THREE from 'three';
 import type { Viewer } from '../scene/viewer';
 import { clearGroup } from '../scene/viewer';
-import { fetchAerial, fetchGsiBuildings, fetchOsmBuildings, siteLatLon, type NeighborBuilding, type SiteLocation } from './geo';
+import { fetchAerial, fetchGsiBuildings, fetchOsmBuildings, metersPerDegree, siteLatLon, toLocal, type NeighborBuilding, type SiteLocation } from './geo';
 import { sunPosition, sunDirectionWorld, localDate, keyDates, sunriseSunset } from './solar';
+import { ALIGN_COLORS, type EN } from './align';
+import { PLANNED_COLORS, PLANNED_DEFAULT_LABEL, buildPlannedHouseGeometry, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from './plannedHouse';
+import { fillGapsWith } from './footprint';
+import { rankShadowCasters } from './keyNeighbors';
+import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
+
+/** 想定の家（planned 付きの周辺建物） */
+export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
+
+// ---------------------------------------------------------------- 周辺建物を隠す・高さを直す（純粋な計算。DOM・THREE を使わない）
+
+export interface LatLon {
+  lat: number;
+  lon: number;
+}
+
+// ---------------------------------------------------------------- 周辺建物の取得（PLATEAU → 国土地理院 → OpenStreetMap）
+
+/** 周辺建物の取得元の選択（既定は PLATEAU。未整備・通信エラーなら国土地理院 → OpenStreetMap に落ちる） */
+export type NeighborSourceChoice = 'plateau' | 'gsi' | 'osm';
+
+/** 周辺建物を取る半径 (m)。航空写真（220 m）の中に収まる範囲 */
+export const NEIGHBOR_RADIUS_M = 110;
+
+/** SunContext.loadNeighbors の結果 */
+export interface LoadNeighborsResult {
+  /** 取り込んだ棟数（敷地に重なる建物を除いた後。手動の隣家・想定の家は含まない） */
+  count: number;
+  /** 実際に使った出典（PLATEAU に無い建物を国土地理院で補ったときは ['plateau', 'gsi']） */
+  used: NeighborSourceChoice[];
+  /** 利用者向けの注記（未整備・通信エラー・一部タイルの失敗・データ量の上限・補完の棟数） */
+  notes: string[];
+  /**
+   * PLATEAU を試した結果（'plateau' で取得したときだけ。datasets・lodCounts は covered のときだけ入る）。
+   * lodCounts は取得した全棟（敷地に重なる建物を除く前）、shapes は一覧に残った建物（count に数えた棟）の内訳。
+   * 利用者向けの文（トースト）は出典行・注記と揃うように shapes で数える
+   */
+  plateau?: { datasets: PlateauDatasetInfo[]; lodCounts: Record<string, number>; status: PlateauFetchResult['status']; shapes: PlateauShapeCounts };
+}
+
+/** PLATEAU の建物の内訳（箱形 = LOD1、屋根形状あり = LOD2 以上。属性の無い旧データは unknown） */
+export interface PlateauShapeCounts {
+  /** うち推定の屋根（roofEstimate.ts）をかぶせた建物の数（box の内数） */
+  est: number;
+  box: number;
+  roof: number;
+  unknown: number;
+}
+
+/** PLATEAU が未整備の地域の注記（§4 のフォールバック表） */
+export const NOTE_PLATEAU_MISSING = 'この地域は PLATEAU（3D都市モデル）が未整備のため、周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。';
+/** PLATEAU を取得できなかった（逆ジオコーダ・索引・tileset・全タイル・復号の失敗）ときの注記 */
+export const NOTE_PLATEAU_ERROR = 'PLATEAU のデータを取得できなかったため（通信エラー）、周辺建物の高さは国土地理院の建物種類から推定しています。「🏘 周辺建物（PLATEAU）」でやり直せます。';
+
+/**
+ * PLATEAU で取れたときの国土地理院の補完と、未整備・通信エラーの退路（国土地理院 → OSM）を待つ上限 (ms)。
+ * 補完は任意なので期限切れは []（PLATEAU だけで続ける）。退路では期限切れを失敗と同じに扱い次の取得元へ
+ */
+export const NEIGHBOR_FILL_TIMEOUT_MS = 10_000;
+
+/** 中止（AbortError。進捗モーダルの「中止」・新しい取得による置き換え）か */
+export function isAbortError(e: unknown): boolean {
+  return (e instanceof DOMException || e instanceof Error) && e.name === 'AbortError';
+}
+
+/** 新しい取得（連打・建設地の変更）で置き換えられた古い取得が投げる中止 */
+export function supersededError(): DOMException {
+  return new DOMException('新しい取得で置き換えました', 'AbortError');
+}
+
+/**
+ * p を待つ。signal の中止は signal.reason を投げ、ms を過ぎたら onTimeout() の値で抜ける（onTimeout が投げればその失敗）。
+ * どちらで抜けても p 自体は止めない（下層の fetch は signal で止まる）
+ */
+export function waitWithLimit<T>(p: Promise<T>, ms: number, signal: AbortSignal | undefined, onTimeout: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onAbort = () => finish(() => reject((signal?.reason as Error | undefined) ?? new Error('中止しました')));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(
+      () =>
+        finish(() => {
+          try {
+            resolve(onTimeout());
+          } catch (e) {
+            reject(e);
+          }
+        }),
+      ms,
+    );
+    p.then(
+      (v) => finish(() => resolve(v)),
+      (e) => finish(() => reject(e)),
+    );
+  });
+}
+
+/** 小数 1 桁に丸める（NeighborBuilding.height の約束。PlateauBuilding.height は丸めていない） */
+const round1 = (v: number) => Math.round(v * 10) / 10;
+
+/**
+ * PLATEAU の建物（anchor 基準）→ プレゼン側の周辺建物（ピン基準）。id `plateau:${gmlId}`・source 'plateau'・heightKind 'measured'・
+ * height = round1(zmax − zmin)。ring/holes は toLocal(anchor, pin) の分だけ平行移動した新しい配列（PlateauBuilding は取得側のキャッシュと共有のため書き換えない）。
+ * mesh は anchor 基準のまま持ち、buildNeighbors で同じ量を足して置く。label = 用途（無ければ名称）
+ */
+export function plateauToNeighborBuilding(b: PlateauBuilding, pin: LatLon): NeighborBuilding {
+  const off = toLocal(b.attrs.anchor.lat, b.attrs.anchor.lon, pin.lat, pin.lon);
+  const shift = (ring: EN[]) => ring.map((p) => ({ e: p.e + off.e, n: p.n + off.n }));
+  const nb: NeighborBuilding = {
+    ring: shift(b.ring),
+    height: Math.max(0.1, round1(b.height)),
+    source: 'plateau',
+    heightKind: 'measured',
+    id: `plateau:${b.gmlId}`,
+    mesh: b.mesh,
+    plateau: { ...b.attrs, anchor: { ...b.attrs.anchor } },
+  };
+  if (b.holes.length) nb.holes = b.holes.map(shift);
+  const label = b.attrs.usage || b.attrs.name;
+  if (label) nb.label = label;
+  return nb;
+}
+
+/** 取得の進捗の文: '周辺建物（PLATEAU）: 建物タイル 3/6（8.1 MB）'（統合の段の「周辺建物を統合しています…」などはそのまま） */
+export function plateauProgressText(p: Pick<PlateauProgress, 'message'>): string {
+  return p.message.startsWith('周辺建物') ? p.message : `周辺建物（PLATEAU）: ${p.message}`;
+}
+
+/** PLATEAU で取れたときの注記（一部タイルの失敗・データ量の上限・隣接する未整備の市区・市区町村コードの改編の救済・国土地理院で補った棟数） */
+export function plateauCoveredNotes(r: Extract<PlateauFetchResult, { status: 'covered' }>, fill: number): string[] {
+  const notes: string[] = [];
+  if (fill > 0) notes.push(`国土地理院の地図から ${fill} 棟を補いました（高さは建物の種類から推定）。`);
+  if (r.failedTiles > 0) notes.push(`PLATEAU の建物タイル ${r.tiles.length + r.failedTiles} 枚のうち ${r.failedTiles} 枚を取得できなかったため、建物が欠けている可能性があります。`);
+  if (r.truncated) notes.push('遠方の建物の一部は取得していません（データ量の上限）。');
+  // 索引に無い市区は名前が分からない（索引に項目が無い）ので市区町村コードで示す
+  if (r.missingMuniCds.length) notes.push(`隣接する市区（市区町村コード ${r.missingMuniCds.join('・')}）は PLATEAU が未整備のため、その範囲は国土地理院の推定で補いました。`);
+  if (r.regionAdded?.length) notes.push(plateauRegionAddedNote(r.datasets, r.regionAdded));
+  return notes;
+}
+
+/**
+ * 市区町村コードの改編（浜松市 2024 年の区再編など）で逆ジオコーダのコードが索引に無く、索引の区域（region）で市区を補ったときの注記。
+ * 「市区町村コードの改編のため、位置の重なる PLATEAU（愛知県名古屋市守山区・2022年度・LOD1）で補いました。」
+ * データセット名は使ったデータセット（datasets）から引き、無ければ（tileset が取れずに落ちた）市区町村コードで示す
+ */
+export function plateauRegionAddedNote(datasets: readonly PlateauDatasetInfo[], regionAdded: readonly string[]): string {
+  const names = regionAdded.map((cd) => datasets.find((d) => d.muniCd === cd)?.label ?? `市区町村コード ${cd}`);
+  return `市区町村コードの改編のため、位置の重なる PLATEAU（${names.join('／')}）で補いました。`;
+}
+
+/** PLATEAU の建物のうち屋根形状（LOD2 以上）の棟数（lodCounts のキーは String(lod)）。取得全棟の数なので利用者向けの文には使わない（shapes を使う） */
+export function roofShapeCount(lodCounts: Record<string, number>): number {
+  let n = 0;
+  for (const [lod, count] of Object.entries(lodCounts)) if (Number(lod) >= 2) n += count;
+  return n;
+}
+
+/**
+ * 一覧に残った PLATEAU の建物の内訳（箱形 / 屋根形状あり / 属性の無い旧データ）。
+ * 判定は src/app/sunDisclosure.ts の isPlateauBox と同じ規則（建物の _lod、無ければデータセットの LOD が 2 以上なら屋根形状あり）。
+ * sunDisclosure.ts の plateauShapeCounts（出典行の内訳）はこの関数の別名なので、トーストと出典行・注記は同じ数になる
+ */
+export function countPlateauShapes(list: Pick<NeighborBuilding, 'source' | 'plateau'>[]): PlateauShapeCounts {
+  const c: PlateauShapeCounts = { est: 0, box: 0, roof: 0, unknown: 0 };
+  for (const b of list) {
+    if (b.source !== 'plateau') continue;
+    const a = b.plateau;
+    if (!a) c.unknown++;
+    else if ((a.lod ?? a.datasetLod) >= 2) c.roof++;
+    else {
+      c.box++;
+      if (a.roofEstimate && !a.roofEstimate.user) c.est++;
+    }
+  }
+  return c;
+}
+
+/** 選んだ建物の色（2 点合わせの航空写真側の印 ALIGN_COLORS.target と同じオレンジ） */
+export const NEIGHBOR_SELECT_COLOR = ALIGN_COLORS.target;
+/** 隠した建物を薄く表示するときの不透明度 */
+export const GHOST_OPACITY = 0.25;
+/** 表示だけ隠した建物の薄い表示の色（計算から除外した建物は灰色） */
+export const GHOST_VIEW_COLOR = '#7fb2e5';
+
+/** リングの面積 (m²)。閉じた点（最後 = 最初）が重なっていても同じ値。座標が大きくても（地点によらない座標）桁落ちしないよう最初の点から測る */
+export function ringArea(ring: EN[]): number {
+  if (ring.length < 3) return 0;
+  const o = ring[0];
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += (ring[j].e - o.e) * (ring[i].n - o.n) - (ring[i].e - o.e) * (ring[j].n - o.n);
+  return Math.abs(a) / 2;
+}
+
+/** リングの重心（面積で重み付け。点の並び・閉じた点の重なりによらない）。面積が 0 なら頂点の平均。最初の点から測って桁落ちを防ぐ */
+export function ringCentroid(ring: EN[]): EN {
+  if (!ring.length) return { e: 0, n: 0 };
+  const o = ring[0];
+  let a = 0;
+  let ce = 0;
+  let cn = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const je = ring[j].e - o.e;
+    const jn = ring[j].n - o.n;
+    const ie = ring[i].e - o.e;
+    const in_ = ring[i].n - o.n;
+    const k = je * in_ - ie * jn;
+    a += k;
+    ce += (je + ie) * k;
+    cn += (jn + in_) * k;
+  }
+  if (Math.abs(a) < 1e-9) {
+    const n = ring.length;
+    return ring.reduce((s, p) => ({ e: s.e + (p.e - o.e) / n, n: s.n + (p.n - o.n) / n }), { e: o.e, n: o.n });
+  }
+  return { e: o.e + ce / (3 * a), n: o.n + cn / (3 * a) };
+}
+
+/** 点がリングの内側か（偶奇判定） */
+export function pointInRing(p: EN, ring: EN[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i];
+    const b = ring[j];
+    if (a.n > p.n !== b.n > p.n && p.e < ((b.e - a.e) * (p.n - a.n)) / (b.n - a.n) + a.e) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * 地点 origin（緯度・経度）から測った東・北 (m) を、どの地点から測っても同じ値になる東・北 (m) に直す
+ * （緯度・経度 × 1° の長さ。基準の緯度は整数度）。建設地のピンを動かして取り直しても同じ建物が同じキーになるように使う
+ */
+export function absoluteEN(p: EN, origin: LatLon): EN {
+  const o = metersPerDegree(origin.lat);
+  const lat = origin.lat + p.n / o.mLat;
+  const lon = origin.lon + p.e / o.mLon;
+  const ref = metersPerDegree(Math.round(origin.lat));
+  return { e: lon * ref.mLon, n: lat * ref.mLat };
+}
+
+const half = (v: number) => (Math.round(v * 2) / 2).toFixed(1);
+
+/**
+ * 周辺建物の「同じ建物か」を表すキー。
+ *  - PLATEAU: `plateau:${gml_id}`（ピン移動・取り直しで不変。年度更新で変わり得るので、その時は外形で当て直す）
+ *  - 国土地理院・OSM: 出典 + 重心（0.5 m 単位）+ 面積（1 m² 単位）。origin（外形を測った地点 = 取得したときのピン）を渡すと
+ *    重心を地点によらない座標（absoluteEN）で測るので、ピンを動かして取り直しても同じ建物は同じキーになる
+ *  - 手動の隣家: 番号（id）。同じ大きさ・場所に 2 棟足しても別の建物になる（id が無ければ形のキー）
+ */
+export function neighborKey(b: Pick<NeighborBuilding, 'ring' | 'source' | 'id' | 'plateau'>, origin?: LatLon | null): string {
+  if (b.plateau?.gmlId) return `plateau:${b.plateau.gmlId}`;
+  if (b.source === 'manual' && b.id) return `manual:${b.id}`;
+  const c = ringCentroid(b.ring);
+  const p = origin ? absoluteEN(c, origin) : c;
+  return `${b.source}:${half(p.e)}:${half(p.n)}:${Math.round(ringArea(b.ring))}`;
+}
+
+/**
+ * 2 つの外形が同じ建物か（キーが丸めの境目でずれたとき・国土地理院と OSM で外形が少し違うときの照合）:
+ * 面積の比が 0.6〜1/0.6 で、互いの重心が相手の内側にある
+ */
+export function sameFootprint(a: EN[], b: EN[]): boolean {
+  const aa = ringArea(a);
+  const ab = ringArea(b);
+  if (!(aa > 0 && ab > 0)) return false;
+  const r = aa / ab;
+  if (r < 0.6 || r > 1 / 0.6) return false;
+  return pointInRing(ringCentroid(a), b) && pointInRing(ringCentroid(b), a);
+}
+
+/**
+ * 隠し方:
+ *  - 'view' = 表示だけ隠す（3D には描かないが、影は落とし、部屋の日当たり・日照時間マップにも入れる。プレゼンで視点を遮る建物など）
+ *  - 'exclude' = 計算から除外（描かない・影を落とさない・解析に入れない。解体予定の既存建物など）
+ */
+export type HideMode = 'view' | 'exclude';
+/** 隠した理由: 解体予定／敷地内の既存建物／データの誤り／その他（自由記述は note） */
+export type HideReason = 'demolish' | 'onSite' | 'dataError' | 'other';
+
+/** 隠し方・理由の記録 */
+export interface HideRecord {
+  mode: HideMode;
+  reason: HideReason;
+  /** 理由の自由記述（その他のとき。ほかの理由でも補足として残す） */
+  note?: string;
+}
+
+export const HIDE_MODES: readonly HideMode[] = ['exclude', 'view'];
+export const HIDE_REASONS: readonly HideReason[] = ['demolish', 'onSite', 'dataError', 'other'];
+/** 隠し方の名前（選択肢・一覧の見出し） */
+export const HIDE_MODE_NAME: Readonly<Record<HideMode, string>> = { view: '表示だけ隠す（影・解析には残す）', exclude: '計算から除外' };
+/** 隠し方の短い名前（一覧のボタン・資料の表） */
+export const HIDE_MODE_SHORT: Readonly<Record<HideMode, string>> = { view: '表示だけ隠す', exclude: '計算から除外' };
+/** 理由の名前 */
+export const HIDE_REASON_LABEL: Readonly<Record<HideReason, string>> = { demolish: '解体予定', onSite: '敷地内の既存建物', dataError: 'データの誤り', other: 'その他' };
+/** 記録の無い（古い）隠す記録の扱い: 計算から除外・その他（以前の「隠す」は影・解析からも外していた） */
+export const LEGACY_HIDE_RECORD: Readonly<HideRecord> = { mode: 'exclude', reason: 'other' };
+
+/**
+ * 隠す記録を読む（保存データ・古い記録・欠けた値）。mode・reason が無い／知らない値なら 計算から除外・その他。
+ * note は前後の空白を落とし、空なら付けない（200 文字まで）
+ */
+export function normalizeHideRecord(raw: unknown): HideRecord {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const mode = HIDE_MODES.includes(r.mode as HideMode) ? (r.mode as HideMode) : LEGACY_HIDE_RECORD.mode;
+  const reason = HIDE_REASONS.includes(r.reason as HideReason) ? (r.reason as HideReason) : LEGACY_HIDE_RECORD.reason;
+  const note = typeof r.note === 'string' ? r.note.trim().slice(0, 200) : '';
+  return note ? { mode, reason, note } : { mode, reason };
+}
+
+/** 理由の表示（その他は自由記述を括弧で。例 'その他（車庫の屋根）'） */
+export function hideReasonText(r: Pick<HideRecord, 'reason' | 'note'>): string {
+  const base = HIDE_REASON_LABEL[r.reason];
+  return r.note ? `${base}（${r.note}）` : base;
+}
+
+/**
+ * 隠す・高さの記録（キー → 状態）。外形は地点によらない座標（absoluteEN）で、手動の隣家には無い。
+ * hidden は隠した建物のキー（どちらの隠し方でも）、hideInfo はその隠し方・理由。
+ * hideInfo に無いキー（古い記録）は 計算から除外・その他（LEGACY_HIDE_RECORD）として扱う
+ */
+export interface NeighborEdits {
+  hidden: Set<string>;
+  hideInfo: Map<string, HideRecord>;
+  heights: Map<string, number>;
+  footprints: Map<string, EN[]>;
+  /** 利用者が直した屋根（形・軒高・棟高・向き・階数・階高）。PLATEAU の建物の mesh・高さをこの仕様で作り直す */
+  roofs: Map<string, RoofSpec>;
+  /** 高さを現地で測って確定した建物 */
+  confirmed: Set<string>;
+}
+
+export function emptyEdits(): NeighborEdits {
+  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map(), roofs: new Map(), confirmed: new Set() };
+}
+
+/** キーの隠す記録（隠していなければ null。隠し方・理由の無い古い記録は 計算から除外・その他） */
+export function hideRecordOf(edits: NeighborEdits, key: string): HideRecord | null {
+  if (!edits.hidden.has(key)) return null;
+  return normalizeHideRecord(edits.hideInfo?.get(key));
+}
+
+/** 記録の付いたキー（隠した・高さを直した） */
+function editedKeys(edits: NeighborEdits): Set<string> {
+  return new Set([...edits.hidden, ...edits.heights.keys(), ...edits.roofs.keys(), ...edits.confirmed]);
+}
+
+/**
+ * 取り直した一覧に、隠す・高さの記録を当て直す（list の hidden を付け直し、記録のキーを今の建物のキーに付け替える）。
+ *  1) キーが同じ記録 2) 無ければ、どの建物にもキーで当たらなかった記録のうち外形が同じ（sameFootprint）もの。
+ * keyOf: 建物のキー、footprintOf: 照合に使う外形（手動の隣家は null = キーだけで照合）。
+ * 戻り値: 隠した建物の数（今の一覧の中で）
+ */
+export function reapplyEdits(list: NeighborBuilding[], keyOf: (b: NeighborBuilding) => string, footprintOf: (b: NeighborBuilding) => EN[] | null, edits: NeighborEdits): number {
+  const keys = list.map(keyOf);
+  const recs = editedKeys(edits);
+  const exact = new Set(keys.filter((k) => recs.has(k)));
+  const free = [...recs].filter((k) => !exact.has(k) && (edits.footprints.get(k)?.length ?? 0) >= 3);
+  // 記録 → 当たった今のキー（外形で当たったものだけ。付け替える）
+  const moves = new Map<string, Set<string>>();
+  if (free.length)
+    list.forEach((b, i) => {
+      if (recs.has(keys[i])) return;
+      const fp = footprintOf(b);
+      if (!fp || fp.length < 3) return;
+      const r = free.find((k) => sameFootprint(fp, edits.footprints.get(k)!));
+      if (!r) return;
+      if (!moves.has(r)) moves.set(r, new Set());
+      moves.get(r)!.add(keys[i]);
+      // 照合に使った外形は今の建物の外形に更新する
+      edits.footprints.set(keys[i], fp);
+    });
+  for (const [from, tos] of moves) {
+    for (const to of tos) {
+      if (edits.hidden.has(from)) {
+        edits.hidden.add(to);
+        // 隠し方・理由も一緒に付け替える（古い記録で無ければ付けない = 計算から除外・その他のまま）
+        const info = edits.hideInfo.get(from);
+        if (info) edits.hideInfo.set(to, { ...info });
+      }
+      const hgt = edits.heights.get(from);
+      if (hgt != null && !edits.heights.has(to)) edits.heights.set(to, hgt);
+      const roof = edits.roofs.get(from);
+      if (roof && !edits.roofs.has(to)) edits.roofs.set(to, roof);
+      if (edits.confirmed.has(from)) edits.confirmed.add(to);
+    }
+    edits.hidden.delete(from);
+    edits.hideInfo.delete(from);
+    edits.heights.delete(from);
+    edits.roofs.delete(from);
+    edits.confirmed.delete(from);
+    edits.footprints.delete(from);
+  }
+  let n = 0;
+  list.forEach((b, i) => {
+    b.hidden = edits.hidden.has(keys[i]);
+    if (b.hidden) n++;
+  });
+  return n;
+}
+
+/** 範囲選択: 画面上の点（建物の中心を投影した px）のうち、2 隅 a・b の長方形（どちら向きのドラッグでも）に入るもののキー */
+export function keysInRect(pts: { key: string; x: number; y: number }[], a: { x: number; y: number }, b: { x: number; y: number }): string[] {
+  const x0 = Math.min(a.x, b.x);
+  const x1 = Math.max(a.x, b.x);
+  const y0 = Math.min(a.y, b.y);
+  const y1 = Math.max(a.y, b.y);
+  const out = new Set<string>();
+  for (const p of pts) if (Number.isFinite(p.x) && Number.isFinite(p.y) && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) out.add(p.key);
+  return [...out];
+}
+
+/** 外形の当たり判定: 点 p（東・北 m）を含む外形のうち、いちばん小さいもののキー（無ければ null） */
+export function pickRingAt(items: { key: string; ring: EN[] }[], p: EN): string | null {
+  let best: string | null = null;
+  let ba = Infinity;
+  for (const it of items) {
+    if (it.ring.length < 3 || !pointInRing(p, it.ring)) continue;
+    const a = ringArea(it.ring);
+    if (a < ba) {
+      ba = a;
+      best = it.key;
+    }
+  }
+  return best;
+}
 
 export function textSprite(text: string, opts: { size?: number; color?: string; bg?: string; scale?: number } = {}): THREE.Sprite {
   const size = opts.size ?? 48;
@@ -51,19 +490,488 @@ export class SunContext {
   readonly group = new THREE.Group();
   private aerial = new THREE.Group();
   private neighborsG = new THREE.Group();
+  /**
+   * 隠した建物の薄い表示（影を落とさない・解析に入らない: userData.neighbor を付けず noShadow）。
+   * 表示だけ隠した建物の影は、別に neighborsG に影だけのメッシュ（userData.shadowOnly）を作る
+   */
+  private ghostsG = new THREE.Group();
   private pathG = new THREE.Group();
   private sunMarker = new THREE.Group();
   private aerialInfo: { west: number; east: number; south: number; north: number; tex: THREE.Texture } | null = null;
   state: ContextState;
   year = new Date().getFullYear();
+  /** 隠す・高さの記録（取り直し・建設地の微調整の後も同じ建物に当て直す。「周辺建物をすべて消す」で消える） */
+  readonly edits: NeighborEdits = emptyEdits();
+  /** state.neighbors の外形を測った地点（取得したときのピン）。キーを地点によらない座標で作る */
+  private neighborsOrigin: LatLon | null = null;
+  private keyCache = new WeakMap<NeighborBuilding, string>();
+  private seq = 0;
+  /** loadNeighbors の世代番号（同時に 2 本走ったとき、後に始めた方だけが一覧を書く。古い方は AbortError で抜ける） */
+  private loadSeq = 0;
+  /** 隠した建物をすべて薄く表示する（「建物を選んで隠す」の間。薄い建物をクリックして戻せる） */
+  private ghostsOn = false;
+  /** 隠した建物のうち、これだけは薄く表示する（「隠した建物」の一覧で指している行） */
+  private previewKey: string | null = null;
+  private highlightKeys = new Set<string>();
+  private mats: {
+    ghost: THREE.Material;
+    ghostView: THREE.Material;
+    ghostSel: THREE.Material;
+    sel: THREE.Material;
+    shadowOnly: THREE.Material;
+    edge: THREE.LineBasicMaterial;
+    edgeSel: THREE.LineBasicMaterial;
+  } | null = null;
+  /** buildNeighbors の後に呼ぶ（日照ステップの一覧・選択の表示を合わせる。ステップを離れるときは null に戻す） */
+  onNeighborsChange: (() => void) | null = null;
+  /** 想定の家を 3D・影・解析に含めるか（setPlannedEnabled） */
+  private plannedOn = true;
+  /** 最後に選んだ取得元（建設地の変更・微調整で取り直すときに使う。PLATEAU が未整備で国土地理院に落ちても 'plateau' のまま） */
+  lastSource: NeighborSourceChoice = 'plateau';
+  /** 推定の屋根（LOD1 の低層住宅に寄棟をかぶせる）。次に周辺建物を取り直すときから効く */
+  roofEstimate = true;
+  /** 最後の取得の結果（注記・出典の表示用。まだ取っていなければ null） */
+  lastLoad: LoadNeighborsResult | null = null;
 
   constructor(
     readonly viewer: Viewer,
     site: SiteLocation,
   ) {
     this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, aerialLoaded: false };
-    this.group.add(this.aerial, this.neighborsG, this.pathG, this.sunMarker);
+    this.ghostsG.name = 'neighbor-ghosts';
+    this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.pathG, this.sunMarker);
     viewer.groups.context.add(this.group);
+  }
+
+  /**
+   * 周辺建物（実体）のグループ。メッシュは userData.neighbor（解析の遮蔽物）と userData.neighborKey を持つ。
+   * 表示だけ隠した建物は影だけのメッシュ（userData.shadowOnly。色も奥行きも書かず、影と解析にだけ入る）
+   */
+  get neighborGroup(): THREE.Group {
+    return this.neighborsG;
+  }
+  /** 隠した建物の薄い表示のグループ。メッシュは userData.ghost と userData.neighborKey を持つ（neighbor は無い） */
+  get ghostGroup(): THREE.Group {
+    return this.ghostsG;
+  }
+  /** 隠したキーの集合（どちらの隠し方でも。今の一覧に無い建物の記録も含む） */
+  get hiddenKeys(): Set<string> {
+    return this.edits.hidden;
+  }
+
+  /** キーの隠し方・理由（隠していなければ null。古い記録は 計算から除外・その他） */
+  hideRecord(key: string): HideRecord | null {
+    return hideRecordOf(this.edits, key);
+  }
+
+  /** 建物の隠し方（隠していなければ null） */
+  hideModeOf(b: NeighborBuilding): HideMode | null {
+    return b.hidden ? (this.hideRecord(this.keyOf(b))?.mode ?? LEGACY_HIDE_RECORD.mode) : null;
+  }
+
+  /** 建物のキー（neighborKey。国土地理院・OSM は取得した地点から地点によらない座標で測る） */
+  keyOf(b: NeighborBuilding): string {
+    let k = this.keyCache.get(b);
+    if (k == null) {
+      k = neighborKey(b, b.source === 'manual' ? null : (this.neighborsOrigin ?? siteLatLon(this.state.site)));
+      this.keyCache.set(b, k);
+    }
+    return k;
+  }
+
+  /** 照合用の外形（地点によらない座標）。手動の隣家は建物に付いて動くので null（キー = 番号だけで照合） */
+  private footprintOf(b: NeighborBuilding): EN[] | null {
+    if (b.source === 'manual') return null;
+    const o = this.neighborsOrigin ?? siteLatLon(this.state.site);
+    return b.ring.map((p) => absoluteEN(p, o));
+  }
+
+  /** キーの建物（今の一覧の中。重複があれば最初の 1 棟） */
+  findByKey(key: string): NeighborBuilding | undefined {
+    return this.state.neighbors.find((b) => this.keyOf(b) === key);
+  }
+
+  /** 影・解析に使う高さ（直した高さがあればそれ） */
+  heightOf(b: NeighborBuilding): number {
+    const key = this.keyOf(b);
+    const roof = this.edits.roofs.get(key);
+    if (roof && b.plateau && b.mesh) return specTop(roof);
+    return this.edits.heights.get(key) ?? b.height;
+  }
+
+  /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物（開示・出典の数え方用。元のオブジェクトは変えない） */
+  effective(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean } {
+    const key = this.keyOf(b);
+    const roof = this.edits.roofs.get(key);
+    const out: NeighborBuilding & { confirmed?: boolean } = { ...b };
+    if (this.edits.heights.has(key) || (roof && b.plateau && b.mesh)) out.heightKind = 'manual';
+    if (roof && b.plateau && b.mesh) out.plateau = { ...b.plateau, roofEstimate: roof };
+    if (this.edits.confirmed.has(key)) out.confirmed = true;
+    return out;
+  }
+
+  /** 利用者が直した屋根（PLATEAU の建物のみ） */
+  roofOf(b: NeighborBuilding): RoofSpec | null {
+    return b.plateau && b.mesh ? (this.edits.roofs.get(this.keyOf(b)) ?? null) : null;
+  }
+
+  /** 屋根を利用者の仕様にする（null で自動の推定に戻す）。直した高さの記録は外す。取り直しの後も同じ建物に当て直す */
+  setRoof(key: string, spec: RoofSpec | null): boolean {
+    const b = this.findByKey(key);
+    if (!b || !b.plateau || !b.mesh) return false;
+    if (spec) {
+      this.edits.roofs.set(key, normalizeSpec({ ...spec, user: true }));
+      this.edits.heights.delete(key);
+      const fp = this.footprintOf(b);
+      if (fp) this.edits.footprints.set(key, fp);
+    } else {
+      this.edits.roofs.delete(key);
+      if (!this.edits.hidden.has(key) && !this.edits.heights.has(key) && !this.edits.confirmed.has(key)) this.edits.footprints.delete(key);
+    }
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 高さを現地で測って確定した印（影・解析は変わらないので作り直さない） */
+  setConfirmed(key: string, on: boolean): boolean {
+    const b = this.findByKey(key);
+    if (!b) return false;
+    if (on) {
+      this.edits.confirmed.add(key);
+      const fp = this.footprintOf(b);
+      if (fp) this.edits.footprints.set(key, fp);
+    } else {
+      this.edits.confirmed.delete(key);
+      if (!this.edits.hidden.has(key) && !this.edits.heights.has(key) && !this.edits.roofs.has(key)) this.edits.footprints.delete(key);
+    }
+    return true;
+  }
+
+  isConfirmed(b: NeighborBuilding): boolean {
+    return this.edits.confirmed.has(this.keyOf(b));
+  }
+
+  /** 敷地（無ければ建物）の輪郭（東・北。ring と同じ座標）。要確認の建物の影の判定に使う */
+  targetRing(): EN[] | null {
+    const st = this.viewer.state;
+    if (!st) return null;
+    const r = st.site ?? null;
+    const bb = st.meta.bbox;
+    const [x0, x1, z0, z1] = r ? [r.min.x, r.max.x, r.min.y, r.max.y] : [bb.min.x, bb.max.x, bb.min.z, bb.max.z];
+    return ([[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as const).map(([x, z]) => this.fromWorld(new THREE.Vector3(x, 0, z)));
+  }
+
+  /** 要確認の建物: 冬至の 8〜16 時に敷地へ影を落とす建物（影の長い順）。確定済みは後ろ */
+  keyNeighbors(): { b: NeighborBuilding; hours: number }[] {
+    const target = this.targetRing();
+    const { lat, lon } = siteLatLon(this.state.site);
+    const cands = this.state.neighbors
+      .filter((b) => this.isActive(b) && !b.planned && (!b.hidden || this.hideModeOf(b) === 'view'))
+      .map((b) => ({ ring: b.ring, height: this.heightOf(b), source: b.source as string, heightKind: b.heightKind, plateau: b.plateau, mesh: b.mesh, confirmed: this.isConfirmed(b), b }));
+    const ranked = rankShadowCasters(cands, target, lat, lon, new Date().getFullYear());
+    return ranked.map((r) => ({ b: r.n.b, hours: r.hours })).sort((x, y) => Number(this.isConfirmed(x.b)) - Number(this.isConfirmed(y.b)) || y.hours - x.hours);
+  }
+
+  /** 隠した建物（今の一覧の中）。mode を渡すとその隠し方の建物だけ */
+  hiddenList(mode?: HideMode): NeighborBuilding[] {
+    return this.state.neighbors.filter((b) => b.hidden && this.isActive(b) && (!mode || this.hideModeOf(b) === mode));
+  }
+
+  /** 3D・影・解析に入れてよいか（想定の家は plannedEnabled のときだけ。それ以外はいつも true） */
+  isActive(b: NeighborBuilding): boolean {
+    return !b.planned || this.plannedOn;
+  }
+
+  // ---------------------------------------------------------------- 想定の家（未建築の隣家）
+
+  /** 想定の家を 3D・影・解析に含めるか（既定 true） */
+  get plannedEnabled(): boolean {
+    return this.plannedOn;
+  }
+
+  /**
+   * 想定の家を含めるか切り替える。false の間は計算から除外した建物と同じく何も作らない（実体・影だけのメッシュ・薄い表示のどれも。
+   * 隠す記録には触らない。hiddenList・選択・クリックの対象からも外れる）。変わったら作り直して true
+   */
+  setPlannedEnabled(on: boolean): boolean {
+    if (this.plannedOn === on) return false;
+    this.plannedOn = on;
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** キーか id で想定の家を探す */
+  private findPlanned(ref: string): PlannedBuilding | undefined {
+    return this.state.neighbors.find((b): b is PlannedBuilding => !!b.planned && (b.id === ref || this.keyOf(b) === ref));
+  }
+
+  /** 今の形（ring・直した高さ heightOf に合わせた中心・高さ） */
+  private currentPlanned(b: PlannedBuilding): PlannedHouse {
+    return syncPlannedHouse(b.planned, b.ring, this.heightOf(b));
+  }
+
+  /** 想定の家の一覧（含めない設定でも全部。planned は ring・直した高さに合わせ直してから返す） */
+  plannedList(): PlannedBuilding[] {
+    const out: PlannedBuilding[] = [];
+    for (const b of this.state.neighbors) {
+      if (!b.planned) continue;
+      const pb = b as PlannedBuilding;
+      const cur = this.currentPlanned(pb);
+      if (cur !== pb.planned) pb.planned = cur;
+      out.push(pb);
+    }
+    return out;
+  }
+
+  /** 想定の家 → 周辺建物の値（ring = 足元、height = 最高高さ、label = 名前か「想定の家」） */
+  private applyPlanned(b: NeighborBuilding, p: PlannedHouse) {
+    b.planned = p;
+    b.ring = plannedFootprint(p);
+    b.height = p.ridgeHeight;
+    b.label = p.label ?? PLANNED_DEFAULT_LABEL;
+    b.source = 'manual';
+    // キーは id から作るので変わらないが、念のためキャッシュを捨てる
+    this.keyCache.delete(b);
+  }
+
+  /**
+   * 想定の家を足す（値は clampHouse で整える。id は 'planned-<連番>'）。戻り値: 建物のキー（'manual:planned-<連番>'。
+   * setHidden・setHighlight・updatePlanned・removePlanned に使う）
+   */
+  addPlanned(h: Partial<PlannedHouse>): string {
+    const taken = new Set(this.state.neighbors.map((b) => b.id));
+    let id = `planned-${++this.seq}`;
+    while (taken.has(id)) id = `planned-${++this.seq}`;
+    const b: NeighborBuilding = { ring: [], height: 0, source: 'manual', id };
+    this.applyPlanned(b, clampHouse({ ...h, id }));
+    this.state.neighbors.push(b);
+    this.buildNeighbors();
+    return this.keyOf(b);
+  }
+
+  /**
+   * 想定の家を変える（ref = キーか id。patch に無い値は今のまま）。高さを変えたら「高さを直す」の記録（edits.heights）は外す。
+   * 変わったら作り直して true
+   */
+  updatePlanned(ref: string, patch: Partial<Omit<PlannedHouse, 'id'>>): boolean {
+    const b = this.findPlanned(ref);
+    if (!b) return false;
+    const key = this.keyOf(b);
+    const cur = this.currentPlanned(b);
+    const next = clampHouse({ ...cur, ...patch, id: cur.id });
+    if (JSON.stringify(next) === JSON.stringify(b.planned) && !this.edits.heights.has(key)) return false;
+    this.applyPlanned(b, next);
+    this.edits.heights.delete(key);
+    if (!this.edits.hidden.has(key)) this.edits.footprints.delete(key);
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 想定の家を消す（ref = キーか id。隠す・高さの記録も消す）。消したら作り直して true */
+  removePlanned(ref: string): boolean {
+    const b = this.findPlanned(ref);
+    if (!b) return false;
+    const key = this.keyOf(b);
+    this.state.neighbors = this.state.neighbors.filter((x) => x !== b);
+    this.forgetKey(key);
+    this.buildNeighbors();
+    return true;
+  }
+
+  /** 想定の家をすべて消す。戻り値: 消した棟数 */
+  clearPlanned(): number {
+    const gone = this.state.neighbors.filter((b) => b.planned);
+    if (!gone.length) return 0;
+    for (const b of gone) this.forgetKey(this.keyOf(b));
+    this.state.neighbors = this.state.neighbors.filter((b) => !b.planned);
+    this.buildNeighbors();
+    return gone.length;
+  }
+
+  /** キーの記録（隠す・高さ・外形・選択）を消す */
+  private forgetKey(key: string) {
+    this.edits.hidden.delete(key);
+    this.edits.hideInfo.delete(key);
+    this.edits.heights.delete(key);
+    this.edits.roofs.delete(key);
+    this.edits.confirmed.delete(key);
+    this.edits.footprints.delete(key);
+    this.highlightKeys.delete(key);
+    if (this.previewKey === key) this.previewKey = null;
+  }
+
+  /**
+   * 建物を隠す／戻す。戻り値: 状態が変わった建物の数（隠し方を変えた建物も数える）。
+   * 隠すときは隠し方・理由（rec。省略時は 計算から除外・その他）を一緒に記録する。
+   * 隠す記録は外形と一緒に残し、取り直し（loadNeighbors）の後も同じ建物に当て直す
+   */
+  setHidden(keys: Iterable<string>, hidden: boolean, rec: Partial<HideRecord> = {}): number {
+    const ks = new Set(keys);
+    const info = normalizeHideRecord(rec);
+    let n = 0;
+    for (const b of this.state.neighbors) {
+      const k = this.keyOf(b);
+      if (!ks.has(k)) continue;
+      if (hidden) {
+        if (!b.hidden || this.hideRecord(k)?.mode !== info.mode) n++;
+        b.hidden = true;
+        this.edits.hidden.add(k);
+        this.edits.hideInfo.set(k, { ...info });
+        const fp = this.footprintOf(b);
+        if (fp) this.edits.footprints.set(k, fp);
+      } else {
+        if (b.hidden) n++;
+        b.hidden = false;
+      }
+    }
+    if (!hidden)
+      for (const k of ks) {
+        this.edits.hidden.delete(k);
+        this.edits.hideInfo.delete(k);
+        if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
+      }
+    this.buildNeighbors();
+    return n;
+  }
+
+  /** 隠した建物の隠し方を変える（理由はそのまま）。戻り値: 変えた建物の数 */
+  setHideMode(keys: Iterable<string>, mode: HideMode): number {
+    let n = 0;
+    for (const k of new Set(keys)) {
+      const r = this.hideRecord(k);
+      if (!r || r.mode === mode) continue;
+      this.edits.hideInfo.set(k, { ...r, mode });
+      n += this.state.neighbors.filter((b) => b.hidden && this.keyOf(b) === k).length;
+    }
+    if (n) this.buildNeighbors();
+    return n;
+  }
+
+  /** 隠した建物をすべて戻す（今の一覧に無い建物の記録も消す）。戻り値: 戻した建物の数（今の一覧の中） */
+  restoreAll(): number {
+    const n = this.hiddenList().length;
+    for (const k of this.edits.hidden) if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
+    this.edits.hidden.clear();
+    this.edits.hideInfo.clear();
+    for (const b of this.state.neighbors) b.hidden = false;
+    this.buildNeighbors();
+    return n;
+  }
+
+  /** 建物の高さを直す（null で元のデータの高さに戻す）。取り直しの後も同じ建物に当て直す */
+  setHeight(key: string, height: number | null) {
+    const b = this.findByKey(key);
+    if (height == null) {
+      this.edits.heights.delete(key);
+      if (!this.edits.hidden.has(key)) this.edits.footprints.delete(key);
+    } else {
+      this.edits.roofs.delete(key);
+      this.edits.heights.set(key, height);
+      const fp = b ? this.footprintOf(b) : null;
+      if (fp) this.edits.footprints.set(key, fp);
+    }
+    this.buildNeighbors();
+  }
+
+  /** 隠した建物をすべて薄く表示するか（「建物を選んで隠す」の間だけ） */
+  setGhosts(on: boolean) {
+    this.ghostsOn = on;
+    this.applyGhosts();
+  }
+
+  /** 隠した建物のうち key だけを薄く（選択色で）表示する（null で消す） */
+  setPreview(key: string | null) {
+    if (this.previewKey === key) return;
+    this.previewKey = key;
+    this.applyGhosts();
+  }
+
+  /** 選んだ建物をオレンジで表示する（実体・薄い表示の両方。作り直さずにマテリアルだけ替える） */
+  setHighlight(keys: Iterable<string>) {
+    this.highlightKeys = new Set(keys);
+    this.applyGhosts();
+  }
+
+  private materials() {
+    if (!this.mats) {
+      const ghost = new THREE.MeshStandardMaterial({ color: '#b9c0c8', roughness: 0.9, transparent: true, opacity: GHOST_OPACITY, depthWrite: false });
+      // 表示だけ隠した建物（影・解析には残る）は青みの薄い表示で、計算から除外した建物（灰色）と見分ける
+      const ghostView = new THREE.MeshStandardMaterial({ color: GHOST_VIEW_COLOR, roughness: 0.9, transparent: true, opacity: GHOST_OPACITY, depthWrite: false });
+      const ghostSel = new THREE.MeshStandardMaterial({ color: NEIGHBOR_SELECT_COLOR, roughness: 0.9, transparent: true, opacity: 0.45, depthWrite: false });
+      const sel = new THREE.MeshStandardMaterial({ color: NEIGHBOR_SELECT_COLOR, emissive: NEIGHBOR_SELECT_COLOR, emissiveIntensity: 0.25, roughness: 0.85 });
+      // 影だけのメッシュ: 色も奥行きも書かない（画面には何も描かれない）。three.js は castShadow の可視メッシュを
+      // マテリアルの colorWrite によらず影の地図に描くので、実時間の影は落ちる
+      const shadowOnly = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+      // 薄い面だけでは航空写真の上で見分けにくいので、輪郭の線を添える（線は影・解析に入らない）
+      const edge = new THREE.LineBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.8, toneMapped: false });
+      const edgeSel = new THREE.LineBasicMaterial({ color: NEIGHBOR_SELECT_COLOR, toneMapped: false });
+      this.mats = { ghost, ghostView, ghostSel, sel, shadowOnly, edge, edgeSel };
+    }
+    return this.mats;
+  }
+
+  /** 薄い表示の見え方・選択色を今の設定に合わせる */
+  private applyGhosts() {
+    const m = this.materials();
+    for (const o of this.neighborsG.children) {
+      const mesh = o as THREE.Mesh;
+      const base = mesh.userData.baseMaterial as THREE.Material[] | undefined;
+      if (!base) continue;
+      mesh.material = this.highlightKeys.has(mesh.userData.neighborKey as string) ? [m.sel, m.sel] : base;
+    }
+    for (const o of this.ghostsG.children) {
+      const mesh = o as THREE.Mesh;
+      const k = mesh.userData.neighborKey as string;
+      const pv = k === this.previewKey;
+      const on = this.highlightKeys.has(k) || pv;
+      mesh.visible = this.ghostsOn || pv;
+      mesh.material = on ? m.ghostSel : mesh.userData.hideMode === 'view' ? m.ghostView : m.ghost;
+      for (const c of mesh.children) if ((c as THREE.LineSegments).isLineSegments) (c as THREE.LineSegments).material = on ? m.edgeSel : m.edge;
+    }
+    this.ghostsG.visible = this.state.showNeighbors;
+    this.viewer.invalidate();
+  }
+
+  /**
+   * 範囲選択の対象: 見えている建物（隠した建物は薄く表示している間だけ）の中心（外形の重心・高さの半分）のワールド座標
+   */
+  selectableCentroids(): { key: string; hidden: boolean; world: THREE.Vector3 }[] {
+    if (!this.state.showNeighbors) return [];
+    const out: { key: string; hidden: boolean; world: THREE.Vector3 }[] = [];
+    for (const b of this.state.neighbors) {
+      if (!this.isActive(b)) continue;
+      const key = this.keyOf(b);
+      if (b.hidden && !this.ghostsOn) continue;
+      const c = ringCentroid(b.ring);
+      out.push({ key, hidden: !!b.hidden, world: this.toWorld(c.e, c.n, this.heightOf(b) / 2) });
+    }
+    return out;
+  }
+
+  /**
+   * 画面の点（NDC）にある周辺建物。手前の建物（PDF の建物・屋根・3DS など blockers）に当たればそれを優先して null。
+   * 隠した建物は薄く表示している間だけ拾う。メッシュに当たらなければ、地面（y = 0）の点を含む外形で拾う
+   */
+  pickNeighbor(ndc: THREE.Vector2, blockers: THREE.Object3D[] = []): { key: string; hidden: boolean } | null {
+    if (!this.state.showNeighbors) return null;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.viewer.camera);
+    const shown = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+      return true;
+    };
+    const hits = rc.intersectObjects([this.neighborsG, this.ghostsG, ...blockers], true);
+    // 影だけのメッシュ（表示だけ隠した建物）は画面に見えないので拾わない（薄い表示のほうで拾う）
+    const hit = hits.find((x) => (x.object as THREE.Mesh).isMesh && !x.object.userData.shadowOnly && shown(x.object));
+    if (hit) {
+      const key = hit.object.userData.neighborKey as string | undefined;
+      return key ? { key, hidden: !!hit.object.userData.ghost } : null;
+    }
+    const g = rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+    if (!g) return null;
+    const items = this.state.neighbors.filter((b) => this.isActive(b) && (!b.hidden || this.ghostsOn || this.keyOf(b) === this.previewKey)).map((b) => ({ key: this.keyOf(b), ring: b.ring }));
+    const key = pickRingAt(items, this.fromWorld(g));
+    return key ? { key, hidden: !!this.findByKey(key)?.hidden } : null;
   }
 
   /** 東・北 (m) → ワールド */
@@ -127,121 +1035,136 @@ export class SunContext {
     return img.attribution;
   }
 
-  async loadNeighbors(source: 'gsi' | 'osm' = 'gsi') {
+  /**
+   * 周辺建物を取り直す（半径 NEIGHBOR_RADIUS_M）。
+   *  - 'plateau'（既定）: PLATEAU（国土交通省 3D都市モデル）の実測の高さ・形状。国土地理院は並列に取り、PLATEAU に無い建物
+   *    （新しい建物・LOD0 のみ）だけを補う（fillGapsWith。失敗しても無視）。未整備（none）・通信エラー（error）なら従来の 国土地理院 → OSM に落ち、notes に理由を書く
+   *  - 'gsi' / 'osm': 従来どおり（取れなければもう一方）
+   * 敷地・計画建物に重なる建物は除外し、PLATEAU は id `plateau:${gml_id}`、国土地理院・OSM は連番の id。手動の隣家・想定の家は残し、
+   * 隠した建物・直した高さは同じ建物（キー、無ければ外形）に当て直す。中止（opts.signal）は signal.reason を投げる。
+   * 同時に 2 本走ったとき（微調整の連打など）は後に始めた方だけが一覧を書き、古い方は AbortError（supersededError）で抜ける。
+   * 国土地理院の補完・退路の待ちは opts.fillTimeoutMs（既定 NEIGHBOR_FILL_TIMEOUT_MS）で打ち切る（補完は任意なので期限切れは []）
+   */
+  async loadNeighbors(
+    source: NeighborSourceChoice = 'plateau',
+    opts: { signal?: AbortSignal; onProgress?: (msg: string, ratio: number) => void; fillTimeoutMs?: number } = {},
+  ): Promise<LoadNeighborsResult> {
+    const seq = ++this.loadSeq;
+    /** 後から始まった取得があれば、この取得の結果は捨てる */
+    const throwIfSuperseded = () => {
+      if (seq !== this.loadSeq) throw supersededError();
+    };
+    const throwIfAborted = () => {
+      if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? new Error('中止しました');
+    };
+    const limitMs = opts.fillTimeoutMs ?? NEIGHBOR_FILL_TIMEOUT_MS;
+    this.lastSource = source;
     const { lat, lon } = siteLatLon(this.state.site);
-    // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）
-    const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? fetchGsiBuildings(lat, lon, 110) : fetchOsmBuildings(lat, lon, 110));
+    const R = NEIGHBOR_RADIUS_M;
+    const notes: string[] = [];
+    const used: NeighborSourceChoice[] = [];
     let list: NeighborBuilding[] = [];
-    let err: Error | null = null;
-    for (const src of source === 'gsi' ? (['gsi', 'osm'] as const) : (['osm', 'gsi'] as const)) {
+    let plateau: LoadNeighborsResult['plateau'];
+    /** PLATEAU で取れた結果（注記は敷地に重なる建物を除いた後の棟数で書くので、ここに控えて最後に足す） */
+    let coveredResult: Extract<PlateauFetchResult, { status: 'covered' }> | null = null;
+    // 国土地理院は PLATEAU と並列に始める（補完と、未整備・通信エラーのときの退路）。失敗は後で（使うときに）扱う。中止は下層の fetch まで通す
+    let gsiPending: Promise<NeighborBuilding[]> | null = null;
+    if (source === 'plateau') {
+      gsiPending = fetchGsiBuildings(lat, lon, R, { signal: opts.signal });
+      gsiPending.catch(() => undefined);
+      opts.onProgress?.('周辺建物（PLATEAU）: 市区町村を調べています', 0);
+      let r: PlateauFetchResult;
       try {
-        list = await fetchFrom(src);
-        if (list.length) break;
+        r = await fetchPlateauBuildings(lat, lon, R, { signal: opts.signal, roofEstimate: this.roofEstimate, onProgress: (p) => opts.onProgress?.(plateauProgressText(p), p.ratio) });
       } catch (e) {
-        err = e as Error;
+        if (opts.signal?.aborted) throw e;
+        // 取得側は中止以外を status に畳む約束だが、万一の例外も通信エラー扱いにして国土地理院に落ちる
+        r = { status: 'error', stage: 'tiles', message: (e as Error).message };
+      }
+      throwIfSuperseded();
+      // shapes は敷地に重なる建物を除いた後（fresh）で数えるので、ここでは空にしておき最後に入れる
+      plateau = { datasets: r.status === 'covered' ? r.datasets : [], lodCounts: r.status === 'covered' ? r.lodCounts : {}, status: r.status, shapes: countPlateauShapes([]) };
+      if (r.status === 'covered' && r.buildings.length) {
+        const fromPlateau = r.buildings.map((b) => plateauToNeighborBuilding(b, { lat, lon }));
+        let gsi: NeighborBuilding[] = [];
+        try {
+          // 補完は任意: 国土地理院が応答しなくても上限で打ち切って PLATEAU だけで続ける。中止はここでも効く
+          gsi = await waitWithLimit(gsiPending, limitMs, opts.signal, () => []);
+        } catch (e) {
+          if (opts.signal?.aborted) throw e;
+          // 補完は任意（国土地理院が落ちていても PLATEAU だけで続ける）
+        }
+        gsiPending = null;
+        list = [...fromPlateau, ...fillGapsWith(fromPlateau, gsi)];
+        used.push('plateau');
+        coveredResult = r;
+      } else {
+        notes.push(r.status === 'none' ? NOTE_PLATEAU_MISSING : NOTE_PLATEAU_ERROR);
+        if (r.status === 'error') console.warn(`PLATEAU の取得に失敗（${r.stage}）: ${r.message}`);
       }
     }
-    if (!list.length && err) throw err;
-    // 以前の「残す／消す」の指定は、同じ場所の建物に引き継ぐ
-    const prev = this.state.neighbors.filter((b) => b.source !== 'manual' && (b.hidden || b.keep));
-    const cen = (b: NeighborBuilding) => ({ e: b.ring.reduce((a, p) => a + p.e, 0) / b.ring.length, n: b.ring.reduce((a, p) => a + p.n, 0) / b.ring.length });
-    for (const b of list) {
-      const c = cen(b);
-      const m = prev.find((q) => {
-        const d = cen(q);
-        return Math.hypot(d.e - c.e, d.n - c.n) < 1.5;
-      });
-      if (m) {
-        b.hidden = m.hidden;
-        b.keep = m.keep;
+    if (!list.length) {
+      throwIfAborted();
+      // 国土地理院で取れなければ OpenStreetMap で取り直す（逆も同様）。PLATEAU と並列に始めた国土地理院の結果があればそれを使う
+      const fetchFrom = (src: 'gsi' | 'osm') => (src === 'gsi' ? (gsiPending ?? fetchGsiBuildings(lat, lon, R, { signal: opts.signal })) : fetchOsmBuildings(lat, lon, R, { signal: opts.signal }));
+      let err: Error | null = null;
+      for (const src of source === 'osm' ? (['osm', 'gsi'] as const) : (['gsi', 'osm'] as const)) {
+        const name = src === 'gsi' ? '国土地理院' : 'OpenStreetMap';
+        opts.onProgress?.(`周辺建物（${name}）を取得しています…`, src === 'gsi' ? 0.5 : 0.75);
+        try {
+          // 退路も同じ上限で待つ（応答が無ければ失敗と同じに扱い、次の取得元へ）
+          const got = await waitWithLimit(fetchFrom(src), limitMs, opts.signal, () => {
+            throw new Error(`${name}の応答がありません（時間切れ）`);
+          });
+          if (got.length) {
+            list = got;
+            used.push(src);
+            break;
+          }
+        } catch (e) {
+          if (opts.signal?.aborted) throw e;
+          err = e as Error;
+        }
       }
+      if (!list.length && err) throw err;
     }
-    const manual = this.state.neighbors.filter((b) => b.source === 'manual');
-    this.state.neighbors = [...manual, ...list];
-    this.buildNeighbors();
-    return list.length;
-  }
-
-  /** 新築の建物（配置場所）に重なる既存建物か（建て替え前の家など）。「残す」にしたものは除く */
-  overlapsHouse(b: NeighborBuilding): boolean {
+    // ここから先は待たない。後から始まった取得があれば、その方が今のピンの結果を書くのでこの結果は捨てる
+    throwIfSuperseded();
+    throwIfAborted();
+    // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
     const st = this.viewer.state!;
+    const site = st.site;
     const bb = st.meta.bbox;
-    const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
-    const x0 = Math.min(...ws.map((w) => w.x));
-    const x1 = Math.max(...ws.map((w) => w.x));
-    const z0 = Math.min(...ws.map((w) => w.z));
-    const z1 = Math.max(...ws.map((w) => w.z));
-    // 外接矩形の重なりでは隣家まで消えるので、建物の矩形の中にリングの頂点があるか、リングが建物を覆っているかで判定
-    const m = 0.3;
-    const inHouse = (x: number, z: number) => x > bb.min.x - m && x < bb.max.x + m && z > bb.min.z - m && z < bb.max.z + m;
-    if (ws.some((w) => inHouse(w.x, w.z))) return true;
-    const cx = (bb.min.x + bb.max.x) / 2;
-    const cz = (bb.min.z + bb.max.z) / 2;
-    return x0 < cx && x1 > cx && z0 < cz && z1 > cz;
-  }
-
-  /** 表示される周辺建物か */
-  isNeighborShown(b: NeighborBuilding): boolean {
-    if (b.hidden) return false;
-    if (b.keep || b.source === 'manual') return true;
-    return !this.overlapsHouse(b);
-  }
-
-  /** 残す／消す の選択モード（消えている建物も薄く表示してクリックできる） */
-  selectMode = false;
-  setSelectMode(on: boolean) {
-    this.selectMode = on;
-    this.buildNeighbors();
-  }
-
-  /** 画面上の点にある周辺建物の番号 */
-  pickNeighbor(ndc: THREE.Vector2): number | null {
-    const rc = new THREE.Raycaster();
-    rc.setFromCamera(ndc, this.viewer.camera);
-    const hit = rc.intersectObjects(this.neighborsG.children, false)[0];
-    if (!hit) return null;
-    const i = hit.object.userData.index as number | undefined;
-    return i == null ? null : i;
-  }
-
-  /** 残す ↔ 消す を切り替える */
-  toggleNeighbor(i: number): 'shown' | 'hidden' {
-    const b = this.state.neighbors[i];
-    if (!b) return 'hidden';
-    if (this.isNeighborShown(b)) {
-      b.hidden = true;
-      b.keep = false;
-      this.buildNeighbors();
-      return 'hidden';
+    const inSite = (b: NeighborBuilding) => {
+      const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
+      if (ws.some((w) => w.x > site.min.x - 0.5 && w.x < site.max.x + 0.5 && w.z > site.min.y - 0.5 && w.z < site.max.y + 0.5)) return true;
+      const x0 = Math.min(...ws.map((w) => w.x));
+      const x1 = Math.max(...ws.map((w) => w.x));
+      const z0 = Math.min(...ws.map((w) => w.z));
+      const z1 = Math.max(...ws.map((w) => w.z));
+      return x1 > bb.min.x - 0.8 && x0 < bb.max.x + 0.8 && z1 > bb.min.z - 0.8 && z0 < bb.max.z + 0.8;
+    };
+    const manual = this.state.neighbors.filter((b) => b.source === 'manual');
+    const fresh = list.filter((b) => !inSite(b));
+    // PLATEAU は gml_id（ピン移動・取り直しで不変）、国土地理院・OSM は連番
+    for (const b of fresh) b.id = b.plateau?.gmlId ? `plateau:${b.plateau.gmlId}` : `${b.source}-${++this.seq}`;
+    // 外形は取得したときのピンから測っている（キー・照合はここから地点によらない座標に直す）
+    this.neighborsOrigin = { lat, lon };
+    this.state.neighbors = [...manual, ...fresh];
+    // 隠した建物・直した高さを、取り直した一覧の同じ建物に当て直す（国土地理院で隠した建物は外形の照合で PLATEAU の同じ建物に引き継がれる）
+    reapplyEdits(this.state.neighbors, (b) => this.keyOf(b), (b) => this.footprintOf(b), this.edits);
+    if (coveredResult) {
+      // 国土地理院で補った棟数（敷地に重なる建物を除いた後）
+      const fill = fresh.filter((b) => b.source === 'gsi').length;
+      if (fill) used.push('gsi');
+      notes.push(...plateauCoveredNotes(coveredResult, fill));
     }
-    b.hidden = false;
-    b.keep = true;
+    const result: LoadNeighborsResult = { count: fresh.length, used, notes };
+    // 内訳（箱形 / 屋根形状あり）は一覧に残った建物で数える（取得全棟の lodCounts とは敷地に重なる建物の分だけずれる）
+    if (plateau) result.plateau = { ...plateau, shapes: countPlateauShapes(fresh) };
+    this.lastLoad = result;
     this.buildNeighbors();
-    return 'shown';
-  }
-
-  /** 手で指定した残す／消すをすべて取り消す */
-  resetNeighborChoices() {
-    for (const b of this.state.neighbors) {
-      b.hidden = false;
-      b.keep = false;
-    }
-    this.buildNeighbors();
-  }
-
-  /** 残す／消す の集計 */
-  neighborCounts() {
-    let shown = 0;
-    let auto = 0;
-    let manualHidden = 0;
-    let kept = 0;
-    for (const b of this.state.neighbors) {
-      if (this.isNeighborShown(b)) shown++;
-      else if (b.hidden) manualHidden++;
-      else auto++;
-      if (b.keep) kept++;
-    }
-    return { shown, autoHidden: auto, manualHidden, kept, total: this.state.neighbors.length };
+    return result;
   }
 
   /** 手動で隣家を追加（方向・距離・大きさ） */
@@ -261,17 +1184,46 @@ export class SunContext {
       height,
       source: 'manual',
       label: '隣家',
+      id: `manual-${++this.seq}`,
     });
     this.buildNeighbors();
   }
 
-  clearNeighbors() {
-    this.state.neighbors = [];
+  /**
+   * 周辺建物をすべて消す（隠す・高さの記録も消す）。想定の家（planned）は既定では残す（その記録も残す）。
+   * opts.includePlanned = true なら想定の家も消す
+   */
+  clearNeighbors(opts: { includePlanned?: boolean } = {}) {
+    const keep = opts.includePlanned ? [] : this.state.neighbors.filter((b) => b.planned);
+    const keepKeys = new Set(keep.map((b) => this.keyOf(b)));
+    this.state.neighbors = keep;
+    for (const k of [...this.edits.hidden]) if (!keepKeys.has(k)) this.edits.hidden.delete(k);
+    for (const k of [...this.edits.hideInfo.keys()]) if (!keepKeys.has(k)) this.edits.hideInfo.delete(k);
+    for (const k of [...this.edits.heights.keys()]) if (!keepKeys.has(k)) this.edits.heights.delete(k);
+    for (const k of [...this.edits.footprints.keys()]) if (!keepKeys.has(k)) this.edits.footprints.delete(k);
+    for (const k of [...this.highlightKeys]) if (!keepKeys.has(k)) this.highlightKeys.delete(k);
+    if (this.previewKey && !keepKeys.has(this.previewKey)) this.previewKey = null;
     this.buildNeighbors();
   }
 
+  /**
+   * 周辺建物のメッシュを作り直す。隠した建物（b.hidden）は見える実体を作らない。
+   *  - 計算から除外: 影・部屋の日当たり・日照時間マップの遮蔽物にも入らない（メッシュを作らない）
+   *  - 表示だけ隠す: 影だけのメッシュ（neighborsG・userData.neighbor・userData.shadowOnly・castShadow・colorWrite/depthWrite なし・
+   *    receiveShadow なし）を作る。画面には描かれないが、実時間の影を落とし、buildOccluder（userData.neighbor）にも入る
+   * どちらも薄い表示（ghostsG）を作り、「建物を選んで隠す」の間だけ見せる: 不透明度 GHOST_OPACITY・depthWrite なし・
+   * castShadow なし・userData.noShadow（bakeWorldTriangles が除く）・userData.neighbor なし（buildOccluder の対象外）
+   */
   buildNeighbors() {
+    // 想定の家（planned）: 押し出しではなく屋根付きの形（buildPlannedHouseGeometry、軒の出も影に入る）。壁 #cfdcec・屋根 #6f8fb3（不透明・航空写真なし）、
+    // userData.planned = true。隠し方・薄い表示は他の建物と同じ。plannedEnabled が false の間は何も作らない
     clearGroup(this.neighborsG);
+    // 薄い表示の輪郭の線（メッシュの子）は clearGroup が捨てないので、ここで捨てる
+    this.ghostsG.traverse((o) => {
+      if ((o as THREE.LineSegments).isLineSegments) (o as THREE.LineSegments).geometry.dispose();
+    });
+    clearGroup(this.ghostsG);
+    const mats = this.materials();
     const wallMat = new THREE.MeshStandardMaterial({ color: '#e8e6e1', roughness: 0.9 });
     // 航空写真があれば屋上に貼る（Google Earth のような見え方）
     const ai = this.aerialInfo;
@@ -281,19 +1233,92 @@ export class SunContext {
     const a0 = (st.model.northAngleDeg * Math.PI) / 180;
     const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
     const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
+    // PLATEAU の実形状（anchor 基準の局所座標 x=東, y=上, z=−北）→ ワールド: 列 (east, 上, −north)、平行移動 = anchor の地点（地面 y=0）
+    const upV = new THREE.Vector3(0, 1, 0);
+    const southV = northV.clone().negate();
+    // ring（と PLATEAU の anchor）を測った地点（取得したときのピン。まだ取っていなければ今のピン）
+    const origin = this.neighborsOrigin ?? siteLatLon(this.state.site);
     const manualMat = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
-    const ghostMat = new THREE.MeshStandardMaterial({ color: '#c84b2f', roughness: 0.9, transparent: true, opacity: 0.22, depthWrite: false });
-    const keptMat = new THREE.MeshStandardMaterial({ color: '#dfe9d8', roughness: 0.9 });
-    this.state.neighbors.forEach((b, index) => {
-      const shown = this.isNeighborShown(b);
-      if (!shown && !this.selectMode) return;
-      const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
-      // ワールド XZ で Shape を作り、上方向へ押し出す
-      const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: b.height, bevelEnabled: false });
-      geo.rotateX(-Math.PI / 2);
-      if (ai) {
-        // 屋根面（上向き）の UV を航空写真の座標に
+    let plannedMats: THREE.Material[] | null = null;
+    for (const b of this.state.neighbors) {
+      if (!this.isActive(b)) continue;
+      const key = this.keyOf(b);
+      const planned = b.planned ? this.currentPlanned(b as PlannedBuilding) : null;
+      // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く。地面は y=0（地盤の高低差は表現しない。計画建物・他の建物と同じ平面）
+      const shaped = !planned && !!b.mesh && !!b.plateau;
+      let geo: THREE.BufferGeometry;
+      if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });
+      else if (shaped) {
+        const pa = b.plateau!;
+        const a = toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon);
+        // 直した高さは足元を固定して縦に伸縮（形状の高さ zmax − zmin に対する比）
+        // 利用者が直した屋根: anchor 基準の輪郭から仕様どおりに作り直す（高さは仕様の最高点なので伸縮しない）
+        const roofSpec = this.edits.roofs.get(key);
+        const specM = roofSpec ? specMesh(b.ring.map((p) => ({ e: p.e - a.e, n: p.n - a.n })), roofSpec) : null;
+        const span = specM ? 0 : pa.zmax - pa.zmin;
+        const heightScale = span > 0.01 ? this.heightOf(b) / span : 1;
+        // 航空写真があれば屋根に平面投影の UV（勾配屋根にも貼れる）。写真の範囲は ring と同じピン基準の東・北
+        const roofUV = ai ? { west: ai.west, east: ai.east, south: ai.south, north: ai.north, toEN: (x: number, z: number) => ({ e: a.e + x, n: a.n - z }) } : null;
+        geo = buildPlateauGeometry(specM ?? b.mesh!, { heightScale, roofUV });
+        geo.applyMatrix4(new THREE.Matrix4().makeBasis(eastV, upV, southV).setPosition(this.toWorld(a.e, a.n, 0)));
+      } else {
+        const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
+        // ワールド XZ で Shape を作り、上方向へ押し出す（中庭などの穴があれば抜く）
+        const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, -p.z)));
+        for (const hole of b.holes ?? []) {
+          if (hole.length < 3) continue;
+          shape.holes.push(new THREE.Path(hole.map((p) => this.toWorld(p.e, p.n)).map((p) => new THREE.Vector2(p.x, -p.z))));
+        }
+        geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+      }
+      if (b.hidden) {
+        const mode = this.hideModeOf(b) ?? LEGACY_HIDE_RECORD.mode;
+        if (mode === 'view') {
+          const shadow = new THREE.Mesh(geo.clone(), mats.shadowOnly);
+          shadow.castShadow = true;
+          shadow.receiveShadow = false;
+          shadow.userData.neighbor = true;
+          shadow.userData.shadowOnly = true;
+          shadow.userData.neighborKey = key;
+          shadow.userData.neighborId = b.id;
+          this.neighborsG.add(shadow);
+        }
+        const ghost = new THREE.Mesh(geo, mode === 'view' ? mats.ghostView : mats.ghost);
+        ghost.castShadow = false;
+        ghost.receiveShadow = false;
+        ghost.renderOrder = 5;
+        ghost.userData.noShadow = true;
+        ghost.userData.ghost = true;
+        ghost.userData.hideMode = mode;
+        ghost.userData.neighborKey = key;
+        ghost.userData.neighborId = b.id;
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 20), mats.edge);
+        edges.castShadow = false;
+        edges.userData.noShadow = true;
+        edges.renderOrder = 6;
+        ghost.add(edges);
+        this.ghostsG.add(ghost);
+        continue;
+      }
+      if (planned) {
+        // グループ 0 = 屋根、1 = 壁
+        plannedMats ??= [new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.roof, roughness: 0.75 }), new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.wall, roughness: 0.85 })];
+        const mesh = new THREE.Mesh(geo, plannedMats);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.name = b.label ?? PLANNED_DEFAULT_LABEL;
+        mesh.userData.neighbor = true;
+        mesh.userData.neighborKey = key;
+        mesh.userData.neighborId = b.id;
+        mesh.userData.planned = true;
+        mesh.userData.baseMaterial = plannedMats;
+        mesh.userData.matKey = undefined;
+        this.neighborsG.add(mesh);
+        continue;
+      }
+      if (ai && !shaped) {
+        // 押し出した建物: 屋根面（上向き）の UV を航空写真の座標に（PLATEAU の実形状は buildPlateauGeometry で付けている）
         const pos = geo.getAttribute('position');
         const nor = geo.getAttribute('normal');
         const uv = geo.getAttribute('uv');
@@ -307,25 +1332,32 @@ export class SunContext {
         }
         uv.needsUpdate = true;
       }
-      // ExtrudeGeometry のグループ: 0 = 上下面, 1 = 側面
-      const side = b.source === 'manual' ? manualMat : this.selectMode && b.keep ? keptMat : wallMat;
-      const mesh = new THREE.Mesh(geo, shown ? [roofMat, side] : [ghostMat, ghostMat]);
-      // 消えている建物（選択モードの薄い表示）は影も日照の計算にも入れない
-      mesh.castShadow = shown;
-      mesh.receiveShadow = shown;
-      mesh.userData.neighbor = shown;
-      mesh.userData.index = index;
+      // グループ: 0 = 屋根（ExtrudeGeometry は上下面、PLATEAU の実形状は上向きの面）, 1 = 壁（側面）
+      const base = [roofMat, b.source === 'manual' ? manualMat : wallMat];
+      const mesh = new THREE.Mesh(geo, base);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.neighbor = true;
+      mesh.userData.neighborKey = key;
+      mesh.userData.neighborId = b.id;
+      mesh.userData.baseMaterial = base;
       mesh.userData.matKey = undefined;
-      if (!shown) mesh.renderOrder = 5;
       this.neighborsG.add(mesh);
-    });
+    }
+    // 選択色・薄い表示の見え方を当て直す（今の一覧に無いキーの選択は消す）
+    const present = new Set(this.state.neighbors.map((b) => this.keyOf(b)));
+    for (const k of [...this.highlightKeys]) if (!present.has(k)) this.highlightKeys.delete(k);
+    if (this.previewKey && !present.has(this.previewKey)) this.previewKey = null;
+    this.applyGhosts();
     this.applyVisibility();
     this.viewer.invalidate();
+    this.onNeighborsChange?.();
   }
 
   applyVisibility() {
     this.aerial.visible = this.state.showAerial && this.state.aerialLoaded;
     this.neighborsG.visible = this.state.showNeighbors;
+    this.ghostsG.visible = this.state.showNeighbors;
     this.pathG.visible = this.state.showSunPath;
     // 航空写真表示中は生成した道路・遠景の地面を隠す
     this.viewer.groups.landscape.traverse((o) => {

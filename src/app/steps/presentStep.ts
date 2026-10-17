@@ -7,10 +7,32 @@ import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFail
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
+import { externalController, externalSampleY, setExternalMounted } from '../externalBuilding';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
 import { resolveSpec } from '../../styles/spec';
+import { activeSunContext } from './sunStep';
+import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine, type SunDisclosure } from '../sunDisclosure';
+
+/** 日当たりを設計の 3D データ（3DS）で解析しているときに資料に添える注記 */
+export const SUN_EXTERNAL_CAPTION = '日当たりは設計 3D データ（3DS）で解析';
+
+/** 光と日当たりの注記（3DS で置き換えているときだけ）。資料の数字・写真がどの建物のものかを示す */
+export function sunCaption(external: { replaces: boolean } | null | undefined): string | null {
+  return external?.replaces ? SUN_EXTERNAL_CAPTION : null;
+}
+
+/**
+ * 資料の日照のページに書く周辺建物の扱い: 結果を作った時点の写し（state.sun.disclosure）、無ければ今の扱い
+ * （日照ステップを開いていなければ周辺建物なし）
+ */
+export function deckDisclosure(saved: SunDisclosure | undefined, now: SunDisclosure | null | undefined): SunDisclosure {
+  return saved ?? now ?? NO_NEIGHBORS_DISCLOSURE;
+}
+
+/** 資料の表のページあたりの行数 */
+export const EXCLUDED_ROWS_PER_SLIDE = 12;
 
 /** 足りない素材をすべて自動で作る（一気通貫） */
 export async function autoGenerate(ctx: StepCtx, draft = false) {
@@ -62,42 +84,63 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     }
     state.plans = state.model!.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(state.model!, f) }));
     // 日照
-    if (!state.sun.seasons.length) {
-      const { lat, lon } = siteLatLon(state.site);
-      const seasons: SeasonResult[] = [];
-      const dates = keyDates(new Date().getFullYear()).filter((d) => d.id !== 'autumn');
-      for (let i = 0; i < dates.length; i++) {
-        if (pm.signal.aborted) return;
-        const d = dates[i];
-        const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`) });
-        seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
-      }
-      const order = ['winter', 'spring', 'summer'];
-      seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-      state.sun.seasons = seasons;
-      state.sun.highlights = sunHighlights(seasons);
+    // 設計の 3DS があるときは、解析と撮影の間だけ日照ステップと同じ表示にする（3DS を見せ、置き換えなら PDF の建物・屋根・家具を隠す）。
+    // 解析（buildOccluder）は 3DS で影を計算するので、写真も同じ建物でないと数字と写真が別の建物になる
+    const extCtrl = externalController();
+    if (extCtrl) {
+      setExternalMounted(v, true);
+      // PDF の建物が作り直されていたら、ラッパー位置・影の範囲・隠す設定を今の状態に合わせる
+      if (extCtrl.dirty) extCtrl.sync(v);
     }
-    if (!state.sun.images.length) {
-      const { lat, lon } = siteLatLon(state.site);
-      const y = new Date().getFullYear();
-      const ldkShot = currentShots(ctx).find((s) => s.kind === 'interior');
-      const b = v.state!.meta.bbox;
-      const c = b.getCenter(new THREE.Vector3());
-      const R = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
-      const aerial = { pos: c.clone().set(c.x + R * 1.5, R * 1.6, c.z + R * 2), target: c.clone().setY(1), fov: 45 };
-      const list = [
-        { label: '冬至 10:00（外観）', m: 12, d: 22, hh: 10, view: aerial },
-        { label: '冬至 14:00（外観）', m: 12, d: 22, hh: 14, view: aerial },
-        ...(ldkShot ? [{ label: '冬至 12:00（室内）', m: 12, d: 22, hh: 12, view: ldkShot.view }, { label: '夏至 12:00（室内）', m: 6, d: 21, hh: 12, view: ldkShot.view }] : []),
-      ];
-      for (let i = 0; i < list.length; i++) {
-        const s = list[i];
-        pm.set(0.87 + (i / list.length) * 0.12, `日当たり比較を撮影中（${s.label}）`);
-        const sp = sunPosition(localDate(y, s.m, s.d, s.hh), lat, lon);
-        v.setSunDirection(sunDirectionWorld(sp.azimuth, sp.elevation, state.model!.northAngleDeg));
-        v.applyView(s.view);
-        state.sun.images.push({ label: s.label, url: await v.capture(1600, 900) });
+    try {
+      if (!state.sun.seasons.length) {
+        const { lat, lon } = siteLatLon(state.site);
+        const seasons: SeasonResult[] = [];
+        const dates = keyDates(new Date().getFullYear()).filter((d) => d.id !== 'autumn');
+        // 設計の 3DS で置き換えているときは、3DS 自身の床の上から測る（日照ステップと同じ）
+        const sy = externalSampleY(v);
+        try {
+          for (let i = 0; i < dates.length; i++) {
+            if (pm.signal.aborted) return;
+            const d = dates[i];
+            const rooms = await analyzeRooms(v, { year: d.year, month: d.month, day: d.day, lat, lon, northAngleDeg: state.model!.northAngleDeg }, { onProgress: (r) => pm.set(0.75 + ((i + r) / dates.length) * 0.12, `日当たりを解析中（${d.label}）`), sampleY: sy?.fn });
+            seasons.push({ id: d.id as SeasonResult['id'], label: d.label, dateLabel: `${d.month}月${d.day}日`, rooms });
+          }
+        } finally {
+          sy?.dispose();
+        }
+        const order = ['winter', 'spring', 'summer'];
+        seasons.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+        state.sun.seasons = seasons;
+        state.sun.highlights = sunHighlights(seasons);
+        // 解析した時点の周辺建物の扱い（計算から除外・表示だけ隠した建物）を資料の注記に使う
+        state.sun.disclosure = collectDisclosure(activeSunContext());
       }
+      if (!state.sun.images.length) {
+        const { lat, lon } = siteLatLon(state.site);
+        const y = new Date().getFullYear();
+        const ldkShot = currentShots(ctx).find((s) => s.kind === 'interior');
+        const b = v.state!.meta.bbox;
+        const c = b.getCenter(new THREE.Vector3());
+        const R = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
+        const aerial = { pos: c.clone().set(c.x + R * 1.5, R * 1.6, c.z + R * 2), target: c.clone().setY(1), fov: 45 };
+        const list = [
+          { label: '冬至 10:00（外観）', m: 12, d: 22, hh: 10, view: aerial },
+          { label: '冬至 14:00（外観）', m: 12, d: 22, hh: 14, view: aerial },
+          ...(ldkShot ? [{ label: '冬至 12:00（室内）', m: 12, d: 22, hh: 12, view: ldkShot.view }, { label: '夏至 12:00（室内）', m: 6, d: 21, hh: 12, view: ldkShot.view }] : []),
+        ];
+        for (let i = 0; i < list.length; i++) {
+          const s = list[i];
+          pm.set(0.87 + (i / list.length) * 0.12, `日当たり比較を撮影中（${s.label}）`);
+          const sp = sunPosition(localDate(y, s.m, s.d, s.hh), lat, lon);
+          v.setSunDirection(sunDirectionWorld(sp.azimuth, sp.elevation, state.model!.northAngleDeg));
+          v.applyView(s.view);
+          state.sun.images.push({ label: s.label, url: await v.capture(1600, 900) });
+        }
+      }
+    } finally {
+      // 他のステップでは PDF の建物のまま（3DS の表示は日照ステップの間だけ）
+      if (extCtrl) setExternalMounted(v, false);
     }
     toast('プレゼン資料の素材がそろいました', 'ok');
   } finally {
@@ -138,7 +181,15 @@ function conceptCopy(extName: string, intName: string, hasCourt: boolean, hasVoi
   return { lead, body };
 }
 
-export function buildDeck(): HTMLElement[] {
+/** 資料の日照のページの注記（周辺建物の扱い: 影に入れた棟数・出典（PLATEAU・国土地理院）・除外・表示だけ隠した建物・想定の家） */
+function sunNote(d: SunDisclosure, target: 'deck' | 'diagram') {
+  return h('div', { class: 'sun-note', 'data-target': target }, ...disclosureLines(d, target).map((t) => h('div', null, t)));
+}
+
+/**
+ * プレゼン資料のページ。opts.disclosure: 今の周辺建物の扱い（state.sun.disclosure が無いときに使う）
+ */
+export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTMLElement[] {
   const model = state.model!;
   const ext = exteriorById(state.design.exteriorId);
   const int = interiorById(state.design.interiorId);
@@ -345,6 +396,8 @@ export function buildDeck(): HTMLElement[] {
   // 光と日当たり
   if (state.sun.seasons.length || state.sun.images.length) {
     const winter = state.sun.seasons.find((x) => x.id === 'winter') ?? state.sun.seasons[0];
+    // 周辺建物の扱い（計算から除外した建物の理由ごとの棟数・表示だけ隠した建物の棟数）を日照のページすべてに添える
+    const disc = deckDisclosure(state.sun.disclosure, opts.disclosure);
     slides.push(
       slide(
         'sun',
@@ -353,6 +406,8 @@ export function buildDeck(): HTMLElement[] {
           { style: 'min-height:0;overflow:hidden' },
           head(no('Sunlight'), 'Sunlight', '光と日当たり'),
           ...state.sun.highlights.slice(0, 3).map((hl) => h('div', { class: 'hl' }, h('b', { class: 'serif' }, hl.title), h('span', null, hl.body))),
+          sunCaption(state.external) ? h('p', { style: 'font-size:0.9cqw;color:var(--ink-3);margin-top:1.2cqw' }, sunCaption(state.external)) : null,
+          sunNote(disc, 'deck'),
         ),
         state.sun.images.length
           ? h('div', { class: 'sungrid' }, ...state.sun.images.slice(0, 4).map((im) => h('div', { class: 'cell' }, h('img', { class: 'photo', src: im.url }), h('div', { class: 'lbl' }, im.label))))
@@ -361,7 +416,35 @@ export function buildDeck(): HTMLElement[] {
             : null,
       ),
     );
-    if (state.sun.diagramSvg) slides.push(slide('sun', h('div', null, head(no('Sunlight'), 'Shadow Study', '日影図（冬至）'), h('p', null, '冬至の日に、建物がまわりへ落とす影の範囲を時刻ごとに示しています。')), h('div', { class: 'svgfit', html: state.sun.diagramSvg })));
+    if (state.sun.diagramSvg) slides.push(slide('sun', h('div', null, head(no('Sunlight'), 'Shadow Study', '日影図（冬至）'), h('p', null, '冬至の日に、建物がまわりへ落とす影の範囲を時刻ごとに示しています。'), sunNote(disc, 'diagram')), h('div', { class: 'svgfit', html: state.sun.diagramSvg })));
+    // 計算から除外した周辺建物の表（出典・高さ・理由・方向と距離）
+    const rows = excludedTableRows(disc);
+    for (let i = 0; i < rows.length; i += EXCLUDED_ROWS_PER_SLIDE) {
+      const part = rows.slice(i, i + EXCLUDED_ROWS_PER_SLIDE);
+      slides.push(
+        slide(
+          'sun sun-excluded',
+          h(
+            'div',
+            { style: 'min-height:0;overflow:hidden' },
+            head(no('Sunlight'), 'Excluded Buildings', '計算から除外した周辺建物'),
+            h('p', null, '日当たりの解析から外した周辺建物の一覧です。出典・高さ・外した理由と、計画建物から見た方向・距離を示します。'),
+            sunNote(disc, 'deck'),
+          ),
+          h(
+            'div',
+            { class: 'tblbox' },
+            h(
+              'table',
+              { class: 'excluded' },
+              h('thead', null, h('tr', null, ...['No.', '出典', '高さ', '理由', '方向・距離'].map((t) => h('th', null, t)))),
+              h('tbody', null, ...part.map((r) => h('tr', null, h('td', { class: 'n' }, String(r.no)), h('td', null, r.source), h('td', { class: 'a' }, r.height), h('td', null, r.reason), h('td', null, r.where)))),
+            ),
+            i + EXCLUDED_ROWS_PER_SLIDE < rows.length ? h('p', { class: 'cont' }, `（${rows.length} 棟のうち ${i + 1}〜${i + part.length}。次のページへ続く）`) : null,
+          ),
+        ),
+      );
+    }
   }
   // 上質を支える納まり
   const items: { k: string; t: string; d: string }[] = [];
@@ -465,16 +548,18 @@ export const presentStep: Step = {
   mount(ctx) {
     const deck = h('div', { class: 'deck view' });
     ctx.stage.appendChild(deck);
+    // 解析結果に写しが無いときは、今の周辺建物の扱いで注記する
+    const deckOpts = () => ({ disclosure: collectDisclosure(activeSunContext()) });
     const render = () => {
       clear(deck);
-      const slides = buildDeck();
+      const slides = buildDeck(deckOpts());
       deck.append(
         h(
           'div',
           { class: 'deck-tools' },
-          h('button', { class: 'btn primary', onclick: () => present(buildDeck()) }, '▶ プレゼンを開始（全画面）'),
+          h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
           h('button', { class: 'btn', onclick: () => window.print() }, '🖨 PDF で保存（印刷）'),
-          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck()) }, '⬇ HTML で保存（お客様へ送付用）'),
+          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, '⬇ HTML で保存（お客様へ送付用）'),
         ),
         ...slides,
       );
@@ -499,7 +584,21 @@ export const presentStep: Step = {
           { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
           h('li', null, `パース ${state.gallery.length} 枚（写真品質 ${state.gallery.filter((g) => g.quality === 'photoreal').length} 枚）`),
           h('li', null, `立面図 ${state.elevations.length} 面・平面図 ${state.plans.length} 枚`),
-          h('li', null, `日照解析 ${state.sun.seasons.length ? '済' : '未'}／日影図 ${state.sun.diagramSvg ? '済' : '未'}`),
+          h('li', null, `日照解析 ${state.sun.seasons.length ? '済' : '未'}／日影図 ${state.sun.diagramSvg ? '済' : '未'}${sunCaption(state.external) ? '（設計 3D データで解析）' : ''}`),
+          (() => {
+            const d = deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext()));
+            return d.excluded.length || d.viewOnly.length ? h('li', null, `周辺建物: 計算から除外 ${d.excluded.length} 棟・表示だけ隠す ${d.viewOnly.length} 棟（資料の日照のページに注記）`) : null;
+          })(),
+          (() => {
+            // 周辺建物の出典（PLATEAU・国土地理院の棟数。資料の日照のページに同じ行を注記）
+            const src = deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext())).sources?.[0];
+            return src ? h('li', null, `${src}（資料の日照のページに注記）`) : null;
+          })(),
+          (() => {
+            // 想定の家（未建築の仮の建物）を置いたときは、その棟数と扱いも（資料の日照のページに同じ行を注記）
+            const pl = plannedLine(deckDisclosure(state.sun.disclosure, collectDisclosure(activeSunContext())));
+            return pl ? h('li', null, `${pl}（資料の日照のページに注記）`) : null;
+          })(),
           h('li', null, `動画 ${state.videos.length} 本`),
         ),
         h('p', { class: 'hint' }, '写真品質のパースがある場合は優先して使われます。印刷は A4 横に最適化されています。'),

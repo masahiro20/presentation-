@@ -2,7 +2,8 @@
  * 地理情報: 住所検索（国土地理院）、航空写真タイル、周辺建物（国土地理院ベクトルタイル / OpenStreetMap）
  */
 import { decodeMvt } from './mvt';
-import type { PlanSide } from '../core/types';
+import type { PlannedHouse } from './plannedHouse';
+import type { NeighborMesh, PlateauAttrs } from './plateau/types';
 
 export interface SiteLocation {
   lat: number;
@@ -66,7 +67,7 @@ export const PRECISION_LABEL: Record<GeocodePrecision, string> = {
 };
 
 const KANJI_NUM: Record<string, number> = { 〇: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-function kanjiToNum(k: string): number {
+export function kanjiToNum(k: string): number {
   // 一〜十九程度（丁目に使われる範囲）
   if (/^\d+$/.test(k)) return +k;
   let n = 0;
@@ -78,7 +79,7 @@ function kanjiToNum(k: string): number {
 }
 
 /** 検索結果の文字列から、どこまで特定できているかを判定 */
-function precisionOf(title: string): GeocodePrecision {
+export function precisionOf(title: string): GeocodePrecision {
   const t = title.normalize('NFKC');
   if (/\d+号$/.test(t)) return 'go';
   if (/\d+番地?(\d+)?$/.test(t) || /\d+(-\d+)*$/.test(t)) return 'ban';
@@ -87,7 +88,7 @@ function precisionOf(title: string): GeocodePrecision {
 }
 
 /** 緯度経度の直接入力（"35.288, 136.924"）や Google マップの URL（@35.288,136.924 / q=35.288,136.924） */
-function parsePoint(q: string): GeocodeResult | null {
+export function parsePoint(q: string): GeocodeResult | null {
   const m = q.match(/@?(-?\d{1,2}\.\d{3,}),\s*(-?\d{1,3}\.\d{3,})/);
   if (!m) return null;
   const lat = +m[1];
@@ -96,8 +97,75 @@ function parsePoint(q: string): GeocodeResult | null {
   return { title: `緯度 ${lat.toFixed(5)}／経度 ${lon.toFixed(5)}`, lat, lon, precision: 'point' };
 }
 
+/** 日本付近の緯度経度か（それ以外は入力ミスとみなす） */
+export function inJapan(lat: number, lon: number): boolean {
+  return lat >= 20 && lat <= 46 && lon >= 122 && lon <= 154;
+}
+
+/**
+ * 1 つの角度の文字列を度（10 進）にする。10 進（"35.21058"）、度分秒（"35°12'38.1\"", "35度12分38.1秒", "35 12 38.1"、
+ * 全角数字、N/S/E/W の記号付き）に対応。読めなければ null
+ */
+export function parseDegrees(text: string): number | null {
+  let t = text.normalize('NFKC').trim();
+  if (!t) return null;
+  let sign = 1;
+  if (/[SW南西]/i.test(t) && !/[NE北東]/i.test(t.replace(/[SW南西]/gi, ''))) sign = -1;
+  t = t.replace(/[NSEW北南東西]/gi, ' ');
+  if (/^\s*-/.test(t)) {
+    sign = -sign;
+    t = t.replace('-', ' ');
+  }
+  // 度・分・秒の記号は区切りに（"' " と '" ' と "′″" と 漢字）
+  t = t.replace(/[°度]/g, ' ').replace(/[′'分]/g, ' ').replace(/[″"秒]/g, ' ').replace(/,/g, ' ');
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (!parts.length || parts.length > 3) return null;
+  const nums = parts.map(Number);
+  if (nums.some((v) => !Number.isFinite(v) || v < 0)) return null;
+  if (parts.length > 1 && (nums[1] >= 60 || (parts.length === 3 && nums[2] >= 60))) return null;
+  const deg = nums[0] + (nums[1] ?? 0) / 60 + (nums[2] ?? 0) / 3600;
+  return sign * deg;
+}
+
+/**
+ * 緯度・経度の入力欄（別々）または 1 行（"35.21058, 136.93831"／Google マップの URL）を読む。
+ * 日本付近の座標でなければ null（緯度と経度を取り違えていれば入れ替えて再判定する）
+ */
+export function parseLatLonFields(latText: string, lonText = ''): { lat: number; lon: number } | null {
+  const a = latText.normalize('NFKC').trim();
+  const b = lonText.normalize('NFKC').trim();
+  if (!b) {
+    const pt = parsePoint(a);
+    if (pt) return { lat: pt.lat, lon: pt.lon };
+    // "35 12 38.1  136 56 17.9" のような 1 行はカンマ区切りだけ受ける
+    const m = a.split(/[,，]/);
+    if (m.length === 2) return parseLatLonFields(m[0], m[1]);
+    return null;
+  }
+  const lat = parseDegrees(a);
+  const lon = parseDegrees(b);
+  if (lat == null || lon == null) return null;
+  if (inJapan(lat, lon)) return { lat, lon };
+  if (inJapan(lon, lat)) return { lat: lon, lon: lat };
+  return null;
+}
+
+/** 緯度経度の表示（10 進 5 桁 ≈ 1 m）と、度分秒の表示 */
+export function formatDeg(v: number): string {
+  return v.toFixed(5);
+}
+export function formatDms(v: number, axis: 'lat' | 'lon'): string {
+  const hemi = axis === 'lat' ? (v >= 0 ? 'N' : 'S') : v >= 0 ? 'E' : 'W';
+  const a = Math.abs(v);
+  const d = Math.floor(a);
+  const mFull = (a - d) * 60;
+  const m = Math.floor(mFull);
+  const sec = (mFull - m) * 60;
+  return `${hemi}${d}°${String(m).padStart(2, '0')}′${sec.toFixed(1).padStart(4, '0')}″`;
+}
+
 /** 入力の末尾の番号（丁目・番地・号）を取り出す。例 "4-213-1" "4丁目213番地1号" "宮前50" */
-function tailNumbers(q: string): number[] {
+export function tailNumbers(q: string): number[] {
   const t = q.replace(/\s.*$/, '');
   const m = t.match(/((?:\d+(?:丁目|番地?|号|[-ー−‐の])?)+)$/);
   if (!m) return [];
@@ -168,6 +236,19 @@ async function lookupAbr(townTitle: string, nums: number[]): Promise<GeocodeResu
     return { title: `${label}${suffix}`, lat, lon, precision: exact.length && kind === '住居表示' ? 'go' : 'ban' };
   }
   return null;
+}
+
+/**
+ * OpenStreetMap の display_name（「奥沢三丁目, 奥沢, 世田谷区, 東京都, 158-0083, 日本」）を日本式の 1 行にする。
+ * 郵便番号・国名・数字だけの部分は捨て、「奥沢」のように次の部分の先頭に含まれる重複（奥沢→奥沢三丁目）は 1 回だけにする
+ */
+export function osmTitle(displayName: string): string {
+  const parts = displayName
+    .split(',')
+    .reverse()
+    .map((x) => x.trim())
+    .filter((x) => x && x !== '日本' && !/^[0-9-]+$/.test(x));
+  return parts.filter((x, i) => !(i + 1 < parts.length && parts[i + 1].startsWith(x))).join('');
 }
 
 /**
@@ -242,7 +323,7 @@ export async function geocode(q: string, opts: { googleKey?: string } = {}): Pro
       if (res.ok) {
         const js = (await res.json()) as { lat: string; lon: string; display_name: string; class?: string; type?: string }[];
         for (const r of js) {
-          const title = r.display_name.split(',').reverse().map((x) => x.trim()).filter((x) => x && x !== '日本' && !/^[0-9-]+$/.test(x)).join('');
+          const title = osmTitle(r.display_name);
           const p = r.class === 'building' || r.type === 'house' || /\d+$/.test(title) ? 'ban' : precisionOf(title);
           out.push({ title, lat: +r.lat, lon: +r.lon, precision: p });
         }
@@ -331,16 +412,32 @@ export interface NeighborBuilding {
   /** 中心からの東・北 (m) のリング */
   ring: { e: number; n: number }[];
   height: number;
-  source: 'gsi' | 'osm' | 'manual';
+  source: 'plateau' | 'gsi' | 'osm' | 'manual';
+  /** 高さの根拠（無ければ source から: plateau = measured, gsi = estimated, osm = height あり measured, manual = manual） */
+  heightKind?: 'measured' | 'estimated' | 'manual';
   label?: string;
-  /** 手で「消す」にした */
+  /** 一覧の中で一意の番号（取得・追加したときに SunContext が付ける。手動の隣家はこれがキーになる） */
+  id?: string;
+  /** 隠した建物（3D に出さず、影も落とさず、解析にも入れない。SunContext の記録から付け直す） */
   hidden?: boolean;
-  /** 手で「残す」にした（敷地に近くても自動では消さない） */
-  keep?: boolean;
+  /**
+   * 想定の家（未建築の隣家）。座標は ring と同じ建物の中心からの東・北 (m)。source は 'manual'、ring = 足元、height = 最高高さ、
+   * label 既定「想定の家」。SunContext.addPlanned / updatePlanned / removePlanned で扱う
+   */
+  planned?: PlannedHouse;
+  /** 穴（中庭など）。外周と同じ座標 */
+  holes?: { e: number; n: number }[][];
+  /**
+   * 実形状（PLATEAU）。建物の anchor（plateau.anchor）基準の非インデックス三角形（x=東, y=上, z=−北 [m]。y=0 = 足元）。
+   * buildNeighbors で toLocal(anchor, siteLatLon) の分を平行移動して置く。無ければ ring を押し出す
+   */
+  mesh?: NeighborMesh;
+  /** PLATEAU の属性（出典・年度・LOD・実測の最高高さなど） */
+  plateau?: PlateauAttrs;
 }
 
-/** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得 */
-export async function fetchGsiBuildings(lat: number, lon: number, radius = 120): Promise<NeighborBuilding[]> {
+/** 国土地理院 最適化ベクトルタイル（建物 BldA）から周辺建物の外形を取得。中止（opts.signal）は signal.reason を投げる（失敗には数えない） */
+export async function fetchGsiBuildings(lat: number, lon: number, radius = 120, opts: { signal?: AbortSignal } = {}): Promise<NeighborBuilding[]> {
   const z = 16;
   const { mLat, mLon } = metersPerDegree(lat);
   const t0 = lonLatToTile(lon - radius / mLon, lat + radius / mLat, z);
@@ -353,13 +450,15 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
       tiles++;
       let layers: ReturnType<typeof decodeMvt>;
       try {
-        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
+        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`, { signal: opts.signal });
         if (!res.ok) {
           if (res.status !== 404) failed++;
           continue;
         }
         layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
-      } catch {
+      } catch (e) {
+        // 中止は失敗に数えず、そのまま投げる（呼び出し側の signal.reason）
+        if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? e;
         failed++;
         continue;
       }
@@ -395,13 +494,14 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120):
   return dedupe(out);
 }
 
-/** OpenStreetMap（Overpass API）から建物を取得。高さ・階数タグがあれば利用 */
-export async function fetchOsmBuildings(lat: number, lon: number, radius = 120): Promise<NeighborBuilding[]> {
+/** OpenStreetMap（Overpass API）から建物を取得。高さ・階数タグがあれば利用。中止（opts.signal）は fetch の AbortError */
+export async function fetchOsmBuildings(lat: number, lon: number, radius = 120, opts: { signal?: AbortSignal } = {}): Promise<NeighborBuilding[]> {
   const q = `[out:json][timeout:25];way["building"](around:${radius},${lat},${lon});out geom tags;`;
   const res = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'data=' + encodeURIComponent(q),
+    signal: opts.signal,
   });
   if (!res.ok) throw new Error(`OpenStreetMap の取得に失敗しました (${res.status})`);
   const js = (await res.json()) as { elements: { geometry?: { lat: number; lon: number }[]; tags?: Record<string, string> }[] };
@@ -428,152 +528,4 @@ function dedupe(bs: NeighborBuilding[]): NeighborBuilding[] {
     seen.add(k);
     return true;
   });
-}
-
-/** 国土地理院ベクトルタイルの道路中心線（RdCL） */
-export interface RoadLine {
-  /** 中心からの東・北 (m) の折れ線 */
-  pts: { e: number; n: number }[];
-  /** 幅員 (m)。不明なら undefined */
-  widthM?: number;
-  category?: string;
-}
-
-export async function fetchGsiRoads(lat: number, lon: number, radius = 80): Promise<RoadLine[]> {
-  const z = 16;
-  const { mLat, mLon } = metersPerDegree(lat);
-  const t0 = lonLatToTile(lon - radius / mLon, lat + radius / mLat, z);
-  const t1 = lonLatToTile(lon + radius / mLon, lat - radius / mLat, z);
-  const out: RoadLine[] = [];
-  let tiles = 0;
-  let failed = 0;
-  for (let ty = Math.floor(t0.y); ty <= Math.floor(t1.y); ty++)
-    for (let tx = Math.floor(t0.x); tx <= Math.floor(t1.x); tx++) {
-      tiles++;
-      let layers: ReturnType<typeof decodeMvt>;
-      try {
-        const res = await fetch(`https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/${z}/${tx}/${ty}.pbf`);
-        if (!res.ok) {
-          if (res.status !== 404) failed++;
-          continue;
-        }
-        layers = decodeMvt(new Uint8Array(await res.arrayBuffer()));
-      } catch {
-        failed++;
-        continue;
-      }
-      const rd = layers['RdCL'];
-      if (!rd) continue;
-      for (const f of rd.features) {
-        if (f.type !== 2) continue;
-        const w = Number(f.props['vt_width'] ?? 0);
-        const rank = String(f.props['vt_rnkwidth'] ?? '');
-        // vt_width は cm 単位のことが多い。無ければ幅員区分の下限
-        let widthM: number | undefined = w > 0 ? (w > 100 ? w / 100 : w) : undefined;
-        if (widthM == null) {
-          const m = /(\d+(?:\.\d+)?)m/.exec(rank);
-          if (m) widthM = parseFloat(m[1]);
-        }
-        for (const line of f.rings) {
-          if (line.length < 2) continue;
-          const pts = line.map(([px, py]) => {
-            const ll = tileToLonLat(tx + px / rd.extent, ty + py / rd.extent, z);
-            return toLocal(ll.lat, ll.lon, lat, lon);
-          });
-          out.push({ pts, widthM, category: String(f.props['vt_rdctg'] ?? '') });
-        }
-      }
-    }
-  if (tiles && failed === tiles) throw new Error('国土地理院のサーバーに接続できませんでした');
-  return out;
-}
-
-export interface NorthEstimate {
-  /** 道路の向きから（図面に道路側の記載がある場合） */
-  fromRoad?: { northDeg: number; roadBearing: number; distanceM: number; widthM?: number; category?: string; side: PlanSide };
-  /** 敷地上の既存建物の向きから（90° ごとの候補のうち現在値に最も近いもの） */
-  fromBuilding?: { northDeg: number; candidates: number[]; distanceM: number };
-}
-
-const SIDE_PHI: Record<PlanSide, number> = { top: 0, right: 90, bottom: 180, left: 270 };
-
-function norm180(a: number) {
-  let x = ((a + 180) % 360) - 180;
-  if (x <= -180) x += 360;
-  return Math.round(x * 10) / 10;
-}
-
-/**
- * 座標から真北（図面の上から時計回りの角度）を推定する。
- * - 道路: 最も近い道路中心線へ向かう方位 β と、図面の道路側 φ（上 0 / 右 90 / 下 180 / 左 270）から N = φ − β
- * - 建物: 敷地上（最も近い）建物外形の長辺の方位に図面の軸を合わせる（90° ごとの候補）
- */
-export async function estimateNorth(lat: number, lon: number, roadSide: PlanSide | null, currentNorthDeg: number): Promise<NorthEstimate> {
-  const out: NorthEstimate = {};
-  const [roads, blds] = await Promise.all([fetchGsiRoads(lat, lon, 80).catch(() => [] as RoadLine[]), fetchGsiBuildings(lat, lon, 60).catch(() => [] as NeighborBuilding[])]);
-  // 最も近い道路区間
-  let best: { d: number; e: number; n: number; r: RoadLine; seg: [number, number] } | null = null;
-  for (const r of roads)
-    for (let i = 0; i + 1 < r.pts.length; i++) {
-      const a = r.pts[i];
-      const b = r.pts[i + 1];
-      const vx = b.e - a.e;
-      const vy = b.n - a.n;
-      const L2 = vx * vx + vy * vy || 1;
-      const t = Math.max(0, Math.min(1, (-a.e * vx + -a.n * vy) / L2));
-      const px = a.e + vx * t;
-      const py = a.n + vy * t;
-      const d = Math.hypot(px, py);
-      if (!best || d < best.d) best = { d, e: px, n: py, r, seg: [i, i + 1] };
-    }
-  if (best && roadSide) {
-    // 敷地中心から道路へ向かう方位（北から時計回り）。道路の向きに直交する向きに揃える
-    const a = best.r.pts[best.seg[0]];
-    const b = best.r.pts[best.seg[1]];
-    const roadDir = Math.atan2(b.e - a.e, b.n - a.n);
-    const toRoad = Math.atan2(best.e, best.n);
-    // 道路に直交する 2 方向のうち、道路へ向かう側
-    const perp = [roadDir + Math.PI / 2, roadDir - Math.PI / 2].sort((p, q) => Math.abs(norm180(((p - toRoad) * 180) / Math.PI)) - Math.abs(norm180(((q - toRoad) * 180) / Math.PI)))[0];
-    const beta = (perp * 180) / Math.PI;
-    out.fromRoad = { northDeg: norm180(SIDE_PHI[roadSide] - beta), roadBearing: norm180((roadDir * 180) / Math.PI), distanceM: best.d, widthM: best.r.widthM, category: best.r.category, side: roadSide };
-  }
-  // 敷地上の建物（点を含む外形、無ければ最も近いもの）
-  const inside = (ring: { e: number; n: number }[]) => {
-    let c = false;
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const a = ring[i];
-      const b = ring[j];
-      if (a.n > 0 !== b.n > 0 && 0 < ((b.e - a.e) * (0 - a.n)) / (b.n - a.n) + a.e) c = !c;
-    }
-    return c;
-  };
-  let bb: { b: NeighborBuilding; d: number } | null = null;
-  for (const b of blds) {
-    const c = b.ring.reduce((s, p) => ({ e: s.e + p.e / b.ring.length, n: s.n + p.n / b.ring.length }), { e: 0, n: 0 });
-    const d = inside(b.ring) ? 0 : Math.hypot(c.e, c.n);
-    if (d > 30) continue;
-    if (!bb || d < bb.d) bb = { b, d };
-  }
-  if (bb) {
-    // 長さで重み付けした辺の向き（90° 周期）
-    let sx = 0;
-    let sy = 0;
-    const ring = bb.b.ring;
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i];
-      const b = ring[(i + 1) % ring.length];
-      const L = Math.hypot(b.e - a.e, b.n - a.n);
-      if (L < 0.5) continue;
-      const th = Math.atan2(b.e - a.e, b.n - a.n) * 4; // 90° 周期 → 360°
-      sx += Math.cos(th) * L;
-      sy += Math.sin(th) * L;
-    }
-    const axis = (Math.atan2(sy, sx) / 4) * (180 / Math.PI); // 建物の一辺の方位（北から時計回り）
-    // 図面の上方向の方位 = −N。建物の辺の向きに揃える候補: −N ≡ axis + k·90 → N = −axis − k·90
-    const cands = [0, 90, 180, 270].map((k) => norm180(-axis - k));
-    const ref = out.fromRoad ? out.fromRoad.northDeg : currentNorthDeg;
-    cands.sort((p, q) => Math.abs(norm180(p - ref)) - Math.abs(norm180(q - ref)));
-    out.fromBuilding = { northDeg: cands[0], candidates: cands, distanceM: bb.d };
-  }
-  return out;
 }

@@ -1,0 +1,73 @@
+{
+ "generated": "2026-10-10",
+ "source": "https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets",
+ "urlPrefix": "https://assets.cms.plateau.reearth.io/assets/",
+ "areas": {
+  "13112": {
+   "pref": "東京都",
+   "city": "世田谷区",
+   "ward": null,
+   "year": 2025,
+   "sets": [
+    {
+     "lod": 2,
+     "tex": false,
+     "url": "1a/57c9bb-cbed-47c0-be15-bbe662eabce4/13112_setagaya-ku_pref_2025_citygml_1_op_bldg_3dtiles_13112_setagaya-ku_lod2_no_texture/tileset.json",
+     "size": 130875950
+    },
+    {
+     "lod": 2,
+     "tex": true,
+     "url": "bc/1c2533-8fb5-4b1b-a6fc-37caa55b3f53/13112_setagaya-ku_pref_2025_citygml_1_op_bldg_3dtiles_13112_setagaya-ku_lod2/tileset.json",
+     "size": 146274200
+    },
+    {
+     "lod": 1,
+     "tex": true,
+     "url": "36/586abf-16c7-4a6e-a802-5a85fdc34554/13112_setagaya-ku_pref_2025_citygml_1_op_bldg_3dtiles_13112_setagaya-ku_lod1/tileset.json",
+     "size": 122940696
+    }
+   ]
+  },
+  "23102": {
+   "pref": "愛知県",
+   "city": "名古屋市",
+   "ward": "東区",
+   "year": 2022,
+   "sets": [
+    {
+     "lod": 2,
+     "tex": false,
+     "url": "f5/70535e-559f-4479-acee-b49051d3afb0/23100_nagoya-shi_city_2022_citygml_4_op_bldg_3dtiles_23102_higashi-ku_lod2_no_texture/tileset.json",
+     "size": 10218969
+    },
+    {
+     "lod": 2,
+     "tex": true,
+     "url": "8c/61d87b-1235-4a68-8f92-d9fabc3a83a6/23100_nagoya-shi_city_2022_citygml_4_op_bldg_3dtiles_23102_higashi-ku_lod2/tileset.json",
+     "size": 15877705
+    },
+    {
+     "lod": 1,
+     "tex": true,
+     "url": "02/d91205-c321-4541-b93d-47d699041068/23100_nagoya-shi_city_2022_citygml_4_op_bldg_3dtiles_23102_higashi-ku_lod1/tileset.json",
+     "size": 10114894
+    }
+   ]
+  },
+  "23113": {
+   "pref": "愛知県",
+   "city": "名古屋市",
+   "ward": "守山区",
+   "year": 2022,
+   "sets": [
+    {
+     "lod": 1,
+     "tex": true,
+     "url": "42/4f909f-374b-4fae-8dde-1023720e7ea5/23100_nagoya-shi_city_2022_citygml_4_op_bldg_3dtiles_23113_moriyama-ku_lod1/tileset.json",
+     "size": 34556964
+    }
+   ]
+  }
+ }
+}

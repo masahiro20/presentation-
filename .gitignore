@@ -4,3 +4,6 @@ dist/
 .DS_Store
 /test-output/
 deliverables/
+
+# Claude Code のワークフローが作る作業ツリー（ローカル専用）
+.claude/worktrees/

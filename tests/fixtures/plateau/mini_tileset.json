@@ -1,0 +1,168 @@
+{
+  "asset": {
+    "version": "1.0",
+    "extras": {
+      "note": "手書き（W3）: tests/plateauTileset.test.ts 用。奥沢 35.6019,139.6736 を中心に、root → a → (a1, a2) の 3 階層 REPLACE。葉 a1 は距離 311 m・高さスパン 19 m（規則で落ちる）、葉 a2 は距離 160 m・スパン 25 m（残る）。b は box ボリューム、c は transform 付き、d は外部 tileset（content が .json）で、いずれも warnings に出て枝ごと捨てられる"
+    }
+  },
+  "geometricError": 361.1472073322571,
+  "root": {
+    "boundingVolume": {
+      "region": [
+        2.43699375873237,
+        0.6207411531997791,
+        2.4385346374947336,
+        0.6219995967317594,
+        20,
+        190
+      ]
+    },
+    "geometricError": 361.1472073322571,
+    "refine": "REPLACE",
+    "content": {
+      "uri": "data/root.b3dm"
+    },
+    "children": [
+      {
+        "boundingVolume": {
+          "region": [
+            2.4376486322063746,
+            0.6212759917008707,
+            2.437879764020729,
+            0.6214647582306678,
+            30,
+            75
+          ]
+        },
+        "geometricError": 120,
+        "content": {
+          "uri": "data/a.b3dm"
+        },
+        "children": [
+          {
+            "boundingVolume": {
+              "region": [
+                2.4378065722795164,
+                0.6214049821628987,
+                2.4378605030361995,
+                0.621449027686518,
+                36,
+                55
+              ]
+            },
+            "geometricError": 0,
+            "content": {
+              "uri": "data/a1.b3dm"
+            }
+          },
+          {
+            "boundingVolume": {
+              "region": [
+                2.437795015688799,
+                0.6213546444216195,
+                2.43784124205167,
+                0.621386105509919,
+                36,
+                61
+              ]
+            },
+            "geometricError": 0,
+            "content": {
+              "uri": "data/a2.b3dm"
+            }
+          }
+        ]
+      },
+      {
+        "boundingVolume": {
+          "box": [
+            0,
+            0,
+            0,
+            50,
+            0,
+            0,
+            0,
+            50,
+            0,
+            0,
+            0,
+            20
+          ]
+        },
+        "geometricError": 60,
+        "content": {
+          "uri": "data/box.b3dm"
+        },
+        "children": [
+          {
+            "boundingVolume": {
+              "region": [
+                2.437754567621287,
+                0.6213625096936943,
+                2.4377738286058164,
+                0.6213782402378442,
+                36,
+                50
+              ]
+            },
+            "geometricError": 0,
+            "content": {
+              "uri": "data/b1.b3dm"
+            }
+          }
+        ]
+      },
+      {
+        "boundingVolume": {
+          "region": [
+            2.4377449371290223,
+            0.6213546444216195,
+            2.437764198113552,
+            0.6213703749657692,
+            36,
+            50
+          ]
+        },
+        "geometricError": 0,
+        "transform": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          1,
+          2,
+          3,
+          1
+        ],
+        "content": {
+          "uri": "data/c.b3dm"
+        }
+      },
+      {
+        "boundingVolume": {
+          "region": [
+            2.437764198113552,
+            0.6213703749657692,
+            2.4377834590980814,
+            0.621386105509919,
+            36,
+            50
+          ]
+        },
+        "geometricError": 0,
+        "content": {
+          "uri": "sub/tileset.json"
+        }
+      }
+    ]
+  }
+}

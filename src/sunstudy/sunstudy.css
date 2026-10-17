@@ -1,0 +1,220 @@
+/* 日照シミュレーション（3D データ読み込み版）固有のスタイル。共通部分は app/styles.css */
+.brand-mark.sun { background: linear-gradient(135deg, #f3b14a, #d98a2b); color: #1f2226; }
+.top-link { color: #c9ccd2; font-size: 12.5px; text-decoration: none; white-space: nowrap; padding: 6px 10px; border-radius: 8px; border: 1px solid #3a3e45; }
+.top-link:hover { background: #2c3036; color: #fff; }
+
+/* 地図（場所のステップ） */
+.map-root { position: absolute; inset: 0; background: #e9e6df; }
+.map-root canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab; }
+.map-root canvas.placing { cursor: crosshair; }
+.map-root canvas.picking { cursor: crosshair; }
+.map-root .map-offline-note { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); z-index: 3; width: min(560px, calc(100% - 28px)); box-shadow: 0 6px 24px rgba(0,0,0,.18); line-height: 1.6; }
+.map-root canvas.dragging { cursor: grabbing; }
+.map-tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+.map-tools .btn { background: rgba(255,255,255,0.94); backdrop-filter: blur(4px); font-size: 12.5px; padding: 6px 11px; }
+.map-tools .btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.map-status { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.94); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; box-shadow: var(--shadow); z-index: 2; max-width: 60%; line-height: 1.6; }
+.map-status b { font-size: 13.5px; }
+.map-attrib { position: absolute; right: 10px; bottom: 6px; font-size: 10.5px; color: #333; background: rgba(255,255,255,0.7); padding: 1px 6px; border-radius: 4px; z-index: 2; }
+.map-hint { position: absolute; top: 14px; right: 14px; background: rgba(31,34,38,0.86); color: #fff; border-radius: 10px; padding: 8px 12px; font-size: 12.5px; z-index: 2; max-width: 300px; line-height: 1.6; }
+.map-zoom { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 4px; background: rgba(255,255,255,0.94); border-radius: 12px; padding: 6px; box-shadow: var(--shadow); z-index: 2; }
+.map-zoom button { width: 36px; height: 36px; border: 0; background: transparent; border-radius: 8px; font-size: 18px; color: var(--ink2); }
+.map-zoom button:hover { background: #f1ede7; color: var(--ink); }
+
+/* 検索結果 */
+.geo-results button { display: block; width: 100%; text-align: left; margin: 3px 0; }
+
+/* 3D データの寸法表示 */
+.dims { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.dims .stat b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.dims .stat b small { font-size: 12px; font-weight: 400; color: var(--ink2); margin-left: 2px; }
+.ok-box { background: #eef7f0; border: 1px solid #bfe0c8; color: #24633a; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin: 6px 0; line-height: 1.6; }
+.info-box { background: #f7f5f1; border: 1px solid var(--line); color: var(--ink2); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin: 6px 0; line-height: 1.6; }
+
+/* 周辺環境の取得状況 */
+.env-status { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12.5px; line-height: 1.7; margin: 6px 0; }
+.env-status .k { color: var(--ink3); white-space: nowrap; }
+.src-tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: #e8e6e1; color: #444; margin-left: 4px; vertical-align: 1px; }
+.src-tag.measured { background: #dcefe2; color: #24633a; }
+.src-tag.estimated { background: #fbe9d0; color: #8a5a14; }
+.src-tag.manual { background: #e3e9f4; color: #2f4f6b; }
+
+/* 測定点 */
+.pt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pt-table th { text-align: left; font-weight: 500; color: var(--ink3); padding: 3px 4px; border-bottom: 1px solid var(--line); }
+.pt-table td { padding: 4px 4px; border-bottom: 1px solid #f0ece5; vertical-align: top; }
+.pt-table input { width: 100%; border: 1px solid transparent; background: transparent; border-radius: 5px; padding: 2px 4px; }
+.pt-table input:hover, .pt-table input:focus { border-color: var(--line); background: #fff; }
+.pt-table .del { border: 0; background: transparent; color: var(--ink3); font-size: 15px; }
+.pt-table .del:hover { color: #a33b2b; }
+
+/* 隣家の編集ポップアップ（3D の上） */
+.pop { position: absolute; background: #fff; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 12.5px; z-index: 5; min-width: 220px; pointer-events: auto; }
+.pop h5 { margin: 0 0 6px; font-size: 13px; }
+.pop .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.pop input[type=number] { width: 80px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+
+/* 進行中のオーバーレイ案内 */
+/* 狭い画面では折り返す（.stage は overflow: hidden なので nowrap だと両端が切れる）。キー操作の案内はタッチ端末では隠す */
+.stage-note { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(31,34,38,0.86); color: #fff; border-radius: 999px; padding: 7px 14px; font-size: 13px; line-height: 1.5; z-index: 4; pointer-events: none; white-space: normal; max-width: calc(100% - 28px); width: max-content; text-align: center; box-sizing: border-box; }
+@media (pointer: coarse) { .stage-note .keys { display: none; } }
+
+/* ドロップ画面（建物のステップ） */
+.drop.light { background: radial-gradient(1200px 600px at 30% 20%, #fbf8f3, #ece7df); }
+.drop-card .sub { color: var(--ink3); font-size: 12px; margin-top: 8px; }
+
+/* 凡例（面の日照時間） */
+.legend.facade .grad { background: linear-gradient(90deg, rgb(40,60,150), rgb(50,140,210), rgb(80,190,120), rgb(240,210,60), rgb(235,90,40)); }
+
+/* 季節比較の画像一覧 */
+.img-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.img-grid figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #eee; }
+.img-grid img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; }
+.img-grid figcaption { font-size: 11px; padding: 4px 6px; background: #fff; }
+
+/* ---- 建設地・建物を置くステップ（placeStep / modelStep） ---- */
+.map-tools .segmented { background: rgba(255,255,255,0.94); box-shadow: var(--shadow); }
+.map-tools .segmented button { padding: 6px 10px; font-size: 12.5px; }
+.map-tools .btn:disabled { opacity: 0.5; }
+.geo-results { margin-top: 6px; }
+.geo-results .btn { white-space: normal; line-height: 1.5; }
+.model-info { word-break: break-all; }
+.obj-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow: auto; }
+.obj-row { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; background: #f7f5f1; cursor: pointer; }
+.obj-row input { accent-color: var(--accent); width: 15px; height: 15px; }
+.obj-row .obj-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obj-row .obj-meta, .obj-row .hint { grid-column: 2; font-size: 11.5px; color: var(--ink3); margin: 0; }
+details.obj-details summary { cursor: pointer; font-size: 13px; color: var(--ink2); margin: 4px 0; }
+.nudge { display: grid; grid-template-columns: auto 1fr 1fr 1fr; gap: 4px 6px; align-items: center; font-size: 12.5px; margin: 6px 0; }
+.pos-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.pos-fields .field { margin: 4px 0; }
+.nudge .k { color: var(--ink2); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; line-height: 1.7; }
+.kv .k { color: var(--ink3); white-space: nowrap; }
+.drop-card .fmt { display: inline-block; background: #f1efea; border-radius: 6px; padding: 2px 9px; margin: 2px; font-size: 12.5px; font-weight: 600; color: var(--ink2); }
+.field .btn-row input[type=number] { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; }
+.btn-row input[type=number] { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; width: 100%; }
+
+/* ===== 日照シミュレーション画面（steps/simStep.ts） ===== */
+/* ステージ左上の列: 視点ボタン → 前提チップ → 周辺環境の案内 */
+.stage-left { position: absolute; top: 14px; left: 14px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; pointer-events: none; max-width: calc(100% - 270px); z-index: 3; }
+.stage-left > * { pointer-events: auto; }
+.stage-left .view-tools { position: static; }
+.stage-left .warn.float { max-width: 400px; margin: 0; background: rgba(255,246,232,0.96); box-shadow: var(--shadow); }
+/* 前提チップ（単位・寸法・方位・GL・周辺建物・地形・時刻） */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips .chip.light { background: rgba(255,255,255,0.92); color: #333; border: 1px solid transparent; font-size: 11.5px; padding: 3px 10px; backdrop-filter: blur(4px); line-height: 1.5; }
+.chips button.chip.light:hover { background: #fff; border-color: #cfc8bc; }
+.chips .chip.light.caution { background: rgba(255,243,223,0.95); color: #8a5a14; border-color: #f1d4a6; }
+/* 太陽バッジ */
+.sun-badge .dim { color: #8b9098; }
+.sun-badge .small { font-size: 11px; margin-top: 4px; }
+body.presenting .sun-badge { font-size: 16px; }
+body.presenting .sun-badge b { font-size: 22px; }
+/* 時刻バーの速さ */
+.overlay-bar .speed { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.overlay-bar select { background: #2a2d31; color: #fff; border: 1px solid #50555d; border-radius: 6px; padding: 3px; }
+/* 要確認の隣家 */
+.nb-row { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin: 6px 0; font-size: 12.5px; }
+.nb-row.done { opacity: 0.55; }
+.nb-row .meta { color: var(--ink3); font-size: 11.5px; margin-left: 6px; }
+.nb-row input[type=number] { width: 72px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+/* 隣家の手動追加 */
+.manual-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.manual-grid .field { margin: 0; }
+.manual-grid .field input, .manual-grid .field select { padding: 6px 6px; }
+/* 測定点の表: 時間帯の 2 行目 */
+.pt-table .spans { color: var(--ink3); font-size: 11px; line-height: 1.4; }
+/* 隣家ポップアップの補足 */
+.pop .hint { margin: 0 0 4px; }
+/* PLATEAU の建物のクリック情報（出典・年度・LOD・実測の最高高さ／モデルの高さ・所在・地盤 T.P.・建物 ID）。gml_id は長いので折り返す */
+.pop.plateau-pop { max-width: 360px; border-top: 3px solid #4d8f66; }
+.pop .src-lines { font-size: 11.5px; color: var(--ink3); line-height: 1.5; margin: 0 0 6px; overflow-wrap: anywhere; }
+.pop .src-lines div { margin: 0; }
+.pop .btn.measured-preset { background: #dcefe2; border-color: #bfe0c8; color: #24633a; }
+/* 周辺環境の取得状況: PLATEAU の内訳（屋根形状あり・箱形）と取得中の進捗の文 */
+.env-status .nb-breakdown { color: var(--ink3); font-size: 11.5px; margin-left: 4px; }
+.info-box .env-progress { color: var(--ink3); font-size: 12px; }
+
+/* 座標で指定（建設地のステップ）: 度分秒の表示とコピーの行 */
+.coord-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink3); margin: 2px 0 0; line-height: 1.5; }
+.coord-row .coord-dms { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.coord-row .btn.sm { padding: 3px 9px; font-size: 11.5px; }
+
+/* 周辺建物を選んで隠す（steps/neighborHide.ts）: ステージ上の操作バー・範囲選択の矩形・隠した建物の一覧 */
+.nb-select-bar { background: rgba(24,26,30,0.9); color: #fff; border-radius: 12px; padding: 7px 10px; font-size: 12.5px; box-shadow: var(--shadow); max-width: 520px; box-sizing: border-box; }
+.nb-select-bar .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.nb-select-bar .help { font-size: 11.5px; color: #c4c7cc; margin-top: 5px; line-height: 1.5; }
+.nb-select-bar .count { font-weight: 600; margin-right: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.nb-select-bar .btn.sm:disabled { opacity: 0.45; cursor: default; }
+.nb-select-bar .btn.ghost { color: #fff; border-color: #50555d; }
+.nb-select-rect { position: absolute; border: 1.5px dashed #e5531f; background: rgba(229,83,31,0.12); pointer-events: none; z-index: 4; box-sizing: border-box; }
+details.nb-hidden { margin: 6px 0; }
+details.nb-hidden summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); margin: 4px 0; }
+.nb-hidden-row { display: flex; align-items: center; gap: 8px; border: 1px dashed #c9c3b8; border-radius: 8px; padding: 5px 8px; margin: 5px 0; font-size: 12.5px; background: #faf8f5; }
+.nb-hidden-row .nb-hidden-name { flex: 1; min-width: 0; }
+.nb-hidden-row .meta { display: block; color: var(--ink3); font-size: 11.5px; }
+
+/* 隠し方（計算から除外／表示だけ隠す）と理由（steps/neighborHide.ts の hideOptionsControl）: 操作バー・ポップアップ・一覧・建設地 */
+.hide-opts { display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center; font-size: 12px; margin: 4px 0; }
+.hide-opts label { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
+.hide-opts .k { color: var(--ink3); font-size: 11.5px; white-space: nowrap; }
+.hide-opts select, .hide-opts input { font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; background: #fff; color: var(--ink); max-width: 100%; }
+.hide-opts .hide-note { flex: 1 1 140px; min-width: 110px; }
+.hide-opts.compact { gap: 4px 8px; }
+.hide-opts.compact select, .hide-opts.compact input { font-size: 11.5px; padding: 2px 5px; }
+.nb-select-bar .hide-opts { margin: 5px 0 0; }
+.nb-select-bar .hide-opts .k { color: #c4c7cc; }
+.nb-select-bar .hide-opts select, .nb-select-bar .hide-opts input { background: #2a2d31; color: #fff; border-color: #50555d; }
+.pop .hide-opts { margin: 6px 0; max-width: 300px; }
+/* 隠した建物の一覧: 隠し方ごとのまとまり（表示だけ隠した建物は青） */
+details.nb-hidden summary .meta { color: var(--ink3); font-size: 11.5px; margin-left: 6px; }
+.nb-hidden-head { font-size: 12px; margin: 8px 0 2px; }
+.nb-hidden-head .meta { display: block; color: var(--ink3); font-size: 11px; line-height: 1.45; }
+.nb-hidden-group.view .nb-hidden-row { border-color: #9cc6f0; background: #f3f8fd; }
+.nb-hidden-row .meta.reason { color: var(--ink2); }
+.nb-hidden-row .hide-opts { margin: 4px 0 0; }
+/* 日影図の規制値 */
+.field.diagram-reg { margin: 4px 0 6px; }
+.field.diagram-reg select { padding: 6px 8px; }
+
+/* 3D: 想定の家（未建築の隣家。steps/plannedEdit.ts）: 3D の上の編集欄・サイドの一覧 */
+.src-tag.planned { background: #dfe8f4; color: #2f4f6b; }
+.pop.planned-pop { width: 320px; max-width: calc(100% - 16px); box-sizing: border-box; border-top: 3px solid #6f8fb3; }
+.pop.planned-pop h5 { display: flex; align-items: center; gap: 4px; }
+.planned-pop .planned-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 8px; margin: 4px 0; }
+.planned-pop .planned-grid .span2 { grid-column: span 3; }
+.planned-pop .planned-grid .span-rest { grid-column: span 2; align-self: end; margin: 0 0 6px; font-size: 11px; line-height: 1.35; }
+.planned-pop .field { margin: 3px 0; }
+.planned-pop .field-label { font-size: 11px; margin-bottom: 2px; }
+.planned-pop input, .planned-pop select { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: #fff; color: var(--ink); }
+.planned-pop input[type=number] { width: 100%; }
+.planned-pop input:disabled { background: #f3f1ed; color: var(--ink3); }
+.planned-pop .planned-keys { font-size: 11px; line-height: 1.5; margin: 4px 0 0; }
+.planned-section .field { margin: 4px 0; }
+.planned-section .field select { width: 100%; padding: 6px 8px; }
+.planned-row { border-color: #b9c9de; background: #f6f9fd; }
+.planned-row.sel { border-color: #e5531f; box-shadow: 0 0 0 2px rgba(229,83,31,0.18); }
+.planned-row.off { opacity: 0.6; }
+.planned-row .planned-meta { display: block; margin: 2px 0 0; }
+.acc-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 9px; font-size: 10.5px; line-height: 1.5; background: #eee; color: #444; }
+.acc-tag.acc-confirmed { background: #d9f0dc; color: #1d5b2a; }
+.acc-tag.acc-measured { background: #e3eefb; color: #1f4a80; }
+.acc-tag.acc-est-roof, .acc-tag.acc-box { background: #fdf0d5; color: #7a5200; }
+.acc-tag.acc-estimated { background: #fbe0dc; color: #8a2a1c; }
+.roof-editor .field { margin: 3px 0; }
+.roof-editor input, .roof-editor select { width: 100%; box-sizing: border-box; padding: 3px 5px; font-size: 12.5px; }
+
+/* ---- 使いやすさの整理（折りたたみ・十字キー・GL） ---- */
+.nudge-box { display: flex; gap: 14px; align-items: center; margin: 8px 0; }
+.dpad { display: grid; grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 34px); gap: 3px; flex: none; }
+.dpad .dpad-btn { padding: 0; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.dpad .n { grid-area: 1 / 2; } .dpad .w { grid-area: 2 / 1; } .dpad .e { grid-area: 2 / 3; } .dpad .s { grid-area: 3 / 2; }
+.dpad .dpad-c { grid-area: 2 / 2; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--ink3); }
+.nudge-side { display: flex; flex-direction: column; min-width: 0; }
+.panel-section.inner-fold { border-top: 0; }
+.panel-section.inner-fold > summary { font-size: 12px; font-weight: 500; padding: 6px 0; }
+.panel-section.more-fold .panel-section { border-top: 1px dashed var(--line); }
+.gl-step .btn { min-width: 44px; }
+details.gl-help, details.model-notes, details.env-notes { margin: 6px 0; }
+.nudge-side .segmented button { white-space: nowrap; padding: 6px 9px; }

@@ -1340,6 +1340,15 @@ export class Viewer {
             sp.visible = this.roomLabels;
             this.groups.cut.add(sp);
           }
+          // 設計士のメモ（図面の吹き出し）: 薄い生成りの札。部屋名より優先して残す
+          for (const n of f.notes ?? []) {
+            const sp = tagSprite(n.text, '', 0.02, true, true);
+            if (!sp) continue;
+            sp.position.set(n.x * MM, cutY + 0.3, n.y * MM);
+            sp.userData.labelPriority = 1e9;
+            sp.visible = this.roomLabels;
+            this.groups.cut.add(sp);
+          }
           this.groups.cut.updateMatrixWorld(true);
           this.declutterLabels();
         }
@@ -1476,13 +1485,13 @@ function roomLabelSprite(r: Room): THREE.Sprite | null {
 }
 
 /** 白い札に文字を書いたスプライト（高さ h [m]） */
-function tagSprite(name: string, sub: string, h: number, screenFixed = false): THREE.Sprite | null {
+function tagSprite(name: string, sub: string, h: number, screenFixed = false, note = false): THREE.Sprite | null {
   if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
   if (!g) return null;
   const S = 2;
-  const font = `500 ${20 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
+  const font = `${note ? 400 : 500} ${(note ? 17 : 20) * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
   const subFont = `400 ${14 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
   g.font = font;
   const wName = g.measureText(name).width;
@@ -1506,12 +1515,12 @@ function tagSprite(name: string, sub: string, h: number, screenFixed = false): T
   g.lineTo(0, rad);
   g.quadraticCurveTo(0, 0, rad, 0);
   g.closePath();
-  g.fillStyle = 'rgba(255,255,255,0.94)';
+  g.fillStyle = note ? 'rgba(255,247,226,0.96)' : 'rgba(255,255,255,0.94)';
   g.fill();
   g.lineWidth = 1 * S;
-  g.strokeStyle = 'rgba(40,40,40,0.18)';
+  g.strokeStyle = note ? 'rgba(140,100,40,0.35)' : 'rgba(40,40,40,0.18)';
   g.stroke();
-  g.fillStyle = '#20232a';
+  g.fillStyle = note ? '#4a3a1a' : '#20232a';
   g.textBaseline = 'middle';
   g.font = font;
   g.fillText(name, padX, H / 2 + 1 * S);

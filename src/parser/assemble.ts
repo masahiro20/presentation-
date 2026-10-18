@@ -10,7 +10,7 @@ import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './r
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs } from './stairs';
 import { detectSite, translateSite } from './site';
-import { detectSymbols, symbolsToItems } from './symbols';
+import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
 
 export interface MmText {
   str: string;
@@ -1459,6 +1459,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   }
 
   if (!rooms.length) warnings.push(`${level}階: 部屋を検出できませんでした`);
+  // 設計士のメモ（室名より小さい文字の説明文）
+  const labelSizes = rooms.map((r) => plan.texts.find((t) => Math.abs(t.x - r.labelPos.x) < 50 && Math.abs(t.y - r.labelPos.y) < 50)?.size ?? 0).filter((s) => s > 0).sort((a, b) => a - b);
+  const labelSize = labelSizes.length ? labelSizes[Math.floor(labelSizes.length / 2)] : 280;
+  const nearTexts = plan.siteTexts.filter((t) => t.x > plan.bbox.minX - 3000 && t.x < plan.bbox.maxX + 3000 && t.y > plan.bbox.minY - 3000 && t.y < plan.bbox.maxY + 3000 && !plan.texts.some((u) => u.x === t.x && u.y === t.y));
+  const notes = plan.scan ? [] : detectNotes([...plan.texts, ...nearTexts], labelSize, rooms);
   // 家具・設備・車・植栽の記号（スキャン図面には無い）
   const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(detectSymbols(uniqueSegs([...plan.segs, ...plan.siteSegs])), rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
   return {
@@ -1473,6 +1478,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     outline,
     planItems: sym.items.length ? sym.items : undefined,
     exterior: sym.exterior.cars.length || sym.exterior.trees.length ? sym.exterior : undefined,
+    notes: notes.length ? notes : undefined,
   };
 }
 
@@ -2109,6 +2115,7 @@ export function translateFloor(f: Floor, dx: number, dy: number) {
   }
   f.outline = f.outline.map((l) => l.map(tr));
   if (f.planItems) for (const it of f.planItems) { it.x = Math.round(it.x + dx); it.y = Math.round(it.y + dy); }
+  if (f.notes) for (const n of f.notes) { n.x = Math.round(n.x + dx); n.y = Math.round(n.y + dy); }
   if (f.exterior) {
     f.exterior.cars = f.exterior.cars.map((c) => ({ ...c, x: Math.round(c.x + dx), y: Math.round(c.y + dy) }));
     f.exterior.trees = f.exterior.trees.map((t) => ({ ...t, x: Math.round(t.x + dx), y: Math.round(t.y + dy) }));
@@ -2263,5 +2270,6 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
   }
   // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す
   const planItems = f.planItems?.map((it) => ({ ...it, roomId: nf.rooms.find((r) => pointInPolygon({ x: it.x, y: it.y }, r.polygon))?.id ?? it.roomId }));
-  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs, planItems, exterior: f.exterior };
+  const notes = f.notes?.map((n) => ({ ...n, roomId: nf.rooms.find((r) => pointInPolygon({ x: n.x, y: n.y }, r.polygon))?.id ?? n.roomId }));
+  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs, planItems, exterior: f.exterior, notes };
 }

@@ -10,6 +10,7 @@
 import type { FurnitureItem, FurnitureKind, Room, RoomType, Vec2, Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import type { Seg } from './walls';
+import type { MmText } from './assemble';
 
 export type SymbolKind = 'car' | 'chair' | 'chairBack' | 'sofaModule' | 'sofa' | 'bed' | 'toilet' | 'bath' | 'sink' | 'counter' | 'plant';
 
@@ -448,4 +449,54 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     push('kitchen', { x: ct.x, y: ct.y }, along, inward, back, { len, kitchenType: found ? 'peninsula' : 'island', stoveSide, fridge: 'none', d: +(back / 1000).toFixed(2) }, c);
   }
   return { items, exterior };
+}
+
+/** 図面の設計士のメモ（吹き出しの説明文: 「東から光を取り込みます」「R壁を使ったニッチ」など） */
+export interface PlanNote {
+  text: string;
+  x: number;
+  y: number;
+  roomId?: string;
+}
+
+const NOTE_NG = /境界線|帖|㎡|m2|面積|平面図|立面図|断面図|四捨五入|図面|工事|様邸|様 邸|事務所|縮尺|S\s*[:：]|TEL|FAX|更新日|管理者|設計者|担当者|建築士|丸め|配線|ﾘﾓｽﾃ|リモコン|要床補強|№|No\.|^\s*[A-Z]{1,3}\s*$/i;
+
+/**
+ * 室名より小さい文字で書かれた「文（ひらがなを含む）」をメモとして拾い、行が続くものはつなぐ。
+ * roomLabelSize は室名の文字の大きさ（mm）。
+ */
+export function detectNotes(texts: MmText[], roomLabelSize: number, rooms: Room[]): PlanNote[] {
+  const hira = /[ぁ-ゟ]/;
+  const cands = texts
+    .filter((t) => t.str.trim().length >= 4 && hira.test(t.str) && !NOTE_NG.test(t.str) && t.size <= roomLabelSize * 0.92 && Math.abs(((t.angle % 360) + 360) % 360) < 2)
+    .map((t) => ({ ...t, str: t.str.trim().normalize('NFKC') }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const used = new Set<number>();
+  const notes: PlanNote[] = [];
+  for (let i = 0; i < cands.length; i++) {
+    if (used.has(i)) continue;
+    used.add(i);
+    const lines = [cands[i]];
+    // 次の行: 同じ大きさで、すぐ下（行間 ≤ 1.7 文字）、横位置が近い
+    let last = cands[i];
+    for (let j = i + 1; j < cands.length; j++) {
+      if (used.has(j)) continue;
+      const t = cands[j];
+      if (Math.abs(t.size - last.size) > last.size * 0.15) continue;
+      const dy = t.y - last.y;
+      if (dy < last.size * 0.6 || dy > last.size * 1.7) continue;
+      if (Math.abs(t.x - last.x) > last.size * Math.max(4, last.str.length * 0.6)) continue;
+      used.add(j);
+      lines.push(t);
+      last = t;
+    }
+    const text = lines.map((l) => l.str).join('');
+    if (text.length < 5) continue;
+    // 位置: 1 行目の中心（吹き出しの文字の中心）
+    const x = lines.reduce((a, l) => a + l.x, 0) / lines.length;
+    const y = lines.reduce((a, l) => a + l.y, 0) / lines.length;
+    const room = rooms.find((r) => pointInPolygon({ x, y }, r.polygon));
+    notes.push({ text, x: Math.round(x), y: Math.round(y), roomId: room?.id });
+  }
+  return notes;
 }

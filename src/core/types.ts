@@ -123,6 +123,8 @@ export interface Floor {
   planItems?: FurnitureItem[];
   /** 図面の記号から読み取った外構（車・植栽。図面座標 mm） */
   exterior?: { cars: { x: number; y: number; rot: number }[]; trees: { x: number; y: number; r: number }[] };
+  /** 図面に書かれた設計士のメモ（吹き出しの説明文） */
+  notes?: { text: string; x: number; y: number; roomId?: string }[];
 }
 
 export interface ParseReport {

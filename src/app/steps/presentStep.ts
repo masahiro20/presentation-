@@ -300,6 +300,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
             fi === 0 ? h('p', null, `家族の動線と、光の入り方を丁寧に読み解いた ${model.floors.length > 1 ? `${model.floors.length}層` : 'ワンフロア'}の構成です。`) : null,
             h('div', { class: 'floor-area serif' }, `${f.level}F　約 ${area.toFixed(1)}㎡`),
             h('table', { class: 'schedule' }, h('tbody', null, ...list.slice(0, 12).map((r) => h('tr', null, h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))))),
+            f.notes?.length ? h('div', { class: 'plan-notes' }, h('div', { class: 'label' }, '設計士のメモ'), ...f.notes.slice(0, 6).map((n) => h('p', null, n.text))) : null,
           ),
           h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) })),
         ),

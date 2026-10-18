@@ -183,6 +183,28 @@ async function main() {
     row('内観', MAIN_INTERIOR_IDS.slice(0, 4), INTERIOR_STYLES, 'interiorId');
   });
   // AR
+  // 設計士のメモ（図面の吹き出し）: タップでその場所へ
+  const notes = proj.model.floors.flatMap((f) => (f.notes ?? []).map((n) => ({ ...n, level: f.level })));
+  if (notes.length)
+    addTab('notes', '設計士のメモ', (pane) => {
+      for (const n of notes) {
+        pane.appendChild(
+          h(
+            'button',
+            {
+              class: 'vw-chip note',
+              onclick: () => {
+                const s = (n.roomId && shots().find((x) => x.kind === 'interior' && x.roomId === n.roomId)) || shots().find((x) => x.kind === 'cutaway' && x.cutaway === n.level) || shots().find((x) => x.kind === 'cutaway');
+                if (s) goto(s);
+                tag.textContent = n.text;
+              },
+            },
+            n.text,
+          ),
+        );
+      }
+      pane.appendChild(h('div', { class: 'vw-hint' }, '図面に書き込んだ、この家の見どころです。'));
+    });
   addTab('ar', 'AR', (pane) => {
     const mv = document.createElement('model-viewer') as HTMLElement & { activateAR: () => Promise<void>; canActivateAR: boolean };
     mv.setAttribute('ar', '');

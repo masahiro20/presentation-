@@ -137,8 +137,8 @@ export class MaterialRegistry {
     // 外構
     const L = e.landscape;
     set('l.ground', M(L.ground));
-    // 周囲の地面は芝ではなく、住宅地のアスファルト・コンクリート舗装の中間色
-    set('l.far', M({ pattern: 'concrete', color: '#9b9994', tile: 8 }));
+    // 敷地の外は落ち着いた緑の地面（一面の舗装は駐車場のように見えるので避ける）。彩度を抑えて建物を主役に
+    set('l.far', M({ pattern: 'grass', color: '#5f6a4c', color2: '#717a5a', tile: 6 }));
     set('l.nbWallA', color('#d8d3ca', 0.95));
     set('l.nbWallB', color('#b9b6b0', 0.95));
     set('l.nbWallC', color('#e4e0d8', 0.95));

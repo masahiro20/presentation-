@@ -197,7 +197,7 @@ input, select, textarea { font: inherit; }
 .deck { position: absolute; inset: 0; overflow-y: auto; background: #1b1c1e; padding: 24px 0 60px; }
 /* ---- プレゼン資料（建築作品集のような静かで上質な誌面） ---- */
 .slide {
-  --paper: #f5f1ea; --paper2: #ece6dc; --ink: #1c1b19; --ink-2: #57524a; --ink-3: #8f877b; --bronze: #9a7a52; --hair: rgba(28, 27, 25, 0.16);
+  --paper: #ffffff; --paper2: #f4f4f2; --ink: #1e1e1e; --ink-2: #4a4a48; --ink-3: #8a8a86; --bronze: #8a8a86; --hair: rgba(30, 30, 30, 0.14);
   width: min(1100px, 94%); aspect-ratio: 16 / 9; margin: 0 auto 24px; background: var(--paper); color: var(--ink);
   box-shadow: 0 18px 50px rgba(0,0,0,0.35); position: relative; overflow: hidden; container-type: inline-size;
   font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif; font-weight: 300;
@@ -210,6 +210,30 @@ input, select, textarea { font: inherit; }
 .slide .brandline { position: absolute; left: 4.2cqw; bottom: 2.6cqw; font-size: 0.9cqw; letter-spacing: 0.18em; color: var(--ink-3); }
 .slide .brandline.light { color: rgba(255,255,255,0.75); }
 .slide .draft { position: absolute; top: 2.4cqw; right: 2.4cqw; background: rgba(154,122,82,0.92); color: #fff; font-size: 0.95cqw; padding: 0.35cqw 0.9cqw; letter-spacing: 0.08em; }
+
+/* ---- ホームランディックの提案書の書式: 白地・小さな文字・広い余白・画は全面 ---- */
+.slide .hl-head .en { font-size: 0.72cqw; letter-spacing: 0.08em; color: var(--ink-2); }
+.slide .hl-head h2 { margin: 0.9cqw 0 0; font-size: 1.75cqw; font-weight: 400; letter-spacing: 0.1em; line-height: 1.4; }
+.slide .hl-rule { width: 1.6cqw; height: 1px; background: #c9c9c6; margin: 1.6cqw 0 2.2cqw; }
+.slide.hl-cover { background: #fff; display: grid; place-items: center; }
+.slide.hl-cover .c { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1.6cqw; }
+.slide.hl-cover .office { font-size: 0.9cqw; letter-spacing: 0.1em; color: var(--ink-2); }
+.slide.hl-cover .title { font-size: 1.9cqw; letter-spacing: 0.18em; font-weight: 400; }
+.slide.hl-cover .logo { height: 3.4cqw; max-width: 18cqw; object-fit: contain; }
+.slide.hl-cover .mark { font-size: 0.85cqw; letter-spacing: 0.06em; line-height: 1.4; color: var(--ink); }
+.slide.hl-cover .mark::after { content: ''; display: block; width: 1.6cqw; height: 1px; background: #c9c9c6; margin: 1.2cqw auto 0; }
+.slide.hl-cover .date { font-size: 0.75cqw; letter-spacing: 0.08em; color: var(--ink-2); }
+.slide.hl-close .motto { font-family: 'Shippori Mincho', 'Noto Serif JP', serif; font-size: 1.9cqw; letter-spacing: 0.12em; color: var(--ink-2); margin: 1.2cqw 0; }
+.slide.hl-close .contact { font-size: 0.8cqw; line-height: 2.1; color: var(--ink-2); text-align: left; }
+.slide.hl-close .contact span { display: inline-block; width: 5.5cqw; }
+.slide.hl-text { padding: 9cqw 10cqw; }
+.slide.hl-text .body p { font-size: 0.95cqw; line-height: 2.6; color: var(--ink); margin: 0 0 1.2cqw; }
+.slide.hl-overview { display: grid; grid-template-columns: 1fr 1.25fr; gap: 5cqw; padding: 7cqw 0 7cqw 7cqw; }
+.slide.hl-overview .ov { display: grid; grid-template-columns: 8cqw 1fr; row-gap: 1.75cqw; margin: 0; font-size: 0.92cqw; letter-spacing: 0.06em; }
+.slide.hl-overview .ov dt { color: var(--ink-2); }
+.slide.hl-overview .ov dd { margin: 0; }
+.slide.hl-overview .ph { position: relative; }
+.slide.hl.full .hl-tag { position: absolute; left: 2.6cqw; bottom: 2.2cqw; font-size: 0.8cqw; letter-spacing: 0.14em; color: rgba(255,255,255,0.92); text-shadow: 0 1px 6px rgba(0,0,0,0.45); }
 
 /* 見出し（章番号・英字・和文） */
 .slide .head { display: flex; align-items: baseline; gap: 1.6cqw; }

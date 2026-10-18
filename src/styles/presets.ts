@@ -119,7 +119,7 @@ function plasterBox(o: {
 
 /** 外観テイスト画面の主な選択肢（ホームランディックで実際に使う構成） */
 export const MAIN_EXTERIOR_IDS = ['hl-jolypat-grey', 'hl-jolypat-greige', 'hl-jolypat-beige', 'hl-soton-grey', 'hl-sto-lightgrey', 'hl-galva-black'];
-export const MAIN_INTERIOR_IDS = ['hl-grey-oak', 'hl-dark-stone', 'hl-greige-hotel', 'hl-pale-beige', 'hl-light-gray', 'hl-greige-walnut'];
+export const MAIN_INTERIOR_IDS = ['hl-slate-cedar', 'hl-grey-oak', 'hl-dark-stone', 'hl-greige-hotel', 'hl-pale-beige', 'hl-light-gray', 'hl-greige-walnut'];
 const int = (s: InteriorStyle) => s;
 
 export const EXTERIOR_STYLES: ExteriorStyle[] = [
@@ -708,9 +708,35 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
       metal: '#242424',
       counter: { pattern: 'concrete', color: '#6f6e6b', roughness: 0.55 },
       cabinet: { pattern: 'paint', color: '#5a5957', roughness: 0.5 },
-      rug: { pattern: 'fabric', color: '#8a3a2e', roughness: 1 },
+      rug: { pattern: 'fabric', color: '#4a4845', roughness: 1 },
     },
     lightKelvin: 2700,
+  }),
+  // 施工・設計事例（服部様・池本様など）のパースに多い構成: 黒の大判スレートタイル床、白の塗り壁、明るい木の羽目板天井、黒サッシ
+  int({
+    id: 'hl-slate-cedar',
+    name: '黒スレート床 × 白壁 × 木の羽目板天井',
+    catch: '大判の黒いタイル床、白い塗り壁、明るい木の天井',
+    description: '600×1200 の黒いスレート調タイルの床に、白の塗り壁と明るい木の羽目板天井。黒の細いサッシと木の柱、中庭の緑を引き立てる、ホームランディックらしい陰影のある空間。',
+    swatch: ['#e8e6e1', '#3c3e41', '#c8a678', '#1f1f1f'],
+    floor: { pattern: 'tileFloor', color: '#3c3e41', roughness: 0.5, size: 0.6, size2: 1.2, tile: 2.4 },
+    wetFloor: { pattern: 'tileFloor', color: '#45474a', roughness: 0.45, size: 0.3, size2: 0.6, tile: 1.2 },
+    entranceFloor: { pattern: 'tileFloor', color: '#3a3c3f', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
+    wall: { pattern: 'plaster', color: '#e8e6e1', color2: '#e1dfd9', roughness: 0.95, normalStrength: 0.18 },
+    accentWall: { pattern: 'stone', color: '#7d7b77', color2: '#6b6966', roughness: 0.8, size: 0.4, size2: 0.25 },
+    ceiling: { pattern: 'woodSiding', color: '#c8a678', color2: '#b8956a', roughness: 0.65, size: 0.1 },
+    door: { pattern: 'paint', color: '#e8e6e1', roughness: 0.6 },
+    trim: '#1f1f1f',
+    furniture: {
+      wood: { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 },
+      fabric: { pattern: 'fabric', color: '#3a3a3a', roughness: 0.95 },
+      fabric2: { pattern: 'fabric', color: '#8a877f', roughness: 0.95 },
+      metal: '#1c1c1c',
+      counter: { pattern: 'stone', color: '#d9d7d2', color2: '#cfccc6', roughness: 0.35, size: 3.2 },
+      cabinet: { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 },
+      rug: { pattern: 'fabric', color: '#5a5853', roughness: 1 },
+    },
+    lightKelvin: 3000,
   }),
   int({
     id: 'hl-dark-stone',
@@ -1117,7 +1143,7 @@ export interface DesignOptions {
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
   exteriorId: 'hl-jolypat-grey',
-  interiorId: 'hl-grey-oak',
+  interiorId: 'hl-slate-cedar',
   timeOfDay: 'day',
   furniture: true,
 };

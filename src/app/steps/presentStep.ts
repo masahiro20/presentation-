@@ -148,7 +148,6 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
     }
     toast('プレゼン資料の素材がそろいました', 'ok');
   } finally {
-    v.setTownVisible(true);
     v.applyView(prevView);
     pm.close();
   }
@@ -174,9 +173,9 @@ function draftMark(g: GalleryItem | undefined) {
 const photo = (g: GalleryItem | undefined) => (g ? h('img', { class: 'photo', src: g.url, alt: g.title }) : null);
 const cleanTitle = (t: string) => t.replace(/^(外観|内観|鳥瞰)[:：]?/, '').replace(/(内観|外観)?パース[（(]?/, '').replace(/[）)]$/, '').trim() || t;
 
-/** 章の見出し（番号・英字・和文） */
-function head(no: number, en: string, ja: string) {
-  return h('div', null, h('div', { class: 'head' }, h('span', { class: 'no' }, String(no).padStart(2, '0')), h('div', null, h('div', { class: 'en latin' }, en), h('h2', { class: 'serif' }, ja))), h('div', { class: 'rule' }));
+/** 見出し（ホームランディックの提案書の書式: 小さな英字の見出し・和文・短い線。番号は付けない） */
+function head(_no: number, en: string, ja: string) {
+  return h('div', { class: 'hl-head' }, h('div', { class: 'en' }, en.toUpperCase()), h('h2', null, ja), h('div', { class: 'hl-rule' }));
 }
 
 /** 外観・内観のテイストと間取りから、提案の言葉を組み立てる */
@@ -229,145 +228,61 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   chapters.push({ en: 'Details', ja: '上質を支える納まり' });
   const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
 
-  // 表紙
+  const office = state.company || 'ホームランディック一級建築士事務所';
+  const kind = state.gallery.length ? 'PRESENTATION' : 'FIRST PLAN';
+  // 表紙（白地・中央に小さく。社内の提案書と同じ書式）
   slides.push(
     slide(
-      'cover',
-      photo(hero),
-      h('div', { class: 'shade' }),
-      h('div', { class: 'corner latin' }, 'Residential Design Proposal'),
-      h('div', { class: 'corner-r latin' }, dateStr),
+      'hl hl-cover',
       h(
         'div',
-        { class: 'txt' },
-        h('div', { class: 'latin' }, `Proposal for ${state.customer.replace(/様$/, '')}`),
-        h('h1', { class: 'serif' }, state.name),
-        h('div', { class: 'meta' }, h('span', null, `${state.customer}　ご提案資料`), h('i'), h('span', null, brand || '')),
+        { class: 'c' },
+        h('div', { class: 'office' }, office),
+        h('div', { class: 'title' }, `[ ${state.customer.replace(/様$/, '')}様邸　${kind} ]`),
+        state.logo ? h('img', { class: 'logo', src: state.logo, alt: '' }) : h('div', { class: 'mark' }, h('div', null, 'HOME LANDICK'), h('div', null, 'Architectural design office')),
+        h('div', { class: 'date' }, dateStr),
       ),
     ),
   );
-  // 目次
+  // 理念・アプローチ
+  slides.push(
+    slide('hl hl-text', head(0, 'Philosophy', '理念'), h('div', { class: 'body' }, h('p', null, '私たちは『ご家族の暮らしをデザインする』を信条に、'), h('p', null, '本当に住みたい家　性能とデザインを両立した住まいを提供します。'))),
+  );
   slides.push(
     slide(
-      'index',
-      h('div', { class: 'left' }, photo(ints[0] ?? exts[1] ?? hero)),
-      h(
-        'div',
-        { class: 'right' },
-        h('div', { class: 'latin', style: 'font-size:1.05cqw;color:var(--ink-3)' }, 'Contents'),
-        h('h2', { class: 'serif', style: 'margin:0.6cqw 0 0;font-size:2.3cqw;letter-spacing:0.14em;font-weight:500' }, '目次'),
-        h('ol', null, ...chapters.map((c, i) => h('li', null, h('span', { class: 'n' }, String(i + 1).padStart(2, '0')), h('span', { class: 'serif' }, c.ja), h('span', { class: 'e latin' }, c.en)))),
-      ),
+      'hl hl-text',
+      head(0, 'Our Approach', '私たちのアプローチ'),
+      h('div', { class: 'body' }, h('p', null, '1.　性能の高い住まい（断熱・気密・耐震）'), h('p', null, '2.　意匠デザインで「器」ではなく「体験」を設計'), h('p', null, 'ご家族と共に、唯一無二の空間を共創します。')),
     ),
   );
-  // コンセプト
+  // 建築概要（読み取った間取りから）
+  const f1 = model.floors[0];
+  const buildArea = f1 ? f1.rooms.filter((r) => !['balcony', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0) : 0;
+  const ov: [string, string][] = [
+    ['敷地所在地', state.site.address && !/（仮）/.test(state.site.address) ? state.site.address : '—'],
+    ['建築面積', `${buildArea.toFixed(2)} ㎡`],
+    ['延床面積', `${totalArea.toFixed(2)} ㎡（約 ${(totalArea / 3.30579).toFixed(1)} 坪）`],
+    ['構造', 'ＳＥ構法'],
+    ['規模', `${model.floors.length}階建て`],
+    ['主要用途', '住宅'],
+  ];
+  if (ldk) ov.push([ldk.name.normalize('NFKC'), `${tatami(ldk)} 帖`]);
+  ov.push(['外観', ext.name], ['内観', int.name]);
   slides.push(
     slide(
-      'split wide-photo',
-      h('div', { class: 'ph' }, photo(exts[0] ?? hero), draftMark(exts[0] ?? hero)),
-      h(
-        'div',
-        { class: 'tx' },
-        head(no('Concept'), 'Concept', 'コンセプト'),
-        h('div', { class: 'lead-copy serif' }, ...lines(copy.lead)),
-        h('p', null, copy.body),
-        h(
-          'dl',
-          { class: 'facts' },
-          h('dt', null, '延床面積'),
-          h('dd', null, `約 ${totalArea.toFixed(1)}㎡（約 ${(totalArea / 3.30579).toFixed(1)}坪）`),
-          h('dt', null, '階数'),
-          h('dd', null, `${model.floors.length}階建て`),
-          ldk ? h('dt', null, ldk.name.normalize('NFKC')) : null,
-          ldk ? h('dd', null, `${tatami(ldk)}帖`) : null,
-          h('dt', null, '外観'),
-          h('dd', null, ext.name),
-          h('dt', null, '内観'),
-          h('dd', null, int.name),
-        ),
-      ),
+      'hl hl-overview',
+      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: 'ov' }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
+      h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
     ),
   );
-  // 外観
-  if (exts.length || aerial) {
-    const n = no('Exterior');
-    const first = exts[0] ?? aerial!;
-    slides.push(
-      slide(
-        'full',
-        photo(first),
-        h('div', { class: 'capbox' }, h('div', { class: 'latin' }, `${String(n).padStart(2, '0')} — Exterior`), h('h3', { class: 'serif' }, cleanTitle(first.title)), h('p', null, first.caption || ext.description)),
-        draftMark(first),
-      ),
-    );
-    const rest = [...exts.slice(1), ...(aerial && first !== aerial ? [aerial] : [])];
-    for (let i = 0; i < rest.length; i += 2) {
-      const set = rest.slice(i, i + 2);
-      if (set.length === 1) {
-        slides.push(slide('full', photo(set[0]), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Exterior'), h('h3', { class: 'serif' }, cleanTitle(set[0].title)), set[0].caption ? h('p', null, set[0].caption) : null), draftMark(set[0])));
-        continue;
-      }
-      slides.push(
-        slide(
-          'pair',
-          head(n, 'Exterior', '外観'),
-          h('div', { class: 'row', style: 'grid-template-columns:1fr 1fr' }, ...set.map((g) => h('div', { class: 'cell' }, photo(g), h('div', { class: 'lbl serif' }, cleanTitle(g.title)), draftMark(g)))),
-        ),
-      );
-    }
-  }
-  // 間取り模型（輪切り）
-  if (cuts.length) {
-    const n = no('Model');
-    for (let i = 0; i < cuts.length; i += 2) {
-      const set = cuts.slice(i, i + 2);
-      if (set.length === 1) {
-        slides.push(slide('full', photo(set[0]), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, `${String(n).padStart(2, '0')} — Model`), h('h3', { class: 'serif' }, cleanTitle(set[0].title)), set[0].caption ? h('p', null, set[0].caption) : null), draftMark(set[0])));
-        continue;
-      }
-      slides.push(
-        slide(
-          'pair',
-          head(n, 'Model', '間取り模型'),
-          h('div', { class: 'row', style: 'grid-template-columns:1fr 1fr' }, ...set.map((g) => h('div', { class: 'cell' }, photo(g), h('div', { class: 'lbl serif' }, cleanTitle(g.title)), draftMark(g)))),
-        ),
-      );
-    }
-  }
-  // 内観
-  if (ints.length) {
-    const n = no('Interior');
-    slides.push(
-      slide(
-        'split photo-right',
-        h(
-          'div',
-          { class: 'tx' },
-          head(n, 'Interior', '内観'),
-          h('div', { class: 'lead-copy serif', style: 'font-size:1.55cqw' }, ...lines('線を減らし、\n素材と光で魅せる空間。')),
-          h('p', null, int.description),
-          h('p', { style: 'font-size:0.95cqw;color:var(--ink-3)' }, cleanTitle(ints[0].title)),
-        ),
-        h('div', { class: 'ph' }, photo(ints[0]), draftMark(ints[0])),
-      ),
-    );
-    const rest = ints.slice(1);
-    for (let i = 0; i < rest.length; i += 3) {
-      const set = rest.slice(i, i + 3);
-      if (set.length === 1) {
-        slides.push(slide('full', photo(set[0]), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Interior'), h('h3', { class: 'serif' }, cleanTitle(set[0].title)), set[0].caption ? h('p', null, set[0].caption) : null), draftMark(set[0])));
-        continue;
-      }
-      const cols = set.length === 3 ? '1.4fr 1fr 1fr' : '1fr 1fr';
-      slides.push(
-        slide(
-          'pair',
-          head(n, 'Interior', '内観'),
-          h('div', { class: 'row', style: `grid-template-columns:${cols}` }, ...set.map((g) => h('div', { class: 'cell' }, photo(g), h('div', { class: 'lbl serif' }, cleanTitle(g.title)), draftMark(g)))),
-        ),
-      );
-    }
-  }
+  void copy;
+  void lines;
+  void chapters;
+  // パース: 1 枚ずつ全面に（言葉は添えず、画で見せる。左下に小さく場所の名前だけ）
+  const full = (g: GalleryItem) => slide('hl full', photo(g), h('div', { class: 'hl-tag' }, cleanTitle(g.title)), draftMark(g));
+  for (const g of [...exts, ...(aerial ? [aerial] : [])]) slides.push(full(g));
+  for (const g of cuts) slides.push(full(g));
+  for (const g of ints) slides.push(full(g));
   // 間取り: 1 階ずつ 1 枚に、図面を大きく。左に階の部屋と広さ
   // （立面図は資料の水準に届くまで載せない）
   if (state.plans.length) {
@@ -466,20 +381,30 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   if (state.videos.length) {
     slides.push(slide('full', h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Movie'), h('h3', { class: 'serif' }, state.videos[0].title))));
   }
-  // 締め
-  const last = exts.find((g) => /夕景|夜景/.test(g.title)) ?? exts[1] ?? hero;
+  // 締め（社内の提案書と同じ: 言葉・事務所・担当・連絡先）
+  const contact: [string, string | undefined][] = [
+    ['設計担当', state.designer],
+    ['TEL', state.tel],
+    ['Email', state.email],
+    ['URL', state.url],
+  ];
   slides.push(
     slide(
-      'cover',
-      photo(last),
-      h('div', { class: 'shade' }),
-      h('div', { class: 'txt' }, h('div', { class: 'latin' }, 'Thank you'), h('h1', { class: 'serif', style: 'font-size:3.2cqw' }, '理想の暮らしを、かたちに。'), h('div', { class: 'meta' }, h('span', null, brand || 'ご清聴ありがとうございました'))),
+      'hl hl-cover hl-close',
+      h(
+        'div',
+        { class: 'c' },
+        h('div', { class: 'mark' }, h('div', null, 'HOME LANDICK'), h('div', null, 'Architectural design office')),
+        h('div', { class: 'motto' }, '「美しく、安心で快適な暮らしを」'),
+        h('div', { class: 'office' }, office),
+        h('div', { class: 'contact' }, ...contact.filter(([, v]) => v).map(([k, v]) => h('div', null, h('span', null, k), `：［　${v}　］`))),
+      ),
     ),
   );
   slides.forEach((s, i) => {
     const dark = s.classList.contains('cover') || s.classList.contains('full');
-    if (!s.classList.contains('cover')) s.appendChild(h('div', { class: `pageno ${dark ? 'light' : ''}` }, `${String(i + 1).padStart(2, '0')} / ${String(slides.length).padStart(2, '0')}`));
-    if (!s.classList.contains('cover') && brand && !s.classList.contains('full')) s.appendChild(h('div', { class: 'brandline' }, brand));
+    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover')) s.appendChild(h('div', { class: `pageno ${dark ? 'light' : ''}` }, `${String(i + 1).padStart(2, '0')} / ${String(slides.length).padStart(2, '0')}`));
+    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover') && brand && !s.classList.contains('full')) s.appendChild(h('div', { class: 'brandline' }, brand));
   });
   return slides;
 }
@@ -573,7 +498,16 @@ export const presentStep: Step = {
         '表紙の情報',
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'お客様名'), h('input', { type: 'text', value: state.customer, onchange: (e: Event) => { state.customer = (e.target as HTMLInputElement).value; render(); } })),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '会社名・担当者'), h('input', { type: 'text', value: state.company, onchange: (e: Event) => { state.company = (e.target as HTMLInputElement).value; render(); } })),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '事務所名'), h('input', { type: 'text', value: state.company, placeholder: 'ホームランディック一級建築士事務所', onchange: (e: Event) => { state.company = (e.target as HTMLInputElement).value; render(); } })),
+        ...(
+          [
+            ['designer', '設計担当'],
+            ['tel', 'TEL'],
+            ['email', 'Email'],
+            ['url', 'URL'],
+          ] as const
+        ).map(([k, label]) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'text', value: state[k] ?? '', onchange: (e: Event) => { state[k] = (e.target as HTMLInputElement).value; render(); } }))),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
       ),
       section(
         '収録内容',

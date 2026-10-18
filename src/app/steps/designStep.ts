@@ -259,7 +259,7 @@ export const designStep: Step = {
   mount(ctx) {
     const v = ctx.app.viewer;
     v.setCutaway(null);
-    v.setTownVisible(true);
+    v.setTownVisible(false);
     ctx.app.viewer.groups.context.visible = false;
     let shots = currentShots(ctx);
     let active: Shot | null = null;

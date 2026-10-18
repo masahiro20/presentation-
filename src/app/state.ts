@@ -20,6 +20,11 @@ export interface ProjectState {
   name: string;
   customer: string;
   company: string;
+  /** 提案書の締めのページ: 設計担当・連絡先 */
+  designer?: string;
+  tel?: string;
+  email?: string;
+  url?: string;
   /** 事務所ロゴ（dataURL。図面の表題欄・ヘッダー・シネマに使う） */
   logo?: string;
   pdfName?: string;

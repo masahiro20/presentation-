@@ -598,12 +598,12 @@ export const designStep: Step = {
       };
       side.append(
         section(
-          'カット集（別の AI・Blender に渡す用）',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめます。構図と間取りはそのまま、質感だけを写真のように仕上げてもらう使い方です。'),
+          'カット集（高解像度で一括保存）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、ZIP にまとめます。'),
           h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `📦 カット集を保存（${shots.length}枚・ZIP）`),
-          h('button', { class: 'btn block', title: '各カットに、深度・法線・線画・素材IDの4枚を添えます（AI・Blender に形を固定して渡す条件画像）', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height, passes: true }) }, '🧩 パス付きカット集（AI 用 4 枚セット）'),
+          
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind !== 'interior'), { width: state.render.width, height: state.render.height }) }, '外観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind === 'interior'), { width: state.render.width, height: state.render.height }) }, '内観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, [currentAsShot()], { width: state.render.width, height: state.render.height }) }, 'この構図だけ')),
-          h('p', { class: 'hint' }, 'サイズは下の「サイズ」の設定です。ZIP の「カット一覧と説明文.txt」に、各カットのプロンプト（日本語・英語）が入っています。'),
+          h('p', { class: 'hint' }, 'サイズは下の「サイズ」の設定です。'),
         ),
         section(
           '提案用パースの書き出し',

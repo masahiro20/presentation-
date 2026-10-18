@@ -1,0 +1,45 @@
+/* お客様向けの閲覧ページ（スマホ優先）。白地・細い文字・画面いっぱいの 3D */
+:root { --ink: #1e1e1e; --ink2: #5a5a58; --ink3: #8a8a86; --line: #e4e3e0; --paper: #ffffff; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--paper); color: var(--ink); font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif; font-weight: 300; overflow: hidden; -webkit-user-select: none; user-select: none; }
+#view { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr auto; }
+.vw-head { padding: calc(env(safe-area-inset-top, 0px) + 12px) 18px 10px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.vw-head .office { font-size: 11px; letter-spacing: 0.12em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vw-head .office img { height: 22px; vertical-align: middle; }
+.vw-head .title { font-family: 'Shippori Mincho', serif; font-size: 15px; letter-spacing: 0.1em; white-space: nowrap; }
+.vw-stage { position: relative; min-height: 0; background: #e9ecef; }
+.vw-stage canvas { display: block; width: 100% !important; height: 100% !important; touch-action: none; }
+.vw-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink2); font-size: 13px; letter-spacing: 0.1em; background: var(--paper); z-index: 5; }
+.vw-loading .mark { font-family: 'Shippori Mincho', serif; font-size: 18px; margin-bottom: 10px; color: var(--ink); }
+.vw-tag { position: absolute; left: 14px; bottom: 12px; font-size: 11px; letter-spacing: 0.12em; color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,0.5); pointer-events: none; }
+.vw-foot { padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 10px); border-top: 1px solid var(--line); background: var(--paper); }
+.vw-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-bottom: 6px; }
+.vw-tabs::-webkit-scrollbar { display: none; }
+.vw-tab { flex: none; appearance: none; border: 1px solid var(--line); background: var(--paper); color: var(--ink2); font: inherit; font-size: 12.5px; letter-spacing: 0.08em; padding: 8px 14px; border-radius: 999px; }
+.vw-tab.on { border-color: var(--ink); color: var(--ink); }
+.vw-pane { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding-top: 6px; min-height: 44px; }
+.vw-pane[hidden] { display: none; }
+.vw-chip { appearance: none; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font: inherit; font-size: 12.5px; padding: 7px 12px; border-radius: 6px; }
+.vw-chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.vw-chip.primary { background: var(--ink); color: #fff; border-color: var(--ink); padding: 10px 16px; }
+.vw-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+.vw-row input[type=range] { flex: 1; accent-color: var(--ink); }
+.vw-row .val { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 3.5em; text-align: right; }
+.vw-hint { font-size: 11.5px; color: var(--ink3); width: 100%; }
+/* 歩く: 画面上の十字キー */
+.vw-pad { position: absolute; right: 14px; bottom: 14px; display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(2, 48px); gap: 6px; z-index: 4; }
+.vw-pad button { appearance: none; border: 0; border-radius: 10px; background: rgba(255,255,255,0.85); color: var(--ink); font-size: 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.18); touch-action: none; }
+.vw-pad button:active { background: var(--ink); color: #fff; }
+.vw-pad .up { grid-column: 2; grid-row: 1; }
+.vw-pad .left { grid-column: 1; grid-row: 2; }
+.vw-pad .down { grid-column: 2; grid-row: 2; }
+.vw-pad .right { grid-column: 3; grid-row: 2; }
+.vw-exit { position: absolute; left: 14px; top: 12px; z-index: 4; appearance: none; border: 0; border-radius: 999px; padding: 8px 14px; background: rgba(255,255,255,0.9); color: var(--ink); font: inherit; font-size: 12.5px; box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
+/* 動画・パース */
+.vw-media { position: absolute; inset: 0; background: #111; z-index: 6; display: flex; flex-direction: column; }
+.vw-media video, .vw-media img { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #111; }
+.vw-media .bar { display: flex; gap: 6px; padding: 10px; background: #111; overflow-x: auto; }
+.vw-media .bar button { appearance: none; border: 1px solid #444; background: transparent; color: #eee; font: inherit; font-size: 12.5px; padding: 7px 12px; border-radius: 6px; white-space: nowrap; }
+.vw-media .bar button.on { background: #eee; color: #111; }
+model-viewer { width: 1px; height: 1px; position: absolute; left: -10px; top: -10px; opacity: 0; pointer-events: none; }

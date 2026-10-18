@@ -119,7 +119,7 @@ function plasterBox(o: {
 
 /** 外観テイスト画面の主な選択肢（ホームランディックで実際に使う構成） */
 export const MAIN_EXTERIOR_IDS = ['hl-jolypat-grey', 'hl-jolypat-greige', 'hl-jolypat-beige', 'hl-soton-grey', 'hl-sto-lightgrey', 'hl-galva-black'];
-export const MAIN_INTERIOR_IDS = ['hl-slate-cedar', 'hl-grey-oak', 'hl-dark-stone', 'hl-greige-hotel', 'hl-pale-beige', 'hl-light-gray', 'hl-greige-walnut'];
+export const MAIN_INTERIOR_IDS = ['hl-standard', 'hl-slate-cedar', 'hl-grey-oak', 'hl-dark-stone', 'hl-greige-hotel', 'hl-pale-beige', 'hl-light-gray', 'hl-greige-walnut'];
 const int = (s: InteriorStyle) => s;
 
 export const EXTERIOR_STYLES: ExteriorStyle[] = [
@@ -712,6 +712,32 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     },
     lightKelvin: 2700,
   }),
+  // ホームランディックの標準仕様: オークのフローリング、白の塗り壁、平らな白い天井（木は張らない）、黒の細いサッシ、黒皮鉄の階段。玄関と水まわりはグレーの大判タイル
+  int({
+    id: 'hl-standard',
+    name: 'オークの床 × 白壁 × 白天井（標準）',
+    catch: '明るいオークのフローリング、白い塗り壁、黒のサッシ',
+    description: 'オークのフローリングに、白の塗り壁と平らな白い天井。黒の細いサッシと黒皮鉄の階段、天井際の間接光で陰影をつくる、ホームランディックの標準的な内観。',
+    swatch: ['#efede8', '#c9a97c', '#f4f3f0', '#1f1f1f'],
+    floor: { pattern: 'woodFloor', color: '#c9a97c', color2: '#b8976c', roughness: 0.55, size: 0.15 },
+    wetFloor: { pattern: 'tileFloor', color: '#8e8c88', roughness: 0.45, size: 0.6, size2: 0.6, tile: 1.2 },
+    entranceFloor: { pattern: 'tileFloor', color: '#6f6d69', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
+    wall: { pattern: 'plaster', color: '#efede8', color2: '#e8e5df', roughness: 0.95, normalStrength: 0.18 },
+    accentWall: { pattern: 'plaster', color: '#b9b5ad', color2: '#aeaaa2', roughness: 0.95, normalStrength: 0.25 },
+    ceiling: { pattern: 'paint', color: '#f4f3f0' },
+    door: { pattern: 'paint', color: '#efede8', roughness: 0.6 },
+    trim: '#1f1f1f',
+    furniture: {
+      wood: { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 },
+      fabric: { pattern: 'fabric', color: '#4a4a4a', roughness: 0.95 },
+      fabric2: { pattern: 'fabric', color: '#9a968e', roughness: 0.95 },
+      metal: '#1c1c1c',
+      counter: { pattern: 'stone', color: '#dcdad5', color2: '#d0cec8', roughness: 0.35, size: 3.2 },
+      cabinet: { pattern: 'paint', color: '#e6e4df', roughness: 0.5 },
+      rug: { pattern: 'fabric', color: '#6a675f', roughness: 1 },
+    },
+    lightKelvin: 3000,
+  }),
   // 施工・設計事例（服部様・池本様など）のパースに多い構成: 黒の大判スレートタイル床、白の塗り壁、明るい木の羽目板天井、黒サッシ
   int({
     id: 'hl-slate-cedar',
@@ -1143,7 +1169,7 @@ export interface DesignOptions {
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
   exteriorId: 'hl-jolypat-grey',
-  interiorId: 'hl-slate-cedar',
+  interiorId: 'hl-standard',
   timeOfDay: 'day',
   furniture: true,
 };

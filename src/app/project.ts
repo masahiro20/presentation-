@@ -48,6 +48,9 @@ async function toDataUrl(url: string): Promise<string> {
   }
 }
 
+// 自動点検用
+(globalThis as any).__serializeProject = () => serializeProject();
+
 export async function serializeProject(): Promise<ProjectFile> {
   const gallery = [];
   for (const g of state.gallery) {

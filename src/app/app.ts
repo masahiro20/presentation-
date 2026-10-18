@@ -1,6 +1,7 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
 import { h, clear, toast } from './dom';
 import { state, on, emit } from './state';
+import { shareDialog } from './share';
 import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project';
 import { Viewer } from '../scene/viewer';
 
@@ -137,6 +138,7 @@ export class App {
       { class: 'proj-btns' },
       h('button', { class: 'btn sm', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '💾 保存'),
       h('button', { class: 'btn sm', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '📂 開く'),
+      h('button', { class: 'btn sm accent', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog() }, '🔗 お客様に渡す'),
       input,
     );
   }

@@ -639,6 +639,13 @@ export class Viewer {
     }
   }
 
+  /** 画面上のボタン（スマホ）から歩く操作を入れる: 'w' 'a' 's' 'd' を押した／離した */
+  pressKey(key: 'w' | 'a' | 's' | 'd' | 'shift', on: boolean) {
+    if (on) this.keys.add(key);
+    else this.keys.delete(key);
+    this.dirty = true;
+  }
+
   /** キー操作の受付（入力欄の操作中は除く） */
   private bindKeys() {
     const typing = (e: KeyboardEvent) => {

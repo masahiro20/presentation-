@@ -41,7 +41,7 @@ function generate(ctx: StepCtx, color: boolean) {
 
 export const elevationStep: Step = {
   id: 'elevation',
-  label: '立面図',
+  label: '図面',
   needsModel: true,
   uses3d: false,
   mount(ctx) {

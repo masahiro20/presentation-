@@ -251,6 +251,9 @@ function isInside(ctx: StepCtx): boolean {
   return p.x > b.min.x && p.x < b.max.x && p.z > b.min.z && p.z < b.max.z && p.y < v.state!.meta.topY;
 }
 
+/** サイドパネルで開いているタブ（作り直しても保つ） */
+let designTab = 'taste';
+
 export const designStep: Step = {
   id: 'design',
   label: '外観・内観パース',
@@ -511,7 +514,7 @@ export const designStep: Step = {
       );
       // 見どころ
       const list = h('div', { class: 'shot-list' });
-      for (const s of shots) {
+      for (const s of shots.filter((x) => x.kind !== 'section')) {
         list.appendChild(
           h(
             'button',
@@ -523,11 +526,11 @@ export const designStep: Step = {
               },
             },
             h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観'),
-            h('div', null, s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title),
+            h('div', null, (s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC')),
           ),
         );
       }
-      side.append(section('見どころカメラ（自動）', list, h('p', { class: 'hint' }, 'ドラッグで回転（クリックした物を中心に回ります）、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。「👁目線」にすると人の目の高さで歩けます: ドラッグで見回し、ホイールまたは W・S で前後、A・D で左右、Shift で速く。壁は通り抜けず、階段も上れます。')));
+      side.append(section('見どころカメラ（自動）', list, h('details', { class: 'hint-fold' }, h('summary', null, '操作のヒント'), h('p', { class: 'hint' }, 'ドラッグで回転（クリックした物を中心に回ります）、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。「👁目線」にすると人の目の高さで歩けます: ドラッグで見回し、ホイールまたは W・S で前後、A・D で左右、Shift で速く。壁は通り抜けず、階段も上れます。'))));
       // 撮影
       const samplesSel = h(
         'select',
@@ -646,8 +649,8 @@ export const designStep: Step = {
           h(
             'button',
             {
-              class: 'btn sm ghost block',
-              style: 'margin-top:6px',
+              class: 'btn primary block',
+              style: 'margin-top:10px',
               title: 'Blender・D5 Render・Twinmotion・Lumion などで写真品質のパースを作るための 3D モデル（材料・テクスチャ付き）と、見どころカメラの位置',
               onclick: async () => {
                 const pm = progressModal('3D モデルを書き出しています', false);
@@ -663,7 +666,7 @@ export const designStep: Step = {
                 }
               },
             },
-            '🧊 3D モデルを書き出す（.glb・外部レンダラー用）',
+            '🧊 D5・Twinmotion へ渡す 3D モデル（.glb＋カメラ）',
           ),
         ),
       );
@@ -697,6 +700,35 @@ export const designStep: Step = {
         }
       };
       renderGallery();
+      // ---- 区画をタブにまとめる（縦に長い一覧をやめ、今の作業に必要なものだけを見せる） ----
+      const TABS: { id: string; label: string; match: RegExp }[] = [
+        { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
+        { id: 'spec', label: '納まり', match: /標準仕様/ },
+        { id: 'export', label: '書き出し', match: /書き出し|カット集|ギャラリー/ },
+      ];
+      const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
+      const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));
+      let cameraSec: HTMLElement | null = null;
+      for (const sec of secs) {
+        const title = sec.querySelector('h4, summary')?.textContent ?? '';
+        // 見どころカメラはいつも見せる（タブの上）
+        if (/カメラ/.test(title)) {
+          cameraSec = sec;
+          continue;
+        }
+        const t = TABS.find((x) => x.match.test(title)) ?? TABS[0];
+        panes.get(t.id)!.appendChild(sec);
+      }
+      const bar = h('div', { class: 'side-tabs' });
+      const show = (id: string) => {
+        designTab = id;
+        for (const [k, el] of panes) el.hidden = k !== id;
+        for (const b of bar.children) (b as HTMLElement).classList.toggle('on', (b as HTMLElement).dataset.tab === id);
+      };
+      for (const t of TABS) bar.appendChild(h('button', { class: 'side-tab', 'data-tab': t.id, onclick: () => show(t.id) }, t.label));
+      if (cameraSec) side.append(cameraSec);
+      side.append(bar, ...panes.values());
+      show(designTab);
     };
     renderSide();
   },

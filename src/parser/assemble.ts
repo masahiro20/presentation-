@@ -10,6 +10,7 @@ import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './r
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs } from './stairs';
 import { detectSite, translateSite } from './site';
+import { detectSymbols, symbolsToItems } from './symbols';
 
 export interface MmText {
   str: string;
@@ -794,6 +795,19 @@ export interface FloorHints {
   courtyards?: Vec2[];
 }
 
+/** 同じ線（平面の線と周囲の線で重複したもの）を 1 本にする */
+function uniqueSegs(segs: Seg[]): Seg[] {
+  const seen = new Set<string>();
+  const out: Seg[] = [];
+  for (const s of segs) {
+    const k = `${Math.round(s.a.x)},${Math.round(s.a.y)},${Math.round(s.b.x)},${Math.round(s.b.y)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
 export function buildFloor(plan: PlanData, level: number, northAngleDeg: number, warnings: string[], expectedArea?: number, hints?: FloorHints): Floor {
   const walls = plan.walls;
   const res = 20;
@@ -1445,6 +1459,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   }
 
   if (!rooms.length) warnings.push(`${level}階: 部屋を検出できませんでした`);
+  // 家具・設備・車・植栽の記号（スキャン図面には無い）
+  const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(detectSymbols(uniqueSegs([...plan.segs, ...plan.siteSegs])), rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
   return {
     level,
     elevation: 0,
@@ -1455,6 +1471,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     rooms,
     stairs,
     outline,
+    planItems: sym.items.length ? sym.items : undefined,
+    exterior: sym.exterior.cars.length || sym.exterior.trees.length ? sym.exterior : undefined,
   };
 }
 
@@ -1780,6 +1798,14 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
     plans.splice(plans.indexOf(p), 1);
   }
+  // 周囲の線（敷地・車・植栽の読み取り用）から、同じページにある別の階の図面の範囲を除く
+  for (const p of plans) {
+    const others = plans.filter((q) => q !== p && q.pageIndex === p.pageIndex);
+    if (!others.length) continue;
+    const inOther = (q: Vec2) => others.some((o) => q.x > o.bbox.minX - 400 && q.x < o.bbox.maxX + 400 && q.y > o.bbox.minY - 400 && q.y < o.bbox.maxY + 400);
+    p.siteSegs = p.siteSegs.filter((s) => !(inOther(s.a) && inOther(s.b)));
+    p.siteTexts = p.siteTexts.filter((t) => !inOther(t));
+  }
   return plans;
 }
 
@@ -2082,6 +2108,11 @@ export function translateFloor(f: Floor, dx: number, dy: number) {
     s.maxY += dy;
   }
   f.outline = f.outline.map((l) => l.map(tr));
+  if (f.planItems) for (const it of f.planItems) { it.x = Math.round(it.x + dx); it.y = Math.round(it.y + dy); }
+  if (f.exterior) {
+    f.exterior.cars = f.exterior.cars.map((c) => ({ ...c, x: Math.round(c.x + dx), y: Math.round(c.y + dy) }));
+    f.exterior.trees = f.exterior.trees.map((t) => ({ ...t, x: Math.round(t.x + dx), y: Math.round(t.y + dy) }));
+  }
 }
 
 export { normalizeText };
@@ -2230,5 +2261,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     if (l.type) r.type = l.type;
     r.labelPos = { x: l.x, y: l.y };
   }
-  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs };
+  // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す
+  const planItems = f.planItems?.map((it) => ({ ...it, roomId: nf.rooms.find((r) => pointInPolygon({ x: it.x, y: it.y }, r.polygon))?.id ?? it.roomId }));
+  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs, planItems, exterior: f.exterior };
 }

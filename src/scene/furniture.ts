@@ -115,6 +115,10 @@ interface RoomCtx {
   lights: LightPoint[];
   room: Room;
   env: ItemEnv;
+  /** 図面の記号から置いた家具の種類（自動配置はこれ以外を補う） */
+  has: Set<FurnitureKind>;
+  /** 図面から置いたキッチン（ダイニングの並びに使う） */
+  planKitchen?: FurnitureItem;
 }
 
 /** 家具を置くときの階の情報 */
@@ -158,13 +162,13 @@ export const FURNITURE_LABEL: Record<FurnitureKind, string> = {
 export function furnitureDims(it: FurnitureItem): { w: number; d: number; v0: number } {
   switch (it.kind) {
     case 'kitchen':
-      return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: (it.kitchenType ?? 'peninsula') === 'wall' ? 0.7 : 2.42, v0: 0 };
+      return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: (it.kitchenType ?? 'peninsula') === 'wall' ? 0.7 : (it.d ? Math.max(1.2, Math.min(2.6, it.d)) : 1.52) + 0.45, v0: 0 };
     case 'fridge':
       return { w: 0.68, d: 0.7, v0: 0 };
     case 'cupboard':
       return { w: it.w ?? 1.8, d: 0.45, v0: 0 };
     case 'dining':
-      return { w: 1.6, d: 1.65, v0: -0.83 };
+      return { w: it.w ?? 1.8, d: 1.65, v0: -0.83 };
     case 'sofa':
       return { w: it.w ?? 2.1, d: 0.9, v0: 0 };
     case 'coffeeTable':
@@ -281,13 +285,20 @@ export function buildFurniture(
       currentOcc = [];
       occupancy.set(room.id, currentOcc);
       currentRoomId = room.id;
-      const ctx: RoomCtx = { mb, R, y: f.elevation * MM, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room, env };
+      const ctx: RoomCtx = { mb, R, y: f.elevation * MM, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room, env, has: new Set() };
       collectBlocked(ctx, f, inner);
       const ceilingY = f.ceilingHeight * MM;
       const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - 0.02, (R.minZ + R.maxZ) / 2);
       if (override) {
         if (!['void', 'balcony', 'porch', 'garage', 'other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
         continue;
+      }
+      // 図面の記号から読んだ家具は、図面どおりの位置・向きに先に置く
+      for (const it of f.planItems ?? []) {
+        if (it.roomId !== room.id) continue;
+        emitItem({ ...it }, env);
+        ctx.has.add(it.kind);
+        if (it.kind === 'kitchen') ctx.planKitchen = it;
       }
       switch (room.type) {
         case 'ldk':
@@ -390,7 +401,7 @@ function emitItem(it: FurnitureItem, env: ItemEnv) {
       break;
     }
     case 'dining':
-      diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY);
+      diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY, it.w);
       break;
     case 'sofa':
       sofa(fr, 0, 0, it.w ?? 2.1);
@@ -598,14 +609,17 @@ function rug(fr: Frame, u: number, v: number, w: number, d: number) {
   fr.box('f.rug', u, v, w, d, 0.002, 0.012);
 }
 
-function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number) {
+function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number, width?: number) {
   // v = テーブル中心までの距離。無垢の一枚板（厚 4cm）を 2 枚の板脚で受ける、設計事務所らしい端正なテーブル
-  const tw = 1.8;
+  const tw = width ?? 1.8;
   const td = 0.9;
   fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
   for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
-  // 椅子: 細い木のフレームに布張りの座、低い背（Y チェア・CH 系のような軽い形）
-  for (const du of [-0.45, 0.45])
+  // 椅子: 細い木のフレームに布張りの座、低い背（Y チェア・CH 系のような軽い形）。長いテーブルは 3 脚ずつ
+  const perSide = tw >= 2.3 ? 3 : 2;
+  const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;
+  const chairUs = perSide === 3 ? [-pitch, 0, pitch] : [-0.45, 0.45];
+  for (const du of chairUs)
     for (const side of [-1, 1]) {
       const cv = v + side * (td / 2 + 0.18);
       fr.box('f.fabric2', u + du, cv - 0.22, 0.46, 0.44, 0.41, 0.05);
@@ -623,7 +637,7 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
 }
 
-function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureItem, 'kitchenType' | 'stoveSide' | 'fridge' | 'hood'> = {}) {
+function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureItem, 'kitchenType' | 'stoveSide' | 'fridge' | 'hood' | 'd'> = {}) {
   const type = opt.kitchenType ?? 'peninsula';
   const stoveSign = (opt.stoveSide ?? 'right') === 'right' ? 1 : -1;
   const fridge = opt.fridge ?? 'right';
@@ -675,7 +689,8 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
   for (let k = 1; k < Math.round(bw / 0.6); k++) fr.box('f.metal', -bw / 2 + (bw / Math.round(bw / 0.6)) * k, 0.62, 0.006, 0.004, 0.02, ceilingY - 0.04);
   // アイランド: 厚い石の天板を両端で床まで落とす（ウォーターフォール）。扉は取っ手なしのフラット面
   const cw = Math.min(len - 0.4, 2.7);
-  const cv = 0.62 + 0.9;
+  // アイランドの中心までの距離（図面から読んだ場合はその位置）
+  const cv = opt.d ? Math.max(1.2, Math.min(2.6, opt.d)) : 0.62 + 0.9;
   const depth = 0.9;
   fr.box('f.cabinet', 0, cv + 0.02, cw - 0.12, depth - 0.04, 0.08, 0.8);
   fr.box('f.metal', 0, cv + 0.1, cw - 0.2, depth - 0.2, 0, 0.08); // 奥に引いた台輪の影
@@ -712,15 +727,21 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   } else {
     kSide = opposite[winSide];
   }
+  if (ctx.planKitchen) kSide = sideOfRot(ctx.planKitchen.rot);
   const total = kSide === 'e' || kSide === 'w' ? W : D;
   const kDepth = total >= 6.5 ? 2.5 : 2.3;
   const dDepth = total >= 6.5 ? 2.4 : 2.1;
   const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== 'dining' && ctx.room.type !== 'kitchen';
   const { f: kf, len: klen } = sideFrame(ctx, kSide);
-  place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
+  if (!ctx.has.has('kitchen')) place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
   // ダイニング
-  place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
+  if (!ctx.has.has('dining')) place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
   if (!hasLiving) return;
+  // 図面にソファがあればリビングはそのまま（テレビ台だけソファの向く壁に）
+  if (ctx.has.has('sofa')) {
+    ctx.lights.push({ pos: kf.point(0, kDepth + dDepth + (total - kDepth - dDepth) / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
+    return;
+  }
   // リビング: 反対側の壁 or 窓のない長辺
   const livStart = kDepth + dDepth;
   const livDepth = total - livStart;
@@ -808,6 +829,7 @@ function layoutBedroom(ctx: RoomCtx, big: boolean) {
     }
     if (placed) break;
   }
+  if (ctx.has.has('bed')) placed = null;
   if (placed) {
     const { s, f, u, depth } = placed;
     place('bed', f, u, 0.02, ctx.env, { w: bw });
@@ -873,7 +895,7 @@ function layoutBath(ctx: RoomCtx) {
   const s: Side = W >= D ? (ctx.windows.n > ctx.windows.s ? 's' : 'n') : ctx.windows.w > ctx.windows.e ? 'e' : 'w';
   const { f, len } = sideFrame(ctx, s);
   const tw = Math.min(len - 0.05, 1.6);
-  place('bath', f, 0, 0, ctx.env, { len: +tw.toFixed(2) });
+  if (!ctx.has.has('bath')) place('bath', f, 0, 0, ctx.env, { len: +tw.toFixed(2) });
   // 水栓・鏡
   const o = opposite[s];
   const { f: of } = sideFrame(ctx, o);
@@ -883,14 +905,16 @@ function layoutBath(ctx: RoomCtx) {
 function layoutWash(ctx: RoomCtx) {
   const order = (['n', 's', 'e', 'w'] as Side[]).sort((a, b) => ctx.windows[a] - ctx.windows[b]);
   let used: Side | null = null;
-  for (const s of order) {
-    const { f, len } = sideFrame(ctx, s);
-    const u = findSpot(ctx, s, 0.8, len, -len / 4);
-    if (u == null) continue;
-    place('washstand', f, u, 0, ctx.env);
-    used = s;
-    break;
-  }
+  if (ctx.has.has('washstand')) used = sideOfRot(ctx.has.has('washstand') ? (currentItems?.find((it) => it.roomId === ctx.room.id && it.kind === 'washstand')?.rot ?? 0) : 0);
+  else
+    for (const s of order) {
+      const { f, len } = sideFrame(ctx, s);
+      const u = findSpot(ctx, s, 0.8, len, -len / 4);
+      if (u == null) continue;
+      place('washstand', f, u, 0, ctx.env);
+      used = s;
+      break;
+    }
   if (!used) return;
   for (const s of order) {
     if (s === used) continue;
@@ -908,6 +932,7 @@ function layoutToilet(ctx: RoomCtx) {
   const D = R.maxZ - R.minZ;
   // 短辺の奥（ドアのない側）
   const cands: Side[] = W < D ? ['n', 's'] : ['w', 'e'];
+  if (ctx.has.has('toilet')) return;
   const s = cands.sort((a, b) => ctx.blocked[a].length - ctx.blocked[b].length)[0];
   const { f } = sideFrame(ctx, s);
   place('toilet', f, 0, 0, ctx.env);

@@ -711,7 +711,14 @@ export class Viewer {
     void placeModels(fur.models, this.groups.furniture, () => gen === this.modelGen).then((n) => {
       if (n) this.dirty = true;
     });
-    const land = buildLandscape(meta, ext, model.site);
+    const ex0 = model.floors.find((f) => f.exterior)?.exterior;
+    const planExt = ex0
+      ? {
+          cars: ex0.cars.map((c) => ({ x: c.x * MM, z: c.y * MM, dirX: Math.cos((c.rot * Math.PI) / 180), dirZ: Math.sin((c.rot * Math.PI) / 180) })),
+          trees: ex0.trees.map((t) => ({ x: t.x * MM, z: t.y * MM, r: t.r * MM })),
+        }
+      : undefined;
+    const land = buildLandscape(meta, ext, model.site, planExt);
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));

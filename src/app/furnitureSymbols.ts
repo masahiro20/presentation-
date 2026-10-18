@@ -76,7 +76,7 @@ export function furnitureSymbol(it: FurnitureItem): Prim[] {
         text(fu, 0.42, '冷蔵庫', 0.12);
       }
       const cw = Math.min(len - 0.4, 2.55);
-      const cv = 1.35;
+      const cv = it.d ? Math.max(1.2, Math.min(2.6, it.d)) - 0.17 : 1.35;
       rect(0, cv, cw, type === 'island' ? 0.95 : 0.75, { fill: BODY });
       if (type === 'peninsula') line(-cw / 2, cv + 0.75, cw / 2, cv + 0.75, { stroke: '#4a4e55' });
       fittings(0, cv, cw);

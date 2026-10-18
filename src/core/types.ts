@@ -119,6 +119,10 @@ export interface Floor {
   stairs: Stair[];
   /** 建物外形（外壁芯） */
   outline: Vec2[][];
+  /** 図面の記号から読み取った家具・設備（図面どおりの位置・向き。自動配置より優先） */
+  planItems?: FurnitureItem[];
+  /** 図面の記号から読み取った外構（車・植栽。図面座標 mm） */
+  exterior?: { cars: { x: number; y: number; rot: number }[]; trees: { x: number; y: number; r: number }[] };
 }
 
 export interface ParseReport {
@@ -198,7 +202,7 @@ export interface FurnitureItem {
   rot: number;
   /** 幅 (m)（ソファ・ベッド・ラグ・テレビ台など） */
   w?: number;
-  /** 奥行 (m)（ラグ） */
+  /** 奥行 (m)（ラグ）。キッチンでは背面の壁からアイランド中心までの距離 */
   d?: number;
   /** 長さ (m)（キッチン・浴槽） */
   len?: number;

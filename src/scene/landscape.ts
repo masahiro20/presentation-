@@ -49,7 +49,13 @@ export interface LandscapePlan {
   cars: { x: number; z: number; dirX: number; dirZ: number }[];
 }
 
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
+/** 図面の記号から読んだ外構（ワールド座標 m） */
+export interface PlanExterior {
+  cars: { x: number; z: number; dirX: number; dirZ: number }[];
+  trees: { x: number; z: number; r: number }[];
+}
+
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
   const mb = new MeshBuilder();
   const trees = new MeshBuilder();
   const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [] };
@@ -156,8 +162,20 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   };
   rect('l.driveway', parkCenterAlong - parkW / 2, parkCenterAlong + parkW / 2, depthA - 0.3, depthB, 0.012);
   const parking = { center: toWorld(parkCenterAlong, (depthA + depthB) / 2, 0), along };
-  // 駐車場の車（奥行が足りるときだけ。道路に向けて前進駐車）
-  if (depthB - depthA > 4.8) {
+  // 図面に車が描かれていれば、その位置・向きに駐車場（舗装）を取る。車そのものは平面図にだけ描く（3D の外観パースは建物を主役に）
+  if (planExt?.cars.length) {
+    for (const c of planExt.cars) {
+      plan.cars.push(c);
+      const a = V(c.dirX, 0, c.dirZ).normalize();
+      const s = V(-a.z, 0, a.x);
+      const p = [V(c.x, 0.012, c.z).addScaledVector(a, -2.7).addScaledVector(s, -1.35), V(c.x, 0.012, c.z).addScaledVector(a, 2.7).addScaledVector(s, -1.35), V(c.x, 0.012, c.z).addScaledVector(a, 2.7).addScaledVector(s, 1.35), V(c.x, 0.012, c.z).addScaledVector(a, -2.7).addScaledVector(s, 1.35)];
+      plan.paving.push({ key: 'l.driveway', pts: p });
+      const n = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
+      if (n.y < 0) mb.quad('l.driveway', p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
+      else mb.quad('l.driveway', p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
+    }
+  } else if (depthB - depthA > 4.8) {
+    // 駐車場の車（奥行が足りるときだけ。道路に向けて前進駐車）
     const nCar = parkW >= 5.0 ? 2 : 1;
     for (let i = 0; i < nCar; i++) {
       const a = parkCenterAlong + (nCar === 2 ? (i - 0.5) * 2.6 : 0);
@@ -254,11 +272,11 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   }
 
   // 植栽: シンボルツリー（アプローチ脇）と庭木
-  const addTree = (p0: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern') => {
+  const addTree = (p0: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern', exact = false) => {
     // 敷地の内側で、建物から離れた位置に（だめなら敷地の中心へ寄せて探す。見つからなければ植えない）
     const r0 = h * 0.22;
     const siteC = V((min.x + max.x) / 2, 0, (min.y + max.y) / 2);
-    let p: THREE.Vector3 | null = null;
+    let p: THREE.Vector3 | null = exact ? p0.clone() : null;
     for (let k = 0; k <= 6 && !p; k++) {
       const q = p0.clone().lerp(siteC, k * 0.12);
       if (spotOk(q, r0)) p = q;
@@ -310,7 +328,10 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     }
   };
   const kind = style.landscape.trees;
-  if (ent) {
+  // 図面に描かれた植栽はその位置に（大きさは記号の半径から）
+  const drawn = planExt?.trees ?? [];
+  for (const t of drawn) addTree(V(t.x, 0, t.z), Math.min(5.5, Math.max(2.2, t.r * 4.5)), kind, true);
+  if (ent && drawn.length < 2) {
     // シンボルツリーは駐車場と反対側の敷地の角（構図の額縁になる位置）
     const cornerAlong = parkSign > 0 ? alongMin + 1.3 : alongMax - 1.3;
     const tp = toWorld(Math.abs(cornerAlong - entAlong) > 1.8 ? cornerAlong : entAlong - 2.2 * parkSign, depthB - 1.1, 0);
@@ -321,8 +342,10 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   // 裏庭・側面
   const backCenter = road.clone().multiplyScalar(-1);
   const bpos = V(cx, 0, cz).addScaledVector(backCenter, (road.x !== 0 ? max.x - min.x : max.y - min.y) / 2 - 0.9);
-  addTree(bpos.clone().addScaledVector(along, (alongMax - alongMin) * 0.35), 3.6, kind);
-  addTree(bpos.clone().addScaledVector(along, -(alongMax - alongMin) * 0.38), 3.0, kind);
+  if (drawn.length < 2) {
+    addTree(bpos.clone().addScaledVector(along, (alongMax - alongMin) * 0.35), 3.6, kind);
+    addTree(bpos.clone().addScaledVector(along, -(alongMax - alongMin) * 0.38), 3.0, kind);
+  }
   for (let i = 0; i < 5; i++) shrub(bpos.clone().addScaledVector(along, (rnd() - 0.5) * (alongMax - alongMin) * 0.8), 0.3 + rnd() * 0.2);
   // 庭木が足りなければ、敷地の空いている所（建物・舗装から離れた場所）に植える
   for (let guard = 0; plan.trees.length < 3 && guard < 3; guard++) {

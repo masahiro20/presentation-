@@ -724,7 +724,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     entranceFloor: { pattern: 'tileFloor', color: '#3a3c3f', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
     wall: { pattern: 'plaster', color: '#e8e6e1', color2: '#e1dfd9', roughness: 0.95, normalStrength: 0.18 },
     accentWall: { pattern: 'stone', color: '#7d7b77', color2: '#6b6966', roughness: 0.8, size: 0.4, size2: 0.25 },
-    ceiling: { pattern: 'woodSiding', color: '#c8a678', color2: '#b8956a', roughness: 0.65, size: 0.1 },
+    ceiling: { pattern: 'woodSiding', color: '#d2b991', color2: '#c4a97f', roughness: 0.7, size: 0.075 },
     door: { pattern: 'paint', color: '#e8e6e1', roughness: 0.6 },
     trim: '#1f1f1f',
     furniture: {

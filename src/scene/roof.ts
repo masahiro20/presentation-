@@ -206,14 +206,13 @@ function roofPlane(ctx: RoofCtx, top: V3[], eaveEdges: number[], downhill: V3) {
 }
 
 /** 鉛直面内の多角形を厚み t で押し出す（妻壁など） */
-function prism(mb: MeshBuilder, key: string, pts: V3[], normal: V3, t: number) {
+function prism(mb: MeshBuilder, key: string, pts: V3[], normal: V3, t: number, skipBottom = false) {
   const off = normal.clone().multiplyScalar(t / 2);
   const front = pts.map((p) => p.clone().add(off));
   const back = pts.map((p) => p.clone().sub(off));
-  const uA = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), normal).normalize();
-  const vA = new THREE.Vector3(0, 1, 0);
-  mb.polygon(key, front, normal, uA, vA);
-  mb.polygon(key, back.slice().reverse(), normal.clone().negate(), uA, vA);
+  // 外壁と同じ向きのテクスチャ座標（外壁の面と柄・色がそろうように）
+  mb.polygon(key, front, normal);
+  mb.polygon(key, back.slice().reverse(), normal.clone().negate());
   const cen = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
   for (let i = 0; i < pts.length; i++) {
     const a = front[i];
@@ -221,10 +220,47 @@ function prism(mb: MeshBuilder, key: string, pts: V3[], normal: V3, t: number) {
     const c = back[(i + 1) % pts.length];
     const d = back[i];
     const out = new THREE.Vector3().addVectors(pts[i], pts[(i + 1) % pts.length]).multiplyScalar(0.5).sub(cen);
+    // 外壁の天端に乗る下の面は作らない（継ぎ目に点線のように透けるため）
+    if (skipBottom && Math.abs(pts[i].y - pts[(i + 1) % pts.length].y) < 1e-4 && out.y < 0) continue;
     const qn = new THREE.Vector3().subVectors(d, a).cross(new THREE.Vector3().subVectors(c, a));
     if (qn.dot(out) >= 0) mb.quad(key, a, d, c, b);
     else mb.quad(key, a, b, c, d);
   }
+}
+
+type Region = { minX: number; maxX: number; minZ: number; maxZ: number };
+/**
+ * 妻壁（片流れ・切妻の三角形・台形）。外側の面を下の外壁の面にぴったりそろえ、薄くする分は内側に逃がす
+ * （外壁の面から引っ込むと、継ぎ目の線と、そこだけ色の違う三角形が見えるため）
+ */
+function gablePrism(ctx: RoofCtx, R: Region, pts: V3[], normal: V3) {
+  const t = ctx.wallT - inset();
+  const cen = pts.reduce((a, p) => a.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+  const out = Math.sign(cen.x * normal.x + cen.z * normal.z - (((R.minX + R.maxX) / 2) * normal.x + ((R.minZ + R.maxZ) / 2) * normal.z)) || 1;
+  const sh = normal.clone().multiplyScalar((out * (ctx.wallT - t)) / 2);
+  prism(ctx.mb, ctx.gableKey, pts.map((p) => p.clone().add(sh)), normal, t, true);
+}
+/**
+ * 壁の立ち上がり（箱）。同じく外側の面を外壁の面にそろえ、外壁と同じ向きのテクスチャ座標で張る。
+ * 下の面は作らない（外壁の天端と重なる見えない面が、継ぎ目に点線のように透けて見えるため）
+ */
+function gableBox(ctx: RoofCtx, R: Region, c: V3, dir: V3, len: number, h: number) {
+  const t = ctx.wallT - boxT();
+  const u = dir.clone().setY(0).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const n = new THREE.Vector3().crossVectors(u, up).normalize();
+  const out = Math.sign((c.x - (R.minX + R.maxX) / 2) * n.x + (c.z - (R.minZ + R.maxZ) / 2) * n.z) || 1;
+  const b = c.clone().addScaledVector(n, (out * (ctx.wallT - t)) / 2);
+  const P = (s: number, y: number, d: number) => b.clone().addScaledVector(u, s).addScaledVector(up, y).addScaledVector(n, d);
+  const hl = len / 2;
+  const hd = t / 2;
+  const k = ctx.gableKey;
+  const mb = ctx.mb;
+  mb.quad(k, P(-hl, 0, hd), P(hl, 0, hd), P(hl, h, hd), P(-hl, h, hd)); // +n
+  mb.quad(k, P(hl, 0, -hd), P(-hl, 0, -hd), P(-hl, h, -hd), P(hl, h, -hd)); // -n
+  mb.quad(k, P(-hl, h, -hd), P(-hl, h, hd), P(hl, h, hd), P(hl, h, -hd)); // 上
+  mb.quad(k, P(-hl, 0, -hd), P(-hl, 0, hd), P(-hl, h, hd), P(-hl, h, -hd)); // 始端
+  mb.quad(k, P(hl, 0, hd), P(hl, 0, -hd), P(hl, h, -hd), P(hl, h, hd)); // 終端
 }
 
 function gutter(ctx: RoofCtx, a: V3, b: V3, outward: V3) {
@@ -256,7 +292,7 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
     // 妻壁
     for (const x of [R.minX, R.maxX]) {
       if (!ctx.onBoundary(x, R.minZ, x, R.maxZ)) continue;
-      prism(ctx.mb, ctx.gableKey, [V(x, H - 0.01, R.minZ - ctx.wallT / 2), V(x, H - 0.01, R.maxZ + ctx.wallT / 2), V(x, yR - T + 0.01, zc)], V(1, 0, 0), ctx.wallT - inset());
+      gablePrism(ctx, R, [V(x, H - 0.01, R.minZ - ctx.wallT / 2), V(x, H - 0.01, R.maxZ + ctx.wallT / 2), V(x, yR - T + 0.01, zc)], V(1, 0, 0));
     }
     return yR;
   } else {
@@ -273,7 +309,7 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
     gutter(ctx, V(R.maxX + e, yE, z0), V(R.maxX + e, yE, z1), V(1, 0, 0));
     for (const z of [R.minZ, R.maxZ]) {
       if (!ctx.onBoundary(R.minX, z, R.maxX, z)) continue;
-      prism(ctx.mb, ctx.gableKey, [V(R.minX - ctx.wallT / 2, H - 0.01, z), V(xc, yR - T + 0.01, z), V(R.maxX + ctx.wallT / 2, H - 0.01, z)], V(0, 0, 1), ctx.wallT - inset());
+      gablePrism(ctx, R, [V(R.minX - ctx.wallT / 2, H - 0.01, z), V(xc, yR - T + 0.01, z), V(R.maxX + ctx.wallT / 2, H - 0.01, z)], V(0, 0, 1));
     }
     return yR;
   }
@@ -370,11 +406,11 @@ function shedRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     for (const x of [R.minX, R.maxX]) {
       if (!ctx.onBoundary(x, R.minZ, x, R.maxZ)) continue;
       const pts = [V(x, H - 0.01, zLow), V(x, H - 0.01, zHigh), V(x, yAt(span) - 0.005, zHigh), V(x, H + 0.03, zLow)];
-      prism(ctx.mb, ctx.gableKey, high === 'n' ? pts.reverse() : pts, V(1, 0, 0), t - inset());
+      gablePrism(ctx, R, high === 'n' ? pts.reverse() : pts, V(1, 0, 0));
     }
     if (!attached && ctx.onBoundary(R.minX, zHigh, R.maxX, zHigh)) {
       const c = V((R.minX + R.maxX) / 2, H - 0.01, zHigh);
-      ctx.mb.box(ctx.gableKey, c, V(1, 0, 0), R.maxX - R.minX + t - boxLen(), yAt(span) - H, t - boxT());
+      gableBox(ctx, R, c, V(1, 0, 0), R.maxX - R.minX + t - boxLen(), yAt(span) - H);
     }
   } else {
     const xHigh = high === 'w' ? R.minX : R.maxX;
@@ -382,11 +418,11 @@ function shedRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     for (const z of [R.minZ, R.maxZ]) {
       if (!ctx.onBoundary(R.minX, z, R.maxX, z)) continue;
       const pts = [V(xLow, H - 0.01, z), V(xHigh, H - 0.01, z), V(xHigh, yAt(span) - 0.005, z), V(xLow, H + 0.03, z)];
-      prism(ctx.mb, ctx.gableKey, pts, V(0, 0, 1), t - inset());
+      gablePrism(ctx, R, pts, V(0, 0, 1));
     }
     if (!attached && ctx.onBoundary(xHigh, R.minZ, xHigh, R.maxZ)) {
       const c = V(xHigh, H - 0.01, (R.minZ + R.maxZ) / 2);
-      ctx.mb.box(ctx.gableKey, c, V(0, 0, 1), R.maxZ - R.minZ + t - boxLen(), yAt(span) - H, t - boxT());
+      gableBox(ctx, R, c, V(0, 0, 1), R.maxZ - R.minZ + t - boxLen(), yAt(span) - H);
     }
   }
   return yHigh;
@@ -450,7 +486,7 @@ function shedRoofPlane(
     [w1, bW1],
   ] as const) {
     if (!b) continue;
-    prism(ctx.mb, ctx.gableKey, [W(sA, wv, H - 0.01), W(sB, wv, H - 0.01), W(sB, wv, under(sB) - 0.005), W(sA, wv, under(sA) - 0.005)], wn, t - inset());
+    gablePrism(ctx, R, [W(sA, wv, H - 0.01), W(sB, wv, H - 0.01), W(sB, wv, under(sB) - 0.005), W(sA, wv, under(sA) - 0.005)], wn);
   }
   // 高い側・低い側の壁の立ち上がり
   for (const [sv, b] of [
@@ -460,7 +496,7 @@ function shedRoofPlane(
     const h = under(sv) - H;
     if (!b || h < 0.06) continue;
     const c = W(sv, (w0 + w1) / 2, H - 0.01);
-    ctx.mb.box(ctx.gableKey, c, alongZ ? V(1, 0, 0) : V(0, 0, 1), w1 - w0 + t - boxLen(), h + 0.005, t - boxT());
+    gableBox(ctx, R, c, alongZ ? V(1, 0, 0) : V(0, 0, 1), w1 - w0 + t - boxLen(), h + 0.005);
   }
   return yTop(s0);
 }
@@ -484,7 +520,7 @@ function flatRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; m
     const L = dir.length();
     dir.normalize();
     const c = V((x0 + x1) / 2, H - 0.01, (z0 + z1) / 2);
-    ctx.mb.box(ctx.gableKey, c, dir, L + t - boxLen(), para + 0.01, t - boxT());
+    gableBox(ctx, R, c, dir, L + t - boxLen(), para + 0.01);
     ctx.mb.box('ext.fascia', c.clone().setY(H + para), dir, L + t + 0.02, 0.04, t + 0.03);
   }
 }

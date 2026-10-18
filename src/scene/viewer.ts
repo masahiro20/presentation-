@@ -116,6 +116,7 @@ export class Viewer {
   private lastTick = performance.now();
   private camMoved() {
     this.cullTown();
+    this.declutterLabels();
     this._dirty = true;
     this.lastMove = performance.now();
   }
@@ -263,7 +264,7 @@ export class Viewer {
     this.scene.add(this.root);
     for (const g of Object.values(this.groups)) this.root.add(g);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(4096, 4096);
     this.sun.shadow.bias = -0.0002;
     this.sun.shadow.normalBias = 0.03;
     this.sun.shadow.radius = 3;
@@ -893,7 +894,7 @@ export class Viewer {
     if (ext) b.union(ext);
     if (extra && !extra.isEmpty()) b.union(extra);
     const c = b.getCenter(new THREE.Vector3());
-    const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5 + 14;
+    const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5 + 7;
     this.fitShadowTo(c, r);
   }
 
@@ -1217,7 +1218,40 @@ export class Viewer {
     this.groups.cut.traverse((o) => {
       if (o.userData.roomLabel) o.visible = on;
     });
+    this.declutterLabels();
     this.dirty = true;
+  }
+
+  /** 部屋名の札が画面上で重なるときは、広い部屋の札を優先して残し、重なる札を隠す */
+  private declutterLabels() {
+    if (!this.roomLabels) return;
+    const labels: THREE.Sprite[] = [];
+    this.groups.cut.traverse((o) => {
+      if (o.userData.roomLabel) labels.push(o as THREE.Sprite);
+    });
+    if (!labels.length) return;
+    const W = this.renderer.domElement.clientWidth || 1;
+    const Hh = this.renderer.domElement.clientHeight || 1;
+    this.camera.updateMatrixWorld();
+    const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    const v = new THREE.Vector3();
+    labels.sort((a, b) => (b.userData.labelPriority ?? 0) - (a.userData.labelPriority ?? 0));
+    for (const sp of labels) {
+      v.setFromMatrixPosition(sp.matrixWorld).project(this.camera);
+      if (v.z > 1) {
+        sp.visible = false;
+        continue;
+      }
+      const cx = ((v.x + 1) / 2) * W;
+      const cy = ((1 - v.y) / 2) * Hh;
+      // 画面固定の札の高さ（px）: scale.y は画面の高さに対する割合
+      const hpx = (sp.scale.y / (2 * Math.tan((this.camera.fov * Math.PI) / 360))) * Hh + 4;
+      const wpx = hpx * (sp.userData.aspect ?? 3);
+      const r = { x0: cx - wpx / 2, x1: cx + wpx / 2, y0: cy - hpx / 2, y1: cy + hpx / 2 };
+      const hit = placed.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
+      sp.visible = !hit;
+      if (!hit) placed.push(r);
+    }
   }
 
   roomLabelsShown() {
@@ -1292,6 +1326,8 @@ export class Viewer {
             sp.visible = this.roomLabels;
             this.groups.cut.add(sp);
           }
+          this.groups.cut.updateMatrixWorld(true);
+          this.declutterLabels();
         }
         // 方位（真北）の印を敷地の角に置く（輪切りのみ。断面では壁越しに見えて邪魔になる）
         if (f) this.groups.cut.add(northMarker(this.state!.meta.bbox, model.northAngleDeg, resolve));
@@ -1417,32 +1453,34 @@ function northMarker(bbox: THREE.Box3, northAngleDeg: number, resolve: (k: strin
 
 /** 部屋名と帖数を書いた札（スプライト）。模型に置く名札のように、常にカメラを向く */
 function roomLabelSprite(r: Room): THREE.Sprite | null {
-  const name = r.name.replace(/[（(].*?[)）]/g, '').trim() || r.name;
+  const name = (r.name.replace(/[（(].*?[)）]/g, '').trim() || r.name).normalize('NFKC');
   const tatami = r.labeledTatami ?? r.area / 1.62;
   const sub = tatami >= 1 ? `${tatami.toFixed(tatami >= 10 ? 0 : 1)}帖` : '';
-  return tagSprite(name, sub, 0.6);
+  const sp = tagSprite(name, sub, 0.024, true);
+  if (sp) sp.userData.labelPriority = r.area;
+  return sp;
 }
 
 /** 白い札に文字を書いたスプライト（高さ h [m]） */
-function tagSprite(name: string, sub: string, h: number): THREE.Sprite | null {
+function tagSprite(name: string, sub: string, h: number, screenFixed = false): THREE.Sprite | null {
   if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
   if (!g) return null;
   const S = 2;
-  const font = `600 ${22 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
-  const subFont = `500 ${15 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
+  const font = `500 ${20 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
+  const subFont = `400 ${14 * S}px "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif`;
   g.font = font;
   const wName = g.measureText(name).width;
   g.font = subFont;
   const wSub = sub ? g.measureText(sub).width + 10 * S : 0;
   const padX = 14 * S;
   const W = Math.ceil(wName + wSub + padX * 2);
-  const H = 40 * S;
+  const H = 34 * S;
   c.width = W;
   c.height = H;
   // 白い札（角丸）と細い縁
-  const rad = 10 * S;
+  const rad = H / 2;
   g.beginPath();
   g.moveTo(rad, 0);
   g.lineTo(W - rad, 0);
@@ -1456,8 +1494,8 @@ function tagSprite(name: string, sub: string, h: number): THREE.Sprite | null {
   g.closePath();
   g.fillStyle = 'rgba(255,255,255,0.94)';
   g.fill();
-  g.lineWidth = 1.5 * S;
-  g.strokeStyle = 'rgba(40,40,40,0.35)';
+  g.lineWidth = 1 * S;
+  g.strokeStyle = 'rgba(40,40,40,0.18)';
   g.stroke();
   g.fillStyle = '#20232a';
   g.textBaseline = 'middle';
@@ -1471,9 +1509,11 @@ function tagSprite(name: string, sub: string, h: number): THREE.Sprite | null {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
+  // screenFixed: 画面上で一定の大きさ（遠くの札が小さくなりすぎず、近くで巨大にならない）
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, sizeAttenuation: !screenFixed });
   const sp = new THREE.Sprite(mat);
   sp.scale.set((h * W) / H, h, 1);
+  sp.userData.aspect = W / H;
   sp.renderOrder = 50;
   sp.userData.roomLabel = true;
   return sp;

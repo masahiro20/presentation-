@@ -121,6 +121,62 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
  * 上階の外壁が、下階の外壁とほぼ同じ線（面のずれ 18cm 以内・平行・重なりあり）にあれば、外面を下階に合わせて平行移動する。
  * その線上にある他の壁の端点も一緒に動かし、開口の位置は壁の始点の移動分だけ補正する。
  */
+/**
+ * 間仕切り壁の端が外壁の中まで食い込み、外壁の外の面のすぐ裏まで来ていると、外から見て細い縦の点線が透ける。
+ * 外壁に突き当たる間仕切り壁の端は、外壁の芯（壁の中央）で止める
+ */
+export function trimInteriorEnds(model: BuildingModel): BuildingModel {
+  const floors = model.floors.map((f) => {
+    const ext = f.walls.filter((w) => w.exterior);
+    const walls = f.walls.map((w) => {
+      if (w.exterior) return w;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      if (L < 1) return w;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      let { a, b } = w;
+      for (const v of ext) {
+        const vl = Math.hypot(v.b.x - v.a.x, v.b.y - v.a.y);
+        if (vl < 1) continue;
+        const vx = (v.b.x - v.a.x) / vl;
+        const vy = (v.b.y - v.a.y) / vl;
+        // ほぼ直交するものだけ
+        if (Math.abs(ux * vx + uy * vy) > 0.2) continue;
+        const nx = -vy;
+        const ny = vx;
+        for (const end of ['a', 'b'] as const) {
+          const e = end === 'a' ? a : b;
+          const along = (e.x - v.a.x) * vx + (e.y - v.a.y) * vy;
+          if (along < -v.thickness || along > vl + v.thickness) continue;
+          const off = (e.x - v.a.x) * nx + (e.y - v.a.y) * ny; // 外壁の芯からの距離（符号付き）
+          if (Math.abs(off) > v.thickness / 2 + 5 || Math.abs(off) < 1) continue;
+          // 壁の向きに沿って、外壁の芯まで戻す
+          const dirDot = ux * nx + uy * ny;
+          if (Math.abs(dirDot) < 0.5) continue;
+          const back = off / dirDot;
+          const p = { x: e.x - ux * back, y: e.y - uy * back };
+          if (end === 'a') {
+            a = p;
+          } else b = p;
+        }
+      }
+      if (a === w.a && b === w.b) return w;
+      return { ...w, a, b };
+    });
+    // 開口の位置は始点からの距離なので、始点が動いた壁はずらす
+    const openings = f.openings.map((o) => {
+      const w0 = f.walls.find((x) => x.id === o.wallId);
+      const w1 = walls.find((x) => x.id === o.wallId);
+      if (!w0 || !w1 || w0 === w1 || (w0.a.x === w1.a.x && w0.a.y === w1.a.y)) return o;
+      const L = Math.hypot(w0.b.x - w0.a.x, w0.b.y - w0.a.y) || 1;
+      const d = ((w1.a.x - w0.a.x) * (w0.b.x - w0.a.x) + (w1.a.y - w0.a.y) * (w0.b.y - w0.a.y)) / L;
+      return { ...o, t0: o.t0 - d, t1: o.t1 - d };
+    });
+    return { ...f, walls, openings };
+  });
+  return { ...model, floors };
+}
+
 export function alignUpperWalls(model: BuildingModel): BuildingModel {
   const floors = model.floors.map((f) => ({ ...f, walls: f.walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } })), openings: f.openings.map((o) => ({ ...o })), outline: f.outline.map((l) => l.map((p) => ({ ...p }))) }));
   for (let i = 1; i < floors.length; i++) {
@@ -204,7 +260,7 @@ export function alignUpperWalls(model: BuildingModel): BuildingModel {
 }
 
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
-  model = alignUpperWalls(model);
+  model = trimInteriorEnds(alignUpperWalls(model));
   const mb = new MeshBuilder();
   const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [] };
   const ext = opts.exterior;
@@ -305,7 +361,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
     for (const poly of f.outline) {
       if (holes.includes(poly)) continue;
-      emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005);
+      emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005, 'ext.wall'); // 外周の小口は外から見える（2階の跳ね出しの下など）ので外壁の仕上げ
       // 下階からはみ出した部分（オーバーハング・ピロティの天井）は軒天の仕上げで見せる
       if (lower) emitFlat(mb, 'ext.soffit', poly, [...voids, ...holeRects, ...lowerRects], fl - 0.25, false);
     }
@@ -462,7 +518,7 @@ function emitFlat(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
   }
 }
 
-function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y0: number, y1: number) {
+function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y0: number, y1: number, edgeKey = key) {
   emitFlat(mb, key, polyMm, voidsMm, y0, false);
   const pts = polyMm.map((p) => ({ x: p.x * MM, y: p.y * MM }));
   for (let i = 0; i < pts.length; i++) {
@@ -475,8 +531,8 @@ function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
     const pb = V(b.x, y0, b.y);
     const ta = V(a.x, y1, a.y);
     const tb = V(b.x, y1, b.y);
-    if (inside) mb.quad(key, pa, pb, tb, ta);
-    else mb.quad(key, pb, pa, ta, tb);
+    if (inside) mb.quad(edgeKey, pa, pb, tb, ta);
+    else mb.quad(edgeKey, pb, pa, ta, tb);
   }
 }
 
@@ -643,28 +699,59 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     // 曇りガラスは浴室・トイレの小窓だけ（天井付けの高窓は透明で空を見せる）
     const frosted = o.windowStyle === 'small';
     const glassKey = frosted ? 'ext.glassFrosted' : 'ext.glass';
-    const panes = width > 1.0 && o.windowStyle !== 'high' ? 2 : 1;
+    // ホームランディックの窓の語彙: 引違いは使わず、FIX と縦すべり出し・横すべり出しを細い方立てで組む。
+    // ガラスは枠の面にそろえ（障子を前後にずらさない）、見付けの線を最小にする
     const innerW = width - fw * 2;
     const innerH = H - fw * 2;
-    for (let i = 0; i < panes; i++) {
-      const pw = panes === 2 ? innerW / 2 + 0.02 : innerW;
-      const off = panes === 2 ? (i === 0 ? -innerW / 4 + 0.01 : innerW / 4 - 0.01) : 0;
-      const depthOff = panes === 2 ? (i === 0 ? 0.015 : -0.015) : 0;
-      const c = plane.clone().addScaledVector(dir, off).addScaledVector(outN, depthOff).setY(sill + fw);
-      // 障子の框
-      const sw = 0.03;
-      mb.box(frame, c.clone(), dir, pw, sw, 0.028);
-      mb.box(frame, c.clone().setY(sill + fw + innerH - sw), dir, pw, sw, 0.028);
-      mb.box(frame, c.clone().addScaledVector(dir, -pw / 2 + sw / 2), dir, sw, innerH, 0.028);
-      mb.box(frame, c.clone().addScaledVector(dir, pw / 2 - sw / 2), dir, sw, innerH, 0.028);
-      // ガラス（両面）
-      const g0 = c.clone().addScaledVector(dir, -pw / 2 + sw).setY(sill + fw + sw);
-      const g1 = c.clone().addScaledVector(dir, pw / 2 - sw).setY(sill + fw + sw);
-      const g2 = g1.clone().setY(sill + fw + innerH - sw);
-      const g3 = g0.clone().setY(sill + fw + innerH - sw);
+    const y0 = sill + fw;
+    const mull = 0.03;
+    // 区画: 横長の小窓・高窓は横すべり出し 1 枚。それ以外は FIX（1 枚の幅 1.8m まで）＋ 端に縦すべり出し（幅 0.5m）を 1 枚
+    const cells: { w: number; vent: 'none' | 'side' | 'top' }[] = [];
+    const flat = H < 0.7 || o.windowStyle === 'high';
+    if (flat) cells.push({ w: innerW, vent: 'top' });
+    else if (innerW <= 0.75) cells.push({ w: innerW, vent: 'side' });
+    else {
+      const ventW = Math.min(0.5, innerW * 0.35);
+      const fixW = innerW - ventW - mull;
+      const nFix = Math.max(1, Math.ceil(fixW / 1.8));
+      const fw1 = (fixW - mull * (nFix - 1)) / nFix;
+      for (let k = 0; k < nFix; k++) cells.push({ w: fw1, vent: 'none' });
+      // 開く窓は戸袋側（壁の端に近い側）に
+      if (o.hingeAtStart === false) cells.push({ w: ventW, vent: 'side' });
+      else cells.unshift({ w: ventW, vent: 'side' });
+    }
+    let u = -innerW / 2;
+    cells.forEach((cell, k) => {
+      if (k > 0) {
+        // 方立て
+        mb.box(frame, plane.clone().addScaledVector(dir, u + mull / 2).setY(y0), dir, mull, innerH, fd * 0.8);
+        u += mull;
+      }
+      const c = plane.clone().addScaledVector(dir, u + cell.w / 2);
+      let gx0 = -cell.w / 2;
+      let gx1 = cell.w / 2;
+      let gy0 = y0;
+      let gy1 = y0 + innerH;
+      if (cell.vent !== 'none') {
+        // 開く障子の框（細く、FIX のガラス面とほぼ同じ面に）
+        const sw = 0.028;
+        mb.box(frame, c.clone().setY(y0), dir, cell.w, sw, 0.03);
+        mb.box(frame, c.clone().setY(y0 + innerH - sw), dir, cell.w, sw, 0.03);
+        mb.box(frame, c.clone().addScaledVector(dir, -cell.w / 2 + sw / 2).setY(y0), dir, sw, innerH, 0.03);
+        mb.box(frame, c.clone().addScaledVector(dir, cell.w / 2 - sw / 2).setY(y0), dir, sw, innerH, 0.03);
+        gx0 += sw;
+        gx1 -= sw;
+        gy0 += sw;
+        gy1 -= sw;
+      }
+      const g0 = c.clone().addScaledVector(dir, gx0).setY(gy0);
+      const g1 = c.clone().addScaledVector(dir, gx1).setY(gy0);
+      const g2 = g1.clone().setY(gy1);
+      const g3 = g0.clone().setY(gy1);
       mb.quad(glassKey, g0, g1, g2, g3);
       mb.quad(glassKey, g1, g0, g3, g2);
-    }
+      u += cell.w;
+    });
     // 外部の水切り
     mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.04, 0.02, 0.05);
     // 室内の窓台

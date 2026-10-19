@@ -172,6 +172,47 @@ npm test           # テスト（図面解析・地図・地形・3D 読み込�
 - 部屋のつながり（ドア）からグラフを作り、玄関→LDK→和室→階段→2階の各部屋を巡るルートを自動作成。視線は先読みで滑らかに、玄関・階段は暗転で切り替え
 - 1コマずつ高画質でレンダリングし、WebCodecs（H.264）＋ mp4-muxer で MP4 に。未対応ブラウザは WebM
 
+## Claude Code・Codex から使う（MCP）
+
+このツールの図面読み取り・木造の常識チェック・清書平面図（SVG）・DXF 書き出し・概算見積・仕上げカタログは、**MCP（Model Context Protocol）サーバー**として AI エージェント（Claude Code・Codex CLI・その他の MCP クライアント）から呼べます。アプリの「図面読込」画面の下にある **「Claude Code・Codex との連携（MCP）」** に、コピーできる接続コマンドがあります。
+
+**本番の URL に接続する（インストール不要）**
+
+```bash
+claude mcp add --transport http madori https://madori-presentation.vercel.app/api/mcp
+codex mcp add madori --url https://madori-presentation.vercel.app/api/mcp
+```
+
+Codex の `~/.codex/config.toml` に書く場合:
+
+```toml
+[mcp_servers.madori]
+url = "https://madori-presentation.vercel.app/api/mcp"
+```
+
+**リポジトリのフォルダで動かす（ローカル・stdio）** — PDF をファイルのまま渡せ、読み取った間取り（model_id）をプロセスが生きている間ずっと覚えています。リポジトリ直下の `.mcp.json` があるので、Claude Code でこのフォルダを開くとそのまま使えます。
+
+```bash
+npm install
+claude mcp add madori -- npx tsx scripts/mcp-server.ts
+codex mcp add madori -- npx tsx scripts/mcp-server.ts
+npm run mcp        # 手で起動して確かめる（stdin に JSON-RPC を 1 行ずつ）
+```
+
+| ツール | 内容 |
+| --- | --- |
+| `parse_floor_plan` | 平面図（`pdf_base64` / `pdf_url` / `dxf_text` / アプリの保存ファイル `project`）を読み取り、階・部屋（用途・面積・帖数）・壁・開口・階段・家具・木造モジュール・方位・接道と `model_id` を返す。`include_model: true` で間取り JSON 全体も返す |
+| `wood_check` | 在来木造の常識チェック（短い壁の断片・格子に乗らない端・直下率と外壁の受け・梁のスパン・開口だらけの外壁・出入口の無い部屋・階段の上下階の位置・UB／便所の寸法） |
+| `floor_plan_svg` | 清書平面図を SVG で（`sheet: true` で A3 図枠・面積表・建具表つき） |
+| `export_dxf` | 壁芯・開口・部屋名・階段を DXF（実寸 mm）で CAD へ戻す |
+| `estimate` | 数量拾い（延床・施工面積・外壁・屋根・基礎外周・建具数…）と、積算シートの既定仕様での概算見積（P／S シリーズ） |
+| `catalog` | 仕上げ・設備カタログ（メーカー・品番）の検索 |
+| `get_model` / `list_models` | 読み取った間取り JSON の取り出し・一覧 |
+
+プロンプト `plan_review`（平面図 → 木造チェック → 設計士向けレビュー）も用意しています。
+
+注意: 本番の `/api/mcp` はリクエスト本文が 4.5 MB までなので、大きな PDF は `pdf_url` で渡してください。サーバーのインスタンスが入れ替わると `model_id` は消えるため、長い作業では `include_model: true` で受け取った `model` をそのまま次のツールに渡します（アプリで保存したプロジェクトファイル `.json` も `model` として渡せます）。
+
 ## 対応状況・注意点
 - **CAD から出力したベクター PDF** が最も高精度です（ARCHITREND のカラー平面図・白黒平面図など）。
 - **手描き風の平面図**（Illustrator の手描きブラシ等、線が揺れている図面）は、太線を画像化して壁の帯を検出する方式で読み取ります。
@@ -195,6 +236,7 @@ src/parser/     PDF → 建物モデル（壁・開口・部屋・階段・縮�
 src/scene/      3D 生成（建物・屋根・家具・外構・マテリアル・空・ビューア・パストレーサー・カメラ）
 src/styles/     テイストのプリセットと手続き的テクスチャ
 src/drawings/   立面図・清書平面図（SVG）
+src/mcp/        MCP サーバー（ツール定義と JSON-RPC。scripts/mcp-server.ts = stdio、api/mcp.ts = 本番 HTTP）
 src/sun/        太陽位置・地理情報・周辺環境・日照解析・レポート
 src/sunstudy/   日照シミュレーション（3D データ読み込み版）: 地図・地形・周辺建物・3DS 読み込み・シーン・解析・画面
 src/video/      カメラワークと動画書き出し

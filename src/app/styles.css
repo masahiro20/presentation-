@@ -719,3 +719,10 @@ body.cinema .main { grid-template-columns: 1fr; }
 .slide.hl-finish .k { font-size: 0.92cqw; }
 .slide.hl-finish .nm { font-size: 1.02cqw; line-height: 1.35; }
 .slide.hl-finish .cd { font-size: 0.84cqw; line-height: 1.3; }
+
+/* MCP 連携カード */
+.mcp-fold .fold-body { display: flex; flex-direction: column; gap: 6px; }
+.mcp-group { margin-top: 6px; font-size: 12.5px; }
+.mcp-cmd { display: grid; grid-template-columns: 74px 1fr auto; align-items: center; gap: 6px; }
+.mcp-cmd-label { font-size: 11.5px; color: var(--ink2); }
+.mcp-cmd code { display: block; min-width: 0; font: 11.5px/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; background: #f3f1ec; color: #2a2d33; padding: 6px 8px; border-radius: 6px; overflow-x: auto; white-space: pre; }

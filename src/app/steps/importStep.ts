@@ -1,4 +1,4 @@
-import { h, clear, toast, progressModal, section, field, segmented } from '../dom';
+import { h, clear, toast, progressModal, section, field, segmented, fold, download } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
@@ -159,12 +159,74 @@ export const importStep: Step = {
           field('事務所ロゴ（図面の表題欄・ヘッダー・シネマに入ります）', logoInput()),
           field('会社名・担当者', h('input', { type: 'text', value: state.company, placeholder: '〇〇ホーム 設計担当 〇〇', oninput: (e: Event) => (state.company = (e.target as HTMLInputElement).value) })),
         ),
+        mcpCard(),
       );
       return;
     }
     renderResult(ctx);
+    ctx.side.append(mcpCard());
   },
 };
+
+/** この画面の URL から本番の MCP エンドポイントを出す（ローカル・file: のときは本番 URL） */
+function mcpEndpoint(): string {
+  const origin = typeof location !== 'undefined' && /^https?:/.test(location.protocol) && !/localhost|127\.0\.0\.1/.test(location.hostname) ? location.origin : 'https://madori-presentation.vercel.app';
+  return `${origin}/api/mcp`;
+}
+
+/** Claude Code・Codex などの AI エージェントから、このツールを MCP で使うための接続カード */
+function mcpCard(): HTMLElement {
+  const url = mcpEndpoint();
+  const cmd = (label: string, text: string) =>
+    h(
+      'div',
+      { class: 'mcp-cmd' },
+      h('span', { class: 'mcp-cmd-label' }, label),
+      h('code', null, text),
+      h(
+        'button',
+        {
+          class: 'btn sm',
+          onclick: () => {
+            navigator.clipboard?.writeText(text).then(
+              () => toast('コピーしました', 'ok', 1500),
+              () => toast('コピーできませんでした。選択して Ctrl+C で写してください', 'error'),
+            );
+          },
+        },
+        'コピー',
+      ),
+    );
+  const exportModel = () => {
+    const model = state.model;
+    if (!model) return;
+    const blob = new Blob([JSON.stringify(model)], { type: 'application/json' });
+    const u = URL.createObjectURL(blob);
+    download(u, `${(state.name || model.name || 'madori').replace(/[\\/:*?"<>|]+/g, '_')}.model.json`);
+    setTimeout(() => URL.revokeObjectURL(u), 10000);
+  };
+  return fold(
+    'Claude Code・Codex との連携（MCP）',
+    { open: false, meta: '接続コマンド', cls: 'mcp-fold' },
+    h('p', { class: 'hint', style: 'margin:0 0 8px' }, 'このツールの図面読み取り・木造チェック・清書平面図（SVG）・DXF・概算見積・仕上げカタログを、Claude Code や Codex などの AI エージェントから MCP ツールとして呼べます。追加の設定は不要です。'),
+    h('div', { class: 'mcp-group' }, h('b', null, 'この URL に接続する（どこからでも）')),
+    cmd('Claude Code', `claude mcp add --transport http madori ${url}`),
+    cmd('Codex CLI', `codex mcp add madori --url ${url}`),
+    cmd('config.toml', `[mcp_servers.madori]\nurl = "${url}"`),
+    h('div', { class: 'mcp-group' }, h('b', null, 'リポジトリのフォルダで動かす（PDF をそのまま渡せる・Node.js が必要）')),
+    cmd('Claude Code', 'claude mcp add madori -- npx tsx scripts/mcp-server.ts'),
+    cmd('Codex CLI', 'codex mcp add madori -- npx tsx scripts/mcp-server.ts'),
+    h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'ツール: parse_floor_plan（PDF/DXF → 間取り）・wood_check・floor_plan_svg・export_dxf・estimate・catalog・get_model。URL 接続では PDF は base64 か pdf_url で渡します（4.5 MB まで）。'),
+    state.model
+      ? h(
+          'div',
+          { class: 'btn-row', style: 'margin-top:8px' },
+          h('button', { class: 'btn sm', onclick: exportModel }, '読み取った間取りを JSON で書き出す'),
+          h('span', { class: 'hint', style: 'align-self:center' }, 'MCP の model として渡せます'),
+        )
+      : null,
+  );
+}
 
 const PLAN_SIDE_LABEL: Record<PlanSide, string> = { top: '図面の上', right: '図面の右', bottom: '図面の下', left: '図面の左' };
 

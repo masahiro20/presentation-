@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import { WebGLPathTracer, DenoiseMaterial } from 'three-gpu-pathtracer';
+import { oidnDenoise } from './oidn';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Viewer } from './viewer';
 import { loadHdri, equirectIrradiance } from './hdri';
@@ -34,6 +35,8 @@ export interface PhotorealOptions {
   interior?: boolean;
   /** 「ここで仕上げる」: 計算を打ち切り、その時点の画像で仕上げる */
   finish?: AbortSignal;
+  /** AI ノイズ除去（OIDN・WebGPU）を使う（既定: 使える環境なら使う） */
+  denoise?: boolean;
 }
 
 export interface Saved {
@@ -326,14 +329,26 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       }
       console.info(`写真品質レンダリング: 露出 ${renderer.toneMappingExposure.toFixed(2)}`);
     }
-    // サンプル数が少ない（GPU が遅い）ときはノイズ除去を強める
-    const u = (denoise as unknown as { uniforms: Record<string, { value: number }> }).uniforms;
-    if (pt.samples < 64) {
-      const k = Math.min(1, (64 - pt.samples) / 48);
-      u.sigma.value = 2.2 + 1.8 * k;
-      u.threshold.value = 0.08 + 0.1 * k;
+    // AI ノイズ除去（OIDN）。WebGPU の無い環境・失敗時は従来のノイズ除去（サンプルが少ないときは強め）
+    const aiTex = opts.denoise === false ? null : await oidnDenoise({ renderer, target: pt.target, scene, camera, onStatus: opts.onStatus, signal: opts.signal });
+    if (aiTex) {
+      const mat = quad.material as THREE.MeshBasicMaterial;
+      quad.material = mat;
+      mat.map = aiTex;
+      mat.needsUpdate = true;
+      renderer.setRenderTarget(null);
+      renderer.autoClear = true;
+      quad.render(renderer);
+      aiTex.dispose();
+    } else {
+      const u = (denoise as unknown as { uniforms: Record<string, { value: number }> }).uniforms;
+      if (pt.samples < 64) {
+        const k = Math.min(1, (64 - pt.samples) / 48);
+        u.sigma.value = 2.2 + 1.8 * k;
+        u.threshold.value = 0.08 + 0.1 * k;
+      }
+      present(true);
     }
-    present(true);
     await gpuWait(gl, () => lost);
     check();
     const luma = meanLuma(canvas);

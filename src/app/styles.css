@@ -807,6 +807,11 @@ body.theme-atelier .side-tabs { background: var(--panel); }
 .slide.hl-finish .k { font-size: 0.95cqw; color: var(--bronze); letter-spacing: 0.1em; }
 .slide.hl-finish .nm { font-size: 1.1cqw; color: var(--ink); }
 .slide.hl-finish .cd { font-size: 0.85cqw; color: var(--ink-3); }
-.slide.hl-finish { display: grid; grid-template-columns: 1.5fr 1fr; gap: 4cqw; padding: 6cqw 0 6cqw 6cqw; }
+.slide.hl-finish { display: grid; grid-template-columns: 2.1fr 1fr; gap: 3cqw; padding: 5cqw 0 5cqw 5cqw; }
 .slide.hl-finish .ph { position: relative; }
-.slide.hl-finish .finish-grid { grid-template-columns: 1fr 1fr; }
+.slide.hl-finish .finish-grid { grid-template-columns: repeat(3, 1fr); gap: 0.1cqw 1.4cqw; }
+.slide.hl-finish .finish-row { grid-template-columns: 1.6cqw 4.6cqw 1fr; gap: 0.6cqw; padding: 0.42cqw 0; }
+.slide.hl-finish .sw { height: 2cqw; }
+.slide.hl-finish .k { font-size: 0.72cqw; }
+.slide.hl-finish .nm { font-size: 0.82cqw; line-height: 1.35; }
+.slide.hl-finish .cd { font-size: 0.66cqw; line-height: 1.3; }

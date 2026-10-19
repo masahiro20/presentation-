@@ -807,3 +807,6 @@ body.theme-atelier .side-tabs { background: var(--panel); }
 .slide.hl-finish .k { font-size: 0.95cqw; color: var(--bronze); letter-spacing: 0.1em; }
 .slide.hl-finish .nm { font-size: 1.1cqw; color: var(--ink); }
 .slide.hl-finish .cd { font-size: 0.85cqw; color: var(--ink-3); }
+.slide.hl-finish { display: grid; grid-template-columns: 1.5fr 1fr; gap: 4cqw; padding: 6cqw 0 6cqw 6cqw; }
+.slide.hl-finish .ph { position: relative; }
+.slide.hl-finish .finish-grid { grid-template-columns: 1fr 1fr; }

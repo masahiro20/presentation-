@@ -355,7 +355,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   });
   // 入れ子のペアを除外: 壁の2本の線の間にあるサッシ線などとの組は壁ではない
   {
-    const bracket = new Map<string, [number, number][]>();
+    const bracket = new Map<string, [number, number, number][]>();
     // 仮の主要壁厚（長さ加重の最頻値）: 二重壁の判定に使う
     let domT = 0;
     {
@@ -375,7 +375,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
         for (const q of pairs) { const qo = (lines[q.g][q.i].o + lines[q.g][q.j].o) / 2; if (Math.abs(qo) >= rng[0] && Math.abs(qo) <= rng[1]) console.log('PAIR', q.g, JSON.stringify({ o: Math.round(qo), d: Math.round(q.d), t0: Math.round(q.t0), t1: Math.round(q.t1), i: q.i, j: q.j })); }
       }
     }
-    for (const q of pairs) {
+    for (let qi = 0; qi < pairs.length; qi++) {
+      const q = pairs[qi];
       if (q.d > 260) continue;
       // 二重壁（外壁の内側にもう 1 枚の壁）: 間の線が 1 本だけで、両側がそれぞれ壁厚になる太線なら、サッシ線ではなく壁面
       {
@@ -401,11 +402,22 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       for (let k = q.i + 1; k < q.j; k++) {
         const key = `${q.g}:${k}`;
         if (!bracket.has(key)) bracket.set(key, []);
-        bracket.get(key)!.push([q.t0, q.t1]);
+        bracket.get(key)!.push([q.t0, q.t1, qi]);
       }
     }
     const keep = pairs.filter((p) => {
-      const iv = mergeIntervals([...(bracket.get(`${p.g}:${p.i}`) ?? []), ...(bracket.get(`${p.g}:${p.j}`) ?? [])]);
+      const ls = lines[p.g];
+      const nearDom = domT > 0 && Math.abs(p.d - domT) <= Math.max(10, domT * 0.1);
+      const lenOf = (k: number) => ls[k].t1 - ls[k].t0;
+      const ivs = [...(bracket.get(`${p.g}:${p.i}`) ?? []), ...(bracket.get(`${p.g}:${p.j}`) ?? [])].filter(([, , qi]) => {
+        if (!nearDom) return true;
+        // 主要な壁厚のペアは、壁面を共有して相手の線が壁面より短い組（壁面と、接する階段の塗り・家具の輪郭）では入れ子にしない
+        const q = pairs[qi];
+        if (q.i === p.i) return lenOf(q.j) >= 0.6 * lenOf(p.j);
+        if (q.j === p.j) return lenOf(q.i) >= 0.6 * lenOf(p.i);
+        return true;
+      });
+      const iv = mergeIntervals(ivs.map(([a, b]) => [a, b] as [number, number]));
       if (!iv.length) return true;
       const covered = intervalsLength(iv.map(([a, b]) => [Math.max(a, p.t0), Math.min(b, p.t1)] as [number, number]).filter(([a, b]) => b > a));
       return covered < (p.t1 - p.t0) * 0.5;

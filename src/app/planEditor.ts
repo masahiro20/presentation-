@@ -15,6 +15,7 @@ import { buildFurniture, furnitureDims, FURNITURE_LABEL } from '../scene/furnitu
 import { ROOM_TYPE_LABEL } from '../core/types';
 import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
+import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../parser/symbolDict';
 import { h, clear, toast } from './dom';
 
 type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs';
@@ -1141,6 +1142,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const fl = [...furn].filter(([, v]) => v).map(([level, v]) => ({ level, items: v! }));
       if (fl.length) model.furniture = fl;
       else delete model.furniture;
+      learnSymbols(model, fl);
       onDone(true);
     } else onDone(false);
   };
@@ -1149,4 +1151,32 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     fit();
     setTool('select');
   });
+}
+
+
+/**
+ * 記号辞書に覚える: 手で直した家具が、図面の長方形（読み取りの候補）の上にあれば「この形はこの家具」と覚える。
+ * 次に同じテンプレートの図面を読むとき、同じ形を同じ家具として読む
+ */
+function learnSymbols(model: BuildingModel, fl: { level: number; items: FurnitureItem[] }[]) {
+  const dict = loadSymbolDict();
+  let n = 0;
+  for (const { level, items } of fl) {
+    const f = model.floors.find((x) => x.level === level);
+    if (!f?.symbolCandidates?.length) continue;
+    for (const it of items) {
+      // 家具の基準点（壁側の辺の中央）か、奥行の中心が候補の長方形（350mm の余裕）に入るもの
+      const cand = f.symbolCandidates.find((c) => Math.abs(it.x - c.cx) <= c.w / 2 + 350 && Math.abs(it.y - c.cy) <= c.h / 2 + 350);
+      if (!cand || cand.kind === it.kind) continue;
+      const room = f.rooms.find((r) => r.id === cand.roomId);
+      if (!room) continue;
+      learnSymbol(dict, signatureOf(room.type, cand.w, cand.h, cand.inner), it.kind);
+      n++;
+    }
+  }
+  if (n) {
+    saveSymbolDict(dict);
+    (globalThis as { __symbolDict?: unknown }).__symbolDict = dict;
+    toast(`図面の記号の読み方を ${n} 件覚えました（次の図面から同じ形を同じ家具として読みます）`, 'ok', 5000);
+  }
 }

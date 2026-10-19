@@ -8,10 +8,14 @@ import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type BuildingModel, type PlanSide, type RoomType } from '../../core/types';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
+import { woodCheck } from '../../parser/woodCheck';
+import { loadSymbolDict, type SymbolSignature } from '../../parser/symbolDict';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto') {
   const pm = progressModal('平面図を解析しています', false);
   try {
+    // 修正画面で教えた家具記号（部屋種別×大きさ→種類）を読み取りに使う
+    (globalThis as { __symbolDict?: SymbolSignature[] }).__symbolDict = loadSymbolDict();
     const model =
       kind === 'dxf'
         ? parseDxf(decodeDxf(data), { name, module: moduleMode })
@@ -295,7 +299,11 @@ function renderResult(ctx: StepCtx) {
     }, state.pdfName ?? '');
   };
   side.append(
-    checkCard(model, openEditor, () => northInput?.focus()),
+    checkCard(model, openEditor, () => northInput?.focus(), () => {
+      emit('model');
+      toast('読み取りを修正しました', 'ok');
+      ctx.app.go('import');
+    }),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn primary block', onclick: () => ctx.app.go('design') }, '3D パースを作成する →')),
     h(
       'div',
@@ -461,7 +469,7 @@ function numInput(v: number, onChange: (v: number) => void) {
  * 読み込み直後の確認カード: 階・玄関・方位・階段・部屋・窓ドアを一目で確認し、
  * 怪しい所は修正画面へ直接飛べるようにする
  */
-function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void): HTMLElement {
+function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void): HTMLElement {
   type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void } };
   const rows: Row[] = [];
   const floors = model.floors;
@@ -534,6 +542,30 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     detail: odd < 0 ? areas.map((a, i) => `${floors[i].level}階 ${(a / 3.30579).toFixed(1)}坪`).join('　') : `${floors[odd].level}階が1階より大きく読めています（壁の読み落としの可能性）`,
     action: odd < 0 ? undefined : { label: '修正画面で確認', fn: openEditor },
   });
+
+  // 木造（在来軸組）の常識: 壁の端・直下率・梁のスパン・耐力壁・出入口・階段・UB の寸法
+  const issues = woodCheck(model);
+  const shown = [...issues.filter((i) => i.severity === 'warn'), ...issues.filter((i) => i.severity === 'info')].slice(0, 6);
+  if (!shown.length) {
+    rows.push({ ok: true, label: '木造', detail: '壁の端・直下率・梁のスパン・出入口・階段の位置に不自然な所はありません' });
+  }
+  for (const it of shown) {
+    const fix = it.fix;
+    rows.push({
+      ok: it.severity === 'warn' ? false : null,
+      label: '木造',
+      detail: `${it.title} — ${it.detail}`,
+      action: fix
+        ? {
+            label: fix.label,
+            fn: () => {
+              fix.apply(model);
+              onFix();
+            },
+          }
+        : { label: '修正画面で確認', fn: openEditor },
+    });
+  }
 
   const ng = rows.filter((r) => r.ok === false).length;
   const head = h('div', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? 'の項目はパース・動画の出来に影響します' : '階・玄関・階段・部屋・窓が揃っています'));

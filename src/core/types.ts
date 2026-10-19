@@ -121,6 +121,8 @@ export interface Floor {
   outline: Vec2[][];
   /** 図面の記号から読み取った家具・設備（図面どおりの位置・向き。自動配置より優先） */
   planItems?: FurnitureItem[];
+  /** 家具の判定に使った図面の長方形（修正画面で直した答えを記号辞書に覚えるため） */
+  symbolCandidates?: { id: number; cx: number; cy: number; w: number; h: number; inner: number; arcs?: number; roomId: string; kind?: FurnitureKind }[];
   /** 図面の記号から読み取った外構（車・植栽。図面座標 mm） */
   exterior?: { cars: { x: number; y: number; rot: number }[]; trees: { x: number; y: number; r: number }[] };
   /** 図面に書かれた設計士のメモ（吹き出しの説明文） */

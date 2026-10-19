@@ -1,7 +1,7 @@
 /**
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
-import type { BuildingModel, Floor, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
+import type { BuildingModel, Floor, FurnitureKind, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
@@ -11,6 +11,8 @@ import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, norm
 import { detectStairs } from './stairs';
 import { detectSite, translateSite } from './site';
 import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
+import { readContextItems } from './context';
+import type { SymbolSignature } from './symbolDict';
 import { chooseModule, moduleInfoOf, snapCoord, snapTolerance, endTolerance, snapStairs, translateModule, woodWallThickness, type ModuleFit, type ModuleMode } from './module';
 
 export interface MmText {
@@ -354,6 +356,8 @@ export interface PlanData {
   walls: WWall[];
   texts: MmText[];
   segs: Seg[];
+  /** 円弧（コンロの輪・丸テーブル・便器の形など、家具の文脈読みに使う） */
+  arcs: Arc[];
   /** 敷地・道路の読み取り用（建物の周囲 30m の文字と線） */
   siteTexts: MmText[];
   siteSegs: Seg[];
@@ -1500,6 +1504,14 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const notes = plan.scan ? [] : detectNotes([...plan.texts, ...nearTexts], labelSize, rooms);
   // 家具・設備・車・植栽の記号（スキャン図面には無い）
   const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(detectSymbols(uniqueSegs([...plan.segs, ...plan.siteSegs])), rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
+  // 文脈読み（部屋の種類・大きさ・壁からの位置・隣の物との関係）。同じ部屋で同じ種類を読めたら、形の決め打ちの結果より優先する
+  const g = globalThis as { __symbolDict?: SymbolSignature[]; __ctxTrace?: string[] };
+  const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items);
+  if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
+  // 同じ部屋で同じ種類を文脈読みが読めたら、形の決め打ちの方は外す（食卓はキッチンと兼ねて読むことがあるので、キッチンを読んだ部屋の食卓も）
+  const taken = new Set((ctx?.items ?? []).flatMap((it) => (it.kind === 'kitchen' ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`])));
+  const mergedItems = [...(ctx?.items ?? []), ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))];
+  void (null as FurnitureKind | null);
   return {
     level,
     elevation: 0,
@@ -1510,7 +1522,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     rooms,
     stairs,
     outline,
-    planItems: sym.items.length ? sym.items : undefined,
+    planItems: mergedItems.length ? mergedItems : undefined,
+    symbolCandidates: ctx?.candidates.length ? ctx.candidates : undefined,
     exterior: sym.exterior.cars.length || sym.exterior.trees.length ? sym.exterior : undefined,
     notes: notes.length ? notes : undefined,
   };
@@ -1812,7 +1825,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         roomFills.push(c.poly);
       }
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan });
     }
   }
   assignFloorTitles(plans, pages);
@@ -1830,6 +1843,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     const seen = new Set(q.texts);
     q.texts.push(...p.texts.filter((t) => !seen.has(t)));
     q.segs.push(...p.segs);
+    q.arcs.push(...p.arcs);
     q.wallPolys.push(...p.wallPolys);
     q.sashPolys.push(...p.sashPolys);
     q.roomFills.push(...p.roomFills);
@@ -1983,6 +1997,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   }
   p.texts = p.texts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
   p.segs = p.segs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
+  p.arcs = p.arcs.map((a) => ({ ...a, p0: tr(a.p0), p1: tr(a.p1), p2: tr(a.p2), p3: tr(a.p3) }));
   p.siteTexts = p.siteTexts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
   p.siteSegs = p.siteSegs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
   p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
@@ -2438,6 +2453,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     walls,
     texts: labels.map((l) => ({ str: l.name, x: l.x, y: l.y, size: 250, angle: 0 })),
     segs: [],
+    arcs: [],
     siteTexts: [],
     siteSegs: [],
     wallPolys: [],

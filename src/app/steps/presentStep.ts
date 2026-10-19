@@ -293,7 +293,6 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
           }),
         ),
       ),
-      h('div', { class: 'ph' }, photo(ints[0] ?? exts[0] ?? hero)),
     ),
   );
   void copy;
@@ -341,7 +340,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
           { style: 'min-height:0;overflow:hidden' },
           head(no('Sunlight'), 'Sunlight', '光と日当たり'),
           ...state.sun.highlights.slice(0, 3).map((hl) => h('div', { class: 'hl' }, h('b', { class: 'serif' }, hl.title), h('span', null, hl.body))),
-          sunCaption(state.external) ? h('p', { style: 'font-size:0.9cqw;color:var(--ink-3);margin-top:1.2cqw' }, sunCaption(state.external)) : null,
+          sunCaption(state.external) ? h('p', { style: 'font-size:1.05cqw;color:var(--ink-3);margin-top:1.2cqw' }, sunCaption(state.external)) : null,
           sunNote(disc, 'deck'),
         ),
         state.sun.images.length

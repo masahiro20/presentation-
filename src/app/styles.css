@@ -244,43 +244,43 @@ body.side-hidden .side { border-left: 0; }
 .slide .serif { font-family: 'Shippori Mincho', 'Noto Serif JP', 'Hiragino Mincho ProN', 'Yu Mincho', serif; font-weight: 500; }
 .slide .latin { font-family: 'Cormorant Garamond', 'Times New Roman', serif; font-weight: 400; letter-spacing: 0.28em; text-transform: uppercase; }
 .slide .photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
-.slide .pageno { position: absolute; right: 4.2cqw; bottom: 2.6cqw; font-family: 'Cormorant Garamond', serif; font-size: 1.05cqw; letter-spacing: 0.2em; color: var(--ink-3); }
+.slide .pageno { position: absolute; right: 4.2cqw; bottom: 2.6cqw; font-family: 'Cormorant Garamond', serif; font-size: 1.2cqw; letter-spacing: 0.2em; color: var(--ink-3); }
 .slide .pageno.light { color: rgba(255,255,255,0.75); }
-.slide .brandline { position: absolute; left: 4.2cqw; bottom: 2.6cqw; font-size: 0.9cqw; letter-spacing: 0.18em; color: var(--ink-3); }
+.slide .brandline { position: absolute; left: 4.2cqw; bottom: 2.6cqw; font-size: 1.05cqw; letter-spacing: 0.18em; color: var(--ink-3); }
 .slide .brandline.light { color: rgba(255,255,255,0.75); }
 .slide .draft { position: absolute; top: 2.4cqw; right: 2.4cqw; background: rgba(154,122,82,0.92); color: #fff; font-size: 0.95cqw; padding: 0.35cqw 0.9cqw; letter-spacing: 0.08em; }
 
-/* ---- ホームランディックの提案書の書式: 白地・小さな文字・広い余白・画は全面 ---- */
-.slide .hl-head .en { font-size: 0.72cqw; letter-spacing: 0.08em; color: var(--ink-2); }
-.slide .hl-head h2 { margin: 0.9cqw 0 0; font-size: 1.75cqw; font-weight: 400; letter-spacing: 0.1em; line-height: 1.4; }
-.slide .hl-rule { width: 1.6cqw; height: 1px; background: #c9c9c6; margin: 1.6cqw 0 2.2cqw; }
+/* ---- ホームランディックの提案書の書式: 白地・控えめな文字・広い余白・画は全面（印刷・投影でも読める大きさ） ---- */
+.slide .hl-head .en { font-size: 0.95cqw; letter-spacing: 0.1em; color: var(--ink-2); }
+.slide .hl-head h2 { margin: 0.9cqw 0 0; font-size: 2.4cqw; font-weight: 400; letter-spacing: 0.1em; line-height: 1.4; }
+.slide .hl-rule { width: 1.8cqw; height: 1px; background: #c9c9c6; margin: 1.6cqw 0 2.2cqw; }
 .slide.hl-cover { background: #fff; display: grid; place-items: center; }
 .slide.hl-cover .c { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 1.6cqw; }
-.slide.hl-cover .office { font-size: 0.9cqw; letter-spacing: 0.1em; color: var(--ink-2); }
-.slide.hl-cover .title { font-size: 1.9cqw; letter-spacing: 0.18em; font-weight: 400; }
-.slide.hl-cover .logo { height: 3.4cqw; max-width: 18cqw; object-fit: contain; }
-.slide.hl-cover .mark { font-size: 0.85cqw; letter-spacing: 0.06em; line-height: 1.4; color: var(--ink); }
+.slide.hl-cover .office { font-size: 1.2cqw; letter-spacing: 0.1em; color: var(--ink-2); }
+.slide.hl-cover .title { font-size: 2.9cqw; letter-spacing: 0.18em; font-weight: 400; }
+.slide.hl-cover .logo { height: 4.4cqw; max-width: 22cqw; object-fit: contain; }
+.slide.hl-cover .mark { font-size: 1.1cqw; letter-spacing: 0.06em; line-height: 1.5; color: var(--ink); }
 .slide.hl-cover .mark::after { content: ''; display: block; width: 1.6cqw; height: 1px; background: #c9c9c6; margin: 1.2cqw auto 0; }
-.slide.hl-cover .date { font-size: 0.75cqw; letter-spacing: 0.08em; color: var(--ink-2); }
-.slide.hl-close .motto { font-family: 'Shippori Mincho', 'Noto Serif JP', serif; font-size: 1.9cqw; letter-spacing: 0.12em; color: var(--ink-2); margin: 1.2cqw 0; }
-.slide.hl-close .contact { font-size: 0.8cqw; line-height: 2.1; color: var(--ink-2); text-align: left; }
-.slide.hl-close .contact span { display: inline-block; width: 5.5cqw; }
+.slide.hl-cover .date { font-size: 1.0cqw; letter-spacing: 0.1em; color: var(--ink-2); }
+.slide.hl-close .motto { font-family: 'Shippori Mincho', 'Noto Serif JP', serif; font-size: 2.6cqw; letter-spacing: 0.12em; color: var(--ink-2); margin: 1.2cqw 0; }
+.slide.hl-close .contact { font-size: 1.1cqw; line-height: 2.1; color: var(--ink-2); text-align: left; }
+.slide.hl-close .contact span { display: inline-block; width: 7.5cqw; }
 .slide.hl-text { padding: 9cqw 10cqw; }
-.slide.hl-text .body p { font-size: 0.95cqw; line-height: 2.6; color: var(--ink); margin: 0 0 1.2cqw; }
+.slide.hl-text .body p { font-size: 1.45cqw; line-height: 2.4; color: var(--ink); margin: 0 0 1.2cqw; letter-spacing: 0.04em; }
 .slide.hl-overview { display: grid; grid-template-columns: 1fr 1.25fr; gap: 5cqw; padding: 7cqw 0 7cqw 7cqw; }
-.slide.hl-overview .ov { display: grid; grid-template-columns: 8cqw 1fr; row-gap: 1.75cqw; margin: 0; font-size: 0.92cqw; letter-spacing: 0.06em; }
+.slide.hl-overview .ov { display: grid; grid-template-columns: 11cqw 1fr; row-gap: 1.5cqw; margin: 0; font-size: 1.25cqw; letter-spacing: 0.06em; }
 .slide.hl-overview .ov dt { color: var(--ink-2); }
 .slide.hl-overview .ov dd { margin: 0; }
 .slide.hl-overview .ph { position: relative; }
-.slide.hl.full .hl-tag { position: absolute; left: 2.6cqw; bottom: 2.2cqw; font-size: 0.8cqw; letter-spacing: 0.14em; color: rgba(255,255,255,0.92); text-shadow: 0 1px 6px rgba(0,0,0,0.45); }
+.slide.hl.full .hl-tag { position: absolute; left: 2.6cqw; bottom: 2.2cqw; font-size: 1.05cqw; letter-spacing: 0.14em; color: rgba(255,255,255,0.92); text-shadow: 0 1px 6px rgba(0,0,0,0.45); }
 
 /* 見出し（章番号・英字・和文） */
 .slide .head { display: flex; align-items: baseline; gap: 1.6cqw; }
 .slide .head .no { font-family: 'Cormorant Garamond', serif; font-size: 3.6cqw; line-height: 1; color: var(--bronze); font-weight: 300; }
-.slide .head .en { font-size: 1.05cqw; color: var(--ink-3); }
+.slide .head .en { font-size: 1.15cqw; color: var(--ink-3); }
 .slide .head h2 { margin: 0.5cqw 0 0; font-size: 2.3cqw; letter-spacing: 0.12em; line-height: 1.4; }
 .slide .rule { width: 4cqw; height: 1px; background: var(--bronze); margin: 1.6cqw 0; }
-.slide p { font-size: 1.12cqw; line-height: 2.05; color: var(--ink-2); margin: 0 0 1cqw; letter-spacing: 0.04em; }
+.slide p { font-size: 1.3cqw; line-height: 2.0; color: var(--ink-2); margin: 0 0 1cqw; letter-spacing: 0.04em; }
 .slide .lead-copy { font-size: 1.75cqw; line-height: 1.9; color: var(--ink); letter-spacing: 0.1em; margin-bottom: 1.6cqw; }
 
 /* 表紙・締め */
@@ -334,29 +334,29 @@ body.side-hidden .side { border-left: 0; }
 .slide.drawing.plan-one .sheet { background: transparent; border: 0; }
 .slide.drawing.plan-one .sheet .svgbox { background: transparent; padding: 0; }
 .slide.drawing.plan-one .sheet .svgbox svg { mix-blend-mode: multiply; }
-.slide.drawing.plan-one .floor-area { margin: 1.6cqw 0 0.6cqw; font-size: 1.15cqw; letter-spacing: 0.12em; color: var(--ink-2, #555); }
-.slide .schedule { width: 100%; border-collapse: collapse; font-size: 0.95cqw; margin-top: 1.2cqw; letter-spacing: 0.06em; }
+.slide.drawing.plan-one .floor-area { margin: 1.6cqw 0 0.6cqw; font-size: 1.4cqw; letter-spacing: 0.12em; color: var(--ink-2, #555); }
+.slide .schedule { width: 100%; border-collapse: collapse; font-size: 1.15cqw; margin-top: 1.2cqw; letter-spacing: 0.06em; }
 .slide .schedule td { padding: 0.45cqw 0; border-bottom: 1px solid var(--hair); }
 .slide .schedule td.f { color: var(--bronze); font-family: 'Cormorant Garamond', serif; width: 2.6cqw; }
 .slide .schedule td.a { text-align: right; color: var(--ink-3); }
 .slide .plan-notes { margin-top: 1.4cqw; }
-.slide .plan-notes .label { font-size: 0.95cqw; letter-spacing: 0.18em; color: var(--bronze); margin-bottom: 0.5cqw; }
-.slide .plan-notes p { font-size: 1.15cqw; line-height: 1.6; margin: 0 0 0.3cqw; color: var(--ink-2); }
+.slide .plan-notes .label { font-size: 1.05cqw; letter-spacing: 0.18em; color: var(--bronze); margin-bottom: 0.5cqw; }
+.slide .plan-notes p { font-size: 1.25cqw; line-height: 1.6; margin: 0 0 0.3cqw; color: var(--ink-2); }
 
 /* 日当たり */
 .slide.sun { padding: 4.2cqw 4.2cqw 5.4cqw; display: grid; grid-template-columns: 30cqw 1fr; gap: 3cqw; }
 .slide .hl { border-top: 1px solid var(--hair); padding-top: 1cqw; margin-top: 1cqw; }
-.slide .hl b { display: block; font-weight: 500; font-size: 1.15cqw; letter-spacing: 0.08em; color: var(--ink); margin-bottom: 0.3cqw; }
-.slide .hl span { font-size: 0.98cqw; line-height: 1.85; color: var(--ink-2); }
+.slide .hl b { display: block; font-weight: 500; font-size: 1.4cqw; letter-spacing: 0.08em; color: var(--ink); margin-bottom: 0.3cqw; }
+.slide .hl span { font-size: 1.2cqw; line-height: 1.85; color: var(--ink-2); }
 .slide .sungrid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1.2cqw; min-height: 0; }
 .slide .sungrid .cell { position: relative; overflow: hidden; }
-.slide .sungrid .lbl { position: absolute; left: 0; bottom: 0; padding: 0.5cqw 0.9cqw; background: rgba(245,241,234,0.94); font-size: 0.9cqw; letter-spacing: 0.1em; }
+.slide .sungrid .lbl { position: absolute; left: 0; bottom: 0; padding: 0.5cqw 0.9cqw; background: rgba(245,241,234,0.94); font-size: 1.05cqw; letter-spacing: 0.1em; }
 .slide .svgfit { position: relative; min-height: 0; display: grid; place-items: center; background: #fff; border: 1px solid var(--hair); padding: 1cqw; }
 .slide .svgfit svg { max-width: 100%; max-height: 100%; }
 /* 日照のページの注記（周辺建物の扱い）と、計算から除外した周辺建物の表 */
-.slide .sun-note { margin-top: 1.2cqw; padding-top: 0.8cqw; border-top: 1px solid var(--hair); font-size: 0.88cqw; line-height: 1.75; color: var(--ink-3); letter-spacing: 0.03em; }
+.slide .sun-note { margin-top: 1.2cqw; padding-top: 0.8cqw; border-top: 1px solid var(--hair); font-size: 1.0cqw; line-height: 1.75; color: var(--ink-3); letter-spacing: 0.03em; }
 .slide .tblbox { min-height: 0; overflow: hidden; background: #fff; border: 1px solid var(--hair); padding: 1.6cqw 1.8cqw; }
-.slide table.excluded { width: 100%; border-collapse: collapse; font-size: 0.92cqw; letter-spacing: 0.04em; }
+.slide table.excluded { width: 100%; border-collapse: collapse; font-size: 1.05cqw; letter-spacing: 0.04em; }
 .slide table.excluded th { text-align: left; font-weight: 500; color: var(--ink-3); border-bottom: 1px solid var(--ink-3); padding: 0.4cqw 0.6cqw; }
 .slide table.excluded td { padding: 0.45cqw 0.6cqw; border-bottom: 1px solid var(--hair); color: var(--ink-2); vertical-align: top; }
 .slide table.excluded td.n { color: var(--bronze); width: 3cqw; }
@@ -367,9 +367,9 @@ body.side-hidden .side { border-left: 0; }
 .slide.details { padding: 6cqw 6cqw; display: grid; grid-template-columns: 26cqw 1fr; gap: 5cqw; }
 .slide.details .list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 3.4cqw; align-content: center; }
 .slide.details .item { border-top: 1px solid var(--hair); padding: 1.3cqw 0 1.5cqw; }
-.slide.details .item .k { font-size: 0.85cqw; color: var(--bronze); }
-.slide.details .item h4 { margin: 0.4cqw 0 0.4cqw; font-size: 1.3cqw; font-weight: 500; letter-spacing: 0.1em; }
-.slide.details .item p { margin: 0; font-size: 0.95cqw; line-height: 1.85; }
+.slide.details .item .k { font-size: 1.0cqw; color: var(--bronze); }
+.slide.details .item h4 { margin: 0.4cqw 0 0.4cqw; font-size: 1.6cqw; font-weight: 500; letter-spacing: 0.1em; }
+.slide.details .item p { margin: 0; font-size: 1.2cqw; line-height: 1.85; }
 
 .slide video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .deck-tools { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; justify-content: center; margin-bottom: 18px; }
@@ -711,11 +711,11 @@ body.cinema .main { grid-template-columns: 1fr; }
 .slide.hl-finish .k { font-size: 0.95cqw; color: var(--bronze); letter-spacing: 0.1em; }
 .slide.hl-finish .nm { font-size: 1.1cqw; color: var(--ink); }
 .slide.hl-finish .cd { font-size: 0.85cqw; color: var(--ink-3); }
-.slide.hl-finish { display: grid; grid-template-columns: 2.1fr 1fr; gap: 3cqw; padding: 5cqw 0 5cqw 5cqw; }
+.slide.hl-finish { display: grid; grid-template-columns: 1fr; padding: 5cqw 5cqw 4cqw; }
 .slide.hl-finish .ph { position: relative; }
-.slide.hl-finish .finish-grid { grid-template-columns: repeat(3, 1fr); gap: 0.1cqw 1.4cqw; }
-.slide.hl-finish .finish-row { grid-template-columns: 1.6cqw 4.6cqw 1fr; gap: 0.6cqw; padding: 0.42cqw 0; }
-.slide.hl-finish .sw { height: 2cqw; }
-.slide.hl-finish .k { font-size: 0.72cqw; }
-.slide.hl-finish .nm { font-size: 0.82cqw; line-height: 1.35; }
-.slide.hl-finish .cd { font-size: 0.66cqw; line-height: 1.3; }
+.slide.hl-finish .finish-grid { grid-template-columns: repeat(4, 1fr); gap: 0.1cqw 2cqw; }
+.slide.hl-finish .finish-row { grid-template-columns: 1.8cqw 5.6cqw 1fr; gap: 0.7cqw; padding: 0.5cqw 0; }
+.slide.hl-finish .sw { height: 2.2cqw; }
+.slide.hl-finish .k { font-size: 0.92cqw; }
+.slide.hl-finish .nm { font-size: 1.02cqw; line-height: 1.35; }
+.slide.hl-finish .cd { font-size: 0.84cqw; line-height: 1.3; }

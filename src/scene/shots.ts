@@ -335,7 +335,7 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     const occ = occupancy.get(room.id) ?? [];
     const wins = windowsOf(model, ri.floor.level, room, y0);
     const center = new THREE.Vector3((R.minX + R.maxX) / 2, y0 + 1.1, (R.minZ + R.maxZ) / 2);
-    let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3 } | null = null;
+    let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3; mean: number } | null = null;
     const vfov = aspect > 1.4 ? 58 : 66;
     const halfH = Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect);
     // 候補位置: 部屋内の格子点（家具・扉の近くは除外）
@@ -355,6 +355,7 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
         const yaw = (k / 16) * Math.PI * 2;
         const dir = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw));
         let score: number;
+        let meanDist = Infinity;
         if (ray) {
           // 視野内のレイで開放感・近接障害物・外の眺め（窓）を評価
           let sum = 0;
@@ -376,6 +377,7 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
             }
           }
           const mean = sum / (N * 2);
+          meanDist = mean;
           const cornerBonus = Math.min(Math.abs(pos.x - center.x) / (W / 2), 1) * Math.min(Math.abs(pos.z - center.z) / (D / 2), 1);
           // 窓は視野の端に入るのが良い（正面に窓だけが見える逆光の構図は避ける）
           score = mean * 1.4 + Math.min(outside, 3) * 0.3 + cornerBonus * 1.5 - (minC < 1.6 ? (1.6 - minC) * 6 : 0) - (centerOut ? 2.5 : 0);
@@ -393,13 +395,16 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
         }
         if (!best || score > best.score) {
           const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + 1.15);
-          best = { score, pos, target };
+          best = { score, pos, target, mean: ray ? meanDist : Infinity };
         }
       }
     }
     if (!best) {
-      best = { score: 0, pos: new THREE.Vector3(R.minX + 0.3, y0 + eyeH, R.minZ + 0.3), target: center.clone() };
+      best = { score: 0, pos: new THREE.Vector3(R.minX + 0.3, y0 + eyeH, R.minZ + 0.3), target: center.clone(), mean: Infinity };
     }
+    // どこを向いても壁がすぐ目の前（狭い玄関・土間など）になる部屋は、パースとして成立しないので外す。
+    // 玄関は廊下状の土間・SIC だと見せ場にならないので、ゆとりのある玄関ホールだけ
+    if (best.mean < (room.type === 'entrance' ? 2.4 : 1.7)) continue;
     const label = room.name || ROOM_TYPE_LABEL[room.type];
     void best;
     const tatami = room.labeledTatami ?? room.area / 1.62;

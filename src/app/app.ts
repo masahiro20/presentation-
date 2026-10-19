@@ -221,6 +221,10 @@ export class App {
     this.viewerHost.style.visibility = s.uses3d ? 'visible' : 'hidden';
     if (s.uses3d) {
       this.ensureScene();
+      // 日照の太陽の軌道・周辺建物・ヒートマップは日照ステップだけ（そのステップが自分で表示する）
+      this.viewer.groups.context.visible = false;
+      this.viewer.groups.overlay.visible = false;
+      this.viewer.invalidate();
       this.viewer.resize();
     }
     const inner = h('div', { class: 'side-inner' });

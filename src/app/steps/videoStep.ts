@@ -131,7 +131,6 @@ export const videoStep: Step = {
     };
     ctx.side.append(
       h('h2', null, '動画'),
-      h('p', { class: 'lead' }, '道路から玄関を通って各部屋をめぐるウォークスルー、外観をぐるりと回るドローン映像、一日の日差しの動きを見せるタイムラプスを自動で作成します。部屋名の字幕も入ります。'),
       section(
         '種類',
         segmented<Kind>(
@@ -161,7 +160,7 @@ export const videoStep: Step = {
       section(
         '作成',
         h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: preview }, '▶ プレビュー'), h('button', { class: 'btn ghost', onclick: () => stopPreview(ctx) }, '停止')),
-        h('button', { class: 'btn primary block', onclick: record }, '🎬 動画を書き出す（MP4）'),
+        h('button', { class: 'btn primary block', onclick: record }, '動画を書き出す（MP4）'),
         h('p', { class: 'hint' }, '1コマずつ高画質でレンダリングするため、パソコンの性能により数分かかります。お使いのブラウザが MP4 に未対応の場合は WebM で保存されます。'),
       ),
       section(

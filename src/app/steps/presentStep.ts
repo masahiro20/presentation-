@@ -487,6 +487,7 @@ async function exportHtml(slides: HTMLElement[]) {
 export const presentStep: Step = {
   id: 'present',
   label: 'プレゼン資料',
+  short: '資料',
   needsModel: true,
   uses3d: false,
   mount(ctx) {
@@ -502,8 +503,8 @@ export const presentStep: Step = {
           'div',
           { class: 'deck-tools' },
           h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
-          h('button', { class: 'btn', onclick: () => window.print() }, '🖨 PDF で保存（印刷）'),
-          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, '⬇ HTML で保存（お客様へ送付用）'),
+          h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
+          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
         ),
         ...slides,
       );
@@ -511,10 +512,9 @@ export const presentStep: Step = {
     render();
     ctx.side.append(
       h('h2', null, 'プレゼン資料'),
-      h('p', { class: 'lead' }, 'ここまでに作成したパース・図面・日照検討・動画から、お客様向けのプレゼン資料を自動で組み立てます。足りない素材はボタン一つで自動作成できます。'),
-      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '✨ 足りない素材を自動作成して資料を完成（写真品質）'),
+      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成（写真品質）'),
       h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
-      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '⚡ 高品質描画ですばやく資料を完成（数十秒）'),
+      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '高品質描画ですばやく資料を完成（数十秒）'),
       section(
         '表紙の情報',
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),

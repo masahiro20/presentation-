@@ -1395,6 +1395,25 @@ export class Viewer {
     this.dirty = true;
   }
 
+  /** 小さなサムネイル用の素早い描画（後処理なし。カメラだけを一時的に切り替える） */
+  captureQuick(view: CameraView, width: number, height: number): string {
+    const prevView = this.currentView();
+    const prev = { pr: this.renderer.getPixelRatio() };
+    const prevSize = this.renderer.getSize(new THREE.Vector2());
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.applyView(view);
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
+    this.renderer.setPixelRatio(prev.pr);
+    this.renderer.setSize(prevSize.x, prevSize.y, false);
+    this.applyView(prevView);
+    this.resize();
+    this.dirty = true;
+    return url;
+  }
+
   /** 指定解像度で書き出し（高品質） */
   async capture(width: number, height: number, mime = 'image/jpeg', q = 0.92): Promise<string> {
     const prev = { w: this.container.clientWidth, h: this.container.clientHeight, pr: this.renderer.getPixelRatio() };

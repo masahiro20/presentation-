@@ -68,7 +68,7 @@ let extPanel: ExternalPanel | null = null;
 
 // ---------------------------------------------------------------- 周辺建物を選んで隠す／戻す（文言・表示の純粋な部分）
 
-export const HIDE_MODE_LABEL = '🏠 建物を選んで隠す';
+export const HIDE_MODE_LABEL = '建物を選んで隠す';
 export const HIDE_MODE_ARMED = '建物をクリックして選んでください（Shift+ドラッグで範囲選択。もう一度押すと終了・Esc でも終了）';
 export const HIDE_MODE_GUIDE = '建物をクリックすると選択（もう一度で解除）、Shift を押しながらドラッグすると範囲で選べます。隠し方（計算から除外／表示だけ隠す）と理由を選んで、画面上の「隠す」を押してください。薄く見えているのは隠した建物（青は表示だけ隠した建物）で、選んで「戻す」で戻せます';
 export const NO_NEIGHBORS_MSG = '周辺の建物がありません。先に「🏘 周辺建物（PLATEAU）」で読み込んでください';
@@ -105,7 +105,7 @@ export async function reloadSurroundings(deps: SurroundingsDeps, mode: 'adjust' 
 // ---------------------------------------------------------------- 周辺建物の取得（PLATEAU → 国土地理院 → OSM）の文言
 
 /** 周辺建物の取得元のボタン名 */
-export const NEIGHBOR_SOURCE_BUTTON: Readonly<Record<NeighborSourceChoice, string>> = { plateau: '🏘 周辺建物（PLATEAU）', gsi: '🏘 周辺建物（国土地理院）', osm: '🏘 周辺建物（OSM）' };
+export const NEIGHBOR_SOURCE_BUTTON: Readonly<Record<NeighborSourceChoice, string>> = { plateau: '周辺建物（PLATEAU）', gsi: '周辺建物（国土地理院）', osm: '周辺建物（OSM）' };
 /** 周辺環境の説明（高さ・形状の根拠。地盤の高低差は表現しない） */
 export const NEIGHBORS_HINT =
   '周辺建物は PLATEAU（国土交通省 3D都市モデル）がある地域では実測の高さ・形状（LOD1 は箱形、LOD2 は屋根形状）、無い地域は国土地理院データの建物の種類から推定（普通建物 約7m）しています。地盤の高低差は表現しません。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。';
@@ -514,6 +514,7 @@ export function readCoordInput(latText: string, lonText: string): { lat: number;
 export const sunStep: Step = {
   id: 'sun',
   label: '日照シミュレーション',
+  short: '日照',
   needsModel: true,
   uses3d: true,
   unmount() {
@@ -671,7 +672,7 @@ export const sunStep: Step = {
 
     // ---- サイドパネル ----
     const side = ctx.side;
-    side.append(h('h2', null, '日照シミュレーション'), h('p', { class: 'lead' }, '建設地の住所を入れると、航空写真と周辺の建物を読み込み、実際の太陽の動きで日当たりを確認できます。季節・時刻を動かして、部屋ごとの日当たりや日影図も自動で作成します。'));
+    side.append(h('h2', null, '日照シミュレーション'));
 
     // 敷地
     const googleKeyInput = h('input', {
@@ -839,12 +840,12 @@ export const sunStep: Step = {
     };
     // 航空写真をクリックして、建物を実際の敷地の位置に置く（住所検索は町・丁目の代表点になることが多いため）
     let placing = false;
-    const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '📍 航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
+    const placeBtn = h('button', { class: 'btn sm block', style: 'margin-top:8px' }, '航空写真の上で敷地をクリックして位置を合わせる') as HTMLButtonElement;
     const canvasEl = v.renderer.domElement;
     const setPlacing = (on: boolean) => {
       placing = on;
       placeBtn.classList.toggle('dark', on);
-      placeBtn.textContent = on ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止・Esc でも中止）' : '📍 航空写真の上で敷地をクリックして位置を合わせる';
+      placeBtn.textContent = on ? '航空写真の上で、建てる敷地をクリックしてください（もう一度押すと中止・Esc でも中止）' : '航空写真の上で敷地をクリックして位置を合わせる';
       canvasEl.style.cursor = on ? 'crosshair' : '';
     };
     // 2 点合わせと同じく、押した所から動かさずに離したときだけ置く（ドラッグで視点を動かしても置かない）。イベントは止めずに OrbitControls にも渡す
@@ -2206,7 +2207,7 @@ export const sunStep: Step = {
           { class: 'btn-row' },
           // PLATEAU（実測の高さ・形状）を既定に。国土地理院・OSM は手動で選ぶ退路
           h('button', { class: 'btn sm primary', title: '国土交通省 PLATEAU 3D都市モデルの実測の高さ・形状。無い地域は国土地理院の建物（高さは推定）に自動で切り替えます', onclick: () => loadNeighbors('plateau') }, NEIGHBOR_SOURCE_BUTTON.plateau),
-          h('button', { class: 'btn sm', onclick: loadAerial }, '🛰 航空写真を表示'),
+          h('button', { class: 'btn sm', onclick: loadAerial }, '航空写真を表示'),
           h(
             'label',
             { class: 'check', style: 'font-size:12px', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません）。切り替えると周辺建物を取り直します' },
@@ -2422,12 +2423,12 @@ export const sunStep: Step = {
     side.append(
       section(
         '日当たりの解析',
-        h('button', { class: 'btn primary block', onclick: runRooms }, '☀ 部屋ごとの日当たりを解析（冬至・春分・夏至）'),
-        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: runHeat }, '🌡 日照時間マップ（表示中の日付）'), h('button', { class: 'btn sm', onclick: () => runDiagram(1.5) }, '📐 日影図（GL+1.5m）'), h('button', { class: 'btn sm', onclick: () => runDiagram(4) }, '日影図（GL+4m）')),
+        h('button', { class: 'btn primary block', onclick: runRooms }, '部屋ごとの日当たりを解析（冬至・春分・夏至）'),
+        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: runHeat }, '日照時間マップ（表示中の日付）'), h('button', { class: 'btn sm', onclick: () => runDiagram(1.5) }, '日影図（GL+1.5m）'), h('button', { class: 'btn sm', onclick: () => runDiagram(4) }, '日影図（GL+4m）')),
         diagramControls(),
         heatLegend,
         heatNote,
-        h('button', { class: 'btn sm block', onclick: captureSeasons }, '📷 季節の日当たり比較を撮影（プレゼン用）'),
+        h('button', { class: 'btn sm block', onclick: captureSeasons }, '季節の日当たり比較を撮影（プレゼン用）'),
         out,
       ),
     );

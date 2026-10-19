@@ -293,7 +293,7 @@ function renderResult(ctx: StepCtx) {
       { class: 'edit-callout' },
       h('b', null, '読み取りが違う所は、平面の上で直せます'),
       h('p', null, '部屋がつながっている・壁が足りない・余分な壁がある・窓やドアが無い・部屋名が違う、といった所を、壁を描く／消す、窓・ドアを置く、部屋名を置くだけで修正できます。'),
-      h('button', { class: 'btn dark block', onclick: openEditor }, '✏️ 間取りを手で修正する'),
+      h('button', { class: 'btn dark block', onclick: openEditor }, '間取りを手で修正する'),
     ),
   );
 
@@ -394,7 +394,7 @@ function renderResult(ctx: StepCtx) {
         'div',
         { class: 'btn-row' },
         h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind) }, '再解析'),
-        h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, '💾 プロジェクトを保存'),
+        h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, 'プロジェクトを保存'),
         h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),
@@ -478,7 +478,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
   });
 
   const ng = rows.filter((r) => r.ok === false).length;
-  const head = h('div', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? '⚠ の項目はパース・動画の出来に影響します' : '階・玄関・階段・部屋・窓が揃っています'));
+  const head = h('div', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? 'の項目はパース・動画の出来に影響します' : '階・玄関・階段・部屋・窓が揃っています'));
   const list = h(
     'div',
     { class: 'check-rows' },

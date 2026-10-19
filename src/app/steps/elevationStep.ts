@@ -69,7 +69,6 @@ export const elevationStep: Step = {
     };
     ctx.side.append(
       h('h2', null, '立面図'),
-      h('p', { class: 'lead' }, '3D モデルから東西南北の立面図を、A3 の図枠・表題欄付きで自動作成します。外形線・段差・開口まわり・目地で線の太さを描き分け、軒の影と外壁・屋根・サッシの仕上げの引き出し線を入れます。平面図には建具記号と建具表・面積表が入ります。'),
       section(
         '表示',
         segmented(
@@ -107,7 +106,7 @@ export const elevationStep: Step = {
               setTimeout(() => URL.revokeObjectURL(url), 10000);
             },
           },
-          '📐 DXF を保存',
+          'DXF を保存',
         ),
       ),
     );

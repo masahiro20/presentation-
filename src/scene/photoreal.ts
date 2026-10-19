@@ -192,7 +192,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       const procE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, sd.y));
       // 夕景は実写の空の方が暗く沈みがちなので少し持ち上げる。夜景はブルーアワーの空が見える明るさに固定
       // （手続き的な夜空は暗すぎて、合わせると空が真っ黒になる）
-      const k = night ? 0.02 / Math.max(1e-4, hdri.irradiance) : (procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1) * (tod === 'evening' ? 1.35 : 1);
+      const k = night ? 0.08 / Math.max(1e-4, hdri.irradiance) : (procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1) * (tod === 'evening' ? 1.35 : 1);
       skyE = procE;
       scene.environment = hdri.texture;
       scene.background = hdri.texture;
@@ -348,7 +348,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     {
       const target = opts.interior ? (night ? 96 : 118) : night ? 52 : tod === 'evening' ? 86 : 108;
       const lo = opts.interior ? 0.1 : 0.45;
-      const hi = opts.interior ? 8 : 2.6;
+      const hi = opts.interior ? 8 : night ? 4.5 : 2.6;
       for (let it = 0; it < 5; it++) {
         present(false);
         const m = lumaPercentile(canvas, 0.5);

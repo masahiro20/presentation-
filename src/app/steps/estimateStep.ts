@@ -323,6 +323,7 @@ function csvOf(c: Computed): string {
 export const estimateStep: Step = {
   id: 'estimate',
   label: '見積・資金計画',
+  short: '見積',
   needsModel: true,
   uses3d: false,
   mount(ctx: StepCtx) {
@@ -408,7 +409,6 @@ export const estimateStep: Step = {
       );
       panel.append(
         h('h2', null, '見積・資金計画'),
-        h('p', { class: 'lead' }, '読み込んだ間取りから面積・長さ・個数を拾い、社内の積算（価格表）で御見積書と内訳書を作り、本体工事費を資金計画書に流し込みます。数量と仕様はここで直せます。'),
         section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g); render(); })),
         section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }], which, (w) => { which = w; render(); })),
         h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　坪単価 ¥${yen(Math.round(est.perTsubo))}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`)),

@@ -14,6 +14,8 @@ export interface StepCtx {
 export interface Step {
   id: string;
   label: string;
+  /** 狭い画面で使う短い名前 */
+  short?: string;
   needsModel: boolean;
   /** 3D ビューアを使うか */
   uses3d: boolean;
@@ -49,25 +51,14 @@ export class App {
         emit('project');
       },
     });
-    // テーマ（アトリエ = 設計事務所向けの新しい見た目。クラシック = 従来）
-    let theme = 'atelier';
-    try {
-      theme = localStorage.getItem('uiTheme') === 'classic' ? 'classic' : 'atelier';
-    } catch {
-      // 保存できない環境
-    }
-    const applyTheme = () => document.body.classList.toggle('theme-atelier', theme === 'atelier');
-    applyTheme();
-    const themeBtn = h('button', { class: 'btn sm', title: '見た目を切り替える（アトリエ／クラシック）' }, theme === 'atelier' ? '◐ クラシック表示' : '◑ アトリエ表示');
-    themeBtn.onclick = () => {
-      theme = theme === 'atelier' ? 'classic' : 'atelier';
-      try {
-        localStorage.setItem('uiTheme', theme);
-      } catch {
-        // 保存できない環境
-      }
-      applyTheme();
-      themeBtn.textContent = theme === 'atelier' ? '◐ クラシック表示' : '◑ アトリエ表示';
+    // 作業パネルを隠して 3D を画面いっぱいに（もう一度押すと戻る）
+    let sideHidden = false;
+    const sideBtn = h('button', { class: 'side-toggle', title: '作業パネルを隠す／表示する' }, '▸');
+    sideBtn.onclick = () => {
+      sideHidden = !sideHidden;
+      document.body.classList.toggle('side-hidden', sideHidden);
+      sideBtn.textContent = sideHidden ? '◂' : '▸';
+      window.setTimeout(() => this._viewer?.resize(), 220);
     };
     const office = h('div', { class: 'office' });
     const paintOffice = () => {
@@ -81,13 +72,14 @@ export class App {
     const top = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'brand' }, h('div', { class: 'brand-mark' }, '家'), h('div', null, h('div', { class: 'wordmark' }, 'Atelier'), h('small', null, '間取りプレゼン ─ 図面から、提案のすべてを'))),
-      this.stepBar,
-      h('div', { class: 'spacer' }),
+      h('div', { class: 'brand' }, h('div', { class: 'wordmark' }, 'Atelier')),
       office,
       nameInput,
+      h('div', { class: 'spacer' }),
+      this.stepBar,
+      h('div', { class: 'spacer' }),
       this.buildProjectButtons(),
-      themeBtn,
+      sideBtn,
     );
     this.viewerHost = h('div', { id: 'viewer3d', class: 'view' });
     this.navBar = h('div', { class: 'nav-tools' });
@@ -136,9 +128,9 @@ export class App {
     return h(
       'div',
       { class: 'proj-btns' },
-      h('button', { class: 'btn sm', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '💾 保存'),
-      h('button', { class: 'btn sm', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '📂 開く'),
-      h('button', { class: 'btn sm accent', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog() }, '🔗 お客様に渡す'),
+      h('button', { class: 'btn sm ghost', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '保存'),
+      h('button', { class: 'btn sm ghost', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '開く'),
+      h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog() }, 'お客様に渡す'),
       input,
     );
   }
@@ -210,7 +202,8 @@ export class App {
           'button',
           { class: `step ${this.current?.id === s.id ? 'on' : ''}`, disabled: s.needsModel && !state.model, onclick: () => this.go(s.id) },
           h('span', { class: 'num' }, String(i + 1)),
-          s.label,
+          h('span', { class: 'lbl-long' }, s.label),
+          h('span', { class: 'lbl-short' }, s.short ?? s.label),
         ),
       ),
     );

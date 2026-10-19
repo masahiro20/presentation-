@@ -48,7 +48,7 @@ export interface ExternalPanel {
   dispose: () => void;
 }
 
-const TWO_POINT_LABEL = '📍 2 点合わせ（建物の角 → 航空写真の同じ角）';
+const TWO_POINT_LABEL = '2 点合わせ（建物の角 → 航空写真の同じ角）';
 const UNITS: LengthUnit[] = ['mm', 'cm', 'm', 'in', 'ft', 'custom'];
 /** クリックとドラッグを分ける移動量 (px)。「敷地をクリック」（sunStep）も同じ値で判定する */
 export const CLICK_PX = 3;

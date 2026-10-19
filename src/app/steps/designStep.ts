@@ -279,6 +279,7 @@ let designTab = 'taste';
 export const designStep: Step = {
   id: 'design',
   label: '外観・内観パース',
+  short: 'パース',
   needsModel: true,
   uses3d: true,
   mount(ctx) {
@@ -356,6 +357,60 @@ export const designStep: Step = {
     }
     ctx.stage.appendChild(tools);
 
+    // ---- 見どころカメラのフィルムストリップ（ステージ下）: 小さな下書き画像つき ----
+    const strip = h('div', { class: 'shot-strip' });
+    ctx.stage.appendChild(strip);
+    const thumbs = (v.userData.shotThumbs ??= new Map<string, string>()) as Map<string, string>;
+    let thumbGen = 0;
+    const kindLabel = (s: Shot) => (s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観');
+    const renderStrip = () => {
+      clear(strip);
+      for (const s of shots) {
+        const th = h('div', { class: 'th' }, thumbs.has(s.id) ? h('img', { src: thumbs.get(s.id)! }) : kindLabel(s));
+        const card = h(
+          'button',
+          {
+            class: `shot-card ${active?.id === s.id ? 'on' : ''}`,
+            title: s.caption,
+            onclick: () => {
+              v.applyShot(s, true);
+              active = s;
+              for (const c of strip.children) c.classList.toggle('on', c === card);
+            },
+          },
+          th,
+          h('div', { class: 't' }, h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, kindLabel(s)), (s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC')),
+        );
+        strip.appendChild(card);
+      }
+      scheduleThumbs();
+    };
+    /** 下書きのサムネイルは画面が空いたときに少しずつ（カメラだけ動かして小さく描く。輪切り・断面・時間帯の違う構図は札だけ） */
+    const scheduleThumbs = () => {
+      const gen = ++thumbGen;
+      // 時間帯の違う構図も、今の光のまま構図だけ描く（夕景・夜景の雰囲気は選んでから）
+      const todo = shots.filter((s) => !thumbs.has(s.id) && !s.cutaway && !s.section);
+      if (!todo.length) return;
+      const idle = (fn: () => void) => ((window as unknown as { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => void }).requestIdleCallback ? (window as unknown as { requestIdleCallback: (f: () => void, o?: { timeout: number }) => void }).requestIdleCallback(fn, { timeout: 1500 }) : window.setTimeout(fn, 300));
+      const step = (i: number) => {
+        if (gen !== thumbGen || i >= todo.length || !v.state) return;
+        const s = todo[i];
+        try {
+          thumbs.set(s.id, v.captureQuick(s.view, 192, 108));
+          const card = [...strip.children].find((c) => (c as HTMLElement).title === s.caption && c.textContent?.includes((s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC')));
+          const th = card?.querySelector('.th');
+          if (th) {
+            clear(th);
+            th.appendChild(h('img', { src: thumbs.get(s.id)! }));
+          }
+        } catch {
+          // 描けない環境では札のまま
+        }
+        idle(() => step(i + 1));
+      };
+      idle(() => step(0));
+    };
+
     // ---- サイドパネル ----
     const side = ctx.side;
     const update = (patch: Partial<DesignOptions>) => {
@@ -374,7 +429,6 @@ export const designStep: Step = {
       clear(side);
       side.append(
         h('h2', null, '外観・内観パース'),
-        h('p', { class: 'lead' }, '「こういうイメージ」を選ぶだけで、外壁・屋根・床・家具まで一式の仕上げが切り替わります。見どころのカメラは自動で用意しています。'),
       );
       const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined, eaves: undefined, finishes: clearFinishes('外部') }));
       const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id, finishes: clearFinishes('内部') }));
@@ -557,25 +611,8 @@ export const designStep: Step = {
           ),
         ),
       );
-      // 見どころ
-      const list = h('div', { class: 'shot-list' });
-      for (const s of shots.filter((x) => x.kind !== 'section')) {
-        list.appendChild(
-          h(
-            'button',
-            {
-              class: 'shot-btn',
-              onclick: () => {
-                v.applyShot(s, true);
-                active = s;
-              },
-            },
-            h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観'),
-            h('div', null, (s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC')),
-          ),
-        );
-      }
-      side.append(section('見どころカメラ（自動）', list, h('details', { class: 'hint-fold' }, h('summary', null, '操作のヒント'), h('p', { class: 'hint' }, 'ドラッグで回転（クリックした物を中心に回ります）、右ドラッグ（または画面右の「✋移動」・スペースキー）で画面を掴んで移動、ホイールでカーソルの位置へズーム。「👁目線」にすると人の目の高さで歩けます: ドラッグで見回し、ホイールまたは W・S で前後、A・D で左右、Shift で速く。壁は通り抜けず、階段も上れます。'))));
+      // 見どころカメラはステージ下のフィルムストリップに
+      renderStrip();
       // 撮影
       const samplesSel = h(
         'select',
@@ -645,7 +682,7 @@ export const designStep: Step = {
         section(
           'カット集（高解像度で一括保存）',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、ZIP にまとめます。'),
-          h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `📦 カット集を保存（${shots.length}枚・ZIP）`),
+          h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `カット集を保存（${shots.length}枚・ZIP）`),
           
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind !== 'interior'), { width: state.render.width, height: state.render.height }) }, '外観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind === 'interior'), { width: state.render.width, height: state.render.height }) }, '内観だけ'), h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, [currentAsShot()], { width: state.render.width, height: state.render.height }) }, 'この構図だけ')),
           h('p', { class: 'hint' }, 'サイズは下の「サイズ」の設定です。'),
@@ -670,10 +707,10 @@ export const designStep: Step = {
                 renderGallery();
               },
             },
-            '✨ この構図を提案用パースとして保存（写真品質）',
+            'この構図を提案用パースとして保存（写真品質）',
           ),
           h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, '品質'), samplesSel), h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'サイズ'), sizeSel)),
-          h('button', { class: 'btn dark block', onclick: () => batch(shots, 'photoreal') }, `🖼 おすすめパースを写真品質で一括作成（${shots.length}枚）`),
+          h('button', { class: 'btn dark block', onclick: () => batch(shots, 'photoreal') }, `おすすめパースを写真品質で一括作成（${shots.length}枚）`),
           h(
             'div',
             { class: 'btn-row' },
@@ -688,8 +725,8 @@ export const designStep: Step = {
                 showImage(it);
               }
               renderGallery();
-            } }, '⚡ 高品質描画で保存（数秒）'),
-            h('button', { class: 'btn sm', onclick: () => batch(shots, 'studio') }, '⚡ 高品質描画で一括作成'),
+            } }, '高品質描画で保存（数秒）'),
+            h('button', { class: 'btn sm', onclick: () => batch(shots, 'studio') }, '高品質描画で一括作成'),
           ),
           h(
             'button',
@@ -711,7 +748,7 @@ export const designStep: Step = {
                 }
               },
             },
-            '🧊 D5・Twinmotion へ渡す 3D モデル（.glb＋カメラ）',
+            'D5・Twinmotion へ渡す 3D モデル（.glb＋カメラ）',
           ),
         ),
       );
@@ -754,14 +791,8 @@ export const designStep: Step = {
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));
-      let cameraSec: HTMLElement | null = null;
       for (const sec of secs) {
         const title = sec.querySelector('h4, summary')?.textContent ?? '';
-        // 見どころカメラはいつも見せる（タブの上）
-        if (/カメラ/.test(title)) {
-          cameraSec = sec;
-          continue;
-        }
         const t = TABS.find((x) => x.match.test(title)) ?? TABS[0];
         panes.get(t.id)!.appendChild(sec);
       }
@@ -772,7 +803,6 @@ export const designStep: Step = {
         for (const b of bar.children) (b as HTMLElement).classList.toggle('on', (b as HTMLElement).dataset.tab === id);
       };
       for (const t of TABS) bar.appendChild(h('button', { class: 'side-tab', 'data-tab': t.id, onclick: () => show(t.id) }, t.label));
-      if (cameraSec) side.append(cameraSec);
       side.append(bar, ...panes.values());
       show(designTab);
     };

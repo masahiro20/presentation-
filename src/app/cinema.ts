@@ -32,7 +32,7 @@ export function startCinema(viewer: Viewer, stage: HTMLElement, shots: Shot[], o
   const playBtn = h('button', { class: 'btn sm' }, '❚❚ 一時停止');
   const prevBtn = h('button', { class: 'btn sm', onclick: () => go(i - 1) }, '‹');
   const nextBtn = h('button', { class: 'btn sm', onclick: () => go(i + 1) }, '›');
-  const exitBtn = h('button', { class: 'btn sm', onclick: () => stop() }, '✕ 終了 (Esc)');
+  const exitBtn = h('button', { class: 'btn sm', onclick: () => stop() }, '終了 (Esc)');
   playBtn.onclick = () => {
     playing = !playing;
     playBtn.textContent = playing ? '❚❚ 一時停止' : '▶ 再生';

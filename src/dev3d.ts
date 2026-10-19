@@ -39,6 +39,25 @@ if (shotId) {
   const s = shots.find((s) => s.id === shotId || s.id.startsWith(shotId));
   if (s) viewer.applyShot(s);
 }
+// 写真の仕上げ（グレーディング）だけを試す: grade=1
+if (params.get('grade')) {
+  const { finishPhoto } = await import('./scene/photoreal');
+  const W = +(params.get('w') ?? 1280);
+  const H = +(params.get('hh') ?? 720);
+  const url0 = await viewer.capture(W, H, 'image/png');
+  const im = new Image();
+  im.src = url0;
+  await im.decode();
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  cv.getContext('2d')!.drawImage(im, 0, 0);
+  const interior = params.get('view') === 'int' || (params.get('shot') ?? '').startsWith('int');
+  const url = finishPhoto(cv, { interior, tod: design.timeOfDay });
+  viewer.pause(true);
+  document.body.innerHTML = `<img id="ptimg" src="${url}" style="width:100vw;display:block">`;
+  await (document.getElementById('ptimg') as HTMLImageElement).decode();
+}
 if (params.get('pt')) {
   const { renderPhotoreal } = await import('./scene/photoreal');
   const url = await renderPhotoreal(viewer, { width: +(params.get('w') ?? 480), height: +(params.get('hh') ?? 300), samples: +params.get('pt')!, timeLimit: 3000000, exposure: +(params.get('exp') ?? (params.get('shot')?.startsWith('int') ? 1.9 : 1.0)) });

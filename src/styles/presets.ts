@@ -721,10 +721,10 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     floor: { pattern: 'woodFloor', color: '#c9a97c', color2: '#b8976c', roughness: 0.55, size: 0.15 },
     wetFloor: { pattern: 'tileFloor', color: '#8e8c88', roughness: 0.45, size: 0.6, size2: 0.6, tile: 1.2 },
     entranceFloor: { pattern: 'tileFloor', color: '#6f6d69', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
-    wall: { pattern: 'plaster', color: '#efede8', color2: '#e8e5df', roughness: 0.95, normalStrength: 0.18 },
+    wall: { pattern: 'plaster', color: '#ece8e1', color2: '#e4dfd7', roughness: 0.95, normalStrength: 0.2 },
     accentWall: { pattern: 'plaster', color: '#b9b5ad', color2: '#aeaaa2', roughness: 0.95, normalStrength: 0.25 },
-    ceiling: { pattern: 'paint', color: '#f4f3f0' },
-    door: { pattern: 'paint', color: '#efede8', roughness: 0.6 },
+    ceiling: { pattern: 'paint', color: '#f1efea' },
+    door: { pattern: 'paint', color: '#ece8e1', roughness: 0.6 },
     trim: '#1f1f1f',
     furniture: {
       wood: { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 },

@@ -67,7 +67,7 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
     g.drawImage(img, 0, 0, opts.width, opts.height);
-    return finishPhoto(c, { contrast: 0.08, vignette: 0.16 });
+    return finishPhoto(c, { interior: !!opts.interior, tod: viewer.design.timeOfDay });
   } finally {
     scene.background = prev.bg;
     scene.backgroundIntensity = prev.bgI;

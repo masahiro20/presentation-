@@ -9,7 +9,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Viewer } from './viewer';
 import { loadHdri, equirectIrradiance } from './hdri';
 import { buildInteriorPhotoLights, buildExteriorLights } from './interiorLights';
-import { interiorById } from '../styles/presets';
+import { interiorById, type TimeOfDay } from '../styles/presets';
 import { interiorFor } from '../coordinate/catalog';
 import { resolveSpec } from '../styles/spec';
 import { kelvinToColor } from './viewer';
@@ -382,7 +382,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     check();
     const luma = meanLuma(canvas);
     if (luma < (night ? 1.5 : 4)) throw new PhotorealError(`画像が真っ黒になりました（平均輝度 ${luma.toFixed(1)}）`, 'black');
-    return finishPhoto(canvas);
+    return finishPhoto(canvas, { interior: !!opts.interior, tod });
   } finally {
     canvas.removeEventListener('webglcontextlost', onLost);
     renderer.debug.onShaderError = prevOnShaderError;
@@ -413,16 +413,40 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
 }
 
 /** 写真としての仕上げ: ハイライトのにじみ（ブルーム）、ごく弱い周辺減光とトーンカーブ、フィルムの粒子 */
-export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; contrast?: number; bloom?: number; grain?: number } = {}): string {
+export interface FinishOptions {
+  vignette?: number;
+  contrast?: number;
+  bloom?: number;
+  grain?: number;
+  /** 内観（彩度・クラリティを控えめに、影をやわらかく） */
+  interior?: boolean;
+  tod?: TimeOfDay;
+  /** 彩度の低い色ほど強く持ち上げる（ヴァイブランス） */
+  vibrance?: number;
+  /** 局所コントラスト（大きな半径のアンシャープマスク。素材の質感が立つ） */
+  clarity?: number;
+  /** 影を少し青く、ハイライトを少し暖かく（0〜255 の量） */
+  splitTone?: number;
+}
+
+/**
+ * 写真の仕上げ（建築写真家のレタッチに倣う）:
+ * ブルーム → クラリティ（局所コントラスト） → トーンカーブ（S 字・黒の持ち上げ・ハイライトのショルダー）→
+ * ヴァイブランス → スプリットトーン → 粒子 → ビネット
+ */
+export function finishPhoto(src: HTMLCanvasElement, opts: FinishOptions = {}): string {
   const w = src.width;
   const h = src.height;
+  const interior = opts.interior ?? false;
+  const tod = opts.tod ?? 'day';
+  const dusk = tod === 'night' || tod === 'evening';
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
   const ctx = c.getContext('2d')!;
   ctx.drawImage(src, 0, 0);
   // ブルーム: 明るい部分（空・窓・照明）だけを取り出してぼかし、薄く重ねる（レンズのにじみ）
-  const bloom = opts.bloom ?? 0.1;
+  const bloom = opts.bloom ?? (dusk ? 0.14 : interior ? 0.1 : 0.06);
   if (bloom > 0) {
     const s = Math.max(1, Math.round(Math.max(w, h) / 240));
     const bw = Math.max(1, Math.floor(w / s));
@@ -449,34 +473,98 @@ export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; c
     ctx.drawImage(b, 0, 0, w, h);
     ctx.restore();
   }
+  // クラリティ: 大きくぼかした画像との差を少し足す（局所コントラスト。塗り壁・石・木の質感が立ち、写真の「抜け」が出る）
+  const clarity = opts.clarity ?? (interior ? 0.12 : 0.18);
+  let blur: Uint8ClampedArray | null = null;
+  if (clarity > 0) {
+    const s = 6;
+    const bw = Math.max(1, Math.ceil(w / s));
+    const bh = Math.max(1, Math.ceil(h / s));
+    const b = document.createElement('canvas');
+    b.width = bw;
+    b.height = bh;
+    const bc = b.getContext('2d')!;
+    bc.filter = `blur(${Math.max(1, Math.round(bw / 70))}px)`;
+    bc.drawImage(src, 0, 0, bw, bh);
+    const u = document.createElement('canvas');
+    u.width = w;
+    u.height = h;
+    const uc = u.getContext('2d', { willReadFrequently: true })!;
+    uc.imageSmoothingEnabled = true;
+    uc.imageSmoothingQuality = 'high';
+    uc.drawImage(b, 0, 0, w, h);
+    blur = uc.getImageData(0, 0, w, h).data;
+  }
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
-  const k = opts.contrast ?? 0.06;
-  const grain = (opts.grain ?? 0.012) * 255;
+  const k = opts.contrast ?? (interior ? 0.07 : 0.1);
+  const grain = (opts.grain ?? 0.008) * 255;
+  const vib = opts.vibrance ?? (interior ? 0.08 : 0.14);
+  const st = opts.splitTone ?? (dusk ? 0 : 5);
   let seed = 1234567;
   const rnd = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 4294967296 - 0.5;
   };
-  // S字カーブ（中間調を少し締める）
-  const lut = new Uint8ClampedArray(256);
+  // トーンカーブ: S 字（中間調を締める）＋ 黒をわずかに持ち上げ（フィルムの黒）＋ ハイライトのショルダー（白飛びをなだらかに）
+  const lut = new Float32Array(256);
   for (let i = 0; i < 256; i++) {
     const x = i / 255;
-    const s = x + k * Math.sin((x - 0.5) * Math.PI * 2) * -0.5 * Math.sin(x * Math.PI);
-    lut[i] = Math.round(Math.max(0, Math.min(1, s)) * 255);
+    let v = x + k * Math.sin((x - 0.5) * Math.PI * 2) * -0.5 * Math.sin(x * Math.PI);
+    if (v > 0.86) v = 0.86 + (v - 0.86) * 0.78;
+    v = 0.012 + v * 0.988;
+    lut[i] = Math.max(0, Math.min(1, v)) * 255;
   }
+  const clamp = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+  const sample = (v: number) => {
+    const i = v < 0 ? 0 : v > 255 ? 255 : v;
+    const i0 = i | 0;
+    const f = i - i0;
+    return i0 >= 255 ? lut[255] : lut[i0] + (lut[i0 + 1] - lut[i0]) * f;
+  };
   for (let i = 0; i < d.length; i += 4) {
-    const g = grain > 0 ? rnd() * grain : 0;
-    d[i] = lut[d[i]] + g;
-    d[i + 1] = lut[d[i + 1]] + g;
-    d[i + 2] = lut[d[i + 2]] + g;
+    let r = d[i];
+    let g = d[i + 1];
+    let b = d[i + 2];
+    if (blur) {
+      r = clamp(r + clarity * (r - blur[i]));
+      g = clamp(g + clarity * (g - blur[i + 1]));
+      b = clamp(b + clarity * (b - blur[i + 2]));
+    }
+    r = sample(r);
+    g = sample(g);
+    b = sample(b);
+    // ヴァイブランス: 彩度の低い色ほど持ち上げ、もともと鮮やかな色は増やしすぎない
+    const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    const sat = mx > 0 ? (mx - mn) / mx : 0;
+    const f = 1 + vib * (1 - sat);
+    r = l + (r - l) * f;
+    g = l + (g - l) * f;
+    b = l + (b - l) * f;
+    // スプリットトーン: 影は少し青く、ハイライトは少し暖かく
+    if (st > 0) {
+      const t = (l / 255 - 0.5) * 2;
+      if (t < 0) {
+        b += -t * st;
+        r -= -t * st * 0.4;
+      } else {
+        r += t * st;
+        g += t * st * 0.5;
+      }
+    }
+    const gn = grain > 0 ? rnd() * grain : 0;
+    d[i] = clamp(r + gn);
+    d[i + 1] = clamp(g + gn);
+    d[i + 2] = clamp(b + gn);
   }
   ctx.putImageData(img, 0, 0);
-  const v = opts.vignette ?? 0.14;
-  const g = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.hypot(w, h) * 0.62);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(1, `rgba(0,0,0,${v})`);
-  ctx.fillStyle = g;
+  const v = opts.vignette ?? (interior ? 0.14 : 0.18);
+  const gr = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.38, w / 2, h / 2, Math.hypot(w, h) * 0.64);
+  gr.addColorStop(0, 'rgba(0,0,0,0)');
+  gr.addColorStop(1, `rgba(0,0,0,${v})`);
+  ctx.fillStyle = gr;
   ctx.fillRect(0, 0, w, h);
   return c.toDataURL('image/jpeg', 0.95);
 }

@@ -41,7 +41,7 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
     glowCol = new THREE.Color(0.02, 0.02, 0.04);
   } else {
     // 彩度を抑えた青と、靄のかかった地平（写真の空に近い落ち着き）
-    zenith = new THREE.Color(0.2, 0.36, 0.7).lerp(new THREE.Color(0.14, 0.19, 0.42), low * 0.6).multiplyScalar(0.35 + 0.65 * dayF);
+    zenith = new THREE.Color(0.17, 0.33, 0.72).lerp(new THREE.Color(0.14, 0.19, 0.42), low * 0.6).multiplyScalar(0.35 + 0.65 * dayF);
     // 朝は地平が淡い桃色〜乳白（靄）、夕景は橙
     const horizonWarm = p.mode === 'morning' ? new THREE.Color(1.0, 0.82, 0.72) : new THREE.Color(1.0, 0.64, 0.38);
     horizon = new THREE.Color(0.8, 0.85, 0.9).lerp(horizonWarm, low * (p.mode === 'evening' ? 0.95 : p.mode === 'morning' ? 0.8 : 0.5)).multiplyScalar(0.45 + 0.75 * dayF);

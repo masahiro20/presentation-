@@ -12,7 +12,7 @@ import type { BuildingModel, Room } from '../core/types';
 import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
-import { buildFurniture, type LightPoint, type Footprint } from './furniture';
+import { buildFurniture, setKitchenFinish, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
@@ -28,6 +28,12 @@ import { clearMaterialCache } from '../styles/textures';
 import { resolveSpec } from '../styles/spec';
 
 /** 建築パース用カメラ: レンズシフトで縦線を垂直に保つ */
+/** 暗い色か（キッチンの扉の色でレンジフードをシルバー／ブラックに振り分ける） */
+function isDarkColor(hex: string): boolean {
+  const c = new THREE.Color(hex);
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.25;
+}
+
 export class ArchCamera extends THREE.PerspectiveCamera {
   shiftY = 0;
   updateProjectionMatrix() {
@@ -708,6 +714,7 @@ export class Viewer {
     this.groups.roof.add(roof.mb.build(resolve, { name: 'roof' }));
     this.edgeLines = [];
     this.rebuildEdges([this.groups.building, this.groups.roof]);
+    setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
     // 実物のモデル（観葉植物・ラウンジチェア）は読み込み後に追加
@@ -1370,6 +1377,7 @@ export class Viewer {
         // 方位（真北）の印を敷地の角に置く（輪切りのみ。断面では壁越しに見えて邪魔になる）
         if (f) this.groups.cut.add(northMarker(this.state!.meta.bbox, model.northAngleDeg, resolve));
         if (this.design.furniture) {
+          setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
           const fur = buildFurniture(model, { cut: f ? { level: level!, y: cutY } : undefined, clip: sec ? clip : undefined });
           this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
           const gen = this.modelGen;

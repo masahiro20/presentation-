@@ -23,6 +23,15 @@ if (view === 'ext') viewer.applyView({ pos: new THREE.Vector3(c.x + 13, 1.6, c.z
 else if (view === 'aerial') viewer.applyView({ pos: new THREE.Vector3(c.x + 14, 14, c.z + 18), target: new THREE.Vector3(c.x, 2, c.z), fov: 45 });
 else if (view === 'cut') { viewer.setCutaway(+(params.get('lv') ?? 1)); viewer.applyView({ pos: new THREE.Vector3(c.x + 6, 14, c.z + 11), target: new THREE.Vector3(c.x, 0, c.z), fov: 45 }); }
 else if (view === 'int') viewer.applyView({ pos: new THREE.Vector3(+(params.get('x') ?? 6), 0.5 + 1.35, +(params.get('z') ?? 7)), target: new THREE.Vector3(+(params.get('tx') ?? 0.5), 1.2, +(params.get('tz') ?? 3)), fov: 62, architectural: true });
+// キッチンの型を試す: kt=two|island|wall|peninsula（1 階 LDK の西側の壁に置く。kx/ky mm, kr 度, kl m）
+if (params.get('kt')) {
+  const ldk = model.floors[0].rooms.find((r) => r.type === 'ldk' || r.type === 'living');
+  if (ldk) {
+    const xs = ldk.polygon.map((p) => p.x), ys = ldk.polygon.map((p) => p.y);
+    model.furniture = [{ level: 1, items: [{ id: 'k1', kind: 'kitchen', x: +(params.get('kx') ?? Math.min(...xs) + 70), y: +(params.get('ky') ?? (Math.min(...ys) + Math.max(...ys)) / 2), rot: +(params.get('kr') ?? -90), len: +(params.get('kl') ?? (Math.max(...ys) - Math.min(...ys)) / 1000), kitchenType: params.get('kt') as any, roomId: ldk.id }] }];
+    viewer.setModel(model);
+  }
+}
 const shotId = params.get('shot');
 if (shotId) {
   const shots = viewer.shots(1280 / 800);

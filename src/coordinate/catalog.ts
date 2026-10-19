@@ -36,6 +36,10 @@ export interface FinishCategory {
 const paint = (color: string, roughness = 0.55): MatSpec => ({ pattern: 'paint', color, roughness });
 /** セラミック天板（目地の無い大判。わずかな石目） */
 const ceramic = (color: string, color2: string): MatSpec => ({ pattern: 'marble', color, color2, roughness: 0.3, size: 3.2, size2: 3.2 });
+/** LINE KITCHEN のモルタル調メラミン（モルタライト・モルタブラック・グレーストーン）: ざらつきのある塗り調 */
+const mortar = (color: string, color2: string): MatSpec => ({ pattern: 'plaster', color, color2, roughness: 0.55, normalStrength: 0.12 });
+/** ステンレス バイブレーション天板 */
+const stainless = (): MatSpec => ({ pattern: 'paint', color: '#b9bbbd', roughness: 0.32, metalness: 0.9 });
 
 export const FINISH_CATEGORIES: FinishCategory[] = [
   {
@@ -177,10 +181,18 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     id: 'kitchen',
     label: 'キッチン',
     part: '設備',
+    // 既定: 白壁・明るい床の内観はモルタライト、スレート床・グレー壁・木天井の内観はモルタブラック（御社の仕上げパースのキッチンは暗い色が多い）
+    defaultFor: (d) => (/slate|grey|cedar|dark/.test(d.interiorId) ? 'kitchen.hl.line.mortablack' : 'kitchen.hl.line.mortalight'),
     products: [
-      { id: 'kitchen.hl.line.stone', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 グレー × 扉 グレージュ', swatch: ['#8e8c88', '#c9c3b8'], apply: (s) => { s.int.furniture.counter = ceramic('#8e8c88', '#84827e'); s.int.furniture.cabinet = paint('#c9c3b8', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
-      { id: 'kitchen.hl.line.white', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ホワイト × 扉 ホワイト', swatch: ['#dcdad5', '#e6e4df'], apply: (s) => { s.int.furniture.counter = ceramic('#dcdad5', '#d0cec8'); s.int.furniture.cabinet = paint('#e6e4df', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
-      { id: 'kitchen.hl.line.black', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ブラック × 扉 ブラック', swatch: ['#2c2c2c', '#303030'], apply: (s) => { s.int.furniture.counter = ceramic('#2c2c2c', '#262626'); s.int.furniture.cabinet = paint('#303030', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      // LINE KITCHEN（ホームランディック標準）: カタログの GROUP1 メラミン化粧板・ステンレス、GROUP2 木目。天板はステンレス バイブレーション or 扉同色
+      { id: 'kitchen.hl.line.mortalight', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'モルタライト（天板・扉同色）', swatch: ['#b3a995', '#b3a995'], apply: (s) => { s.int.furniture.counter = mortar('#b3a995', '#a89e8a'); s.int.furniture.cabinet = mortar('#b3a995', '#a89e8a'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.mortablack', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'モルタブラック（天板・扉同色）', swatch: ['#3a3a36', '#3a3a36'], apply: (s) => { s.int.furniture.counter = mortar('#3a3a36', '#33332f'); s.int.furniture.cabinet = mortar('#3a3a36', '#33332f'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.darkgrey', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'ダークグレー × ステンレス バイブレーション天板', swatch: ['#b9bbbd', '#2f3a40'], apply: (s) => { s.int.furniture.counter = stainless(); s.int.furniture.cabinet = paint('#2f3a40', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.greystone', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'グレーストーン（天板・扉同色）', swatch: ['#5e6165', '#5e6165'], apply: (s) => { s.int.furniture.counter = mortar('#5e6165', '#55585c'); s.int.furniture.cabinet = mortar('#5e6165', '#55585c'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.white', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'ナチュラルホワイト × ステンレス バイブレーション天板', swatch: ['#b9bbbd', '#f1f0ec'], apply: (s) => { s.int.furniture.counter = stainless(); s.int.furniture.cabinet = paint('#f1f0ec', 0.45); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.darkbeige', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'ダークベージュ（天板・扉同色）', swatch: ['#a89f99', '#a89f99'], apply: (s) => { s.int.furniture.counter = paint('#a89f99', 0.4); s.int.furniture.cabinet = paint('#a89f99', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.walnut', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'ウォールナット（GROUP2）× ステンレス バイブレーション天板', swatch: ['#b9bbbd', '#6e4b36'], apply: (s) => { s.int.furniture.counter = stainless(); s.int.furniture.cabinet = { pattern: 'wood', color: '#6e4b36', color2: '#5a3c2b', roughness: 0.5 }; }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.ash', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'アッシュ（GROUP2）× ステンレス バイブレーション天板', swatch: ['#b9bbbd', '#cfb58d'], apply: (s) => { s.int.furniture.counter = stainless(); s.int.furniture.cabinet = { pattern: 'wood', color: '#cfb58d', color2: '#bca27a', roughness: 0.5 }; }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
       { id: 'kitchen.lixil.richelle', maker: 'LIXIL', name: 'リシェルSI ペニンシュラ I 型', code: 'W2585 セラミックトップ', color: 'グレースモーク × 扉 ウォールナット', swatch: ['#7d7b78', '#6e5542'], apply: (s) => { s.int.furniture.counter = ceramic('#7d7b78', '#747270'); s.int.furniture.cabinet = { pattern: 'wood', color: '#6e5542', color2: '#5c4535', roughness: 0.5 }; }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
       { id: 'kitchen.panasonic.lclass', maker: 'パナソニック', name: 'Lクラス フラット対面', code: 'W2600 有機ガラス系ワークトップ', color: 'ホワイト × 扉 ライトグレー', swatch: ['#ecebe8', '#c6c5c1'], apply: (s) => { s.int.furniture.counter = { pattern: 'paint', color: '#ecebe8', roughness: 0.22 }; s.int.furniture.cabinet = paint('#c6c5c1', 0.45); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
       { id: 'kitchen.cleanup.centro', maker: 'クリナップ', name: 'セントロ ペニンシュラ', code: 'W2550 ステンレスワークトップ', color: 'ステンレス × 扉 チャコール', swatch: ['#b9bbbd', '#3a3b3d'], apply: (s) => { s.int.furniture.counter = { pattern: 'paint', color: '#b9bbbd', roughness: 0.35, metalness: 0.9 }; s.int.furniture.cabinet = paint('#3a3b3d', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
@@ -193,7 +205,7 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     label: 'カップボード（背面収納）',
     part: '設備',
     products: [
-      { id: 'cup.line.same', maker: 'ホームランディック', name: 'LINE キッチン 背面収納', code: 'キッチン扉と同色 天井まで', color: 'キッチン同色', swatch: ['#c9c3b8'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; }, note: '扉はキッチンと同じ面材。取っ手なし' },
+      { id: 'cup.line.same', maker: 'ホームランディック', name: 'LINE KITCHEN カップボード ミックスタイプ', code: 'W2440〜2740 D450 H850 ＋ 吊戸 ＋ トール', color: 'キッチン扉と同色', swatch: ['#b3a995'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; }, note: '扉はキッチンと同じ面材。取っ手なし' },
       { id: 'cup.custom.oak', maker: '造作（家具工事）', name: '造作カップボード', code: 'オーク突板 ＋ 石目カウンター', color: 'オーク', swatch: ['#c3a06f'], apply: (s) => { s.int.furniture.cabinet = { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 }; } },
       { id: 'cup.custom.white', maker: '造作（家具工事）', name: '造作カップボード', code: 'メラミン ホワイト ＋ 石目カウンター', color: 'ホワイト', swatch: ['#ecebe8'], apply: (s) => { s.int.furniture.cabinet = paint('#ecebe8', 0.5); } },
       { id: 'cup.lixil.richelle', maker: 'LIXIL', name: 'リシェルSI カップボード', code: 'W2700 トール＋カウンター', color: 'キッチン同色', swatch: ['#6e5542'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; } },
@@ -293,9 +305,9 @@ function clone<T>(v: T): T {
 /** テイストにコーディネートの選択を重ねた外観・内観 */
 export function stylesFor(d: DesignOptions): { ext: ExteriorStyle; int: InteriorStyle } {
   const s = { ext: clone(exteriorById(d.exteriorId)), int: clone(interiorById(d.interiorId)) };
-  if (!d.finishes) return s;
   for (const cat of FINISH_CATEGORIES) {
-    const id = d.finishes[cat.id];
+    // キッチン・カップボードは選んでいなくても既定の商品（LINE KITCHEN）を 3D に反映する（仕上げ表と 3D を一致させる）。他の部位はテイストの素材のまま
+    const id = d.finishes?.[cat.id] ?? (cat.id === 'kitchen' || cat.id === 'cupboard' ? selectedProduct(cat, d).id : undefined);
     if (!id) continue;
     cat.products.find((p) => p.id === id)?.apply?.(s);
   }

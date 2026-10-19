@@ -114,6 +114,11 @@ export class MaterialRegistry {
     set('f.metal', color(F.metal, 0.35, 0.8));
     set('f.handle', color('#262626', 0.4, 0.6));
     set('f.hood', color('#e9e7e3', 0.45, 0.2));
+    // LINE KITCHEN: ステンレス（バイブレーション）のシンク、レンジフードのシルバー／ブラック、キャビネット内部のチャコールグレー
+    set('f.stainless', color('#b9bbbd', 0.32, 0.9));
+    set('f.hoodSilver', color('#c6c7c9', 0.35, 0.85));
+    set('f.hoodDark', color('#1b1b1b', 0.45, 0.6));
+    set('f.carcass', color('#3b3b3b', 0.7, 0.1));
     set('int.shadowGap', color('#3a3836', 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
     set('f.downlight', color('#fffaf0', 0.2, 0, { emissive: new THREE.Color('#fff1dc'), emissiveIntensity: night ? 14 : 1.2 }));

@@ -346,6 +346,8 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
       for (let z = R.minZ + ins; z <= R.maxZ - ins + 1e-6; z += step) {
         const pos = new THREE.Vector3(x, y0 + eyeH, z);
         if (occ.some((o) => o.maxY > 0.5 && x > o.minX - 0.3 && x < o.maxX + 0.3 && z > o.minZ - 0.3 && z < o.maxZ + 0.3)) continue;
+        // 背の高い物（レンジフード・カップボード・トール収納）のすぐそばには立たない（頭上に大きな箱がかぶる構図を避ける）
+        if (occ.some((o) => o.maxY > 1.4 && x > o.minX - 0.9 && x < o.maxX + 0.9 && z > o.minZ - 0.9 && z < o.maxZ + 0.9)) continue;
         if (meta.doorLeaves.some((d) => Math.abs(d.a.y - y0) < 0.5 && distToSeg2(pos, d.a, d.b) < 0.7)) continue;
         cands.push(pos);
       }

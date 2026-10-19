@@ -668,67 +668,198 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
 }
 
+/** キッチンの仕上げ（扉が暗い色か）。レンジフードの色（シルバー／ブラック）を扉に合わせるために、組み立て前に設定する */
+let kitchenFinish = { dark: false };
+export function setKitchenFinish(f: { dark: boolean }) {
+  kitchenFinish = f;
+}
+
+/**
+ * LINE KITCHEN（ホームランディックの標準キッチン）。カタログ・プランニングシートの呼び寸法どおりに作る。
+ * - 間口 W2290 / 2440 / 2590（シンクキャビネット 750/900/1050 ＋ 食器洗い機 450 ＋ 加熱機器キャビネット 1050）、高さ H850、キャビネット奥行 650
+ * - ペニンシュラ・アイランドはカウンタースタイル: 天板 D750（ダイニング側に 100 の持ち出し）、ダイニング側は FIX パネル
+ * - 天板 20mm（ステンレス バイブレーション or 扉同色のメラミン）、フラット扉は取っ手なしで天板の下に手掛けの影の線（LINE）
+ * - アンダーシンク W800×D435×H190、IH 3 口 W750、浅型食器洗い機 W450、台輪 H100
+ * - レンジフード: 壁付け I 型・Ⅱ型は ASR-3A-9027（薄型・壁掛け）、ペニンシュラ・アイランドは天吊りの箱型（TAJIMA FLBT）。色は扉に合わせてシルバー／ブラック
+ * - 背面はカップボード フロアタイプ（D450 H850）＋ 吊戸（H600）、端にトール（H2050 D650）のミックスタイプ。冷蔵庫はその並び
+ * - Ⅱ型: 壁に加熱機器キャビネット W1840、対面にシンクキャビネット W1840（D750）
+ */
 function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureItem, 'kitchenType' | 'stoveSide' | 'fridge' | 'hood' | 'd'> = {}) {
   const type = opt.kitchenType ?? 'peninsula';
   const stoveSign = (opt.stoveSide ?? 'right') === 'right' ? 1 : -1;
   const fridge = opt.fridge ?? 'right';
   const hood = opt.hood !== false;
-  // 小物（木のトレーと白い器、細い一輪挿し）
-  const props = (cv: number) => {
-    fr.box('f.wood', 0.05 * stoveSign, cv + 0.3, 0.42, 0.26, 0.89, 0.018);
-    fr.cyl('f.white', -0.03, cv + 0.3, 0.07, 0.908, 0.09);
-    fr.cyl('f.white', 0.13, cv + 0.3, 0.045, 0.908, 0.13);
-    fr.cyl('f.white', -0.45 * stoveSign, cv + 0.32, 0.035, 0.89, 0.22);
-    fr.cyl('f.leaf', -0.45 * stoveSign, cv + 0.32, 0.004, 1.11, 0.22, 6);
-    fr.sphere('f.leaf', -0.45 * stoveSign, cv + 0.32, 1.35, 0.045, 1.4);
+  const hoodKey = kitchenFinish.dark ? 'f.hoodDark' : 'f.hoodSilver';
+  const H = 0.85;
+  const TOP = 0.02;
+  const KICK = 0.1;
+  const D = 0.65;
+  /** 手掛けの影の線・扉の目地（扉面から 3mm 出した細い黒い帯） */
+  const lineH = (u: number, v: number, w: number, y: number, h: number, dir: 1 | -1) => fr.box('f.handle', u, dir > 0 ? v - 0.003 : v - 0.009, w, 0.012, y, h);
+  /**
+   * キャビネット本体: 台輪（奥に引く）・箱・天板・手掛けの線・扉の目地。
+   * front = 扉の面がある側（+1: 室内側 v+d, -1: 壁側 v）。sections = 扉の割り（幅と引出し段数）。topD = 天板の奥行（持ち出し分を含む）
+   */
+  const cabinet = (u: number, v: number, w: number, d: number, sections: { w: number; rows: number }[], front: 1 | -1, topD = d, topShift = 0) => {
+    fr.box('int.shadowGap', u, v + 0.04, w - 0.08, d - 0.08, 0, KICK);
+    fr.box('f.cabinet', u, v, w, d, KICK, H - KICK - TOP);
+    fr.box('f.counter', u, v + topShift, w, topD, H - TOP, TOP);
+    const face = front > 0 ? v + d : v;
+    // 手掛け（天板のすぐ下、間口いっぱい）
+    lineH(u, face, w - 0.02, H - TOP - 0.03, 0.022, front);
+    // 扉の割り: 縦目地と引出しの段
+    let x = u - w / 2 + 0.02;
+    sections.forEach((sec, i) => {
+      if (i > 0) fr.box('f.handle', x, front > 0 ? face - 0.003 : face - 0.009, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.05);
+      const body = H - KICK - TOP - 0.03;
+      for (let r = 1; r < sec.rows; r++) {
+        // 1 段目は浅い引出し（天板下 170）、残りを等分
+        const y = r === 1 ? H - TOP - 0.03 - 0.17 : KICK + ((body - 0.17) * (sec.rows - r)) / (sec.rows - 1);
+        lineH(x + sec.w / 2, face, sec.w - 0.01, y, 0.006, front);
+      }
+      x += sec.w;
+    });
   };
-  // シンク・コンロ・フード（カウンターの中心線 cv、幅 cw）
-  const fittings = (cv: number, cw: number, depth: number) => {
-    const sinkU = -stoveSign * (cw / 2 - 0.6);
-    const stoveU = stoveSign * (cw / 2 - 0.5);
-    fr.box('f.chrome', sinkU, cv + 0.12, 0.75, 0.42, 0.855, 0.04);
-    fr.cyl('f.chrome', sinkU, cv + 0.08, 0.015, 0.89, 0.28);
-    fr.box('f.screen', stoveU, cv + 0.08, 0.6, 0.5, 0.89, 0.01);
-    if (hood) {
-      if (type === 'wall') {
-        // 壁付けは壁掛けのスリムなフード
-        fr.box('f.hood', stoveU, cv + 0.02, 0.75, depth - 0.1, 1.55, 0.06);
-        fr.box('f.hood', stoveU, cv + 0.02, 0.5, 0.3, 1.61, ceilingY - 1.61);
-      } else fr.box('f.hood', stoveU, cv + 0.05, 0.9, 0.5, ceilingY - 0.025, 0.025); // 天井埋込の薄型フード
+  /** 間口の呼称と扉の割り（右シンクのとき左から: シンク / 食器洗い機 / 加熱機器） */
+  const sizing = (avail: number) => {
+    const W = avail >= 2.65 ? 2.59 : avail >= 2.5 ? 2.44 : 2.29;
+    const sinkW = W === 2.59 ? 1.05 : W === 2.44 ? 0.9 : 0.75;
+    const secs = [
+      { w: sinkW, rows: 2 },
+      { w: 0.45, rows: 1 },
+      { w: 1.05, rows: 3 },
+    ];
+    return { W, secs: stoveSign > 0 ? secs : secs.slice().reverse(), sinkU: stoveSign * -(W / 2 - sinkW / 2), stoveU: stoveSign * (W / 2 - 0.525) };
+  };
+  /** アンダーシンク（天板に穴を開け、ステンレスの槽を下げる）と水栓 */
+  const sink = (u: number, v: number, topD: number, faucetV: number) => {
+    const sw = 0.8;
+    const sd = 0.435;
+    // 槽（ステンレス）: 天板より 10mm 下から H190
+    fr.box('f.stainless', u, v + (topD - sd) / 2, sw, sd, H - 0.2, 0.19);
+    fr.box('f.carcass', u, v + (topD - sd) / 2 + 0.01, sw - 0.02, sd - 0.02, H - 0.19, 0.17);
+    // 水栓（グースネック・クローム）
+    fr.cyl('f.chrome', u + 0.3, faucetV, 0.016, H, 0.3, 12);
+    fr.box('f.chrome', u + 0.3, faucetV - 0.1, 0.03, 0.2, H + 0.28, 0.025);
+    fr.cyl('f.chrome', u + 0.3, faucetV - 0.19, 0.012, H + 0.17, 0.12, 10);
+  };
+  /** IH 3 口（黒ガラス、天板に落とし込み） */
+  const ih = (u: number, v: number, topD: number) => {
+    fr.box('f.screen', u, v + (topD - 0.52) / 2, 0.75, 0.52, H - 0.002, 0.006);
+    for (const du of [-0.2, 0.2]) fr.cyl('f.handle', u + du, v + topD / 2 + 0.08, 0.09, H + 0.004, 0.001, 20);
+    fr.cyl('f.handle', u, v + topD / 2 - 0.1, 0.08, H + 0.004, 0.001, 20);
+  };
+  /** 壁掛けの薄型フード（ASR-3A-9027: W900、前傾の薄い本体 ＋ 天井までのダクトカバー） */
+  const wallHood = (u: number) => {
+    fr.box(hoodKey, u, 0.02, 0.9, 0.5, 1.5, 0.05);
+    fr.box(hoodKey, u, 0.02, 0.9, 0.3, 1.55, 0.3);
+    fr.box(hoodKey, u, 0.02, 0.5, 0.3, 1.85, ceilingY - 1.86);
+  };
+  /** 天吊りの箱型フード（TAJIMA FLBT: W900 D600、ステンレス） */
+  const ceilingHood = (u: number, v: number) => {
+    fr.box(hoodKey, u, v - 0.275, 0.9, 0.55, ceilingY - 0.9, 0.32);
+    fr.box(hoodKey, u, v - 0.15, 0.4, 0.3, ceilingY - 0.59, 0.59);
+  };
+  /** 小物: 黒いトレーと器、細い一輪挿し */
+  const props = (u: number, v: number) => {
+    fr.box('f.handle', u - 0.1 * stoveSign, v, 0.4, 0.26, H, 0.015);
+    fr.cyl('f.white', u - 0.14 * stoveSign, v, 0.065, H + 0.015, 0.08);
+    fr.cyl('f.white', u + 0.02 * stoveSign, v + 0.02, 0.04, H + 0.015, 0.12);
+    fr.cyl('f.white', u + 0.45 * stoveSign, v, 0.03, H, 0.24);
+    fr.sphere('f.leaf', u + 0.45 * stoveSign, v, H + 0.34, 0.05, 1.5);
+  };
+  /** 冷蔵庫（扉面が平らな W680 D700 H1820） */
+  const fridgeBox = (u: number) => {
+    fr.box('f.fridge', u, 0.02, 0.68, 0.7, 0, 1.82);
+    fr.box('f.handle', u - 0.3, 0.72, 0.012, 0.012, 0.95, 0.5);
+  };
+  /**
+   * 背面収納: カップボード フロアタイプ（D450 H850）＋吊戸（D350 H600 上端 2050）、冷蔵庫と反対の端にトール（D650 H2050）
+   * wallW = 使える壁の長さ。冷蔵庫は fridge の側の端
+   */
+  const backStorage = (wallW: number, withTall = true) => {
+    const fw = fridge === 'none' ? 0 : 0.72;
+    const tallW = withTall ? 0.9 : 0;
+    const cupW = Math.max(0.9, Math.min(2.74, wallW - fw - tallW));
+    const fSign = fridge === 'right' ? 1 : -1;
+    const x0 = -wallW / 2;
+    // 並び（左から）: 冷蔵庫が左なら 冷蔵庫 / カップボード / トール、右なら トール / カップボード / 冷蔵庫
+    const order = fSign < 0 ? ['fridge', 'cup', 'tall'] : ['tall', 'cup', 'fridge'];
+    let x = x0 + (wallW - fw - tallW - cupW) / 2;
+    for (const part of order) {
+      if (part === 'fridge' && fw) {
+        fridgeBox(x + fw / 2);
+        x += fw;
+      } else if (part === 'cup') {
+        const n = Math.max(2, Math.round(cupW / 0.9));
+        const secs = Array.from({ length: n }, () => ({ w: cupW / n, rows: 2 }));
+        cabinet(x + cupW / 2, 0.02, cupW, 0.45, secs, 1);
+        // 吊戸（扉同材、取っ手なし）
+        fr.box('f.cabinet', x + cupW / 2, 0.02, cupW, 0.35, 1.45, 0.6);
+        lineH(x + cupW / 2, 0.37, cupW - 0.02, 1.47, 0.02, 1);
+        for (let k = 1; k < n; k++) fr.box('f.handle', x + (cupW / n) * k, 0.37 - 0.003, 0.004, 0.012, 1.5, 0.5);
+        x += cupW;
+      } else if (part === 'tall' && tallW) {
+        fr.box('int.shadowGap', x + tallW / 2, 0.06, tallW - 0.08, 0.57, 0, KICK);
+        fr.box('f.cabinet', x + tallW / 2, 0.02, tallW, 0.65, KICK, 2.05 - KICK);
+        fr.box('f.handle', x + tallW / 2, 0.67 - 0.003, 0.004, 0.012, 0.15, 1.85);
+        lineH(x + tallW / 2, 0.67, tallW - 0.02, 1.0, 0.012, 1);
+        x += tallW;
+      }
     }
   };
+
   if (type === 'wall') {
-    // 壁付け I 型: 壁沿いのカウンターにシンク・コンロ。冷蔵庫はその端
-    const cw = Math.min(len - 0.3, 3.0) - (fridge === 'none' ? 0 : 0.75);
-    const cu = fridge === 'none' ? 0 : fridge === 'right' ? -0.375 : 0.375;
-    fr.box('f.cabinet', cu, 0, cw, 0.65, 0, 0.85);
-    fr.box('f.counter', cu, -0.01, cw + 0.02, 0.67, 0.85, 0.04);
-    // 吊戸棚
-    fr.box('f.cabinet', cu, 0, cw, 0.35, 1.55, ceilingY - 1.6);
-    const sinkU = cu - stoveSign * (cw / 2 - 0.6);
-    const stoveU = cu + stoveSign * (cw / 2 - 0.5);
-    fr.box('f.chrome', sinkU, 0.12, 0.75, 0.42, 0.855, 0.04);
-    fr.cyl('f.chrome', sinkU, 0.08, 0.015, 0.89, 0.28);
-    fr.box('f.screen', stoveU, 0.08, 0.6, 0.5, 0.89, 0.01);
-    if (hood) fr.box('f.hood', stoveU, 0.02, 0.75, 0.5, 1.5, 0.06);
-    if (fridge !== 'none') fr.box('f.fridge', (fridge === 'right' ? 1 : -1) * (cw / 2 + 0.375 - 0.36) + cu, 0, 0.68, 0.7, 0, 1.82);
+    // 壁付け I 型: 壁沿いにキッチン、その端に冷蔵庫。吊戸は加熱機器側がフィラー
+    const fw = fridge === 'none' ? 0 : 0.72;
+    const { W, secs, sinkU, stoveU } = sizing(Math.min(len - 0.3, 3.2) - fw);
+    const cu = fridge === 'none' ? 0 : (fridge === 'right' ? -1 : 1) * (fw / 2);
+    cabinet(cu, 0.02, W, D, secs, 1);
+    sink(cu + sinkU, 0.02, D, 0.02 + 0.08);
+    ih(cu + stoveU, 0.02, D);
+    fr.box('f.cabinet', cu, 0.02, W, 0.35, 1.45, 0.6);
+    lineH(cu, 0.37, W - 0.02, 1.47, 0.02, 1);
+    if (hood) wallHood(cu + stoveU);
+    if (fw) fridgeBox(cu + (fridge === 'right' ? 1 : -1) * (W / 2 + fw / 2));
+    props(cu, 0.02 + D - 0.2);
     return;
   }
-  // 背面: 天井までの扉付き収納を一枚の面に（冷蔵庫も扉の中に組み込み、取っ手を見せない）
-  const bw = Math.min(len - 0.3, 3.2);
-  fr.box('f.cabinet', 0, 0, bw, 0.62, 0, ceilingY - 0.01);
-  for (let k = 1; k < Math.round(bw / 0.6); k++) fr.box('f.metal', -bw / 2 + (bw / Math.round(bw / 0.6)) * k, 0.62, 0.006, 0.004, 0.02, ceilingY - 0.04);
-  // アイランド: 厚い石の天板を両端で床まで落とす（ウォーターフォール）。扉は取っ手なしのフラット面
-  const cw = Math.min(len - 0.4, 2.7);
-  // アイランドの中心までの距離（図面から読んだ場合はその位置）
-  const cv = opt.d ? Math.max(1.2, Math.min(2.6, opt.d)) : 0.62 + 0.9;
-  const depth = 0.9;
-  fr.box('f.cabinet', 0, cv + 0.02, cw - 0.12, depth - 0.04, 0.08, 0.8);
-  fr.box('f.metal', 0, cv + 0.1, cw - 0.2, depth - 0.2, 0, 0.08); // 奥に引いた台輪の影
-  fr.box('f.counter', 0, cv, cw, depth, 0.88, 0.06);
-  for (const du of [-cw / 2 + 0.03, cw / 2 - 0.03]) fr.box('f.counter', du, cv, 0.06, depth, 0, 0.88);
-  fittings(cv, cw - 0.1, depth);
-  props(cv);
+  const wallW = Math.min(len - 0.3, 3.4);
+  if (type === 'two') {
+    // Ⅱ型: 壁に加熱機器キャビネット W1840、対面にシンクキャビネット W1840（カウンタースタイル D750）
+    const su = stoveSign * (wallW / 2 - 0.92);
+    cabinet(su, 0.02, 1.84, D, [{ w: 0.9, rows: 3 }, { w: 0.9, rows: 3 }], 1);
+    ih(su, 0.02, D);
+    if (hood) wallHood(su);
+    // 壁の残りにカップボードと冷蔵庫
+    const restW = wallW - 1.84 - 0.05;
+    if (restW >= 1.2) {
+      const rc = -stoveSign * (wallW / 2 - restW / 2);
+      const fw = fridge === 'none' ? 0 : 0.72;
+      const cupW = Math.max(0.6, restW - fw);
+      const fridgeFirst = (fridge === 'right' ? 1 : -1) === stoveSign ? false : true;
+      const cx = rc + (fridgeFirst ? 1 : -1) * stoveSign * (fw / 2);
+      cabinet(cx, 0.02, cupW, 0.45, [{ w: cupW / 2, rows: 2 }, { w: cupW / 2, rows: 2 }], 1);
+      fr.box('f.cabinet', cx, 0.02, cupW, 0.35, 1.45, 0.6);
+      lineH(cx, 0.37, cupW - 0.02, 1.47, 0.02, 1);
+      if (fw) fridgeBox(rc - (fridgeFirst ? 1 : -1) * stoveSign * (cupW / 2));
+    }
+    const cv = opt.d ? Math.max(1.3, Math.min(2.6, opt.d)) : 0.65 + 1.0 + 0.325;
+    cabinet(su, cv - D / 2, 1.84, D, [{ w: 1.0, rows: 2 }, { w: 0.84, rows: 1 }], -1, 0.75, 0.05);
+    sink(su - stoveSign * 0.3, cv - D / 2 + 0.1, 0.65, cv + 0.3);
+    props(su + stoveSign * 0.5, cv + 0.1);
+    return;
+  }
+  // ペニンシュラ・アイランド: 背面収納 ＋ 対面のキッチン（カウンタースタイル D750）
+  backStorage(wallW, true);
+  const { W, secs, sinkU, stoveU } = sizing(Math.min(len - 0.4, 3.0));
+  const cv = opt.d ? Math.max(1.3, Math.min(2.6, opt.d)) : 0.45 + 1.0 + 0.325;
+  // 扉はキッチン側（壁向き）、天板はダイニング側へ 100 持ち出し
+  cabinet(0, cv - D / 2, W, D, secs, -1, 0.75, 0.05);
+  sink(sinkU, cv - D / 2 + 0.1, 0.65, cv + 0.3);
+  ih(stoveU, cv - D / 2, D);
+  if (hood) ceilingHood(stoveU, cv);
+  props(0, cv + 0.12);
 }
 
 function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {

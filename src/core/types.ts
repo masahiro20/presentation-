@@ -209,8 +209,8 @@ export interface FurnitureItem {
   /** 長さ (m)（キッチン・浴槽） */
   len?: number;
   roomId?: string;
-  /** キッチンの型: 対面ペニンシュラ（既定）／アイランド／壁付け I 型 */
-  kitchenType?: 'peninsula' | 'island' | 'wall';
+  /** キッチンの型: 対面ペニンシュラ（既定）／アイランド／壁付け I 型／Ⅱ型（壁にコンロ、対面にシンク） */
+  kitchenType?: 'peninsula' | 'island' | 'wall' | 'two';
   /** コンロの位置（部屋側からキッチンを見て左／右。既定: 右） */
   stoveSide?: 'left' | 'right';
   /** 冷蔵庫の位置（背面収納の端。既定: 右） */

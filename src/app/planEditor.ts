@@ -578,7 +578,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
           const optSel = (label: string, opts: [string, string][], get: () => string, set: (v: string) => void) =>
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('select', { onchange: (e: Event) => edit(() => set((e.target as HTMLSelectElement).value)) }, opts.map(([v, l]) => h('option', { value: v, selected: v === get() }, l))));
           panel.append(
-            optSel('キッチンの型', [['peninsula', '対面ペニンシュラ（腰壁あり）'], ['island', 'アイランド'], ['wall', '壁付け I 型']], () => it.kitchenType ?? 'peninsula', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.kitchenType = v as FurnitureItem['kitchenType']; }),
+            optSel('キッチンの型', [['peninsula', '対面ペニンシュラ（カウンタースタイル）'], ['island', 'アイランド'], ['wall', '壁付け I 型'], ['two', 'Ⅱ型（壁にコンロ・対面にシンク）']], () => it.kitchenType ?? 'peninsula', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.kitchenType = v as FurnitureItem['kitchenType']; }),
             optSel('コンロの位置（部屋側から見て）', [['right', '右'], ['left', '左']], () => it.stoveSide ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.stoveSide = v as FurnitureItem['stoveSide']; }),
             optSel('冷蔵庫', [['right', '右端'], ['left', '左端'], ['none', '置かない（別に配置）']], () => it.fridge ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.fridge = v as FurnitureItem['fridge']; }),
             optSel('レンジフード', [['on', 'あり'], ['off', 'なし']], () => (it.hood === false ? 'off' : 'on'), (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.hood = v === 'on'; }),

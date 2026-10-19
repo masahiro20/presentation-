@@ -383,7 +383,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     // ---- 階段 ----
     for (const s of f.stairs) {
       if (!s.goesUp || !upper) continue;
-      buildStairs(mb, s, fl, upper.elevation * MM);
+      buildStairs(mb, s, fl, upper.elevation * MM, f);
     }
   }
 
@@ -1100,7 +1100,7 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
 }
 
 /** 階段（直・折り返し） */
-function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
+function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number, f?: Floor) {
   const rise = y1 - y0;
   const n = stairStepCount(rise / MM, s);
   const rh = rise / n;
@@ -1125,4 +1125,69 @@ function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number) {
   for (const p of lay.pieces) put(p, y0 + rh * p.i);
   // 折り返し階段の中央の腰壁
   if (lay.wall) mb.aabb('int.wall', V(lay.wall.minX * MM, y0, lay.wall.minY * MM), V(lay.wall.maxX * MM, y0 + rise * 0.5 + 0.9, lay.wall.maxY * MM));
+  steelStairDetails(mb, lay, rh, y0, f);
+}
+
+/**
+ * 鉄骨階段の表現: 直線の区間ごとに中央のささら桁（黒皮鉄の鋼板）を勾配なりに通し、
+ * 壁の無い側にフラットバーの支柱と丸パイプの手すりを付ける（ホームランディックの標準）。
+ */
+function steelStairDetails(mb: MeshBuilder, lay: ReturnType<typeof stairLayout>, rh: number, y0: number, f?: Floor) {
+  type Piece = (typeof lay.pieces)[number];
+  const center = (p: Piece) => V(((p.minX + p.maxX) / 2) * MM, 0, ((p.minY + p.maxY) / 2) * MM);
+  // 同じ向きに続く踏板を 1 つの区間に
+  const runs: Piece[][] = [];
+  for (const p of lay.pieces) {
+    if (p.kind !== 'tread') {
+      runs.push([]);
+      continue;
+    }
+    const last = runs[runs.length - 1];
+    if (last && last.length && last[0].dir.x === p.dir.x && last[0].dir.y === p.dir.y) last.push(p);
+    else runs.push([p]);
+  }
+  const metal = 'f.metal';
+  for (const run of runs.filter((r) => r.length >= 2)) {
+    const a = run[0];
+    const b = run[run.length - 1];
+    const d = V(a.dir.x, 0, a.dir.y).normalize();
+    const perp = V(-d.z, 0, d.x);
+    const ca = center(a).setY(y0 + rh * a.i - 0.04);
+    const cb = center(b).setY(y0 + rh * b.i - 0.04);
+    const treadD = Math.abs(V(b.maxX - b.minX, 0, b.maxY - b.minY).dot(d)) * MM;
+    const treadW = Math.abs(V(b.maxX - b.minX, 0, b.maxY - b.minY).dot(perp)) * MM;
+    // ささら桁: 踏板の下 12cm を中心に、区間の両端へ踏板 1 枚分延ばした鋼板（t12 × 200）
+    const x = cb.clone().sub(ca);
+    const len = x.length() + treadD;
+    x.normalize();
+    const z = perp.clone();
+    const y = new THREE.Vector3().crossVectors(z, x).normalize();
+    const geo = new THREE.BoxGeometry(len, 0.2, 0.012);
+    const m = new THREE.Matrix4().makeBasis(x, y, z);
+    m.setPosition(ca.clone().add(cb).multiplyScalar(0.5).addScaledVector(y, -0.12));
+    mb.addGeometry(metal, geo, m);
+    geo.dispose();
+    // 手すり: 壁の無い側（踏板の脇 30cm が階段以外の部屋）にだけ
+    for (const sg of [1, -1]) {
+      let open = false;
+      if (f) {
+        const mid = center(run[Math.floor(run.length / 2)]);
+        const q = mid.clone().addScaledVector(perp, sg * (treadW / 2 + 0.3));
+        const r = roomAt(f, q.x / MM, q.z / MM);
+        open = !!r && r.type !== 'stairs' && r.type !== 'closet' && r.type !== 'storage';
+      }
+      if (!open) continue;
+      const posts: THREE.Vector3[] = [];
+      run.forEach((p, k) => {
+        if (k % 2 && k !== run.length - 1) return;
+        const c = center(p).setY(y0 + rh * p.i);
+        const base = c.addScaledVector(perp, sg * (treadW / 2 - 0.05));
+        // 支柱: フラットバー 12×40、踏板の上 900
+        mb.box(metal, base.clone(), d, 0.04, 0.9, 0.012);
+        posts.push(base.clone().setY(base.y + 0.9));
+      });
+      // 丸パイプ φ32 の手すり（支柱の天端を結ぶ）
+      for (let k = 0; k + 1 < posts.length; k++) mb.tube(metal, posts[k], posts[k + 1], 0.016, 0.016, 10);
+    }
+  }
 }

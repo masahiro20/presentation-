@@ -10,6 +10,7 @@ import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '
 import { CATEGORIES, type Grade } from '../../estimate/catalog';
 import { computeEstimate, newChoice, defaultGroups, unitPriceOf, yen, type EstimateChoice, type EstimateResult } from '../../estimate/calc';
 import { computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
+import { estimateGroupsFor } from '../../coordinate/catalog';
 
 export interface EstimateState {
   choice: EstimateChoice;
@@ -54,6 +55,18 @@ function ensure(): EstimateState {
   return state.estimate;
 }
 
+/** コーディネートで選んだ商品を見積の行（group の選択）に反映する */
+export function syncEstimateWithFinishes() {
+  const es = ensure();
+  Object.assign(es.choice.groups, estimateGroupsFor(state.design));
+  emit('estimate');
+}
+
+/** コーディネート側で決まっている group（見積の画面ではそちらで変える） */
+function finishDrivenGroups(): Set<string> {
+  return new Set(Object.keys(estimateGroupsFor(state.design)));
+}
+
 function baseAreas(grade: Grade): Areas {
   const model = state.model!;
   const ext = exteriorById(state.design.exteriorId);
@@ -74,6 +87,7 @@ interface Computed {
 }
 
 function compute(es: EstimateState): Computed {
+  Object.assign(es.choice.groups, estimateGroupsFor(state.design));
   const base = baseAreas(es.choice.grade);
   const areas = applyOverrides(base, es.areasOverride);
   const est = computeEstimate(areas, es.choice);
@@ -364,8 +378,9 @@ export const estimateStep: Step = {
           seen.add(l.group);
           const options = CATEGORIES.flatMap((cc) => cc.lines).filter((x) => x.group === l.group);
           const cur = es.choice.groups[l.group] ?? defaultGroups(es.choice.grade)[l.group];
-          const sel = h('select', { onchange: (e: Event) => { es.choice.groups[l.group!] = (e.target as HTMLSelectElement).value; render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur }, `${o.desc}　¥${yen(unitPriceOf(o))}/${o.unit}`)));
-          groupBody.appendChild(field(GROUP_LABEL[l.group] ?? l.group, sel));
+          const driven = finishDrivenGroups().has(l.group);
+          const sel = h('select', { disabled: driven, onchange: (e: Event) => { es.choice.groups[l.group!] = (e.target as HTMLSelectElement).value; render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur }, `${o.desc}　¥${yen(unitPriceOf(o))}/${o.unit}`)));
+          groupBody.appendChild(field(GROUP_LABEL[l.group] ?? l.group, sel, driven ? 'パースの「コーディネート」で選んだ商品' : undefined));
         }
       // 資金計画
       const fundBody = h('div', { class: 'fund-form' });

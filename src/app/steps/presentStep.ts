@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 import { h, clear, toast, progressModal, section, download } from '../dom';
 import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
@@ -195,8 +196,7 @@ function sunNote(d: SunDisclosure, target: 'deck' | 'diagram') {
  */
 export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTMLElement[] {
   const model = state.model!;
-  const ext = exteriorById(state.design.exteriorId);
-  const int = interiorById(state.design.interiorId);
+  const { ext, int } = stylesFor(state.design);
   const spec = resolveSpec(state.design.specId, state.design.specPatch);
   const extAll = pick('exterior');
   const exts = extAll.filter((g) => !/夕景|夜景/.test(g.title)).concat(extAll.filter((g) => /夕景|夜景/.test(g.title)));
@@ -273,6 +273,26 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       'hl hl-overview',
       h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: 'ov' }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
       h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
+    ),
+  );
+  // 仕上げ・設備（コーディネート: メーカー・品番）
+  slides.push(
+    slide(
+      'hl hl-finish',
+      h(
+        'div',
+        null,
+        head(0, 'Finish & Equipment', '仕上げ・設備'),
+        h(
+          'div',
+          { class: 'finish-grid' },
+          ...FINISH_CATEGORIES.map((cat) => {
+            const p = selectedProduct(cat, state.design);
+            return h('div', { class: 'finish-row' }, h('div', { class: 'sw' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'k' }, cat.label), h('div', { class: 'v' }, h('div', { class: 'nm' }, `${p.maker}　${p.name}`), h('div', { class: 'cd' }, [p.code, p.color].filter(Boolean).join('　'))));
+          }),
+        ),
+      ),
+      h('div', { class: 'ph' }, photo(ints[0] ?? exts[0] ?? hero)),
     ),
   );
   void copy;

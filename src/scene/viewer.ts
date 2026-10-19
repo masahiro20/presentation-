@@ -21,6 +21,7 @@ import { buildLandscape, type SiteInfo } from './landscape';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions } from '../styles/presets';
+import { exteriorFor, interiorFor } from '../coordinate/catalog';
 import { preloadPhotoTextures } from '../styles/photoTextures';
 import { clearMaterialCache } from '../styles/textures';
 import { resolveSpec } from '../styles/spec';
@@ -270,7 +271,7 @@ export class Viewer {
     this.sun.shadow.radius = 3;
     this.scene.add(this.sun, this.sun.target, this.hemi);
 
-    this.registry = new MaterialRegistry(exteriorById(design.exteriorId), interiorById(design.interiorId), { night: design.timeOfDay === 'night', clay: design.clay });
+    this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', clay: design.clay });
     // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
     void preloadPhotoTextures().then(() => {
       clearMaterialCache();
@@ -860,7 +861,7 @@ export class Viewer {
   /** テイスト変更（屋根形状の変更時のみ屋根を再生成） */
   /** 現在の外観テイスト（軒の出の上書きを反映） */
   extStyle() {
-    const e = exteriorById(this.design.exteriorId);
+    const e = exteriorFor(this.design);
     const ev = this.design.eaves;
     return ev == null ? e : { ...e, roof: { ...e.roof, eaves: ev, verge: Math.min(e.roof.verge, ev) } };
   }
@@ -868,16 +869,16 @@ export class Viewer {
   setDesign(design: DesignOptions) {
     const prev = this.design;
     this.design = design;
-    this.registry.update(exteriorById(design.exteriorId), interiorById(design.interiorId), {
+    this.registry.update(exteriorFor(design), interiorFor(design), {
       wallColor: design.wallColorOverride,
       doorColor: design.specPatch?.doorColor,
       night: design.timeOfDay === 'night',
       clay: design.clay,
     });
     if (!this.state) return;
-    const ext = exteriorById(design.exteriorId);
+    const ext = exteriorFor(design);
     const roofChanged =
-      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.eaves !== design.eaves || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch);
+      prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.eaves !== design.eaves || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch) || (prev.finishes?.accent ?? '') !== (design.finishes?.accent ?? '');
     if (roofChanged || prev.exteriorId !== design.exteriorId) {
       // 外構・アクセント位置も変わるので建物以外を再構築
       this.setModel(this.state.model);
@@ -1117,7 +1118,7 @@ export class Viewer {
     clearGroup(this.groups.lights);
     if (!this.state) return;
     const night = this.design.timeOfDay === 'night';
-    const kelvin = interiorById(this.design.interiorId).lightKelvin;
+    const kelvin = interiorFor(this.design).lightKelvin;
     const col = kelvinToColor(kelvin);
     const used = new Set<string>();
     for (const l of this.state.lights) {

@@ -1,4 +1,13 @@
 import * as THREE from 'three';
+import { FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
+import { syncEstimateWithFinishes } from './estimateStep';
+
+/** テイストを変えたとき、その部位のコーディネートの選択を既定に戻す */
+function clearFinishes(part: '外部' | '内部'): Record<string, string> | undefined {
+  const f = { ...(state.design.finishes ?? {}) };
+  for (const c of FINISH_CATEGORIES) if (c.part === part) delete f[c.id];
+  return Object.keys(f).length ? f : undefined;
+}
 import { h, clear, toast, progressModal, section, segmented, modal, download } from '../dom';
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
@@ -342,14 +351,20 @@ export const designStep: Step = {
       shots = currentShots(ctx);
       renderSide();
     };
+    /** コーディネートで商品を選ぶ: 3D と見積の行を同時に */
+    const chooseFinish = (catId: string, productId: string) => {
+      const finishes = { ...(state.design.finishes ?? {}), [catId]: productId };
+      update({ finishes });
+      syncEstimateWithFinishes();
+    };
     const renderSide = () => {
       clear(side);
       side.append(
         h('h2', null, '外観・内観パース'),
         h('p', { class: 'lead' }, '「こういうイメージ」を選ぶだけで、外壁・屋根・床・家具まで一式の仕上げが切り替わります。見どころのカメラは自動で用意しています。'),
       );
-      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined, eaves: undefined }));
-      const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id }));
+      const extCard = (s: (typeof EXTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.exteriorId, () => update({ exteriorId: s.id, roofOverride: undefined, roofPitch: undefined, wallColorOverride: undefined, eaves: undefined, finishes: clearFinishes('外部') }));
+      const intCard = (s: (typeof INTERIOR_STYLES)[number]) => styleCard(s, s.id === state.design.interiorId, () => update({ interiorId: s.id, finishes: clearFinishes('内部') }));
       const others = (cards: HTMLElement[], open: boolean) =>
         h('details', { open, style: 'margin-top:8px' }, h('summary', { style: 'font-size:12.5px;color:#8b9098;cursor:pointer' }, 'その他のテイスト（比較用）'), h('div', { class: 'style-grid', style: 'margin-top:8px' }, cards));
       const spec = resolveSpec(state.design.specId, state.design.specPatch);
@@ -422,6 +437,22 @@ export const designStep: Step = {
                 step: 50,
                 value: state.design.specPatch?.ceilingHeight ?? v.state!.model.floors[0].ceilingHeight,
                 onchange: (e: Event) => update({ specPatch: { ...state.design.specPatch, ceilingHeight: +(e.target as HTMLInputElement).value } }),
+              }),
+            ),
+          ),
+        ),
+        section(
+          'コーディネート',
+          h('p', { class: 'hint', style: 'margin:0 0 10px' }, '部位ごとにメーカー・品番を選ぶと、3D の仕上げと見積の該当行が同時に変わります。テイストを変えると標準に戻ります。'),
+          ...(['外部', '内部', '設備'] as const).map((part) =>
+            h(
+              'div',
+              { class: 'coord-part' },
+              h('div', { class: 'coord-part-title' }, part),
+              ...FINISH_CATEGORIES.filter((c) => c.part === part).map((cat) => {
+                const cur = selectedProduct(cat, state.design);
+                const sel = h('select', { onchange: (e: Event) => chooseFinish(cat.id, (e.target as HTMLSelectElement).value) }, ...cat.products.map((p) => h('option', { value: p.id, selected: p.id === cur.id }, `${p.maker}　${p.name}${p.color ? `　${p.color}` : ''}`)));
+                return h('div', { class: 'coord-row' }, h('div', { class: 'sw' }, ...cur.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'body' }, h('div', { class: 'k' }, cat.label), sel, h('div', { class: 'cd' }, [cur.code, cur.note].filter(Boolean).join('　'))));
               }),
             ),
           ),
@@ -703,6 +734,7 @@ export const designStep: Step = {
       // ---- 区画をタブにまとめる（縦に長い一覧をやめ、今の作業に必要なものだけを見せる） ----
       const TABS: { id: string; label: string; match: RegExp }[] = [
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
+        { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
         { id: 'export', label: '書き出し', match: /書き出し|カット集|ギャラリー/ },
       ];

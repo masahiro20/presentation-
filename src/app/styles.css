@@ -789,3 +789,21 @@ body.theme-atelier .side-tabs { background: var(--panel); }
   .est-sheet.funding { page: fundingPage; }
   .est-table .sel, .est-table.detail tr.add, .est-table.detail .qn { display: none !important; }
 }
+
+/* ---- コーディネート ---- */
+.coord-part { margin-bottom: 10px; }
+.coord-part-title { font-size: 11px; letter-spacing: 0.12em; color: var(--ink3); margin: 8px 0 6px; }
+.coord-row { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; padding: 7px 0; border-top: 1px solid var(--line); }
+.coord-row .sw { display: flex; flex-direction: column; height: 46px; border-radius: 6px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08); }
+.coord-row .sw span { flex: 1; }
+.coord-row .body { min-width: 0; }
+.coord-row .k { font-size: 11px; color: var(--ink3); letter-spacing: 0.08em; margin-bottom: 3px; }
+.coord-row select { width: 100%; font: inherit; font-size: 12.5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.coord-row .cd { font-size: 11px; color: var(--ink2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slide.hl-finish .finish-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5cqw 2.4cqw; }
+.slide.hl-finish .finish-row { display: grid; grid-template-columns: 2.2cqw 7cqw 1fr; gap: 1cqw; align-items: center; padding: 0.45cqw 0; border-bottom: 1px solid var(--hair); }
+.slide.hl-finish .sw { display: flex; flex-direction: column; height: 2.6cqw; border-radius: 0.3cqw; overflow: hidden; }
+.slide.hl-finish .sw span { flex: 1; }
+.slide.hl-finish .k { font-size: 0.95cqw; color: var(--bronze); letter-spacing: 0.1em; }
+.slide.hl-finish .nm { font-size: 1.1cqw; color: var(--ink); }
+.slide.hl-finish .cd { font-size: 0.85cqw; color: var(--ink-3); }

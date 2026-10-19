@@ -1164,6 +1164,8 @@ export interface DesignOptions {
   eaves?: number;
   /** 白模型（スタディ模型）表示: 仕上げを白いクレイにする */
   clay?: boolean;
+  /** コーディネート: 部位ごとに選んだ商品（部位 id → 商品 id）。テイストの既定に重ねる */
+  finishes?: Record<string, string>;
 }
 
 export const DEFAULT_DESIGN: DesignOptions = {

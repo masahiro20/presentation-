@@ -5,10 +5,11 @@
  *  - 立面図: GL・各階 FL・軒高・最高高さの寸法、方位名を記入
  *  - 断面図: 切断した建物（切り口は濃い塗り）に GL・FL・天井高・最高高さの寸法を記入
  */
+import { exteriorFor, FINISH_CATEGORIES } from '../coordinate/catalog';
 import * as THREE from 'three';
 import type { Viewer, SectionSpec } from '../scene/viewer';
 import { wrapSheet, type SheetInfo, type Vb } from './sheet';
-import { exteriorById } from '../styles/presets';
+import type { DesignOptions } from '../styles/presets';
 import type { MatSpec } from '../styles/textures';
 
 export type ElevationDir = 'south' | 'north' | 'east' | 'west';
@@ -449,13 +450,19 @@ function finishName(m: MatSpec | undefined): string {
 }
 
 /** 立面図の材料の注記（外壁・アクセント・屋根・サッシ・基礎） */
-function finishNotes(exteriorId: string): { cat: MatCat; text: string }[] {
-  const st = exteriorById(exteriorId);
+function finishNotes(design: DesignOptions): { cat: MatCat; text: string }[] {
+  const st = exteriorFor(design);
   const isPlaster = (m?: MatSpec) => m?.pattern === 'stucco' || m?.pattern === 'plaster';
-  // テイスト名が塗り材の商品名（ジョリパット・そとん壁・Sto）なら、それを外壁の名前に使う
-  const wallName = isPlaster(st.wall) && /ジョリパット|そとん|Sto|塗り壁/.test(st.name) ? `${st.name.replace(/\s*×.*$/, '')}（塗り壁）` : finishName(st.wall);
+  // コーディネートで商品を選んでいればメーカー・品番、無ければテイスト名（ジョリパット・そとん壁・Sto）か素材名
+  const product = (catId: string) => {
+    const cat = FINISH_CATEGORIES.find((c) => c.id === catId);
+    const id = design.finishes?.[catId];
+    const p = cat && id ? cat.products.find((x) => x.id === id) : undefined;
+    return p ? `${p.maker} ${p.name}${p.color ? ` ${p.color}` : ''}` : '';
+  };
+  const wallName = product('extWall') || (isPlaster(st.wall) && /ジョリパット|そとん|Sto|塗り壁/.test(st.name) ? `${st.name.replace(/\s*×.*$/, '')}（塗り壁）` : finishName(st.wall));
   const notes: { cat: MatCat; text: string }[] = [{ cat: 'wall', text: `外壁　${wallName}` }];
-  if (st.accent) notes.push({ cat: 'accent', text: `外壁（アクセント）　${finishName(st.accent)}` });
+  if (st.accent) notes.push({ cat: 'accent', text: `外壁（アクセント）　${product('accent') || finishName(st.accent)}` });
   notes.push({ cat: 'roof', text: `屋根　${finishName(st.roof.material)}` });
   const dark = new THREE.Color(st.frame.color).getHSL({ h: 0, s: 0, l: 0 }).l < 0.3;
   notes.push({ cat: 'frame', text: `サッシ　アルミ樹脂複合（${dark ? 'ブラック' : 'シルバー'}）` });
@@ -533,7 +540,7 @@ export function renderElevation(viewer: Viewer, dir: ElevationDir, opts: Elevati
   const maxY = Math.max(st.roof.maxY, st.meta.topY);
   levels.push({ label: `▽最高高さ +${Math.round(maxY * 1000)}`, y: maxY });
   const title = `${JP[dir]}立面図`;
-  const { svg, vb, inner } = compose(o, levels, title, 'S = 1 / 100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined, finishNotes(viewer.design.exteriorId));
+  const { svg, vb, inner } = compose(o, levels, title, 'S = 1 / 100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined, finishNotes(viewer.design));
   return { dir, title, svg, widthMm: vb.w, heightMm: vb.h, inner, vb };
 }
 

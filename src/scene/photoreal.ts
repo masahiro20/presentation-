@@ -10,6 +10,7 @@ import type { Viewer } from './viewer';
 import { loadHdri, equirectIrradiance } from './hdri';
 import { buildInteriorPhotoLights } from './interiorLights';
 import { interiorById } from '../styles/presets';
+import { interiorFor } from '../coordinate/catalog';
 import { resolveSpec } from '../styles/spec';
 import { kelvinToColor } from './viewer';
 
@@ -224,7 +225,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       lights: viewer.state.lights,
       camera: camera.position,
       skyE: refE,
-      lampColor: kelvinToColor(interiorById(viewer.design.interiorId).lightKelvin),
+      lampColor: kelvinToColor(interiorFor(viewer.design).lightKelvin),
       mode: viewer.design.timeOfDay,
     });
     scene.add(extraLights);

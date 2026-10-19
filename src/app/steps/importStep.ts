@@ -2,22 +2,23 @@ import { h, clear, toast, progressModal, section, field, segmented } from '../do
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
-import { parseDxf } from '../../parser';
+import { parseDxf, type ModuleMode } from '../../parser';
 import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type BuildingModel, type PlanSide, type RoomType } from '../../core/types';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 
-async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf') {
+async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto') {
   const pm = progressModal('平面図を解析しています', false);
   try {
     const model =
       kind === 'dxf'
-        ? parseDxf(decodeDxf(data), { name })
+        ? parseDxf(decodeDxf(data), { name, module: moduleMode })
         : await parsePdfInBrowser(data.slice(), {
             name,
             scaleDenominator,
+            module: moduleMode,
             onProgress: (msg, r) => pm.set(r, msg),
           });
     const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
@@ -27,7 +28,7 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
     }
     state.model = model;
     state.pdfName = name;
-    lastPdf = { data, name, kind };
+    lastPdf = { data, name, kind, moduleMode };
     emit('model');
     toast(`${model.floors.length}階分・${rooms}室を認識しました`, 'ok');
     ctx.app.go('import');
@@ -39,7 +40,14 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
   }
 }
 
-let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf' } | null = null;
+let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf'; moduleMode?: ModuleMode } | null = null;
+
+/** モジュールの表示名 */
+export function moduleLabel(model: BuildingModel): string {
+  const m = model.module;
+  if (!m) return '図面の寸法のまま（モジュール格子に乗っていない）';
+  return `${m.size === 910 ? '尺モジュール 910（半間 455 格子）' : 'メーターモジュール 1000（500 格子）'}・壁芯の ${Math.round(m.fit * 100)}% が格子に整合${m.source === 'manual' ? '・手動指定' : ''}`;
+}
 
 function dropScreen(ctx: StepCtx) {
   const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf,.json', style: 'display:none' }) as HTMLInputElement;
@@ -270,6 +278,7 @@ function renderResult(ctx: StepCtx) {
       h('div', { class: 'stat' }, h('b', null, `${openings}`), h('span', null, '窓・ドア')),
     ),
     h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `縮尺 ${scaleLabel}（${srcLabel[rep.scaleSource]}）／延床 約${totalArea.toFixed(1)}㎡（${(totalArea / 3.30579).toFixed(1)}坪）／壁厚 ${rep.wallThicknesses.slice(0, 4).join('・')}mm`),
+    h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `木造モジュール: ${moduleLabel(model)}${model.module ? '（壁芯・部屋・階段を格子にそろえ、壁厚は外壁 160・内壁 130 の在来木造標準）' : ''}`),
     ...rep.warnings.map((w) => h('div', { class: 'warn' }, w)),
   );
   const openEditor = () => {
@@ -415,14 +424,28 @@ function renderResult(ctx: StepCtx) {
     h('option', { value: '' }, '自動判定'),
     [30, 50, 100, 150, 200].map((n) => h('option', { value: n, selected: rep.scaleDenominator === n && rep.scaleSource === 'manual' }, `1/${n}`)),
   ) as HTMLSelectElement;
+  const curModule: ModuleMode = lastPdf?.moduleMode ?? 'auto';
+  const moduleSel = h(
+    'select',
+    null,
+    (
+      [
+        ['auto', '自動判定（尺／メーター）'],
+        ['shaku', '尺モジュール 910'],
+        ['meter', 'メーターモジュール 1000'],
+        ['none', '図面の寸法のまま'],
+      ] as [ModuleMode, string][]
+    ).map(([v, l]) => h('option', { value: v, selected: v === curModule }, l)),
+  ) as HTMLSelectElement;
   side.append(
     section(
       '読み込みのやり直し',
       field('縮尺を指定して再解析', scaleSel, '縮尺がずれている場合に指定してください'),
+      field('木造モジュール', moduleSel, '壁芯を 455（尺）／500（メーター）の格子にそろえます。自動で判定できない図面は指定してください'),
       h(
         'div',
         { class: 'btn-row' },
-        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind) }, '再解析'),
+        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind, moduleSel.value as ModuleMode) }, '再解析'),
         h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, 'プロジェクトを保存'),
         h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
@@ -467,6 +490,12 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     label: '方位',
     detail: nd === false ? '方位記号が無いため、図面の上を北としています' : `真北 ${model.northAngleDeg}°（${nd ? '方位記号から' : '設定値'}）`,
     action: nd === false ? { label: '真北を指定', fn: focusNorth } : undefined,
+  });
+  // 木造モジュール
+  rows.push({
+    ok: model.module ? (model.module.fit >= 0.9 ? true : null) : null,
+    label: 'モジュール',
+    detail: model.module ? `${model.module.size === 910 ? '尺 910' : 'メーター 1000'}（壁芯の ${Math.round(model.module.fit * 100)}% が格子に整合）` : '格子に乗っていないため図面の寸法のまま（読み込みのやり直しで指定できます）',
   });
   // 階段
   const stairsPerFloor = floors.map((f) => `${f.level}階 ${f.stairs.length}`);

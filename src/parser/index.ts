@@ -5,7 +5,9 @@ import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
 import { assembleModel, pageToMm, moduleScaleFromWalls, dominantTilt, rotatePageMm, type PageMm } from './assemble';
+import type { ModuleMode } from './module';
 export { moduleScaleFromWalls };
+export type { ModuleMode };
 import { thickStrokeMask } from './rasterWalls';
 import { dxfToPages } from './dxf';
 
@@ -31,6 +33,8 @@ export interface ParseOptions {
   straighten?: boolean;
   /** 座標 1 単位あたりの mm（DXF のように実寸のデータでは 1） */
   mmPerPt?: number;
+  /** 木造のモジュール: auto = 図面から判定, shaku = 尺 910, meter = メーター 1000, none = 格子へ寄せない */
+  module?: ModuleMode;
 }
 
 export async function loadPdfVectors(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<PageVectors[]> {
@@ -138,7 +142,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       return rotatePageMm(p, -tilt);
     });
   let mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
-  let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
+  let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
   if (scanned && res.floors.length) {
     warnings.push('スキャン画像の図面のため、画像から壁を読み取りました。室名は読み取れないため、下の一覧で部屋名と用途を指定してください');
     // 文字の読めないスキャン図面は、壁の芯が 910mm モジュールにそろう性質から縮尺を補正する
@@ -151,7 +155,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
         scaleSource = 'module';
         warnings.push(`壁の間隔（910mm モジュール）から縮尺を推定しました（約1/${Math.round(sc.mmPerPt / PT_TO_MM)}）`);
         mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
-        res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
+        res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
       }
     }
   }
@@ -184,7 +188,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
           : `図面の縮尺表記と帖数が合わないため、帖数から縮尺を補正しました（縮小印刷の可能性・約1/${shown}）`,
       );
       mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
-      res = assembleModel(mmPages, opts.name ?? '新築計画', warnings);
+      res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
     } else if (Math.abs(med - 1) > 0.15) {
       warnings.push('図面の帖数と解析した面積に差があります。縮尺をご確認ください');
     }

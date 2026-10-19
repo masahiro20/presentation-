@@ -221,6 +221,22 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
           if ((!from || Math.abs(q.x - from.x) > 1 || free) && Math.abs(e.y - q.y) < tol) q.y = e.y;
         }
     }
+    // 木造モジュールの格子（半間 455）に乗せる
+    const mod = model.module;
+    if (!hint && mod) {
+      const gx = mod.phaseX + Math.round((q.x - mod.phaseX) / mod.grid) * mod.grid;
+      const gy = mod.phaseY + Math.round((q.y - mod.phaseY) / mod.grid) * mod.grid;
+      let on = false;
+      if ((!from || Math.abs(q.y - from.y) > 1 || free) && Math.abs(gx - q.x) < tol) {
+        q.x = gx;
+        on = true;
+      }
+      if ((!from || Math.abs(q.x - from.x) > 1 || free) && Math.abs(gy - q.y) < tol) {
+        q.y = gy;
+        on = true;
+      }
+      if (on) hint = `${mod.size === 910 ? '尺' : 'メーター'}モジュールの格子`;
+    }
     return { p: { x: Math.round(q.x), y: Math.round(q.y) }, hint };
   };
 

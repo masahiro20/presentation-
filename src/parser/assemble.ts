@@ -11,6 +11,7 @@ import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, norm
 import { detectStairs } from './stairs';
 import { detectSite, translateSite } from './site';
 import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
+import { chooseModule, moduleInfoOf, snapCoord, snapTolerance, endTolerance, snapStairs, translateModule, woodWallThickness, type ModuleFit, type ModuleMode } from './module';
 
 export interface MmText {
   str: string;
@@ -1991,7 +1992,194 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }
 
-export function assembleModel(pages: PageMm[], name: string, warnings: string[]): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean } {
+/**
+ * 組み立てた階を木造のモジュール格子（半間 455 / 500）へ寄せる。
+ * 部屋の区切りは図面の線のまま解析し、結果（壁芯・開口・部屋・外形・階段）だけを格子へ寄せる。
+ * 縦横の壁の芯を格子へ寄せ、壁の端は接していた直交する壁の芯へ付け直し、部屋・外形の頂点は元の壁を追って動かす。
+ * 斜めの壁・格子から大きく外れた壁はそのまま
+ */
+function snapFloorWalls(f: Floor, m: ModuleFit) {
+  const tol = snapTolerance(m.grid);
+  const tolEnd = endTolerance(m.grid);
+  type Ax = { wall: Wall; horiz: boolean; oldAxis: number; newAxis: number };
+  const axes: Ax[] = [];
+  for (const w of f.walls) {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    if (L < 1) continue;
+    const horiz = Math.abs(w.b.y - w.a.y) < L * 0.02;
+    const vert = Math.abs(w.b.x - w.a.x) < L * 0.02;
+    if (!horiz && !vert) continue;
+    const oldAxis = horiz ? (w.a.y + w.b.y) / 2 : (w.a.x + w.b.x) / 2;
+    const sn = snapCoord(oldAxis, horiz ? m.phaseY : m.phaseX, m.grid);
+    axes.push({ wall: w, horiz, oldAxis, newAxis: Math.abs(sn - oldAxis) <= tol ? sn : oldAxis });
+  }
+  /** 元の位置 v に最も近かった（横 or 縦の）壁の芯の、寄せた後の位置 */
+  const follow = (v: number, horiz: boolean, within: number): number | null => {
+    let best: Ax | null = null;
+    for (const ax of axes) {
+      if (ax.horiz !== horiz) continue;
+      const d = Math.abs(ax.oldAxis - v);
+      if (d <= within && (!best || d < Math.abs(best.oldAxis - v))) best = ax;
+    }
+    return best ? best.newAxis : null;
+  };
+  // 壁: 芯を寄せ、端は接していた直交する壁の芯へ（無ければ格子へ）
+  const shiftA = new Map<string, number>();
+  for (const ax of axes) {
+    const w = ax.wall;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+    const endPos = (p: Vec2) => (ax.horiz ? p.x : p.y);
+    const newEnd = (p: Vec2): number => {
+      const v = endPos(p);
+      const f0 = follow(v, !ax.horiz, 250);
+      if (f0 != null) return f0;
+      const sn = snapCoord(v, ax.horiz ? m.phaseX : m.phaseY, m.grid);
+      return Math.abs(sn - v) <= tolEnd ? sn : v;
+    };
+    let ea = newEnd(w.a);
+    let eb = newEnd(w.b);
+    // 短い壁（柱型など）は両端が同じ直交壁へ寄ってしまうので、端は格子だけで寄せる
+    if (Math.abs(ea - eb) < 200) {
+      const gridEnd = (p: Vec2) => {
+        const v = endPos(p);
+        const sn = snapCoord(v, ax.horiz ? m.phaseX : m.phaseY, m.grid);
+        return Math.abs(sn - v) <= tolEnd ? sn : v;
+      };
+      ea = gridEnd(w.a);
+      eb = gridEnd(w.b);
+      if (Math.abs(ea - eb) < 100) {
+        ea = endPos(w.a);
+        eb = endPos(w.b);
+      }
+    }
+    const na = ax.horiz ? { x: ea, y: ax.newAxis } : { x: ax.newAxis, y: ea };
+    const nb = ax.horiz ? { x: eb, y: ax.newAxis } : { x: ax.newAxis, y: eb };
+    // a が壁の向きに沿ってどれだけ動いたか（開口の位置は a からの距離なので差し引く）
+    const da = (na.x - w.a.x) * u.x + (na.y - w.a.y) * u.y;
+    shiftA.set(w.id, da);
+    w.a = na;
+    w.b = nb;
+  }
+  for (const op of f.openings) {
+    const da = shiftA.get(op.wallId);
+    if (da == null) continue;
+    const w = f.walls.find((q) => q.id === op.wallId)!;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const wd = op.t1 - op.t0;
+    op.t0 = Math.max(0, Math.min(L - wd, op.t0 - da));
+    op.t1 = Math.min(L, op.t0 + wd);
+  }
+  // 角の接合（直交する壁の芯まで伸ばした端を、相手の壁厚の半分だけ延長して角を埋める）を結び直す
+  rejoinFloorWalls(f);
+  // 部屋・外形の頂点は元の壁を追う（壁に乗っていなかった頂点はそのまま）
+  const movePoly = (poly: Vec2[]): Vec2[] => {
+    const n = poly.length;
+    const out: Vec2[] = [];
+    for (let i = 0; i < n; i++) {
+      const p = poly[i];
+      const prev = poly[(i + n - 1) % n];
+      const next = poly[(i + 1) % n];
+      const vertEdge = (q: Vec2) => Math.abs(q.x - p.x) < 1 && Math.abs(q.y - p.y) >= 1;
+      const horizEdge = (q: Vec2) => Math.abs(q.y - p.y) < 1 && Math.abs(q.x - p.x) >= 1;
+      let x = p.x;
+      let y = p.y;
+      // 壁に乗っていない頂点（吹抜・玄関の開口の縁など）は格子へ
+      const gridOr = (v: number, phase: number) => {
+        const sn = snapCoord(v, phase, m.grid);
+        return Math.abs(sn - v) <= tol ? sn : v;
+      };
+      if (vertEdge(prev) || vertEdge(next)) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
+      if (horizEdge(prev) || horizEdge(next)) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+      out.push({ x, y });
+    }
+    return cleanPolygon(out, poly);
+  };
+  for (const r of f.rooms) {
+    r.polygon = movePoly(r.polygon);
+    r.area = Math.round((Math.abs(polygonArea(r.polygon)) / 1e6) * 100) / 100;
+  }
+  f.outline = f.outline.map(movePoly);
+}
+
+/** 同じ点になった頂点・一直線上の中間点を除く（3 点未満になったら元のまま） */
+function cleanPolygon(out: Vec2[], fallback: Vec2[]): Vec2[] {
+  const dedup: Vec2[] = [];
+  for (const p of out) {
+    const last = dedup[dedup.length - 1];
+    if (last && Math.abs(last.x - p.x) < 1 && Math.abs(last.y - p.y) < 1) continue;
+    dedup.push(p);
+  }
+  while (dedup.length > 1 && Math.abs(dedup[0].x - dedup[dedup.length - 1].x) < 1 && Math.abs(dedup[0].y - dedup[dedup.length - 1].y) < 1) dedup.pop();
+  const clean: Vec2[] = [];
+  for (let i = 0; i < dedup.length; i++) {
+    const a = dedup[(i + dedup.length - 1) % dedup.length];
+    const p = dedup[i];
+    const b = dedup[(i + 1) % dedup.length];
+    const cross = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
+    if (Math.abs(cross) < 1 && (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y) > 0) continue;
+    clean.push(p);
+  }
+  return clean.length >= 3 ? clean : fallback;
+}
+
+/** 階の壁を軸線の形に直して角の接合をやり直し、壁の端点・開口の位置・接合フラグを書き戻す */
+function rejoinFloorWalls(f: Floor) {
+  const groups: { u: Vec2 }[] = [];
+  const groupOf = (u: Vec2) => {
+    let gi = groups.findIndex((g) => Math.abs(g.u.x * u.y - g.u.y * u.x) < 0.02 && g.u.x * u.x + g.u.y * u.y > 0);
+    if (gi < 0) {
+      groups.push({ u });
+      gi = groups.length - 1;
+    }
+    return gi;
+  };
+  const ww: { w: Wall; ax: WWall; swapped: boolean }[] = [];
+  for (const w of f.walls) {
+    let a = w.a;
+    let b = w.b;
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 30) continue;
+    let u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    const swapped = u.x < -1e-6 || (Math.abs(u.x) <= 1e-6 && u.y < 0);
+    if (swapped) {
+      [a, b] = [b, a];
+      u = { x: -u.x, y: -u.y };
+    }
+    const n = { x: -u.y, y: u.x };
+    const t0 = a.x * u.x + a.y * u.y;
+    const o = a.x * n.x + a.y * n.y;
+    ww.push({ w, swapped, ax: { a, b, u, n, d: w.thickness, t0, t1: t0 + L, o, g: groupOf(u), openings: [], joinedA: false, joinedB: false } });
+  }
+  joinWalls(ww.map((q) => q.ax));
+  for (const { w, ax, swapped } of ww) {
+    const oldA = swapped ? w.b : w.a;
+    const oldL = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const na = swapped ? ax.b : ax.a;
+    const nb = swapped ? ax.a : ax.b;
+    const newL = Math.hypot(nb.x - na.x, nb.y - na.y);
+    // a 側（元の向きでの a）がどれだけ手前へ伸びたか
+    const ext0 = swapped ? Math.hypot(ax.b.x - oldA.x, ax.b.y - oldA.y) : Math.hypot(ax.a.x - oldA.x, ax.a.y - oldA.y);
+    for (const op of f.openings) {
+      if (op.wallId !== w.id) continue;
+      const wd = op.t1 - op.t0;
+      op.t0 = Math.max(0, Math.min(newL - wd, op.t0 + ext0));
+      op.t1 = Math.min(newL, op.t0 + wd);
+    }
+    void oldL;
+    w.a = { x: Math.round(na.x * 10) / 10, y: Math.round(na.y * 10) / 10 };
+    w.b = { x: Math.round(nb.x * 10) / 10, y: Math.round(nb.y * 10) / 10 };
+    w.joinedA = w.joinedA || (swapped ? ax.joinedB : ax.joinedA);
+    w.joinedB = w.joinedB || (swapped ? ax.joinedA : ax.joinedB);
+  }
+}
+
+export interface AssembleOptions {
+  /** 木造のモジュール: auto = 図面から判定（尺／メーター）, shaku = 910, meter = 1000, none = 寄せない */
+  module?: ModuleMode;
+}
+
+export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean } {
   let plans = detectPlans(pages, warnings);
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
@@ -2036,6 +2224,15 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     // 原点を1階の左上へ
     const o = { x: -base.bbox.minX, y: -base.bbox.minY };
     for (const p of sorted) translatePlan(p, o);
+  }
+  // 木造のモジュール: 全階の壁芯から格子（半間 455 / 500）の位相を求め、乗っている図面は壁芯を格子へ寄せる（柱は上下階で通るので位相は共通）
+  const moduleMode: ModuleMode = opts.module ?? 'auto';
+  const mfit = chooseModule(sorted.flatMap((p) => p.walls.map((w) => ({ a: w.a, b: w.b }))), moduleMode);
+  const moduleInfo = mfit ? moduleInfoOf(mfit, moduleMode === 'auto' ? 'auto' : 'manual', true) : undefined;
+  if (mfit) {
+    if (mfit.onGrid < 0.7) warnings.push(`壁芯の ${Math.round(mfit.onGrid * 100)}% しか ${mfit.size === 910 ? '尺（910）' : 'メーター（1000）'}モジュールの格子に乗っていません（乗っていない壁はそのまま）`);
+  } else if (moduleMode === 'auto') {
+    warnings.push('壁芯が 910／1000 のモジュール格子にそろっていないため、図面の寸法のまま読み取りました（読み込みのやり直しでモジュールを指定できます）');
   }
   const areaTable = readAreaTable(pages);
   const floors: Floor[] = [];
@@ -2117,6 +2314,18 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
       return [{ ...t, id: s.id, goesUp: s.goesUp }];
     });
   }
+  // 木造として: 部屋・外形・階段も格子へ寄せ、壁厚を在来木造の標準（外壁 160・内壁 130）にそろえる
+  if (mfit && moduleInfo) {
+    thicknesses.clear();
+    for (const f of floors) {
+      for (const w of f.walls) {
+        w.thickness = woodWallThickness(w);
+        thicknesses.add(w.thickness);
+      }
+      snapFloorWalls(f, mfit);
+      snapStairs(f, moduleInfo);
+    }
+  }
   // 接道・敷地（1階の図面の周囲から）
   const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
   // 原点を1階外壁芯の左上に揃える
@@ -2126,8 +2335,9 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[])
     const dy = -Math.min(...o1.map((p) => p.y));
     for (const f of floors) translateFloor(f, dx, dy);
     if (site) translateSite(site, dx, dy);
+    if (moduleInfo) translateModule(moduleInfo, dx, dy);
   }
-  return { name, floors, northAngleDeg: north, site: site ?? undefined, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null };
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

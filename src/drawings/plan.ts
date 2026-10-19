@@ -176,6 +176,8 @@ export interface PlanSvgOptions {
   tags?: boolean;
   /** 断面図の切断線（ワールド m: 法線 (nx, nz)、d = 面上の点·n）。矢印は見る向き（−n） */
   sectionLines?: { nx: number; nz: number; d: number; label: string }[];
+  /** 木造モジュールの格子（1 間 = 910 ごとの細い点線）を描く（既定: 図枠ありのとき） */
+  showModuleGrid?: boolean;
 }
 
 export interface OpeningScheduleEntry {
@@ -367,6 +369,17 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     }
     const first = lay.pieces[0];
     if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777">${st.goesUp ? 'UP' : 'DN'}</text>`;
+  }
+  // 木造モジュールの格子（1 間ごと。部屋の上・壁の下に薄く）
+  const mod = model.module;
+  if (mod && (opts.showModuleGrid ?? !!opts.sheet)) {
+    const step = mod.size;
+    const gx0 = mod.phaseX + Math.floor((minX - mod.phaseX) / step) * step;
+    const gy0 = mod.phaseY + Math.floor((minY - mod.phaseY) / step) * step;
+    let g = '';
+    for (let x = gx0; x <= maxX + step; x += step) g += `M${x.toFixed(0)} ${(minY - 600).toFixed(0)}V${(maxY + 600).toFixed(0)}`;
+    for (let y = gy0; y <= maxY + step; y += step) g += `M${(minX - 600).toFixed(0)} ${y.toFixed(0)}H${(maxX + 600).toFixed(0)}`;
+    s += `<path d="${g}" fill="none" stroke="#9b9589" stroke-width="7" stroke-dasharray="70 90" stroke-opacity="0.55"/>`;
   }
   // 壁（開口部を抜いて描く）
   for (const w of f.walls) {

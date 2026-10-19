@@ -219,9 +219,27 @@ export interface FurnitureItem {
   hood?: boolean;
 }
 
+/** 木造のモジュール（壁芯を合わせる基準の格子） */
+export interface ModuleInfo {
+  /** 910 = 尺モジュール（半間 455 格子）, 1000 = メーターモジュール（500 格子） */
+  size: 910 | 1000;
+  /** 壁芯を合わせる格子の間隔 (mm) */
+  grid: number;
+  /** 格子の位相（図面座標 mm。x = phaseX + n·grid の線に壁芯が乗る） */
+  phaseX: number;
+  phaseY: number;
+  /** 適合度 0..1（格子に乗っている壁の長さの割合） */
+  fit: number;
+  /** 壁芯・部屋・外形を格子へ寄せたか */
+  snapped: boolean;
+  source: 'auto' | 'manual';
+}
+
 export interface BuildingModel {
   name: string;
   floors: Floor[];
+  /** 木造のモジュール（尺 910／メーター 1000）。読み取った壁芯を格子へ寄せた結果 */
+  module?: ModuleInfo;
   /** 手で置き直した家具（階ごと）。無い階は自動配置 */
   furniture?: { level: number; items: FurnitureItem[] }[];
   /** 真北の方向: 図面の上方向から時計回りの角度 (度) */

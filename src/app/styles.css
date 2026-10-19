@@ -701,6 +701,8 @@ body.cinema .main { grid-template-columns: 1fr; }
 .coord-row .body { min-width: 0; }
 .coord-row .k { font-size: 11px; color: var(--ink3); letter-spacing: 0.08em; margin-bottom: 3px; }
 .coord-row select { width: 100%; font: inherit; font-size: 12.5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.coord-row input.note { width: 100%; font: inherit; font-size: 11.5px; padding: 3px 8px; margin-top: 4px; border: 1px solid transparent; border-bottom-color: var(--line); background: transparent; color: var(--ink); }
+.coord-row input.note:focus { outline: none; border-bottom-color: var(--accent); }
 .coord-row .cd { font-size: 11px; color: var(--ink2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slide.hl-finish .finish-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5cqw 2.4cqw; }
 .slide.hl-finish .finish-row { display: grid; grid-template-columns: 2.2cqw 7cqw 1fr; gap: 1cqw; align-items: center; padding: 0.45cqw 0; border-bottom: 1px solid var(--hair); }

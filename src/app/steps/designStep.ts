@@ -519,7 +519,8 @@ export const designStep: Step = {
               ...FINISH_CATEGORIES.filter((c) => c.part === part).map((cat) => {
                 const cur = selectedProduct(cat, state.design);
                 const sel = h('select', { onchange: (e: Event) => chooseFinish(cat.id, (e.target as HTMLSelectElement).value) }, ...cat.products.map((p) => h('option', { value: p.id, selected: p.id === cur.id }, `${p.maker}　${p.name}${p.color ? `　${p.color}` : ''}`)));
-                return h('div', { class: 'coord-row' }, h('div', { class: 'sw' }, ...cur.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'body' }, h('div', { class: 'k' }, cat.label), sel, h('div', { class: 'cd' }, [cur.code, cur.note].filter(Boolean).join('　'))));
+                const note = h('input', { type: 'text', class: 'note', placeholder: '品番・メモ（例: IS-1234、AA-1234）', value: state.design.finishNotes?.[cat.id] ?? '', onchange: (e: Event) => { const v = (e.target as HTMLInputElement).value.trim(); const notes = { ...(state.design.finishNotes ?? {}) }; if (v) notes[cat.id] = v; else delete notes[cat.id]; state.design = { ...state.design, finishNotes: notes }; } });
+                return h('div', { class: 'coord-row' }, h('div', { class: 'sw' }, ...cur.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'body' }, h('div', { class: 'k' }, cat.label), sel, h('div', { class: 'cd' }, [cur.code, cur.note].filter(Boolean).join('　')), note));
               }),
             ),
           ),

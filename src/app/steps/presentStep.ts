@@ -288,7 +288,8 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
           { class: 'finish-grid' },
           ...FINISH_CATEGORIES.map((cat) => {
             const p = selectedProduct(cat, state.design);
-            return h('div', { class: 'finish-row' }, h('div', { class: 'sw' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'k' }, cat.label), h('div', { class: 'v' }, h('div', { class: 'nm' }, `${p.maker}　${p.name}`), h('div', { class: 'cd' }, [p.code, p.color].filter(Boolean).join('　'))));
+            const memo = state.design.finishNotes?.[cat.id];
+            return h('div', { class: 'finish-row' }, h('div', { class: 'sw' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'k' }, cat.label), h('div', { class: 'v' }, h('div', { class: 'nm' }, `${p.maker}　${p.name}`), h('div', { class: 'cd' }, [memo ?? p.code.replace(/\s*※品番は品番メモに/, ''), p.color].filter(Boolean).join('　'))));
           }),
         ),
       ),

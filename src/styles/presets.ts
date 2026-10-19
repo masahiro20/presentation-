@@ -1165,6 +1165,8 @@ export interface DesignOptions {
   clay?: boolean;
   /** コーディネート: 部位ごとに選んだ商品（部位 id → 商品 id）。テイストの既定に重ねる */
   finishes?: Record<string, string>;
+  /** コーディネート: 部位ごとの品番・メモ（カタログに無い正確な品番を書く。資料・図面の仕上げ表に出る） */
+  finishNotes?: Record<string, string>;
 }
 
 export const DEFAULT_DESIGN: DesignOptions = {

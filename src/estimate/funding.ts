@@ -35,6 +35,8 @@ export interface FundingInput {
   spec: Record<string, boolean>;
   dateLabel: string;
   version: string;
+  /** 備考: 初回提案・契約時・変更後 など */
+  stage?: string;
 }
 
 export interface FundingTotals {
@@ -111,6 +113,7 @@ export function newFunding(opts: { series: Grade; address: string; constArea: nu
     spec: {},
     dateLabel: `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`,
     version: 'Ver.0',
+    stage: '初回提案',
   };
 }
 

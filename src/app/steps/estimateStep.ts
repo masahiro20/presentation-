@@ -18,6 +18,10 @@ export interface EstimateState {
   funding: FundingInput | null;
   /** 内訳書に 0 円の行も出す（編集用） */
   showAll?: boolean;
+  /** お客様向け: 数量・単位・単価の列を出さない（既定 true） */
+  customerView?: boolean;
+  /** お客様向けでも数量・単価を見せる行 */
+  showQty?: Record<string, boolean>;
 }
 
 const GROUP_LABEL: Record<string, string> = {
@@ -118,7 +122,7 @@ const num = (v: number, d = 2) => (Number.isInteger(v) ? String(v) : v.toFixed(d
 function quoteSheet(c: Computed): HTMLElement {
   const { est, areas } = c;
   const date = new Date();
-  const company = state.company || '株式会社ホームランディック';
+  const co = companyInfo();
   const rows = est.categories.map((cat) => h('tr', null, h('td', { class: 'no' }, `${cat.def.no}.`), h('td', null, `${cat.def.name}`), h('td', { class: 'amt' }, fmt(cat.amount))));
   return h(
     'div',
@@ -128,7 +132,7 @@ function quoteSheet(c: Computed): HTMLElement {
       'div',
       { class: 'est-head' },
       h('div', { class: 'est-to' }, h('div', { class: 'name' }, `${state.customer || '〇〇様'} 邸　新築工事`), h('div', { class: 'sub' }, '下記の通り御見積り申し上げます。')),
-      h('div', { class: 'est-from' }, h('div', null, `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`), h('div', { class: 'co' }, company), h('div', null, state.designer ? `担当　${state.designer}` : '')),
+      h('div', { class: 'est-from' }, h('div', null, `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`), state.logo ? h('img', { class: 'logo', src: state.logo }) : null, h('div', { class: 'co' }, co.name), co.rep ? h('div', null, co.rep) : null, co.address ? h('div', { class: 'addr' }, co.address) : null, co.tel ? h('div', null, `TEL ${co.tel}`) : null, co.designer ? h('div', { class: 'staff' }, `担当　${co.designer}`) : null),
     ),
     h(
       'table',
@@ -143,7 +147,7 @@ function quoteSheet(c: Computed): HTMLElement {
       { class: 'est-table summary' },
       h('thead', null, h('tr', null, h('th', { class: 'no' }, ''), h('th', null, '工事名'), h('th', { class: 'amt' }, '金額（円）'))),
       h('tbody', null, ...rows),
-      h('tfoot', null, h('tr', { class: 'sum' }, h('td', null, ''), h('td', null, '小計'), h('td', { class: 'amt' }, yen(est.subtotal))), h('tr', null, h('td', null, ''), h('td', null, '消費税（10%）'), h('td', { class: 'amt' }, yen(est.tax))), h('tr', { class: 'total' }, h('td', null, ''), h('td', null, '合計（税込）'), h('td', { class: 'amt' }, yen(est.total)))),
+      h('tfoot', null, est.adjust ? h('tr', { class: 'adj' }, h('td', null, ''), h('td', null, '端数調整'), h('td', { class: 'amt' }, `△${yen(-est.adjust)}`)) : null, h('tr', { class: 'sum' }, h('td', null, ''), h('td', null, '小計（税抜）'), h('td', { class: 'amt' }, yen(est.subtotal))), h('tr', null, h('td', null, ''), h('td', null, '消費税（10%）'), h('td', { class: 'amt' }, yen(est.tax))), h('tr', { class: 'total' }, h('td', null, ''), h('td', null, '合計（税込）'), h('td', { class: 'amt' }, yen(est.total)))),
     ),
     h('div', { class: 'est-note' }, '※ 本見積は概算です。仕様の決定・地盤調査・敷地条件により金額が変わります。有効期限は提出日より 1 ヵ月です。'),
   );
@@ -155,6 +159,11 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
   const sheets: HTMLElement[] = [];
   let cur: HTMLElement | null = null;
   let rowsOnPage = 0;
+  // お客様向け: 数量・単位・単価の列を出さない（編集中は全部出す）。行ごとに「見せる」にした行だけ数量を書く
+  const customer = es.customerView !== false && !es.showAll;
+  const anyQty = customer && est.categories.some((cat) => cat.lines.some((l) => es.showQty?.[l.id]));
+  const showCols = !customer || anyQty;
+  const cols = showCols ? 7 : 4;
   const newPage = () => {
     cur = h('div', { class: 'est-sheet detail' }, h('div', { class: 'est-title small' }, '内　訳　書'));
     sheets.push(cur);
@@ -185,6 +194,10 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
             },
           })
         : num(l.qty, 2);
+      const qtyShown = !customer || !!es.showQty?.[l.id];
+      const qtyToggle = es.showAll
+        ? h('button', { class: `linkbtn qv ${es.showQty?.[l.id] ? 'on' : ''}`, title: 'お客様向けの内訳書でもこの行の数量・単価を見せる', onclick: () => { es.showQty = { ...(es.showQty ?? {}), [l.id]: !es.showQty?.[l.id] }; rerender(); } }, es.showQty?.[l.id] ? '数量 表示' : '数量 非表示')
+        : null;
       const sel = es.showAll && l.def && !l.def.group
         ? h('input', {
             type: 'checkbox',
@@ -203,10 +216,10 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
           { class: l.selected && l.qty > 0 ? '' : 'off' },
           h('td', { class: 'sel' }, sel),
           h('td', { class: 'spec' }, l.spec),
-          h('td', { class: 'desc' }, l.desc, l.qtyNote && es.showAll ? h('span', { class: 'qn' }, `（${l.qtyNote}）`) : null),
-          h('td', { class: 'qty' }, qtyCell),
-          h('td', { class: 'unit' }, l.unit),
-          h('td', { class: 'amt' }, yen(l.unitPrice)),
+          h('td', { class: 'desc' }, l.desc, l.qtyNote && es.showAll ? h('span', { class: 'qn' }, `（${l.qtyNote}）`) : null, qtyToggle),
+          showCols ? h('td', { class: 'qty' }, qtyShown ? qtyCell : '') : null,
+          showCols ? h('td', { class: 'unit' }, qtyShown ? l.unit : '') : null,
+          showCols ? h('td', { class: 'amt' }, qtyShown ? yen(l.unitPrice) : '') : null,
           h('td', { class: 'amt' }, fmt(l.amount)),
         ),
       );
@@ -216,7 +229,7 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
         h(
           'tr',
           { class: 'add' },
-          h('td', { colspan: 7 }, h('button', { class: 'linkbtn', onclick: () => {
+          h('td', { colspan: cols }, h('button', { class: 'linkbtn', onclick: () => {
             const desc = prompt('追加する項目の内容（例: 造作テレビボード W2400）');
             if (!desc) return;
             const price = Number(prompt('売価（円・税抜）', '100000') ?? 0);
@@ -230,13 +243,21 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
       h(
         'table',
         { class: 'est-table detail' },
-        h('thead', null, h('tr', { class: 'cat' }, h('th', { colspan: 6 }, `${cat.def.no}. ${cat.def.name}`), h('th', { class: 'amt' }, yen(cat.amount))), h('tr', null, h('th', { class: 'sel' }, ''), h('th', null, '仕様'), h('th', null, '内容'), h('th', { class: 'qty' }, '数量'), h('th', null, '単位'), h('th', { class: 'amt' }, '単価'), h('th', { class: 'amt' }, '金額'))),
+        h('thead', null, h('tr', { class: 'cat' }, h('th', { colspan: cols }, `${cat.def.no}. ${cat.def.name}`)), h('tr', null, h('th', { class: 'sel' }, ''), h('th', null, '仕様'), h('th', null, '内容'), showCols ? h('th', { class: 'qty' }, '数量') : null, showCols ? h('th', null, '単位') : null, showCols ? h('th', { class: 'amt' }, '単価') : null, h('th', { class: 'amt' }, '金額'))),
         tbody,
-        h('tfoot', null, h('tr', null, h('td', { colspan: 6 }, '小計'), h('td', { class: 'amt' }, yen(cat.amount)))),
+        h('tfoot', null, h('tr', null, h('td', { colspan: cols - 1 }, '小計'), h('td', { class: 'amt' }, yen(cat.amount)))),
       ),
     );
     rowsOnPage += lines.length + 3;
   }
+  if (rowsOnPage + 5 > 38) newPage();
+  cur!.appendChild(
+    h(
+      'table',
+      { class: 'est-table detail grand' },
+      h('tbody', null, h('tr', null, h('td', null, '工事費 合計'), h('td', { class: 'amt' }, yen(est.rawSubtotal))), est.adjust ? h('tr', null, h('td', null, '端数調整'), h('td', { class: 'amt' }, `△${yen(-est.adjust)}`)) : null, h('tr', null, h('td', null, '小計（税抜）'), h('td', { class: 'amt' }, yen(est.subtotal))), h('tr', null, h('td', null, '消費税（10%）'), h('td', { class: 'amt' }, yen(est.tax))), h('tr', { class: 'total' }, h('td', null, '合計（税込）'), h('td', { class: 'amt' }, yen(est.total)))),
+    ),
+  );
   return sheets;
 }
 
@@ -251,7 +272,15 @@ function fundingSheet(c: Computed): HTMLElement {
   return h(
     'div',
     { class: 'est-sheet funding' },
-    h('div', { class: 'fp-head' }, h('div', { class: 'fp-title' }, `${state.customer || '〇〇様'} 邸　資金計画書`), h('div', { class: 'fp-series' }, `${f.series}シリーズ`), h('div', { class: 'fp-site' }, h('span', null, '建築場所'), f.address || '')),
+    h(
+      'div',
+      { class: 'fp-head' },
+      h('div', { class: 'fp-title' }, `${state.customer || '〇〇様'} 邸　資金計画書`),
+      h('div', { class: 'fp-series' }, `${f.series}シリーズ`),
+      h('div', { class: 'fp-site' }, h('span', null, '建築場所'), f.address || ''),
+      h('div', { class: 'fp-meta' }, h('span', null, f.stage || ''), h('span', null, f.dateLabel), h('span', null, f.version)),
+      h('div', { class: 'fp-issuer' }, state.logo ? h('img', { src: state.logo }) : null, h('div', null, h('b', null, companyInfo().name), companyInfo().tel ? `　TEL ${companyInfo().tel}` : '', companyInfo().designer ? `　担当 ${companyInfo().designer}` : '')),
+    ),
     h(
       'div',
       { class: 'fp-grid' },
@@ -300,16 +329,51 @@ function fundingSheet(c: Computed): HTMLElement {
       h(
         'div',
         { class: 'fp-loans' },
-        h('div', { class: 'fp-notes-title' }, '【予算計画】※借入の目安として活用ください。'),
-        h(
-          'table',
-          { class: 'fp-loan' },
-          h('thead', null, h('tr', null, h('th', null, ''), h('th', null, '借入金額'), h('th', null, '期間'), h('th', null, '金利'), h('th', null, '返済額（月々）'))),
-          h('tbody', null, ...f.loans.map((l, i) => h('tr', null, h('td', { class: 'lbl' }, l.label), h('td', null, `${l.amountMan.toLocaleString('ja-JP')} 万円`), h('td', null, `${l.years} 年`), h('td', null, `${l.rate.toFixed(3)}%`), h('td', { class: 'amt' }, `¥${yen(t.loans[i].monthly)}`)))),
-        ),
-        h('div', { class: 'fp-sign' }, h('span', null, `見積作成日：${f.dateLabel} ${f.version}`), h('span', null, '担当　　印'), h('span', null, '上長　　印'), h('span', null, '代表　　印')),
+        h('div', { class: 'fp-notes-title' }, '備考'),
+        h('table', { class: 'fp-remarks' }, h('tbody', null, h('tr', null, h('th', null, '作成日'), h('td', null, f.dateLabel)), h('tr', null, h('th', null, '版'), h('td', null, f.version)), h('tr', null, h('th', null, '区分'), h('td', null, f.stage || '')), h('tr', null, h('th', null, '担当'), h('td', null, companyInfo().designer || '')))),
+        h('div', { class: 'fp-sign' }, h('span', null, '担当　　印'), h('span', null, '上長　　印'), h('span', null, '代表　　印')),
       ),
     ),
+  );
+}
+
+/** 発行者（会社情報）。未入力の項目はブラウザに覚えた前回の値を使う */
+function companyInfo(): { name: string; rep: string; address: string; tel: string; designer: string } {
+  let saved: Record<string, string> = {};
+  try {
+    saved = JSON.parse(localStorage.getItem('companyInfo') ?? '{}');
+  } catch {
+    saved = {};
+  }
+  return {
+    name: state.company || saved.name || '株式会社ホームランディック',
+    rep: state.companyRep ?? saved.rep ?? '代表取締役　伊岐見 恭子',
+    address: state.companyAddress ?? saved.address ?? '',
+    tel: state.tel ?? saved.tel ?? '',
+    designer: state.designer ?? saved.designer ?? '',
+  };
+}
+
+function companyForm(rerender: () => void): HTMLElement {
+  const co = companyInfo();
+  const remember = () => {
+    try {
+      localStorage.setItem('companyInfo', JSON.stringify({ name: state.company, rep: state.companyRep, address: state.companyAddress, tel: state.tel, designer: state.designer }));
+    } catch {
+      // 保存できない環境
+    }
+  };
+  const inp = (label: string, value: string, set: (v: string) => void, placeholder = '') =>
+    field(label, h('input', { type: 'text', value, placeholder, onchange: (e: Event) => { set((e.target as HTMLInputElement).value); remember(); rerender(); } }));
+  return h(
+    'div',
+    null,
+    inp('会社名', co.name, (v) => (state.company = v)),
+    inp('代表者', co.rep, (v) => (state.companyRep = v), '代表取締役　〇〇 〇〇'),
+    inp('住所', co.address, (v) => (state.companyAddress = v), '愛知県小牧市…'),
+    inp('電話', co.tel, (v) => (state.tel = v), '0568-00-0000'),
+    inp('担当者', co.designer, (v) => (state.designer = v), '設計担当　〇〇'),
+    h('p', { class: 'hint' }, '御見積書・資金計画書の発行者欄に入ります。入力した内容はこのブラウザに記憶され、次のプロジェクトでも使われます。'),
   );
 }
 
@@ -396,15 +460,14 @@ export const estimateStep: Step = {
       };
       fundBody.append(
         field('建築場所', h('input', { type: 'text', value: funding.address, onchange: (e: Event) => { funding.address = (e.target as HTMLInputElement).value; render(); } })),
-        h('div', { class: 'row2' }, field('見積作成日', h('input', { type: 'text', value: funding.dateLabel, onchange: (e: Event) => { funding.dateLabel = (e.target as HTMLInputElement).value; render(); } })), field('版', h('input', { type: 'text', value: funding.version, onchange: (e: Event) => { funding.version = (e.target as HTMLInputElement).value; render(); } }))),
+        h('div', { class: 'row2' }, field('作成日', h('input', { type: 'text', value: funding.dateLabel, onchange: (e: Event) => { funding.dateLabel = (e.target as HTMLInputElement).value; render(); } })), field('版', h('input', { type: 'text', value: funding.version, onchange: (e: Event) => { funding.version = (e.target as HTMLInputElement).value; render(); } }))),
         field('①本体工事（税抜）', h('input', { type: 'number', value: funding.bodyOverride ?? funding.body, onchange: (e: Event) => { const v = Number((e.target as HTMLInputElement).value); funding.bodyOverride = Math.abs(v - funding.body) < 1 ? undefined : v; render(); } }), funding.bodyOverride != null ? `見積の小計 ¥${yen(funding.body)} を上書き中` : '見積の小計から自動'),
         rowsEditor('②付帯工事費用', funding.attached),
         rowsEditor('③追加変更工事', funding.changes),
         rowsEditor('④土地費用', funding.land),
         rowsEditor('⑤その他工事費', funding.other),
         rowsEditor('⑥ローン諸経費', funding.loanFees),
-        h('div', { class: 'area-group' }, '借入の目安'),
-        ...funding.loans.map((l) => h('div', { class: 'loan-row' }, h('span', { class: 'lbl' }, l.label), h('input', { type: 'number', value: l.amountMan || '', placeholder: '万円', onchange: (e: Event) => { l.amountMan = Number((e.target as HTMLInputElement).value) || 0; render(); } }), h('input', { type: 'number', value: l.years, onchange: (e: Event) => { l.years = Number((e.target as HTMLInputElement).value) || 35; render(); } }), h('input', { type: 'number', step: 0.001, value: l.rate, onchange: (e: Event) => { l.rate = Number((e.target as HTMLInputElement).value) || 0; render(); } }))),
+        field('備考（区分）', h('select', { onchange: (e: Event) => { funding.stage = (e.target as HTMLSelectElement).value; render(); } }, ...['初回提案', '再提案', '契約時', '変更後'].map((v) => h('option', { value: v, selected: v === (funding.stage ?? '初回提案') }, v)))),
         h('div', { class: 'row2' }, field('排水', h('select', { onchange: (e: Event) => { funding.site.sewer = (e.target as HTMLSelectElement).value; render(); } }, ...['下水', '浄化槽', '汲み取り'].map((v) => h('option', { value: v, selected: v === funding.site.sewer }, v)))), field('準防火地域', h('select', { onchange: (e: Event) => { funding.site.fireZone = (e.target as HTMLSelectElement).value === '1'; render(); } }, h('option', { value: '0', selected: !funding.site.fireZone }, '非該当'), h('option', { value: '1', selected: funding.site.fireZone }, '該当')))),
       );
       panel.append(
@@ -413,6 +476,9 @@ export const estimateStep: Step = {
         section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }], which, (w) => { which = w; render(); })),
         h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　坪単価 ¥${yen(Math.round(est.perTsubo))}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`)),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', onclick: () => window.print() }, '印刷・PDF'), h('button', { class: 'btn', onclick: () => download('data:text/csv;charset=utf-8,' + encodeURIComponent(csvOf(c)), `${state.name}_見積.csv`) }, 'CSV'), h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!es.showAll, onchange: (e: Event) => { es.showAll = (e.target as HTMLInputElement).checked; if (es.showAll) which = 'detail'; render(); } }), '内訳を編集（全行表示）')),
+        field('端数調整', segmented([{ value: '10000', label: '万円単位' }, { value: '1000', label: '千円単位' }, { value: '0', label: 'なし' }], String(es.choice.roundUnit ?? 10000), (v) => { es.choice.roundUnit = Number(v); render(); }), est.adjust ? `税抜 ¥${yen(est.rawSubtotal)} → △${yen(-est.adjust)} 切り捨て` : '切り捨てなし'),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: es.customerView !== false, onchange: (e: Event) => { es.customerView = (e.target as HTMLInputElement).checked; render(); } }), 'お客様向け（内訳書の数量・単位・単価を隠す）'),
+        fold('会社情報・担当', { open: false, meta: companyInfo().designer || companyInfo().name }, companyForm(render)),
         fold('面積・数量（図面から自動）', { open: false, meta: `延床 ${num(areas.totalTsubo)} 坪 ／ 施工 ${num(areas.constTsubo)} 坪` }, areaBody, h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => { es.areasOverride = {}; render(); } }, 'すべて図面の値に戻す'))),
         fold('仕様の選択', { open: true, meta: `${Object.keys(GROUP_LABEL).length} 項目` }, groupBody),
         fold('任意の項目', { open: false }, optBody),

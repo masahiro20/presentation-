@@ -762,8 +762,8 @@ describe('開示・文言', () => {
     expect(neighborSourceLine(g)).toBe('出典: 国土地理院（高さは建物の種類からの推定）');
     expect(neighborSourceLine({ source: 'osm' })).toBe('出典: OpenStreetMap');
     expect(neighborSourceLine({ source: 'manual' })).toBe('出典: 手動で追加');
-    expect(NEIGHBOR_SOURCE_BUTTON.plateau).toBe('🏘 周辺建物（PLATEAU）');
-    expect(NO_NEIGHBORS_MSG).toContain('🏘 周辺建物（PLATEAU）');
+    expect(NEIGHBOR_SOURCE_BUTTON.plateau).toBe('周辺建物（PLATEAU）');
+    expect(NO_NEIGHBORS_MSG).toContain('周辺建物（PLATEAU）');
     expect(NEIGHBORS_HINT).toContain('地盤の高低差は表現しません');
     expect(NEIGHBORS_HINT).toMatch(/LOD1 は箱形、LOD2 は屋根形状/);
     expect(NEIGHBORS_HINT).toMatch(/普通建物 約7m/);

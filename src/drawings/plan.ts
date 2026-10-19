@@ -2,6 +2,7 @@
  * プレゼン用の清書平面図（SVG）
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
+import { takeoff } from '../estimate/areas';
 import type { BuildingModel, Floor, RoomType } from '../core/types';
 import { stairLayout, stairStepCount } from '../core/stairs';
 import { polygonCentroid } from '../core/geometry';
@@ -267,7 +268,15 @@ export function areaTableSvg(model: BuildingModel, x: number, y: number) {
     rows.push(['建蔽率', `${((bld / site) * 100).toFixed(1)} %`, '']);
     rows.push(['容積率', `${((total / site) * 100).toFixed(1)} %`, '']);
   }
-  return svgTable(x, y, '面積表', [{ label: '項目', w: 2600 }, { label: '㎡', w: 2200, align: 'right' }, { label: '坪', w: 2000, align: 'right' }], rows);
+  // 外壁面積・屋根面積（積算の拾いと同じ計算）
+  try {
+    const tk = takeoff(model, { grade: 'P', eavesMm: 100, pitch: 0.5, roofType: 'shed', solido: 'none' });
+    rows.push(['外壁面積', `${tk.extWall.toFixed(1)} ㎡`, '']);
+    rows.push(['屋根面積', `${tk.roofArea.toFixed(1)} ㎡`, '']);
+  } catch {
+    // 拾えない図面ではこの行を出さない
+  }
+  return svgTable(x, y, '面積表', [{ label: '項目', w: 3400 }, { label: '㎡', w: 2600, align: 'right' }, { label: '坪', w: 2400, align: 'right' }], rows, { fontSize: 260, rowH: 440 });
 }
 
 /** 建具表（この階） */
@@ -275,7 +284,7 @@ export function openingTableSvg(f: Floor, x: number, y: number, maxRows = 22) {
   const sch = openingSchedule(f);
   const rows = sch.slice(0, maxRows).map((e) => [e.tag, e.kindJa, `${e.w}`, `${e.h}`, e.sill ? `${e.sill}` : '-']);
   if (sch.length > maxRows) rows.push([`ほか ${sch.length - maxRows}`, '', '', '', '']);
-  return svgTable(x, y, `建具表（${f.level}階）`, [{ label: '記号', w: 1100, align: 'center' }, { label: '種別', w: 2300 }, { label: 'W', w: 1100, align: 'right' }, { label: 'H', w: 1100, align: 'right' }, { label: '腰高', w: 1200, align: 'right' }], rows, { fontSize: 150, rowH: 260 });
+  return svgTable(x, y, `建具表（${f.level}階）`, [{ label: '記号', w: 1300, align: 'center' }, { label: '種別', w: 2900 }, { label: 'W', w: 1300, align: 'right' }, { label: 'H', w: 1300, align: 'right' }, { label: '腰高', w: 1600, align: 'right' }], rows, { fontSize: 240, rowH: 400 });
 }
 
 export interface PlanParts {

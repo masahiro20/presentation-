@@ -10,6 +10,7 @@ import { sheetInfo } from '../sheetInfo';
 const DIRS: ElevationDir[] = ['south', 'east', 'north', 'west'];
 
 function generate(ctx: StepCtx, color: boolean) {
+  // 提案用の図面は線画が標準（面ごとの張り分け・色塗りはしない）
   ctx.app.ensureScene();
   const v = ctx.app.viewer;
   const model = state.model!;
@@ -26,8 +27,8 @@ function generate(ctx: StepCtx, color: boolean) {
   for (const f of model.floors) {
     const parts = floorPlanParts(model, f, { sheet: sheetInfo(`${f.level}階平面図`), sectionLines });
     const at = areaTableSvg(model, 0, 0);
-    const ot = openingTableSvg(f, 0, at.h + 700);
-    const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 700 + ot.h };
+    const ot = openingTableSvg(f, 0, at.h + 900);
+    const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 900 + ot.h };
     sheets.push({ title: `${f.level}階平面図`, svg: composeSheet([parts], sheetInfo(`${f.level}階平面図`, `A-${no++}`), { right, defs: parts.defs }) });
   }
   // 立面図は 2 面ずつ（1/100 で大きく。仕上げの引き出し線が読める大きさに）
@@ -45,7 +46,7 @@ export const elevationStep: Step = {
   needsModel: true,
   uses3d: false,
   mount(ctx) {
-    let color = true;
+    let color = false;
     const view = h('div', { class: 'plan-view' });
     ctx.stage.appendChild(view);
     const draw = () => {
@@ -73,10 +74,10 @@ export const elevationStep: Step = {
         '表示',
         segmented(
           [
-            { value: 'color', label: 'カラー立面図' },
-            { value: 'line', label: '線画' },
+            { value: 'line', label: '線画（標準）' },
+            { value: 'color', label: '仕上げの色を付ける' },
           ],
-          'color',
+          'line',
           (val) => {
             color = val === 'color';
             regen();

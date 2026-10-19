@@ -473,7 +473,7 @@ function finishNotes(design: DesignOptions): { cat: MatCat; text: string }[] {
 function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: string, sheet?: SheetInfo, notes: { cat: MatCat; text: string }[] = []): { svg: string; vb: Vb; inner: string } {
   const yOf = (worldY: number) => (o.yMax - worldY) * 1000;
   const glY = yOf(0);
-  const pad = notes.length ? 4600 : 2600;
+  const pad = notes.length ? 6200 : 2600;
   const vb: Vb = { x: -pad, y: -1400, w: o.Wmm + pad + 2600 + 3600, h: o.Hmm + 1400 + (sheet ? 900 : 1900) };
   const dimX = o.Wmm + 700;
   let ann = '';
@@ -483,7 +483,7 @@ function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: s
   for (const lv of levels) {
     const y = yOf(lv.y);
     ann += `<line x1="${o.Wmm + 100}" y1="${y}" x2="${dimX + 300}" y2="${y}" stroke="#555" stroke-width="10" stroke-dasharray="60 30"/>`;
-    ann += `<text x="${dimX + 380}" y="${y - 40}" font-size="170" fill="#222">${lv.label}</text>`;
+    ann += `<text x="${dimX + 380}" y="${y - 40}" font-size="220" fill="#222">${lv.label}</text>`;
   }
   const dimLv = levels.filter((l) => l.dim !== false).slice().sort((a, b) => a.y - b.y);
   for (let i = 0; i + 1 < dimLv.length; i++) {
@@ -492,7 +492,7 @@ function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: s
     if (Math.abs(y0 - y1) < 50) continue;
     ann += `<line x1="${dimX}" y1="${y0}" x2="${dimX}" y2="${y1}" stroke="#333" stroke-width="12"/>`;
     for (const y of [y0, y1]) ann += `<line x1="${dimX - 60}" y1="${y + 60}" x2="${dimX + 60}" y2="${y - 60}" stroke="#333" stroke-width="16"/>`;
-    ann += `<text x="${dimX - 90}" y="${(y0 + y1) / 2}" font-size="150" fill="#333" text-anchor="middle" transform="rotate(-90 ${dimX - 90} ${(y0 + y1) / 2})">${Math.round(Math.abs(y0 - y1))}</text>`;
+    ann += `<text x="${dimX - 90}" y="${(y0 + y1) / 2}" font-size="200" fill="#333" text-anchor="middle" transform="rotate(-90 ${dimX - 90} ${(y0 + y1) / 2})">${Math.round(Math.abs(y0 - y1))}</text>`;
   }
   // 仕上げの引き出し線: 材料の面の内側に点、左の余白へ水平に引き出して名前を書く（重ならないよう上から順に詰める）
   const placed = notes
@@ -502,11 +502,11 @@ function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: s
   let lastY = -Infinity;
   const tx = -350;
   for (const n of placed) {
-    const ly = Math.max(n.a.y, lastY + 420);
+    const ly = Math.max(n.a.y, lastY + 520);
     lastY = ly;
     ann += `<circle cx="${n.a.x.toFixed(0)}" cy="${n.a.y.toFixed(0)}" r="45" fill="#111"/>`;
     ann += `<polyline points="${n.a.x.toFixed(0)},${n.a.y.toFixed(0)} ${Math.min(n.a.x, 250).toFixed(0)},${ly.toFixed(0)} ${tx},${ly.toFixed(0)}" fill="none" stroke="#111" stroke-width="10"/>`;
-    ann += `<text x="${tx - 60}" y="${(ly + 55).toFixed(0)}" font-size="150" text-anchor="end" fill="#111">${n.text}</text>`;
+    ann += `<text x="${tx - 60}" y="${(ly + 70).toFixed(0)}" font-size="210" text-anchor="end" fill="#111">${n.text}</text>`;
   }
   // 図面名と縮尺（下線つき）
   const ty = glY + 1150;

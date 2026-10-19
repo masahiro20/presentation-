@@ -13,6 +13,8 @@ export interface EstimateChoice {
   off: string[];
   /** 自由追加の行 */
   extras: { id: string; cat: string; desc: string; unit: string; price: number; cost: number; qty: number }[];
+  /** 端数調整の単位（円）。税抜の小計をこの単位に切り捨てる（0 = 調整しない）。既定 10,000 */
+  roundUnit?: number;
 }
 
 export interface LineResult {
@@ -44,6 +46,10 @@ export interface CategoryResult {
 
 export interface EstimateResult {
   categories: CategoryResult[];
+  /** 端数調整前の小計（各工事の合計） */
+  rawSubtotal: number;
+  /** 端数調整（マイナス。小計を万円・千円単位に切り捨てる） */
+  adjust: number;
   subtotal: number;
   cost: number;
   tax: number;
@@ -78,7 +84,7 @@ export function defaultGroups(grade: Grade): Record<string, string> {
 }
 
 export function newChoice(grade: Grade): EstimateChoice {
-  return { grade, groups: defaultGroups(grade), qty: {}, off: [], extras: [] };
+  return { grade, groups: defaultGroups(grade), qty: {}, off: [], extras: [], roundUnit: 10000 };
 }
 
 function isOn(l: LineDef, choice: EstimateChoice): boolean {
@@ -111,10 +117,13 @@ export function computeEstimate(areasIn: Areas, choice: EstimateChoice): Estimat
     }
     return { def, lines, amount: lines.reduce((s, l) => s + l.amount, 0), cost: lines.reduce((s, l) => s + l.cost, 0) };
   });
-  const subtotal = categories.reduce((s, c) => s + c.amount, 0);
+  const rawSubtotal = categories.reduce((s, c) => s + c.amount, 0);
+  const unit = choice.roundUnit ?? 10000;
+  const adjust = unit > 0 && rawSubtotal > 0 ? -(rawSubtotal % unit) : 0;
+  const subtotal = rawSubtotal + adjust;
   const cost = categories.reduce((s, c) => s + c.cost, 0);
   const tax = Math.floor(subtotal * TAX_RATE);
-  return { categories, subtotal, cost, tax, total: subtotal + tax, perTsubo: a.totalTsubo > 0 ? subtotal / a.totalTsubo : 0 };
+  return { categories, rawSubtotal, adjust, subtotal, cost, tax, total: subtotal + tax, perTsubo: a.totalTsubo > 0 ? subtotal / a.totalTsubo : 0 };
 }
 
 export const yen = (v: number) => `${Math.round(v).toLocaleString('ja-JP')}`;

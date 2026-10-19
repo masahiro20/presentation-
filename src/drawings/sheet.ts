@@ -87,7 +87,7 @@ export function wrapSheet(inner: string, vb: Vb, info: SheetInfo, opts: { right?
  */
 export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: { svg: string; w: number; h: number }; defs?: string; gap?: number } = {}): string {
   const margin = 1200;
-  const titleH = 2600;
+  const titleH = 3200;
   const gap = opts.gap ?? 1600;
   const rgap = opts.right ? 1000 : 0;
   const rightW = opts.right?.w ?? 0;
@@ -128,7 +128,7 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   const W = 420 * denom;
   const H = 297 * denom;
   const sw = Math.max(16, denom * 0.18); // 線の太さ（紙の上で一定）
-  const fs = denom * 1.9; // 表題の文字（紙の上で約 1.9mm）
+  const fs = denom * 2.4; // 表題の文字（紙の上で約 2.4mm）
   // 内容の配置: 図枠の中で中央寄せ（右の表がある時はその左の領域で）
   const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
   const areaH = H - margin * 2 - titleH;
@@ -148,11 +148,11 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   const bw = W - margin - sw * 12;
   s += `<rect x="${bx}" y="${by}" width="${bw}" height="${titleH}" fill="#fff" stroke="#111" stroke-width="${sw * 1.2}"/>`;
   const cells: { label: string; value: string; w: number; big?: boolean }[] = [
-    { label: '工事名', value: info.project, w: 0.3, big: true },
-    { label: '図面名', value: info.drawing, w: 0.24, big: true },
-    { label: '縮尺', value: `S = 1/${denom}（A3）`, w: 0.12 },
+    { label: '設計', value: info.designer, w: 0.2 },
+    { label: '工事名', value: info.project, w: 0.28, big: true },
+    { label: '図面名', value: info.drawing, w: 0.22, big: true },
+    { label: '縮尺', value: `S = 1/${denom}（A3）`, w: 0.11 },
     { label: '日付', value: info.date, w: 0.12 },
-    { label: '設計', value: info.designer, w: 0.15 },
     { label: 'No.', value: info.no ?? '', w: 0.07 },
   ];
   let x = bx;
@@ -161,9 +161,11 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
     s += `<line x1="${x}" y1="${by}" x2="${x}" y2="${by + titleH}" stroke="#111" stroke-width="${sw * 0.8}"/>`;
     s += `<text x="${x + fs * 0.6}" y="${by + fs * 1.3}" font-size="${fs * 0.75}" fill="#666" letter-spacing="${fs * 0.08}">${esc(c.label)}</text>`;
     if (c.label === '設計' && info.logo) {
-      s += `<image href="${info.logo}" x="${x + fs * 0.6}" y="${by + fs * 1.7}" width="${cw - fs * 1.2}" height="${titleH * 0.34}" preserveAspectRatio="xMinYMid meet"/>`;
-      s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.5}" font-size="${fs * 0.8}" fill="#111">${esc(c.value)}</text>`;
-    } else s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.75}" font-size="${c.big ? fs * 1.25 : fs}" font-weight="${c.big ? 600 : 400}" fill="#111">${esc(c.value)}</text>`;
+      // 事務所ロゴを大きく（表題欄の高さの半分）、その下に事務所名
+      s += `<image href="${info.logo}" x="${x + fs * 0.6}" y="${by + fs * 1.5}" width="${cw - fs * 1.2}" height="${titleH * 0.46}" preserveAspectRatio="xMinYMid meet"/>`;
+      s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.6}" font-size="${fs * 0.8}" fill="#111">${esc(c.value)}</text>`;
+    } else if (c.label === '設計') s += `<text x="${x + fs * 0.6}" y="${by + titleH * 0.62}" font-size="${fs * 1.1}" font-weight="600" fill="#111" letter-spacing="${fs * 0.1}">${esc(c.value)}</text>`;
+    else s += `<text x="${x + fs * 0.6}" y="${by + titleH - fs * 0.9}" font-size="${c.big ? fs * 1.3 : fs}" font-weight="${c.big ? 600 : 400}" fill="#111">${esc(c.value)}</text>`;
     x += cw;
   }
   s += `</svg>`;

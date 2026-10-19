@@ -23,6 +23,9 @@ export interface ProjectState {
   company: string;
   /** 提案書の締めのページ: 設計担当・連絡先 */
   designer?: string;
+  /** 会社情報（見積書・資金計画書の発行者欄） */
+  companyRep?: string;
+  companyAddress?: string;
   tel?: string;
   email?: string;
   url?: string;

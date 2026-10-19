@@ -47,11 +47,24 @@ export interface CaptureOptions {
   slot?: { index: number; total: number };
 }
 
+/** 独立 GPU（GeForce / Radeon RX / Arc）か。実写テクスチャを大きいまま載せられる */
+function discreteGpu(renderer: THREE.WebGLRenderer): boolean {
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+    return /GeForce|RTX|GTX|Radeon RX|Radeon Pro|Arc\(TM\) A|Apple M[1-9] (Pro|Max|Ultra)/i.test(name);
+  } catch {
+    return false;
+  }
+}
+
 /** 室内・夕景・夜景は露出を上げる（写真と同じ考え方） */
 function exposureFor(kind: string | undefined, tod: string): number {
   if (kind === 'interior') return tod === 'night' ? 1.5 : 1.9;
   if (tod === 'night') return 1.4;
   if (tod === 'evening') return 1.15;
+  if (tod === 'morning') return 1.05;
   return 1.0;
 }
 
@@ -71,9 +84,9 @@ export async function captureShot(ctx: StepCtx, shot: Shot | null, opts: Capture
     const kind = shot?.kind ?? (v.camera.position.y < 8 && v.state && isInside(ctx) ? 'interior' : 'exterior');
     const exposure = exposureFor(kind, v.design.timeOfDay);
     const view = v.currentView();
-    // 1回目: 通常 → 2回目: テクスチャ・区画を小さく → 3回目: 半分の解像度で計算して拡大
-    const stages = [
-      { safe: false, w: W, h: H, note: '' },
+    // 1回目: 通常（独立 GPU なら実写テクスチャを 1024 で載せる）→ 2回目: テクスチャ・区画を小さく → 3回目: 半分の解像度で計算して拡大
+    const stages: { safe: boolean; w: number; h: number; note: string; textureSize?: number }[] = [
+      { safe: false, w: W, h: H, note: '', textureSize: discreteGpu(v.renderer) ? 1024 : 512 },
       { safe: true, w: W, h: H, note: '（負荷を下げて再計算中）' },
       { safe: true, w: Math.round(W / 2), h: Math.round(H / 2), note: '（軽量モードで再計算中）', textureSize: 128 },
     ];
@@ -516,6 +529,7 @@ export const designStep: Step = {
           h('div', { class: 'field-label', style: 'margin-top:10px' }, '時間帯'),
           segmented<TimeOfDay>(
             [
+              { value: 'morning', label: '朝' },
               { value: 'day', label: '昼' },
               { value: 'evening', label: '夕景' },
               { value: 'night', label: '夜景' },

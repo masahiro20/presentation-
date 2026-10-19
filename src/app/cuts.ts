@@ -83,8 +83,8 @@ const PATTERN_EN: Record<string, string> = {
   concrete: 'concrete', stone: 'stone', brick: 'brick', tileFloor: 'large-format tile', marble: 'marble', wood: 'wood', woodFloor: 'solid oak flooring', herringbone: 'herringbone wood floor', tatami: 'tatami', gravel: 'gravel', grass: 'lawn', paving: 'paving', roofTile: 'roof tile', slate: 'slate', fabric: 'linen fabric', leather: 'leather',
 };
 const mat = (m: MatSpec | undefined, lang: 'ja' | 'en') => (m ? `${(lang === 'ja' ? PATTERN_JA : PATTERN_EN)[m.pattern] ?? m.pattern} ${m.color}` : '');
-const TOD_JA: Record<TimeOfDay, string> = { day: '昼（自然光）', evening: '夕方（マジックアワー）', night: '夜（室内照明）' };
-const TOD_EN: Record<TimeOfDay, string> = { day: 'daytime natural light', evening: 'golden hour', night: 'night, warm interior lighting' };
+const TOD_JA: Record<TimeOfDay, string> = { morning: '朝（低い横からの光・薄い靄）', day: '昼（自然光）', evening: '夕方（マジックアワー）', night: '夜（室内照明）' };
+const TOD_EN: Record<TimeOfDay, string> = { morning: 'early morning, low raking sunlight, light mist', day: 'daytime natural light', evening: 'golden hour', night: 'night, warm interior lighting' };
 
 export function cutPrompt(shot: Shot, index: number): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);

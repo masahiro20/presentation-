@@ -75,7 +75,7 @@ const DEFAULT_TILE: Record<Pattern, number> = {
   grass: 4,
   asphalt: 6,
   paving: 1.2,
-  gravel: 2,
+  gravel: 1.2,
   fabric: 0.4,
   wood: 1.2,
   leather: 0.6,
@@ -376,11 +376,12 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'grass': {
+          // 刈り込んだ芝: 細かな葉のきらめきと、ゆるやかな色むら（明暗差は抑え、遠目には一様な緑に）
           const blades = noise.fbm(x * 6, y * 6, N * 6, 64, 3);
           const patches = n1;
-          // 明暗差を抑えた落ち着いた芝（粒が目立たないように）
-          const c = lerp3(base, alt, patches * 0.7 + blades * 0.3);
-          set(i, tint(c, 0.93 + 0.1 * blades), blades, 0.95);
+          const fine = cellRand(x, y, 9);
+          const c = lerp3(base, alt, patches * 0.6 + blades * 0.25 + fine * 0.15);
+          set(i, tint(c, 0.9 + 0.12 * blades + 0.05 * fine), blades * 0.7 + fine * 0.3, 0.95);
           break;
         }
         case 'asphalt': {
@@ -390,9 +391,30 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'gravel': {
-          const g1 = noise.fbm(x * 4, y * 4, N * 4, 64, 3);
-          const c = lerp3(base, alt, cellRand(Math.floor(x / 3), Math.floor(y / 3)));
-          set(i, tint(c, 0.7 + 0.5 * g1), g1, 0.95);
+          // 砕石敷き: 2〜3cm の石が敷き詰まる（最も近い石の中心までの距離で、石の丸みと石どうしの隙間の影を出す）
+          const cs = 0.028;
+          const gx = mx / cs;
+          const gy = my / cs;
+          const ci = Math.floor(gx);
+          const cj = Math.floor(gy);
+          let best = 9;
+          let bid = 0;
+          for (let dj = -1; dj <= 1; dj++)
+            for (let di = -1; di <= 1; di++) {
+              const px = ci + di + cellRand(ci + di, cj + dj, 1) * 0.9;
+              const py = cj + dj + cellRand(ci + di, cj + dj, 2) * 0.9;
+              const dd = Math.hypot(gx - px, gy - py);
+              if (dd < best) {
+                best = dd;
+                bid = (ci + di) * 7919 + (cj + dj);
+              }
+            }
+          const rv = cellRand(bid, 5);
+          const dome = Math.max(0, 1 - best / 0.62);
+          const rim = smooth(0.0, 0.25, dome);
+          const c = lerp3(base, alt, rv);
+          const k = (0.7 + 0.45 * rv) * (0.55 + 0.45 * rim) * (0.94 + 0.08 * n2);
+          set(i, tint(c, k), dome * 0.8 + 0.1 * n2, 0.9);
           break;
         }
         case 'paving': {

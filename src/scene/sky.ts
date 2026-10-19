@@ -7,8 +7,8 @@ import { ValueNoise } from '../styles/noise';
 export interface SkyParams {
   /** 太陽方向（ワールド、単位ベクトル） */
   sunDir: THREE.Vector3;
-  /** 'day' | 'evening' | 'night' */
-  mode: 'day' | 'evening' | 'night';
+  /** 'morning' | 'day' | 'evening' | 'night' */
+  mode: 'morning' | 'day' | 'evening' | 'night';
   /** 太陽円盤を含めるか（パストレーサー用） */
   sunDisk: boolean;
   width?: number;
@@ -42,8 +42,11 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
   } else {
     // 彩度を抑えた青と、靄のかかった地平（写真の空に近い落ち着き）
     zenith = new THREE.Color(0.2, 0.36, 0.7).lerp(new THREE.Color(0.14, 0.19, 0.42), low * 0.6).multiplyScalar(0.35 + 0.65 * dayF);
-    horizon = new THREE.Color(0.8, 0.85, 0.9).lerp(new THREE.Color(1.0, 0.64, 0.38), low * (p.mode === 'evening' ? 0.95 : 0.5)).multiplyScalar(0.45 + 0.75 * dayF);
-    glowCol = new THREE.Color(1.0, 0.85, 0.6).lerp(new THREE.Color(1.0, 0.45, 0.15), low);
+    // 朝は地平が淡い桃色〜乳白（靄）、夕景は橙
+    const horizonWarm = p.mode === 'morning' ? new THREE.Color(1.0, 0.82, 0.72) : new THREE.Color(1.0, 0.64, 0.38);
+    horizon = new THREE.Color(0.8, 0.85, 0.9).lerp(horizonWarm, low * (p.mode === 'evening' ? 0.95 : p.mode === 'morning' ? 0.8 : 0.5)).multiplyScalar(0.45 + 0.75 * dayF);
+    if (p.mode === 'morning') horizon.lerp(new THREE.Color(0.95, 0.95, 0.97), 0.35);
+    glowCol = new THREE.Color(1.0, 0.85, 0.6).lerp(p.mode === 'morning' ? new THREE.Color(1.0, 0.7, 0.5) : new THREE.Color(1.0, 0.45, 0.15), low);
   }
   const ground = p.groundColor ?? new THREE.Color(0.3, 0.28, 0.22);
   const sunI = p.sunIntensity ?? (p.mode === 'night' ? 0 : 60000 * (0.1 + 0.9 * dayF));
@@ -92,7 +95,7 @@ export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
           const cov = Math.max(0, Math.min(1, (d - (0.78 - cloudAmt * 0.5)) * 3.2));
           if (cov > 0) {
             const fade = Math.min(1, dir.y * 6);
-            const lit = 0.55 + 0.45 * Math.max(0, cosS) + (p.mode === 'evening' ? 0.2 : 0);
+            const lit = 0.55 + 0.45 * Math.max(0, cosS) + (p.mode === 'evening' ? 0.2 : p.mode === 'morning' ? 0.1 : 0);
             const cr = (glowCol.r * 0.35 + 0.8) * lit * (0.35 + 0.65 * dayF);
             const cg = (glowCol.g * 0.35 + 0.8) * lit * (0.35 + 0.65 * dayF);
             const cb = (glowCol.b * 0.3 + 0.85) * lit * (0.35 + 0.65 * dayF);

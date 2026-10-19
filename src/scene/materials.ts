@@ -52,7 +52,7 @@ export class MaterialRegistry {
     // 外壁の天端（笠木）は外壁の色に合わせて少し暗く（黒い家に白い縁が出ないように）
     set('ext.wallTop', M(wall));
     set('ext.foundation', M(e.foundation));
-    set('ext.frame', color(e.frame.color, 0.4, e.frame.metalness));
+    set('ext.frame', color(e.frame.color, 0.35, Math.max(0.5, e.frame.metalness)));
     set('ext.door', M(e.entranceDoor));
     set('ext.roof', M(e.roof.material));
     set('ext.fascia', color(e.roof.fascia, 0.6, 0.1));
@@ -60,13 +60,14 @@ export class MaterialRegistry {
     set('ext.gutter', color(e.roof.fascia, 0.5, 0.2));
     set('ext.canopy', color(e.roof.fascia, 0.5, 0.2));
     set('ext.balcony', M({ pattern: 'woodFloor', color: '#8a7a68', color2: '#76685a', roughness: 0.8 }));
+    // 透明ガラス: 空と周囲の映り込みをはっきり出す（写真のサッシはガラス面が鏡のように景色を映す）
     const glass = new THREE.MeshPhysicalMaterial({
-      color: '#aebfc8',
+      color: '#c3cfd4',
       metalness: 0,
       roughness: 0.02,
       transparent: true,
-      opacity: night ? 0.12 : 0.3,
-      envMapIntensity: 1.2,
+      opacity: night ? 0.14 : 0.34,
+      envMapIntensity: 1.7,
       side: THREE.DoubleSide,
       depthWrite: false,
       ior: 1.5,
@@ -138,11 +139,12 @@ export class MaterialRegistry {
     const L = e.landscape;
     set('l.ground', M(L.ground));
     // 敷地の外は落ち着いた緑の地面（一面の舗装は駐車場のように見えるので避ける）。彩度を抑えて建物を主役に
-    set('l.far', M({ pattern: 'grass', color: '#5f6a4c', color2: '#717a5a', tile: 6 }));
-    set('l.nbWallA', color('#d8d3ca', 0.95));
-    set('l.nbWallB', color('#b9b6b0', 0.95));
-    set('l.nbWallC', color('#e4e0d8', 0.95));
-    set('l.nbRoof', color('#3b3c3f', 0.7));
+    set('l.far', M({ pattern: 'grass', color: '#66704f', color2: '#7a8460', tile: 3 }));
+    // 隣家は主役を引き立てる淡いグレー（彩度・明暗差を抑える）
+    set('l.nbWallA', color('#cfcbc4', 0.95));
+    set('l.nbWallB', color('#bdbab4', 0.95));
+    set('l.nbWallC', color('#d8d4cd', 0.95));
+    set('l.nbRoof', color('#45474a', 0.75));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
     set('l.driveway', M(L.driveway));

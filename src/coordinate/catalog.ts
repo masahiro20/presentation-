@@ -75,6 +75,18 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     ],
   },
   {
+    id: 'soffit',
+    label: '軒天（軒の裏）',
+    part: '外部',
+    products: [
+      { id: 'soffit.same', maker: '—', name: '外壁と同色の塗り壁', code: '', color: '外壁同色', swatch: ['#9a9893'], apply: (s) => { s.ext.roof.soffit = { pattern: 'paint', color: s.ext.wall.color, roughness: 0.95 }; }, note: '軒の裏まで外壁と同じ色で回し、箱の輪郭を強調します' },
+      { id: 'soffit.white', maker: 'ケイミュー', name: '軒天ボード（無塗装板 塗装）', code: '軒天 12mm', color: 'ホワイト', swatch: ['#efeeea'], apply: (s) => { s.ext.roof.soffit = { pattern: 'paint', color: '#efeeea', roughness: 0.9 }; } },
+      { id: 'soffit.black', maker: 'ケイミュー', name: '軒天ボード（無塗装板 塗装）', code: '軒天 12mm', color: 'ブラック', swatch: ['#2c2c2d'], apply: (s) => { s.ext.roof.soffit = { pattern: 'paint', color: '#2c2c2d', roughness: 0.85 }; } },
+      { id: 'soffit.cedar', maker: 'チャネルオリジナル', name: 'レッドシダー 軒天羽目板', code: 'ウイルウォール 軒天', color: 'ナチュラル', swatch: ['#a88762'], apply: (s) => { s.ext.roof.soffit = { pattern: 'woodSiding', color: '#a88762', color2: '#8f6f4c', roughness: 0.75, size: 0.1 }; } },
+      { id: 'soffit.oak', maker: 'ニチハ', name: '軒天 木目調ボード', code: 'センターサイディング 軒天', color: 'ライトオーク', swatch: ['#c2a37a'], apply: (s) => { s.ext.roof.soffit = { pattern: 'woodSiding', color: '#c2a37a', color2: '#ad8f66', roughness: 0.7, size: 0.1 }; } },
+    ],
+  },
+  {
     id: 'sash',
     label: 'サッシ',
     part: '外部',

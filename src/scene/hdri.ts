@@ -8,10 +8,11 @@
 import * as THREE from 'three';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 
-export type SkyMode = 'day' | 'evening' | 'night';
+export type SkyMode = 'morning' | 'day' | 'evening' | 'night';
 
 /** 同梱の HDRI（public/hdri。いずれも Poly Haven・CC0） */
 const FILES: Record<SkyMode, string> = {
+  morning: 'kiara_1_dawn_2k.hdr',
   day: 'kloofendal_48d_partly_cloudy_puresky_2k.hdr',
   evening: 'belfast_sunset_puresky_2k.hdr',
   night: 'kloppenheim_02_puresky_2k.hdr',

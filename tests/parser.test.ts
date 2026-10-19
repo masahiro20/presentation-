@@ -53,8 +53,10 @@ for (const file of ['sample_house_A3.pdf', 'sample_house_pages.pdf']) {
       expect(f1.openings.filter((o) => o.kind === 'window').length).toBeGreaterThanOrEqual(8);
       expect(f1.openings.filter((o) => o.kind === 'door').length).toBeGreaterThanOrEqual(5);
       expect(f1.openings.filter((o) => o.kind === 'sliding').length).toBeGreaterThanOrEqual(2);
+      // ホームランディックの窓の語彙: 掃き出しは LDK（庭側）に 1 ヵ所だけ（図面に寸法の無い窓は横長の高窓・縦すべりになる）
       const ldkHakidashi = f1.openings.filter((o) => o.windowStyle === 'hakidashi');
-      expect(ldkHakidashi.length).toBeGreaterThanOrEqual(2);
+      expect(ldkHakidashi.length).toBe(1);
+      expect(f1.openings.filter((o) => o.windowStyle === 'high').length).toBeGreaterThanOrEqual(1);
       const f2 = model.floors[1];
       expect(f2.openings.filter((o) => o.kind === 'door').length).toBeGreaterThanOrEqual(7);
     });

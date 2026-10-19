@@ -393,10 +393,37 @@ function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boo
     case 'bedroom':
     case 'kids':
     case 'study':
-      if (widthMm >= 1600 && facingSouth) return { style: 'koshi', sill: 900, height: 1300 };
-      return { style: 'koshi', sill: 900, height: 1100 };
     default:
+      // 居室の大きな窓は腰高にせず、天井付けの横長（FIX＋横すべり出し）に。細い窓は縦すべり出し（天井まで）
+      if (widthMm >= 1400) return { style: 'high', sill: 1300, height: 700 };
       return { style: 'koshi', sill: 900, height: 1100 };
+  }
+  void facingSouth;
+}
+
+/**
+ * ホームランディックの窓の語彙: 掃き出し窓は LDK（庭側）に 1 ヵ所だけ。残りの大きな窓は天井付けの横長 FIX、細い窓は縦すべり出しにする。
+ * 図面にサッシ記号・FL 注記で寸法が書かれた窓はそのまま。
+ */
+function applyWindowVocabulary(openings: Opening[], info: Map<number, { room: RoomType | null; south: number; drawn: boolean }>) {
+  const living = new Set<RoomType | null>(['ldk', 'living', 'dining', 'japanese']);
+  const cands = openings
+    .map((o, i) => ({ o, i, inf: info.get(i) }))
+    .filter((x) => x.o.kind === 'window' && x.o.windowStyle === 'hakidashi' && x.inf && !x.inf.drawn && living.has(x.inf.room));
+  if (cands.length <= 1) return;
+  // 庭側（南）に面した幅の広い窓を掃き出しに残す
+  cands.sort((a, b) => b.o.t1 - b.o.t0 + b.inf!.south * 1500 - (a.o.t1 - a.o.t0 + a.inf!.south * 1500));
+  for (const x of cands.slice(1)) {
+    const w = x.o.t1 - x.o.t0;
+    if (w >= 1400) {
+      x.o.windowStyle = 'high';
+      x.o.sill = 1300;
+      x.o.height = 700;
+    } else {
+      x.o.windowStyle = 'koshi';
+      x.o.sill = 900;
+      x.o.height = 1100;
+    }
   }
 }
 
@@ -1214,6 +1241,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   };
   const outWalls: Wall[] = [];
   const openings: Opening[] = [];
+  // 窓ごとの補助情報（部屋・南向き度・図面に寸法が書かれていたか）: 窓の語彙の後処理に使う
+  const winInfo = new Map<number, { room: RoomType | null; south: number; drawn: boolean }>();
   const roomAt = (p: Vec2): Room | null => {
     const [x, y] = grid.cellOf(p);
     const l = x >= 0 && y >= 0 && x < grid.w && y < grid.h ? labels[y * grid.w + x] : 0;
@@ -1324,11 +1353,13 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         } else {
           kind = 'window';
           const outN = { x: w.n.x * (outsideSign ?? 1), y: w.n.y * (outsideSign ?? 1) };
-          const facingSouth = outN.x * southVec.x + outN.y * southVec.y > 0.7;
+          const southDot = outN.x * southVec.x + outN.y * southVec.y;
+          const facingSouth = southDot > 0.7;
           const ws = windowStyleFor(inRoom?.type ?? null, width, facingSouth);
           sill = ws.sill;
           height = ws.height;
           windowStyle = ws.style;
+          winInfo.set(openings.length, { room: inRoom?.type ?? null, south: Math.max(0, southDot), drawn: !!(noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) || (noteFl != null && noteFl < 1600) });
           // 図面に書かれたサッシ記号（例 16511 = W1650×H1170）があれば、その寸法を優先する
           if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) {
             height = noteSash.height;
@@ -1370,6 +1401,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       });
     }
   });
+
+  applyWindowVocabulary(openings, winInfo);
 
   // ---- 階段 ----
   const stairs: Stair[] = [];

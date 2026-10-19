@@ -84,7 +84,8 @@ function plasterBox(o: {
   accent?: string | null;
   frame?: string;
 }): ExteriorStyle {
-  const accent = o.accent === undefined ? '#5d5c59' : o.accent;
+  // 外壁は一色が標準（アクセントはコーディネートで選んだときだけ玄関まわりに）
+  const accent = o.accent === undefined ? null : o.accent;
   return {
     id: o.id,
     name: o.name,
@@ -101,10 +102,11 @@ function plasterBox(o: {
       soffit: { pattern: 'paint', color: o.wall, roughness: 0.95 },
       gutter: false,
     },
-    wall: { pattern: 'stucco', color: o.wall, color2: o.wall2 ?? o.wall, roughness: 0.97, normalStrength: o.coarse ?? 0.35 },
+    wall: { pattern: 'stucco', color: o.wall, color2: o.wall2 ?? o.wall, roughness: 0.97, normalStrength: o.coarse ?? 0.3 },
     accent: accent ? { pattern: 'solido', color: accent, roughness: 0.92, normalStrength: 0.6 } : undefined,
     accentRule: accent ? 'entrance' : 'none',
-    foundation: { pattern: 'concrete', color: '#9b9993', roughness: 0.9 },
+    // 基礎はモルタル刷毛引き（型枠の目地・セパ穴は出さない）
+    foundation: { pattern: 'plaster', color: '#8f8d88', roughness: 0.92, normalStrength: 0.25 },
     frame: { color: o.frame ?? '#1f1f1f', metalness: 0.4 },
     entranceDoor: { pattern: 'paint', color: '#3a3a3a', roughness: 0.55 },
     landscape: {
@@ -127,28 +129,26 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
   plasterBox({
     id: 'hl-jolypat-grey',
     name: 'ジョリパット グレー',
-    catch: '中間グレーの塗り壁 × SOLIDO',
-    description: 'ジョリパットの中間グレーの塗り壁の箱に、玄関まわりだけ SOLIDO（セメント板）を貼ったホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。',
+    catch: '中間グレーの塗り壁の箱',
+    description: 'ジョリパットの中間グレーの塗り壁を一色で回したホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。アクセント（SOLIDO・木板）はコーディネートで玄関まわりに足せます。',
     wall: '#8f8e8a',
     wall2: '#86857f',
   }),
   plasterBox({
     id: 'hl-jolypat-greige',
     name: 'ジョリパット グレージュ',
-    catch: 'やわらかなグレージュ × 炭色 SOLIDO',
-    description: 'グレージュのジョリパットに、炭色の SOLIDO を玄関まわりに。陰影がやわらかく、植栽が映える外観です。',
+    catch: 'やわらかなグレージュの塗り壁',
+    description: 'グレージュのジョリパットを一色で。陰影がやわらかく、植栽が映える外観です。',
     wall: '#a99f93',
     wall2: '#a1978b',
-    accent: '#4e4d4a',
   }),
   plasterBox({
     id: 'hl-jolypat-beige',
     name: 'ジョリパット ベージュ',
-    catch: '明るいベージュ × グレーの SOLIDO',
-    description: '明るいベージュの塗り壁に、グレーの SOLIDO を合わせた穏やかな外観。',
+    catch: '明るいベージュの塗り壁',
+    description: '明るいベージュの塗り壁を一色で回した穏やかな外観。',
     wall: '#c4b8a6',
     wall2: '#bcb09e',
-    accent: '#7b7a76',
   }),
   plasterBox({
     id: 'hl-soton-grey',
@@ -163,11 +163,10 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
   plasterBox({
     id: 'hl-sto-lightgrey',
     name: 'Sto 塗り壁 ライトグレー',
-    catch: '明るいグレーの塗り壁 × 黒い SOLIDO',
-    description: 'Sto の明るいグレーの塗り壁に、黒に近い SOLIDO を一面だけ。軽やかでシャープな外観です。',
+    catch: '明るいグレーの塗り壁',
+    description: 'Sto の明るいグレーの塗り壁を一色で。軽やかでシャープな外観です。',
     wall: '#b3b2ae',
     wall2: '#abaaa6',
-    accent: '#3e3e3c',
   }),
   ext({
     id: 'hl-galva-black',
@@ -1145,7 +1144,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
 
 export const TATAMI: MatSpec = { pattern: 'tatami', color: '#b9b77e', color2: '#3b3a33', roughness: 0.85 };
 
-export type TimeOfDay = 'day' | 'evening' | 'night';
+export type TimeOfDay = 'morning' | 'day' | 'evening' | 'night';
 
 export interface DesignOptions {
   /** 標準仕様（建具・窓・照明の納まり） */

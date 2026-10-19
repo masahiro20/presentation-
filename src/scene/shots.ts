@@ -23,7 +23,7 @@ export interface Shot {
   view: CameraView;
   /** パース用の太陽（ワールド方向）。null なら実際の太陽位置 */
   sunDir: THREE.Vector3 | null;
-  timeOfDay?: 'day' | 'evening' | 'night';
+  timeOfDay?: 'morning' | 'day' | 'evening' | 'night';
   roomId?: string;
   level?: number;
   /** 輪切り模型: 切る階 */
@@ -61,11 +61,11 @@ function fitOblique(pts: THREE.Vector3[], target: THREE.Vector3, fromDir: THREE.
   return hi;
 }
 
-function sunForView(pos: THREE.Vector3, target: THREE.Vector3, sideSign = -1, elevDeg = 38): THREE.Vector3 {
-  // カメラの左後方 40° から光が当たるように
+function sunForView(pos: THREE.Vector3, target: THREE.Vector3, sideSign = -1, elevDeg = 38, sideDeg = 55): THREE.Vector3 {
+  // カメラの左後方 55° から光が当たるように（朝・夕は横から低く差し込む）
   const d = new THREE.Vector3().subVectors(target, pos).setY(0).normalize();
   const back = d.clone().negate();
-  const ang = (sideSign * 55 * Math.PI) / 180;
+  const ang = (sideSign * sideDeg * Math.PI) / 180;
   const h = back.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), ang);
   const el = (elevDeg * Math.PI) / 180;
   return new THREE.Vector3(h.x * Math.cos(el), Math.sin(el), h.z * Math.cos(el)).normalize();
@@ -163,8 +163,9 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   const center = new THREE.Vector3((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
   const road = site.roadDir.clone();
   const shots: Shot[] = [];
-  const eye = 1.55;
-  const vfov = 42;
+  // 目の高さ 1.5m、35mm 相当の画角（広角の歪みを避ける）、建物のまわりに余白を取る
+  const eye = 1.5;
+  const vfov = 38;
   // 道路側から、玄関が見える向きに 35° 振る
   const ent = meta.entrance;
   const along = new THREE.Vector3(-road.z, 0, road.x);
@@ -175,10 +176,13 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   const entSide = Math.abs(along.dot(south)) > 0.3 ? southSide : ent ? Math.sign(ent.pos.clone().sub(center).dot(along)) || 1 : 1;
   const mk = (id: string, title: string, caption: string, fromDir: THREE.Vector3, tod: Shot['timeOfDay'] = 'day', sideSign = -1): Shot => {
     const dir = fromDir.clone().negate().normalize(); // カメラの視線方向
-    const dist = fitDistance(pts, center, dir, eye, vfov, aspect);
+    const dist = fitDistance(pts, center, dir, eye, vfov, aspect, 1.3);
     const pos = center.clone().addScaledVector(dir, -dist).setY(eye);
-    const target = center.clone().setY(topY * 0.42);
-    return { id, kind: 'exterior', title, caption, view: { pos, target, fov: vfov, architectural: true }, sunDir: sunForView(pos, target, sideSign), timeOfDay: tod };
+    const target = center.clone().setY(topY * 0.4);
+    // 時間帯ごとの太陽: 昼は高く（38°）、朝は低く横から（長い影と靄）、夕景はさらに低く逆光気味
+    const elev = tod === 'morning' ? 16 : tod === 'evening' ? 9 : 38;
+    const side = tod === 'morning' ? 88 : tod === 'evening' ? 112 : 55;
+    return { id, kind: 'exterior', title, caption, view: { pos, target, fov: vfov, architectural: true }, sunDir: sunForView(pos, target, sideSign, elev, side), timeOfDay: tod };
   };
   let frontDir = road.clone().multiplyScalar(Math.cos(0.6)).addScaledVector(along, entSide * Math.sin(0.6)).normalize();
   // 窓の情報があれば、道路側の半分の中で窓（＝表情）が最も多く見える角度を選ぶ（窓の無い壁ばかり写さない）
@@ -203,6 +207,7 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   // 庭側（道路の反対 or 最も窓の多い面）
   const gardenDir = gardenPick ?? road.clone().negate().multiplyScalar(Math.cos(0.45)).addScaledVector(along, Math.sin(0.45)).normalize();
   shots.push(mk('ext-garden', '外観パース（庭側）', '庭側からの外観。大きな窓からの明るさと、庭とのつながりをイメージしてください。', gardenDir));
+  shots.push(mk('ext-morning', '朝のパース', '朝の光が横から差し込む外観。長い影と薄い靄が、塗り壁の質感を引き立てます。', frontDir, 'morning'));
   shots.push(mk('ext-evening', '夕景パース', '夕暮れどき、室内の灯りがともる外観。帰宅したくなる佇まいを演出します。', frontDir, 'evening'));
   shots.push(mk('ext-night', '夜景パース', '夜の外観。窓からこぼれる灯りが、暮らしのぬくもりを伝えます。', frontDir, 'night'));
   // 鳥瞰

@@ -8,7 +8,7 @@ import { oidnDenoise } from './oidn';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import type { Viewer } from './viewer';
 import { loadHdri, equirectIrradiance } from './hdri';
-import { buildInteriorPhotoLights } from './interiorLights';
+import { buildInteriorPhotoLights, buildExteriorLights } from './interiorLights';
 import { interiorById } from '../styles/presets';
 import { interiorFor } from '../coordinate/catalog';
 import { resolveSpec } from '../styles/spec';
@@ -168,7 +168,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   const prevEnv = scene.environment;
   const prevBg = scene.background;
   const prevEnvI = scene.environmentIntensity;
-  const night = viewer.design.timeOfDay === 'night';
+  const tod = viewer.design.timeOfDay;
+  const night = tod === 'night';
+  const dusk = night || tod === 'evening';
   const sky = viewer.getSkyTexture(false);
   scene.environment = sky;
   scene.background = sky;
@@ -188,7 +190,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       const sd = viewer.sunDir;
       const target = night ? 0 : sky.image ? Math.atan2(sd.z, sd.x) : 0;
       const procE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, sd.y));
-      const k = procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1;
+      // 夕景は実写の空の方が暗く沈みがちなので少し持ち上げる。夜景はブルーアワーの空が見える明るさに固定
+      // （手続き的な夜空は暗すぎて、合わせると空が真っ黒になる）
+      const k = night ? 0.02 / Math.max(1e-4, hdri.irradiance) : (procE > 0 && hdri.irradiance > 0 ? procE / hdri.irradiance : 1) * (tod === 'evening' ? 1.35 : 1);
       skyE = procE;
       scene.environment = hdri.texture;
       scene.background = hdri.texture;
@@ -199,9 +203,9 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
       usingHdri = true;
     }
   }
-  // 昼の補助光（室内の擬似間接光）は不要
+  // リアルタイム用の補助光・点光源は使わない（夕景・夜景は下で物理的な照明を置く）
   const lightVis = viewer.groups.lights.visible;
-  if (!night) viewer.groups.lights.visible = false;
+  viewer.groups.lights.visible = false;
   const hemiVis = viewer.hemi.visible;
   viewer.hemi.visible = false;
   const sunI = viewer.sun.intensity;
@@ -230,7 +234,27 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     });
     scene.add(extraLights);
     scene.updateMatrixWorld(true);
-    if (night) viewer.groups.lights.visible = false;
+  }
+  // 夕景・夜景の外観: 室内の灯り（全階）・ポーチ・植栽のアップライト・フットライト
+  let extLights: THREE.Group | null = null;
+  if (dusk && viewer.state) {
+    if (!skyE) {
+      const img = sky.image as { data: Float32Array; width: number; height: number };
+      skyE = equirectIrradiance(img.data, img.width, img.height) * (night ? 0.4 : 1) + (night ? 0 : sunI0 * 1.15 * Math.max(0, viewer.sunDir.y));
+    }
+    const refE = night ? Math.max(skyE, 1e-3) * 1500 : skyE;
+    extLights = buildExteriorLights({
+      meta: viewer.state.meta,
+      plan: viewer.state.plan,
+      // 内観では室内の灯りは上で置いているので、外部の器具だけ
+      lights: opts.interior ? [] : viewer.state.lights,
+      mode: tod,
+      skyE: refE,
+      lampColor: kelvinToColor(interiorFor(viewer.design).lightKelvin),
+      physical: true,
+    });
+    scene.add(extLights);
+    scene.updateMatrixWorld(true);
   }
   const saved = prepareMaterials(scene);
 
@@ -319,13 +343,17 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     check();
     console.info(`写真品質レンダリング: ${Math.floor(pt.samples)} サンプル / ${Math.round((performance.now() - t0) / 1000)} 秒`);
     if (pt.samples < 1) throw new PhotorealError('計算が進みませんでした', 'no-samples');
-    // 内観は露出を自動で合わせる（窓の外は白く飛ぶのが自然。室内の中間の明るさを基準に）
-    if (opts.interior) {
+    // 露出を自動で合わせる（写真の自動露出と同じ。内観は室内の中間の明るさを基準に、窓の外は白く飛ぶのが自然。
+    // 夕景・夜景は暗い側に基準を置き、灯りが主役になる明るさに）
+    {
+      const target = opts.interior ? (night ? 96 : 118) : night ? 52 : tod === 'evening' ? 86 : 108;
+      const lo = opts.interior ? 0.1 : 0.45;
+      const hi = opts.interior ? 8 : 2.6;
       for (let it = 0; it < 5; it++) {
         present(false);
         const m = lumaPercentile(canvas, 0.5);
-        const f = Math.max(0.5, Math.min(2.2, Math.pow(118 / Math.max(2, m), 1.3)));
-        renderer.toneMappingExposure = Math.max(baseExposure * 0.1, Math.min(baseExposure * 8, renderer.toneMappingExposure * f));
+        const f = Math.max(0.5, Math.min(2.2, Math.pow(target / Math.max(2, m), 1.3)));
+        renderer.toneMappingExposure = Math.max(baseExposure * lo, Math.min(baseExposure * hi, renderer.toneMappingExposure * f));
         if (Math.abs(f - 1) < 0.04) break;
       }
       console.info(`写真品質レンダリング: 露出 ${renderer.toneMappingExposure.toFixed(2)}`);
@@ -363,6 +391,7 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     denoise.dispose();
     restoreMaterials(saved);
     if (extraLights) scene.remove(extraLights);
+    if (extLights) scene.remove(extLights);
     sky.dispose();
     scene.environment = prevEnv;
     scene.background = prevBg;
@@ -383,8 +412,8 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   }
 }
 
-/** 写真としての仕上げ: ごく弱い周辺減光とトーンカーブ */
-export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; contrast?: number } = {}): string {
+/** 写真としての仕上げ: ハイライトのにじみ（ブルーム）、ごく弱い周辺減光とトーンカーブ、フィルムの粒子 */
+export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; contrast?: number; bloom?: number; grain?: number } = {}): string {
   const w = src.width;
   const h = src.height;
   const c = document.createElement('canvas');
@@ -392,9 +421,43 @@ export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; c
   c.height = h;
   const ctx = c.getContext('2d')!;
   ctx.drawImage(src, 0, 0);
+  // ブルーム: 明るい部分（空・窓・照明）だけを取り出してぼかし、薄く重ねる（レンズのにじみ）
+  const bloom = opts.bloom ?? 0.1;
+  if (bloom > 0) {
+    const s = Math.max(1, Math.round(Math.max(w, h) / 240));
+    const bw = Math.max(1, Math.floor(w / s));
+    const bh = Math.max(1, Math.floor(h / s));
+    const b = document.createElement('canvas');
+    b.width = bw;
+    b.height = bh;
+    const bc = b.getContext('2d', { willReadFrequently: true })!;
+    bc.drawImage(src, 0, 0, bw, bh);
+    const bi = bc.getImageData(0, 0, bw, bh);
+    const bd = bi.data;
+    for (let i = 0; i < bd.length; i += 4) {
+      const l = (0.2126 * bd[i] + 0.7152 * bd[i + 1] + 0.0722 * bd[i + 2]) / 255;
+      const t = Math.max(0, (l - 0.72) / 0.28);
+      bd[i] *= t;
+      bd[i + 1] *= t;
+      bd[i + 2] *= t;
+    }
+    bc.putImageData(bi, 0, 0);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = bloom;
+    ctx.filter = `blur(${Math.max(2, Math.round(Math.max(w, h) / 90))}px)`;
+    ctx.drawImage(b, 0, 0, w, h);
+    ctx.restore();
+  }
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
   const k = opts.contrast ?? 0.06;
+  const grain = (opts.grain ?? 0.012) * 255;
+  let seed = 1234567;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296 - 0.5;
+  };
   // S字カーブ（中間調を少し締める）
   const lut = new Uint8ClampedArray(256);
   for (let i = 0; i < 256; i++) {
@@ -403,9 +466,10 @@ export function finishPhoto(src: HTMLCanvasElement, opts: { vignette?: number; c
     lut[i] = Math.round(Math.max(0, Math.min(1, s)) * 255);
   }
   for (let i = 0; i < d.length; i += 4) {
-    d[i] = lut[d[i]];
-    d[i + 1] = lut[d[i + 1]];
-    d[i + 2] = lut[d[i + 2]];
+    const g = grain > 0 ? rnd() * grain : 0;
+    d[i] = lut[d[i]] + g;
+    d[i + 1] = lut[d[i + 1]] + g;
+    d[i + 2] = lut[d[i + 2]] + g;
   }
   ctx.putImageData(img, 0, 0);
   const v = opts.vignette ?? 0.14;

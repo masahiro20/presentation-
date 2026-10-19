@@ -18,16 +18,14 @@ interface PhotoDef {
 
 /** パターン → 実写素材 */
 const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
-  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.35 },
+  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.22 },
   plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.3 },
   concrete: { id: 'concrete_floor_02', tile: 4, detail: 0.6 },
   woodFloor: { id: 'wood_floor', tile: 2.0 },
   woodSiding: { id: 'wood_planks', tile: 2.0 },
   tileFloor: { id: 'large_floor_tiles_02', tile: 2.4 },
   marble: { id: 'marble_01', tile: 2.4 },
-  gravel: { id: 'gravel_concrete_03', tile: 3 },
-  grass: { id: 'leafy_grass', tile: 3 },
-  asphalt: { id: 'asphalt_02', tile: 5 },
+  asphalt: { id: 'asphalt_02', tile: 5, detail: 0.55 },
 };
 
 interface Loaded {

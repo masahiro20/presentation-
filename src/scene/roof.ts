@@ -22,6 +22,8 @@ interface RoofCtx {
   slope: number;
   wallT: number;
   gableKey: string;
+  /** この妻壁（面の中点 x,z・外向き法線）の下の外壁がアクセント仕上げか。無ければ gableKey */
+  gableKeyAt?: (x: number, z: number, nx: number, nz: number) => string;
   gutter: boolean;
   /** 外周上の辺か判定（mm 座標系の外形） */
   onBoundary: (x0: number, z0: number, x1: number, z1: number) => boolean;
@@ -44,6 +46,31 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
   const floors = model.floors;
   if (!floors.length) return { mb, info };
   const extT = Math.max(120, ...floors.flatMap((f) => f.walls.filter((w) => w.exterior).map((w) => w.thickness))) * MM;
+  // 玄関まわりのアクセント帯（建物側と同じ判定）: 妻壁・壁の立ち上がりも下の外壁と同じ仕上げにする（三角だけ色が変わらないように）
+  const entranceLines: { a: THREE.Vector2; b: THREE.Vector2 }[] = [];
+  if (style.accent && style.accentRule === 'entrance')
+    for (const f of floors)
+      for (const o of f.openings)
+        if (o.kind === 'entrance') {
+          const w = f.walls.find((x) => x.id === o.wallId);
+          if (w) entranceLines.push({ a: new THREE.Vector2(w.a.x, w.a.y), b: new THREE.Vector2(w.b.x, w.b.y) });
+        }
+  const gableKeyAt = (x: number, z: number, nx: number, nz: number): string => {
+    if (!style.accent || style.accentRule !== 'entrance') return 'ext.wall';
+    // 面の中点（mm）が玄関の壁の線上（120mm 以内）にあればアクセント
+    const px = x / MM;
+    const pz = z / MM;
+    for (const l of entranceLines) {
+      const d = new THREE.Vector2().subVectors(l.b, l.a);
+      const L = d.length() || 1;
+      const t = ((px - l.a.x) * d.x + (pz - l.a.y) * d.y) / (L * L);
+      const dist = Math.abs((px - l.a.x) * d.y - (pz - l.a.y) * d.x) / L;
+      // 壁の線に平行で近い（法線が線と直交）
+      const par = Math.abs(nx * d.x + nz * d.y) / L;
+      if (dist < 160 && par < 0.3 && t > -0.05 && t < 1.05) return 'ext.accent';
+    }
+    return 'ext.wall';
+  };
 
   // 真北方向（平面座標）: 片流れの向きに使う
   const na = (model.northAngleDeg * Math.PI) / 180;
@@ -89,6 +116,7 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       slope: (pitchOverride ?? style.roof.pitch) / 10,
       wallT: extT,
       gableKey: upperAccent ? 'ext.accent' : 'ext.wall',
+      gableKeyAt: upperAccent ? undefined : gableKeyAt,
       gutter: style.roof.gutter,
       onBoundary: (x0, z0, x1, z1) => {
         // 辺に沿って数点、両側を調べ、どこかで片側が外（この階の範囲外）なら外周
@@ -238,7 +266,8 @@ function gablePrism(ctx: RoofCtx, R: Region, pts: V3[], normal: V3) {
   const cen = pts.reduce((a, p) => a.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
   const out = Math.sign(cen.x * normal.x + cen.z * normal.z - (((R.minX + R.maxX) / 2) * normal.x + ((R.minZ + R.maxZ) / 2) * normal.z)) || 1;
   const sh = normal.clone().multiplyScalar((out * (ctx.wallT - t)) / 2);
-  prism(ctx.mb, ctx.gableKey, pts.map((p) => p.clone().add(sh)), normal, t, true);
+  const key = ctx.gableKeyAt ? ctx.gableKeyAt(cen.x, cen.z, normal.x * out, normal.z * out) : ctx.gableKey;
+  prism(ctx.mb, key, pts.map((p) => p.clone().add(sh)), normal, t, true);
 }
 /**
  * 壁の立ち上がり（箱）。同じく外側の面を外壁の面にそろえ、外壁と同じ向きのテクスチャ座標で張る。
@@ -254,7 +283,7 @@ function gableBox(ctx: RoofCtx, R: Region, c: V3, dir: V3, len: number, h: numbe
   const P = (s: number, y: number, d: number) => b.clone().addScaledVector(u, s).addScaledVector(up, y).addScaledVector(n, d);
   const hl = len / 2;
   const hd = t / 2;
-  const k = ctx.gableKey;
+  const k = ctx.gableKeyAt ? ctx.gableKeyAt(c.x, c.z, n.x * out, n.z * out) : ctx.gableKey;
   const mb = ctx.mb;
   mb.quad(k, P(-hl, 0, hd), P(hl, 0, hd), P(hl, h, hd), P(-hl, h, hd)); // +n
   mb.quad(k, P(hl, 0, -hd), P(-hl, 0, -hd), P(-hl, h, -hd), P(hl, h, -hd)); // -n

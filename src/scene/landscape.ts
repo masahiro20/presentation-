@@ -388,12 +388,21 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       const alongV = V(-s.n.z, 0, s.n.x);
       const edge = s.n.x !== 0 ? (s.n.x > 0 ? max.x : min.x) : s.n.z > 0 ? max.y : min.y;
       const span = s.n.x !== 0 ? [min.y, max.y] : [min.x, max.x];
-      let t = span[0] - 4 - r2() * 3;
-      while (t < span[1] + 4) {
+      // 道路に面する側の隣家は、道路境界から 1.5m 以上下がる（道路まで迫り出して外観を塞がない）
+      const sideOfRoad = Math.abs(s.n.dot(road)) < 0.5;
+      if (sideOfRoad) {
+        const roadEdge = road.x !== 0 ? (road.x > 0 ? max.x : min.x) : road.z > 0 ? max.y : min.y;
+        const sgn = road.x + road.z;
+        if (sgn > 0) span[1] = Math.min(span[1], roadEdge - 3.0);
+        else span[0] = Math.max(span[0], roadEdge + 3.0);
+      }
+      let t = span[0] - (sideOfRoad && road.x + road.z < 0 ? 0 : 4 + r2() * 3);
+      while (t < span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) {
         const w = 6 + r2() * 3;
         const d = 6.5 + r2() * 2.5;
         const hh = r2() > 0.3 ? 6.0 : 3.2;
-        const gap = 1.6 + r2() * 1.6;
+        const gap = 2.2 + r2() * 1.8;
+        if (t + w > span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) break;
         const cA = (s.n.x !== 0 ? 0 : 1) * 0;
         void cA;
         const center = V(0, 0, 0);

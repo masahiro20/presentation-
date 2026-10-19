@@ -17,7 +17,8 @@ import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
-import { buildLandscape, type SiteInfo } from './landscape';
+import { buildLandscape, type SiteInfo, type LandscapePlan } from './landscape';
+import { buildExteriorLights } from './interiorLights';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions } from '../styles/presets';
@@ -51,6 +52,8 @@ export interface SceneState {
   meta: BuildingMeta;
   roof: RoofInfo;
   site: SiteInfo;
+  /** 外構の配置（植栽・舗装・車。夜景の照明や平面図に使う） */
+  plan: LandscapePlan;
   lights: LightPoint[];
   occupancy: Map<string, Footprint[]>;
 }
@@ -740,7 +743,7 @@ export class Viewer {
         m.renderOrder = 2;
       }
     });
-    this.state = { model, meta, roof: roof.info, site: land.site, lights: fur.lights, occupancy: fur.occupancy };
+    this.state = { model, meta, roof: roof.info, site: land.site, plan: land.plan, lights: fur.lights, occupancy: fur.occupancy };
     this.fitShadow();
     this.updateInteriorLights();
     this.updateEnvironment();
@@ -956,12 +959,16 @@ export class Viewer {
     this.envRT = this.pmrem.fromEquirectangular(this.skyTex);
     this.scene.environment = this.envRT.texture;
     this.scene.background = this.skyTex;
-    this.scene.environmentIntensity = mode === 'night' ? 0.28 : 0.66;
-    this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : 1.0;
-    // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）
-    const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : '#cfd6dc';
-    if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(fogCol, 0.0024);
-    else (this.scene.fog as THREE.FogExp2).color.set(fogCol);
+    this.scene.environmentIntensity = mode === 'night' ? 0.28 : mode === 'morning' ? 0.6 : 0.66;
+    this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
+    // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）。朝は靄が濃い
+    const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : mode === 'morning' ? '#e3e2e6' : '#cfd6dc';
+    const fogD = mode === 'morning' ? 0.0036 : 0.0024;
+    if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(fogCol, fogD);
+    else {
+      (this.scene.fog as THREE.FogExp2).color.set(fogCol);
+      (this.scene.fog as THREE.FogExp2).density = fogD;
+    }
     this.dirty = true;
   }
 
@@ -1113,25 +1120,32 @@ export class Viewer {
     return { key: m.name || h.object.name, point: h.point.toArray().map((v) => Math.round(v * 1000)), n: n ? n.toArray().map((v) => Math.round(v * 10) / 10) : null } as never;
   }
 
-  /** 室内照明（夜景時は点光源、昼は弱い補助光で室内の暗さを緩和） */
+  /** 室内照明（夕景・夜景は点光源＋外部の照明、昼は弱い補助光で室内の暗さを緩和） */
   updateInteriorLights() {
     clearGroup(this.groups.lights);
     if (!this.state) return;
-    const night = this.design.timeOfDay === 'night';
+    const tod = this.design.timeOfDay;
+    const night = tod === 'night' || tod === 'evening';
     const kelvin = interiorFor(this.design).lightKelvin;
     const col = kelvinToColor(kelvin);
     const used = new Set<string>();
+    const dim = tod === 'evening' ? 0.75 : 1;
     for (const l of this.state.lights) {
       const key = `${l.roomId}:${l.kind}`;
       if (!night && used.has(key)) continue;
       used.add(key);
-      const intensity = night ? (l.kind === 'ceiling' ? 6 : l.kind === 'pendant' ? 3 : 1.2) : l.kind === 'ceiling' ? 2.2 : 0;
+      const intensity = night ? (l.kind === 'ceiling' ? 6 * dim : l.kind === 'pendant' ? 3 * dim : 1.2 * dim) : l.kind === 'ceiling' ? 2.2 : 0;
       if (intensity <= 0) continue;
       const p = new THREE.PointLight(night ? col : new THREE.Color('#fff6ea'), intensity, night ? 7 : 7, night ? 1.6 : 1.0);
       p.position.copy(l.pos);
       // 昼は部屋の中ほどに置いて天井・壁・床をまんべんなく照らす（間接光の近似）
       if (l.kind === 'ceiling') p.position.y -= night ? 0.3 : 1.2;
       this.groups.lights.add(p);
+    }
+    // 外部の照明（ポーチ・植栽のアップライト・フットライト）。室内の灯りは上で点けているので外す
+    if (night) {
+      const ext = buildExteriorLights({ meta: this.state.meta, plan: this.state.plan, lights: [], mode: tod, skyE: 1, lampColor: col, physical: false });
+      this.groups.lights.add(ext);
     }
     this.dirty = true;
   }

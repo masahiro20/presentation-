@@ -731,7 +731,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
       fabric: { pattern: 'fabric', color: '#4a4a4a', roughness: 0.95 },
       fabric2: { pattern: 'fabric', color: '#9a968e', roughness: 0.95 },
       metal: '#1c1c1c',
-      counter: { pattern: 'stone', color: '#dcdad5', color2: '#d0cec8', roughness: 0.35, size: 3.2 },
+      counter: { pattern: 'marble', color: '#d9d7d2', color2: '#cdcbc5', roughness: 0.3, size: 3.2, size2: 3.2 },
       cabinet: { pattern: 'paint', color: '#e6e4df', roughness: 0.5 },
       rug: { pattern: 'fabric', color: '#6a675f', roughness: 1 },
     },

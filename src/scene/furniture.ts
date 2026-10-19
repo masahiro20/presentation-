@@ -49,13 +49,16 @@ export interface PlanItem {
 let currentPlan: PlanItem[] | null = null;
 
 /** 実物の 3D モデル（Poly Haven・CC0。public/models）を置く位置 */
+export type ModelId = 'potted_plant_02' | 'potted_plant_04' | 'modern_arm_chair_01' | 'coffee_table_round_01' | 'side_table_01' | 'ceramic_vase_01' | 'modern_ceiling_lamp_01';
 export interface ModelPlacement {
-  id: 'potted_plant_02' | 'modern_arm_chair_01';
+  id: ModelId;
   pos: V3;
   /** Y 軸まわりの回転（ラジアン） */
   rotY: number;
   /** 目標の高さ (m)。モデルの大きさから倍率を決める */
   height: number;
+  /** 'top' = 上端を pos に合わせる（天井から吊るペンダント）。既定は底面 */
+  anchor?: 'top' | 'bottom';
 }
 let currentModels: ModelPlacement[] = [];
 let currentRoomId = '';
@@ -570,9 +573,22 @@ function sofa(fr: Frame, u: number, v: number, w: number) {
   for (let i = 0; i < n; i++) fr.box('f.fabric', u - w / 2 + sw * (i + 0.5), v + 0.16, sw - 0.06, 0.16, 0.42, 0.34);
   fr.box('f.fabric2', u - w / 2 + 0.35, v + 0.3, 0.42, 0.12, 0.42, 0.36);
   fr.box('f.fabric2', u + w / 2 - 0.55, v + 0.3, 0.38, 0.12, 0.42, 0.32);
+  // ソファ脇のサイドテーブル（オークの箱型・実物モデル）と、その上の器
+  const sp = fr.point(u + w / 2 + 0.32, v + 0.35, 0);
+  currentModels.push({ id: 'side_table_01', pos: sp, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.5 });
+  currentModels.push({ id: 'ceramic_vase_01', pos: sp.clone().setY(sp.y + 0.5), rotY: 0.7, height: 0.2 });
+  if (currentPlan) currentPlan.push({ key: 'f.wood', shape: 'box', cx: sp.x, cz: sp.z, w: 0.45, d: 0.45, ax: fr.along.x, az: fr.along.z, r: 0, top: 0.5, roomId: currentRoomId });
+  if (currentOcc) currentOcc.push({ minX: sp.x - 0.25, maxX: sp.x + 0.25, minZ: sp.z - 0.25, maxZ: sp.z + 0.25, maxY: 0.5 });
 }
 
 function coffeeTable(fr: Frame, u: number, v: number) {
+  // 実物のローテーブル（大理石の丸天板・スチール脚）と、その上の陶器の花器。読み込めない環境では下の簡易形状
+  const p = fr.point(u, v + 0.3, 0);
+  currentModels.push({ id: 'coffee_table_round_01', pos: p, rotY: 0.3, height: 0.4 });
+  currentModels.push({ id: 'ceramic_vase_01', pos: p.clone().setY(p.y + 0.4).addScaledVector(fr.along, 0.18), rotY: 1.1, height: 0.26 });
+  if (currentPlan) currentPlan.push({ key: 'f.counter', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.48, top: 0.4, roomId: currentRoomId });
+  if (currentOcc) currentOcc.push({ minX: p.x - 0.5, maxX: p.x + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5, maxY: 0.4 });
+  if (modelsAvailable) return;
   // 低い石の天板（トラバーチン調）を、ひと回り小さい台座で浮かせる
   fr.box('f.counter', u, v, 1.1, 0.55, 0.28, 0.06);
   fr.box('f.counter', u, v + 0.08, 0.8, 0.39, 0, 0.28);
@@ -591,7 +607,8 @@ function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
 export function plant(fr: Frame, u: number, v: number, scale = 1) {
   // 実物の観葉植物モデル（読み込めない環境では下の簡易形状）
   const p = fr.point(u, v, 0);
-  currentModels.push({ id: 'potted_plant_02', pos: p, rotY: Math.sin(u * 12.9898 + v * 4.1) * Math.PI, height: 1.15 * scale });
+  const alt = (Math.sin(p.x * 7.3 + p.z * 3.1) + 1) * 0.5 > 0.55;
+  currentModels.push({ id: alt ? 'potted_plant_04' : 'potted_plant_02', pos: p, rotY: Math.sin(u * 12.9898 + v * 4.1) * Math.PI, height: (alt ? 0.95 : 1.15) * scale });
   if (currentPlan) currentPlan.push({ key: 'f.pot', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.3 * scale, top: 1, roomId: currentRoomId });
   if (modelsAvailable) return;
   fr.cyl('f.pot', u, v, 0.17 * scale, 0, 0.35 * scale, 14);
@@ -615,25 +632,39 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   const td = 0.9;
   fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
   for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
-  // 椅子: 細い木のフレームに布張りの座、低い背（Y チェア・CH 系のような軽い形）。長いテーブルは 3 脚ずつ
+  // 椅子: 丸脚の細いオークのフレームに、薄く丸みのある張り座と、ゆるく曲がった薄い背板（マルニ・カリモクの軽い木椅子の形）。長いテーブルは 3 脚ずつ
   const perSide = tw >= 2.3 ? 3 : 2;
   const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;
   const chairUs = perSide === 3 ? [-pitch, 0, pitch] : [-0.45, 0.45];
   for (const du of chairUs)
     for (const side of [-1, 1]) {
-      const cv = v + side * (td / 2 + 0.18);
-      fr.box('f.fabric2', u + du, cv - 0.22, 0.46, 0.44, 0.41, 0.05);
-      for (const lu of [-0.2, 0.2]) for (const lv of [-0.19, 0.19]) fr.box('f.wood', u + du + lu, cv + lv - 0.012, 0.024, 0.024, 0, 0.41);
-      fr.box('f.wood', u + du, cv + side * 0.2 - 0.012, 0.46, 0.024, 0.64, 0.05);
-      for (const lu of [-0.2, 0.2]) fr.box('f.wood', u + du + lu, cv + side * 0.2 - 0.012, 0.024, 0.024, 0.41, 0.28);
+      const cu = u + du;
+      const cv = v + side * (td / 2 + 0.2);
+      // 座（布）と座枠
+      fr.box('f.fabric2', cu, cv - 0.22, 0.43, 0.43, 0.42, 0.045);
+      fr.box('f.wood', cu, cv - 0.21, 0.41, 0.41, 0.395, 0.025);
+      // 丸脚（わずかに外へ開く）
+      for (const lu of [-0.17, 0.17]) for (const lv of [-0.17, 0.17]) fr.cyl('f.wood', cu + lu, cv + lv, 0.013, 0, 0.395, 10);
+      // 背: 2 本の丸い支柱と、薄い曲げ板
+      for (const lu of [-0.17, 0.17]) fr.cyl('f.wood', cu + lu, cv + side * 0.17, 0.012, 0.395, 0.32, 10);
+      fr.box('f.wood', cu, cv + side * 0.17 - 0.012, 0.4, 0.024, 0.6, 0.12);
     }
-  // ペンダント: 黒い小さなドームを 3 灯（細いコード）
-  for (const du of [-0.55, 0, 0.55]) {
-    const y = 1.5;
-    fr.box('f.metal', u + du, v - 0.004, 0.006, 0.006, y + 0.16, ceilingY - y - 0.16);
-    fr.cyl('f.lampShade', u + du, v, 0.11, y, 0.16, 18);
-    fr.sphere('f.lamp', u + du, v, y + 0.01, 0.045);
-    lights.push({ pos: fr.point(u + du, v, y - 0.05), kind: 'pendant', roomId });
+  // ペンダント: 乳白ガラスの球（実物モデル）を 2〜3 灯、天井から細いロッドで吊る。読み込めない環境は黒い小さなドーム
+  const n = tw >= 2.3 ? 3 : 2;
+  const us = n === 3 ? [-0.62, 0, 0.62] : [-0.42, 0.42];
+  for (const du of us) {
+    const y = 1.52;
+    // 球の直径 ≈ モデルの高さ × 0.4。球が φ25cm ほどになる大きさにし、天井までは細いロッドでつなぐ
+    const mh = 0.62;
+    const top = y + mh - 0.02;
+    currentModels.push({ id: 'modern_ceiling_lamp_01', pos: fr.point(u + du, v, top), rotY: 0, height: mh, anchor: 'top' });
+    if (modelsAvailable && ceilingY > top + 0.02) fr.cyl('f.metal', u + du, v, 0.004, top, ceilingY - top, 8);
+    if (!modelsAvailable) {
+      fr.box('f.metal', u + du, v - 0.004, 0.006, 0.006, y + 0.16, ceilingY - y - 0.16);
+      fr.cyl('f.lampShade', u + du, v, 0.11, y, 0.16, 18);
+      fr.sphere('f.lamp', u + du, v, y + 0.01, 0.045);
+    }
+    lights.push({ pos: fr.point(u + du, v, y - 0.1), kind: 'pendant', roomId });
   }
 }
 

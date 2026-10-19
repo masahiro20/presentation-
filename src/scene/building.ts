@@ -772,15 +772,13 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
         const pL = fitsAt(-(width / 2 + 0.36)) ? 0.35 : 0;
         const pR = fitsAt(width / 2 + 0.36) ? 0.35 : 0;
         mb.box('int.shadowGap', pocket.clone().addScaledVector(dir, (pR - pL) / 2), dir, width + pL + pR, 0.004, 0.16);
-        // 両脇にまとめたドレープ（ひだを丸い縦の束で表現）
+        // 両脇にまとめたドレープ: 波打つ薄い布（正弦波の面）。硬い縦の束に見せない
         for (const side of [-1, 1]) {
-          const folds = 6;
-          const outside = fitsAt(side * (width / 2 + 0.03 + (folds - 1) * 0.058 + 0.04));
-          for (let k = 0; k < folds; k++) {
-            const u = outside ? side * (width / 2 + 0.03 + k * 0.058) : side * (width / 2 - 0.04 - k * 0.058);
-            const c = inner.clone().addScaledVector(dir, u).addScaledVector(outN, k % 2 ? 0.018 : -0.018);
-            mb.roundedBox('f.curtain', c.setY(fl + 0.012), dir, 0.07, ceil - fl - 0.02, 0.055, 0.026, 2);
-          }
+          const bundle = 0.34;
+          const outside = fitsAt(side * (width / 2 + 0.03 + bundle + 0.04));
+          const u0 = outside ? side * (width / 2 + 0.03) : side * (width / 2 - 0.04 - bundle);
+          const uStart = side > 0 || !outside ? Math.min(u0, u0 + side * bundle) : u0 - bundle;
+          curtainWave(mb, inner.clone().addScaledVector(dir, Math.min(uStart, uStart + bundle)), dir, outN, bundle, fl + 0.015, ceil - 0.012);
         }
         return;
       }
@@ -997,6 +995,29 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   }
 }
 
+/**
+ * 波打つ薄い布（カーテン）: 壁に沿う方向 dir に長さ len、正弦波（振幅 3.5cm・周期 11cm）で前後にうねる面を、両面で作る
+ */
+function curtainWave(mb: MeshBuilder, start: THREE.Vector3, dir: THREE.Vector3, outN: THREE.Vector3, len: number, y0: number, y1: number) {
+  const period = 0.11;
+  const amp = 0.035;
+  const n = Math.max(4, Math.round((len / period) * 6));
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i <= n; i++) {
+    const u = (len * i) / n;
+    const w = Math.sin((u / period) * Math.PI * 2) * amp;
+    pts.push(start.clone().addScaledVector(dir, u).addScaledVector(outN, w));
+  }
+  for (let i = 0; i < n; i++) {
+    const a = pts[i].clone().setY(y0);
+    const b = pts[i + 1].clone().setY(y0);
+    const c = pts[i + 1].clone().setY(y1);
+    const d = pts[i].clone().setY(y1);
+    mb.quad('f.curtain', a, b, c, d, dir, V(0, 1, 0));
+    mb.quad('f.curtain', b, a, d, c, dir, V(0, 1, 0));
+  }
+}
+
 /** 天井のダウンライト・間接照明 */
 function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
   const ceil = fl + f.ceilingHeight * MM;
@@ -1009,17 +1030,35 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
     const z0 = Math.min(...zs);
     const z1 = Math.max(...zs);
     if (spec.lighting === 'downlight') {
-      // 壁から 0.7m 以上離し、約 1.8m 間隔で均等配置
-      const nx = Math.max(1, Math.round((x1 - x0 - 1.4) / 1.8) + 1);
-      const nz = Math.max(1, Math.round((z1 - z0 - 1.4) / 1.8) + 1);
-      for (let i = 0; i < nx; i++)
-        for (let j = 0; j < nz; j++) {
-          const x = nx === 1 ? (x0 + x1) / 2 : x0 + 0.7 + ((x1 - x0 - 1.4) * i) / (nx - 1);
-          const z = nz === 1 ? (z0 + z1) / 2 : z0 + 0.7 + ((z1 - z0 - 1.4) * j) / (nz - 1);
-          if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) continue;
-          mb.cylinder('f.downlightRing', V(x, ceil - 0.004, z), 0.055, 0.003, 20);
-          mb.cylinder('f.downlight', V(x, ceil - 0.006, z), 0.042, 0.003, 20);
-        }
+      // 照明計画: 小さな（φ75）ダウンライトを 3 灯一列のまとまりにして点在させる（均等にばらまかない）。
+      // 小さな部屋・水まわりは 1 灯
+      const lamp = (x: number, z: number, rr: number) => {
+        if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) return;
+        mb.cylinder('f.downlightRing', V(x, ceil - 0.004, z), rr + 0.008, 0.003, 20);
+        mb.cylinder('f.downlight', V(x, ceil - 0.006, z), rr, 0.003, 20);
+      };
+      const W = x1 - x0;
+      const Dp = z1 - z0;
+      const small = ['bath', 'toilet', 'washroom', 'closet', 'storage', 'hall', 'entrance', 'corridor'].includes(r.type) || W * Dp < 7;
+      if (small) lamp((x0 + x1) / 2, (z0 + z1) / 2, 0.04);
+      else {
+        const alongX = W >= Dp;
+        const L = alongX ? W : Dp;
+        const S = alongX ? Dp : W;
+        const nL = Math.max(1, Math.round((L - 1.0) / 2.7));
+        const nS = S >= 4.6 ? 2 : 1;
+        for (let i = 0; i < nL; i++)
+          for (let j = 0; j < nS; j++) {
+            const cL = nL === 1 ? L / 2 : 0.9 + ((L - 1.8) * i) / (nL - 1);
+            const cS = nS === 1 ? S / 2 : 0.9 + ((S - 1.8) * j) / (nS - 1);
+            for (const k of [-1, 0, 1]) {
+              const a = cL + k * 0.3;
+              const x = alongX ? x0 + a : x0 + cS;
+              const z = alongX ? z0 + cS : z0 + a;
+              lamp(x, z, 0.0375);
+            }
+          }
+      }
     } else if (!['bath', 'toilet'].includes(r.type)) {
       mb.cylinder('f.lampShade', V((x0 + x1) / 2, ceil - 0.08, (z0 + z1) / 2), 0.28, 0.08, 28);
     }

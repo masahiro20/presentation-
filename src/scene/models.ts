@@ -70,7 +70,9 @@ export async function placeModels(list: ModelPlacement[], group: THREE.Group, is
     // 底面の中心を置き場所に（回転の中心も置き場所）
     const pivot = new THREE.Group();
     pivot.position.copy(pl.pos);
-    o.position.set(-c.x * k, pl.pos.y - box.min.y * k - pl.pos.y, -c.z * k);
+    // 天井から吊るもの（ペンダント）は上端を置き場所に合わせる
+    const yOff = pl.anchor === 'top' ? -box.max.y * k : -box.min.y * k;
+    o.position.set(-c.x * k, yOff, -c.z * k);
     pivot.rotation.y = pl.rotY;
     o.rotation.y = 0;
     pivot.add(o);

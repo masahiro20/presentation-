@@ -5,3 +5,4 @@
 - kloofendal_48d_partly_cloudy_puresky_2k.hdr — 昼
 - belfast_sunset_puresky_2k.hdr — 夕景
 - kloppenheim_02_puresky_2k.hdr — 夜景
+- spruit_sunrise_2k.hdr — 朝（低い太陽・澄んだ空）

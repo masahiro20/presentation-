@@ -34,6 +34,8 @@ export interface FinishCategory {
 }
 
 const paint = (color: string, roughness = 0.55): MatSpec => ({ pattern: 'paint', color, roughness });
+/** セラミック天板（目地の無い大判。わずかな石目） */
+const ceramic = (color: string, color2: string): MatSpec => ({ pattern: 'marble', color, color2, roughness: 0.3, size: 3.2, size2: 3.2 });
 
 export const FINISH_CATEGORIES: FinishCategory[] = [
   {
@@ -156,9 +158,13 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     label: 'キッチン',
     part: '設備',
     products: [
-      { id: 'kitchen.hl.line.stone', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 グレー × 扉 グレージュ', swatch: ['#8e8c88', '#c9c3b8'], apply: (s) => { s.int.furniture.counter = { pattern: 'stone', color: '#8e8c88', color2: '#84827e', roughness: 0.35, size: 3.2 }; s.int.furniture.cabinet = paint('#c9c3b8', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
-      { id: 'kitchen.hl.line.white', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ホワイト × 扉 ホワイト', swatch: ['#dcdad5', '#e6e4df'], apply: (s) => { s.int.furniture.counter = { pattern: 'stone', color: '#dcdad5', color2: '#d0cec8', roughness: 0.35, size: 3.2 }; s.int.furniture.cabinet = paint('#e6e4df', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
-      { id: 'kitchen.hl.line.black', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ブラック × 扉 ブラック', swatch: ['#2c2c2c', '#303030'], apply: (s) => { s.int.furniture.counter = { pattern: 'stone', color: '#2c2c2c', color2: '#262626', roughness: 0.35, size: 3.2 }; s.int.furniture.cabinet = paint('#303030', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.stone', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 グレー × 扉 グレージュ', swatch: ['#8e8c88', '#c9c3b8'], apply: (s) => { s.int.furniture.counter = ceramic('#8e8c88', '#84827e'); s.int.furniture.cabinet = paint('#c9c3b8', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.white', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ホワイト × 扉 ホワイト', swatch: ['#dcdad5', '#e6e4df'], apply: (s) => { s.int.furniture.counter = ceramic('#dcdad5', '#d0cec8'); s.int.furniture.cabinet = paint('#e6e4df', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.hl.line.black', maker: 'ホームランディック', name: 'LINE キッチン ペニンシュラ', code: 'HL オリジナル W2550', color: 'セラミック天板 ブラック × 扉 ブラック', swatch: ['#2c2c2c', '#303030'], apply: (s) => { s.int.furniture.counter = ceramic('#2c2c2c', '#262626'); s.int.furniture.cabinet = paint('#303030', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
+      { id: 'kitchen.lixil.richelle', maker: 'LIXIL', name: 'リシェルSI ペニンシュラ I 型', code: 'W2585 セラミックトップ', color: 'グレースモーク × 扉 ウォールナット', swatch: ['#7d7b78', '#6e5542'], apply: (s) => { s.int.furniture.counter = ceramic('#7d7b78', '#747270'); s.int.furniture.cabinet = { pattern: 'wood', color: '#6e5542', color2: '#5c4535', roughness: 0.5 }; }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
+      { id: 'kitchen.panasonic.lclass', maker: 'パナソニック', name: 'Lクラス フラット対面', code: 'W2600 有機ガラス系ワークトップ', color: 'ホワイト × 扉 ライトグレー', swatch: ['#ecebe8', '#c6c5c1'], apply: (s) => { s.int.furniture.counter = { pattern: 'paint', color: '#ecebe8', roughness: 0.22 }; s.int.furniture.cabinet = paint('#c6c5c1', 0.45); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
+      { id: 'kitchen.cleanup.centro', maker: 'クリナップ', name: 'セントロ ペニンシュラ', code: 'W2550 ステンレスワークトップ', color: 'ステンレス × 扉 チャコール', swatch: ['#b9bbbd', '#3a3b3d'], apply: (s) => { s.int.furniture.counter = { pattern: 'paint', color: '#b9bbbd', roughness: 0.35, metalness: 0.9 }; s.int.furniture.cabinet = paint('#3a3b3d', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
+      { id: 'kitchen.graftekt', maker: 'グラフテクト', name: 'メルクリオ ペニンシュラ', code: 'W2600 エバルト（ラミネート）', color: 'ベトングレー × 扉 同色', swatch: ['#9a9893', '#9a9893'], apply: (s) => { s.int.furniture.counter = { pattern: 'plaster', color: '#9a9893', color2: '#92908b', roughness: 0.45, normalStrength: 0.15 }; s.int.furniture.cabinet = paint('#9a9893', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, note: 'LINE キッチンと同等の金額として見積に載せます' },
       { id: 'kitchen.custom.oak', maker: '造作（家具工事）', name: '造作キッチン', code: 'オーク突板 ＋ ステンレスバイブレーション天板', color: 'オーク × ステンレス', swatch: ['#b9bbbd', '#c3a06f'], apply: (s) => { s.int.furniture.counter = { pattern: 'paint', color: '#b9bbbd', roughness: 0.35, metalness: 0.9 }; s.int.furniture.cabinet = { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 }; }, estimate: { group: 'kitchen', line: 'eq.kitchenCustom' } },
     ],
   },

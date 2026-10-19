@@ -51,7 +51,54 @@ export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps'> | null) 
   return Math.max(10, Math.round(riseMm / 200));
 }
 
-export function stairLayout(s: Stair, n = 14): StairLayout {
+/** 踏面の最小寸法 (mm)。これより浅くなる階段は、昇り口側へ延ばして勾配を緩める（鉄骨のストリップ階段の標準的な勾配） */
+export const MIN_TREAD = 240;
+
+/**
+ * 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
+ * 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
+ */
+export function stairRunExtended(s: Stair, n: number): Stair {
+  const F = stairFrame(s);
+  const { Ls, Lt } = F;
+  let need = 0;
+  if (s.kind === 'straight') need = MIN_TREAD * n - Ls;
+  else if (s.kind === 'u') {
+    const land = Math.min(Ls * 0.4, Lt / 2);
+    const n1 = Math.floor(n / 2);
+    const n2 = n - n1 - 1;
+    const run = Ls - land;
+    const want = MIN_TREAD * Math.max(n1, n2);
+    // 延ばすと踊り場も少し伸びる（land = 0.4Ls のとき）ので、その分を見込む
+    need = want > run ? (want - run) / (Ls * 0.4 < Lt / 2 ? 0.6 : 1) : 0;
+  } else {
+    const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+    const len1 = Math.max(0, Ls - fw);
+    const len2 = Math.max(0, Lt - fw);
+    const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round(((n - 1) * len1) / Math.max(1, len1 + len2))));
+    need = MIN_TREAD * n1 - len1;
+  }
+  if (need <= 10) return s;
+  const ext = Math.min(need, 1500);
+  const o = { ...s };
+  switch (s.entry) {
+    case 'n':
+      o.minY -= ext;
+      break;
+    case 's':
+      o.maxY += ext;
+      break;
+    case 'w':
+      o.minX -= ext;
+      break;
+    default:
+      o.maxX += ext;
+  }
+  return o;
+}
+
+export function stairLayout(s0: Stair, n = 14): StairLayout {
+  const s = stairRunExtended(s0, n);
   const F = stairFrame(s);
   const P = (sv: number, tv: number) => ({ x: F.o.x + F.u.x * sv + F.r.x * tv, y: F.o.y + F.u.y * sv + F.r.y * tv });
   const rect = (s0: number, s1: number, t0: number, t1: number) => {

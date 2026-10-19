@@ -1,4 +1,4 @@
-import { h, clear, toast, progressModal, section, field } from '../dom';
+import { h, clear, toast, progressModal, section, field, segmented } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
@@ -322,6 +322,35 @@ function renderResult(ctx: StepCtx) {
         }) as HTMLInputElement),
       ),
       northVal,
+      // 道路に面する辺（図面に書かれていない・違うときは手で指定。外観パース・外構・日照の道路側に使う）
+      (() => {
+        const cur = model.site?.roads.find((r) => r.source === 'manual')?.side ?? (model.site?.roads.length ? 'auto' : 'auto');
+        const read = model.site?.roads.filter((r) => r.source !== 'manual') ?? [];
+        const lbl = read.length ? `図面から: ${read.map((r) => PLAN_SIDE_LABEL[r.side].replace('図面の', '')).join('・')}` : '図面から読み取れませんでした（玄関の向きで仮に決めます）';
+        return h(
+          'div',
+          { class: 'field', style: 'margin-top:10px' },
+          h('span', { class: 'field-label' }, '道路に面する辺（手で指定）'),
+          segmented<'auto' | 'top' | 'bottom' | 'left' | 'right'>(
+            [
+              { value: 'auto', label: '自動' },
+              { value: 'top', label: '上' },
+              { value: 'bottom', label: '下' },
+              { value: 'left', label: '左' },
+              { value: 'right', label: '右' },
+            ],
+            cur as 'auto' | 'top' | 'bottom' | 'left' | 'right',
+            (val) => {
+              if (!model.site) model.site = { roads: [], bounds: {} };
+              model.site.roads = model.site.roads.filter((r) => r.source !== 'manual');
+              if (val !== 'auto') model.site.roads.unshift({ side: val, source: 'manual', label: '手入力' });
+              emit('model');
+              drawPlans();
+            },
+          ),
+          h('span', { class: 'hint' }, lbl),
+        );
+      })(),
       h(
         'div',
         { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px' },

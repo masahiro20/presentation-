@@ -7,23 +7,10 @@
  *
  * リポジトリ直下の .mcp.json にも同じ設定があるので、Claude Code でこのフォルダを開くとそのまま使える。
  */
-import { createRequire } from 'node:module';
-import path from 'node:path';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { createMcpServer } from '../src/mcp/server';
-import { createContext } from '../src/mcp/tools';
+import { createMcpServer, createNodeContext } from '../src/mcp/node';
 
-const require = createRequire(import.meta.url);
-const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
-
-const ctx = createContext({
-  pdfjs: pdfjs as never,
-  pdfOptions: {
-    cMapUrl: path.join(pdfjsDir, 'cmaps') + '/',
-    standardFontDataUrl: path.join(pdfjsDir, 'standard_fonts') + '/',
-    wasmUrl: path.join(pdfjsDir, 'wasm') + '/',
-  },
-});
+const ctx = createNodeContext(pdfjs as never, import.meta.url);
 const server = createMcpServer(ctx);
 
 const log = (...a: unknown[]) => process.stderr.write(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n');

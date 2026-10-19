@@ -8,22 +8,11 @@
  * リクエスト本文は Vercel の上限（4.5 MB）に収まる必要があるので、大きな PDF は pdf_url で渡す。
  * サーバーのインスタンスは入れ替わるので、model_id は同じインスタンスの間だけ有効（include_model: true で model を受け取れば続きができる）。
  */
-import { createRequire } from 'node:module';
-import path from 'node:path';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { createMcpServer, SERVER_INFO } from '../src/mcp/server';
-import { createContext } from '../src/mcp/tools';
+// src/ を束ねた ESM（npm run build:mcp で作る。Vercel の関数は TypeScript の src/ を直接読めない）
+import { createMcpServer, createNodeContext, SERVER_INFO } from './_bundle/mcp-core.mjs';
 
-const require = createRequire(import.meta.url);
-const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
-
-const ctx = createContext({
-  pdfjs: pdfjs as never,
-  pdfOptions: {
-    cMapUrl: path.join(pdfjsDir, 'cmaps') + '/',
-    standardFontDataUrl: path.join(pdfjsDir, 'standard_fonts') + '/',
-  },
-});
+const ctx = createNodeContext(pdfjs as never, import.meta.url);
 const server = createMcpServer(ctx);
 
 interface Req {

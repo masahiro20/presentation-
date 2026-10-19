@@ -10,7 +10,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["vite/client", "node"]
+    "types": ["vite/client", "node"],
+    "paths": { "#mcp-node": ["./src/mcp/node.ts"] }
   },
   "include": ["src", "tests", "scripts", "api", "vite.config.ts"]
 }

@@ -2,7 +2,7 @@
   "functions": {
     "api/mcp.ts": {
       "maxDuration": 60,
-      "includeFiles": "node_modules/pdfjs-dist/{cmaps,standard_fonts}/**"
+      "includeFiles": "node_modules/pdfjs-dist/**"
     }
   }
 }

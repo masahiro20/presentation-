@@ -5,6 +5,7 @@ import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
 import type { SeasonResult, SunHighlight } from '../sun/report';
 import type { ExternalBuilding } from './externalFit';
 import type { SunDisclosure } from './sunDisclosure';
+import type { EstimateState } from './steps/estimateStep';
 
 export interface GalleryItem {
   id: string;
@@ -52,6 +53,8 @@ export interface ProjectState {
   render: { samples: number; width: number; height: number };
   /** 設計の 3D データ（3DS など）で置き換えた正確な建物（日照ステップ）。無ければ null */
   external: ExternalBuilding | null;
+  /** 見積・資金計画（数量の上書き・仕様の選択・資金計画の入力） */
+  estimate: EstimateState | null;
 }
 
 export const state: ProjectState = {
@@ -69,6 +72,7 @@ export const state: ProjectState = {
   videos: [],
   render: { samples: 512, width: 1920, height: 1080 },
   external: null,
+  estimate: null,
 };
 
 type Handler = (payload?: unknown) => void;

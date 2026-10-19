@@ -685,3 +685,107 @@ body.theme-atelier .side-tabs { background: var(--panel); }
 .segmented { flex-wrap: wrap; }
 .hint-fold { margin-top: 8px; }
 .hint-fold summary { font-size: 12px; color: var(--ink3, #8b9098); cursor: pointer; letter-spacing: 0.06em; }
+
+/* ---- 見積・資金計画 ---- */
+.est-view { position: absolute; inset: 0; overflow: auto; padding: 24px; background: #cfccc5; }
+.est-sheet { background: #fff; color: #1e1e1e; width: 210mm; min-height: 297mm; margin: 0 auto 24px; padding: 16mm 14mm; box-shadow: 0 6px 24px rgba(0,0,0,0.18); font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif; font-size: 10.5pt; line-height: 1.5; box-sizing: border-box; }
+.est-sheet.funding { width: 297mm; min-height: 210mm; padding: 10mm 12mm; font-size: 8pt; }
+.est-title { text-align: center; font-size: 20pt; letter-spacing: 0.4em; margin: 4mm 0 10mm; font-family: 'Shippori Mincho', serif; }
+.est-title.small { font-size: 14pt; margin: 0 0 6mm; }
+.est-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8mm; }
+.est-to .name { font-size: 14pt; border-bottom: 1px solid #333; padding-bottom: 2mm; margin-bottom: 2mm; }
+.est-to .sub { font-size: 9.5pt; color: #444; }
+.est-from { text-align: right; font-size: 9.5pt; }
+.est-from .co { font-size: 11pt; margin: 1mm 0; }
+.est-summary-head { border-collapse: collapse; width: 100%; margin-bottom: 8mm; }
+.est-summary-head th { text-align: left; width: 28mm; font-weight: 500; color: #555; padding: 1.6mm 2mm; border-bottom: 1px solid #ddd; }
+.est-summary-head td { padding: 1.6mm 2mm; border-bottom: 1px solid #ddd; }
+.est-summary-head td.big { font-size: 16pt; font-weight: 600; }
+.est-table { border-collapse: collapse; width: 100%; }
+.est-table th, .est-table td { border: 1px solid #c9c7c2; padding: 1.4mm 2mm; vertical-align: top; }
+.est-table th { background: #f1efea; font-weight: 500; text-align: left; }
+.est-table .amt { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.est-table .no { width: 8mm; text-align: right; color: #777; }
+.est-table .qty { text-align: right; width: 16mm; font-variant-numeric: tabular-nums; }
+.est-table .unit { width: 10mm; }
+.est-table .sel { width: 5mm; text-align: center; padding: 0; }
+.est-table .spec { width: 30mm; color: #444; }
+.est-table.summary td { padding: 2.2mm 2mm; }
+.est-table.summary tfoot td { background: #faf9f6; }
+.est-table.summary tr.total td { font-weight: 600; font-size: 11.5pt; }
+.est-table.detail { margin-bottom: 6mm; font-size: 8.5pt; }
+.est-table.detail tr.cat th { background: #2b2b2b; color: #fff; font-size: 9.5pt; }
+.est-table.detail tr.off td { color: #aaa; }
+.est-table.detail tr.off td.desc { text-decoration: line-through; text-decoration-color: #ccc; }
+.est-table.detail .qn { color: #8a7a4a; font-size: 7.5pt; margin-left: 1mm; }
+.est-table.detail input.qty-in { width: 16mm; text-align: right; font: inherit; border: 1px solid #ccc; border-radius: 3px; padding: 0 1mm; }
+.est-table.detail tr.add td { background: #fbfaf7; }
+.est-note { margin-top: 8mm; font-size: 8.5pt; color: #666; }
+.linkbtn { appearance: none; background: none; border: 0; color: #4a6b8a; cursor: pointer; font: inherit; padding: 0 2px; }
+/* 資金計画書 */
+.fp-head { display: flex; align-items: baseline; gap: 8mm; border-bottom: 2px solid #222; padding-bottom: 2mm; margin-bottom: 3mm; }
+.fp-title { font-size: 13pt; font-family: 'Shippori Mincho', serif; letter-spacing: 0.1em; }
+.fp-series { font-size: 10pt; border: 1px solid #222; padding: 0 2mm; }
+.fp-site { margin-left: auto; font-size: 8pt; }
+.fp-site span { color: #666; margin-right: 2mm; }
+.fp-grid { display: grid; grid-template-columns: 1.05fr 1.05fr 1fr; gap: 4mm; }
+.fp-block { border-collapse: collapse; width: 100%; margin-bottom: 3mm; }
+.fp-block th { background: #e9e6df; text-align: left; padding: 1.2mm 2mm; border: 1px solid #bbb; font-weight: 600; }
+.fp-block td { border: 1px solid #ccc; padding: 1mm 1.5mm; }
+.fp-block td.lbl { width: 60%; }
+.fp-block td.lbl .note { color: #888; font-size: 7pt; margin-left: 1mm; }
+.fp-block td.amt { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fp-block td.yen { width: 5mm; color: #666; }
+.fp-block tr.tot td { background: #f6f4ef; font-weight: 500; }
+.fp-block tr.tot.strong td { background: #ebe7dd; font-weight: 700; }
+.fp-block.grand tr.tot td { background: #2b2b2b; color: #fff; font-size: 10pt; font-weight: 700; }
+.fp-col.notes { font-size: 7.2pt; color: #333; }
+.fp-flags { display: flex; flex-wrap: wrap; gap: 1mm 3mm; margin-bottom: 2mm; }
+.fp-flags span { border: 1px solid #ccc; border-radius: 3px; padding: 0 1.5mm; }
+.fp-notes-title { font-weight: 700; margin: 2mm 0 1mm; border-left: 3px solid #2b2b2b; padding-left: 1.5mm; }
+.fp-notes { margin: 0; padding-left: 4mm; }
+.fp-notes li { margin: 0 0 0.6mm; }
+.fp-bottom { display: grid; grid-template-columns: 1.6fr 1fr; gap: 4mm; margin-top: 2mm; border-top: 1px solid #999; padding-top: 2mm; }
+.spec-cols { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr; gap: 2mm; }
+.spec-h { font-weight: 600; border-bottom: 1px solid #999; margin-bottom: 1mm; }
+.spec-col { list-style: none; margin: 0; padding: 0; }
+.spec-col li { display: flex; gap: 1mm; color: #999; }
+.spec-col li.on { color: #111; }
+.spec-col .dot { width: 3mm; flex: none; }
+.fp-loan { border-collapse: collapse; width: 100%; }
+.fp-loan th, .fp-loan td { border: 1px solid #ccc; padding: 1mm 1.5mm; }
+.fp-loan th { background: #e9e6df; font-weight: 500; }
+.fp-loan td.amt { text-align: right; }
+.fp-sign { display: flex; gap: 6mm; margin-top: 3mm; justify-content: flex-end; }
+/* パネル */
+.est-total-card { background: #1f1f1f; color: #fff; border-radius: 10px; padding: 14px 16px; margin: 6px 0 12px; }
+.est-total-card .k { font-size: 11px; letter-spacing: 0.1em; opacity: 0.75; }
+.est-total-card .v { font-size: 26px; font-weight: 600; letter-spacing: 0.02em; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.est-total-card .s { font-size: 11.5px; opacity: 0.8; }
+.area-grid { display: flex; flex-direction: column; gap: 4px; }
+.area-group { font-size: 11px; letter-spacing: 0.1em; color: var(--ink3); margin: 10px 0 4px; }
+.area-row { display: grid; grid-template-columns: 1fr 76px 28px 18px; align-items: center; gap: 6px; font-size: 12.5px; }
+.area-row input { width: 100%; text-align: right; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.area-row input.changed { border-color: #b08a3a; background: #fff8e8; }
+.area-row .unit { color: var(--ink3); font-size: 11px; }
+.opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 12.5px; }
+.opt { display: flex; gap: 6px; align-items: center; }
+.group-list .field { margin-bottom: 8px; }
+.group-list select { width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.fund-form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fund-rows { display: flex; flex-direction: column; gap: 4px; }
+.fund-row { display: grid; grid-template-columns: 1fr 96px 16px; gap: 6px; align-items: center; font-size: 12px; }
+.fund-row input { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; min-width: 0; }
+.fund-row input[type=number] { text-align: right; }
+.fund-row .unit { color: var(--ink3); font-size: 11px; }
+.loan-row { display: grid; grid-template-columns: 1fr 64px 44px 56px; gap: 6px; align-items: center; font-size: 11.5px; margin-bottom: 4px; }
+.loan-row input { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; text-align: right; min-width: 0; }
+.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; margin-left: 6px; }
+@page estimate { size: A4 portrait; margin: 0; }
+@page fundingPage { size: A4 landscape; margin: 0; }
+@media print {
+  .est-view { position: static; padding: 0; background: #fff; overflow: visible; }
+  .est-sheet { box-shadow: none; margin: 0; page: estimate; break-after: page; }
+  .est-sheet.funding { page: fundingPage; }
+  .est-table .sel, .est-table.detail tr.add, .est-table.detail .qn { display: none !important; }
+}

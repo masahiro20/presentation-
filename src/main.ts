@@ -6,10 +6,11 @@ import { elevationStep } from './app/steps/elevationStep';
 import { sunStep } from './app/steps/sunStep';
 import { videoStep } from './app/steps/videoStep';
 import { presentStep } from './app/steps/presentStep';
+import { estimateStep } from './app/steps/estimateStep';
 import { state, emit } from './app/state';
 import { parsePdfInBrowser } from './parser/browser';
 
-const app = new App(document.getElementById('app')!, [importStep, designStep, elevationStep, sunStep, videoStep, presentStep]);
+const app = new App(document.getElementById('app')!, [importStep, designStep, elevationStep, sunStep, estimateStep, videoStep, presentStep]);
 (window as unknown as { app: App }).app = app;
 
 async function boot() {

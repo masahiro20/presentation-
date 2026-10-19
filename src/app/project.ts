@@ -30,6 +30,7 @@ export interface ProjectFile {
   plans: ProjectState['plans'];
   gallery: (Omit<GalleryItem, 'url'> & { url: string })[];
   sun: { seasons: ProjectState['sun']['seasons']; highlights: ProjectState['sun']['highlights']; diagramSvg?: string; images: { label: string; url: string }[] };
+  estimate?: ProjectState['estimate'];
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -80,6 +81,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     plans: state.plans,
     gallery,
     sun: { seasons: state.sun.seasons, highlights: state.sun.highlights, diagramSvg: state.sun.diagramSvg, images },
+    estimate: state.estimate,
   };
 }
 
@@ -102,6 +104,7 @@ export function applyProject(p: ProjectFile) {
   state.gallery = (p.gallery ?? []).map((g) => ({ ...g }));
   state.sun = { seasons: p.sun?.seasons ?? [], highlights: p.sun?.highlights ?? [], diagramSvg: p.sun?.diagramSvg, images: p.sun?.images ?? [] };
   state.videos = [];
+  state.estimate = p.estimate ?? null;
   emit('model');
   emit('project');
   emit('project-loaded');

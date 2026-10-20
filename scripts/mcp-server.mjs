@@ -8,6 +8,7 @@
  *
  * リポジトリ直下の .mcp.json にも同じ設定があるので、Claude Code でこのフォルダを開くとそのまま使える。
  */
+import '../api/_lib/pdfjs-polyfill.mjs';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { createMcpServer, createNodeContext } from '../api/_bundle/mcp-core.mjs';
 

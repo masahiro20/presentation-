@@ -8,6 +8,8 @@
  * リクエスト本文は Vercel の上限（4.5 MB）に収まる必要があるので、大きな PDF は pdf_url で渡す。
  * サーバーのインスタンスは入れ替わるので、model_id は同じインスタンスの間だけ有効（include_model: true で model を受け取れば続きができる）。
  */
+// pdf.js より先に読む（Vercel の関数には @napi-rs/canvas が無く、DOMMatrix が無いと pdf.js の読み込みが落ちる）
+import './_lib/pdfjs-polyfill.mjs';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 // src/ を束ねた ESM（npm run build:mcp で作る。Vercel の関数は TypeScript の src/ を直接読めない）
 import { createMcpServer, createNodeContext, SERVER_INFO } from './_bundle/mcp-core.mjs';

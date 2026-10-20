@@ -213,9 +213,9 @@ function mcpCard(): HTMLElement {
     cmd('Claude Code', `claude mcp add --transport http madori ${url}`),
     cmd('Codex CLI', `codex mcp add madori --url ${url}`),
     cmd('config.toml', `[mcp_servers.madori]\nurl = "${url}"`),
-    h('div', { class: 'mcp-group' }, h('b', null, 'リポジトリのフォルダで動かす（PDF をそのまま渡せる・Node.js が必要）')),
-    cmd('Claude Code', 'claude mcp add madori -- npx tsx scripts/mcp-server.ts'),
-    cmd('Codex CLI', 'codex mcp add madori -- npx tsx scripts/mcp-server.ts'),
+    h('div', { class: 'mcp-group' }, h('b', null, 'リポジトリのフォルダで動かす（Node.js だけで動く）')),
+    cmd('Claude Code', 'claude mcp add madori -- node scripts/mcp-server.mjs'),
+    cmd('Codex CLI', 'codex mcp add madori -- node scripts/mcp-server.mjs'),
     h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'ツール: parse_floor_plan（PDF/DXF → 間取り）・wood_check・floor_plan_svg・export_dxf・estimate・catalog・get_model。URL 接続では PDF は base64 か pdf_url で渡します（4.5 MB まで）。'),
     state.model
       ? h(

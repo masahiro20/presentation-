@@ -9,7 +9,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "samples": "python3 samples/generate_sample_plans.py",
-    "mcp": "tsx scripts/mcp-server.ts",
+    "mcp": "node scripts/mcp-server.mjs",
     "build:mcp": "vite build --config vite.mcp.config.ts"
   },
   "repository": {

@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "madori": {
-      "command": "npx",
-      "args": ["tsx", "scripts/mcp-server.ts"]
+      "command": "node",
+      "args": ["scripts/mcp-server.mjs"]
     }
   }
 }

@@ -193,9 +193,9 @@ url = "https://madori-presentation.vercel.app/api/mcp"
 **リポジトリのフォルダで動かす（ローカル・stdio）** — PDF をファイルのまま渡せ、読み取った間取り（model_id）をプロセスが生きている間ずっと覚えています。リポジトリ直下の `.mcp.json` があるので、Claude Code でこのフォルダを開くとそのまま使えます。
 
 ```bash
-npm install
-claude mcp add madori -- npx tsx scripts/mcp-server.ts
-codex mcp add madori -- npx tsx scripts/mcp-server.ts
+npm install          # 初回のみ。サーバーの中身（api/_bundle/mcp-core.mjs）は同梱済み。src を変えたら npm run build で作り直す
+claude mcp add madori -- node scripts/mcp-server.mjs
+codex mcp add madori -- node scripts/mcp-server.mjs
 npm run mcp        # 手で起動して確かめる（stdin に JSON-RPC を 1 行ずつ）
 ```
 
@@ -236,7 +236,7 @@ src/parser/     PDF → 建物モデル（壁・開口・部屋・階段・縮�
 src/scene/      3D 生成（建物・屋根・家具・外構・マテリアル・空・ビューア・パストレーサー・カメラ）
 src/styles/     テイストのプリセットと手続き的テクスチャ
 src/drawings/   立面図・清書平面図（SVG）
-src/mcp/        MCP サーバー（ツール定義と JSON-RPC。scripts/mcp-server.ts = stdio、api/mcp.ts = 本番 HTTP）
+src/mcp/        MCP サーバー（ツール定義と JSON-RPC。scripts/mcp-server.mjs = stdio、api/mcp.ts = 本番 HTTP）
 src/sun/        太陽位置・地理情報・周辺環境・日照解析・レポート
 src/sunstudy/   日照シミュレーション（3D データ読み込み版）: 地図・地形・周辺建物・3DS 読み込み・シーン・解析・画面
 src/video/      カメラワークと動画書き出し

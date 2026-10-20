@@ -336,8 +336,8 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     const wins = windowsOf(model, ri.floor.level, room, y0);
     const center = new THREE.Vector3((R.minX + R.maxX) / 2, y0 + 1.1, (R.minZ + R.maxZ) / 2);
     let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3; mean: number } | null = null;
-    // 建築写真の広角（16:9 で水平約 80°、24mm 相当）。これ以上広げると端が間延びする
-    const vfov = aspect > 1.4 ? 52 : 60;
+    // 建築写真の広角より気持ち広め（16:9 で水平約 86°、20mm 相当）。部屋を広く見せつつ、端の間延びは抑える
+    const vfov = aspect > 1.4 ? 56 : 64;
     const halfH = Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect);
     // 候補位置: 部屋内の格子点（家具・扉の近くは除外）
     const cands: THREE.Vector3[] = [];

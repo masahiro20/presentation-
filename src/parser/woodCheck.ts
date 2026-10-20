@@ -5,10 +5,11 @@
  *  - 梁のスパンは 2 間（3,640）まで → 超える部屋は柱か大きな梁
  *  - 一面が窓ばかりの外壁は耐力壁が取れない
  *  - 出入口の無い部屋、上下階で位置の合わない階段、UB・便所の格子寸法
+ *  - 通れない幅（廊下・ホール・階段は柱芯 910 が最小）、幅 600 未満の戸、同じ場所に重なった壁
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
 import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
-import { distPointSegment } from '../core/geometry';
+import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
 
 /** 平面図に赤で示す位置（階ごと）。線は壁の区間、矩形は部屋・階段・内側の空間 */
@@ -63,6 +64,53 @@ function unsupportedSegments(w: Wall, below: Wall[]): { a: Vec2; b: Vec2 }[] {
     }
   }
   return out;
+}
+
+/**
+ * 部屋の一番狭い幅（芯々 mm）: 向かい合う平行な辺の距離の最小。L 字の廊下でも細い所を拾う。
+ * 戻り値はその幅と、位置を示す線（狭い辺）
+ */
+function narrowestWidth(poly: Vec2[]): { width: number; a: Vec2; b: Vec2 } | null {
+  let best: { width: number; a: Vec2; b: Vec2 } | null = null;
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 400) continue;
+    const ux = (b.x - a.x) / L;
+    const uy = (b.y - a.y) / L;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const c = poly[j];
+      const d = poly[(j + 1) % n];
+      const M = Math.hypot(d.x - c.x, d.y - c.y);
+      if (M < 400) continue;
+      const vx = (d.x - c.x) / M;
+      const vy = (d.y - c.y) / M;
+      // 平行で向かい合う（向きが逆）辺
+      if (ux * vx + uy * vy > -0.98) continue;
+      // 辺 i の中点が辺 j の範囲に入り、2 辺の重なりが 600 以上（通路らしい長さ）
+      const t = ((mx - c.x) * vx + (my - c.y) * vy) / M;
+      if (t < 0 || t > 1) continue;
+      const ta = (a.x - c.x) * vx + (a.y - c.y) * vy;
+      const tb = (b.x - c.x) * vx + (b.y - c.y) * vy;
+      const overlap = Math.min(M, Math.max(ta, tb)) - Math.max(0, Math.min(ta, tb));
+      if (overlap < 600) continue;
+      const dist = Math.abs((mx - c.x) * -vy + (my - c.y) * vx);
+      // 300 未満は通路ではなく輪郭の段差（框・壁の出入り）
+      if (dist < 300) continue;
+      // 間に他の辺が無い（中点どうしを結ぶ線の中央が多角形の内側）
+      const px = c.x + vx * M * t;
+      const py = c.y + vy * M * t;
+      const q = { x: (mx + px) / 2, y: (my + py) / 2 };
+      if (!pointInPolygon(q, poly)) continue;
+      if (!best || dist < best.width) best = { width: dist, a, b };
+    }
+  }
+  return best;
 }
 
 function bboxOf(poly: Vec2[]): { minX: number; minY: number; maxX: number; maxY: number } {
@@ -315,6 +363,111 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const marks: WoodMark[] = [{ level: f.level, rects: [{ minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }], label: `短辺 ${m(short)} m` }];
       if (r.type === 'bath' && short < 1700 && short > 0) out.push({ id: `ub-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`, detail: 'ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります', marks });
       if (r.type === 'toilet' && short < 800 && short > 0) out.push({ id: `wc-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(short)} m は便所として狭すぎます`, detail: '便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります', marks });
+    }
+  }
+  // (i) 通れない幅: 廊下・ホール・玄関・階段の一番狭い所と、部屋の幅（物入・収納は 455 でも成り立つので除く）
+  for (const f of floors) {
+    for (const r of f.rooms) {
+      if (['void', 'balcony', 'porch', 'garage', 'closet', 'storage', 'toilet', 'bath'].includes(r.type)) continue;
+      const nw = narrowestWidth(r.polygon);
+      if (!nw) continue;
+      const clear = nw.width - 130;
+      const passage = r.type === 'hall' || r.type === 'entrance' || r.type === 'stairs';
+      const mark: WoodMark = { level: f.level, lines: [{ a: nw.a, b: nw.b }], label: `幅 ${m(nw.width)} m（内法 約 ${m(Math.max(0, clear))} m）` };
+      if (passage && nw.width < 700) {
+        out.push({ id: `narrow-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(nw.width)} m では通れません`, detail: `柱芯 ${Math.round(nw.width)} だと内法は約 ${Math.round(Math.max(0, clear))} です。廊下は柱芯 910（内法 780）が最小で、車いすや家具の搬入を考えると 1,000 以上が目安です。壁の読み取りがずれているか、本当に狭い場合は間取りの見直しになります`, marks: [mark] });
+      } else if (passage && nw.width < 880) {
+        out.push({ id: `narrow-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 幅 ${m(nw.width)} m は少し狭い通路です`, detail: `内法が約 ${Math.round(clear)} で、910 モジュール（内法 780）より狭くなっています。格子（455）に乗らない幅なので、壁の読み取りのずれの可能性もあります。手すりを付けると更に 50 狭くなります`, marks: [mark] });
+      } else if (!passage && nw.width < 600 && r.area >= 1.2) {
+        out.push({ id: `narrow-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(nw.width)} m の部分は使えません`, detail: `柱芯 ${Math.round(nw.width)}（内法 約 ${Math.round(Math.max(0, clear))}）の細い部分があります。壁の読み取りがずれているか、余分な壁を読んでいる可能性があります。修正画面で確認してください`, marks: [mark] });
+      }
+    }
+  }
+
+  // (j) 戸の幅: 550 未満の戸は通れない（便所でも 650 以上）。記号の読み取りミスが多い
+  for (const f of floors) {
+    const storages = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage');
+    const segOf = (o: { wallId: string; t0: number; t1: number }) => {
+      const w = f.walls.find((x) => x.id === o.wallId);
+      if (!w) return null;
+      const L = len(w) || 1;
+      const at = (t: number) => ({ x: w.a.x + ((w.b.x - w.a.x) * t) / L, y: w.a.y + ((w.b.y - w.a.y) * t) / L });
+      return { a: at(o.t0), b: at(o.t1) };
+    };
+    // 物入・収納の戸（455 の片開き・折れ戸）は狭くても成り立つので除く
+    const intoStorage = (seg: { a: Vec2; b: Vec2 }) => {
+      const c = { x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 };
+      return storages.some((r) => r.polygon.some((p, i) => distPointSegment(c, p, r.polygon[(i + 1) % r.polygon.length]) <= 250));
+    };
+    const narrow = f.openings.filter((o) => {
+      if (o.kind === 'window' || o.kind === 'open' || o.t1 - o.t0 >= 550) return false;
+      const seg = segOf(o);
+      return !!seg && !intoStorage(seg);
+    });
+    if (!narrow.length) continue;
+    const lines = narrow.map(segOf).filter((x): x is { a: Vec2; b: Vec2 } => !!x);
+    out.push({
+      id: `door-${f.level}`,
+      level: f.level,
+      severity: 'warn',
+      title: `${f.level}階: 幅 0.55 m 未満の戸が ${narrow.length} か所`,
+      detail: `${narrow.map((o) => `${Math.round(o.t1 - o.t0)}`).join('・')} mm の戸があります。戸は便所でも 650 以上、居室は 750〜800 が標準です。戸の記号（円弧・引戸の線）を小さく読んだ可能性があります。修正画面で戸を置き直してください`,
+      marks: [{ level: f.level, lines, label: '狭い戸' }],
+    });
+  }
+
+  // (k) 二重の壁: 平行で近く（芯々 60〜230）、長さが重なる壁の組は、同じ壁を 2 回読んだ疑い
+  for (const f of floors) {
+    const dup: { keep: Wall; drop: Wall }[] = [];
+    const seen = new Set<string>();
+    for (const w of f.walls) {
+      const L = len(w);
+      if (L < 600) continue;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      for (const v of f.walls) {
+        if (v === w || seen.has(`${v.id}|${w.id}`)) continue;
+        const M = len(v);
+        if (M < 600) continue;
+        const vx = (v.b.x - v.a.x) / M;
+        const vy = (v.b.y - v.a.y) / M;
+        if (Math.abs(ux * vx + uy * vy) < 0.995) continue;
+        // 芯々の距離（v の中点から w の直線へ）
+        const mx = (v.a.x + v.b.x) / 2 - w.a.x;
+        const my = (v.a.y + v.b.y) / 2 - w.a.y;
+        const gap = Math.abs(mx * -uy + my * ux);
+        if (gap < 60 || gap > 230) continue;
+        // 長さの重なり
+        const t0 = Math.min((v.a.x - w.a.x) * ux + (v.a.y - w.a.y) * uy, (v.b.x - w.a.x) * ux + (v.b.y - w.a.y) * uy);
+        const t1 = Math.max((v.a.x - w.a.x) * ux + (v.a.y - w.a.y) * uy, (v.b.x - w.a.x) * ux + (v.b.y - w.a.y) * uy);
+        const ov = Math.min(L, t1) - Math.max(0, t0);
+        if (ov < 600 || ov < Math.min(L, M) * 0.6) continue;
+        // 両方が外壁（二重壁の納まり）は対象外。外壁と内壁なら内壁を、同じなら短い方を消す候補にする
+        if (w.exterior && v.exterior) continue;
+        seen.add(`${w.id}|${v.id}`);
+        const drop = w.exterior ? v : v.exterior ? w : L >= M ? v : w;
+        dup.push({ keep: drop === v ? w : v, drop });
+      }
+    }
+    if (dup.length) {
+      const ids = new Set(dup.map((d) => d.drop.id));
+      out.push({
+        id: `dup-${f.level}`,
+        level: f.level,
+        severity: 'warn',
+        title: `${f.level}階: 重なった壁が ${dup.length} 組`,
+        detail: '同じ場所に平行な壁が 2 本あります（芯々 60〜230）。壁の両面の線を別々の壁と読んだか、仕上げ線・巾木の線を壁と読んだ疑いがあります。3D では壁が厚く見えたり、隙間ができたりします',
+        marks: [{ level: f.level, lines: dup.map((d) => ({ a: d.drop.a, b: d.drop.b })), label: '重なった壁' }],
+        fix: {
+          label: '片方を消す',
+          apply: (mm) => {
+            const fl = mm.floors.find((x) => x.level === f.level);
+            if (!fl) return;
+            fl.walls = fl.walls.filter((w) => !ids.has(w.id));
+            fl.openings = fl.openings.filter((o) => !ids.has(o.wallId));
+          },
+        },
+      });
     }
   }
   return out;

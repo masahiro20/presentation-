@@ -474,7 +474,8 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
         const f = t < pk.t0 - 1.0 ? 0 : t < pk.t0 ? ease((t - (pk.t0 - 1.0)) / 1.0) : t <= pk.t1 ? 1 : t < pk.t1 + 1.2 ? 1 - ease((t - pk.t1) / 1.2) : 0;
         if (f > 0) doors.set(pk.id, Math.max(doors.get(pk.id) ?? 0, f));
       }
-      return { pos, target, fov: 55, fade, caption: cap?.text, doors };
+      // 歩く目線は気持ち広角（縦 60° = 16:9 で水平約 92°）。廊下や LDK が広く見える
+      return { pos, target, fov: 60, fade, caption: cap?.text, doors };
     },
   };
 }

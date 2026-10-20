@@ -1,4 +1,4 @@
-import { h, clear, toast, progressModal, section, field, segmented, fold, download } from '../dom';
+import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
@@ -8,8 +8,9 @@ import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { ROOM_TYPE_LABEL, type BuildingModel, type PlanSide, type RoomType } from '../../core/types';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
-import { woodCheck } from '../../parser/woodCheck';
-import { loadSymbolDict, type SymbolSignature } from '../../parser/symbolDict';
+import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
+import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
+import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto') {
   const pm = progressModal('平面図を解析しています', false);
@@ -159,14 +160,141 @@ export const importStep: Step = {
           field('事務所ロゴ（図面の表題欄・ヘッダー・シネマに入ります）', logoInput()),
           field('会社名・担当者', h('input', { type: 'text', value: state.company, placeholder: '〇〇ホーム 設計担当 〇〇', oninput: (e: Event) => (state.company = (e.target as HTMLInputElement).value) })),
         ),
+        dictCard(),
         mcpCard(),
       );
       return;
     }
     renderResult(ctx);
-    ctx.side.append(mcpCard());
+    ctx.side.append(dictCard(), mcpCard());
   },
 };
+
+/**
+ * 読み取りの辞書（御社の図面の家具・設備の記号）: 修正画面で直した答えを覚え、過去の図面からまとめて学習し、
+ * JSON で持ち運べる。初期辞書は御社の過去プランから同梱
+ */
+function dictCard(): HTMLElement {
+  const body = h('div');
+  const el = fold('読み取りの辞書（御社の図面の記号）', { open: false, meta: '', cls: 'dict-fold' }, body);
+  const render = () => {
+    clear(body);
+    const dict = loadSymbolDict();
+    const c = countDict(dict);
+    el.setMeta(`学習 ${c.user + c.bulk} 件・初期 ${c.seed} 件`);
+    const bulkInput = h('input', { type: 'file', accept: 'application/pdf,.pdf', multiple: true, style: 'display:none' }) as HTMLInputElement;
+    const jsonInput = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none' }) as HTMLInputElement;
+    bulkInput.addEventListener('change', async () => {
+      const files = Array.from(bulkInput.files ?? []);
+      if (!files.length) return;
+      const pm = progressModal('過去の図面から記号を学習しています', false);
+      let learned = 0;
+      let plans = 0;
+      try {
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          pm.set(i / files.length, `${i + 1}/${files.length} ${f.name}`);
+          try {
+            const data = new Uint8Array(await f.arrayBuffer());
+            (globalThis as { __symbolDict?: SymbolSignature[] }).__symbolDict = dict;
+            const model = await parsePdfInBrowser(data, { name: f.name });
+            if (!model.floors.length) continue;
+            plans++;
+            for (const fl of model.floors) {
+              for (const cand of fl.symbolCandidates ?? []) {
+                if (!cand.kind) continue;
+                const room = fl.rooms.find((r) => r.id === cand.roomId);
+                if (!room) continue;
+                learnSymbol(dict, signatureOf(room.type, cand.w, cand.h, cand.inner), cand.kind, 'bulk');
+                learned++;
+              }
+            }
+          } catch (e) {
+            console.warn('bulk learn failed', f.name, e);
+          }
+        }
+        saveSymbolDict(dict);
+        (globalThis as { __symbolDict?: SymbolSignature[] }).__symbolDict = dict;
+        toast(`${plans} 図面から ${learned} 件の記号を覚えました（規則で決まらない候補に使います）`, 'ok', 6000);
+      } finally {
+        pm.close();
+        render();
+      }
+    });
+    jsonInput.addEventListener('change', async () => {
+      const f = jsonInput.files?.[0];
+      if (!f) return;
+      try {
+        const n = importDict(dict, await f.text());
+        saveSymbolDict(dict);
+        (globalThis as { __symbolDict?: SymbolSignature[] }).__symbolDict = dict;
+        toast(`辞書を ${n} 件取り込みました`, 'ok');
+      } catch (e) {
+        toast(`取り込めませんでした: ${(e as Error).message}`, 'error');
+      }
+      render();
+    });
+    body.append(
+      h('p', { class: 'hint', style: 'margin:0 0 8px' }, '図面の長方形（部屋の種類×大きさ×中の線）が何の家具・設備だったかを覚える辞書です。修正画面で家具を直すと自動で覚え、次の図面から同じ形を同じ家具として読みます。'),
+      h(
+        'ul',
+        { class: 'dict-counts' },
+        h('li', null, h('b', null, `${c.user} 件`), ' 修正画面で覚えた答え（規則より優先）'),
+        h('li', null, h('b', null, `${c.bulk} 件`), ' 過去の図面から一括学習（規則で決まらない候補に使う）'),
+        h('li', null, h('b', null, `${c.seed} 件`), ` 同梱の初期辞書（御社の過去プラン ${SEED_PLANS} 図面から）`),
+      ),
+      h(
+        'div',
+        { class: 'btn-row', style: 'margin-top:8px' },
+        h('button', { class: 'btn sm', onclick: () => bulkInput.click() }, '過去の図面から一括学習（PDF を複数選択）'),
+        h(
+          'button',
+          {
+            class: 'btn sm',
+            onclick: () => {
+              const blob = new Blob([exportDict(dict)], { type: 'application/json' });
+              const u = URL.createObjectURL(blob);
+              download(u, 'madori-symbol-dict.json');
+              setTimeout(() => URL.revokeObjectURL(u), 10000);
+            },
+          },
+          '書き出し（JSON）',
+        ),
+        h('button', { class: 'btn sm', onclick: () => jsonInput.click() }, '取り込み（JSON）'),
+        h(
+          'button',
+          {
+            class: 'btn sm ghost',
+            disabled: c.user + c.bulk === 0,
+            onclick: () =>
+              modal('学習した辞書を消しますか', h('p', null, `修正画面で覚えた ${c.user} 件と一括学習の ${c.bulk} 件を消します（同梱の初期辞書は残ります）。`), [
+                {
+                  label: '消す',
+                  primary: true,
+                  onClick: () => {
+                    saveSymbolDict([]);
+                    (globalThis as { __symbolDict?: SymbolSignature[] }).__symbolDict = loadSymbolDict();
+                    toast('学習した辞書を消しました', 'ok');
+                    render();
+                  },
+                },
+                { label: 'やめる' },
+              ]),
+          },
+          '学習を消す',
+        ),
+      ),
+      bulkInput,
+      jsonInput,
+    );
+  };
+  render();
+  return el;
+}
+
+/** 初期辞書の元になった図面の数（symbolDictSeed.ts のコメントと同じ） */
+const SEED_PLANS = 23;
+void SYMBOL_DICT_SEED;
 
 /** この画面の URL から本番の MCP エンドポイントを出す（ローカル・file: のときは本番 URL） */
 function mcpEndpoint(): string {
@@ -216,7 +344,7 @@ function mcpCard(): HTMLElement {
     h('div', { class: 'mcp-group' }, h('b', null, 'リポジトリのフォルダで動かす（Node.js だけで動く）')),
     cmd('Claude Code', 'claude mcp add madori -- node scripts/mcp-server.mjs'),
     cmd('Codex CLI', 'codex mcp add madori -- node scripts/mcp-server.mjs'),
-    h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'ツール: parse_floor_plan（PDF/DXF → 間取り）・wood_check・floor_plan_svg・export_dxf・estimate・catalog・get_model。URL 接続では PDF は base64 か pdf_url で渡します（4.5 MB まで）。'),
+    h('p', { class: 'hint', style: 'margin:8px 0 0' }, 'ツール: parse_floor_plan（PDF/DXF → 間取り）・wood_check・floor_plan_svg・export_dxf・estimate・catalog・get_model。リポジトリで動かす版には render_views（3D パースを画像で返す。Chrome が必要）もあります。URL 接続では PDF は base64 か pdf_url で渡します（4.5 MB まで）。'),
     state.model
       ? h(
           'div',
@@ -316,11 +444,43 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
 function renderResult(ctx: StepCtx) {
   const model = state.model!;
   const view = h('div', { class: 'plan-view' });
+  // 木造チェックの「図面で見る」で赤表示する項目（state.plans には入れない: 資料・図面出力には載せない）
+  let shownIssue: WoodIssue | null = null;
   const drawPlans = () => {
     clear(view);
     state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
     state.sheets = [];
-    for (const p of state.plans) view.appendChild(h('div', { class: 'sheet', html: p.svg }));
+    if (shownIssue) {
+      view.appendChild(
+        h(
+          'div',
+          { class: 'plan-marks-banner' },
+          h('span', null, h('b', null, '赤表示: '), shownIssue.title),
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              onclick: () => {
+                shownIssue = null;
+                drawPlans();
+              },
+            },
+            '表示を消す',
+          ),
+        ),
+      );
+    }
+    for (const f of model.floors) {
+      const mk = shownIssue?.marks?.filter((x) => x.level === f.level) ?? [];
+      const svg = mk.length ? floorPlanSvg(model, f, { marks: mk }) : state.plans.find((p) => p.level === f.level)!.svg;
+      view.appendChild(h('div', { class: `sheet level-${f.level} ${mk.length ? 'marked' : ''}`, html: svg }));
+    }
+  };
+  const showMarks = (issue: WoodIssue | null) => {
+    shownIssue = issue;
+    drawPlans();
+    const lv = issue?.marks?.[0]?.level;
+    if (lv != null) view.querySelector(`.sheet.level-${lv}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   drawPlans();
   ctx.stage.appendChild(view);
@@ -361,11 +521,17 @@ function renderResult(ctx: StepCtx) {
     }, state.pdfName ?? '');
   };
   side.append(
-    checkCard(model, openEditor, () => northInput?.focus(), () => {
-      emit('model');
-      toast('読み取りを修正しました', 'ok');
-      ctx.app.go('import');
-    }),
+    checkCard(
+      model,
+      openEditor,
+      () => northInput?.focus(),
+      () => {
+        emit('model');
+        toast('読み取りを修正しました', 'ok');
+        ctx.app.go('import');
+      },
+      showMarks,
+    ),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn primary block', onclick: () => ctx.app.go('design') }, '3D パースを作成する →')),
     h(
       'div',
@@ -531,8 +697,8 @@ function numInput(v: number, onChange: (v: number) => void) {
  * 読み込み直後の確認カード: 階・玄関・方位・階段・部屋・窓ドアを一目で確認し、
  * 怪しい所は修正画面へ直接飛べるようにする
  */
-function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void): HTMLElement {
-  type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void } };
+function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void, showMarks: (issue: WoodIssue | null) => void): HTMLElement {
+  type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void }; action2?: { label: string; fn: () => void } };
   const rows: Row[] = [];
   const floors = model.floors;
   const multi = floors.length >= 2;
@@ -626,6 +792,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
             },
           }
         : { label: '修正画面で確認', fn: openEditor },
+      action2: it.marks?.length ? { label: '図面で見る', fn: () => showMarks(it) } : undefined,
     });
   }
 
@@ -641,7 +808,9 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
         h('span', { class: 'ic' }, r.ok === false ? '⚠' : r.ok === null ? 'ℹ' : '✓'),
         h('span', { class: 'lb' }, r.label),
         h('span', { class: 'dt' }, r.detail),
-        r.action ? h('button', { class: 'btn sm', onclick: r.action.fn }, r.action.label) : null,
+        r.action || r.action2
+          ? h('div', { class: 'check-actions' }, r.action ? h('button', { class: 'btn sm', onclick: r.action.fn }, r.action.label) : null, r.action2 ? h('button', { class: 'btn sm ghost', onclick: r.action2.fn }, r.action2.label) : null)
+          : null,
       ),
     ),
   );

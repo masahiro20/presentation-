@@ -76,7 +76,7 @@ export default defineConfig({
     target: 'es2022',
     chunkSizeWarningLimit: 4000,
     // 入口は 2 つ: 間取りプレゼン（index.html）と、3D データ読み込みの日照シミュレーション（sun.html）
-    rollupOptions: { input: { main: path.resolve(__dirname, 'index.html'), sun: path.resolve(__dirname, 'sun.html'), view: path.resolve(__dirname, 'view.html') } },
+    rollupOptions: { input: { main: path.resolve(__dirname, 'index.html'), sun: path.resolve(__dirname, 'sun.html'), view: path.resolve(__dirname, 'view.html'), render: path.resolve(__dirname, 'render.html') } },
   },
   worker: { format: 'es' },
   test: {

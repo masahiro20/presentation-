@@ -7,11 +7,11 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createMcpServer, SERVER_INFO, INSTRUCTIONS } from './server';
-import { createContext, TOOLS, summarizeModel } from './tools';
+import { createContext, TOOLS, summarizeModel, resolveModel, storeModel } from './tools';
 import type { McpContext } from './tools';
 import type { PdfjsLike } from '../parser';
 
-export { createMcpServer, SERVER_INFO, INSTRUCTIONS, createContext, TOOLS, summarizeModel };
+export { createMcpServer, SERVER_INFO, INSTRUCTIONS, createContext, TOOLS, summarizeModel, resolveModel, storeModel };
 export type { McpContext };
 
 /** pdfjs-dist の場所（CMap・標準フォント）。Vercel では /var/task/node_modules、ローカルでは require.resolve */

@@ -434,17 +434,18 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
   for (const [room, cands] of byRoom) {
     const t = room.type;
     const used = new Set<Cand>();
-    // 記号辞書: 同じ形（部屋の種類・大きさ・中身）に答えがあれば最優先
+    // 記号辞書（修正画面で覚えた答え）: 同じ形（部屋の種類・大きさ・中身）に答えがあれば規則より優先
+    const applyDict = (c: Cand, hit: FurnitureKind, note: string) => {
+      c.note = note;
+      used.add(c);
+      if (hit === 'kitchen') pushKitchen(c, cands, used);
+      else if (hit === 'bed') pushBed(c);
+      else if (hit === 'rug') push(c, 'rug', { w: +(c.L / 1000).toFixed(2), d: +(c.S / 1000).toFixed(2) });
+      else push(c, hit, { w: +(c.L / 1000).toFixed(2) });
+    };
     for (const c of cands) {
-      const hit = dict ? lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner)) : null;
-      if (hit) {
-        c.note = '辞書';
-        used.add(c);
-        if (hit === 'kitchen') pushKitchen(c, cands, used);
-        else if (hit === 'bed') pushBed(c);
-        else if (hit === 'rug') push(c, 'rug', { w: +(c.L / 1000).toFixed(2), d: +(c.S / 1000).toFixed(2) });
-        else push(c, hit, { w: +(c.L / 1000).toFixed(2) });
-      }
+      const hit = dict ? lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner), 'user') : null;
+      if (hit) applyDict(c, hit, '辞書');
     }
     const free = () => cands.filter((c) => !used.has(c) && !c.kind);
     const livingLike = t === 'ldk' || t === 'living' || t === 'dining' || t === 'kitchen' || t === 'japanese' || (t === 'other' && Math.abs(polygonArea(room.polygon)) >= 8e6);
@@ -680,6 +681,13 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
           used.add(c);
           push(c, 'washstand', { w: +(c.L / 1000).toFixed(2) });
         }
+      }
+    }
+    // 規則で決まらなかった候補は、一括学習・初期辞書（御社の過去プランで同じ形がいつも同じ答えだったもの）で埋める
+    if (dict) {
+      for (const c of free()) {
+        const hit = lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner), 'fallback');
+        if (hit) applyDict(c, hit, '辞書（過去の図面）');
       }
     }
     for (const c of cands) candidates.push({ id: c.rect.id, cx: Math.round(c.cx), cy: Math.round(c.cy), w: Math.round(c.w), h: Math.round(c.h), inner: c.rect.inner, arcs: ringsIn(c.rect).length, roomId: room.id, kind: (c.kind as string) === 'consumed' ? undefined : c.kind });

@@ -28,7 +28,7 @@ async function tool(name: string, args: Record<string, unknown>): Promise<ToolRe
   expect(res.error).toBeUndefined();
   return res.result as ToolResult;
 }
-const textOf = (r: ToolResult) => r.content.map((c) => c.text).join('');
+const textOf = (r: ToolResult) => r.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
 const jsonOf = (r: ToolResult) => JSON.parse(textOf(r));
 
 describe('MCP サーバー（JSON-RPC）', () => {

@@ -10,10 +10,12 @@
  */
 import '../api/_lib/pdfjs-polyfill.mjs';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { createMcpServer, createNodeContext } from '../api/_bundle/mcp-core.mjs';
+import { createMcpServer, createNodeContext, TOOLS, resolveModel } from '../api/_bundle/mcp-core.mjs';
+import { createRenderTool } from './mcp-render.mjs';
 
 const ctx = createNodeContext(pdfjs, import.meta.url);
-const server = createMcpServer(ctx);
+// render_views（3D パースの画像）はローカルだけ: 裏で Chrome を起動するので本番の関数には無い
+const server = createMcpServer(ctx, { tools: [...TOOLS, createRenderTool({ resolveModel })] });
 
 const log = (...a) => process.stderr.write(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n');
 

@@ -664,7 +664,7 @@ function pointInPolygon(p, poly) {
 	}
 	return inside;
 }
-function bboxOf$1(points) {
+function bboxOf$2(points) {
 	const b = {
 		minX: Infinity,
 		minY: Infinity,
@@ -3799,13 +3799,21 @@ function signatureOf(room, w, h, inner) {
 		innerClass: innerClassOf(inner)
 	};
 }
-/** 辞書に同じ形（±50mm）があればその種類 */
-function lookupSymbol(dict, sig) {
+var sourceOf = (e) => e.source ?? "user";
+/**
+* 辞書に同じ形（±50mm）があればその種類。
+* which = 'user' なら修正で覚えた答えだけ、'fallback' なら一括学習・初期辞書だけ、省略時は user を優先して全部
+*/
+function lookupSymbol(dict, sig, which = "any") {
 	let best = null;
+	const rank = (e) => sourceOf(e) === "user" ? 1 : 0;
 	for (const e of dict) {
+		const src = sourceOf(e);
+		if (which === "user" && src !== "user") continue;
+		if (which === "fallback" && src === "user") continue;
 		if (e.room !== sig.room || e.innerClass !== sig.innerClass) continue;
 		if (Math.abs(e.L - sig.L) > 50 || Math.abs(e.S - sig.S) > 50) continue;
-		if (!best || e.n > best.n) best = e;
+		if (!best || rank(e) > rank(best) || rank(e) === rank(best) && e.n > best.n) best = e;
 	}
 	return best?.kind ?? null;
 }
@@ -4342,19 +4350,20 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
 	for (const [room, cands] of byRoom) {
 		const t = room.type;
 		const used = /* @__PURE__ */ new Set();
+		const applyDict = (c, hit, note) => {
+			c.note = note;
+			used.add(c);
+			if (hit === "kitchen") pushKitchen(c, cands, used);
+			else if (hit === "bed") pushBed(c);
+			else if (hit === "rug") push(c, "rug", {
+				w: +(c.L / 1e3).toFixed(2),
+				d: +(c.S / 1e3).toFixed(2)
+			});
+			else push(c, hit, { w: +(c.L / 1e3).toFixed(2) });
+		};
 		for (const c of cands) {
-			const hit = dict ? lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner)) : null;
-			if (hit) {
-				c.note = "辞書";
-				used.add(c);
-				if (hit === "kitchen") pushKitchen(c, cands, used);
-				else if (hit === "bed") pushBed(c);
-				else if (hit === "rug") push(c, "rug", {
-					w: +(c.L / 1e3).toFixed(2),
-					d: +(c.S / 1e3).toFixed(2)
-				});
-				else push(c, hit, { w: +(c.L / 1e3).toFixed(2) });
-			}
+			const hit = dict ? lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner), "user") : null;
+			if (hit) applyDict(c, hit, "辞書");
 		}
 		const free = () => cands.filter((c) => !used.has(c) && !c.kind);
 		if (t === "ldk" || t === "living" || t === "dining" || t === "kitchen" || t === "japanese" || t === "other" && Math.abs(polygonArea(room.polygon)) >= 8e6) {
@@ -4616,6 +4625,10 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
 				used.add(c);
 				push(c, "washstand", { w: +(c.L / 1e3).toFixed(2) });
 			}
+		}
+		if (dict) for (const c of free()) {
+			const hit = lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner), "fallback");
+			if (hit) applyDict(c, hit, "辞書（過去の図面）");
 		}
 		for (const c of cands) candidates.push({
 			id: c.rect.id,
@@ -5538,7 +5551,7 @@ function voidRectangles(plan) {
 			B.a,
 			B.b
 		];
-		const bb = bboxOf$1(pts);
+		const bb = bboxOf$2(pts);
 		if (bb.maxX - bb.minX < 1200 || bb.maxY - bb.minY < 1200) continue;
 		const tol = 200;
 		if ([
@@ -5712,7 +5725,7 @@ function rasterWallDetection(page) {
 	const hT = heavyWidthThreshold(segs);
 	const heavy = hT == null ? segs : segs.filter((sg) => sg.width >= hT);
 	if (heavy.length < 100) return null;
-	const bb = bboxOf$1(heavy.flatMap((sg) => [sg.a, sg.b]));
+	const bb = bboxOf$2(heavy.flatMap((sg) => [sg.a, sg.b]));
 	const res = 20;
 	const cells = (bb.maxX - bb.minX) / res * ((bb.maxY - bb.minY) / res);
 	const r = cells > 6e6 ? res * Math.sqrt(cells / 6e6) : res;
@@ -6796,7 +6809,7 @@ function wallFillColors(fills, walls) {
 function detectPlans(pages, warnings) {
 	const plans = [];
 	for (const page of pages) {
-		const pageExt = page.segs.length >= 50 || !page.rasterMask ? bboxOf$1(page.segs.flatMap((sg) => [sg.a, sg.b])) : {
+		const pageExt = page.segs.length >= 50 || !page.rasterMask ? bboxOf$2(page.segs.flatMap((sg) => [sg.a, sg.b])) : {
 			minX: 0,
 			minY: 0,
 			maxX: page.rasterMask.w * page.rasterMask.res,
@@ -6850,7 +6863,7 @@ function detectPlans(pages, warnings) {
 		if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
 		const isRoomText = (t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
 		const pageHasRooms = page.texts.some(isRoomText);
-		const boxes = groups.map((g) => bboxOf$1(g.flatMap((w) => [w.a, w.b])));
+		const boxes = groups.map((g) => bboxOf$2(g.flatMap((w) => [w.a, w.b])));
 		const ext = pageExt;
 		const inside = (a, b) => a.minX >= b.minX - 50 && a.maxX <= b.maxX + 50 && a.minY >= b.minY - 50 && a.maxY <= b.maxY + 50;
 		for (let gi = 0; gi < groups.length; gi++) {
@@ -6870,7 +6883,7 @@ function detectPlans(pages, warnings) {
 			const wallPolys = page.colorFills.filter((f) => f.poly.every((q) => inBox(q.x, q.y, margin)) && (wallColors.has(f.color) || isStripFill(f.poly))).map((f) => f.poly);
 			const sashPolys = page.masks.filter((poly) => {
 				if (!poly.every((q) => inBox(q.x, q.y, margin))) return false;
-				const b = bboxOf$1(poly);
+				const b = bboxOf$2(poly);
 				const w = b.maxX - b.minX;
 				const h = b.maxY - b.minY;
 				const thin = Math.min(w, h);
@@ -6884,7 +6897,7 @@ function detectPlans(pages, warnings) {
 			const cand = page.colorFills.filter((f) => !wallColors.has(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin))).map((f) => ({
 				poly: f.poly,
 				area: Math.abs(polygonArea(f.poly)) / 1e6,
-				bb: bboxOf$1(f.poly)
+				bb: bboxOf$2(f.poly)
 			})).filter((c) => c.area >= .6 && c.area <= 80 && isRoomShaped(c.poly)).map((c) => ({
 				...c,
 				labels: labelTexts.filter((t) => pointInPolygon({
@@ -8405,6 +8418,39 @@ function supportedLength(w, below) {
 	}
 	return ok / n * L;
 }
+/** 下階の壁に乗っていない区間（200mm 刻みの判定をつなげた線分）。短い区間（< 300）は省く */
+function unsupportedSegments(w, below) {
+	const L = len(w);
+	const n = Math.max(1, Math.round(L / 200));
+	const at = (t) => ({
+		x: w.a.x + (w.b.x - w.a.x) * t,
+		y: w.a.y + (w.b.y - w.a.y) * t
+	});
+	const out = [];
+	let start = null;
+	for (let i = 0; i <= n; i++) {
+		const free = i < n && !below.some((b) => distPointSegment(at((i + .5) / n), b.a, b.b) <= 90);
+		if (free && start == null) start = i / n;
+		if (!free && start != null) {
+			if ((i / n - start) * L >= 300) out.push({
+				a: at(start),
+				b: at(i / n)
+			});
+			start = null;
+		}
+	}
+	return out;
+}
+function bboxOf$1(poly) {
+	const xs = poly.map((p) => p.x);
+	const ys = poly.map((p) => p.y);
+	return {
+		minX: Math.min(...xs),
+		minY: Math.min(...ys),
+		maxX: Math.max(...xs),
+		maxY: Math.max(...ys)
+	};
+}
 /** 部屋の輪郭の辺ごとに、壁で塞がれている割合と、その辺にある出入口 */
 function roomAccess(r, f) {
 	const poly = r.polygon;
@@ -8454,6 +8500,14 @@ function woodCheck(model) {
 				severity: "warn",
 				title: `${f.level}階: どこにもつながらない短い壁が ${stubs.length} 本`,
 				detail: "木造の壁は柱から柱へ通るので、半間に満たない独立した壁は図面の線（家具・寸法補助線）を壁と読んだ疑いがあります",
+				marks: [{
+					level: f.level,
+					lines: stubs.map((w) => ({
+						a: w.a,
+						b: w.b
+					})),
+					label: "壁の断片"
+				}],
 				fix: {
 					label: "消す",
 					apply: (mm) => {
@@ -8473,13 +8527,26 @@ function woodCheck(model) {
 			if (!horiz && !vert) return false;
 			return [!w.joinedA ? w.a : null, !w.joinedB ? w.b : null].filter((p) => !!p).some((p) => horiz ? !onGrid(p.x, phaseX) : !onGrid(p.y, phaseY));
 		});
-		if (off.length >= 2) out.push({
-			id: `offgrid-${f.level}`,
-			level: f.level,
-			severity: "info",
-			title: `${f.level}階: 端が格子（半間）に乗らない壁が ${off.length} 本`,
-			detail: "壁の端には柱が立つので、ふつう半間の格子点で止まります。腰壁・造作の可能性もありますが、読み取りの端のずれなら修正画面で直せます"
-		});
+		if (off.length >= 2) {
+			const ends = off.flatMap((w) => [!w.joinedA ? w.a : null, !w.joinedB ? w.b : null].filter((p) => !!p));
+			out.push({
+				id: `offgrid-${f.level}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階: 端が格子（半間）に乗らない壁が ${off.length} 本`,
+				detail: "壁の端には柱が立つので、ふつう半間の格子点で止まります。腰壁・造作の可能性もありますが、読み取りの端のずれなら修正画面で直せます",
+				marks: [{
+					level: f.level,
+					rects: ends.map((p) => ({
+						minX: p.x - 160,
+						minY: p.y - 160,
+						maxX: p.x + 160,
+						maxY: p.y + 160
+					})),
+					label: "格子外の端"
+				}]
+			});
+		}
 	}
 	for (let i = 1; i < floors.length; i++) {
 		const up = floors[i];
@@ -8489,19 +8556,26 @@ function woodCheck(model) {
 		let extTotal = 0;
 		let extSup = 0;
 		const hanging = [];
+		const freeAll = [];
+		const freeExt = [];
 		for (const w of up.walls) {
 			const L = len(w);
 			if (L < 300) continue;
 			const s = supportedLength(w, lo.walls);
 			total += L;
 			sup += s;
+			const segs = unsupportedSegments(w, lo.walls);
+			freeAll.push(...segs);
 			if (w.exterior) {
 				extTotal += L;
 				extSup += s;
-				if (L - s >= 910) hanging.push({
-					w,
-					free: L - s
-				});
+				if (L - s >= 910) {
+					hanging.push({
+						w,
+						free: L - s
+					});
+					freeExt.push(...segs);
+				}
 			}
 		}
 		if (total > 0) {
@@ -8511,7 +8585,12 @@ function woodCheck(model) {
 				level: up.level,
 				severity: ratio < .5 ? "warn" : ratio < .6 ? "info" : "ok",
 				title: `${up.level}階の壁の直下率 ${Math.round(ratio * 100)}%`,
-				detail: ratio >= .6 ? `${up.level}階の壁の ${Math.round(ratio * 100)}% が ${lo.level}階の壁の上に乗っています（目安 60% 以上）` : `${up.level}階の壁のうち ${lo.level}階の壁に乗っているのは ${Math.round(ratio * 100)}% です。乗っていない壁の下には梁が必要になり、梁せいが大きくなります（目安 60% 以上）`
+				detail: ratio >= .6 ? `${up.level}階の壁の ${Math.round(ratio * 100)}% が ${lo.level}階の壁の上に乗っています（目安 60% 以上）` : `${up.level}階の壁のうち ${lo.level}階の壁に乗っているのは ${Math.round(ratio * 100)}% です。乗っていない壁の下には梁が必要になり、梁せいが大きくなります（目安 60% 以上）`,
+				marks: freeAll.length ? [{
+					level: up.level,
+					lines: freeAll,
+					label: `${lo.level}階に壁なし（梁で受ける）`
+				}] : void 0
 			});
 		}
 		if (hanging.length) {
@@ -8531,7 +8610,16 @@ function woodCheck(model) {
 				level: up.level,
 				severity: share > .4 ? "warn" : "info",
 				title: `${up.level}階の外壁 ${m(hl)} m（${sides}）の下に ${lo.level}階の壁がありません`,
-				detail: share > .4 ? `${up.level}階の外壁の ${Math.round(share * 100)}% が ${lo.level}階の壁に乗っていません。大きな LDK の上に 2 階を載せる場合は、その位置に梁（集成材の大梁）か柱が必要です。${lo.level}階の壁の読み落としの可能性もあるので、修正画面で確認してください` : `その区間は ${lo.level}階に受ける壁が無いので、梁で受けるか張り出し（オーバーハング、910 まで）になります`
+				detail: share > .4 ? `${up.level}階の外壁の ${Math.round(share * 100)}% が ${lo.level}階の壁に乗っていません。大きな LDK の上に 2 階を載せる場合は、その位置に梁（集成材の大梁）か柱が必要です。${lo.level}階の壁の読み落としの可能性もあるので、修正画面で確認してください` : `その区間は ${lo.level}階に受ける壁が無いので、梁で受けるか張り出し（オーバーハング、910 まで）になります`,
+				marks: [{
+					level: up.level,
+					lines: freeExt,
+					label: `${lo.level}階に壁なし`
+				}, {
+					level: lo.level,
+					lines: freeExt,
+					label: `${up.level}階の外壁がここに乗る（壁か梁が必要）`
+				}]
 			});
 		}
 	}
@@ -8548,19 +8636,31 @@ function woodCheck(model) {
 		const inner = largestInnerRect(r.polygon, 5);
 		if (!inner) continue;
 		const short = Math.min(inner.maxX - inner.minX, inner.maxY - inner.minY) + (model.module ? 130 : 0);
+		const marks = [{
+			level: f.level,
+			rects: [{
+				minX: inner.minX,
+				minY: inner.minY,
+				maxX: inner.maxX,
+				maxY: inner.maxY
+			}],
+			label: `スパン ${m(short)} m`
+		}];
 		if (short > 5e3) out.push({
 			id: `span-${f.level}-${r.id}`,
 			level: f.level,
 			severity: "warn",
 			title: `${f.level}階 ${r.name}: 柱の無い空間が ${m(short)} m`,
-			detail: "短辺が 2.75 間（5,005）を超えています。在来の梁では厳しい大きさなので、途中に柱を立てるか、集成材の大梁・鉄骨梁の検討になります"
+			detail: "短辺が 2.75 間（5,005）を超えています。在来の梁では厳しい大きさなので、途中に柱を立てるか、集成材の大梁・鉄骨梁の検討になります",
+			marks
 		});
 		else if (short > 3700) out.push({
 			id: `span-${f.level}-${r.id}`,
 			level: f.level,
 			severity: "info",
 			title: `${f.level}階 ${r.name}: 梁のスパン ${m(short)} m（2 間超）`,
-			detail: "2 間（3,640）を超えるので、せいの大きな梁（集成材 300〜360）か途中の柱が必要です。吹抜・大きな LDK ではよくある納まりです"
+			detail: "2 間（3,640）を超えるので、せいの大きな梁（集成材 300〜360）か途中の柱が必要です。吹抜・大きな LDK ではよくある納まりです",
+			marks
 		});
 	}
 	for (const f of floors) {
@@ -8580,9 +8680,11 @@ function woodCheck(model) {
 			const key = `${Math.round(-uy * w.outsideSign)},${Math.round(ux * w.outsideSign)}`;
 			const d = dirs[key] ??= {
 				total: 0,
-				open: 0
+				open: 0,
+				walls: []
 			};
 			d.total += L;
+			d.walls.push(w);
 			for (const o of f.openings) if (o.wallId === w.id) d.open += o.t1 - o.t0;
 		}
 		for (const [key, d] of Object.entries(dirs)) {
@@ -8593,7 +8695,15 @@ function woodCheck(model) {
 				level: f.level,
 				severity: "warn",
 				title: `${f.level}階 ${name[key] ?? key}側の外壁は開口が ${Math.round(ratio * 100)}%`,
-				detail: "一面の大半が窓・戸だと、その方向の耐力壁が取りにくくなります。窓の間に 910 の壁を残すか、反対側の壁で補う設計になります"
+				detail: "一面の大半が窓・戸だと、その方向の耐力壁が取りにくくなります。窓の間に 910 の壁を残すか、反対側の壁で補う設計になります",
+				marks: [{
+					level: f.level,
+					lines: d.walls.map((w) => ({
+						a: w.a,
+						b: w.b
+					})),
+					label: `開口 ${Math.round(ratio * 100)}%（耐力壁が取りにくい）`
+				}]
 			});
 		}
 	}
@@ -8614,7 +8724,12 @@ function woodCheck(model) {
 			level: f.level,
 			severity: "warn",
 			title: `${f.level}階 ${r.name}: 出入口が読めていません`,
-			detail: "壁に囲まれていて戸が見つかりません。引戸・開き戸の記号が読めなかったか、壁を読みすぎています。修正画面で戸を置くか壁を消してください"
+			detail: "壁に囲まれていて戸が見つかりません。引戸・開き戸の記号が読めなかったか、壁を読みすぎています。修正画面で戸を置くか壁を消してください",
+			marks: [{
+				level: f.level,
+				rects: [bboxOf$1(r.polygon)],
+				label: "出入口なし"
+			}]
 		});
 	}
 	for (let i = 0; i + 1 < floors.length; i++) {
@@ -8625,19 +8740,48 @@ function woodCheck(model) {
 				const a = Math.max(0, Math.min(s.maxX, t.maxX) - Math.max(s.minX, t.minX)) * Math.max(0, Math.min(s.maxY, t.maxY) - Math.max(s.minY, t.minY)) / Math.min((s.maxX - s.minX) * (s.maxY - s.minY), (t.maxX - t.minX) * (t.maxY - t.minY));
 				return Math.max(b, a);
 			}, 0);
+			const sRect = {
+				minX: s.minX,
+				minY: s.minY,
+				maxX: s.maxX,
+				maxY: s.maxY
+			};
 			if (up.stairs.length && best < .3) out.push({
 				id: `stair-${lo.level}`,
 				level: lo.level,
 				severity: "warn",
 				title: `${lo.level}階と ${up.level}階の階段の位置が合っていません`,
-				detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください`
+				detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください`,
+				marks: [{
+					level: lo.level,
+					rects: [sRect],
+					label: `${lo.level}階の階段`
+				}, {
+					level: up.level,
+					rects: up.stairs.map((t) => ({
+						minX: t.minX,
+						minY: t.minY,
+						maxX: t.maxX,
+						maxY: t.maxY
+					})),
+					label: `${up.level}階の階段（${lo.level}階とずれ）`
+				}]
 			});
 			else if (!up.stairs.length) out.push({
 				id: `stair-${lo.level}`,
 				level: lo.level,
 				severity: "info",
 				title: `${up.level}階に階段の降り口が読めていません`,
-				detail: `${lo.level}階の階段の上に ${up.level}階の階段（DN）がありません。吹抜・ホールとして読まれた可能性があります`
+				detail: `${lo.level}階の階段の上に ${up.level}階の階段（DN）がありません。吹抜・ホールとして読まれた可能性があります`,
+				marks: [{
+					level: lo.level,
+					rects: [sRect],
+					label: "階段"
+				}, {
+					level: up.level,
+					rects: [sRect],
+					label: `${lo.level}階の階段の真上（降り口が無い）`
+				}]
 			});
 		}
 	}
@@ -8647,19 +8791,31 @@ function woodCheck(model) {
 		const w = Math.max(...xs) - Math.min(...xs);
 		const h = Math.max(...ys) - Math.min(...ys);
 		const short = Math.min(w, h);
+		const marks = [{
+			level: f.level,
+			rects: [{
+				minX: Math.min(...xs),
+				minY: Math.min(...ys),
+				maxX: Math.max(...xs),
+				maxY: Math.max(...ys)
+			}],
+			label: `短辺 ${m(short)} m`
+		}];
 		if (r.type === "bath" && short < 1700 && short > 0) out.push({
 			id: `ub-${f.level}-${r.id}`,
 			level: f.level,
 			severity: "warn",
 			title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`,
-			detail: "ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります"
+			detail: "ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります",
+			marks
 		});
 		if (r.type === "toilet" && short < 800 && short > 0) out.push({
 			id: `wc-${f.level}-${r.id}`,
 			level: f.level,
 			severity: "warn",
 			title: `${f.level}階 ${r.name}: 幅 ${m(short)} m は便所として狭すぎます`,
-			detail: "便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります"
+			detail: "便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります",
+			marks
 		});
 	}
 	return out;
@@ -15107,6 +15263,28 @@ function floorPlanParts(model, f, opts = {}) {
 			}
 		}
 	}
+	if (opts.marks?.length) {
+		const RED = "#d7263d";
+		for (const mk of opts.marks) {
+			let lx = NaN;
+			let ly = NaN;
+			for (const r of mk.rects ?? []) {
+				s += `<rect x="${r.minX.toFixed(0)}" y="${r.minY.toFixed(0)}" width="${(r.maxX - r.minX).toFixed(0)}" height="${(r.maxY - r.minY).toFixed(0)}" fill="${RED}" fill-opacity="0.08" stroke="${RED}" stroke-width="40" stroke-dasharray="180 100"/>`;
+				if (Number.isNaN(lx)) {
+					lx = (r.minX + r.maxX) / 2;
+					ly = r.minY - 120;
+				}
+			}
+			for (const l of mk.lines ?? []) {
+				s += `<line x1="${l.a.x.toFixed(0)}" y1="${l.a.y.toFixed(0)}" x2="${l.b.x.toFixed(0)}" y2="${l.b.y.toFixed(0)}" stroke="${RED}" stroke-width="70" stroke-linecap="round" stroke-dasharray="220 140" opacity="0.85"/>`;
+				if (Number.isNaN(lx)) {
+					lx = (l.a.x + l.b.x) / 2;
+					ly = (l.a.y + l.b.y) / 2 - 160;
+				}
+			}
+			if (mk.label && !Number.isNaN(lx)) s += `<text x="${lx.toFixed(0)}" y="${ly.toFixed(0)}" font-size="230" font-weight="700" text-anchor="middle" fill="${RED}" stroke="#fff" stroke-width="60" paint-order="stroke" stroke-linejoin="round">${esc(mk.label)}</text>`;
+		}
+	}
 	return {
 		inner: s,
 		vb,
@@ -20044,4 +20222,4 @@ function createNodeContext(pdfjs, fromUrl) {
 	});
 }
 //#endregion
-export { INSTRUCTIONS, SERVER_INFO, TOOLS, createContext, createMcpServer, createNodeContext, findPdfjsDir, summarizeModel };
+export { INSTRUCTIONS, SERVER_INFO, TOOLS, createContext, createMcpServer, createNodeContext, findPdfjsDir, resolveModel, storeModel, summarizeModel };

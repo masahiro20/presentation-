@@ -3,7 +3,7 @@
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
 import { takeoff } from '../estimate/areas';
-import type { BuildingModel, Floor, RoomType } from '../core/types';
+import type { BuildingModel, Floor, RoomType, Vec2 } from '../core/types';
 import { stairLayout, stairStepCount } from '../core/stairs';
 import { polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
@@ -178,6 +178,14 @@ export interface PlanSvgOptions {
   sectionLines?: { nx: number; nz: number; d: number; label: string }[];
   /** 木造モジュールの格子（1 間 = 910 ごとの細い点線）を描く（既定: 図枠ありのとき） */
   showModuleGrid?: boolean;
+  /** 赤で示す位置（木造チェックの「図面で見る」）。線は壁の区間、矩形は部屋・階段・空間 */
+  marks?: PlanMark[];
+}
+
+export interface PlanMark {
+  lines?: { a: Vec2; b: Vec2 }[];
+  rects?: { minX: number; minY: number; maxX: number; maxY: number }[];
+  label?: string;
 }
 
 export interface OpeningScheduleEntry {
@@ -667,6 +675,31 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         const hy = ey - n.y * 180;
         s += `<polygon points="${(ex - n.x * 60 + t.x * 130).toFixed(0)},${(ey - n.y * 60 + t.y * 130).toFixed(0)} ${(ex - n.x * 60 - t.x * 130).toFixed(0)},${(ey - n.y * 60 - t.y * 130).toFixed(0)} ${hx.toFixed(0)},${hy.toFixed(0)}" fill="#111"/>`;
         s += `<text x="${(E.x + t.x * 0 + n.x * 330).toFixed(0)}" y="${(E.y + n.y * 330 + 90).toFixed(0)}" font-size="260" font-weight="700" text-anchor="middle" fill="#111">${esc(sl.label)}</text>`;
+      }
+    }
+  }
+  // 木造チェックの赤表示（一番上に描く）
+  if (opts.marks?.length) {
+    const RED = '#d7263d';
+    for (const mk of opts.marks) {
+      let lx = NaN;
+      let ly = NaN;
+      for (const r of mk.rects ?? []) {
+        s += `<rect x="${r.minX.toFixed(0)}" y="${r.minY.toFixed(0)}" width="${(r.maxX - r.minX).toFixed(0)}" height="${(r.maxY - r.minY).toFixed(0)}" fill="${RED}" fill-opacity="0.08" stroke="${RED}" stroke-width="40" stroke-dasharray="180 100"/>`;
+        if (Number.isNaN(lx)) {
+          lx = (r.minX + r.maxX) / 2;
+          ly = r.minY - 120;
+        }
+      }
+      for (const l of mk.lines ?? []) {
+        s += `<line x1="${l.a.x.toFixed(0)}" y1="${l.a.y.toFixed(0)}" x2="${l.b.x.toFixed(0)}" y2="${l.b.y.toFixed(0)}" stroke="${RED}" stroke-width="70" stroke-linecap="round" stroke-dasharray="220 140" opacity="0.85"/>`;
+        if (Number.isNaN(lx)) {
+          lx = (l.a.x + l.b.x) / 2;
+          ly = (l.a.y + l.b.y) / 2 - 160;
+        }
+      }
+      if (mk.label && !Number.isNaN(lx)) {
+        s += `<text x="${lx.toFixed(0)}" y="${ly.toFixed(0)}" font-size="230" font-weight="700" text-anchor="middle" fill="${RED}" stroke="#fff" stroke-width="60" paint-order="stroke" stroke-linejoin="round">${esc(mk.label)}</text>`;
       }
     }
   }

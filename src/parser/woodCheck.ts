@@ -11,6 +11,14 @@ import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
 import { distPointSegment } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
 
+/** 平面図に赤で示す位置（階ごと）。線は壁の区間、矩形は部屋・階段・内側の空間 */
+export interface WoodMark {
+  level: number;
+  lines?: { a: Vec2; b: Vec2 }[];
+  rects?: { minX: number; minY: number; maxX: number; maxY: number }[];
+  label?: string;
+}
+
 export interface WoodIssue {
   id: string;
   level?: number;
@@ -19,6 +27,8 @@ export interface WoodIssue {
   detail: string;
   /** 明らかな読み取りミスを直す */
   fix?: { label: string; apply: (m: BuildingModel) => void };
+  /** 平面図に示す位置 */
+  marks?: WoodMark[];
 }
 
 const len = (w: { a: Vec2; b: Vec2 }) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -35,6 +45,30 @@ function supportedLength(w: Wall, below: Wall[]): number {
     if (below.some((b) => distPointSegment(p, b.a, b.b) <= 90)) ok++;
   }
   return (ok / n) * L;
+}
+
+/** 下階の壁に乗っていない区間（200mm 刻みの判定をつなげた線分）。短い区間（< 300）は省く */
+function unsupportedSegments(w: Wall, below: Wall[]): { a: Vec2; b: Vec2 }[] {
+  const L = len(w);
+  const n = Math.max(1, Math.round(L / 200));
+  const at = (t: number) => ({ x: w.a.x + (w.b.x - w.a.x) * t, y: w.a.y + (w.b.y - w.a.y) * t });
+  const out: { a: Vec2; b: Vec2 }[] = [];
+  let start: number | null = null;
+  for (let i = 0; i <= n; i++) {
+    const free = i < n && !below.some((b) => distPointSegment(at((i + 0.5) / n), b.a, b.b) <= 90);
+    if (free && start == null) start = i / n;
+    if (!free && start != null) {
+      if ((i / n - start) * L >= 300) out.push({ a: at(start), b: at(i / n) });
+      start = null;
+    }
+  }
+  return out;
+}
+
+function bboxOf(poly: Vec2[]): { minX: number; minY: number; maxX: number; maxY: number } {
+  const xs = poly.map((p) => p.x);
+  const ys = poly.map((p) => p.y);
+  return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
 /** 部屋の輪郭の辺ごとに、壁で塞がれている割合と、その辺にある出入口 */
@@ -86,6 +120,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         severity: 'warn',
         title: `${f.level}階: どこにもつながらない短い壁が ${stubs.length} 本`,
         detail: '木造の壁は柱から柱へ通るので、半間に満たない独立した壁は図面の線（家具・寸法補助線）を壁と読んだ疑いがあります',
+        marks: [{ level: f.level, lines: stubs.map((w) => ({ a: w.a, b: w.b })), label: '壁の断片' }],
         fix: {
           label: '消す',
           apply: (mm) => {
@@ -109,7 +144,17 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         const free = [!w.joinedA ? w.a : null, !w.joinedB ? w.b : null].filter((p): p is Vec2 => !!p);
         return free.some((p) => (horiz ? !onGrid(p.x, phaseX) : !onGrid(p.y, phaseY)));
       });
-      if (off.length >= 2) out.push({ id: `offgrid-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 端が格子（半間）に乗らない壁が ${off.length} 本`, detail: '壁の端には柱が立つので、ふつう半間の格子点で止まります。腰壁・造作の可能性もありますが、読み取りの端のずれなら修正画面で直せます' });
+      if (off.length >= 2) {
+        const ends = off.flatMap((w) => [!w.joinedA ? w.a : null, !w.joinedB ? w.b : null].filter((p): p is Vec2 => !!p));
+        out.push({
+          id: `offgrid-${f.level}`,
+          level: f.level,
+          severity: 'info',
+          title: `${f.level}階: 端が格子（半間）に乗らない壁が ${off.length} 本`,
+          detail: '壁の端には柱が立つので、ふつう半間の格子点で止まります。腰壁・造作の可能性もありますが、読み取りの端のずれなら修正画面で直せます',
+          marks: [{ level: f.level, rects: ends.map((p) => ({ minX: p.x - 160, minY: p.y - 160, maxX: p.x + 160, maxY: p.y + 160 })), label: '格子外の端' }],
+        });
+      }
     }
   }
 
@@ -122,16 +167,23 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
     let extTotal = 0;
     let extSup = 0;
     const hanging: { w: Wall; free: number }[] = [];
+    const freeAll: { a: Vec2; b: Vec2 }[] = [];
+    const freeExt: { a: Vec2; b: Vec2 }[] = [];
     for (const w of up.walls) {
       const L = len(w);
       if (L < 300) continue;
       const s = supportedLength(w, lo.walls);
       total += L;
       sup += s;
+      const segs = unsupportedSegments(w, lo.walls);
+      freeAll.push(...segs);
       if (w.exterior) {
         extTotal += L;
         extSup += s;
-        if (L - s >= 910) hanging.push({ w, free: L - s });
+        if (L - s >= 910) {
+          hanging.push({ w, free: L - s });
+          freeExt.push(...segs);
+        }
       }
     }
     if (total > 0) {
@@ -142,6 +194,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         severity: ratio < 0.5 ? 'warn' : ratio < 0.6 ? 'info' : 'ok',
         title: `${up.level}階の壁の直下率 ${Math.round(ratio * 100)}%`,
         detail: ratio >= 0.6 ? `${up.level}階の壁の ${Math.round(ratio * 100)}% が ${lo.level}階の壁の上に乗っています（目安 60% 以上）` : `${up.level}階の壁のうち ${lo.level}階の壁に乗っているのは ${Math.round(ratio * 100)}% です。乗っていない壁の下には梁が必要になり、梁せいが大きくなります（目安 60% 以上）`,
+        marks: freeAll.length ? [{ level: up.level, lines: freeAll, label: `${lo.level}階に壁なし（梁で受ける）` }] : undefined,
       });
     }
     if (hanging.length) {
@@ -165,6 +218,10 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
           share > 0.4
             ? `${up.level}階の外壁の ${Math.round(share * 100)}% が ${lo.level}階の壁に乗っていません。大きな LDK の上に 2 階を載せる場合は、その位置に梁（集成材の大梁）か柱が必要です。${lo.level}階の壁の読み落としの可能性もあるので、修正画面で確認してください`
             : `その区間は ${lo.level}階に受ける壁が無いので、梁で受けるか張り出し（オーバーハング、910 まで）になります`,
+        marks: [
+          { level: up.level, lines: freeExt, label: `${lo.level}階に壁なし` },
+          { level: lo.level, lines: freeExt, label: `${up.level}階の外壁がここに乗る（壁か梁が必要）` },
+        ],
       });
     }
     void extSup;
@@ -177,14 +234,15 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const inner = largestInnerRect(r.polygon, 5);
       if (!inner) continue;
       const short = Math.min(inner.maxX - inner.minX, inner.maxY - inner.minY) + (model.module ? 130 : 0);
-      if (short > 5000) out.push({ id: `span-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 柱の無い空間が ${m(short)} m`, detail: '短辺が 2.75 間（5,005）を超えています。在来の梁では厳しい大きさなので、途中に柱を立てるか、集成材の大梁・鉄骨梁の検討になります' });
-      else if (short > 3700) out.push({ id: `span-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 梁のスパン ${m(short)} m（2 間超）`, detail: '2 間（3,640）を超えるので、せいの大きな梁（集成材 300〜360）か途中の柱が必要です。吹抜・大きな LDK ではよくある納まりです' });
+      const marks: WoodMark[] = [{ level: f.level, rects: [{ minX: inner.minX, minY: inner.minY, maxX: inner.maxX, maxY: inner.maxY }], label: `スパン ${m(short)} m` }];
+      if (short > 5000) out.push({ id: `span-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 柱の無い空間が ${m(short)} m`, detail: '短辺が 2.75 間（5,005）を超えています。在来の梁では厳しい大きさなので、途中に柱を立てるか、集成材の大梁・鉄骨梁の検討になります', marks });
+      else if (short > 3700) out.push({ id: `span-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 梁のスパン ${m(short)} m（2 間超）`, detail: '2 間（3,640）を超えるので、せいの大きな梁（集成材 300〜360）か途中の柱が必要です。吹抜・大きな LDK ではよくある納まりです', marks });
     }
   }
 
   // (e) 窓ばかりの外壁面: 向きごとに外壁の長さと開口の長さ
   for (const f of floors) {
-    const dirs: Record<string, { total: number; open: number }> = {};
+    const dirs: Record<string, { total: number; open: number; walls: Wall[] }> = {};
     const name: Record<string, string> = { '0,-1': '図面の上', '0,1': '図面の下', '-1,0': '図面の左', '1,0': '図面の右' };
     for (const w of f.walls) {
       if (!w.exterior || !w.outsideSign) continue;
@@ -196,14 +254,15 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const nx = Math.round(-uy * w.outsideSign);
       const ny = Math.round(ux * w.outsideSign);
       const key = `${nx},${ny}`;
-      const d = (dirs[key] ??= { total: 0, open: 0 });
+      const d = (dirs[key] ??= { total: 0, open: 0, walls: [] });
       d.total += L;
+      d.walls.push(w);
       for (const o of f.openings) if (o.wallId === w.id) d.open += o.t1 - o.t0;
     }
     for (const [key, d] of Object.entries(dirs)) {
       if (d.total < 3000) continue;
       const ratio = d.open / d.total;
-      if (ratio > 0.65) out.push({ id: `shear-${f.level}-${key}`, level: f.level, severity: 'warn', title: `${f.level}階 ${name[key] ?? key}側の外壁は開口が ${Math.round(ratio * 100)}%`, detail: '一面の大半が窓・戸だと、その方向の耐力壁が取りにくくなります。窓の間に 910 の壁を残すか、反対側の壁で補う設計になります' });
+      if (ratio > 0.65) out.push({ id: `shear-${f.level}-${key}`, level: f.level, severity: 'warn', title: `${f.level}階 ${name[key] ?? key}側の外壁は開口が ${Math.round(ratio * 100)}%`, detail: '一面の大半が窓・戸だと、その方向の耐力壁が取りにくくなります。窓の間に 910 の壁を残すか、反対側の壁で補う設計になります', marks: [{ level: f.level, lines: d.walls.map((w) => ({ a: w.a, b: w.b })), label: `開口 ${Math.round(ratio * 100)}%（耐力壁が取りにくい）` }] });
     }
   }
 
@@ -213,7 +272,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       if (['void', 'balcony', 'porch', 'garage', 'stairs', 'hall', 'other'].includes(r.type)) continue;
       if (r.area < 1.2) continue;
       const { hasDoor, hasOpenEdge } = roomAccess(r, f);
-      if (!hasDoor && !hasOpenEdge) out.push({ id: `nodoor-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 出入口が読めていません`, detail: '壁に囲まれていて戸が見つかりません。引戸・開き戸の記号が読めなかったか、壁を読みすぎています。修正画面で戸を置くか壁を消してください' });
+      if (!hasDoor && !hasOpenEdge) out.push({ id: `nodoor-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 出入口が読めていません`, detail: '壁に囲まれていて戸が見つかりません。引戸・開き戸の記号が読めなかったか、壁を読みすぎています。修正画面で戸を置くか壁を消してください', marks: [{ level: f.level, rects: [bboxOf(r.polygon)], label: '出入口なし' }] });
     }
   }
 
@@ -228,8 +287,20 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         const a = (ix * iy) / Math.min((s.maxX - s.minX) * (s.maxY - s.minY), (t.maxX - t.minX) * (t.maxY - t.minY));
         return Math.max(b, a);
       }, 0);
-      if (up.stairs.length && best < 0.3) out.push({ id: `stair-${lo.level}`, level: lo.level, severity: 'warn', title: `${lo.level}階と ${up.level}階の階段の位置が合っていません`, detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください` });
-      else if (!up.stairs.length) out.push({ id: `stair-${lo.level}`, level: lo.level, severity: 'info', title: `${up.level}階に階段の降り口が読めていません`, detail: `${lo.level}階の階段の上に ${up.level}階の階段（DN）がありません。吹抜・ホールとして読まれた可能性があります` });
+      const sRect = { minX: s.minX, minY: s.minY, maxX: s.maxX, maxY: s.maxY };
+      if (up.stairs.length && best < 0.3)
+        out.push({
+          id: `stair-${lo.level}`,
+          level: lo.level,
+          severity: 'warn',
+          title: `${lo.level}階と ${up.level}階の階段の位置が合っていません`,
+          detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください`,
+          marks: [
+            { level: lo.level, rects: [sRect], label: `${lo.level}階の階段` },
+            { level: up.level, rects: up.stairs.map((t) => ({ minX: t.minX, minY: t.minY, maxX: t.maxX, maxY: t.maxY })), label: `${up.level}階の階段（${lo.level}階とずれ）` },
+          ],
+        });
+      else if (!up.stairs.length) out.push({ id: `stair-${lo.level}`, level: lo.level, severity: 'info', title: `${up.level}階に階段の降り口が読めていません`, detail: `${lo.level}階の階段の上に ${up.level}階の階段（DN）がありません。吹抜・ホールとして読まれた可能性があります`, marks: [{ level: lo.level, rects: [sRect], label: '階段' }, { level: up.level, rects: [sRect], label: `${lo.level}階の階段の真上（降り口が無い）` }] });
     }
   }
 
@@ -241,8 +312,9 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const w = Math.max(...xs) - Math.min(...xs);
       const h = Math.max(...ys) - Math.min(...ys);
       const short = Math.min(w, h);
-      if (r.type === 'bath' && short < 1700 && short > 0) out.push({ id: `ub-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`, detail: 'ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります' });
-      if (r.type === 'toilet' && short < 800 && short > 0) out.push({ id: `wc-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(short)} m は便所として狭すぎます`, detail: '便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります' });
+      const marks: WoodMark[] = [{ level: f.level, rects: [{ minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }], label: `短辺 ${m(short)} m` }];
+      if (r.type === 'bath' && short < 1700 && short > 0) out.push({ id: `ub-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`, detail: 'ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります', marks });
+      if (r.type === 'toilet' && short < 800 && short > 0) out.push({ id: `wc-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(short)} m は便所として狭すぎます`, detail: '便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります', marks });
     }
   }
   return out;

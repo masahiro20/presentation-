@@ -5,12 +5,14 @@
  *  - 梁のスパンは 2 間（3,640）まで → 超える部屋は柱か大きな梁
  *  - 一面が窓ばかりの外壁は耐力壁が取れない
  *  - 出入口の無い部屋、上下階で位置の合わない階段、UB・便所の格子寸法
- *  - 通れない幅（廊下・ホール・階段は柱芯 910 が最小）、幅 600 未満の戸、同じ場所に重なった壁
+ *  - 通れない幅（廊下・ホール・階段は柱芯 910 が最小）、幅 550 未満の戸、同じ場所に重なった壁
+ *  - 階段の勾配（蹴上 = 階高 ÷ 段数、踏面 = 階段の長さ ÷ 段数。上限 230／150、目安 200／240）
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
 import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
+import { stairFrame, stairStepCount } from '../core/stairs';
 
 /** 平面図に赤で示す位置（階ごと）。線は壁の区間、矩形は部屋・階段・内側の空間 */
 export interface WoodMark {
@@ -468,6 +470,37 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
           },
         },
       });
+    }
+  }
+  // (l) 階段の勾配: 蹴上 = 階高 ÷ 段数、踏面 = 図面の階段の長さから。住宅の上限は蹴上 230・踏面 150（建築基準法）、
+  //     ゆとりの目安は蹴上 200 以下・踏面 240 以上。図面の矩形が短いと踏面が浅くなる（3D では昇り口側へ延ばして補っている）
+  for (let fi = 0; fi + 1 < floors.length; fi++) {
+    const f = floors[fi];
+    for (const st of f.stairs.filter((x) => x.goesUp)) {
+      const rise = f.height || 2900;
+      const n = stairStepCount(rise, st);
+      const riser = rise / n;
+      const F = stairFrame(st);
+      let tread: number;
+      if (st.kind === 'straight') tread = F.Ls / Math.max(1, n - 1);
+      else if (st.kind === 'u') {
+        const land = Math.min(F.Ls * 0.4, F.Lt / 2);
+        tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));
+      } else {
+        // かね折れ: 曲がりの踊り場（幅 Lt 角）を引いた直線部を段割り
+        tread = (F.Ls + F.Lt - Math.min(F.Lt, F.Ls / 2) * 2) / Math.max(1, n - 2);
+      }
+      const rect = { minX: st.minX, minY: st.minY, maxX: st.maxX, maxY: st.maxY };
+      const label = `蹴上 ${Math.round(riser)}・踏面 約 ${Math.round(tread)}（${n} 段）`;
+      // 蹴上は段数で決まる（図面の「14段」など）ので確度が高い。踏面は図面の矩形の長さから出すが、
+      // 下の数段がホールへ出る描き方や上階の抜きの描き方で短く読めることが多いので、注意（info）に留める
+      if (riser > 230) {
+        out.push({ id: `steep-${f.level}-${st.id}`, level: f.level, severity: 'warn', title: `${f.level}階 階段: 蹴上 ${Math.round(riser)} は急すぎます（${n} 段）`, detail: `階高 ${rise} を ${n} 段で上がると蹴上が ${Math.round(riser)} になります。住宅の上限は蹴上 230（踏面 150）で、ゆとりの目安は 200 以下です。段数を ${Math.ceil(rise / 230)} 段以上（できれば ${Math.ceil(rise / 200)} 段）にしてください。図面の段数の読み取りがずれている可能性もあります`, marks: [{ level: f.level, rects: [rect], label }] });
+      } else if (tread < 200) {
+        out.push({ id: `steep-${f.level}-${st.id}`, level: f.level, severity: 'info', title: `${f.level}階 階段: 図面の長さだと踏面が約 ${Math.round(tread)} です`, detail: `${n} 段（蹴上 ${Math.round(riser)}）を図面の階段の長さに割ると踏面が ${Math.round(tread)} になります。ゆとりの目安は踏面 240 以上（${Math.round(240 * (n - 1))} 程度の長さ）です。下の数段をホール側へ出す描き方なら問題ありません（3D では昇り口側へ延ばして勾配を補っています）`, marks: [{ level: f.level, rects: [rect], label }] });
+      } else if (riser > 205) {
+        out.push({ id: `steep-${f.level}-${st.id}`, level: f.level, severity: 'info', title: `${f.level}階 階段: 蹴上 ${Math.round(riser)} はやや急です（${n} 段）`, detail: `ゆとりの目安は蹴上 200 以下です。1 段増やすと ${Math.round(rise / (n + 1))} になります`, marks: [{ level: f.level, rects: [rect], label }] });
+      }
     }
   }
   return out;

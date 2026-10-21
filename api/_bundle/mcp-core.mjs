@@ -8400,6 +8400,229 @@ function norm(x, y) {
 	};
 }
 //#endregion
+//#region src/core/stairs.ts
+/** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
+function stairFrame(s) {
+	const W = s.maxX - s.minX;
+	const H = s.maxY - s.minY;
+	switch (s.entry) {
+		case "n": return {
+			u: {
+				x: 0,
+				y: 1
+			},
+			r: {
+				x: -1,
+				y: 0
+			},
+			o: {
+				x: s.maxX,
+				y: s.minY
+			},
+			Ls: H,
+			Lt: W
+		};
+		case "s": return {
+			u: {
+				x: 0,
+				y: -1
+			},
+			r: {
+				x: 1,
+				y: 0
+			},
+			o: {
+				x: s.minX,
+				y: s.maxY
+			},
+			Ls: H,
+			Lt: W
+		};
+		case "w": return {
+			u: {
+				x: 1,
+				y: 0
+			},
+			r: {
+				x: 0,
+				y: 1
+			},
+			o: {
+				x: s.minX,
+				y: s.minY
+			},
+			Ls: W,
+			Lt: H
+		};
+		default: return {
+			u: {
+				x: -1,
+				y: 0
+			},
+			r: {
+				x: 0,
+				y: -1
+			},
+			o: {
+				x: s.maxX,
+				y: s.maxY
+			},
+			Ls: W,
+			Lt: H
+		};
+	}
+}
+/** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
+/** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
+function stairStepCount(riseMm, s) {
+	if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+	return Math.max(10, Math.round(riseMm / 200));
+}
+/**
+* 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
+* 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
+*/
+function stairRunExtended(s, n) {
+	const { Ls, Lt } = stairFrame(s);
+	let need = 0;
+	if (s.kind === "straight") need = 240 * n - Ls;
+	else if (s.kind === "u") {
+		const land = Math.min(Ls * .4, Lt / 2);
+		const n1 = Math.floor(n / 2);
+		const n2 = n - n1 - 1;
+		const run = Ls - land;
+		const want = 240 * Math.max(n1, n2);
+		need = want > run ? (want - run) / (Ls * .4 < Lt / 2 ? .6 : 1) : 0;
+	} else {
+		const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+		const len1 = Math.max(0, Ls - fw);
+		const len2 = Math.max(0, Lt - fw);
+		need = 240 * (len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))))) - len1;
+	}
+	if (need <= 10) return s;
+	const ext = Math.min(need, 1500);
+	const o = { ...s };
+	switch (s.entry) {
+		case "n":
+			o.minY -= ext;
+			break;
+		case "s":
+			o.maxY += ext;
+			break;
+		case "w":
+			o.minX -= ext;
+			break;
+		default: o.maxX += ext;
+	}
+	return o;
+}
+function stairLayout(s0, n = 14) {
+	const s = stairRunExtended(s0, n);
+	const F = stairFrame(s);
+	const P = (sv, tv) => ({
+		x: F.o.x + F.u.x * sv + F.r.x * tv,
+		y: F.o.y + F.u.y * sv + F.r.y * tv
+	});
+	const rect = (s0, s1, t0, t1) => {
+		const a = P(s0, t0);
+		const b = P(s1, t1);
+		return {
+			minX: Math.min(a.x, b.x),
+			minY: Math.min(a.y, b.y),
+			maxX: Math.max(a.x, b.x),
+			maxY: Math.max(a.y, b.y)
+		};
+	};
+	const pieces = [];
+	const { Ls, Lt } = F;
+	const neg = (v) => ({
+		x: -v.x,
+		y: -v.y
+	});
+	if (s.kind === "straight") {
+		const st = Ls / n;
+		for (let i = 1; i <= n; i++) pieces.push({
+			kind: "tread",
+			...rect(st * (i - 1), st * i, 0, Lt),
+			i,
+			dir: F.u
+		});
+		return {
+			n,
+			pieces
+		};
+	}
+	if (s.kind === "u") {
+		const turn = s.turn ?? "left";
+		const first = turn === "left" ? [Lt / 2, Lt] : [0, Lt / 2];
+		const second = turn === "left" ? [0, Lt / 2] : [Lt / 2, Lt];
+		const run = Ls - Math.min(Ls * .4, Lt / 2);
+		const n1 = Math.floor(n / 2);
+		const n2 = n - n1 - 1;
+		const st1 = run / n1;
+		const st2 = run / Math.max(1, n2);
+		for (let i = 1; i <= n1; i++) pieces.push({
+			kind: "tread",
+			...rect(st1 * (i - 1), st1 * i, first[0], first[1]),
+			i,
+			dir: F.u
+		});
+		pieces.push({
+			kind: "landing",
+			...rect(run, Ls, 0, Lt),
+			i: n1 + 1,
+			dir: F.u
+		});
+		for (let j = 1; j <= n2; j++) pieces.push({
+			kind: "tread",
+			...rect(run - st2 * (j - 1), run - st2 * j, second[0], second[1]),
+			i: n1 + 1 + j,
+			dir: neg(F.u)
+		});
+		return {
+			n,
+			pieces,
+			wall: rect(0, run, Lt / 2 - 50, Lt / 2 + 50)
+		};
+	}
+	const turn = s.turn ?? "right";
+	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	const strip = turn === "right" ? [0, fw] : [Lt - fw, Lt];
+	const len1 = Math.max(0, Ls - fw);
+	const len2 = Math.max(0, Lt - fw);
+	const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))));
+	const n2 = n - 1 - n1;
+	const st1 = len1 / Math.max(1, n1);
+	for (let i = 1; i <= n1; i++) pieces.push({
+		kind: "tread",
+		...rect(st1 * (i - 1), st1 * i, strip[0], strip[1]),
+		i,
+		dir: F.u
+	});
+	pieces.push({
+		kind: "landing",
+		...rect(len1, Ls, strip[0], strip[1]),
+		i: n1 + 1,
+		dir: F.u
+	});
+	const st2 = len2 / Math.max(1, n2);
+	const dir2 = turn === "right" ? F.r : neg(F.r);
+	for (let j = 1; j <= n2; j++) {
+		const t0 = turn === "right" ? fw + st2 * (j - 1) : Lt - fw - st2 * (j - 1);
+		const t1 = turn === "right" ? fw + st2 * j : Lt - fw - st2 * j;
+		pieces.push({
+			kind: "tread",
+			...rect(len1, Ls, t0, t1),
+			i: n1 + 1 + j,
+			dir: dir2
+		});
+	}
+	return {
+		n,
+		pieces
+	};
+}
+//#endregion
 //#region src/parser/woodCheck.ts
 var len = (w) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
 var m = (mm) => (mm / 1e3).toFixed(2);
@@ -9015,6 +9238,64 @@ function woodCheck(model) {
 			});
 		}
 	}
+	for (let fi = 0; fi + 1 < floors.length; fi++) {
+		const f = floors[fi];
+		for (const st of f.stairs.filter((x) => x.goesUp)) {
+			const rise = f.height || 2900;
+			const n = stairStepCount(rise, st);
+			const riser = rise / n;
+			const F = stairFrame(st);
+			let tread;
+			if (st.kind === "straight") tread = F.Ls / Math.max(1, n - 1);
+			else if (st.kind === "u") {
+				const land = Math.min(F.Ls * .4, F.Lt / 2);
+				tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));
+			} else tread = (F.Ls + F.Lt - Math.min(F.Lt, F.Ls / 2) * 2) / Math.max(1, n - 2);
+			const rect = {
+				minX: st.minX,
+				minY: st.minY,
+				maxX: st.maxX,
+				maxY: st.maxY
+			};
+			const label = `蹴上 ${Math.round(riser)}・踏面 約 ${Math.round(tread)}（${n} 段）`;
+			if (riser > 230) out.push({
+				id: `steep-${f.level}-${st.id}`,
+				level: f.level,
+				severity: "warn",
+				title: `${f.level}階 階段: 蹴上 ${Math.round(riser)} は急すぎます（${n} 段）`,
+				detail: `階高 ${rise} を ${n} 段で上がると蹴上が ${Math.round(riser)} になります。住宅の上限は蹴上 230（踏面 150）で、ゆとりの目安は 200 以下です。段数を ${Math.ceil(rise / 230)} 段以上（できれば ${Math.ceil(rise / 200)} 段）にしてください。図面の段数の読み取りがずれている可能性もあります`,
+				marks: [{
+					level: f.level,
+					rects: [rect],
+					label
+				}]
+			});
+			else if (tread < 200) out.push({
+				id: `steep-${f.level}-${st.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 階段: 図面の長さだと踏面が約 ${Math.round(tread)} です`,
+				detail: `${n} 段（蹴上 ${Math.round(riser)}）を図面の階段の長さに割ると踏面が ${Math.round(tread)} になります。ゆとりの目安は踏面 240 以上（${Math.round(240 * (n - 1))} 程度の長さ）です。下の数段をホール側へ出す描き方なら問題ありません（3D では昇り口側へ延ばして勾配を補っています）`,
+				marks: [{
+					level: f.level,
+					rects: [rect],
+					label
+				}]
+			});
+			else if (riser > 205) out.push({
+				id: `steep-${f.level}-${st.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 階段: 蹴上 ${Math.round(riser)} はやや急です（${n} 段）`,
+				detail: `ゆとりの目安は蹴上 200 以下です。1 段増やすと ${Math.round(rise / (n + 1))} になります`,
+				marks: [{
+					level: f.level,
+					rects: [rect],
+					label
+				}]
+			});
+		}
+	}
 	return out;
 }
 //#endregion
@@ -9479,229 +9760,6 @@ function bboxOf(pts) {
 		minY,
 		maxX,
 		maxY
-	};
-}
-//#endregion
-//#region src/core/stairs.ts
-/** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
-function stairFrame(s) {
-	const W = s.maxX - s.minX;
-	const H = s.maxY - s.minY;
-	switch (s.entry) {
-		case "n": return {
-			u: {
-				x: 0,
-				y: 1
-			},
-			r: {
-				x: -1,
-				y: 0
-			},
-			o: {
-				x: s.maxX,
-				y: s.minY
-			},
-			Ls: H,
-			Lt: W
-		};
-		case "s": return {
-			u: {
-				x: 0,
-				y: -1
-			},
-			r: {
-				x: 1,
-				y: 0
-			},
-			o: {
-				x: s.minX,
-				y: s.maxY
-			},
-			Ls: H,
-			Lt: W
-		};
-		case "w": return {
-			u: {
-				x: 1,
-				y: 0
-			},
-			r: {
-				x: 0,
-				y: 1
-			},
-			o: {
-				x: s.minX,
-				y: s.minY
-			},
-			Ls: W,
-			Lt: H
-		};
-		default: return {
-			u: {
-				x: -1,
-				y: 0
-			},
-			r: {
-				x: 0,
-				y: -1
-			},
-			o: {
-				x: s.maxX,
-				y: s.maxY
-			},
-			Ls: W,
-			Lt: H
-		};
-	}
-}
-/** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
-/** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
-function stairStepCount(riseMm, s) {
-	if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
-	return Math.max(10, Math.round(riseMm / 200));
-}
-/**
-* 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
-* 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
-*/
-function stairRunExtended(s, n) {
-	const { Ls, Lt } = stairFrame(s);
-	let need = 0;
-	if (s.kind === "straight") need = 240 * n - Ls;
-	else if (s.kind === "u") {
-		const land = Math.min(Ls * .4, Lt / 2);
-		const n1 = Math.floor(n / 2);
-		const n2 = n - n1 - 1;
-		const run = Ls - land;
-		const want = 240 * Math.max(n1, n2);
-		need = want > run ? (want - run) / (Ls * .4 < Lt / 2 ? .6 : 1) : 0;
-	} else {
-		const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
-		const len1 = Math.max(0, Ls - fw);
-		const len2 = Math.max(0, Lt - fw);
-		need = 240 * (len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))))) - len1;
-	}
-	if (need <= 10) return s;
-	const ext = Math.min(need, 1500);
-	const o = { ...s };
-	switch (s.entry) {
-		case "n":
-			o.minY -= ext;
-			break;
-		case "s":
-			o.maxY += ext;
-			break;
-		case "w":
-			o.minX -= ext;
-			break;
-		default: o.maxX += ext;
-	}
-	return o;
-}
-function stairLayout(s0, n = 14) {
-	const s = stairRunExtended(s0, n);
-	const F = stairFrame(s);
-	const P = (sv, tv) => ({
-		x: F.o.x + F.u.x * sv + F.r.x * tv,
-		y: F.o.y + F.u.y * sv + F.r.y * tv
-	});
-	const rect = (s0, s1, t0, t1) => {
-		const a = P(s0, t0);
-		const b = P(s1, t1);
-		return {
-			minX: Math.min(a.x, b.x),
-			minY: Math.min(a.y, b.y),
-			maxX: Math.max(a.x, b.x),
-			maxY: Math.max(a.y, b.y)
-		};
-	};
-	const pieces = [];
-	const { Ls, Lt } = F;
-	const neg = (v) => ({
-		x: -v.x,
-		y: -v.y
-	});
-	if (s.kind === "straight") {
-		const st = Ls / n;
-		for (let i = 1; i <= n; i++) pieces.push({
-			kind: "tread",
-			...rect(st * (i - 1), st * i, 0, Lt),
-			i,
-			dir: F.u
-		});
-		return {
-			n,
-			pieces
-		};
-	}
-	if (s.kind === "u") {
-		const turn = s.turn ?? "left";
-		const first = turn === "left" ? [Lt / 2, Lt] : [0, Lt / 2];
-		const second = turn === "left" ? [0, Lt / 2] : [Lt / 2, Lt];
-		const run = Ls - Math.min(Ls * .4, Lt / 2);
-		const n1 = Math.floor(n / 2);
-		const n2 = n - n1 - 1;
-		const st1 = run / n1;
-		const st2 = run / Math.max(1, n2);
-		for (let i = 1; i <= n1; i++) pieces.push({
-			kind: "tread",
-			...rect(st1 * (i - 1), st1 * i, first[0], first[1]),
-			i,
-			dir: F.u
-		});
-		pieces.push({
-			kind: "landing",
-			...rect(run, Ls, 0, Lt),
-			i: n1 + 1,
-			dir: F.u
-		});
-		for (let j = 1; j <= n2; j++) pieces.push({
-			kind: "tread",
-			...rect(run - st2 * (j - 1), run - st2 * j, second[0], second[1]),
-			i: n1 + 1 + j,
-			dir: neg(F.u)
-		});
-		return {
-			n,
-			pieces,
-			wall: rect(0, run, Lt / 2 - 50, Lt / 2 + 50)
-		};
-	}
-	const turn = s.turn ?? "right";
-	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
-	const strip = turn === "right" ? [0, fw] : [Lt - fw, Lt];
-	const len1 = Math.max(0, Ls - fw);
-	const len2 = Math.max(0, Lt - fw);
-	const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))));
-	const n2 = n - 1 - n1;
-	const st1 = len1 / Math.max(1, n1);
-	for (let i = 1; i <= n1; i++) pieces.push({
-		kind: "tread",
-		...rect(st1 * (i - 1), st1 * i, strip[0], strip[1]),
-		i,
-		dir: F.u
-	});
-	pieces.push({
-		kind: "landing",
-		...rect(len1, Ls, strip[0], strip[1]),
-		i: n1 + 1,
-		dir: F.u
-	});
-	const st2 = len2 / Math.max(1, n2);
-	const dir2 = turn === "right" ? F.r : neg(F.r);
-	for (let j = 1; j <= n2; j++) {
-		const t0 = turn === "right" ? fw + st2 * (j - 1) : Lt - fw - st2 * (j - 1);
-		const t1 = turn === "right" ? fw + st2 * j : Lt - fw - st2 * j;
-		pieces.push({
-			kind: "tread",
-			...rect(len1, Ls, t0, t1),
-			i: n1 + 1 + j,
-			dir: dir2
-		});
-	}
-	return {
-		n,
-		pieces
 	};
 }
 //#endregion

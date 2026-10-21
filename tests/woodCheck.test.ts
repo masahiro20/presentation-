@@ -53,6 +53,19 @@ describe('木造の常識チェック', () => {
     expect(f.walls.some((w) => w.id === 'dup-test')).toBe(false);
   }, 60000);
 
+  it('急すぎる階段（段数が少ない・矩形が短い）を見つける', async () => {
+    const model = await parseSample('sample_house_A3.pdf');
+    const f = model.floors[0];
+    const st = f.stairs.find((x) => x.goesUp)!;
+    // 10 段で 2,900 を上がると蹴上 290 → 上限 230 を超える
+    st.steps = 10;
+    const issues = woodCheck(model);
+    const steep = issues.find((i) => i.id === `steep-1-${st.id}`);
+    expect(steep?.severity).toBe('warn');
+    expect(steep?.title).toContain('蹴上 290');
+    expect(steep?.marks?.[0].rects?.length).toBe(1);
+  }, 60000);
+
   it('読み取りミスの疑い（つながらない短い壁）には「消す」の直し方が付く', async () => {
     const model = await parseSample('sample_house_A3.pdf');
     const f = model.floors[0];

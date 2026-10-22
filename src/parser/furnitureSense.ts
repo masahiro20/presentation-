@@ -49,6 +49,17 @@ export interface SenseResult {
 }
 
 /** 部屋ごとに常識で家具を整理する。順番は保つ（先に読めたもの＝文脈読みの結果を優先） */
+function roomArea(room: Room | undefined): number {
+  if (!room) return 0;
+  const p = room.polygon;
+  let a = 0;
+  for (let i = 0; i < p.length; i++) {
+    const q = p[(i + 1) % p.length];
+    a += p[i].x * q.y - q.x * p[i].y;
+  }
+  return Math.abs(a) / 2 / 1e6;
+}
+
 export function senseFurniture(items: FurnitureItem[], rooms: Room[]): SenseResult {
   const removed: string[] = [];
   const roomById = new Map(rooms.map((r) => [r.id, r]));
@@ -89,6 +100,11 @@ export function senseFurniture(items: FurnitureItem[], rooms: Room[]): SenseResu
         const first = sorted[0];
         const twin = sorted.slice(1).find((b) => Math.abs(((b.rot - first.rot) % 180) + 180) % 180 < 10 && d(first, b) < 2600);
         keep = twin ? [first, twin] : [first];
+      } else if (kind === 'sofa' && (type === 'ldk' || type === 'living') && roomArea(room) >= 25) {
+        // 広い LDK のソファセット（3 人掛け＋2 人掛け・L 字に置いた 2 台）は 2 台まで
+        const sorted = [...have].sort((a, b) => (b.w ?? 0) - (a.w ?? 0));
+        const pair = sorted.slice(1).find((b) => d(sorted[0], b) < 3500);
+        keep = pair ? [sorted[0], pair] : [sorted[0]];
       } else if (kind === 'sofa' || kind === 'kitchen' || kind === 'bath') {
         keep = [...have].sort((a, b) => (b.w ?? b.len ?? 0) - (a.w ?? a.len ?? 0)).slice(0, cap);
       } else {

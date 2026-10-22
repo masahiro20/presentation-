@@ -11,7 +11,7 @@ import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, norm
 import { detectStairs, stairEntryFromArrow } from './stairs';
 import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate } from './roomKnowledge';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
-import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
+import { detectSymbols, dashedOutlines, dashedCarSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
 import { northCandidates, pickNorth } from './north';
 import { senseFurniture } from './furnitureSense';
@@ -469,7 +469,7 @@ export function looksLikeRoomName(raw: string): boolean {
   if (/^[\d.,+\-×XW*＊()（）]+$/.test(s)) return false;
   if (/\d{3,}/.test(s)) return false;
   if (/^(UP|DN|FIX|FL|GL|CH|H=|W=|PS|MB|SK|冷|W\d)/.test(s)) return false;
-  if (/境界|道路|隣地|通り芯|芯|^GL|天井|床補強|予定|参考/.test(s)) return false;
+  if (/境界|道路|隣地|通り芯|芯|^GL|天井|床補強|予定|参考|将来|スロープ|想定|程度|ライン|シャッター/.test(s)) return false;
   // 日本語を含む語、または英字のみの略称
   if (/^※/.test(raw.trim())) return false;
   return /[\u3040-\u30ff\u3400-\u9fff]/.test(s) || /^[A-Z]{2,5}$/.test(s);
@@ -579,11 +579,22 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
   const names = plan.texts
     .map((t) => ({ t, nm: cleanRoomName(t.str) }))
     .filter((o) => o.nm && classifyRoomName(o.nm) != null)
-    .map((o) => ({ x: o.t.x, y: o.t.y, nm: o.nm!, type: classifyRoomName(o.nm!)! }));
+    .map((o) => ({ x: o.t.x, y: o.t.y, nm: o.nm!, type: classifyRoomName(o.nm!)!, tatami: undefined as number | undefined }));
   if (names.length < 2) return false;
+  // 室名のそばの帖数（「6帖」「40.1帖」）: 区切りの候補が複数あるとき、帖数に合う面積になる線を選ぶ
+  for (const t of plan.texts) {
+    const area = parseAreaLabel(t.str);
+    const tatami = area?.tatami ?? (area?.m2 ? area.m2 / 1.62 : undefined);
+    if (!tatami) continue;
+    const near = names
+      .map((n) => ({ n, d: Math.hypot(n.x - t.x, n.y - t.y) }))
+      .filter((o) => o.d < 1500)
+      .sort((a, b) => a.d - b.d)[0];
+    if (near && near.n.tatami == null) near.n.tatami = tatami;
+  }
   let changed = false;
-  for (let iter = 0; iter < 3; iter++) {
-    const { labels } = grid.labelComponents();
+  for (let iter = 0; iter < 6; iter++) {
+    const { labels, sizes } = grid.labelComponents();
     const byLabel = new Map<number, typeof names>();
     for (const n of names) {
       const [cx, cy] = grid.cellOf(n);
@@ -633,7 +644,9 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
       });
       // 区切りの候補: 図面の線（戸・間仕切り）と、壁の端からその壁の向きに延ばして 2m 以内で別の壁に当たる線
       // （戸の開口・壁の端にある出入口。収納の折れ戸や、壁の端と直角の壁の間の出入口がこれで閉じる）
-      const candCells: { cells: number[]; L: number }[] = cands.map((sg) => ({ cells: lineCells(grid, sg.a, sg.b), L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) }));
+      const candCells: { cells: number[]; L: number; maxPiece: number }[] = cands.map((sg) => ({ cells: lineCells(grid, sg.a, sg.b), L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y), maxPiece: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) }));
+      /** 壁の端から延ばした線（同じ行・列ごとに集め、壁をはさんで一直線に並ぶものはまとめて 1 本の仮想の間仕切りにする） */
+      const extended: { cells: number[]; L: number; axis: 'h' | 'v'; line: number; from: number; to: number }[] = [];
       {
         const maxLen = Math.round(2730 / grid.res);
         const dirs = [
@@ -680,18 +693,67 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
                 cy += dy;
                 if (cx < 0 || cy < 0 || cx >= grid.w || cy >= grid.h) break;
               }
-              if (hit && cells.length >= 2) candCells.push({ cells, L: cells.length * grid.res });
+              if (hit && cells.length >= 2) {
+                candCells.push({ cells, L: cells.length * grid.res, maxPiece: cells.length * grid.res });
+                const axis = dx ? 'h' : 'v';
+                const ts = cells.map((c) => (axis === 'h' ? c % grid.w : Math.floor(c / grid.w)));
+                extended.push({ cells, L: cells.length * grid.res, axis, line: axis === 'h' ? ny : nx, from: Math.min(...ts), to: Math.max(...ts) });
+              }
             }
           }
+        // 同じ直線上で、間が壁だけの延長線どうしをつなぐ（LDK と洗面脱衣室・ホールが壁なしで続く間取りで、
+        // 中庭や玄関の壁をはさんで一直線に並ぶ壁の端から「見えない間仕切り」を引く）
+        const byLine = new Map<string, typeof extended>();
+        for (const e of extended) {
+          const k = `${e.axis}:${e.line}`;
+          if (!byLine.has(k)) byLine.set(k, []);
+          byLine.get(k)!.push(e);
+        }
+        for (const [k, list] of byLine) {
+          if (list.length < 2) continue;
+          const axis = k[0] as 'h' | 'v';
+          list.sort((a, b) => a.from - b.from);
+          let run: typeof extended = [list[0]];
+          const flush = () => {
+            if (run.length >= 2) {
+              const cells = [...new Set(run.flatMap((r) => r.cells))];
+              candCells.push({ cells, L: cells.length * grid.res, maxPiece: Math.max(...run.map((r) => r.L)) });
+            }
+          };
+          for (let i = 1; i < list.length; i++) {
+            const prev = run[run.length - 1];
+            const cur = list[i];
+            // 間のセルが全部壁なら同じ仮想線
+            let wallOnly = cur.from > prev.to;
+            for (let t = prev.to + 1; wallOnly && t < cur.from; t++) {
+              const c = axis === 'h' ? list[0].line * grid.w + t : t * grid.w + list[0].line;
+              if (grid.data[c] !== WALL) wallOnly = false;
+            }
+            if (wallOnly && cur.from - prev.to <= Math.round(6000 / grid.res)) run.push(cur);
+            else {
+              flush();
+              run = [cur];
+            }
+          }
+          flush();
+        }
       }
-      // 室名どうしを分ける線のうち、小さい側が 0.6㎡ 以上で最も短いもの
-      let best: { cells: number[]; L: number } | null = null;
+      // 室名どうしを分ける線のうち、小さい側が 0.6㎡ 以上で最も短いもの。
+      // 1 本の線で分けられないときだけ、壁をはさんで一直線に並ぶ延長線の組（仮想の間仕切り）を使い、
+      // 帖数が書いてあれば両側の面積が帖数に合う組を選ぶ
+      let best: { cells: number[]; score: number } | null = null;
+      const total = sizes[l] ?? 0;
       const A = distinct[0];
       for (const B of distinct.slice(1)) {
         // 収納・トイレ・個室が他の部屋と一続きになっているときは、1.5 間までの線も使う（普通の戸は 2m まで）
         const strict = mustSeparate(A.type, B.type);
+        for (const pass of [0, 1] as const) {
         for (const cd of candCells) {
-          if (cd.L > 2000 && !strict) continue;
+          const combo = cd.L > cd.maxPiece + 1;
+          if (combo !== (pass === 1)) continue;
+          if (combo) {
+            if (cd.maxPiece > (strict ? 2730 : 2000) || cd.L > 6000) continue;
+          } else if (cd.L > 2000 && !strict) continue;
           const cells = cd.cells;
           const blocked = new Set(cells);
           const [ax, ay] = grid.cellOf(A);
@@ -721,7 +783,26 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
           if (reached) continue;
           const area = (count * grid.res * grid.res) / 1e6;
           if (area < 0.6) continue;
-          if (!best || cd.L < best.L) best = { cells, L: cd.L };
+          // 帖数との照合（延長線の組だけ）: A 側・B 側それぞれ、室名が 1 種類だけで帖数が分かるときは面積のずれを見る
+          // （線の長さが同じ候補どうしの決め手。長さが違えば短い線が優先）
+          let score = combo ? Math.round(cd.L / 300) * 300 * 10 : cd.L;
+          const sideA = ns.filter((n) => {
+            const [x, y] = grid.cellOf(n);
+            return seen[y * grid.w + x] === 1;
+          });
+          const sideB = ns.filter((n) => !sideA.includes(n));
+          const otherArea = ((total - count - cells.length) * grid.res * grid.res) / 1e6;
+          for (const [side, ar] of combo ? ([[sideA, area], [sideB, otherArea]] as [typeof ns, number][]) : []) {
+            const kinds = [...new Set(side.map((n) => n.nm))];
+            if (kinds.length !== 1) continue;
+            const tat = side.find((n) => n.tatami != null)?.tatami;
+            if (tat == null) continue;
+            const want = tat * 1.62;
+            score += Math.min(2999, (Math.abs(ar - want) / want) * 3000);
+          }
+          if (!best || score < best.score) best = { cells, score };
+        }
+        if (best) break;
         }
         if (best) break;
       }
@@ -956,6 +1037,109 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 手描き風の図面は線が揺れているので、同じ直線とみなす幅を広げ、全面ガラスの長い開口も塞ぐ
   const closers = plan.loose ? collinearGaps(walls, 6500, 90) : collinearGaps(walls, 4600);
   for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
+  // 4.6m を超える切れ目でも、その線上に細線（シャッター・全面ガラス・カーポートの縁）が引いてあれば塞ぐ。
+  // 車庫の出入口（〜6.5m）は薄い壁として区画も分ける（車庫が外に漏れて消えないように）
+  // 家具・車の記号（実線のまとまり・破線の輪郭）。車庫の出入口を塞ぐ判定にも使うので先に読む
+  const segsU = plan.scan || plan.loose ? [] : uniqueSegs([...plan.segs, ...plan.siteSegs]);
+  const dashed = segsU.length ? dashedOutlines(segsU) : [];
+  const solidSymbols = segsU.length ? detectSymbols(segsU) : [];
+  const symbols = [...solidSymbols, ...dashedCarSymbols(dashed, solidSymbols)];
+  if (!plan.loose && !(globalThis as { __noLongClosers?: boolean }).__noLongClosers) {
+    const thin = plan.segs.filter((sg) => sg.source === 'stroke' && !sg.dashed);
+    /** 線分 a-b の上（±60mm）にある細線が、その長さの何割を覆うか */
+    const thinCoverage = (a: Vec2, b: Vec2, tol = 250): number => {
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      if (L <= 0) return 0;
+      const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+      const nrm = { x: -u.y, y: u.x };
+      const iv: [number, number][] = [];
+      for (const sg of thin) {
+        // シャッターの一点鎖線は壁の線から少し内側に描かれるので、±25cm まで見る（短い線の断片は数えない）
+        if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 200) continue;
+        const oa = (sg.a.x - a.x) * nrm.x + (sg.a.y - a.y) * nrm.y;
+        const ob = (sg.b.x - a.x) * nrm.x + (sg.b.y - a.y) * nrm.y;
+        if (Math.abs(oa) > tol || Math.abs(ob) > tol || Math.abs(oa - ob) > 60) continue;
+        const ta = (sg.a.x - a.x) * u.x + (sg.a.y - a.y) * u.y;
+        const tb = (sg.b.x - a.x) * u.x + (sg.b.y - a.y) * u.y;
+        const s0 = Math.max(0, Math.min(ta, tb));
+        const s1 = Math.min(L, Math.max(ta, tb));
+        if (s1 > s0) iv.push([s0, s1]);
+      }
+      iv.sort((p, q) => p[0] - q[0]);
+      let covered = 0;
+      let cur: [number, number] | null = null;
+      for (const v of iv) {
+        if (cur && v[0] <= cur[1]) cur[1] = Math.max(cur[1], v[1]);
+        else {
+          if (cur) covered += cur[1] - cur[0];
+          cur = [v[0], v[1]];
+        }
+      }
+      if (cur) covered += cur[1] - cur[0];
+      return covered / L;
+    };
+    const closeWithLine = (a: Vec2, b: Vec2, d: number) => {
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      grid.fillThickSegment(a, b, L <= 6500 ? 60 : d, L <= 6500 ? WALL : GAP);
+    };
+    // 車庫・カーポートの出入口だけが対象（バルコニーや中庭の開口を塞がないように、車庫の室名が近くにある線だけ）
+    const garageLabels = plan.texts.filter((t) => {
+      const nm = cleanRoomName(t.str);
+      return nm != null && classifyRoomName(nm) === 'garage';
+    });
+    // 車庫の室名、または車の記号が線の近く（4.5m 以内）にあること
+    const carMarks = symbols.filter((sy) => sy.kind === 'car').map((sy) => ({ x: sy.x, y: sy.y }));
+    const nearGarage = (a: Vec2, b: Vec2) => [...garageLabels, ...carMarks].some((t) => distPointSegment({ x: t.x, y: t.y }, a, b) <= 4500);
+    /** 線の片側 2.5m 以内に壁が 1 つも無い（出入口は外に向いて開いている。玄関の上がり框の線などは両側に壁がある） */
+    const opensOutside = (a: Vec2, b: Vec2): boolean => {
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+      const nrm = { x: -u.y, y: u.x };
+      for (const sg of [1, -1]) {
+        let blocked = false;
+        for (const w of walls) {
+          for (const q of [w.a, w.b, { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 }]) {
+            const t = (q.x - a.x) * u.x + (q.y - a.y) * u.y;
+            const o = ((q.x - a.x) * nrm.x + (q.y - a.y) * nrm.y) * sg;
+            if (t > -200 && t < L + 200 && o > 150 && o < 2500) blocked = true;
+          }
+          if (blocked) break;
+        }
+        if (!blocked) return true;
+      }
+      return false;
+    };
+    for (const c of collinearGaps(walls, 6500)) {
+      const L = Math.hypot(c.b.x - c.a.x, c.b.y - c.a.y);
+      if (L <= 4600 || !nearGarage(c.a, c.b) || !opensOutside(c.a, c.b)) continue;
+      if (thinCoverage(c.a, c.b) < 0.6) continue;
+      (globalThis as { __closerTrace?: string[] }).__closerTrace?.push(`collinear ${Math.round(c.a.x)},${Math.round(c.a.y)}-${Math.round(c.b.x)},${Math.round(c.b.y)} L=${Math.round(L)}`);
+      closeWithLine(c.a, c.b, c.d);
+    }
+    // 平行な 2 枚の壁の端が向かい合っていて（車庫の両側の壁など）、端と端を結ぶ線上に細線が引いてあれば塞ぐ
+    const ends: { p: Vec2; w: WWall }[] = [];
+    for (const w of walls) {
+      if (!w.joinedA) ends.push({ p: w.a, w });
+      if (!w.joinedB) ends.push({ p: w.b, w });
+    }
+    for (let i = 0; i < ends.length; i++)
+      for (let j = i + 1; j < ends.length; j++) {
+        const e = ends[i];
+        const f = ends[j];
+        if (e.w === f.w) continue;
+        if (Math.abs(e.w.u.x * f.w.u.x + e.w.u.y * f.w.u.y) < 0.98) continue;
+        const dx = f.p.x - e.p.x;
+        const dy = f.p.y - e.p.y;
+        const L = Math.hypot(dx, dy);
+        // 車庫の出入口 1 ヵ所ぶん（2.4〜6.5m。短い線は玄関の上がり框などを拾う。長い線は敷地の線を拾って外を部屋にしてしまう）
+        if (L < 2400 || L > 6500) continue;
+        // 結ぶ線は壁と直交（壁の向きに沿う成分が小さい）
+        if (Math.abs(dx * e.w.u.x + dy * e.w.u.y) > 60) continue;
+        if (!nearGarage(e.p, f.p) || !opensOutside(e.p, f.p) || thinCoverage(e.p, f.p) < 0.6) continue;
+        (globalThis as { __closerTrace?: string[] }).__closerTrace?.push(`ends ${Math.round(e.p.x)},${Math.round(e.p.y)}-${Math.round(f.p.x)},${Math.round(f.p.y)} L=${Math.round(L)}`);
+        closeWithLine(e.p, f.p, Math.max(e.w.d, f.w.d));
+      }
+  }
   // 画像から読んだ図面: 他の壁につながっていない壁の端どうしが近い（70cm 以内）場合は、内外の判定用に仮につなぐ
   if (plan.loose) {
     const ends: { p: Vec2; w: WWall }[] = [];
@@ -1057,7 +1241,22 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         }
       }
       const mergeTo = new Map<number, number>();
-      for (const [u, m] of contact) mergeTo.set(u, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+      // 車庫の塗りに接する大きな名前の無い断片（アプローチ・庭）は車庫に戻さない
+      const garageLabels = new Set<number>();
+      for (const t of named) {
+        const nm = cleanRoomName(t.str);
+        if (nm && classifyRoomName(nm) === 'garage') {
+          const l = labelNear(grid, lb, t);
+          if (l) garageLabels.add(l);
+        }
+      }
+      const { sizes: szNow } = grid.labelComponents();
+      const bigCells = (12 * 1e6) / (grid.res * grid.res);
+      for (const [u, m] of contact) {
+        const order = [...m.entries()].sort((a, b) => b[1] - a[1]);
+        const pick = order.find(([v]) => !(garageLabels.has(v) && (szNow[u] ?? 0) >= bigCells));
+        if (pick) mergeTo.set(u, pick[0]);
+      }
       let changedAny = false;
       for (const [i, sd] of cellSides) {
         const [u, v] = sd;
@@ -1157,7 +1356,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       labelPos = { x: main.x, y: main.y };
     } else if (a?.names.length) {
       // 複数の室名が1つの領域に入った場合（LDK＋パントリーなど）は主な部屋を代表にする
-      const main = mainName(a.names)!;
+      let main = mainName(a.names)!;
+      // 「外部物置」と「庇」が同じ区画に入った軒下のテラス: 物置が 15㎡ を超えることは無いので屋外（庇・ポーチ）を代表にする
+      if ((main.type === 'storage' || main.type === 'closet') && area > 15) {
+        const outdoor = a.names.find((n) => n.type === 'porch' || n.type === 'balcony');
+        if (outdoor) main = outdoor;
+      }
       const uniq = [...new Set([main.str, ...a.names.map((n) => n.str)])];
       name = uniq.join('・');
       type = main.type;
@@ -1335,6 +1539,13 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const bb = bboxOf(rm.polygon);
     const bw = bb.maxX - bb.minX;
     const bh = bb.maxY - bb.minY;
+    // 車庫に接する大きな区画（室名が無い）は駐車場からのアプローチ・自転車置き場
+    if (rm.name === '室' && rm.area >= 10 && neighbors.includes('garage')) {
+      rm.name = 'アプローチ';
+      rm.type = 'porch';
+      rm.inferred = true;
+      continue;
+    }
     const guess = inferNamelessRoom(neighbors, rm.area, { level, width: Math.min(bw, bh), length: Math.max(bw, bh) });
     if (guess) {
       rm.name = guess.name;
@@ -1642,10 +1853,18 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const nearTexts = plan.siteTexts.filter((t) => t.x > plan.bbox.minX - 3000 && t.x < plan.bbox.maxX + 3000 && t.y > plan.bbox.minY - 3000 && t.y < plan.bbox.maxY + 3000 && !plan.texts.some((u) => u.x === t.x && u.y === t.y));
   const notes = plan.scan ? [] : detectNotes([...plan.texts, ...nearTexts], labelSize, rooms);
   // 家具・設備・車・植栽の記号（スキャン図面には無い）
-  const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(detectSymbols(uniqueSegs([...plan.segs, ...plan.siteSegs])), rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
+  const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(symbols, rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
   // 文脈読み（部屋の種類・大きさ・壁からの位置・隣の物との関係）。同じ部屋で同じ種類を読めたら、形の決め打ちの結果より優先する
-  const g = globalThis as { __symbolDict?: SymbolSignature[]; __ctxTrace?: string[] };
-  const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items);
+  const g = globalThis as { __symbolDict?: SymbolSignature[]; __ctxTrace?: string[]; __dashTrace?: string[] };
+  const dashRects = dashed
+    .filter((o) => {
+      const L = Math.max(o.maxX - o.minX, o.maxY - o.minY);
+      const S = Math.min(o.maxX - o.minX, o.maxY - o.minY);
+      return L >= 400 && L <= 3600 && S >= 280 && S <= 2400;
+    })
+    .map((o) => ({ minX: o.minX, minY: o.minY, maxX: o.maxX, maxY: o.maxY, inner: 0, innerRects: 0, arcs: 0, width: 0, dashed: true }));
+  if (g.__dashTrace) for (const o of dashed) g.__dashTrace.push(`${level}F 破線の輪郭 ${Math.round(o.maxX - o.minX)}x${Math.round(o.maxY - o.minY)} n=${o.n} @${Math.round((o.minX + o.maxX) / 2)},${Math.round((o.minY + o.maxY) / 2)}`);
+  const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects);
   if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
   // 同じ部屋で同じ種類を文脈読みが読めたら、形の決め打ちの方は外す（食卓はキッチンと兼ねて読むことがあるので、キッチンを読んだ部屋の食卓も）
   const taken = new Set((ctx?.items ?? []).flatMap((it) => (it.kind === 'kitchen' ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`])));
@@ -1783,7 +2002,11 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         }
       }
     }
-    if ((globalThis as any).__DBG_PLANS) ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
+    if ((globalThis as any).__DBG_PLANS) {
+      ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
+      const lens = ww.map((w) => w.t1 - w.t0);
+      console.log('walls', ww.length, 'len<300', lens.filter((l) => l < 300).length, '<1000', lens.filter((l) => l >= 300 && l < 1000).length, '>=1000', lens.filter((l) => l >= 1000).length, 'd', ww.slice(0, 12).map((w) => Math.round(w.d)).join('/'));
+    }
     const wallColors = wallFillColors(page.colorFills, ww);
     if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
     // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
@@ -1831,9 +2054,10 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const cand = page.colorFills
         .filter((f) => !wallColors.has(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin)))
         .map((f) => ({ poly: f.poly, area: Math.abs(polygonArea(f.poly)) / 1e6, bb: bboxOf(f.poly) }))
-        .filter((c) => c.area >= 0.6 && c.area <= 80 && isRoomShaped(c.poly))
+        .filter((c) => c.area >= 0.6 && c.area <= 150 && isRoomShaped(c.poly))
         .map((c) => ({ ...c, labels: labelTexts.filter((t) => pointInPolygon({ x: t.x, y: t.y }, c.poly)) }))
-        .filter((c) => c.labels.length)
+        // 80㎡ を超える塗りは車庫・カーポートだけ
+        .filter((c) => c.labels.length && (c.area <= 80 || c.labels.some((t) => classifyRoomName(t.str) === 'garage')))
         .sort((a, b) => b.area - a.area);
       const kept: typeof cand = [];
       for (const c of cand) {
@@ -1851,6 +2075,21 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     }
   }
   assignFloorTitles(plans, pages);
+  // 玄関のある図は 1 階（見出しが図面名欄にしか無く、別の図に 1 階が割り当たっていたら入れ替える）
+  for (const page of pages) {
+    const onPage = plans.filter((p) => p.pageIndex === page.pageIndex);
+    if (onPage.length < 2) continue;
+    const hasEntrance = (p: PlanData) => p.texts.some((t) => {
+      const nm = cleanRoomName(t.str);
+      return nm != null && classifyRoomName(nm) === 'entrance' && !/吹抜|上部/.test(t.str);
+    });
+    const ent = onPage.filter(hasEntrance);
+    if (ent.length !== 1 || ent[0].floorHint === 1) continue;
+    const other = onPage.find((p) => p.floorHint === 1);
+    const old = ent[0].floorHint;
+    ent[0].floorHint = 1;
+    if (other) other.floorHint = old != null && old !== 1 ? old : 2;
+  }
   // 見出しの無い図が、見出しのある図のすぐ近く（吹抜などで分かれた同じ階の一部）にあればまとめる
   for (const p of plans.slice()) {
     if (p.floorHint != null) continue;
@@ -1902,6 +2141,10 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
     for (const t of page.texts) {
       const f = parseFloorTitle(t.str);
       if (f == null || !isTitle(t)) continue;
+      // 図面名欄の「1階平面図, 2階平面図」のように 1 行に複数の階が並ぶものは見出しではない
+      const s0 = normalizeText(t.str);
+      if (/[,、，]/.test(s0) && /平面/.test(s0)) continue;
+      if (followingOnLine(t, page.texts, 3).some((q) => parseFloorTitle(q.str) != null && parseFloorTitle(q.str) !== f)) continue;
       for (const p of onPage) {
         const b = p.bbox;
         const dx = Math.max(0, b.minX - t.x, t.x - b.maxX);

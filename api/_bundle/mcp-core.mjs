@@ -616,7 +616,7 @@ var scale = (a, s) => ({
 	y: a.y * s
 });
 var dot = (a, b) => a.x * b.x + a.y * b.y;
-var dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+var dist$1 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 var lerp = (a, b, t) => ({
 	x: a.x + (b.x - a.x) * t,
 	y: a.y + (b.y - a.y) * t
@@ -688,8 +688,8 @@ function bboxGap(a, b) {
 function distPointSegment(p, a, b) {
 	const ab = sub(b, a);
 	const l2 = dot(ab, ab);
-	if (l2 === 0) return dist(p, a);
-	return dist(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
+	if (l2 === 0) return dist$1(p, a);
+	return dist$1(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
 }
 /** Douglas-Peucker による閉多角形の簡略化 */
 function simplifyClosed(poly, tol) {
@@ -698,7 +698,7 @@ function simplifyClosed(poly, tol) {
 	let i1 = 0;
 	let best = -1;
 	for (let i = 0; i < poly.length; i++) {
-		const d = dist(poly[0], poly[i]);
+		const d = dist$1(poly[0], poly[i]);
 		if (d > best) {
 			best = d;
 			i1 = i;
@@ -743,7 +743,7 @@ function removeCollinear(poly, tol) {
 			const a = out[(i - 1 + out.length) % out.length];
 			const b = out[i];
 			const c = out[(i + 1) % out.length];
-			if (distPointSegment(b, a, c) < tol || dist(a, b) < tol) {
+			if (distPointSegment(b, a, c) < tol || dist$1(a, b) < tol) {
 				out.splice(i, 1);
 				changed = true;
 				break;
@@ -896,7 +896,7 @@ function assignGroup(s, groups, tolRad) {
 	return best;
 }
 /** 同一直線上で重なる線を統合 */
-function mergeCollinear(lines) {
+function mergeCollinear$1(lines) {
 	lines.sort((a, b) => a.o - b.o || a.t0 - b.t0);
 	const out = [];
 	let i = 0;
@@ -1002,7 +1002,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 			fill: s.source === "fill"
 		});
 	}
-	const lines = groupLines.map(mergeCollinear);
+	const lines = groupLines.map(mergeCollinear$1);
 	{
 		let fillPairLen = 0;
 		lines.forEach((ls) => {
@@ -1445,7 +1445,7 @@ function circleOf(a, b, c) {
 		r: Math.hypot(a.x - ux, a.y - uy)
 	};
 }
-function bez(a, t) {
+function bez$1(a, t) {
 	const u = 1 - t;
 	return {
 		x: u * u * u * a.p0.x + 3 * u * u * t * a.p1.x + 3 * u * t * t * a.p2.x + t * t * t * a.p3.x,
@@ -1586,9 +1586,9 @@ function curvedWallChords(arcs, segs, heavyT, O) {
 	const parts = [];
 	for (const a of arcs) {
 		if (a.poly) continue;
-		const circ = circleOf(a.p0, bez(a, .5), a.p3);
+		const circ = circleOf(a.p0, bez$1(a, .5), a.p3);
 		if (!circ || circ.r < 300 || circ.r > 8e3) continue;
-		const q = bez(a, .25);
+		const q = bez$1(a, .25);
 		if (Math.abs(Math.hypot(q.x - circ.c.x, q.y - circ.c.y) - circ.r) > circ.r * .03) continue;
 		const m = parts.find((p) => Math.hypot(p.c.x - circ.c.x, p.c.y - circ.c.y) < 10 && Math.abs(p.r - circ.r) < 10 && [p.e0, p.e1].some((e) => [a.p0, a.p3].some((f) => Math.hypot(e.x - f.x, e.y - f.y) < 5)));
 		if (m) {
@@ -1696,9 +1696,9 @@ function curvedWallChords(arcs, segs, heavyT, O) {
 function detectDoorSymbols(arcs, segs, groups) {
 	const parts = [];
 	for (const a of arcs) {
-		const circ = circleOf(a.p0, bez(a, .5), a.p3);
+		const circ = circleOf(a.p0, bez$1(a, .5), a.p3);
 		if (!circ || circ.r < 400 || circ.r > 1400) continue;
-		const q = bez(a, .25);
+		const q = bez$1(a, .25);
 		if (Math.abs(Math.hypot(q.x - circ.c.x, q.y - circ.c.y) - circ.r) > circ.r * .03) continue;
 		const m = parts.find((p) => Math.hypot(p.c.x - circ.c.x, p.c.y - circ.c.y) < 25 && Math.abs(p.r - circ.r) < 25);
 		if (m) {
@@ -2483,16 +2483,21 @@ var RULES = [
 	[/子供|子ども|こども|キッズ|子室|KIDS|CHILD/, "kids"],
 	[/主寝室|寝室|ベッドルーム|MBR|BEDROOM|^BR\d*$|^B\.?R\d*$/, "bedroom"],
 	[/洋室|個室|^室\d*$|^居室|ゲストルーム|GUEST/, "bedroom"],
-	[/書斎|ワーク|スタディ|STUDY|^DEN$|趣味|ヌック|NOOK|テレワーク|WORK|ライブラリー|シアター/, "study"],
+	[/書斎|ワーク|スタディ|STUDY|^DEN$|趣味|ヌック|NOOK|テレワーク|WORK|ライブラリー|シアター|PCコーナー|ママコーナー|パパコーナー|アトリエ/, "study"],
+	[/ファミリーホール|セカンドリビング|フリースペース|多目的|プレイルーム|ファミリールーム/, "living"],
+	[/パウダー|サンルーム|ランドリールーム/, "washroom"],
+	[/ウォークスルー|W\.?T\.?C/, "closet"],
+	[/クローク|ワインセラー|備蓄/, "storage"],
 	[/浴室|バスルーム|^バス$|風呂|^UB$|^U\.?B$|ユニットバス|BATH|^浴$/, "bath"],
 	[/洗面|脱衣|ランドリー|家事室|サニタリー|UTILITY|ユーティリティ|^UT$|^U\.?T$|洗濯|^洗$|LAUNDRY|ドレッサー|身支度/, "washroom"],
 	[/トイレ|便所|^W\.?C$|TOILET|^WC\d*$|^トイ$|化粧室/, "toilet"],
+	[/玄関ホール|玄関ﾎｰﾙ/, "hall"],
 	[/玄関|エントランス|土間|ENTRANCE|^ENT$/, "entrance"],
 	[/ホール|廊下|HALL|ろうか|通路/, "hall"],
 	[/階段|STAIRS?/, "stairs"],
 	[/納戸|物入|収納|^S$|^P\.?S$|物置|倉庫|STORAGE|^収$|ロフト|LOFT|小屋裏|グルニエ|^ST$/, "storage"],
 	[/バルコニー|ベランダ|テラス|ルーフバルコニー|デッキ|BALCONY|屋上|インナーバルコニー|ガーデン|ルーフ|^OPEN$|物干/, "balcony"],
-	[/ポーチ|PORCH/, "porch"],
+	[/ポーチ|PORCH|^庇$|^軒下$|^軒$/, "porch"],
 	[/ガレージ|車庫|ビルトイン|GARAGE|カーポート/, "garage"]
 ];
 function classifyRoomName(raw) {
@@ -2765,6 +2770,329 @@ function stairEntryFromArrow(r, segs, marks) {
 		};
 	}
 	return best ? sideOf(best.tail) : null;
+}
+//#endregion
+//#region src/parser/roomKnowledge.ts
+var K = (p) => ({
+	wet: false,
+	storage: false,
+	circulation: false,
+	private: false,
+	openTo: [],
+	adjacent: [],
+	tatami: [1, 40],
+	door: "in",
+	...p
+});
+var ROOM_KNOWLEDGE = {
+	ldk: K({
+		openTo: [
+			"living",
+			"dining",
+			"kitchen",
+			"hall",
+			"stairs",
+			"japanese",
+			"study"
+		],
+		adjacent: [
+			"kitchen",
+			"storage",
+			"hall",
+			"balcony"
+		],
+		tatami: [12, 40],
+		door: "in"
+	}),
+	living: K({
+		openTo: [
+			"ldk",
+			"dining",
+			"kitchen",
+			"hall",
+			"stairs",
+			"japanese",
+			"study"
+		],
+		adjacent: [
+			"dining",
+			"hall",
+			"balcony"
+		],
+		tatami: [6, 20]
+	}),
+	dining: K({
+		openTo: [
+			"ldk",
+			"living",
+			"kitchen",
+			"hall"
+		],
+		adjacent: ["kitchen", "living"],
+		tatami: [4, 12]
+	}),
+	kitchen: K({
+		wet: true,
+		openTo: [
+			"ldk",
+			"living",
+			"dining"
+		],
+		adjacent: [
+			"dining",
+			"storage",
+			"washroom"
+		],
+		tatami: [3, 8]
+	}),
+	japanese: K({
+		private: true,
+		openTo: ["ldk", "living"],
+		adjacent: [
+			"ldk",
+			"hall",
+			"closet"
+		],
+		tatami: [3, 8]
+	}),
+	bedroom: K({
+		private: true,
+		adjacent: [
+			"closet",
+			"hall",
+			"balcony"
+		],
+		tatami: [4.5, 12]
+	}),
+	kids: K({
+		private: true,
+		adjacent: ["closet", "hall"],
+		tatami: [4, 8]
+	}),
+	study: K({
+		private: true,
+		openTo: [
+			"ldk",
+			"living",
+			"hall",
+			"bedroom"
+		],
+		adjacent: [
+			"hall",
+			"ldk",
+			"bedroom"
+		],
+		tatami: [1.5, 6]
+	}),
+	bath: K({
+		wet: true,
+		private: true,
+		adjacent: ["washroom"],
+		tatami: [1, 2.5],
+		door: "in"
+	}),
+	washroom: K({
+		wet: true,
+		openTo: ["washroom"],
+		adjacent: [
+			"bath",
+			"toilet",
+			"kitchen",
+			"hall",
+			"closet"
+		],
+		tatami: [1.5, 5]
+	}),
+	toilet: K({
+		wet: true,
+		private: true,
+		adjacent: ["hall", "washroom"],
+		tatami: [.5, 1.5],
+		door: "out"
+	}),
+	entrance: K({
+		circulation: true,
+		openTo: ["hall", "storage"],
+		adjacent: [
+			"hall",
+			"storage",
+			"porch"
+		],
+		tatami: [1, 4],
+		door: "none"
+	}),
+	hall: K({
+		circulation: true,
+		openTo: [
+			"entrance",
+			"stairs",
+			"ldk",
+			"living",
+			"dining",
+			"hall",
+			"washroom",
+			"study"
+		],
+		adjacent: [
+			"stairs",
+			"toilet",
+			"washroom",
+			"bedroom",
+			"closet"
+		],
+		tatami: [1, 8],
+		door: "none"
+	}),
+	stairs: K({
+		circulation: true,
+		openTo: [
+			"hall",
+			"ldk",
+			"living",
+			"entrance"
+		],
+		adjacent: ["hall", "storage"],
+		tatami: [1.5, 4],
+		door: "none"
+	}),
+	closet: K({
+		storage: true,
+		adjacent: [
+			"bedroom",
+			"kids",
+			"hall",
+			"washroom",
+			"japanese"
+		],
+		tatami: [.5, 4],
+		door: "out"
+	}),
+	storage: K({
+		storage: true,
+		openTo: ["entrance"],
+		adjacent: [
+			"entrance",
+			"kitchen",
+			"hall",
+			"stairs",
+			"ldk"
+		],
+		tatami: [.3, 4],
+		door: "out"
+	}),
+	balcony: K({
+		door: "in",
+		adjacent: [
+			"ldk",
+			"living",
+			"bedroom",
+			"washroom"
+		],
+		tatami: [1, 12]
+	}),
+	porch: K({
+		circulation: true,
+		adjacent: ["entrance"],
+		tatami: [.5, 4],
+		door: "none"
+	}),
+	garage: K({
+		adjacent: ["entrance", "storage"],
+		tatami: [6, 20],
+		door: "out"
+	}),
+	void: K({
+		door: "none",
+		tatami: [1, 20]
+	}),
+	other: K({})
+};
+/** 壁なしで一続きになっていてもおかしくない組み合わせ（玄関とホール、LDK とダイニング、ホールと階段 …） */
+function canShareSpace(a, b) {
+	if (a === b) return true;
+	return ROOM_KNOWLEDGE[a].openTo.includes(b) || ROOM_KNOWLEDGE[b].openTo.includes(a);
+}
+/** 必ず壁か戸で分かれているべき組み合わせ（収納・トイレ・浴室・個室が他の部屋と一続き） */
+function mustSeparate(a, b) {
+	if (canShareSpace(a, b)) return false;
+	const ka = ROOM_KNOWLEDGE[a];
+	const kb = ROOM_KNOWLEDGE[b];
+	if (a === "other" || b === "other" || a === "void" || b === "void") return false;
+	return ka.storage || kb.storage || ka.private || kb.private || ka.wet || kb.wet;
+}
+/**
+* 室名の無い区画を、隣の部屋から推定する（玄関の隣の小さな区画 → SIC、キッチンの隣 → パントリー、寝室の隣 → WIC …）
+* 分からなければ null
+*/
+function inferNamelessRoom(neighbors, areaM2, opts = { level: 1 }) {
+	const tatami = areaM2 / 1.62;
+	const has = (...ts) => ts.some((t) => neighbors.includes(t));
+	if (opts.width != null) {
+		const len = opts.length ?? 0;
+		if (opts.width < 350 || opts.width < 700 && len >= 2500) return {
+			name: "",
+			type: "other"
+		};
+		if (opts.width >= 700 && opts.width < 1e3 && len >= 1800 && has("hall", "entrance", "stairs", "ldk", "living", "dining", "kitchen")) return {
+			name: "通路",
+			type: "hall"
+		};
+	}
+	if (tatami <= 4.5) {
+		if (has("entrance") && tatami >= .7) return {
+			name: tatami >= 1.5 ? "シューズクローク" : "玄関収納",
+			type: "storage"
+		};
+		if (has("kitchen", "ldk", "dining") && tatami <= 2.5 && tatami >= .7) return {
+			name: "パントリー",
+			type: "storage"
+		};
+		if (has("bedroom", "kids", "japanese")) return {
+			name: tatami >= 1.5 ? "WIC" : "CL",
+			type: "closet"
+		};
+		if (has("stairs") && tatami <= 1.5) return {
+			name: "階段下収納",
+			type: "storage"
+		};
+		if (has("washroom", "bath") && tatami <= 2) return {
+			name: "リネン庫",
+			type: "storage"
+		};
+		if (has("hall") && tatami <= 2) return {
+			name: "物入",
+			type: "closet"
+		};
+		if (tatami <= 2) return {
+			name: "収納",
+			type: "storage"
+		};
+	}
+	if (opts.level >= 2 && tatami >= 4.5 && tatami <= 12 && has("hall", "stairs")) return {
+		name: "洋室",
+		type: "bedroom"
+	};
+	return null;
+}
+/**
+* 戸の開く向き: 両側の部屋の種類から、どちらの部屋の中へ開くか。
+* 戻り値 'a' = a の部屋の中へ、'b' = b の中へ、null = 決められない
+*/
+function doorSwingFor(a, b) {
+	if (!a && !b) return null;
+	const ka = a ? ROOM_KNOWLEDGE[a] : null;
+	const kb = b ? ROOM_KNOWLEDGE[b] : null;
+	if (ka?.door === "out" && kb?.door !== "out") return "b";
+	if (kb?.door === "out" && ka?.door !== "out") return "a";
+	if (ka && (ka.private || ka.wet) && kb && (kb.circulation || !kb.private)) return "a";
+	if (kb && (kb.private || kb.wet) && ka && (ka.circulation || !ka.private)) return "b";
+	if (ka?.circulation && kb && !kb.circulation) return "b";
+	if (kb?.circulation && ka && !ka.circulation) return "a";
+	return null;
+}
+/** 通路（玄関・ホール・階段）か、人が通る大きな部屋（LDK など）か */
+function isCirculation(t) {
+	return !!t && (ROOM_KNOWLEDGE[t].circulation || t === "ldk" || t === "living" || t === "dining");
 }
 //#endregion
 //#region src/parser/site.ts
@@ -3164,7 +3492,8 @@ function translateSite(site, dx, dy) {
 //#region src/parser/symbols.ts
 /** 端点のつながる細い線をまとめる */
 function clusterSegments(segs, maxLen = 2500, minN = 12) {
-	const use = segs.filter((s) => s.source !== "fill" && !s.dashed && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < maxLen);
+	const hatch = hatchSegments(segs);
+	const use = segs.filter((s) => s.source !== "fill" && !s.dashed && !hatch.has(s) && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < maxLen);
 	const key = (q) => `${Math.round(q.x / 4)},${Math.round(q.y / 4)}`;
 	const parent = use.map((_, i) => i);
 	const find = (i) => parent[i] === i ? i : parent[i] = find(parent[i]);
@@ -3208,9 +3537,64 @@ function clusterSegments(segs, maxLen = 2500, minN = 12) {
 	return out;
 }
 var within = (v, lo, hi) => v >= lo && v <= hi;
+/**
+* 車の記号が端点を共有しない何枚かの部品（ボディ・ボンネット・キャビン・後部）で描かれている図面:
+* 大きめの部品（長さ 2.5m 以上）を種に、重なる部品をまとめて車の大きさになれば 1 つの記号にする
+*/
+function assembleCars(clusters) {
+	const L = (c) => Math.max(c.maxX - c.minX, c.maxY - c.minY);
+	const S = (c) => Math.min(c.maxX - c.minX, c.maxY - c.minY);
+	const seeds = clusters.filter((c) => within(L(c), 2500, 5600) && within(S(c), 500, 2400) && c.segs.length >= 20);
+	if (!seeds.length) return clusters;
+	const used = /* @__PURE__ */ new Set();
+	const out = [];
+	for (const seed of seeds) {
+		if (used.has(seed)) continue;
+		let cur = {
+			...seed,
+			segs: [...seed.segs]
+		};
+		const members = /* @__PURE__ */ new Set([seed]);
+		let grew = true;
+		while (grew) {
+			grew = false;
+			const longX = cur.maxX - cur.minX >= cur.maxY - cur.minY;
+			const ex = longX ? 1300 : 150;
+			const ey = longX ? 150 : 1300;
+			for (const c of clusters) {
+				if (members.has(c) || used.has(c)) continue;
+				if (L(c) > 5600 || S(c) < 150 && c.segs.length < 20) continue;
+				const ix = Math.min(cur.maxX + ex, c.maxX) - Math.max(cur.minX - ex, c.minX);
+				const iy = Math.min(cur.maxY + ey, c.maxY) - Math.max(cur.minY - ey, c.minY);
+				if (ix <= 0 || iy <= 0) continue;
+				if (longX ? c.minY < cur.minY - ey || c.maxY > cur.maxY + ey : c.minX < cur.minX - ex || c.maxX > cur.maxX + ex) continue;
+				const nx0 = Math.min(cur.minX, c.minX);
+				const ny0 = Math.min(cur.minY, c.minY);
+				const nx1 = Math.max(cur.maxX, c.maxX);
+				const ny1 = Math.max(cur.maxY, c.maxY);
+				if (Math.max(nx1 - nx0, ny1 - ny0) > 5600 || Math.min(nx1 - nx0, ny1 - ny0) > 2400) continue;
+				cur = {
+					segs: [...cur.segs, ...c.segs],
+					minX: nx0,
+					minY: ny0,
+					maxX: nx1,
+					maxY: ny1
+				};
+				members.add(c);
+				grew = true;
+			}
+		}
+		if (members.size >= 2 && within(L(cur), 4300, 5600) && within(S(cur), 1600, 2400) && cur.segs.length >= 50) {
+			for (const m of members) used.add(m);
+			out.push(cur);
+		}
+	}
+	if (!out.length) return clusters;
+	return [...clusters.filter((c) => !used.has(c)), ...out];
+}
 /** 線のまとまりを記号として分類する（部屋の情報は使わず形だけで） */
 function detectSymbols(segs) {
-	const clusters = clusterSegments(segs, 3400, 4);
+	const clusters = assembleCars(clusterSegments(segs, 3400, 4));
 	const out = [];
 	for (const c of clusters) {
 		const w = c.maxX - c.minX;
@@ -3309,6 +3693,330 @@ function detectSymbols(segs) {
 	for (const s of out) if (s.kind === "plant" && (s.bump ?? 0) < .03) s.kind = "chairBack";
 	const cars = out.filter((s) => s.kind === "car");
 	return out.filter((s) => s.kind === "car" || !cars.some((car) => Math.abs(s.x - car.x) < car.w / 2 && Math.abs(s.y - car.y) < car.h / 2));
+}
+/**
+* 等間隔に並ぶ平行線（床のタイル割・デッキ・階段の段・ハッチ）。
+* CAD のハッチは車や家具の輪郭で切られて端点を共有するので、記号のまとまりに使うと図面全体が 1 つにつながってしまう。
+* 同じ向きの線が同じピッチ（80〜1,200mm）で 5 本以上並ぶものをハッチとみなす。
+*/
+function hatchSegments(segs) {
+	const out = /* @__PURE__ */ new Set();
+	for (const axis of ["h", "v"]) {
+		const byO = /* @__PURE__ */ new Map();
+		for (const s of segs) {
+			if (s.source === "fill") continue;
+			const dx = Math.abs(s.b.x - s.a.x);
+			const dy = Math.abs(s.b.y - s.a.y);
+			if (!(axis === "h" ? dy < 2 && dx >= 250 : dx < 2 && dy >= 250)) continue;
+			const o = Math.round((axis === "h" ? s.a.y : s.a.x) / 2) * 2;
+			const t0 = axis === "h" ? Math.min(s.a.x, s.b.x) : Math.min(s.a.y, s.b.y);
+			const t1 = axis === "h" ? Math.max(s.a.x, s.b.x) : Math.max(s.a.y, s.b.y);
+			if (!byO.has(o)) byO.set(o, []);
+			byO.get(o).push({
+				s,
+				t0,
+				t1
+			});
+		}
+		const os = [...byO.keys()].sort((a, b) => a - b);
+		const has = new Set(os);
+		const marked = /* @__PURE__ */ new Set();
+		for (let i = 0; i < os.length; i++) {
+			if (marked.has(os[i])) continue;
+			for (let j = i + 1; j < Math.min(os.length, i + 5); j++) {
+				const p = os[j] - os[i];
+				if (p < 80) continue;
+				if (p > 1200) break;
+				const members = [];
+				for (let k = -10; k <= 10; k++) {
+					const o = os[i] + k * p;
+					const m = has.has(o) ? o : has.has(o + 2) ? o + 2 : has.has(o - 2) ? o - 2 : null;
+					if (m != null) members.push(m);
+				}
+				if (members.length < 5) continue;
+				let lo = Infinity;
+				let hi = -Infinity;
+				for (const m of members) for (const e of byO.get(m)) {
+					lo = Math.min(lo, e.t0);
+					hi = Math.max(hi, e.t1);
+				}
+				for (const m of members) {
+					marked.add(m);
+					for (const e of byO.get(m)) if (e.t1 > lo && e.t0 < hi) out.add(e.s);
+				}
+				break;
+			}
+		}
+	}
+	return out;
+}
+/**
+* 破線の家具・車の輪郭を拾う。
+* CAD の出力では破線が「短い線分の列」になっていて（setDash ではない）、端点がつながらないので clusterSegments では拾えない。
+* 近い端点（70mm 以内）で向きの近い短い線をつなぎ（直線・ゆるい曲線）、角で直交する線どうしをつないで長方形にし、
+* 大きい輪郭の中の小さなまとまり（車の窓・ソファの座面の線）はその輪郭に含める。
+*/
+function dashedOutlines(segs, gap = 70, maxLen = 120) {
+	const len = (s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+	const frags = segs.filter((s) => s.source !== "fill" && !s.dashed && len(s) >= 2 && len(s) <= Math.max(maxLen, 250));
+	if (frags.length < 12) return [];
+	const n = frags.length;
+	const parent = frags.map((_, i) => i);
+	const find = (i) => parent[i] === i ? i : parent[i] = find(parent[i]);
+	const unite = (a, b) => {
+		const ra = find(a);
+		const rb = find(b);
+		if (ra !== rb) parent[ra] = rb;
+	};
+	const ang = frags.map((s) => Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x));
+	const angDiff = (a, b) => {
+		let d = Math.abs(a - b) % Math.PI;
+		if (d > Math.PI / 2) d = Math.PI - d;
+		return d;
+	};
+	const cell = gap;
+	const hash = /* @__PURE__ */ new Map();
+	const key = (x, y) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+	frags.forEach((s, i) => {
+		for (const q of [s.a, s.b]) {
+			const k = key(q.x, q.y);
+			if (!hash.has(k)) hash.set(k, []);
+			hash.get(k).push(i);
+		}
+	});
+	const linkAll = new Int32Array(n);
+	const linkGap = new Int32Array(n);
+	/** 端点ごとに、つながった相手があるか（a: bit0, b: bit1） */
+	const linkedEnd = new Uint8Array(n);
+	const MAXA = 40 * Math.PI / 180;
+	frags.forEach((s, i) => {
+		[s.a, s.b].forEach((q, ei) => {
+			const cx = Math.floor(q.x / cell);
+			const cy = Math.floor(q.y / cell);
+			for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const j of hash.get(`${cx + dx},${cy + dy}`) ?? []) {
+				if (j === i) continue;
+				const t = frags[j];
+				const da = Math.hypot(t.a.x - q.x, t.a.y - q.y);
+				const db = Math.hypot(t.b.x - q.x, t.b.y - q.y);
+				const d = Math.min(da, db);
+				if (d > gap || angDiff(ang[i], ang[j]) > MAXA) continue;
+				linkedEnd[i] |= ei === 0 ? 1 : 2;
+				linkedEnd[j] |= da <= db ? 1 : 2;
+				if (j < i) continue;
+				unite(i, j);
+				linkAll[i]++;
+				linkAll[j]++;
+				if (d > 6) {
+					linkGap[i]++;
+					linkGap[j]++;
+				}
+			}
+		});
+	});
+	const byRoot = /* @__PURE__ */ new Map();
+	frags.forEach((_, i) => {
+		const r = find(i);
+		if (!byRoot.has(r)) byRoot.set(r, []);
+		byRoot.get(r).push(i);
+	});
+	const chains = [];
+	for (const ids of byRoot.values()) {
+		if (ids.length < 6) continue;
+		let links = 0;
+		let gaps = 0;
+		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		for (const i of ids) {
+			links += linkAll[i];
+			gaps += linkGap[i];
+			for (const q of [frags[i].a, frags[i].b]) {
+				if (q.x < minX) minX = q.x;
+				if (q.x > maxX) maxX = q.x;
+				if (q.y < minY) minY = q.y;
+				if (q.y > maxY) maxY = q.y;
+			}
+		}
+		const solid = links === 0 || gaps / links < .1;
+		const w = maxX - minX;
+		const h = maxY - minY;
+		if (solid && Math.max(w, h) > 2500) continue;
+		const thin = Math.min(w, h) < 40;
+		const ends = [];
+		if (!thin) for (const i of ids) {
+			if (!(linkedEnd[i] & 1)) ends.push(frags[i].a);
+			if (!(linkedEnd[i] & 2)) ends.push(frags[i].b);
+			if (ends.length >= 16) break;
+		}
+		else {
+			const horiz = w >= h;
+			let lo = null;
+			let hi = null;
+			for (const i of ids) for (const q of [frags[i].a, frags[i].b]) {
+				const v = horiz ? q.x : q.y;
+				if (!lo || v < (horiz ? lo.x : lo.y)) lo = q;
+				if (!hi || v > (horiz ? hi.x : hi.y)) hi = q;
+			}
+			if (lo && hi) ends.push(lo, hi);
+		}
+		chains.push({
+			ids,
+			minX,
+			minY,
+			maxX,
+			maxY,
+			thin,
+			ends,
+			links,
+			gaps,
+			solid
+		});
+	}
+	globalThis.__dashChains?.push(...chains.map((c) => {
+		const right = c.ids.map((i) => frags[i]).sort((p, q) => Math.max(q.a.x, q.b.x) - Math.max(p.a.x, p.b.x)).slice(0, 2).map((f) => `(${Math.round(f.a.x)},${Math.round(f.a.y)})-(${Math.round(f.b.x)},${Math.round(f.b.y)})`);
+		const left = c.ids.map((i) => frags[i]).sort((p, q) => Math.min(p.a.x, p.b.x) - Math.min(q.a.x, q.b.x)).slice(0, 2).map((f) => `(${Math.round(f.a.x)},${Math.round(f.a.y)})-(${Math.round(f.b.x)},${Math.round(f.b.y)})`);
+		return {
+			n: c.ids.length,
+			x: Math.round((c.minX + c.maxX) / 2),
+			y: Math.round((c.minY + c.maxY) / 2),
+			w: Math.round(c.maxX - c.minX),
+			h: Math.round(c.maxY - c.minY),
+			thin: c.thin,
+			solid: c.solid,
+			ends: c.ends.length,
+			gapFrac: +(c.gaps / (c.links || 1)).toFixed(2),
+			right,
+			left
+		};
+	}));
+	if (!chains.some((c) => !c.solid)) return [];
+	const cp = chains.map((_, i) => i);
+	const cfind = (i) => cp[i] === i ? i : cp[i] = cfind(cp[i]);
+	const cunite = (a, b) => {
+		const ra = cfind(a);
+		const rb = cfind(b);
+		if (ra !== rb) cp[ra] = rb;
+	};
+	const Lof = (c) => Math.max(c.maxX - c.minX, c.maxY - c.minY);
+	const CORNER = gap * 1.5;
+	const area = (c) => Math.max(1, c.maxX - c.minX) * Math.max(1, c.maxY - c.minY);
+	for (let i = 0; i < chains.length; i++) {
+		const a = chains[i];
+		for (let j = i + 1; j < chains.length; j++) {
+			const b = chains[j];
+			if (a.solid && b.solid) continue;
+			if (Lof(a) > 5600 || Lof(b) > 5600) continue;
+			const m = 20;
+			const inter = a.minX <= b.maxX + 80 && a.maxX >= b.minX - 80 && a.minY <= b.maxY + 80 && a.maxY >= b.minY - 80;
+			const touch = a.ends.some((p) => b.ends.some((q) => Math.hypot(p.x - q.x, p.y - q.y) <= CORNER));
+			if (a.thin && b.thin) {
+				if (a.maxX - a.minX >= a.maxY - a.minY !== b.maxX - b.minX >= b.maxY - b.minY && touch) cunite(i, j);
+				continue;
+			}
+			if (touch) {
+				cunite(i, j);
+				continue;
+			}
+			if (!inter) continue;
+			const ix = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+			const iy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+			const overlap = ix > 0 && iy > 0 ? ix * iy / Math.min(area(a), area(b)) : 0;
+			if (!a.thin && !b.thin) {
+				if (overlap >= .5) cunite(i, j);
+				else {
+					const ux = Math.max(a.maxX, b.maxX) - Math.min(a.minX, b.minX);
+					const uy = Math.max(a.maxY, b.maxY) - Math.min(a.minY, b.minY);
+					const uL = Math.max(ux, uy);
+					const uS = Math.min(ux, uy);
+					const sa = Math.min(a.maxX - a.minX, a.maxY - a.minY);
+					const sb = Math.min(b.maxX - b.minX, b.maxY - b.minY);
+					if (within(uL, 4300, 5600) && within(uS, 1600, 2400) && Math.min(sa, sb) >= 900) cunite(i, j);
+				}
+			} else {
+				const small = a.thin ? a : b;
+				const big = a.thin ? b : a;
+				if (small.minX >= big.minX - m && small.maxX <= big.maxX + m && small.minY >= big.minY - m && small.maxY <= big.maxY + m) cunite(i, j);
+			}
+		}
+	}
+	const groups = /* @__PURE__ */ new Map();
+	chains.forEach((c, i) => {
+		const r = cfind(i);
+		if (!groups.has(r)) groups.set(r, []);
+		groups.get(r).push(c);
+	});
+	const out = [];
+	for (const g of groups.values()) {
+		if (g.every((c) => c.solid)) continue;
+		const minX = Math.min(...g.map((c) => c.minX));
+		const minY = Math.min(...g.map((c) => c.minY));
+		const maxX = Math.max(...g.map((c) => c.maxX));
+		const maxY = Math.max(...g.map((c) => c.maxY));
+		const w = maxX - minX;
+		const h = maxY - minY;
+		if (Math.min(w, h) < 200 || Math.max(w, h) < 400) continue;
+		if (g.every((c) => c.thin)) {
+			const horiz = g.filter((c) => c.maxX - c.minX >= c.maxY - c.minY);
+			const vert = g.filter((c) => c.maxX - c.minX < c.maxY - c.minY);
+			const top = horiz.some((c) => Math.abs(c.minY - minY) < 30);
+			const bottom = horiz.some((c) => Math.abs(c.maxY - maxY) < 30);
+			const left = vert.some((c) => Math.abs(c.minX - minX) < 30);
+			const right = vert.some((c) => Math.abs(c.maxX - maxX) < 30);
+			if (!(top && bottom && left && right)) continue;
+		}
+		out.push({
+			minX,
+			minY,
+			maxX,
+			maxY,
+			n: g.reduce((a, c) => a + c.ids.length, 0)
+		});
+	}
+	return out;
+}
+/** 破線の輪郭のうち車の大きさのもの（4.3〜5.6 × 1.6〜2.4m）を車の記号にする。実線で読めた記号と重なるものは除く */
+function dashedCarSymbols(outlines, existing) {
+	const out = [];
+	for (const o of outlines) {
+		const w = o.maxX - o.minX;
+		const h = o.maxY - o.minY;
+		const L = Math.max(w, h);
+		const S = Math.min(w, h);
+		if (!within(L, 4300, 5600) || !within(S, 1600, 2400)) continue;
+		const x = (o.minX + o.maxX) / 2;
+		const y = (o.minY + o.maxY) / 2;
+		if (existing.some((e) => Math.abs(e.x - x) < Math.max(e.w, e.h) / 2 + 200 && Math.abs(e.y - y) < Math.max(e.w, e.h) / 2 + 200 && (e.kind === "car" || e.kind === "sofa"))) continue;
+		const flat = w >= h ? {
+			a: {
+				x: o.minX,
+				y
+			},
+			b: {
+				x: o.maxX,
+				y
+			}
+		} : {
+			a: {
+				x,
+				y: o.minY
+			},
+			b: {
+				x,
+				y: o.maxY
+			}
+		};
+		out.push({
+			kind: "car",
+			x,
+			y,
+			w,
+			h,
+			n: o.n,
+			flat,
+			shortFrac: 1,
+			bump: 0,
+			longLen: 0
+		});
+	}
+	return out;
 }
 var DEG$2 = 180 / Math.PI;
 /**
@@ -3454,6 +4162,11 @@ function symbolsToItems(symbols, rooms, walls, outline, level, trace) {
 			x: s.x,
 			y: s.y
 		});
+		if (level === 1 && room && (room.type === "other" || room.type === "porch") && !/ポーチ|PORCH/i.test(room.name)) {
+			room.name = room.type === "other" && room.name !== "室" ? `ガレージ（${room.name}）` : "ガレージ";
+			room.type = "garage";
+			room.inferred = true;
+		}
 		if (!inside({
 			x: s.x,
 			y: s.y
@@ -3966,6 +4679,7 @@ function fillRectContents(rects, segs, arcs) {
 		let n = 0;
 		for (const s of segs) {
 			if (!inside(r, s.a) || !inside(r, s.b)) continue;
+			if (r.dashed && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < 150) continue;
 			const onEdge = (p) => Math.abs(p.x - r.minX) < EPS || Math.abs(p.x - r.maxX) < EPS || Math.abs(p.y - r.minY) < EPS || Math.abs(p.y - r.maxY) < EPS;
 			if (onEdge(s.a) && onEdge(s.b)) continue;
 			n++;
@@ -3976,7 +4690,7 @@ function fillRectContents(rects, segs, arcs) {
 	}
 }
 /** 丸テーブル・丸いシンクなど、円弧が輪になっているもの（中心と半径） */
-function findCircles(arcs, rMin = 250, rMax = 900) {
+function findCircles$1(arcs, rMin = 250, rMax = 900) {
 	const out = [];
 	const used = /* @__PURE__ */ new Set();
 	for (let i = 0; i < arcs.length; i++) {
@@ -4143,20 +4857,27 @@ var DEG$1 = 180 / Math.PI;
 * 部屋ごとに長方形を文脈で分類して家具にする。
 * walls は壁の芯（向き・距離の判定に使う）、outline は建物外形。
 */
-function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
+function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], extraRects = []) {
 	const items = [];
 	const trace = [];
 	const candidates = [];
 	let seq = 0;
 	const id = () => `pc${level}_${++seq}`;
 	const rects = findRectangles(segs);
+	for (const e of extraRects) {
+		if (rects.some((r) => Math.abs(r.minX - e.minX) < 50 && Math.abs(r.maxX - e.maxX) < 50 && Math.abs(r.minY - e.minY) < 50 && Math.abs(r.maxY - e.maxY) < 50)) continue;
+		rects.push({
+			...e,
+			id: rects.length
+		});
+	}
 	fillRectContents(rects, segs, arcs);
 	for (const l of findLShapes(segs)) {
 		if (rects.some((r) => Math.abs(r.minX - l.minX) < EPS && Math.abs(r.maxX - l.maxX) < EPS && Math.abs(r.minY - l.minY) < EPS && Math.abs(r.maxY - l.maxY) < EPS)) continue;
 		l.id = rects.length;
 		rects.push(l);
 	}
-	const circles = findCircles(arcs);
+	const circles = findCircles$1(arcs);
 	const rings = findLoops(segs, 120, 700);
 	const ringsIn = (r, grow = 0) => rings.filter((g) => (g.minX + g.maxX) / 2 > r.minX - grow && (g.minX + g.maxX) / 2 < r.maxX + grow && (g.minY + g.maxY) / 2 > r.minY - grow && (g.minY + g.maxY) / 2 < r.maxY + grow);
 	const roomBBox = (r) => {
@@ -4513,8 +5234,8 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
 					used.add(leg);
 					push(main, "sofa", { w: +(main.L / 1e3).toFixed(2) });
 					sofas.push(main);
-				} else if (longAgainstWall(c) || c.rect.innerRects >= 2 || tvFacing(c, cands)) {
-					c.note = longAgainstWall(c) ? "壁沿い" : "テレビ向き";
+				} else if (longAgainstWall(c) || c.rect.innerRects >= 2 || tvFacing(c, cands) || c.rect.dashed && dinnerChairs(c, cands).length === 0) {
+					c.note = longAgainstWall(c) ? "壁沿い" : c.rect.dashed ? "破線の輪郭" : "テレビ向き";
 					used.add(c);
 					push(c, "sofa", { w: +(c.L / 1e3).toFixed(2) });
 					sofas.push(c);
@@ -4533,7 +5254,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
 				if (!(within(c.S, 700, 1100) && within(c.L, 1200, 2600))) continue;
 				const chairs = dinnerChairs(c, cands);
 				const chairArcs = arcs.filter((a) => a.p0.x > c.rect.minX - 700 && a.p0.x < c.rect.maxX + 700 && a.p0.y > c.rect.minY - 700 && a.p0.y < c.rect.maxY + 700).length + ringsIn(c.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !((g.minX + g.maxX) / 2 > c.rect.minX && (g.minX + g.maxX) / 2 < c.rect.maxX && (g.minY + g.maxY) / 2 > c.rect.minY && (g.minY + g.maxY) / 2 < c.rect.maxY)).length * 4;
-				if (chairs.length >= 2 || chairArcs >= 4 || t === "dining" && !longAgainstWall(c) || !longAgainstWall(c) && c.rect.innerRects === 0 && !anyWall(c) && t !== "japanese") {
+				if (chairs.length >= 2 || chairArcs >= 4 || t === "dining" && !longAgainstWall(c) || !longAgainstWall(c) && c.rect.innerRects === 0 && !anyWall(c) && t !== "japanese" && !c.rect.dashed) {
 					c.note = `椅子 ${chairs.length}・弧 ${chairArcs}`;
 					used.add(c);
 					chairs.forEach((ch) => used.add(ch));
@@ -4903,6 +5624,790 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = []) {
 		}
 		trace.push(`kitchen(${type}) ${Math.round(c.w)}x${Math.round(c.h)} @${Math.round(c.cx)},${Math.round(c.cy)} in ${c.room.name} (${c.note ?? ""}) stove=${stoveSide}`);
 	}
+}
+//#endregion
+//#region src/parser/north.ts
+var LABEL = /^(真北|N|Ｎ|北|NORTH)$/i;
+var ANGLE_TEXT = /^([-−+＋]?\d+(?:\.\d+)?)\s*(度|°)$/;
+var norm$1 = (d) => {
+	let x = d % 360;
+	if (x > 180) x -= 360;
+	if (x <= -180) x += 360;
+	return Math.round(x) || 0;
+};
+/** ベクトル（図面座標・y 下向き）→ 真北の角度 */
+var degOf = (dx, dy) => norm$1(Math.atan2(dx, -dy) * 180 / Math.PI);
+var len$1 = (s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+var dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+var bez = (a, t) => {
+	const u = 1 - t;
+	return {
+		x: u * u * u * a.p0.x + 3 * u * u * t * a.p1.x + 3 * u * t * t * a.p2.x + t * t * t * a.p3.x,
+		y: u * u * u * a.p0.y + 3 * u * u * t * a.p1.y + 3 * u * t * t * a.p2.y + t * t * t * a.p3.y
+	};
+};
+function circumcenter(a, b, c) {
+	const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+	if (Math.abs(d) < 1e-9) return null;
+	const a2 = a.x * a.x + a.y * a.y;
+	const b2 = b.x * b.x + b.y * b.y;
+	const c2 = c.x * c.x + c.y * c.y;
+	return {
+		x: (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
+		y: (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d
+	};
+}
+var key3 = (q) => `${Math.round(q.x / 3)},${Math.round(q.y / 3)}`;
+/** 短い線分の連なり（折れ線）をたどって、円に乗る断片を集める */
+function polylineFrags(segs, minR, maxR) {
+	const cand = segs.filter((s) => {
+		const l = len$1(s);
+		return l >= 3 && l <= 320;
+	});
+	const at = /* @__PURE__ */ new Map();
+	cand.forEach((s, i) => {
+		for (const q of [s.a, s.b]) {
+			const k = key3(q);
+			if (!at.has(k)) at.set(k, []);
+			at.get(k).push(i);
+		}
+	});
+	const near = (q) => {
+		const out = [];
+		const kx = Math.round(q.x / 3);
+		const ky = Math.round(q.y / 3);
+		for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const i of at.get(`${kx + dx},${ky + dy}`) ?? []) out.push(i);
+		return out;
+	};
+	const turn = (a, b, c) => {
+		let d = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(b.y - a.y, b.x - a.x);
+		while (d > Math.PI) d -= 2 * Math.PI;
+		while (d < -Math.PI) d += 2 * Math.PI;
+		return d;
+	};
+	const used = new Uint8Array(cand.length);
+	const out = [];
+	for (let i0 = 0; i0 < cand.length; i0++) {
+		if (used[i0]) continue;
+		used[i0] = 1;
+		let pts = [cand[i0].a, cand[i0].b];
+		for (const dir of [1, -1]) {
+			if (dir === -1) pts = pts.reverse();
+			for (let guard = 0; guard < 2e3; guard++) {
+				const end = pts[pts.length - 1];
+				const prev = pts[pts.length - 2];
+				let t0 = 0;
+				let n0 = 0;
+				for (let k = Math.max(1, pts.length - 9); k + 1 < pts.length; k++) t0 += turn(pts[k - 1], pts[k], pts[k + 1]), n0++;
+				const avg = n0 ? t0 / n0 : 0;
+				let best = -1;
+				let bestNxt = null;
+				let bestDev = Infinity;
+				for (const j of near(end)) {
+					if (used[j]) continue;
+					const sj = cand[j];
+					const dA = dist(sj.a, end);
+					const dB = dist(sj.b, end);
+					if (Math.min(dA, dB) > 4) continue;
+					const nxt = dA < dB ? sj.b : sj.a;
+					const t = turn(prev, end, nxt);
+					if (Math.abs(t) > 30 * Math.PI / 180) continue;
+					if (n0 >= 2 && Math.abs(avg) > 3 * Math.PI / 180 && Math.abs(t) > 10 * Math.PI / 180 && Math.sign(t) !== Math.sign(avg)) continue;
+					const dev = Math.abs(t - avg);
+					if (dev < bestDev) bestDev = dev, best = j, bestNxt = nxt;
+				}
+				if (best < 0 || !bestNxt) break;
+				used[best] = 1;
+				pts.push(bestNxt);
+			}
+		}
+		if (pts.length < 6) continue;
+		const c = circumcenter(pts[0], pts[Math.floor(pts.length / 3)], pts[Math.floor(pts.length * 2 / 3)]);
+		if (!c) continue;
+		const r = dist(c, pts[0]);
+		if (r < minR || r > maxR) continue;
+		if (pts.some((q) => Math.abs(dist(q, c) - r) > r * .06)) continue;
+		out.push({
+			c,
+			r,
+			pts
+		});
+	}
+	return out;
+}
+/** 円弧（ベジェ）と折れ線の断片をまとめて、ほぼ一周している円を探す */
+function findCircles(arcs, segs = [], minR = 200, maxR = 4e3) {
+	const frags = [];
+	for (const a of arcs) {
+		if (a.poly) continue;
+		const m = bez(a, .5);
+		const c = circumcenter(a.p0, m, a.p3);
+		if (!c) continue;
+		const r = dist(c, a.p0);
+		if (r < minR || r > maxR) continue;
+		if (Math.abs(dist(c, bez(a, .25)) - r) > r * .06 || Math.abs(dist(c, bez(a, .75)) - r) > r * .06) continue;
+		const pts = [];
+		for (let t = 0; t <= 1.0001; t += .1) pts.push(bez(a, t));
+		frags.push({
+			c,
+			r,
+			pts
+		});
+	}
+	frags.push(...polylineFrags(segs, minR, maxR));
+	const cell = 150;
+	const grid = /* @__PURE__ */ new Map();
+	frags.forEach((f, i) => {
+		const k = `${Math.floor(f.c.x / cell)},${Math.floor(f.c.y / cell)}`;
+		if (!grid.has(k)) grid.set(k, []);
+		grid.get(k).push(i);
+	});
+	const used = new Uint8Array(frags.length);
+	const out = [];
+	for (let i = 0; i < frags.length; i++) {
+		if (used[i]) continue;
+		const f0 = frags[i];
+		const tol = Math.max(40, f0.r * .08);
+		const group = [];
+		const gx = Math.floor(f0.c.x / cell);
+		const gy = Math.floor(f0.c.y / cell);
+		const reach = Math.ceil(tol / cell);
+		for (let dx = -reach; dx <= reach; dx++) for (let dy = -reach; dy <= reach; dy++) for (const j of grid.get(`${gx + dx},${gy + dy}`) ?? []) {
+			if (used[j]) continue;
+			const o = frags[j];
+			if (dist(o.c, f0.c) <= tol && Math.abs(o.r - f0.r) <= tol) group.push(o), used[j] = 1;
+		}
+		if (!group.length) continue;
+		const c = {
+			x: group.reduce((s, g) => s + g.c.x, 0) / group.length,
+			y: group.reduce((s, g) => s + g.c.y, 0) / group.length
+		};
+		const r = group.reduce((s, g) => s + g.r, 0) / group.length;
+		const sectors = /* @__PURE__ */ new Set();
+		for (const g of group) for (const q of g.pts) sectors.add(Math.floor((Math.atan2(q.y - c.y, q.x - c.x) + Math.PI) / (2 * Math.PI) * 24) % 24);
+		const cover = sectors.size / 24;
+		if (cover < .75) continue;
+		out.push({
+			c,
+			r,
+			cover,
+			arcs: group.length
+		});
+	}
+	return out;
+}
+/** 同じ向きで端がつながる線分をひとつの長い線にまとめる（分割して描かれた矢印の軸など） */
+function mergeCollinear(segs) {
+	const at = /* @__PURE__ */ new Map();
+	segs.forEach((s, i) => {
+		for (const q of [s.a, s.b]) {
+			const k = key3(q);
+			if (!at.has(k)) at.set(k, []);
+			at.get(k).push(i);
+		}
+	});
+	const near = (q) => {
+		const out = [];
+		const kx = Math.round(q.x / 3);
+		const ky = Math.round(q.y / 3);
+		for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const i of at.get(`${kx + dx},${ky + dy}`) ?? []) out.push(i);
+		return out;
+	};
+	const used = new Uint8Array(segs.length);
+	const out = [];
+	for (let i0 = 0; i0 < segs.length; i0++) {
+		if (used[i0]) continue;
+		used[i0] = 1;
+		let a = segs[i0].a;
+		let b = segs[i0].b;
+		let merged = false;
+		for (const dir of [1, -1]) for (let guard = 0; guard < 200; guard++) {
+			const end = dir === 1 ? b : a;
+			const other = dir === 1 ? a : b;
+			const l0 = dist(a, b);
+			const ux = (end.x - other.x) / l0;
+			const uy = (end.y - other.y) / l0;
+			let found = -1;
+			let nxt = null;
+			for (const j of near(end)) {
+				if (used[j]) continue;
+				const sj = segs[j];
+				const dA = dist(sj.a, end);
+				const dB = dist(sj.b, end);
+				if (Math.min(dA, dB) > 5) continue;
+				const q = dA < dB ? sj.b : sj.a;
+				const lj = dist(q, end);
+				if (lj < 3) continue;
+				if (((q.x - end.x) * ux + (q.y - end.y) * uy) / lj < .9962) continue;
+				found = j;
+				nxt = q;
+				break;
+			}
+			if (found < 0 || !nxt) break;
+			used[found] = 1;
+			merged = true;
+			if (dir === 1) b = nxt;
+			else a = nxt;
+		}
+		out.push(merged ? {
+			...segs[i0],
+			a,
+			b
+		} : segs[i0]);
+	}
+	return out;
+}
+/** 線分の端 E に付く矢じり（短い斜め線）の本数。axis は線の向き（E へ向かう単位ベクトル） */
+function featherCount(segs, E, axis, L, self) {
+	let n = 0;
+	for (const s of segs) {
+		if (s === self) continue;
+		const sl = len$1(s);
+		if (sl < L * .05 || sl > L * .45) continue;
+		const dA = dist(s.a, E);
+		const dB = dist(s.b, E);
+		if (Math.min(dA, dB) > Math.max(60, L * .08)) continue;
+		const far = dA < dB ? s.b : s.a;
+		const vx = (far.x - E.x) / sl;
+		const vy = (far.y - E.y) / sl;
+		const cos = -(vx * axis.x + vy * axis.y);
+		if (cos > .26 && cos < .97) n++;
+	}
+	return n;
+}
+/** 端 E の近くにある塗りつぶしの矢じり（3〜5 頂点の小さな多角形） */
+function solidHeadNear(fills, E, L) {
+	for (const f of fills) {
+		if (f.polygon.length < 3 || f.polygon.length > 6) continue;
+		if (!f.polygon.some((q) => dist(q, E) < Math.max(80, L * .08))) continue;
+		const xs = f.polygon.map((q) => q.x);
+		const ys = f.polygon.map((q) => q.y);
+		const w = Math.max(...xs) - Math.min(...xs);
+		const h = Math.max(...ys) - Math.min(...ys);
+		if (Math.max(w, h) < L * .5 && Math.max(w, h) > L * .04) return true;
+	}
+	return false;
+}
+/** 1 ページ分の方位記号候補 */
+function northCandidates(p, trace) {
+	const out = [];
+	const segs = p.segs.filter((s) => !s.dashed);
+	const lines = mergeCollinear(segs);
+	const labels = p.texts.filter((t) => LABEL.test(t.str.trim()));
+	const labelWeight = (t) => /真北|NORTH/i.test(t.str) ? 6 : 4;
+	const angleTexts = p.texts.map((t) => ({
+		t,
+		m: ANGLE_TEXT.exec(t.str.trim().replace(/[−＋]/g, (c) => c === "−" ? "-" : "+"))
+	})).filter((o) => !!o.m).map((o) => ({
+		t: o.t,
+		deg: norm$1(parseFloat(o.m[1])),
+		signed: /^[-+]/.test(o.m[1])
+	}));
+	const all = findCircles(p.arcs, segs);
+	const circles = all.filter((c) => all.filter((o) => dist(o.c, c.c) < Math.max(40, c.r * .08)).length <= 2);
+	for (const c of circles) trace?.push(`circle c=(${c.c.x.toFixed(0)},${c.c.y.toFixed(0)}) r=${c.r.toFixed(0)} cover=${c.cover.toFixed(2)} n=${c.arcs}`);
+	/** 端 E に、矢じり以外の長い線がつながっているか（壁・外形線・家具の一部なら方位記号ではない） */
+	const joinedAt = (E, L, l) => {
+		const ux = (L.b.x - L.a.x) / l;
+		const uy = (L.b.y - L.a.y) / l;
+		return segs.some((s) => {
+			if (s === L) return false;
+			const sl = len$1(s);
+			if (sl < Math.max(300, l * .25)) return false;
+			if (dist(s.a, E) > 30 && dist(s.b, E) > 30) return false;
+			return Math.abs(((s.b.x - s.a.x) * ux + (s.b.y - s.a.y) * uy) / sl) < .999;
+		});
+	};
+	/** 中心 c の周り（rIn〜rOut の環）にある線の端点の数。方位記号は単独で置かれるので少ない */
+	const clutter = (c, rIn, rOut, exclude) => {
+		let n = 0;
+		for (const s of segs) {
+			if (exclude.has(s)) continue;
+			for (const q of [s.a, s.b]) {
+				const d = dist(q, c);
+				if (d >= rIn && d <= rOut) n++;
+			}
+		}
+		return n;
+	};
+	for (const c of circles) {
+		const onRing = (q) => Math.abs(dist(q, c.c) - c.r) < c.r * .12;
+		const nearLabel = labels.filter((l) => dist(l, c.c) < Math.max(2.5 * c.r, 1500) + c.r);
+		const chords = lines.filter((s) => onRing(s.a) && onRing(s.b) && len$1(s) > c.r * .5);
+		let tri = null;
+		for (let i = 0; i < chords.length && !tri; i++) for (let j = i + 1; j < chords.length && !tri; j++) {
+			const A = chords[i];
+			const B = chords[j];
+			const pairs = [];
+			for (const pa of [A.a, A.b]) for (const pb of [B.a, B.b]) if (dist(pa, pb) < c.r * .06) pairs.push([
+				pa,
+				pa === A.a ? A.b : A.a,
+				pb === B.a ? B.b : B.a
+			]);
+			for (const [apex, fa, fb] of pairs) {
+				const la = dist(apex, fa);
+				const lb = dist(apex, fb);
+				if (Math.abs(la - lb) > Math.max(la, lb) * .12) continue;
+				const base = dist(fa, fb);
+				if (base > Math.min(la, lb) * .8 || base < c.r * .15) continue;
+				const mid = {
+					x: (fa.x + fb.x) / 2,
+					y: (fa.y + fb.y) / 2
+				};
+				if (clutter(c.c, 0, c.r * .9, /* @__PURE__ */ new Set([A, B])) > 2) continue;
+				tri = {
+					deg: degOf(apex.x - mid.x, apex.y - mid.y),
+					score: 12 + (nearLabel.length ? 3 : 0),
+					how: "triangle",
+					at: c.c
+				};
+			}
+		}
+		if (tri) {
+			out.push(tri);
+			continue;
+		}
+		let bestAxis = null;
+		for (const L of lines) {
+			const l = len$1(L);
+			if (l < c.r * 1.5 || l > c.r * 8) continue;
+			const ux = (L.b.x - L.a.x) / l;
+			const uy = (L.b.y - L.a.y) / l;
+			if (Math.abs((c.c.x - L.a.x) * uy - (c.c.y - L.a.y) * ux) > c.r * .15) continue;
+			const t = (c.c.x - L.a.x) * ux + (c.c.y - L.a.y) * uy;
+			if (t < -c.r * .2 || t > l + c.r * .2) continue;
+			if (joinedAt(L.a, L, l) || joinedAt(L.b, L, l)) continue;
+			trace?.push(`axis? c=(${c.c.x.toFixed(0)},${c.c.y.toFixed(0)}) r=${c.r.toFixed(0)} L=${l.toFixed(0)}`);
+			const ends = [[L.a, {
+				x: -ux,
+				y: -uy
+			}], [L.b, {
+				x: ux,
+				y: uy
+			}]];
+			const sc = ends.map(([E, ax]) => {
+				if (dist(E, c.c) < c.r * 1.2) return -1;
+				let s = 0;
+				const feathers = Math.min(2, featherCount(segs, E, ax, l, L));
+				s += feathers * 2;
+				let evidence = feathers > 0;
+				if (solidHeadNear(p.fills, E, l)) s += 3;
+				for (const lb of nearLabel) if (dist(lb, E) < Math.max(c.r * 2.5, lb.size * 5) && dist(lb, E) < dist(lb, E === L.a ? L.b : L.a)) s += labelWeight(lb), evidence = true;
+				for (const a of angleTexts) if (dist(a.t, E) < Math.max(c.r * 3, a.t.size * 8)) s += 2, evidence = true;
+				return evidence ? s : 0;
+			});
+			if (Math.max(...sc) <= 0 || sc[0] === sc[1]) continue;
+			const k = sc[0] > sc[1] ? 0 : 1;
+			const E = ends[k][0];
+			const cand = {
+				deg: degOf(E.x - c.c.x, E.y - c.c.y),
+				score: 8 + sc[k],
+				how: "axis",
+				at: c.c
+			};
+			if (!bestAxis || cand.score > bestAxis.score) bestAxis = cand;
+		}
+		if (bestAxis) {
+			out.push(bestAxis);
+			continue;
+		}
+		for (const lb of nearLabel) if (dist(lb, c.c) > c.r * .8) out.push({
+			deg: degOf(lb.x - c.c.x, lb.y - c.c.y),
+			score: 4,
+			how: "labelCircle",
+			at: c.c
+		});
+	}
+	for (const lb of labels) {
+		const R = Math.max(lb.size * 4, 800);
+		let best = null;
+		for (const L of lines) {
+			const l = len$1(L);
+			if (l < 600 || l > 2e4) continue;
+			const dA = dist(L.a, lb);
+			const dB = dist(L.b, lb);
+			if (Math.min(dA, dB) > R) continue;
+			if (Math.abs(dA - dB) < l * .5) continue;
+			const E = dA < dB ? L.a : L.b;
+			const F = dA < dB ? L.b : L.a;
+			const ax = {
+				x: (E.x - F.x) / l,
+				y: (E.y - F.y) / l
+			};
+			const feathers = Math.min(2, featherCount(segs, E, ax, l, L));
+			const solid = solidHeadNear(p.fills, E, l);
+			let score = feathers * 3 + (solid ? 4 : 0);
+			if (score === 0) {
+				if (Math.min(dA, dB) > lb.size * 2.5 || labelWeight(lb) < 6) continue;
+				score = 1;
+			}
+			if (joinedAt(F, L, l) || joinedAt(E, L, l)) score -= 3;
+			if (score <= 0) continue;
+			trace?.push(`labelArrow? lb=(${lb.x.toFixed(0)},${lb.y.toFixed(0)}) L=${l.toFixed(0)} feathers=${feathers}`);
+			const cand = {
+				deg: degOf(ax.x, ax.y),
+				score: 3 + score + (labelWeight(lb) - 4),
+				how: "labelArrow",
+				at: {
+					x: lb.x,
+					y: lb.y
+				}
+			};
+			if (!best || cand.score > best.score) best = cand;
+		}
+		if (best) out.push(best);
+	}
+	for (const a of angleTexts) {
+		const geo = out.filter((o) => o.how !== "labelCircle" && dist(o.at, a.t) < Math.max(4e3, a.t.size * 15) && Math.abs(Math.abs(o.deg) - Math.abs(a.deg)) <= 4);
+		if (!(geo.length > 0 || labels.some((l) => dist(l, a.t) < Math.max(3e3, a.t.size * 12)) || circles.some((c) => dist(c.c, a.t) < Math.max(3e3, c.r * 4)))) continue;
+		let deg = a.deg;
+		const g = geo[0];
+		if (g && g.deg !== 0 && (!a.signed || Math.sign(g.deg) !== Math.sign(deg))) deg = Math.sign(g.deg) * Math.abs(deg);
+		out.push({
+			deg: norm$1(deg),
+			score: 20,
+			how: "angleText",
+			at: {
+				x: a.t.x,
+				y: a.t.y
+			}
+		});
+	}
+	if (!out.length) for (const lb of labels) {
+		const R = lb.size * 5;
+		const pts = [];
+		for (const s of segs) for (const q of [s.a, s.b]) if (dist(q, lb) < R) pts.push(q);
+		for (const a of p.arcs) for (const q of [a.p0, a.p3]) if (dist(q, lb) < R) pts.push(q);
+		for (const f of p.fills) for (const q of f.polygon) if (dist(q, lb) < R) pts.push(q);
+		if (pts.length < 3) continue;
+		const cx = pts.reduce((s0, q) => s0 + q.x, 0) / pts.length;
+		const cy = pts.reduce((s0, q) => s0 + q.y, 0) / pts.length;
+		if (Math.hypot(lb.x - cx, lb.y - cy) < lb.size * .5) continue;
+		out.push({
+			deg: degOf(lb.x - cx, lb.y - cy),
+			score: 1,
+			how: "centroid",
+			at: {
+				x: lb.x,
+				y: lb.y
+			}
+		});
+	}
+	return out.sort((a, b) => b.score - a.score);
+}
+/** 複数ページから真北を決める（いちばん確かな候補） */
+function pickNorth(pages) {
+	let best = null;
+	for (const p of pages) {
+		const c = northCandidates(p)[0];
+		if (c && (!best || c.score > best.score)) best = c;
+	}
+	return best;
+}
+//#endregion
+//#region src/parser/furnitureSense.ts
+/** どの部屋でも、ふつう 1 つしか無いもの */
+var ONE_ANYWHERE = [
+	"kitchen",
+	"dining",
+	"sofa",
+	"coffeeTable",
+	"tv",
+	"bath",
+	"toilet",
+	"washer",
+	"fridge",
+	"cupboard",
+	"shoeCabinet",
+	"lowTable"
+];
+/** 部屋の種類ごとの上限（ONE_ANYWHERE 以外） */
+function capOf(kind, type) {
+	if (kind === "bed") return type === "bedroom" || type === "kids" || type === "japanese" ? 2 : 1;
+	if (kind === "desk") return type === "study" || type === "kids" || type === "bedroom" ? 2 : 1;
+	if (kind === "washstand") return type === "washroom" ? 2 : 1;
+	if (ONE_ANYWHERE.includes(kind)) return 1;
+	return Infinity;
+}
+/** その部屋には無いはずのもの */
+var NOT_IN = {
+	toilet: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"desk",
+		"bookshelf",
+		"lowTable",
+		"bath",
+		"washer",
+		"fridge",
+		"cupboard",
+		"shoeCabinet"
+	],
+	bath: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"desk",
+		"bookshelf",
+		"lowTable",
+		"toilet",
+		"washer",
+		"fridge",
+		"cupboard",
+		"shoeCabinet",
+		"cabinet"
+	],
+	washroom: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"desk",
+		"bookshelf",
+		"lowTable",
+		"fridge",
+		"cupboard",
+		"shoeCabinet"
+	],
+	entrance: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"desk",
+		"bath",
+		"toilet",
+		"washstand",
+		"washer",
+		"fridge",
+		"cupboard",
+		"lowTable"
+	],
+	hall: [
+		"kitchen",
+		"dining",
+		"bed",
+		"nightstand",
+		"bath",
+		"toilet",
+		"washer",
+		"fridge",
+		"cupboard"
+	],
+	closet: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"bath",
+		"toilet",
+		"washstand",
+		"washer",
+		"fridge",
+		"cupboard",
+		"lowTable"
+	],
+	storage: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"nightstand",
+		"bath",
+		"toilet",
+		"washstand",
+		"fridge",
+		"lowTable"
+	],
+	bedroom: [
+		"kitchen",
+		"bath",
+		"toilet",
+		"washer",
+		"fridge",
+		"cupboard",
+		"shoeCabinet"
+	],
+	kids: [
+		"kitchen",
+		"bath",
+		"toilet",
+		"washer",
+		"fridge",
+		"cupboard",
+		"shoeCabinet"
+	],
+	japanese: [
+		"kitchen",
+		"bath",
+		"toilet",
+		"washer",
+		"fridge",
+		"cupboard",
+		"shoeCabinet"
+	],
+	living: [
+		"bed",
+		"bath",
+		"toilet",
+		"washer",
+		"shoeCabinet"
+	],
+	ldk: [
+		"bed",
+		"bath",
+		"toilet",
+		"washer",
+		"shoeCabinet"
+	],
+	dining: [
+		"bed",
+		"bath",
+		"toilet",
+		"washer",
+		"shoeCabinet"
+	],
+	kitchen: [
+		"bed",
+		"bath",
+		"toilet",
+		"washer",
+		"sofa",
+		"tv",
+		"shoeCabinet"
+	],
+	stairs: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"coffeeTable",
+		"tv",
+		"bed",
+		"bath",
+		"toilet",
+		"washstand",
+		"washer",
+		"fridge",
+		"cupboard"
+	],
+	garage: [
+		"kitchen",
+		"dining",
+		"sofa",
+		"bed",
+		"bath",
+		"toilet",
+		"washstand",
+		"tv"
+	]
+};
+var KIND_JA = {
+	kitchen: "キッチン",
+	dining: "食卓",
+	sofa: "ソファ",
+	coffeeTable: "センターテーブル",
+	tv: "テレビ",
+	bed: "ベッド",
+	desk: "机",
+	bath: "浴槽",
+	toilet: "便器",
+	washstand: "洗面台",
+	washer: "洗濯機",
+	fridge: "冷蔵庫",
+	cupboard: "カップボード",
+	shoeCabinet: "下駄箱",
+	lowTable: "ローテーブル",
+	nightstand: "ナイトテーブル",
+	bookshelf: "本棚",
+	cabinet: "収納",
+	chair: "椅子",
+	rug: "ラグ",
+	plant: "植栽",
+	mirror: "鏡"
+};
+var furnitureKindJa = (k) => KIND_JA[k] ?? k;
+/** 部屋ごとに常識で家具を整理する。順番は保つ（先に読めたもの＝文脈読みの結果を優先） */
+function roomArea(room) {
+	if (!room) return 0;
+	const p = room.polygon;
+	let a = 0;
+	for (let i = 0; i < p.length; i++) {
+		const q = p[(i + 1) % p.length];
+		a += p[i].x * q.y - q.x * p[i].y;
+	}
+	return Math.abs(a) / 2 / 1e6;
+}
+function senseFurniture(items, rooms) {
+	const removed = [];
+	const roomById = new Map(rooms.map((r) => [r.id, r]));
+	const drop = /* @__PURE__ */ new Set();
+	const byRoom = /* @__PURE__ */ new Map();
+	for (const it of items) {
+		const k = it.roomId ?? "";
+		if (!byRoom.has(k)) byRoom.set(k, []);
+		byRoom.get(k).push(it);
+	}
+	const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	for (const [rid, list] of byRoom) {
+		const room = roomById.get(rid);
+		const type = room?.type;
+		const name = room?.name ?? "（部屋なし）";
+		const banned = type ? NOT_IN[type] ?? [] : [];
+		for (const it of list) if (banned.includes(it.kind)) {
+			drop.add(it);
+			removed.push(`${name}の${furnitureKindJa(it.kind)}（この部屋には無いはず）`);
+		}
+		const kinds = new Set(list.map((it) => it.kind));
+		for (const kind of kinds) {
+			const cap = capOf(kind, type);
+			const have = list.filter((it) => it.kind === kind && !drop.has(it));
+			if (have.length <= cap) continue;
+			let keep;
+			if (kind === "dining") {
+				const kit = list.find((it) => it.kind === "kitchen" && !drop.has(it)) ?? items.find((it) => it.kind === "kitchen" && !drop.has(it));
+				keep = [kit ? [...have].sort((a, b) => d(a, kit) - d(b, kit))[0] : [...have].sort((a, b) => (b.w ?? 0) - (a.w ?? 0))[0]];
+			} else if (kind === "bed" && cap === 2) {
+				const sorted = [...have].sort((a, b) => (b.w ?? 0) - (a.w ?? 0));
+				const first = sorted[0];
+				const twin = sorted.slice(1).find((b) => Math.abs((b.rot - first.rot) % 180 + 180) % 180 < 10 && d(first, b) < 2600);
+				keep = twin ? [first, twin] : [first];
+			} else if (kind === "sofa" && (type === "ldk" || type === "living") && roomArea(room) >= 25) {
+				const sorted = [...have].sort((a, b) => (b.w ?? 0) - (a.w ?? 0));
+				const pair = sorted.slice(1).find((b) => d(sorted[0], b) < 3500);
+				keep = pair ? [sorted[0], pair] : [sorted[0]];
+			} else if (kind === "sofa" || kind === "kitchen" || kind === "bath") keep = [...have].sort((a, b) => (b.w ?? b.len ?? 0) - (a.w ?? a.len ?? 0)).slice(0, cap);
+			else keep = have.slice(0, cap);
+			for (const it of have) {
+				if (keep.includes(it)) continue;
+				drop.add(it);
+				removed.push(`${name}の${furnitureKindJa(kind)}が${have.length}つ → ${keep.length}つに`);
+			}
+		}
+	}
+	return {
+		items: items.filter((it) => !drop.has(it)),
+		removed
+	};
 }
 //#endregion
 //#region src/parser/module.ts
@@ -5547,7 +7052,7 @@ function looksLikeRoomName(raw) {
 	if (/^[\d.,+\-×XW*＊()（）]+$/.test(s)) return false;
 	if (/\d{3,}/.test(s)) return false;
 	if (/^(UP|DN|FIX|FL|GL|CH|H=|W=|PS|MB|SK|冷|W\d)/.test(s)) return false;
-	if (/境界|道路|隣地|通り芯|芯|^GL|天井|床補強|予定|参考/.test(s)) return false;
+	if (/境界|道路|隣地|通り芯|芯|^GL|天井|床補強|予定|参考|将来|スロープ|想定|程度|ライン|シャッター/.test(s)) return false;
 	if (/^※/.test(raw.trim())) return false;
 	return /[\u3040-\u30ff\u3400-\u9fff]/.test(s) || /^[A-Z]{2,5}$/.test(s);
 }
@@ -5680,12 +7185,23 @@ function splitMergedRegions(grid, plan) {
 		x: o.t.x,
 		y: o.t.y,
 		nm: o.nm,
-		type: classifyRoomName(o.nm)
+		type: classifyRoomName(o.nm),
+		tatami: void 0
 	}));
 	if (names.length < 2) return false;
+	for (const t of plan.texts) {
+		const area = parseAreaLabel(t.str);
+		const tatami = area?.tatami ?? (area?.m2 ? area.m2 / 1.62 : void 0);
+		if (!tatami) continue;
+		const near = names.map((n) => ({
+			n,
+			d: Math.hypot(n.x - t.x, n.y - t.y)
+		})).filter((o) => o.d < 1500).sort((a, b) => a.d - b.d)[0];
+		if (near && near.n.tatami == null) near.n.tatami = tatami;
+	}
 	let changed = false;
-	for (let iter = 0; iter < 3; iter++) {
-		const { labels } = grid.labelComponents();
+	for (let iter = 0; iter < 6; iter++) {
+		const { labels, sizes } = grid.labelComponents();
 		const byLabel = /* @__PURE__ */ new Map();
 		for (const n of names) {
 			const [cx, cy] = grid.cellOf(n);
@@ -5731,10 +7247,13 @@ function splitMergedRegions(grid, plan) {
 				return nearWall(sg.a) && nearWall(sg.b);
 			}).map((sg) => ({
 				cells: lineCells(grid, sg.a, sg.b),
-				L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y)
+				L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y),
+				maxPiece: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y)
 			}));
+			/** 壁の端から延ばした線（同じ行・列ごとに集め、壁をはさんで一直線に並ぶものはまとめて 1 本の仮想の間仕切りにする） */
+			const extended = [];
 			{
-				const maxLen = Math.round(2e3 / grid.res);
+				const maxLen = Math.round(2730 / grid.res);
 				const dirs = [
 					[1, 0],
 					[-1, 0],
@@ -5777,54 +7296,129 @@ function splitMergedRegions(grid, plan) {
 							cy += dy;
 							if (cx < 0 || cy < 0 || cx >= grid.w || cy >= grid.h) break;
 						}
-						if (hit && cells.length >= 2) candCells.push({
-							cells,
-							L: cells.length * grid.res
-						});
+						if (hit && cells.length >= 2) {
+							candCells.push({
+								cells,
+								L: cells.length * grid.res,
+								maxPiece: cells.length * grid.res
+							});
+							const axis = dx ? "h" : "v";
+							const ts = cells.map((c) => axis === "h" ? c % grid.w : Math.floor(c / grid.w));
+							extended.push({
+								cells,
+								L: cells.length * grid.res,
+								axis,
+								line: axis === "h" ? ny : nx,
+								from: Math.min(...ts),
+								to: Math.max(...ts)
+							});
+						}
 					}
+				}
+				const byLine = /* @__PURE__ */ new Map();
+				for (const e of extended) {
+					const k = `${e.axis}:${e.line}`;
+					if (!byLine.has(k)) byLine.set(k, []);
+					byLine.get(k).push(e);
+				}
+				for (const [k, list] of byLine) {
+					if (list.length < 2) continue;
+					const axis = k[0];
+					list.sort((a, b) => a.from - b.from);
+					let run = [list[0]];
+					const flush = () => {
+						if (run.length >= 2) {
+							const cells = [...new Set(run.flatMap((r) => r.cells))];
+							candCells.push({
+								cells,
+								L: cells.length * grid.res,
+								maxPiece: Math.max(...run.map((r) => r.L))
+							});
+						}
+					};
+					for (let i = 1; i < list.length; i++) {
+						const prev = run[run.length - 1];
+						const cur = list[i];
+						let wallOnly = cur.from > prev.to;
+						for (let t = prev.to + 1; wallOnly && t < cur.from; t++) {
+							const c = axis === "h" ? list[0].line * grid.w + t : t * grid.w + list[0].line;
+							if (grid.data[c] !== 1) wallOnly = false;
+						}
+						if (wallOnly && cur.from - prev.to <= Math.round(6e3 / grid.res)) run.push(cur);
+						else {
+							flush();
+							run = [cur];
+						}
+					}
+					flush();
 				}
 			}
 			let best = null;
+			const total = sizes[l] ?? 0;
 			const A = distinct[0];
 			for (const B of distinct.slice(1)) {
-				for (const cd of candCells) {
-					const cells = cd.cells;
-					const blocked = new Set(cells);
-					const [ax, ay] = grid.cellOf(A);
-					const [bx, by] = grid.cellOf(B);
-					const start = ay * grid.w + ax;
-					const goal = by * grid.w + bx;
-					if (blocked.has(start) || blocked.has(goal)) continue;
-					const seen = new Uint8Array(labels.length);
-					const q = [start];
-					seen[start] = 1;
-					let reached = false;
-					let count = 0;
-					while (q.length) {
-						const i = q.pop();
-						count++;
-						if (i === goal) {
-							reached = true;
-							break;
+				const strict = mustSeparate(A.type, B.type);
+				for (const pass of [0, 1]) {
+					for (const cd of candCells) {
+						const combo = cd.L > cd.maxPiece + 1;
+						if (combo !== (pass === 1)) continue;
+						if (combo) {
+							if (cd.maxPiece > (strict ? 2730 : 2e3) || cd.L > 6e3) continue;
+						} else if (cd.L > 2e3 && !strict) continue;
+						const cells = cd.cells;
+						const blocked = new Set(cells);
+						const [ax, ay] = grid.cellOf(A);
+						const [bx, by] = grid.cellOf(B);
+						const start = ay * grid.w + ax;
+						const goal = by * grid.w + bx;
+						if (blocked.has(start) || blocked.has(goal)) continue;
+						const seen = new Uint8Array(labels.length);
+						const q = [start];
+						seen[start] = 1;
+						let reached = false;
+						let count = 0;
+						while (q.length) {
+							const i = q.pop();
+							count++;
+							if (i === goal) {
+								reached = true;
+								break;
+							}
+							const x = i % grid.w;
+							for (const j of [
+								x > 0 ? i - 1 : -1,
+								x < grid.w - 1 ? i + 1 : -1,
+								i - grid.w,
+								i + grid.w
+							]) {
+								if (j < 0 || j >= labels.length || seen[j] || labels[j] !== l || blocked.has(j)) continue;
+								seen[j] = 1;
+								q.push(j);
+							}
 						}
-						const x = i % grid.w;
-						for (const j of [
-							x > 0 ? i - 1 : -1,
-							x < grid.w - 1 ? i + 1 : -1,
-							i - grid.w,
-							i + grid.w
-						]) {
-							if (j < 0 || j >= labels.length || seen[j] || labels[j] !== l || blocked.has(j)) continue;
-							seen[j] = 1;
-							q.push(j);
+						if (reached) continue;
+						const area = count * grid.res * grid.res / 1e6;
+						if (area < .6) continue;
+						let score = combo ? Math.round(cd.L / 300) * 300 * 10 : cd.L;
+						const sideA = ns.filter((n) => {
+							const [x, y] = grid.cellOf(n);
+							return seen[y * grid.w + x] === 1;
+						});
+						const sideB = ns.filter((n) => !sideA.includes(n));
+						const otherArea = (total - count - cells.length) * grid.res * grid.res / 1e6;
+						for (const [side, ar] of combo ? [[sideA, area], [sideB, otherArea]] : []) {
+							if ([...new Set(side.map((n) => n.nm))].length !== 1) continue;
+							const tat = side.find((n) => n.tatami != null)?.tatami;
+							if (tat == null) continue;
+							const want = tat * 1.62;
+							score += Math.min(2999, Math.abs(ar - want) / want * 3e3);
 						}
+						if (!best || score < best.score) best = {
+							cells,
+							score
+						};
 					}
-					if (reached) continue;
-					if (count * grid.res * grid.res / 1e6 < .6) continue;
-					if (!best || cd.L < best.L) best = {
-						cells,
-						L: cd.L
-					};
+					if (best) break;
 				}
 				if (best) break;
 			}
@@ -6003,6 +7597,28 @@ function collinearGaps(walls, maxGap, axisTol = 30) {
 	}
 	return out;
 }
+/** 2 つの部屋が壁を挟んで隣り合うか（壁芯の外形どうしが 300mm 以上重なる辺を持つ） */
+function polysAdjacent(pa, pb, tol = 90, minOverlap = 300) {
+	for (let i = 0; i < pa.length; i++) {
+		const a0 = pa[i];
+		const a1 = pa[(i + 1) % pa.length];
+		const L = Math.hypot(a1.x - a0.x, a1.y - a0.y);
+		if (L < minOverlap) continue;
+		const ux = (a1.x - a0.x) / L;
+		const uy = (a1.y - a0.y) / L;
+		for (let j = 0; j < pb.length; j++) {
+			const b0 = pb[j];
+			const b1 = pb[(j + 1) % pb.length];
+			const d0 = Math.abs((b0.x - a0.x) * -uy + (b0.y - a0.y) * ux);
+			const d1 = Math.abs((b1.x - a0.x) * -uy + (b1.y - a0.y) * ux);
+			if (d0 > tol || d1 > tol) continue;
+			const t0 = (b0.x - a0.x) * ux + (b0.y - a0.y) * uy;
+			const t1 = (b1.x - a0.x) * ux + (b1.y - a0.y) * uy;
+			if (Math.min(L, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1)) >= minOverlap) return true;
+		}
+	}
+	return false;
+}
 /** 同じ線（平面の線と周囲の線で重複したもの）を 1 本にする */
 function uniqueSegs(segs) {
 	const seen = /* @__PURE__ */ new Set();
@@ -6051,6 +7667,128 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const GAP = 3;
 	const closers = plan.loose ? collinearGaps(walls, 6500, 90) : collinearGaps(walls, 4600);
 	for (const c of closers) grid.fillThickSegment(c.a, c.b, c.d, GAP);
+	const segsU = plan.scan || plan.loose ? [] : uniqueSegs([...plan.segs, ...plan.siteSegs]);
+	const dashed = segsU.length ? dashedOutlines(segsU) : [];
+	const solidSymbols = segsU.length ? detectSymbols(segsU) : [];
+	const symbols = [...solidSymbols, ...dashedCarSymbols(dashed, solidSymbols)];
+	if (!plan.loose && !globalThis.__noLongClosers) {
+		const thin = plan.segs.filter((sg) => sg.source === "stroke" && !sg.dashed);
+		/** 線分 a-b の上（±60mm）にある細線が、その長さの何割を覆うか */
+		const thinCoverage = (a, b, tol = 250) => {
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			if (L <= 0) return 0;
+			const u = {
+				x: (b.x - a.x) / L,
+				y: (b.y - a.y) / L
+			};
+			const nrm = {
+				x: -u.y,
+				y: u.x
+			};
+			const iv = [];
+			for (const sg of thin) {
+				if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 200) continue;
+				const oa = (sg.a.x - a.x) * nrm.x + (sg.a.y - a.y) * nrm.y;
+				const ob = (sg.b.x - a.x) * nrm.x + (sg.b.y - a.y) * nrm.y;
+				if (Math.abs(oa) > tol || Math.abs(ob) > tol || Math.abs(oa - ob) > 60) continue;
+				const ta = (sg.a.x - a.x) * u.x + (sg.a.y - a.y) * u.y;
+				const tb = (sg.b.x - a.x) * u.x + (sg.b.y - a.y) * u.y;
+				const s0 = Math.max(0, Math.min(ta, tb));
+				const s1 = Math.min(L, Math.max(ta, tb));
+				if (s1 > s0) iv.push([s0, s1]);
+			}
+			iv.sort((p, q) => p[0] - q[0]);
+			let covered = 0;
+			let cur = null;
+			for (const v of iv) if (cur && v[0] <= cur[1]) cur[1] = Math.max(cur[1], v[1]);
+			else {
+				if (cur) covered += cur[1] - cur[0];
+				cur = [v[0], v[1]];
+			}
+			if (cur) covered += cur[1] - cur[0];
+			return covered / L;
+		};
+		const closeWithLine = (a, b, d) => {
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			grid.fillThickSegment(a, b, L <= 6500 ? 60 : d, L <= 6500 ? 1 : GAP);
+		};
+		const garageLabels = plan.texts.filter((t) => {
+			const nm = cleanRoomName(t.str);
+			return nm != null && classifyRoomName(nm) === "garage";
+		});
+		const carMarks = symbols.filter((sy) => sy.kind === "car").map((sy) => ({
+			x: sy.x,
+			y: sy.y
+		}));
+		const nearGarage = (a, b) => [...garageLabels, ...carMarks].some((t) => distPointSegment({
+			x: t.x,
+			y: t.y
+		}, a, b) <= 4500);
+		/** 線の片側 2.5m 以内に壁が 1 つも無い（出入口は外に向いて開いている。玄関の上がり框の線などは両側に壁がある） */
+		const opensOutside = (a, b) => {
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			const u = {
+				x: (b.x - a.x) / L,
+				y: (b.y - a.y) / L
+			};
+			const nrm = {
+				x: -u.y,
+				y: u.x
+			};
+			for (const sg of [1, -1]) {
+				let blocked = false;
+				for (const w of walls) {
+					for (const q of [
+						w.a,
+						w.b,
+						{
+							x: (w.a.x + w.b.x) / 2,
+							y: (w.a.y + w.b.y) / 2
+						}
+					]) {
+						const t = (q.x - a.x) * u.x + (q.y - a.y) * u.y;
+						const o = ((q.x - a.x) * nrm.x + (q.y - a.y) * nrm.y) * sg;
+						if (t > -200 && t < L + 200 && o > 150 && o < 2500) blocked = true;
+					}
+					if (blocked) break;
+				}
+				if (!blocked) return true;
+			}
+			return false;
+		};
+		for (const c of collinearGaps(walls, 6500)) {
+			const L = Math.hypot(c.b.x - c.a.x, c.b.y - c.a.y);
+			if (L <= 4600 || !nearGarage(c.a, c.b) || !opensOutside(c.a, c.b)) continue;
+			if (thinCoverage(c.a, c.b) < .6) continue;
+			globalThis.__closerTrace?.push(`collinear ${Math.round(c.a.x)},${Math.round(c.a.y)}-${Math.round(c.b.x)},${Math.round(c.b.y)} L=${Math.round(L)}`);
+			closeWithLine(c.a, c.b, c.d);
+		}
+		const ends = [];
+		for (const w of walls) {
+			if (!w.joinedA) ends.push({
+				p: w.a,
+				w
+			});
+			if (!w.joinedB) ends.push({
+				p: w.b,
+				w
+			});
+		}
+		for (let i = 0; i < ends.length; i++) for (let j = i + 1; j < ends.length; j++) {
+			const e = ends[i];
+			const f = ends[j];
+			if (e.w === f.w) continue;
+			if (Math.abs(e.w.u.x * f.w.u.x + e.w.u.y * f.w.u.y) < .98) continue;
+			const dx = f.p.x - e.p.x;
+			const dy = f.p.y - e.p.y;
+			const L = Math.hypot(dx, dy);
+			if (L < 2400 || L > 6500) continue;
+			if (Math.abs(dx * e.w.u.x + dy * e.w.u.y) > 60) continue;
+			if (!nearGarage(e.p, f.p) || !opensOutside(e.p, f.p) || thinCoverage(e.p, f.p) < .6) continue;
+			globalThis.__closerTrace?.push(`ends ${Math.round(e.p.x)},${Math.round(e.p.y)}-${Math.round(f.p.x)},${Math.round(f.p.y)} L=${Math.round(L)}`);
+			closeWithLine(e.p, f.p, Math.max(e.w.d, f.w.d));
+		}
+	}
 	if (plan.loose) {
 		const ends = [];
 		for (const w of walls) {
@@ -6159,7 +7897,20 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				}
 			}
 			const mergeTo = /* @__PURE__ */ new Map();
-			for (const [u, m] of contact) mergeTo.set(u, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+			const garageLabels = /* @__PURE__ */ new Set();
+			for (const t of named) {
+				const nm = cleanRoomName(t.str);
+				if (nm && classifyRoomName(nm) === "garage") {
+					const l = labelNear(grid, lb, t);
+					if (l) garageLabels.add(l);
+				}
+			}
+			const { sizes: szNow } = grid.labelComponents();
+			const bigCells = 12e6 / (grid.res * grid.res);
+			for (const [u, m] of contact) {
+				const pick = [...m.entries()].sort((a, b) => b[1] - a[1]).find(([v]) => !(garageLabels.has(v) && (szNow[u] ?? 0) >= bigCells));
+				if (pick) mergeTo.set(u, pick[0]);
+			}
 			let changedAny = false;
 			for (const [i, sd] of cellSides) {
 				const [u, v] = sd;
@@ -6238,6 +7989,8 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const medianD = thick.length ? thick[Math.floor(thick.length / 2)] : 120;
 	const k = Math.max(1, Math.round(medianD / 2 / res));
 	const rooms = [];
+	/** 室名が無く、仮の名前（収納・室）にした区画 */
+	const autoNamed = /* @__PURE__ */ new Set();
 	const minCells = 1e3;
 	for (let l = 1; l < sizes.length; l++) {
 		if (sizes[l] < minCells) continue;
@@ -6260,7 +8013,11 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				y: main.y
 			};
 		} else if (a?.names.length) {
-			const main = mainName(a.names);
+			let main = mainName(a.names);
+			if ((main.type === "storage" || main.type === "closet") && area > 15) {
+				const outdoor = a.names.find((n) => n.type === "porch" || n.type === "balcony");
+				if (outdoor) main = outdoor;
+			}
 			name = [.../* @__PURE__ */ new Set([main.str, ...a.names.map((n) => n.str)])].join("・");
 			type = main.type;
 			labelPos = {
@@ -6274,9 +8031,11 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		} else if (area < 2) {
 			name = "収納";
 			type = "storage";
+			autoNamed.add(rooms.length);
 		} else {
 			name = "室";
 			type = "other";
+			autoNamed.add(rooms.length);
 		}
 		if (!labelPos) {
 			let sx = 0;
@@ -6423,6 +8182,34 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		rooms[idx].name = "中庭";
 		rooms[idx].type = "balcony";
 		courtLabels.add(l);
+	}
+	if (level === 1 && !rooms.some((r) => r.type === "entrance")) {
+		const gh = rooms.find((r) => r.type === "hall" && /玄関/.test(r.name));
+		if (gh) gh.type = "entrance";
+	}
+	for (const idx of autoNamed) {
+		const rm = rooms[idx];
+		if (rm.name !== "室" && rm.name !== "収納") continue;
+		const neighbors = rooms.filter((o, j) => j !== idx && !autoNamed.has(j) && polysAdjacent(rm.polygon, o.polygon)).map((o) => o.type);
+		const bb = bboxOf$2(rm.polygon);
+		const bw = bb.maxX - bb.minX;
+		const bh = bb.maxY - bb.minY;
+		if (rm.name === "室" && rm.area >= 10 && neighbors.includes("garage")) {
+			rm.name = "アプローチ";
+			rm.type = "porch";
+			rm.inferred = true;
+			continue;
+		}
+		const guess = inferNamelessRoom(neighbors, rm.area, {
+			level,
+			width: Math.min(bw, bh),
+			length: Math.max(bw, bh)
+		});
+		if (guess) {
+			rm.name = guess.name;
+			rm.type = guess.type;
+			rm.inferred = true;
+		} else if (rm.name === "収納") rm.inferred = true;
 	}
 	const building = new Uint8Array(grid.w * grid.h);
 	for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== 2 && !courtLabels.has(labels[i]) ? 1 : 0;
@@ -6597,7 +8384,10 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				height,
 				windowStyle,
 				hingeAtStart: op.hingeAtStart,
-				swingSide: op.swingSign,
+				swingSide: op.swingSign ?? (kind === "door" ? (() => {
+					const side = doorSwingFor(inRoom?.type ?? null, otherRoom?.type ?? null);
+					return side === "a" ? inSign : side === "b" ? -inSign : void 0;
+				})() : void 0),
 				confidence: op.confidence
 			});
 		}
@@ -6673,7 +8463,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			}
 			return wall / n;
 		};
-		const sides = [
+		[
 			"n",
 			"s",
 			"e",
@@ -6690,7 +8480,34 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			x: t.x,
 			y: t.y
 		})));
-		const entry = arrowSide && sideWallRatio(arrowSide) < .9 ? arrowSide : sides[0].s;
+		const sideRoom = (side) => {
+			const cx = (r.minX + r.maxX) / 2;
+			const cy = (r.minY + r.maxY) / 2;
+			const p = side === "n" ? {
+				x: cx,
+				y: r.minY - 500
+			} : side === "s" ? {
+				x: cx,
+				y: r.maxY + 500
+			} : side === "w" ? {
+				x: r.minX - 500,
+				y: cy
+			} : {
+				x: r.maxX + 500,
+				y: cy
+			};
+			return roomAt(p);
+		};
+		const bySense = [
+			"n",
+			"s",
+			"e",
+			"w"
+		].map((sd) => ({
+			s: sd,
+			score: sideWallRatio(sd) - (isCirculation(sideRoom(sd)?.type) ? .35 : 0)
+		})).sort((a, b) => a.score - b.score);
+		const entry = arrowSide && sideWallRatio(arrowSide) < .9 ? arrowSide : bySense[0].s;
 		const stepNote = plan.texts.map((t) => ({
 			n: parseStepCount(t.str),
 			d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY))
@@ -6728,12 +8545,30 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			cars: [],
 			trees: []
 		}
-	} : symbolsToItems(detectSymbols(uniqueSegs([...plan.segs, ...plan.siteSegs])), rooms, outWalls, outline, level, globalThis.__symTrace);
+	} : symbolsToItems(symbols, rooms, outWalls, outline, level, globalThis.__symTrace);
 	const g = globalThis;
-	const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items);
+	const dashRects = dashed.filter((o) => {
+		const L = Math.max(o.maxX - o.minX, o.maxY - o.minY);
+		const S = Math.min(o.maxX - o.minX, o.maxY - o.minY);
+		return L >= 400 && L <= 3600 && S >= 280 && S <= 2400;
+	}).map((o) => ({
+		minX: o.minX,
+		minY: o.minY,
+		maxX: o.maxX,
+		maxY: o.maxY,
+		inner: 0,
+		innerRects: 0,
+		arcs: 0,
+		width: 0,
+		dashed: true
+	}));
+	if (g.__dashTrace) for (const o of dashed) g.__dashTrace.push(`${level}F 破線の輪郭 ${Math.round(o.maxX - o.minX)}x${Math.round(o.maxY - o.minY)} n=${o.n} @${Math.round((o.minX + o.maxX) / 2)},${Math.round((o.minY + o.maxY) / 2)}`);
+	const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects);
 	if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
 	const taken = new Set((ctx?.items ?? []).flatMap((it) => it.kind === "kitchen" ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`]));
-	const mergedItems = [...ctx?.items ?? [], ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))];
+	const sensed = senseFurniture([...ctx?.items ?? [], ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))], rooms);
+	if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));
+	const mergedItems = sensed.items;
 	return {
 		level,
 		elevation: 0,
@@ -6750,137 +8585,9 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		notes: notes.length ? notes : void 0
 	};
 }
-/** 方位記号「N」の周囲の図形から真北方向を推定 */
-function bezierMid(a) {
-	return {
-		x: .125 * a.p0.x + .375 * a.p1.x + .375 * a.p2.x + .125 * a.p3.x,
-		y: .125 * a.p0.y + .375 * a.p1.y + .375 * a.p2.y + .125 * a.p3.y
-	};
-}
-function circumcenter(a, b, c) {
-	const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-	if (Math.abs(d) < 1e-9) return null;
-	const a2 = a.x * a.x + a.y * a.y;
-	const b2 = b.x * b.x + b.y * b.y;
-	const c2 = c.x * c.x + c.y * c.y;
-	return {
-		x: (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
-		y: (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d
-	};
-}
-/**
-* 方位記号の図形から真北を求める（ARCHITREND などの「円＋星形＋北を指す長い線と片羽の矢」）。
-* 円の中心を通る長い線のうち、端に矢羽（短い線）が付いている側、または「真北」「N」の文字に近い側を北とする。
-*/
-function detectCompass(p) {
-	const segs = p.segs;
-	const cell = 300;
-	const grid = /* @__PURE__ */ new Map();
-	const add = (q) => {
-		const k = `${Math.floor(q.x / cell)},${Math.floor(q.y / cell)}`;
-		let a = grid.get(k);
-		if (!a) grid.set(k, a = []);
-		a.push(q);
-	};
-	for (const sg of segs) if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 400) add(sg.a), add(sg.b);
-	for (const a of p.arcs) add(a.p0), add(a.p3), add(bezierMid(a));
-	const around = (c, r) => {
-		const out = [];
-		for (let gx = Math.floor((c.x - r) / cell); gx <= Math.floor((c.x + r) / cell); gx++) for (let gy = Math.floor((c.y - r) / cell); gy <= Math.floor((c.y + r) / cell); gy++) for (const q of grid.get(`${gx},${gy}`) ?? []) out.push(q);
-		return out;
-	};
-	const labels = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
-	let best = null;
-	for (const L of segs) {
-		const len = Math.hypot(L.b.x - L.a.x, L.b.y - L.a.y);
-		if (len < 1500 || len > 15e3) continue;
-		const C = {
-			x: (L.a.x + L.b.x) / 2,
-			y: (L.a.y + L.b.y) / 2
-		};
-		const half = len / 2;
-		const pts = around(C, half * .9).map((q) => ({
-			q,
-			d: Math.hypot(q.x - C.x, q.y - C.y)
-		})).filter((o) => o.d > half * .15 && o.d < half * .9);
-		if (pts.length < 24) continue;
-		const bins = /* @__PURE__ */ new Map();
-		for (const o of pts) {
-			const k = Math.round(o.d / (half * .04));
-			if (!bins.has(k)) bins.set(k, []);
-			bins.get(k).push(o);
-		}
-		let ring = [];
-		for (const [k, v] of bins) {
-			const all = v.concat(bins.get(k + 1) ?? []);
-			if (all.length > ring.length) ring = all;
-		}
-		if (ring.length < 20) continue;
-		if (new Set(ring.map((o) => Math.floor((Math.atan2(o.q.y - C.y, o.q.x - C.x) + Math.PI) / (Math.PI * 2) * 8) % 8)).size < 7) continue;
-		const r = ring.reduce((s0, o) => s0 + o.d, 0) / ring.length;
-		if (half < r * 1.4) continue;
-		const ends = [L.a, L.b];
-		const ux = (L.b.x - L.a.x) / len;
-		const uy = (L.b.y - L.a.y) / len;
-		const endScore = ends.map((E) => {
-			let sc = 0;
-			for (const sg of segs) {
-				if (sg === L) continue;
-				const sl = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
-				if (sl > r * 1.2) continue;
-				if (Math.min(Math.hypot(sg.a.x - E.x, sg.a.y - E.y), Math.hypot(sg.b.x - E.x, sg.b.y - E.y)) > r * .7) continue;
-				if (Math.abs(((sg.b.x - sg.a.x) * ux + (sg.b.y - sg.a.y) * uy) / Math.max(1e-6, sl)) < .97) sc += 1;
-			}
-			return sc;
-		});
-		if (Math.max(...endScore) > 6) continue;
-		for (let k = 0; k < 2; k++) for (const t of labels) if (Math.hypot(t.x - ends[k].x, t.y - ends[k].y) < r * 2.5) endScore[k] += 5;
-		if (endScore[0] === endScore[1]) continue;
-		const E = endScore[0] > endScore[1] ? ends[0] : ends[1];
-		const score = Math.max(...endScore) + ring.length / 10;
-		const deg = Math.round(Math.atan2(E.x - C.x, -(E.y - C.y)) * 180 / Math.PI) || 0;
-		if (!best || score > best.score) best = {
-			deg,
-			score
-		};
-	}
-	return best ? best.deg : null;
-}
 function detectNorth(pages) {
-	for (const p of pages) {
-		const c = detectCompass(p);
-		if (c != null) return c;
-	}
-	for (const p of pages) {
-		const ns = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
-		for (const t of ns) {
-			const R = t.size * 5;
-			const pts = [];
-			for (const s of p.segs) for (const q of [s.a, s.b]) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-			for (const a of p.arcs) for (const q of [a.p0, a.p3]) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-			for (const f of p.fills) for (const q of f.polygon) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-			if (pts.length < 3) continue;
-			let cx = pts.reduce((s0, q) => s0 + q.x, 0) / pts.length;
-			let cy = pts.reduce((s0, q) => s0 + q.y, 0) / pts.length;
-			const centers = [];
-			for (const a of p.arcs) {
-				if (Math.hypot(a.p0.x - t.x, a.p0.y - t.y) > R) continue;
-				const c = circumcenter(a.p0, bezierMid(a), a.p3);
-				if (c) centers.push(c);
-			}
-			if (centers.length >= 2) {
-				cx = centers.reduce((s0, q) => s0 + q.x, 0) / centers.length;
-				cy = centers.reduce((s0, q) => s0 + q.y, 0) / centers.length;
-			}
-			const vx = t.x - cx;
-			const vy = t.y - cy;
-			if (Math.hypot(vx, vy) < t.size * .5) continue;
-			let deg = Math.atan2(vx, -vy) * 180 / Math.PI;
-			deg = Math.round(deg) || 0;
-			return deg;
-		}
-	}
-	return null;
+	const c = pickNorth(pages);
+	return c ? c.deg : null;
 }
 /**
 * 部屋の形をした塗り: 頂点が少なく、辺が 45° の倍数の向き。
@@ -6980,10 +8687,14 @@ function detectPlans(pages, warnings) {
 				}
 			}
 		}
-		if (globalThis.__DBG_PLANS) (globalThis.__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({
-			page: page.pageIndex,
-			walls: g
-		})));
+		if (globalThis.__DBG_PLANS) {
+			(globalThis.__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({
+				page: page.pageIndex,
+				walls: g
+			})));
+			const lens = ww.map((w) => w.t1 - w.t0);
+			console.log("walls", ww.length, "len<300", lens.filter((l) => l < 300).length, "<1000", lens.filter((l) => l >= 300 && l < 1e3).length, ">=1000", lens.filter((l) => l >= 1e3).length, "d", ww.slice(0, 12).map((w) => Math.round(w.d)).join("/"));
+		}
 		const wallColors = wallFillColors(page.colorFills, ww);
 		if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
 		const isRoomText = (t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
@@ -7023,13 +8734,13 @@ function detectPlans(pages, warnings) {
 				poly: f.poly,
 				area: Math.abs(polygonArea(f.poly)) / 1e6,
 				bb: bboxOf$2(f.poly)
-			})).filter((c) => c.area >= .6 && c.area <= 80 && isRoomShaped(c.poly)).map((c) => ({
+			})).filter((c) => c.area >= .6 && c.area <= 150 && isRoomShaped(c.poly)).map((c) => ({
 				...c,
 				labels: labelTexts.filter((t) => pointInPolygon({
 					x: t.x,
 					y: t.y
 				}, c.poly))
-			})).filter((c) => c.labels.length).sort((a, b) => b.area - a.area);
+			})).filter((c) => c.labels.length && (c.area <= 80 || c.labels.some((t) => classifyRoomName(t.str) === "garage"))).sort((a, b) => b.area - a.area);
 			const kept = [];
 			for (const c of cand) {
 				if (kept.some((k) => c.bb.minX >= k.bb.minX - 60 && c.bb.maxX <= k.bb.maxX + 60 && c.bb.minY >= k.bb.minY - 60 && c.bb.maxY <= k.bb.maxY + 60 && c.labels.every((t) => k.labels.includes(t)))) continue;
@@ -7057,6 +8768,20 @@ function detectPlans(pages, warnings) {
 		}
 	}
 	assignFloorTitles(plans, pages);
+	for (const page of pages) {
+		const onPage = plans.filter((p) => p.pageIndex === page.pageIndex);
+		if (onPage.length < 2) continue;
+		const hasEntrance = (p) => p.texts.some((t) => {
+			const nm = cleanRoomName(t.str);
+			return nm != null && classifyRoomName(nm) === "entrance" && !/吹抜|上部/.test(t.str);
+		});
+		const ent = onPage.filter(hasEntrance);
+		if (ent.length !== 1 || ent[0].floorHint === 1) continue;
+		const other = onPage.find((p) => p.floorHint === 1);
+		const old = ent[0].floorHint;
+		ent[0].floorHint = 1;
+		if (other) other.floorHint = old != null && old !== 1 ? old : 2;
+	}
 	for (const p of plans.slice()) {
 		if (p.floorHint != null) continue;
 		const near = plans.filter((q) => q !== p && q.pageIndex === p.pageIndex && q.floorHint != null).map((q) => ({
@@ -7108,6 +8833,9 @@ function assignFloorTitles(plans, pages) {
 		for (const t of page.texts) {
 			const f = parseFloorTitle(t.str);
 			if (f == null || !isTitle(t)) continue;
+			const s0 = normalizeText(t.str);
+			if (/[,、，]/.test(s0) && /平面/.test(s0)) continue;
+			if (followingOnLine(t, page.texts, 3).some((q) => parseFloorTitle(q.str) != null && parseFloorTitle(q.str) !== f)) continue;
 			for (const p of onPage) {
 				const b = p.bbox;
 				const dx = Math.max(0, b.minX - t.x, t.x - b.maxX);
@@ -7632,6 +9360,36 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		}
 	}
 	const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
+	if (site && base && !site.roads.length && site.edges?.length) {
+		const c = {
+			x: (base.bbox.minX + base.bbox.maxX) / 2,
+			y: (base.bbox.minY + base.bbox.maxY) / 2
+		};
+		const neighborSides = new Set(site.edges.filter((e) => e.kind === "neighbor").map((e) => nearestSide({
+			x: (e.a.x + e.b.x) / 2 - c.x,
+			y: (e.a.y + e.b.y) / 2 - c.y
+		})));
+		const open = SIDES.filter((sd) => !neighborSides.has(sd));
+		const cars = floors[0]?.exterior?.cars ?? [];
+		let pick = null;
+		if (open.length && cars.length) {
+			const count = /* @__PURE__ */ new Map();
+			for (const car of cars) {
+				const sd = nearestSide({
+					x: car.x - c.x,
+					y: car.y - c.y
+				});
+				if (open.includes(sd)) count.set(sd, (count.get(sd) ?? 0) + 1);
+			}
+			pick = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+		}
+		if (!pick && open.length === 1 && neighborSides.size >= 2) pick = open[0];
+		if (pick) site.roads.push({
+			side: pick,
+			label: cars.length ? "隣地境界線の無い側（駐車場あり）" : "隣地境界線の無い側",
+			source: "inferred"
+		});
+	}
 	const o1 = floors[0]?.outline.flat() ?? [];
 	if (o1.length) {
 		const dx = -Math.min(...o1.map((p) => p.x));
@@ -9497,6 +11255,27 @@ function woodCheck(model) {
 				level: f.level,
 				lines: hits.map((h) => h.seg),
 				label: "戸の前に壁"
+			}]
+		});
+	}
+	for (const f of floors) {
+		const bad = f.rooms.filter((r) => {
+			if (!r.name.includes("・")) return false;
+			const types = r.name.split("・").map((n) => classifyRoomName(n)).filter((t) => !!t);
+			for (let i = 0; i < types.length; i++) for (let j = i + 1; j < types.length; j++) if (mustSeparate(types[i], types[j])) return true;
+			return false;
+		});
+		if (!bad.length) continue;
+		out.push({
+			id: `merged-${f.level}`,
+			level: f.level,
+			severity: "warn",
+			title: `${f.level}階: 壁か戸で分かれているはずの部屋が一続きに読めています（${bad.length} か所）`,
+			detail: `${bad.map((r) => r.name).join("、")}。収納・トイレ・浴室・個室は壁か戸で区切られているのが普通です。間の壁が細い線で描かれているか、戸の記号が読めていない可能性があります。修正画面で壁を足すか、部屋を分けてください`,
+			marks: [{
+				level: f.level,
+				rects: bad.map((r) => bboxOf$1(r.polygon)),
+				label: "一続き"
 			}]
 		});
 	}
@@ -15486,24 +17265,154 @@ function floorPlanParts(model, f, opts = {}) {
 	}
 	if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf$1(model, f.level), hl);
 	for (const st of f.stairs) {
-		const lay = stairLayout(st, stairStepCount(f.height || 2900, st));
-		s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="${hl ? "#f3e6c9" : "#f7f5f0"}" stroke="${hl ? "#777" : "#999"}" stroke-width="${hl ? 8 : 10}"/>`;
-		for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${hl ? "#555" : "#aaa"}" stroke-width="${hl ? 7 : 8}"/>`;
-		const cs = lay.pieces.map((p) => `${((p.minX + p.maxX) / 2).toFixed(0)},${((p.minY + p.maxY) / 2).toFixed(0)}`);
-		if (cs.length > 1) s += `<polyline points="${cs.join(" ")}" fill="none" stroke="${hl ? "#333" : "#888"}" stroke-width="${hl ? 9 : 12}"/>`;
-		const last = lay.pieces[lay.pieces.length - 1];
+		const n = stairStepCount(f.height || 2900, st);
+		const pieces = stairLayout(st, n).pieces;
+		const ctr = (p) => ({
+			x: (p.minX + p.maxX) / 2,
+			y: (p.minY + p.maxY) / 2
+		});
+		const riser = (f.height || 2900) / Math.max(1, n);
+		const cutAt = st.goesUp && hl ? Math.min(pieces.length - 1, Math.max(2, Math.ceil(1400 / riser))) : -1;
+		if (hl) {
+			s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#fff" stroke="#333" stroke-width="8"/>`;
+			pieces.forEach((p, k) => {
+				const above = cutAt >= 0 && k > cutAt;
+				s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${above ? "#999" : "#333"}" stroke-width="6"${above ? " stroke-dasharray=\"70 50\"" : ""}/>`;
+			});
+		} else {
+			s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
+			for (const p of pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
+		}
+		if (pieces.length > 1) {
+			let dpath = "";
+			const treads = pieces.map((p, k) => ({
+				p,
+				k,
+				c: ctr(p)
+			}));
+			const sameDir = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
+			let prev = null;
+			for (let k = 0; k < treads.length; k++) {
+				const t = treads[k];
+				if (t.p.kind === "landing") {
+					const nxt = treads[k + 1];
+					if (!nxt || !prev) continue;
+					const lc = t.c;
+					const d1 = t.p.dir;
+					const ext = Math.abs(d1.x) > .5 ? t.p.maxX - t.p.minX : t.p.maxY - t.p.minY;
+					if (sameDir({
+						x: -d1.x,
+						y: -d1.y
+					}, nxt.p.dir)) {
+						const adv = Math.max(0, ext * .5 - Math.hypot(nxt.c.x - prev.x, nxt.c.y - prev.y) / 2);
+						const p1 = {
+							x: prev.x + d1.x * adv,
+							y: prev.y + d1.y * adv
+						};
+						const p2 = {
+							x: nxt.c.x + d1.x * adv,
+							y: nxt.c.y + d1.y * adv
+						};
+						const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
+						const sweep = d1.x * (p2.y - p1.y) - d1.y * (p2.x - p1.x) > 0 ? 1 : 0;
+						dpath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${sweep} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)} L${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+					} else dpath += ` Q${lc.x.toFixed(0)} ${lc.y.toFixed(0)} ${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+					prev = nxt.c;
+					k++;
+					continue;
+				}
+				dpath += prev ? ` L${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}` : `M${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}`;
+				prev = t.c;
+			}
+			s += `<path d="${dpath}" fill="none" stroke="${hl ? "#111" : "#888"}" stroke-width="${hl ? 8 : 12}" stroke-linejoin="round"/>`;
+		}
+		const first = pieces[0];
+		const last = pieces[pieces.length - 1];
+		if (first) {
+			const c0 = ctr(first);
+			s += `<circle cx="${c0.x.toFixed(0)}" cy="${c0.y.toFixed(0)}" r="${hl ? 45 : 50}" fill="#fff" stroke="${hl ? "#111" : "#888"}" stroke-width="${hl ? 8 : 10}"/>`;
+		}
 		if (last) {
-			const cx = (last.minX + last.maxX) / 2;
-			const cy = (last.minY + last.maxY) / 2;
+			const c1 = ctr(last);
 			const d = last.dir;
 			const tip = {
-				x: cx + d.x * 160,
-				y: cy + d.y * 160
+				x: c1.x + d.x * 170,
+				y: c1.y + d.y * 170
 			};
-			s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="${hl ? "#333" : "#888"}"/>`;
+			s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(c1.x - d.y * 80).toFixed(0)},${(c1.y + d.x * 80).toFixed(0)} ${(c1.x + d.y * 80).toFixed(0)},${(c1.y - d.x * 80).toFixed(0)}" fill="${hl ? "#111" : "#888"}"/>`;
 		}
-		const first = lay.pieces[0];
-		if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="${hl ? 190 : 160}" text-anchor="middle" fill="${hl ? "#111" : "#777"}" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? "UP" : "DN"}</text>`;
+		if (cutAt >= 0 && pieces[cutAt]) {
+			const p = pieces[cutAt];
+			const d = p.dir;
+			const px = {
+				x: -d.y,
+				y: d.x
+			};
+			const c = ctr(p);
+			const halfW = Math.abs(px.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+			const halfD = Math.abs(d.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+			const A = {
+				x: c.x - px.x * halfW * .95 - d.x * halfD * .8,
+				y: c.y - px.y * halfW * .95 - d.y * halfD * .8
+			};
+			const B = {
+				x: c.x + px.x * halfW * .95 + d.x * halfD * .8,
+				y: c.y + px.y * halfW * .95 + d.y * halfD * .8
+			};
+			const m = {
+				x: (A.x + B.x) / 2,
+				y: (A.y + B.y) / 2
+			};
+			const v = {
+				x: B.x - A.x,
+				y: B.y - A.y
+			};
+			const L = Math.hypot(v.x, v.y) || 1;
+			const u = {
+				x: v.x / L,
+				y: v.y / L
+			};
+			const nn = {
+				x: -u.y,
+				y: u.x
+			};
+			const z = Math.min(90, halfW * .25);
+			const pts = [
+				A,
+				{
+					x: m.x - u.x * z,
+					y: m.y - u.y * z
+				},
+				{
+					x: m.x - u.x * z * .4 + nn.x * z,
+					y: m.y - u.y * z * .4 + nn.y * z
+				},
+				{
+					x: m.x + u.x * z * .4 - nn.x * z,
+					y: m.y + u.y * z * .4 - nn.y * z
+				},
+				{
+					x: m.x + u.x * z,
+					y: m.y + u.y * z
+				},
+				B
+			];
+			s += `<polyline points="${pts.map((q) => `${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(" ")}" fill="none" stroke="#111" stroke-width="7"/>`;
+		}
+		if (first) {
+			const c0 = ctr(first);
+			const d = first.dir;
+			let ang = Math.atan2(d.y, d.x) * 180 / Math.PI;
+			if (ang > 90 || ang <= -90) ang += 180;
+			const off = {
+				x: -d.y,
+				y: d.x
+			};
+			const tx = c0.x + off.x * (hl ? 0 : 0) + d.x * 0;
+			const ty = c0.y + off.y * (hl ? 0 : 0) + d.y * 0;
+			if (hl) s += `<text transform="translate(${(c0.x - d.x * 230).toFixed(0)} ${(c0.y - d.y * 230).toFixed(0)}) rotate(${ang.toFixed(0)})" font-size="150" text-anchor="middle" dominant-baseline="middle" fill="#111">${st.goesUp ? "UP" : "DN"}</text>`;
+			else s += `<text x="${tx.toFixed(0)}" y="${(ty + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? "UP" : "DN"}</text>`;
+		}
 	}
 	const mod = model.module;
 	if (mod && (opts.showModuleGrid ?? !!opts.sheet)) {
@@ -15634,7 +17543,8 @@ function floorPlanParts(model, f, opts = {}) {
 				];
 				const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
 				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? "#222" : "#555"}" stroke-width="6"/>`;
-				s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="${hl ? 7 : 9}"/>`;
+				if (hl) s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="12"/>`;
+				else s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="9"/>`;
 			} else if (o.kind === "sliding") {
 				for (const t of [0, len]) {
 					const e0 = P(t, -h);
@@ -15643,7 +17553,15 @@ function floorPlanParts(model, f, opts = {}) {
 				}
 				const th = 36;
 				const off = Math.min(h * .5, 28);
-				if (len >= 1200) {
+				if (hl) {
+					const dotLine = (t0, t1, o) => {
+						const p0 = P(t0, o);
+						const p1 = P(t1, o);
+						return `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="8"/>` + [p0, p1].map((q) => `<circle cx="${q.x.toFixed(0)}" cy="${q.y.toFixed(0)}" r="30" fill="#fff" stroke="#111" stroke-width="6"/>`).join("");
+					};
+					if (len >= 1200) s += dotLine(0, len * .53, -off) + dotLine(len * .47, len, off);
+					else s += dotLine(0, len, 0);
+				} else if (len >= 1200) {
 					s += leaf(0, len * .53, -off, th);
 					s += leaf(len * .47, len, off, th);
 				} else s += leaf(0, len, off, th);
@@ -15657,6 +17575,7 @@ function floorPlanParts(model, f, opts = {}) {
 	for (const r of f.rooms) {
 		if (r.type === "stairs") continue;
 		const name = r.name.normalize("NFKC");
+		if (!name.trim()) continue;
 		const c = r.labelPos ?? polygonCentroid(r.polygon);
 		const xs = r.polygon.map((p) => p.x);
 		const ys = r.polygon.map((p) => p.y);

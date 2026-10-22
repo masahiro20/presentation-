@@ -96,6 +96,8 @@ export function fillRectContents(rects: PlanRect[], segs: Seg[], arcs: Arc[]) {
     let n = 0;
     for (const s of segs) {
       if (!inside(r, s.a) || !inside(r, s.b)) continue;
+      // 破線の輪郭の中の短い線（座面の破線など）は数えない
+      if (r.dashed && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < 150) continue;
       // 自身の辺（外形の上の線）は除く
       const onEdge = (p: Vec2) => Math.abs(p.x - r.minX) < EPS || Math.abs(p.x - r.maxX) < EPS || Math.abs(p.y - r.minY) < EPS || Math.abs(p.y - r.maxY) < EPS;
       if (onEdge(s.a) && onEdge(s.b)) continue;
@@ -271,13 +273,18 @@ export interface ContextResult {
  * 部屋ごとに長方形を文脈で分類して家具にする。
  * walls は壁の芯（向き・距離の判定に使う）、outline は建物外形。
  */
-export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls: Wall[], level: number, dict?: SymbolSignature[], prior: FurnitureItem[] = []): ContextResult {
+export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls: Wall[], level: number, dict?: SymbolSignature[], prior: FurnitureItem[] = [], extraRects: Omit<PlanRect, 'id'>[] = []): ContextResult {
   const items: FurnitureItem[] = [];
   const trace: string[] = [];
   const candidates: ContextResult['candidates'] = [];
   let seq = 0;
   const id = () => `pc${level}_${++seq}`;
   const rects = findRectangles(segs);
+  // 破線で描かれた家具の輪郭（短い線の列）も長方形の候補に
+  for (const e of extraRects) {
+    if (rects.some((r) => Math.abs(r.minX - e.minX) < EPS * 2 && Math.abs(r.maxX - e.maxX) < EPS * 2 && Math.abs(r.minY - e.minY) < EPS * 2 && Math.abs(r.maxY - e.maxY) < EPS * 2)) continue;
+    rects.push({ ...e, id: rects.length });
+  }
   fillRectContents(rects, segs, arcs);
   for (const l of findLShapes(segs)) {
     // 同じ外形の長方形が無いときだけ（ソファの外形と重なる矩形が別にあれば矩形の方を使う）
@@ -540,8 +547,8 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
           used.add(leg);
           push(main, 'sofa', { w: +(main.L / 1000).toFixed(2) });
           sofas.push(main);
-        } else if (longAgainstWall(c) || c.rect.innerRects >= 2 || tvFacing(c, cands)) {
-          c.note = longAgainstWall(c) ? '壁沿い' : 'テレビ向き';
+        } else if (longAgainstWall(c) || c.rect.innerRects >= 2 || tvFacing(c, cands) || (c.rect.dashed && dinnerChairs(c, cands).length === 0)) {
+          c.note = longAgainstWall(c) ? '壁沿い' : c.rect.dashed ? '破線の輪郭' : 'テレビ向き';
           used.add(c);
           push(c, 'sofa', { w: +(c.L / 1000).toFixed(2) });
           sofas.push(c);
@@ -563,7 +570,7 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
         const chairs = dinnerChairs(c, cands);
         // 椅子を丸い線で描く図面: テーブルの周り（辺から 700mm 以内）の円弧の数
         const chairArcs = arcs.filter((a) => a.p0.x > c.rect.minX - 700 && a.p0.x < c.rect.maxX + 700 && a.p0.y > c.rect.minY - 700 && a.p0.y < c.rect.maxY + 700).length + ringsIn(c.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !((g.minX + g.maxX) / 2 > c.rect.minX && (g.minX + g.maxX) / 2 < c.rect.maxX && (g.minY + g.maxY) / 2 > c.rect.minY && (g.minY + g.maxY) / 2 < c.rect.maxY)).length * 4;
-        if (chairs.length >= 2 || chairArcs >= 4 || (t === 'dining' && !longAgainstWall(c)) || (!longAgainstWall(c) && c.rect.innerRects === 0 && !anyWall(c) && t !== 'japanese')) {
+        if (chairs.length >= 2 || chairArcs >= 4 || (t === 'dining' && !longAgainstWall(c)) || (!longAgainstWall(c) && c.rect.innerRects === 0 && !anyWall(c) && t !== 'japanese' && !c.rect.dashed)) {
           c.note = `椅子 ${chairs.length}・弧 ${chairArcs}`;
           used.add(c);
           chairs.forEach((ch) => used.add(ch));

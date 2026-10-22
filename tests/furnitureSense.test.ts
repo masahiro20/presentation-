@@ -23,7 +23,10 @@ describe('家具の常識', () => {
       item('b3', 'bed', 'r2', 4500, 4500, { w: 1.4, rot: 0 }),
     ];
     const r = senseFurniture(items, rooms);
-    expect(r.items.filter((i) => i.kind === 'sofa').map((i) => i.id)).toEqual(['s1']);
+    // 広い LDK の近くに置いた 2 台（3 人掛け＋2 人掛け）はセットとして残す。離れていれば大きい 1 台
+    expect(r.items.filter((i) => i.kind === 'sofa').map((i) => i.id)).toEqual(['s1', 's2']);
+    const far = senseFurniture(items.map((i) => (i.id === 's2' ? { ...i, x: 9000 } : i)), rooms);
+    expect(far.items.filter((i) => i.kind === 'sofa').map((i) => i.id)).toEqual(['s1']);
     // 一番大きい b3 を残し、平行で近いものが無いので 1 台
     expect(r.items.filter((i) => i.kind === 'bed').map((i) => i.id)).toEqual(['b3']);
     const twin = senseFurniture(items.filter((i) => i.id !== 'b3'), rooms);

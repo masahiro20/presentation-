@@ -42,7 +42,8 @@ interface Cluster {
 
 /** 端点のつながる細い線をまとめる */
 export function clusterSegments(segs: Seg[], maxLen = 2500, minN = 12): Cluster[] {
-  const use = segs.filter((s) => s.source !== 'fill' && !s.dashed && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < maxLen);
+  const hatch = hatchSegments(segs);
+  const use = segs.filter((s) => s.source !== 'fill' && !s.dashed && !hatch.has(s) && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < maxLen);
   const key = (q: Vec2) => `${Math.round(q.x / 4)},${Math.round(q.y / 4)}`;
   const parent = use.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
@@ -84,9 +85,58 @@ export function clusterSegments(segs: Seg[], maxLen = 2500, minN = 12): Cluster[
 
 const within = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
 
+/**
+ * 車の記号が端点を共有しない何枚かの部品（ボディ・ボンネット・キャビン・後部）で描かれている図面:
+ * 大きめの部品（長さ 2.5m 以上）を種に、重なる部品をまとめて車の大きさになれば 1 つの記号にする
+ */
+function assembleCars(clusters: Cluster[]): Cluster[] {
+  const L = (c: Cluster) => Math.max(c.maxX - c.minX, c.maxY - c.minY);
+  const S = (c: Cluster) => Math.min(c.maxX - c.minX, c.maxY - c.minY);
+  const seeds = clusters.filter((c) => within(L(c), 2500, 5600) && within(S(c), 500, 2400) && c.segs.length >= 20);
+  if (!seeds.length) return clusters;
+  const used = new Set<Cluster>();
+  const out: Cluster[] = [];
+  for (const seed of seeds) {
+    if (used.has(seed)) continue;
+    let cur: Cluster = { ...seed, segs: [...seed.segs] };
+    const members = new Set<Cluster>([seed]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      // 種の長手方向に ±1.3m、短手方向に ±15cm 広げた箱に掛かる部品を集める（ボンネット・後部は重ならず前後に並ぶ）
+      const longX = cur.maxX - cur.minX >= cur.maxY - cur.minY;
+      const ex = longX ? 1300 : 150;
+      const ey = longX ? 150 : 1300;
+      for (const c of clusters) {
+        if (members.has(c) || used.has(c)) continue;
+        if (L(c) > 5600 || (S(c) < 150 && c.segs.length < 20)) continue;
+        const ix = Math.min(cur.maxX + ex, c.maxX) - Math.max(cur.minX - ex, c.minX);
+        const iy = Math.min(cur.maxY + ey, c.maxY) - Math.max(cur.minY - ey, c.minY);
+        if (ix <= 0 || iy <= 0) continue;
+        // 車の幅からはみ出す部品（隣の駐車枠の線など）は除く
+        if (longX ? c.minY < cur.minY - ey || c.maxY > cur.maxY + ey : c.minX < cur.minX - ex || c.maxX > cur.maxX + ex) continue;
+        const nx0 = Math.min(cur.minX, c.minX);
+        const ny0 = Math.min(cur.minY, c.minY);
+        const nx1 = Math.max(cur.maxX, c.maxX);
+        const ny1 = Math.max(cur.maxY, c.maxY);
+        if (Math.max(nx1 - nx0, ny1 - ny0) > 5600 || Math.min(nx1 - nx0, ny1 - ny0) > 2400) continue;
+        cur = { segs: [...cur.segs, ...c.segs], minX: nx0, minY: ny0, maxX: nx1, maxY: ny1 };
+        members.add(c);
+        grew = true;
+      }
+    }
+    if (members.size >= 2 && within(L(cur), 4300, 5600) && within(S(cur), 1600, 2400) && cur.segs.length >= 50) {
+      for (const m of members) used.add(m);
+      out.push(cur);
+    }
+  }
+  if (!out.length) return clusters;
+  return [...clusters.filter((c) => !used.has(c)), ...out];
+}
+
 /** 線のまとまりを記号として分類する（部屋の情報は使わず形だけで） */
 export function detectSymbols(segs: Seg[]): PlanSymbol[] {
-  const clusters = clusterSegments(segs, 3400, 4);
+  const clusters = assembleCars(clusterSegments(segs, 3400, 4));
   const out: PlanSymbol[] = [];
   for (const c of clusters) {
     const w = c.maxX - c.minX;
@@ -162,6 +212,313 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
   return out.filter((s) => s.kind === 'car' || !cars.some((car) => Math.abs(s.x - car.x) < car.w / 2 && Math.abs(s.y - car.y) < car.h / 2));
 }
 
+/**
+ * 等間隔に並ぶ平行線（床のタイル割・デッキ・階段の段・ハッチ）。
+ * CAD のハッチは車や家具の輪郭で切られて端点を共有するので、記号のまとまりに使うと図面全体が 1 つにつながってしまう。
+ * 同じ向きの線が同じピッチ（80〜1,200mm）で 5 本以上並ぶものをハッチとみなす。
+ */
+export function hatchSegments(segs: Seg[]): Set<Seg> {
+  const out = new Set<Seg>();
+  for (const axis of ['h', 'v'] as const) {
+    const byO = new Map<number, { s: Seg; t0: number; t1: number }[]>();
+    for (const s of segs) {
+      if (s.source === 'fill') continue;
+      const dx = Math.abs(s.b.x - s.a.x);
+      const dy = Math.abs(s.b.y - s.a.y);
+      const ok = axis === 'h' ? dy < 2 && dx >= 250 : dx < 2 && dy >= 250;
+      if (!ok) continue;
+      const o = Math.round((axis === 'h' ? s.a.y : s.a.x) / 2) * 2;
+      const t0 = axis === 'h' ? Math.min(s.a.x, s.b.x) : Math.min(s.a.y, s.b.y);
+      const t1 = axis === 'h' ? Math.max(s.a.x, s.b.x) : Math.max(s.a.y, s.b.y);
+      if (!byO.has(o)) byO.set(o, []);
+      byO.get(o)!.push({ s, t0, t1 });
+    }
+    const os = [...byO.keys()].sort((a, b) => a - b);
+    const has = new Set(os);
+    const marked = new Set<number>();
+    for (let i = 0; i < os.length; i++) {
+      if (marked.has(os[i])) continue;
+      for (let j = i + 1; j < Math.min(os.length, i + 5); j++) {
+        const p = os[j] - os[i];
+        if (p < 80) continue;
+        if (p > 1200) break;
+        const members: number[] = [];
+        for (let k = -10; k <= 10; k++) {
+          const o = os[i] + k * p;
+          // ±3mm のずれは同じ並び
+          const m = has.has(o) ? o : has.has(o + 2) ? o + 2 : has.has(o - 2) ? o - 2 : null;
+          if (m != null) members.push(m);
+        }
+        if (members.length < 5) continue;
+        // 並びの範囲（軸方向）が重なる線だけ
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const m of members) for (const e of byO.get(m)!) { lo = Math.min(lo, e.t0); hi = Math.max(hi, e.t1); }
+        for (const m of members) {
+          marked.add(m);
+          for (const e of byO.get(m)!) if (e.t1 > lo && e.t0 < hi) out.add(e.s);
+        }
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** 破線で描かれた輪郭（短い線の連なり）のまとまり */
+export interface DashOutline {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  /** 線分の数 */
+  n: number;
+}
+
+/**
+ * 破線の家具・車の輪郭を拾う。
+ * CAD の出力では破線が「短い線分の列」になっていて（setDash ではない）、端点がつながらないので clusterSegments では拾えない。
+ * 近い端点（70mm 以内）で向きの近い短い線をつなぎ（直線・ゆるい曲線）、角で直交する線どうしをつないで長方形にし、
+ * 大きい輪郭の中の小さなまとまり（車の窓・ソファの座面の線）はその輪郭に含める。
+ */
+export function dashedOutlines(segs: Seg[], gap = 70, maxLen = 120): DashOutline[] {
+  const len = (s: Seg) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+  // 破線の 1 本は 120mm 以下。丸い角（実線の短い折れ線）もつなぐために 250mm までの短い線を対象にする
+  const frags = segs.filter((s) => s.source !== 'fill' && !s.dashed && len(s) >= 2 && len(s) <= Math.max(maxLen, 250));
+  if (frags.length < 12) return [];
+  const n = frags.length;
+  const parent = frags.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const unite = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  const ang = frags.map((s) => Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x));
+  const angDiff = (a: number, b: number) => {
+    let d = Math.abs(a - b) % Math.PI;
+    if (d > Math.PI / 2) d = Math.PI - d;
+    return d;
+  };
+  const cell = gap;
+  const hash = new Map<string, number[]>();
+  const key = (x: number, y: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+  frags.forEach((s, i) => {
+    for (const q of [s.a, s.b]) {
+      const k = key(q.x, q.y);
+      if (!hash.has(k)) hash.set(k, []);
+      hash.get(k)!.push(i);
+    }
+  });
+  const linkAll = new Int32Array(n);
+  const linkGap = new Int32Array(n);
+  /** 端点ごとに、つながった相手があるか（a: bit0, b: bit1） */
+  const linkedEnd = new Uint8Array(n);
+  const MAXA = (40 * Math.PI) / 180;
+  frags.forEach((s, i) => {
+    [s.a, s.b].forEach((q, ei) => {
+      const cx = Math.floor(q.x / cell);
+      const cy = Math.floor(q.y / cell);
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          for (const j of hash.get(`${cx + dx},${cy + dy}`) ?? []) {
+            if (j === i) continue;
+            const t = frags[j];
+            const da = Math.hypot(t.a.x - q.x, t.a.y - q.y);
+            const db = Math.hypot(t.b.x - q.x, t.b.y - q.y);
+            const d = Math.min(da, db);
+            if (d > gap || angDiff(ang[i], ang[j]) > MAXA) continue;
+            linkedEnd[i] |= ei === 0 ? 1 : 2;
+            linkedEnd[j] |= da <= db ? 1 : 2;
+            if (j < i) continue;
+            unite(i, j);
+            linkAll[i]++;
+            linkAll[j]++;
+            if (d > 6) {
+              linkGap[i]++;
+              linkGap[j]++;
+            }
+          }
+        }
+    });
+  });
+  interface Chain {
+    ids: number[];
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    thin: boolean;
+    ends: Vec2[];
+    links: number;
+    gaps: number;
+    /** 隙間の無い折れ線（丸い角などの実線の断片）。破線の鎖にくっつくときだけ使う */
+    solid: boolean;
+  }
+  const byRoot = new Map<number, number[]>();
+  frags.forEach((_, i) => {
+    const r = find(i);
+    if (!byRoot.has(r)) byRoot.set(r, []);
+    byRoot.get(r)!.push(i);
+  });
+  const chains: Chain[] = [];
+  for (const ids of byRoot.values()) {
+    if (ids.length < 6) continue;
+    let links = 0;
+    let gaps = 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const i of ids) {
+      links += linkAll[i];
+      gaps += linkGap[i];
+      for (const q of [frags[i].a, frags[i].b]) {
+        if (q.x < minX) minX = q.x;
+        if (q.x > maxX) maxX = q.x;
+        if (q.y < minY) minY = q.y;
+        if (q.y > maxY) maxY = q.y;
+      }
+    }
+    // 破線らしさ: つなぎ目に隙間があるものが 3 割以上（実線の折れ線・円は隙間が無い → 破線の鎖にくっつくときだけ使う）
+    // （丸い角の破線は 1 本の破線が 2〜3 本の小さな線になるので、隙間の割合は 1 割あれば破線）
+    const solid = links === 0 || gaps / links < 0.1;
+    const w = maxX - minX;
+    const h = maxY - minY;
+    if (solid && Math.max(w, h) > 2500) continue;
+    const thin = Math.min(w, h) < 40;
+    const ends: Vec2[] = [];
+    if (!thin) {
+      // つながっていない端点（鎖の端）
+      for (const i of ids) {
+        if (!(linkedEnd[i] & 1)) ends.push(frags[i].a);
+        if (!(linkedEnd[i] & 2)) ends.push(frags[i].b);
+        if (ends.length >= 16) break;
+      }
+    } else {
+      const horiz = w >= h;
+      let lo: Vec2 | null = null;
+      let hi: Vec2 | null = null;
+      for (const i of ids)
+        for (const q of [frags[i].a, frags[i].b]) {
+          const v = horiz ? q.x : q.y;
+          if (!lo || v < (horiz ? lo.x : lo.y)) lo = q;
+          if (!hi || v > (horiz ? hi.x : hi.y)) hi = q;
+        }
+      if (lo && hi) ends.push(lo, hi);
+    }
+    chains.push({ ids, minX, minY, maxX, maxY, thin, ends, links, gaps, solid });
+  }
+  (globalThis as { __dashChains?: unknown[] }).__dashChains?.push(
+    ...chains.map((c) => {
+      const right = c.ids.map((i) => frags[i]).sort((p, q) => Math.max(q.a.x, q.b.x) - Math.max(p.a.x, p.b.x)).slice(0, 2).map((f) => `(${Math.round(f.a.x)},${Math.round(f.a.y)})-(${Math.round(f.b.x)},${Math.round(f.b.y)})`);
+      const left = c.ids.map((i) => frags[i]).sort((p, q) => Math.min(p.a.x, p.b.x) - Math.min(q.a.x, q.b.x)).slice(0, 2).map((f) => `(${Math.round(f.a.x)},${Math.round(f.a.y)})-(${Math.round(f.b.x)},${Math.round(f.b.y)})`);
+      return { n: c.ids.length, x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2), w: Math.round(c.maxX - c.minX), h: Math.round(c.maxY - c.minY), thin: c.thin, solid: c.solid, ends: c.ends.length, gapFrac: +(c.gaps / (c.links || 1)).toFixed(2), right, left };
+    }),
+  );
+  if (!chains.some((c) => !c.solid)) return [];
+  // 鎖どうしをまとめる: 角で直交する細い鎖（長方形の辺）、重なる輪郭、輪郭の中の小さなまとまり
+  const cp = chains.map((_, i) => i);
+  const cfind = (i: number): number => (cp[i] === i ? i : (cp[i] = cfind(cp[i])));
+  const cunite = (a: number, b: number) => {
+    const ra = cfind(a);
+    const rb = cfind(b);
+    if (ra !== rb) cp[ra] = rb;
+  };
+  const Lof = (c: Chain) => Math.max(c.maxX - c.minX, c.maxY - c.minY);
+  const CORNER = gap * 1.5;
+  const area = (c: Chain) => Math.max(1, c.maxX - c.minX) * Math.max(1, c.maxY - c.minY);
+  for (let i = 0; i < chains.length; i++) {
+    const a = chains[i];
+    for (let j = i + 1; j < chains.length; j++) {
+      const b = chains[j];
+      if (a.solid && b.solid) continue;
+      if (Lof(a) > 5600 || Lof(b) > 5600) continue;
+      const m = 20;
+      const inter = a.minX <= b.maxX + 80 && a.maxX >= b.minX - 80 && a.minY <= b.maxY + 80 && a.maxY >= b.minY - 80;
+      // 端どうしが近い（長方形の角・破線の胴体と丸い角）
+      const touch = a.ends.some((p) => b.ends.some((q) => Math.hypot(p.x - q.x, p.y - q.y) <= CORNER));
+      if (a.thin && b.thin) {
+        const horizA = a.maxX - a.minX >= a.maxY - a.minY;
+        const horizB = b.maxX - b.minX >= b.maxY - b.minY;
+        if (horizA !== horizB && touch) cunite(i, j);
+        continue;
+      }
+      if (touch) {
+        cunite(i, j);
+        continue;
+      }
+      if (!inter) continue;
+      // 輪郭（細くない鎖）: 片方がもう片方の中（車の窓・ソファの座面）、または大きく重なる（途中で切れた胴体）
+      const ix = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+      const iy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+      const overlap = ix > 0 && iy > 0 ? (ix * iy) / Math.min(area(a), area(b)) : 0;
+      if (!a.thin && !b.thin) {
+        if (overlap >= 0.5) cunite(i, j);
+        else {
+          // 車の輪郭がタイヤの位置で段になって切れている: 隣り合う大きな鎖の合計が車の大きさならつなぐ
+          const ux = Math.max(a.maxX, b.maxX) - Math.min(a.minX, b.minX);
+          const uy = Math.max(a.maxY, b.maxY) - Math.min(a.minY, b.minY);
+          const uL = Math.max(ux, uy);
+          const uS = Math.min(ux, uy);
+          const sa = Math.min(a.maxX - a.minX, a.maxY - a.minY);
+          const sb = Math.min(b.maxX - b.minX, b.maxY - b.minY);
+          if (within(uL, 4300, 5600) && within(uS, 1600, 2400) && Math.min(sa, sb) >= 900) cunite(i, j);
+        }
+      } else {
+        const small = a.thin ? a : b;
+        const big = a.thin ? b : a;
+        if (small.minX >= big.minX - m && small.maxX <= big.maxX + m && small.minY >= big.minY - m && small.maxY <= big.maxY + m) cunite(i, j);
+      }
+    }
+  }
+  const groups = new Map<number, Chain[]>();
+  chains.forEach((c, i) => {
+    const r = cfind(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(c);
+  });
+  const out: DashOutline[] = [];
+  for (const g of groups.values()) {
+    if (g.every((c) => c.solid)) continue;
+    const minX = Math.min(...g.map((c) => c.minX));
+    const minY = Math.min(...g.map((c) => c.minY));
+    const maxX = Math.max(...g.map((c) => c.maxX));
+    const maxY = Math.max(...g.map((c) => c.maxY));
+    const w = maxX - minX;
+    const h = maxY - minY;
+    // 細い線だけ（破線の 1 本線・吹抜の枠の辺）は輪郭ではない
+    if (Math.min(w, h) < 200 || Math.max(w, h) < 400) continue;
+    // 長方形の辺の集まりなら、4 辺（上下左右）がそろっていること
+    if (g.every((c) => c.thin)) {
+      const horiz = g.filter((c) => c.maxX - c.minX >= c.maxY - c.minY);
+      const vert = g.filter((c) => c.maxX - c.minX < c.maxY - c.minY);
+      const top = horiz.some((c) => Math.abs(c.minY - minY) < 30);
+      const bottom = horiz.some((c) => Math.abs(c.maxY - maxY) < 30);
+      const left = vert.some((c) => Math.abs(c.minX - minX) < 30);
+      const right = vert.some((c) => Math.abs(c.maxX - maxX) < 30);
+      if (!(top && bottom && left && right)) continue;
+    }
+    out.push({ minX, minY, maxX, maxY, n: g.reduce((a, c) => a + c.ids.length, 0) });
+  }
+  return out;
+}
+
+/** 破線の輪郭のうち車の大きさのもの（4.3〜5.6 × 1.6〜2.4m）を車の記号にする。実線で読めた記号と重なるものは除く */
+export function dashedCarSymbols(outlines: DashOutline[], existing: PlanSymbol[]): PlanSymbol[] {
+  const out: PlanSymbol[] = [];
+  for (const o of outlines) {
+    const w = o.maxX - o.minX;
+    const h = o.maxY - o.minY;
+    const L = Math.max(w, h);
+    const S = Math.min(w, h);
+    if (!within(L, 4300, 5600) || !within(S, 1600, 2400)) continue;
+    const x = (o.minX + o.maxX) / 2;
+    const y = (o.minY + o.maxY) / 2;
+    if (existing.some((e) => Math.abs(e.x - x) < Math.max(e.w, e.h) / 2 + 200 && Math.abs(e.y - y) < Math.max(e.w, e.h) / 2 + 200 && (e.kind === 'car' || e.kind === 'sofa'))) continue;
+    const flat = w >= h ? { a: { x: o.minX, y }, b: { x: o.maxX, y } } : { a: { x, y: o.minY }, b: { x, y: o.maxY } };
+    out.push({ kind: 'car', x, y, w, h, n: o.n, flat, shortFrac: 1, bump: 0, longLen: 0 });
+  }
+  return out;
+}
+
 export interface ExteriorSymbols {
   /** 車（中心・向きの角度）。rot: 図面の +x 方向から時計回り（度） */
   cars: { x: number; y: number; rot: number }[];
@@ -235,6 +592,12 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     if (s.kind === 'car') {
       const a = axisLong(s);
       const room = roomAt({ x: s.x, y: s.y });
+      // 室名の無い区画（メモの文字しか無い区画）に車が置いてあれば、その区画はガレージ
+      if (level === 1 && room && (room.type === 'other' || room.type === 'porch') && !/ポーチ|PORCH/i.test(room.name)) {
+        room.name = room.type === 'other' && room.name !== '室' ? `ガレージ（${room.name}）` : 'ガレージ';
+        room.type = 'garage';
+        room.inferred = true;
+      }
       if (!inside({ x: s.x, y: s.y }) || room?.type === 'garage') {
         if (level === 1) exterior.cars.push({ x: Math.round(s.x), y: Math.round(s.y), rot: Math.round(Math.atan2(a.y, a.x) * DEG) });
       } else if (room && Math.max(s.w, s.h) <= 4600) s.kind = 'sofa';

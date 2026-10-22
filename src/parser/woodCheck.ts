@@ -14,6 +14,8 @@ import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
 import { stairFrame, stairStepCount } from '../core/stairs';
+import { classifyRoomName } from './labels';
+import { mustSeparate } from './roomKnowledge';
 
 /** 平面図に赤で示す位置（階ごと）。線は壁の区間、矩形は部屋・階段・内側の空間 */
 export interface WoodMark {
@@ -559,6 +561,28 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       title: `${f.level}階: 開いた先に壁がある戸が ${hits.length} か所`,
       detail: `${hits.map((h) => `幅 ${Math.round(h.width)} の戸の前が ${Math.round(Math.max(0, h.clear))}`).join('・')} mm です。開き戸は開く側に戸の幅ぶん（${hits.map((h) => Math.round(h.width)).join('・')}）の空きが要ります。壁に当たる戸は引戸にするか、開く向きを変えてください。戸の記号（円弧の向き）を読み違えている可能性もあります`,
       marks: [{ level: f.level, lines: hits.map((h) => h.seg), label: '戸の前に壁' }],
+    });
+  }
+
+  // (p) 一続きに読めた部屋: 収納・トイレ・浴室・個室が他の部屋と 1 つの区画になっている（間の壁か戸が読めていない）
+  for (const f of floors) {
+    const bad = f.rooms.filter((r) => {
+      if (!r.name.includes('・')) return false;
+      const types = r.name
+        .split('・')
+        .map((n) => classifyRoomName(n))
+        .filter((t): t is NonNullable<typeof t> => !!t);
+      for (let i = 0; i < types.length; i++) for (let j = i + 1; j < types.length; j++) if (mustSeparate(types[i], types[j])) return true;
+      return false;
+    });
+    if (!bad.length) continue;
+    out.push({
+      id: `merged-${f.level}`,
+      level: f.level,
+      severity: 'warn',
+      title: `${f.level}階: 壁か戸で分かれているはずの部屋が一続きに読めています（${bad.length} か所）`,
+      detail: `${bad.map((r) => r.name).join('、')}。収納・トイレ・浴室・個室は壁か戸で区切られているのが普通です。間の壁が細い線で描かれているか、戸の記号が読めていない可能性があります。修正画面で壁を足すか、部屋を分けてください`,
+      marks: [{ level: f.level, rects: bad.map((r) => bboxOf(r.polygon)), label: '一続き' }],
     });
   }
 

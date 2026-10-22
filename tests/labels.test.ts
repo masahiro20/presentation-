@@ -24,7 +24,7 @@ describe('室名の判定', () => {
     ['浴室', 'bath'],
     ['WC', 'toilet'],
     ['トイレ', 'toilet'],
-    ['玄関ホール', 'entrance'],
+    ['玄関ホール', 'hall'],
     ['ホール', 'hall'],
     ['小上がり', 'japanese'],
     ['畳スペース', 'japanese'],

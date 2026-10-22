@@ -9,6 +9,7 @@ import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRaster
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs, stairEntryFromArrow } from './stairs';
+import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate } from './roomKnowledge';
 import { detectSite, translateSite } from './site';
 import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
@@ -632,7 +633,7 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
       // （戸の開口・壁の端にある出入口。収納の折れ戸や、壁の端と直角の壁の間の出入口がこれで閉じる）
       const candCells: { cells: number[]; L: number }[] = cands.map((sg) => ({ cells: lineCells(grid, sg.a, sg.b), L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) }));
       {
-        const maxLen = Math.round(2000 / grid.res);
+        const maxLen = Math.round(2730 / grid.res);
         const dirs = [
           [1, 0],
           [-1, 0],
@@ -685,7 +686,10 @@ function splitMergedRegions(grid: Grid, plan: PlanData): boolean {
       let best: { cells: number[]; L: number } | null = null;
       const A = distinct[0];
       for (const B of distinct.slice(1)) {
+        // 収納・トイレ・個室が他の部屋と一続きになっているときは、1.5 間までの線も使う（普通の戸は 2m まで）
+        const strict = mustSeparate(A.type, B.type);
         for (const cd of candCells) {
+          if (cd.L > 2000 && !strict) continue;
           const cells = cd.cells;
           const blocked = new Set(cells);
           const [ax, ay] = grid.cellOf(A);
@@ -880,6 +884,31 @@ function collinearGaps(walls: WWall[], maxGap: number, axisTol = 30): { a: Vec2;
 export interface FloorHints {
   /** この点を含む区画は中庭（上階の床が無く、ガラス戸に囲まれた室名の無い区画） */
   courtyards?: Vec2[];
+}
+
+/** 2 つの部屋が壁を挟んで隣り合うか（壁芯の外形どうしが 300mm 以上重なる辺を持つ） */
+function polysAdjacent(pa: Vec2[], pb: Vec2[], tol = 90, minOverlap = 300): boolean {
+  for (let i = 0; i < pa.length; i++) {
+    const a0 = pa[i];
+    const a1 = pa[(i + 1) % pa.length];
+    const L = Math.hypot(a1.x - a0.x, a1.y - a0.y);
+    if (L < minOverlap) continue;
+    const ux = (a1.x - a0.x) / L;
+    const uy = (a1.y - a0.y) / L;
+    for (let j = 0; j < pb.length; j++) {
+      const b0 = pb[j];
+      const b1 = pb[(j + 1) % pb.length];
+      // 平行で、同じ直線上（法線方向の差が tol 以内）
+      const d0 = Math.abs((b0.x - a0.x) * -uy + (b0.y - a0.y) * ux);
+      const d1 = Math.abs((b1.x - a0.x) * -uy + (b1.y - a0.y) * ux);
+      if (d0 > tol || d1 > tol) continue;
+      const t0 = (b0.x - a0.x) * ux + (b0.y - a0.y) * uy;
+      const t1 = (b1.x - a0.x) * ux + (b1.y - a0.y) * uy;
+      const ov = Math.min(L, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+      if (ov >= minOverlap) return true;
+    }
+  }
+  return false;
 }
 
 /** 同じ線（平面の線と周囲の線で重複したもの）を 1 本にする */
@@ -1102,6 +1131,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const medianD = thick.length ? thick[Math.floor(thick.length / 2)] : 120;
   const k = Math.max(1, Math.round(medianD / 2 / res));
   const rooms: Room[] = [];
+  /** 室名が無く、仮の名前（収納・室）にした区画 */
+  const autoNamed = new Set<number>();
   const minCells = (0.4 * 1e6) / (res * res);
   for (let l = 1; l < sizes.length; l++) {
     if (sizes[l] < minCells) continue;
@@ -1136,9 +1167,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     } else if (area < 2.0) {
       name = '収納';
       type = 'storage';
+      autoNamed.add(rooms.length);
     } else {
       name = '室';
       type = 'other';
+      autoNamed.add(rooms.length);
     }
     if (!labelPos) {
       // 領域の中心付近のセル
@@ -1283,6 +1316,29 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     rooms[idx].name = '中庭';
     rooms[idx].type = 'balcony';
     courtLabels.add(l);
+  }
+
+  // 「玄関ホール」は床のある通路（hall）として読むが、玄関（土間）の室名が無い図面ではそれを玄関にする
+  if (level === 1 && !rooms.some((r) => r.type === 'entrance')) {
+    const gh = rooms.find((r) => r.type === 'hall' && /玄関/.test(r.name));
+    if (gh) gh.type = 'entrance';
+  }
+
+  // 室名の無い区画の名前を、隣の部屋から推定する（玄関の隣 → シューズクローク、キッチンの隣 → パントリー、寝室の隣 → WIC …）
+  for (const idx of autoNamed) {
+    const rm = rooms[idx];
+    // 内外の判定でバルコニー・中庭・ポーチになった区画はそのまま
+    if (rm.name !== '室' && rm.name !== '収納') continue;
+    const neighbors = rooms.filter((o, j) => j !== idx && !autoNamed.has(j) && polysAdjacent(rm.polygon, o.polygon)).map((o) => o.type);
+    const bb = bboxOf(rm.polygon);
+    const bw = bb.maxX - bb.minX;
+    const bh = bb.maxY - bb.minY;
+    const guess = inferNamelessRoom(neighbors, rm.area, { level, width: Math.min(bw, bh), length: Math.max(bw, bh) });
+    if (guess) {
+      rm.name = guess.name;
+      rm.type = guess.type;
+      rm.inferred = true;
+    } else if (rm.name === '収納') rm.inferred = true;
   }
 
   // ---- 外形 ----
@@ -1456,7 +1512,15 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         height,
         windowStyle,
         hingeAtStart: op.hingeAtStart,
-        swingSide: op.swingSign,
+        // 開く向きが読めない戸は、両側の部屋の種類から（個室・浴室はその部屋の中へ、トイレ・収納は外へ、通路からは部屋の中へ）
+        swingSide:
+          op.swingSign ??
+          (kind === 'door'
+            ? (() => {
+                const side = doorSwingFor(inRoom?.type ?? null, otherRoom?.type ?? null);
+                return side === 'a' ? (inSign as 1 | -1) : side === 'b' ? (-inSign as 1 | -1) : undefined;
+              })()
+            : undefined),
         confidence: op.confidence,
       });
     }
@@ -1530,7 +1594,18 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       nonWallSegs,
       plan.texts.filter((t) => parseStairMark(t.str) != null).map((t) => ({ x: t.x, y: t.y })),
     );
-    const entry: Stair['entry'] = arrowSide && sideWallRatio(arrowSide) < 0.9 ? arrowSide : sides[0].s;
+    // 矢印が無いときは、壁が少なく、かつホール・LDK など人の通る部屋に面した辺（階段は通路から上がる）
+    const sideRoom = (side: 'n' | 's' | 'e' | 'w') => {
+      const cx = (r.minX + r.maxX) / 2;
+      const cy = (r.minY + r.maxY) / 2;
+      const p = side === 'n' ? { x: cx, y: r.minY - 500 } : side === 's' ? { x: cx, y: r.maxY + 500 } : side === 'w' ? { x: r.minX - 500, y: cy } : { x: r.maxX + 500, y: cy };
+      return roomAt(p);
+    };
+    const bySense = (['n', 's', 'e', 'w'] as const)
+      .map((sd) => ({ s: sd, score: sideWallRatio(sd) - (isCirculation(sideRoom(sd)?.type) ? 0.35 : 0) }))
+      .sort((a, b) => a.score - b.score);
+    const entry: Stair['entry'] = arrowSide && sideWallRatio(arrowSide) < 0.9 ? arrowSide : bySense[0].s;
+    void sides;
     // 「14段」などの段数注記（階段の近く）
     const stepNote = plan.texts
       .map((t) => ({ n: parseStepCount(t.str), d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY)) }))

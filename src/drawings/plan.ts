@@ -533,6 +533,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   for (const r of f.rooms) {
     if (r.type === 'stairs') continue;
     const name = r.name.normalize('NFKC');
+    // 名前の無い区画（線の読み違いの隙間）は書かない
+    if (!name.trim()) continue;
     const c = r.labelPos ?? polygonCentroid(r.polygon);
     const xs = r.polygon.map((p) => p.x);
     const ys = r.polygon.map((p) => p.y);

@@ -84,6 +84,8 @@ export interface Room {
   labeledTatami?: number;
   /** 階段の昇り方向などの補助情報 */
   stairDir?: 'up' | 'down';
+  /** 室名が図面に無く、隣の部屋から推定した名前 */
+  inferred?: boolean;
 }
 
 export interface Stair {

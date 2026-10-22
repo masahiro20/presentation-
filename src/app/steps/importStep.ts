@@ -802,13 +802,15 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     action: multi && !f1stairs ? { label: '修正画面で階段を描く', fn: openEditor } : undefined,
   });
   // 部屋名
-  const allRooms = floors.flatMap((f) => f.rooms.filter((r) => r.type !== 'void'));
+  // 名前の無い細い区画（線の読み違いの隙間）は数えない
+  const allRooms = floors.flatMap((f) => f.rooms.filter((r) => r.type !== 'void' && r.name.trim()));
   const unnamed = allRooms.filter((r) => r.type === 'other' || /^室$|^部屋$/.test(r.name.trim()));
+  const inferred = allRooms.filter((r) => r.inferred && r.type !== 'other');
   const hasLdk = allRooms.some((r) => r.type === 'ldk' || r.type === 'living');
   rows.push({
     ok: unnamed.length === 0 && hasLdk,
     label: '部屋',
-    detail: `${allRooms.length}室${hasLdk ? '' : '（LDK／リビングが見つかりません）'}${unnamed.length ? `、用途が分からない部屋 ${unnamed.length}（${unnamed.slice(0, 3).map((r) => r.name).join('・')}${unnamed.length > 3 ? '…' : ''}）` : ''}`,
+    detail: `${allRooms.length}室${hasLdk ? '' : '（LDK／リビングが見つかりません）'}${unnamed.length ? `、用途が分からない部屋 ${unnamed.length}（${unnamed.slice(0, 3).map((r) => r.name).join('・')}${unnamed.length > 3 ? '…' : ''}）` : ''}${inferred.length ? `、名前が無く隣の部屋から推定 ${inferred.length}（${[...new Set(inferred.map((r) => r.name))].slice(0, 4).join('・')}）` : ''}`,
     action: unnamed.length || !hasLdk ? { label: '部屋名を直す', fn: openEditor } : undefined,
   });
   // 窓・ドア

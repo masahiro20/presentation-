@@ -5716,7 +5716,7 @@ function splitMergedRegions(grid, plan) {
 				for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) if (grid.get(x + dx, y + dy) === 1) return true;
 				return false;
 			};
-			const cands = plan.segs.filter((sg) => {
+			const candCells = plan.segs.filter((sg) => {
 				const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
 				if (L < 350 || L > 5e3) return false;
 				const m = {
@@ -5727,12 +5727,66 @@ function splitMergedRegions(grid, plan) {
 				const [mx, my] = grid.cellOf(m);
 				if (labels[my * grid.w + mx] !== l) return false;
 				return nearWall(sg.a) && nearWall(sg.b);
-			});
+			}).map((sg) => ({
+				cells: lineCells(grid, sg.a, sg.b),
+				L: Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y)
+			}));
+			{
+				const maxLen = Math.round(2e3 / grid.res);
+				const dirs = [
+					[1, 0],
+					[-1, 0],
+					[0, 1],
+					[0, -1]
+				];
+				const seenKey = /* @__PURE__ */ new Set();
+				const x0 = Math.max(0, minX - 1);
+				const x1 = Math.min(grid.w - 1, maxX + 1);
+				const y0 = Math.max(0, minY - 1);
+				const y1 = Math.min(grid.h - 1, maxY + 1);
+				for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+					const i = y * grid.w + x;
+					if (grid.data[i] !== 1) continue;
+					for (const [dx, dy] of dirs) {
+						const nx = x + dx;
+						const ny = y + dy;
+						if (nx < 0 || ny < 0 || nx >= grid.w || ny >= grid.h) continue;
+						if (labels[ny * grid.w + nx] !== l) continue;
+						const px = x - dx;
+						const py = y - dy;
+						if (px < 0 || py < 0 || px >= grid.w || py >= grid.h) continue;
+						if (grid.data[py * grid.w + px] !== 1) continue;
+						const key = `${dx},${dy},${dx ? x : y},${Math.floor((dx ? y : x) / 4)}`;
+						if (seenKey.has(key)) continue;
+						seenKey.add(key);
+						const cells = [];
+						let cx = nx;
+						let cy = ny;
+						let hit = false;
+						for (let k = 0; k < maxLen; k++) {
+							const c = cy * grid.w + cx;
+							if (grid.data[c] === 1) {
+								hit = true;
+								break;
+							}
+							if (labels[c] !== l) break;
+							cells.push(c);
+							cx += dx;
+							cy += dy;
+							if (cx < 0 || cy < 0 || cx >= grid.w || cy >= grid.h) break;
+						}
+						if (hit && cells.length >= 2) candCells.push({
+							cells,
+							L: cells.length * grid.res
+						});
+					}
+				}
+			}
 			let best = null;
 			const A = distinct[0];
 			for (const B of distinct.slice(1)) {
-				for (const sg of cands) {
-					const cells = lineCells(grid, sg.a, sg.b);
+				for (const cd of candCells) {
+					const cells = cd.cells;
 					const blocked = new Set(cells);
 					const [ax, ay] = grid.cellOf(A);
 					const [bx, by] = grid.cellOf(B);
@@ -5765,10 +5819,9 @@ function splitMergedRegions(grid, plan) {
 					}
 					if (reached) continue;
 					if (count * grid.res * grid.res / 1e6 < .6) continue;
-					const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
-					if (!best || L < best.L) best = {
+					if (!best || cd.L < best.L) best = {
 						cells,
-						L
+						L: cd.L
 					};
 				}
 				if (best) break;

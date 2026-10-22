@@ -25,6 +25,8 @@ export interface ProjectState {
   designer?: string;
   /** 表題欄の資格・氏名（例: 一級建築士第379471号　伊岐見 恭子） */
   license?: string;
+  /** 読み込み直後の「提案一式をまとめて作る」: 資料の画面を開いたら自動作成を始める（'draft' = 高品質描画で速く） */
+  autoRun?: 'draft' | 'photo';
   /** 会社情報（見積書・資金計画書の発行者欄） */
   companyRep?: string;
   companyAddress?: string;

@@ -510,43 +510,11 @@ export const presentStep: Step = {
     ctx.stage.appendChild(deck);
     // 解析結果に写しが無いときは、今の周辺建物の扱いで注記する
     const deckOpts = () => ({ disclosure: collectDisclosure(activeSunContext()) });
-    const render = () => {
-      clear(deck);
-      const slides = buildDeck(deckOpts());
-      deck.append(
-        h(
-          'div',
-          { class: 'deck-tools' },
-          h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
-          h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
-          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
-        ),
-        ...slides,
-      );
-    };
-    render();
-    ctx.side.append(
-      h('h2', null, 'プレゼン資料'),
-      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成（写真品質）'),
-      h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
-      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '高品質描画ですばやく資料を完成（数十秒）'),
-      section(
-        '表紙の情報',
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'お客様名'), h('input', { type: 'text', value: state.customer, onchange: (e: Event) => { state.customer = (e.target as HTMLInputElement).value; render(); } })),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '事務所名'), h('input', { type: 'text', value: state.company, placeholder: 'ホームランディック一級建築士事務所', onchange: (e: Event) => { state.company = (e.target as HTMLInputElement).value; render(); } })),
-        ...(
-          [
-            ['designer', '設計担当'],
-            ['tel', 'TEL'],
-            ['email', 'Email'],
-            ['url', 'URL'],
-          ] as const
-        ).map(([k, label]) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'text', value: state[k] ?? '', onchange: (e: Event) => { state[k] = (e.target as HTMLInputElement).value; render(); } }))),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
-      ),
-      section(
-        '収録内容',
+    // 収録内容（自動作成の後にも数が更新されるよう、資料と一緒に描き直す）
+    const contentsBox = section('収録内容');
+    const paintContents = () => {
+      while (contentsBox.childElementCount > 1) contentsBox.lastElementChild!.remove();
+      contentsBox.append(
         h(
           'ul',
           { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
@@ -569,8 +537,55 @@ export const presentStep: Step = {
           })(),
           h('li', null, `動画 ${state.videos.length} 本`),
         ),
-        h('p', { class: 'hint' }, '写真品質のパースがある場合は優先して使われます。印刷は A4 横に最適化されています。'),
+        h('p', { class: 'hint' }, '写真品質のパースがある場合は優先して使われます。印刷は A4 横に最適化されています。')
+      );
+    };
+    const render = () => {
+      clear(deck);
+      paintContents();
+      const slides = buildDeck(deckOpts());
+      deck.append(
+        h(
+          'div',
+          { class: 'deck-tools' },
+          h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
+          h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
+          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
+        ),
+        ...slides,
+      );
+    };
+    render();
+    // 読み込み直後の「提案一式をまとめて作る」から来たときは、そのまま自動作成を始める
+    if (state.autoRun) {
+      const mode = state.autoRun;
+      state.autoRun = undefined;
+      setTimeout(async () => {
+        await autoGenerate(ctx, mode === 'draft');
+        render();
+      }, 50);
+    }
+    ctx.side.append(
+      h('h2', null, 'プレゼン資料'),
+      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成（写真品質）'),
+      h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
+      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '高品質描画ですばやく資料を完成（数十秒）'),
+      section(
+        '表紙の情報',
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'お客様名'), h('input', { type: 'text', value: state.customer, onchange: (e: Event) => { state.customer = (e.target as HTMLInputElement).value; render(); } })),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '事務所名'), h('input', { type: 'text', value: state.company, placeholder: 'ホームランディック一級建築士事務所', onchange: (e: Event) => { state.company = (e.target as HTMLInputElement).value; render(); } })),
+        ...(
+          [
+            ['designer', '設計担当'],
+            ['tel', 'TEL'],
+            ['email', 'Email'],
+            ['url', 'URL'],
+          ] as const
+        ).map(([k, label]) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'text', value: state[k] ?? '', onchange: (e: Event) => { state[k] = (e.target as HTMLInputElement).value; render(); } }))),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
       ),
+      contentsBox,
     );
   },
 };

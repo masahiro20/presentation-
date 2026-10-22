@@ -578,6 +578,22 @@ function renderResult(ctx: StepCtx) {
     h('div', { class: 'btn-row' }, h('button', { class: 'btn primary block', onclick: () => ctx.app.go('design') }, '3D パースを作成する →')),
     h(
       'div',
+      { class: 'btn-row', style: 'margin-top:0' },
+      h(
+        'button',
+        {
+          class: 'btn block',
+          title: '3D を立ち上げ、外観・内観のカット、図面シート、提案資料までを一気に作って資料の画面を開きます（高品質描画。写真品質は資料の画面で後から掛けられます）',
+          onclick: () => {
+            state.autoRun = 'draft';
+            ctx.app.go('present');
+          },
+        },
+        '提案一式をまとめて作る（パース・図面・資料）',
+      ),
+    ),
+    h(
+      'div',
       { class: 'edit-callout' },
       h('b', null, '読み取りが違う所は、平面の上で直せます'),
       h('p', null, '部屋がつながっている・壁が足りない・余分な壁がある・窓やドアが無い・部屋名が違う、といった所を、壁を描く／消す、窓・ドアを置く、部屋名を置くだけで修正できます。'),

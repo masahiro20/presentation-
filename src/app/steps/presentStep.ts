@@ -6,6 +6,7 @@ import type { Step, StepCtx } from '../app';
 import { exteriorById, interiorById } from '../../styles/presets';
 import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFailed, currentShots } from './designStep';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
+import { buildSheets } from './elevationStep';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
 import { externalController, externalSampleY, setExternalMounted } from '../externalBuilding';
@@ -86,6 +87,14 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
         const r = renderElevation(v, d, { color: true });
         return { dir: d, title: r.title, svg: r.svg };
       });
+    }
+    // A3 の図面シート（平面図・立面図＋外部仕上表・建具表）。資料の「図面」のページに載せる
+    if (!state.sheets.length) {
+      try {
+        buildSheets(ctx.app);
+      } catch (e) {
+        console.error(e);
+      }
     }
     state.plans = state.model!.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(state.model!, f) }));
     // 日照
@@ -224,6 +233,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   if (cuts.length) chapters.push({ en: 'Model', ja: '間取り模型' });
   if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
   if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
+  if (state.sheets.some((x) => x.title === '立面図')) chapters.push({ en: 'Drawings', ja: '図面' });
   if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
   chapters.push({ en: 'Details', ja: '上質を支える納まり' });
   const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
@@ -304,7 +314,6 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   for (const g of cuts) slides.push(full(g));
   for (const g of ints) slides.push(full(g));
   // 間取り: 1 階ずつ 1 枚に、図面を大きく。左に階の部屋と広さ
-  // （立面図は資料の水準に届くまで載せない）
   if (state.plans.length) {
     const n = no('Floor Plan');
     model.floors.forEach((f, fi) => {
@@ -326,6 +335,12 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
         ),
       );
     });
+  }
+  // 図面（御社の書き方の A3 シート: 立面図 4 面＋外部仕上表、平面図）
+  const elevSheet = state.sheets.find((x) => x.title === '立面図');
+  if (elevSheet) {
+    const n = no('Drawings');
+    slides.push(slide('drawing', h('div', { style: 'min-height:0;overflow:hidden' }, head(n, 'Drawings', '立面図'), h('p', null, '東西南北の 4 面と、屋根・外壁・サッシ・玄関ドアの仕上げ（外部仕上表）です。')), h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: elevSheet.svg }))));
   }
   // 光と日当たり
   if (state.sun.seasons.length || state.sun.images.length) {

@@ -11,9 +11,14 @@ import { sheetInfo } from '../sheetInfo';
 const DIRS: ElevationDir[] = ['south', 'east', 'north', 'west'];
 
 function generate(ctx: StepCtx, color: boolean) {
+  buildSheets(ctx.app, color);
+}
+
+/** 図面一式（平面図シート・立面図シート・建具表）を 3D から作って state に入れる。資料の自動作成からも呼ぶ */
+export function buildSheets(app: StepCtx['app'], color = false) {
   // 提案用の図面は線画が標準（面ごとの張り分け・色塗りはしない）
-  ctx.app.ensureScene();
-  const v = ctx.app.viewer;
+  app.ensureScene();
+  const v = app.viewer;
   const model = state.model!;
   v.setCutaway(null);
   // 立面図（4 面）: プレゼン用の単体図と、A3 シート

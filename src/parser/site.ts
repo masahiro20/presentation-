@@ -19,7 +19,7 @@ export interface SiteText {
 const ROAD_RE = /(道路|公道|私道|市道|町道|区道|村道|県道|府道|都道|国道|認定道|位置指定道|前面道)/;
 const NOT_ROAD_RE = /斜線|後退距離|道路高さ|ドウロシャセン/;
 
-const SIDES: PlanSide[] = ['top', 'right', 'bottom', 'left'];
+export const SIDES: PlanSide[] = ['top', 'right', 'bottom', 'left'];
 const SIDE_VEC: Record<PlanSide, Vec2> = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
 
 /** 方位（北・南東など）→ 図面の辺 */
@@ -38,7 +38,7 @@ export function compassToSide(word: string, northAngleDeg: number): PlanSide | n
   return nearestSide(v);
 }
 
-function nearestSide(v: Vec2): PlanSide {
+export function nearestSide(v: Vec2): PlanSide {
   let best: PlanSide = 'bottom';
   let bd = -Infinity;
   for (const s of SIDES) {

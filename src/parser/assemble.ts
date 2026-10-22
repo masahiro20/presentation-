@@ -1,7 +1,7 @@
 /**
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
-import type { BuildingModel, Floor, FurnitureKind, Opening, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
+import type { BuildingModel, Floor, FurnitureKind, Opening, PlanSide, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
@@ -10,9 +10,11 @@ import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './r
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs, stairEntryFromArrow } from './stairs';
 import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate } from './roomKnowledge';
-import { detectSite, translateSite } from './site';
+import { detectSite, translateSite, nearestSide, SIDES } from './site';
 import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
+import { northCandidates, pickNorth } from './north';
+import { senseFurniture } from './furnitureSense';
 import type { SymbolSignature } from './symbolDict';
 import { chooseModule, moduleInfoOf, snapCoord, snapTolerance, endTolerance, snapStairs, translateModule, woodWallThickness, type ModuleFit, type ModuleMode } from './module';
 
@@ -1647,7 +1649,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
   // 同じ部屋で同じ種類を文脈読みが読めたら、形の決め打ちの方は外す（食卓はキッチンと兼ねて読むことがあるので、キッチンを読んだ部屋の食卓も）
   const taken = new Set((ctx?.items ?? []).flatMap((it) => (it.kind === 'kitchen' ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`])));
-  const mergedItems = [...(ctx?.items ?? []), ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))];
+  const merged0 = [...(ctx?.items ?? []), ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))];
+  // 常識で整理（LDK に食卓 2 つ、玄関に便器…は読み違い）
+  const sensed = senseFurniture(merged0, rooms);
+  if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));
+  const mergedItems = sensed.items;
   void (null as FurnitureKind | null);
   return {
     level,
@@ -1666,139 +1672,18 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   };
 }
 
-/** 方位記号「N」の周囲の図形から真北方向を推定 */
-function bezierMid(a: Arc): Vec2 {
-  return { x: 0.125 * a.p0.x + 0.375 * a.p1.x + 0.375 * a.p2.x + 0.125 * a.p3.x, y: 0.125 * a.p0.y + 0.375 * a.p1.y + 0.375 * a.p2.y + 0.125 * a.p3.y };
-}
-
-function circumcenter(a: Vec2, b: Vec2, c: Vec2): Vec2 | null {
-  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-  if (Math.abs(d) < 1e-9) return null;
-  const a2 = a.x * a.x + a.y * a.y;
-  const b2 = b.x * b.x + b.y * b.y;
-  const c2 = c.x * c.x + c.y * c.y;
-  return {
-    x: (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
-    y: (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d,
-  };
-}
-
-/**
- * 方位記号の図形から真北を求める（ARCHITREND などの「円＋星形＋北を指す長い線と片羽の矢」）。
- * 円の中心を通る長い線のうち、端に矢羽（短い線）が付いている側、または「真北」「N」の文字に近い側を北とする。
- */
+/** 方位記号から真北を読む（north.ts）。候補の点数がいちばん高いものを返す */
 export function detectCompass(p: PageMm): number | null {
-  const segs = p.segs;
-  // 円周候補の点（短い線分の端点・円弧の点）を格子に登録
-  const cell = 300;
-  const grid = new Map<string, Vec2[]>();
-  const add = (q: Vec2) => {
-    const k = `${Math.floor(q.x / cell)},${Math.floor(q.y / cell)}`;
-    let a = grid.get(k);
-    if (!a) grid.set(k, (a = []));
-    a.push(q);
-  };
-  for (const sg of segs) if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 400) add(sg.a), add(sg.b);
-  for (const a of p.arcs) add(a.p0), add(a.p3), add(bezierMid(a));
-  const around = (c: Vec2, r: number) => {
-    const out: Vec2[] = [];
-    for (let gx = Math.floor((c.x - r) / cell); gx <= Math.floor((c.x + r) / cell); gx++)
-      for (let gy = Math.floor((c.y - r) / cell); gy <= Math.floor((c.y + r) / cell); gy++) for (const q of grid.get(`${gx},${gy}`) ?? []) out.push(q);
-    return out;
-  };
-  const labels = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
-  let best: { deg: number; score: number } | null = null;
-  for (const L of segs) {
-    const len = Math.hypot(L.b.x - L.a.x, L.b.y - L.a.y);
-    if (len < 1500 || len > 15000) continue;
-    const C = { x: (L.a.x + L.b.x) / 2, y: (L.a.y + L.b.y) / 2 };
-    const half = len / 2;
-    const pts = around(C, half * 0.9).map((q) => ({ q, d: Math.hypot(q.x - C.x, q.y - C.y) })).filter((o) => o.d > half * 0.15 && o.d < half * 0.9);
-    if (pts.length < 24) continue;
-    // 半径のヒストグラムの山 = 円
-    const bins = new Map<number, typeof pts>();
-    for (const o of pts) {
-      const k = Math.round(o.d / (half * 0.04));
-      if (!bins.has(k)) bins.set(k, []);
-      bins.get(k)!.push(o);
-    }
-    let ring: typeof pts = [];
-    for (const [k, v] of bins) {
-      const all = v.concat(bins.get(k + 1) ?? []);
-      if (all.length > ring.length) ring = all;
-    }
-    if (ring.length < 20) continue;
-    const sectors = new Set(ring.map((o) => Math.floor(((Math.atan2(o.q.y - C.y, o.q.x - C.x) + Math.PI) / (Math.PI * 2)) * 8) % 8));
-    if (sectors.size < 7) continue;
-    const r = ring.reduce((s0, o) => s0 + o.d, 0) / ring.length;
-    if (half < r * 1.4) continue;
-    // 両端のどちらが北か
-    const ends = [L.a, L.b];
-    const ux = (L.b.x - L.a.x) / len;
-    const uy = (L.b.y - L.a.y) / len;
-    const endScore = ends.map((E) => {
-      let sc = 0;
-      for (const sg of segs) {
-        if (sg === L) continue;
-        const sl = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
-        if (sl > r * 1.2) continue;
-        const near = Math.min(Math.hypot(sg.a.x - E.x, sg.a.y - E.y), Math.hypot(sg.b.x - E.x, sg.b.y - E.y));
-        if (near > r * 0.7) continue;
-        const cos = Math.abs(((sg.b.x - sg.a.x) * ux + (sg.b.y - sg.a.y) * uy) / Math.max(1e-6, sl));
-        if (cos < 0.97) sc += 1;
-      }
-      return sc;
-    });
-    // 家具（丸テーブルと椅子など）は端の周りに線が多い。方位記号の矢羽は数本
-    if (Math.max(...endScore) > 6) continue;
-    for (let k = 0; k < 2; k++) for (const t of labels) if (Math.hypot(t.x - ends[k].x, t.y - ends[k].y) < r * 2.5) endScore[k] += 5;
-    if (endScore[0] === endScore[1]) continue;
-    const E = endScore[0] > endScore[1] ? ends[0] : ends[1];
-    const score = Math.max(...endScore) + ring.length / 10;
-    const deg = Math.round((Math.atan2(E.x - C.x, -(E.y - C.y)) * 180) / Math.PI) || 0;
-    if (!best || score > best.score) best = { deg, score };
-  }
-  return best ? best.deg : null;
+  const tr = (globalThis as { __compassTrace?: string[] }).__compassTrace;
+  const cands = northCandidates(p, tr);
+  const c = cands[0];
+  tr?.push(...cands.map((o) => `${o.how} deg=${o.deg} score=${o.score} at=(${o.at.x.toFixed(0)},${o.at.y.toFixed(0)})`));
+  return c && c.score >= 3 ? c.deg : null;
 }
 
 export function detectNorth(pages: PageMm[]): number | null {
-  for (const p of pages) {
-    const c = detectCompass(p);
-    if (c != null) return c;
-  }
-  for (const p of pages) {
-    const ns = p.texts.filter((t) => /^(真北|N|Ｎ|北|NORTH)$/i.test(t.str.trim()));
-    for (const t of ns) {
-      const R = t.size * 5;
-      const pts: Vec2[] = [];
-      for (const s of p.segs) {
-        for (const q of [s.a, s.b]) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-      }
-      for (const a of p.arcs) for (const q of [a.p0, a.p3]) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-      for (const f of p.fills) for (const q of f.polygon) if (Math.hypot(q.x - t.x, q.y - t.y) < R) pts.push(q);
-      if (pts.length < 3) continue;
-      // 方位記号の円の中心（円弧の外接円）を優先し、無ければ図形の重心
-      let cx = pts.reduce((s0, q) => s0 + q.x, 0) / pts.length;
-      let cy = pts.reduce((s0, q) => s0 + q.y, 0) / pts.length;
-      const centers: Vec2[] = [];
-      for (const a of p.arcs) {
-        if (Math.hypot(a.p0.x - t.x, a.p0.y - t.y) > R) continue;
-        const c = circumcenter(a.p0, bezierMid(a), a.p3);
-        if (c) centers.push(c);
-      }
-      if (centers.length >= 2) {
-        cx = centers.reduce((s0, q) => s0 + q.x, 0) / centers.length;
-        cy = centers.reduce((s0, q) => s0 + q.y, 0) / centers.length;
-      }
-      const vx = t.x - cx;
-      const vy = t.y - cy;
-      if (Math.hypot(vx, vy) < t.size * 0.5) continue;
-      let deg = (Math.atan2(vx, -vy) * 180) / Math.PI;
-      deg = Math.round(deg) || 0;
-      return deg;
-    }
-  }
-  return null;
+  const c = pickNorth(pages);
+  return c ? c.deg : null;
 }
 
 /**
@@ -2480,6 +2365,24 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   }
   // 接道・敷地（1階の図面の周囲から）
   const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
+  // 道路の文字が無い図面: 隣地境界線の無い側、駐車場（車の記号）のある側を接道と見る
+  if (site && base && !site.roads.length && site.edges?.length) {
+    const c = { x: (base.bbox.minX + base.bbox.maxX) / 2, y: (base.bbox.minY + base.bbox.maxY) / 2 };
+    const neighborSides = new Set(site.edges.filter((e) => e.kind === 'neighbor').map((e) => nearestSide({ x: (e.a.x + e.b.x) / 2 - c.x, y: (e.a.y + e.b.y) / 2 - c.y })));
+    const open = SIDES.filter((sd) => !neighborSides.has(sd));
+    const cars = floors[0]?.exterior?.cars ?? [];
+    let pick: PlanSide | null = null;
+    if (open.length && cars.length) {
+      const count = new Map<PlanSide, number>();
+      for (const car of cars) {
+        const sd = nearestSide({ x: car.x - c.x, y: car.y - c.y });
+        if (open.includes(sd)) count.set(sd, (count.get(sd) ?? 0) + 1);
+      }
+      pick = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    }
+    if (!pick && open.length === 1 && neighborSides.size >= 2) pick = open[0];
+    if (pick) site.roads.push({ side: pick, label: cars.length ? '隣地境界線の無い側（駐車場あり）' : '隣地境界線の無い側', source: 'inferred' });
+  }
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];
   if (o1.length) {

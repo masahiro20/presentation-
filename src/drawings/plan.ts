@@ -372,23 +372,106 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level), hl);
   // 階段
   for (const st of f.stairs) {
-    const lay = stairLayout(st, stairStepCount(f.height || 2900, st));
-    // 御社の図面: 階段は薄いベージュの塗りに踏面の線、中心線の矢印と UP/DN
-    s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="${hl ? '#f3e6c9' : '#f7f5f0'}" stroke="${hl ? '#777' : '#999'}" stroke-width="${hl ? 8 : 10}"/>`;
-    for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${hl ? '#555' : '#aaa'}" stroke-width="${hl ? 7 : 8}"/>`;
-    // 昇る向きの矢印（段の中心をつなぐ）
-    const cs = lay.pieces.map((p) => `${((p.minX + p.maxX) / 2).toFixed(0)},${((p.minY + p.maxY) / 2).toFixed(0)}`);
-    if (cs.length > 1) s += `<polyline points="${cs.join(' ')}" fill="none" stroke="${hl ? '#333' : '#888'}" stroke-width="${hl ? 9 : 12}"/>`;
-    const last = lay.pieces[lay.pieces.length - 1];
-    if (last) {
-      const cx = (last.minX + last.maxX) / 2;
-      const cy = (last.minY + last.maxY) / 2;
-      const d = last.dir;
-      const tip = { x: cx + d.x * 160, y: cy + d.y * 160 };
-      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="${hl ? '#333' : '#888'}"/>`;
+    const n = stairStepCount(f.height || 2900, st);
+    const lay = stairLayout(st, n);
+    const pieces = lay.pieces;
+    const ctr = (p: { minX: number; minY: number; maxX: number; maxY: number }) => ({ x: (p.minX + p.maxX) / 2, y: (p.minY + p.maxY) / 2 });
+    // 切断線（床から約 1,400mm の高さで切る）より上の段は破線で
+    const riser = (f.height || 2900) / Math.max(1, n);
+    const cutAt = st.goesUp && hl ? Math.min(pieces.length - 1, Math.max(2, Math.ceil(1400 / riser))) : -1;
+    if (hl) {
+      // 御社の図面: 塗りなし。踏面は細線、歩行線は昇り口の○から矢印へ、途中の踊り場は丸く回る
+      s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#fff" stroke="#333" stroke-width="8"/>`;
+      pieces.forEach((p, k) => {
+        const above = cutAt >= 0 && k > cutAt;
+        s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${above ? '#999' : '#333'}" stroke-width="6"${above ? ' stroke-dasharray="70 50"' : ''}/>`;
+      });
+    } else {
+      s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
+      for (const p of pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
     }
-    const first = lay.pieces[0];
-    if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="${hl ? 190 : 160}" text-anchor="middle" fill="${hl ? '#111' : '#777'}" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? 'UP' : 'DN'}</text>`;
+    // 歩行線: 段の中心をつなぐ。向きが変わる所（踊り場）は角を丸く
+    if (pieces.length > 1) {
+      let dpath = '';
+      const treads = pieces.map((p, k) => ({ p, k, c: ctr(p) }));
+      const sameDir = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
+      let prev: { x: number; y: number } | null = null;
+      for (let k = 0; k < treads.length; k++) {
+        const t = treads[k];
+        if (t.p.kind === 'landing') {
+          // 踊り場: 前の段 → 次の段へ曲線で（制御点は踊り場の中心を進行方向へ寄せた点）
+          const nxt = treads[k + 1];
+          if (!nxt || !prev) continue;
+          const lc = t.c;
+          const d1 = t.p.dir;
+          const ext = Math.abs(d1.x) > 0.5 ? t.p.maxX - t.p.minX : t.p.maxY - t.p.minY;
+          const turnBack = sameDir({ x: -d1.x, y: -d1.y }, nxt.p.dir);
+          if (turnBack) {
+            // 折り返し: 半円で回る（踊り場の奥へ少し進んでから）
+            const adv = Math.max(0, ext * 0.5 - Math.hypot(nxt.c.x - prev.x, nxt.c.y - prev.y) / 2);
+            const p1 = { x: prev.x + d1.x * adv, y: prev.y + d1.y * adv };
+            const p2 = { x: nxt.c.x + d1.x * adv, y: nxt.c.y + d1.y * adv };
+            const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
+            const sweep = d1.x * (p2.y - p1.y) - d1.y * (p2.x - p1.x) > 0 ? 1 : 0;
+            dpath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${sweep} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)} L${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+          } else {
+            dpath += ` Q${lc.x.toFixed(0)} ${lc.y.toFixed(0)} ${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+          }
+          void ext;
+          prev = nxt.c;
+          k++;
+          continue;
+        }
+        dpath += prev ? ` L${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}` : `M${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}`;
+        prev = t.c;
+      }
+      s += `<path d="${dpath}" fill="none" stroke="${hl ? '#111' : '#888'}" stroke-width="${hl ? 8 : 12}" stroke-linejoin="round"/>`;
+    }
+    const first = pieces[0];
+    const last = pieces[pieces.length - 1];
+    if (first) {
+      const c0 = ctr(first);
+      // 昇り口の○
+      s += `<circle cx="${c0.x.toFixed(0)}" cy="${c0.y.toFixed(0)}" r="${hl ? 45 : 50}" fill="#fff" stroke="${hl ? '#111' : '#888'}" stroke-width="${hl ? 8 : 10}"/>`;
+    }
+    if (last) {
+      const c1 = ctr(last);
+      const d = last.dir;
+      const tip = { x: c1.x + d.x * 170, y: c1.y + d.y * 170 };
+      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(c1.x - d.y * 80).toFixed(0)},${(c1.y + d.x * 80).toFixed(0)} ${(c1.x + d.y * 80).toFixed(0)},${(c1.y - d.x * 80).toFixed(0)}" fill="${hl ? '#111' : '#888'}"/>`;
+    }
+    // 切断線: 切る段の位置に斜めの線＋途中にジグザグ
+    if (cutAt >= 0 && pieces[cutAt]) {
+      const p = pieces[cutAt];
+      const d = p.dir;
+      const px = { x: -d.y, y: d.x }; // 段の幅方向
+      const c = ctr(p);
+      const halfW = Math.abs(px.x) > 0.5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+      const halfD = Math.abs(d.x) > 0.5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+      // 切る段の中で斜めに（段の幅の内側だけ）
+      const A = { x: c.x - px.x * halfW * 0.95 - d.x * halfD * 0.8, y: c.y - px.y * halfW * 0.95 - d.y * halfD * 0.8 };
+      const B = { x: c.x + px.x * halfW * 0.95 + d.x * halfD * 0.8, y: c.y + px.y * halfW * 0.95 + d.y * halfD * 0.8 };
+      const m = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+      const v = { x: B.x - A.x, y: B.y - A.y };
+      const L = Math.hypot(v.x, v.y) || 1;
+      const u = { x: v.x / L, y: v.y / L };
+      const nn = { x: -u.y, y: u.x };
+      const z = Math.min(90, halfW * 0.25);
+      const pts = [A, { x: m.x - u.x * z, y: m.y - u.y * z }, { x: m.x - u.x * z * 0.4 + nn.x * z, y: m.y - u.y * z * 0.4 + nn.y * z }, { x: m.x + u.x * z * 0.4 - nn.x * z, y: m.y + u.y * z * 0.4 - nn.y * z }, { x: m.x + u.x * z, y: m.y + u.y * z }, B];
+      s += `<polyline points="${pts.map((q) => `${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(' ')}" fill="none" stroke="#111" stroke-width="7"/>`;
+    }
+    // UP / DN は昇り口の○の脇に、段の向きに沿って
+    if (first) {
+      const c0 = ctr(first);
+      const d = first.dir;
+      let ang = (Math.atan2(d.y, d.x) * 180) / Math.PI;
+      if (ang > 90 || ang <= -90) ang += 180;
+      const off = { x: -d.y, y: d.x };
+      const tx = c0.x + off.x * (hl ? 0 : 0) + d.x * 0;
+      const ty = c0.y + off.y * (hl ? 0 : 0) + d.y * 0;
+      if (hl) s += `<text transform="translate(${(c0.x - d.x * 230).toFixed(0)} ${(c0.y - d.y * 230).toFixed(0)}) rotate(${ang.toFixed(0)})" font-size="150" text-anchor="middle" dominant-baseline="middle" fill="#111">${st.goesUp ? 'UP' : 'DN'}</text>`;
+      else s += `<text x="${tx.toFixed(0)}" y="${(ty + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? 'UP' : 'DN'}</text>`;
+    }
   }
   // 木造モジュールの格子（1 間ごと。部屋の上・壁の下に薄く）
   const mod = model.module;
@@ -504,7 +587,12 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         ];
         const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
         s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? '#222' : '#555'}" stroke-width="6"/>`;
-        s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="${hl ? 7 : 9}"/>`;
+        if (hl) {
+          // 御社の図面: 扉は吊元から戸先への 1 本の線（開いた位置）
+          s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="12"/>`;
+        } else {
+          s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="9"/>`;
+        }
       } else if (o.kind === 'sliding') {
         // 開口の両端の枠（壁の厚みを横切る細線）
         for (const t of [0, len]) {
@@ -515,7 +603,16 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         // 引違い（幅 1.2m 以上）は2枚、狭いものは片引きの1枚
         const th = 36;
         const off = Math.min(h * 0.5, 28);
-        if (len >= 1200) {
+        if (hl) {
+          // 御社の図面: 引戸は細い 1 本線の両端に小さな○
+          const dotLine = (t0: number, t1: number, o: number) => {
+            const p0 = P(t0, o);
+            const p1 = P(t1, o);
+            return `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="8"/>` + [p0, p1].map((q) => `<circle cx="${q.x.toFixed(0)}" cy="${q.y.toFixed(0)}" r="30" fill="#fff" stroke="#111" stroke-width="6"/>`).join('');
+          };
+          if (len >= 1200) s += dotLine(0, len * 0.53, -off) + dotLine(len * 0.47, len, off);
+          else s += dotLine(0, len, 0);
+        } else if (len >= 1200) {
           s += leaf(0, len * 0.53, -off, th);
           s += leaf(len * 0.47, len, off, th);
         } else {

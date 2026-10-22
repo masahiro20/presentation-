@@ -422,7 +422,10 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
     const summary = roads.length
       ? roads.map((r) => `${sideCompass(r.side, model.northAngleDeg)}側（${PLAN_SIDE_LABEL[r.side]}）${r.widthMm ? `・幅員${(r.widthMm / 1000).toFixed(1)}m` : ''}`).join('／')
       : '図面に道路の表記が見つかりませんでした。玄関の向きを道路側として扱っています';
-    const src = detected.length ? `図面の「${detected.map((r) => r.label).filter(Boolean).join('」「')}」から読み取り` : roads.length ? '手動で設定' : '';
+    const inferred = detected.filter((r) => r.source === 'inferred');
+    const src = inferred.length && inferred.length === detected.length
+      ? `道路の文字は無く、${inferred.map((r) => r.label).filter(Boolean).join('・')}から推定`
+      : detected.length ? `図面の「${detected.map((r) => r.label).filter(Boolean).join('」「')}」から読み取り` : roads.length ? '手動で設定' : '';
     const nb = site ? Object.keys(site.bounds).length : 0;
     const parts: (HTMLElement | null)[] = [
       h('div', { style: 'font-size:13px;line-height:1.8' }, h('b', null, '道路：'), summary),

@@ -152,8 +152,8 @@ export interface RoadInfo {
   widthMm?: number;
   /** 読み取った文字 */
   label?: string;
-  /** どこから決めたか */
-  source: 'text' | 'compass' | 'manual';
+  /** どこから決めたか（inferred = 隣地境界線の無い側・駐車場のある側から推定） */
+  source: 'text' | 'compass' | 'manual' | 'inferred';
 }
 
 export interface SiteEdge {

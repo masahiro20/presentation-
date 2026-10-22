@@ -10,7 +10,7 @@ import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
 import { buildLandscape, type LandscapePlan } from '../scene/landscape';
 import { EXTERIOR_STYLES } from '../styles/presets';
-import { wrapSheet, svgTable, type SheetInfo } from './sheet';
+import { wrapSheet, svgTable, boxedTitle, type SheetInfo } from './sheet';
 
 /** 外構（3D と同じ配置: 駐車場・アプローチ・植栽） */
 const landscapeCache = new WeakMap<BuildingModel, LandscapePlan | null>();
@@ -74,13 +74,14 @@ function furnitureOf(model: BuildingModel, level: number): PlanItem[] {
 }
 
 /** 家具を平面図の線で描く（高さの低いものから順に重ねる） */
-function furnitureSvg(items: PlanItem[]): string {
+function furnitureSvg(items: PlanItem[], hl = false): string {
   let s = '';
   const sorted = items.slice().sort((a, b) => a.top - b.top);
   for (const it of sorted) {
     const rug = it.key === 'f.rug';
-    const fill = rug ? 'none' : it.key === 'f.bedding' || it.key.startsWith('f.fabric') ? '#fdfcfa' : it.key === 'f.counter' || it.key === 'f.cabinet' ? '#f4f1ec' : '#faf8f4';
-    const stroke = rug ? '#bdb5aa' : '#76716a';
+    // 御社の図面は家具を細い線だけで描く（塗りなし）
+    const fill = hl ? (rug ? 'none' : '#fff') : rug ? 'none' : it.key === 'f.bedding' || it.key.startsWith('f.fabric') ? '#fdfcfa' : it.key === 'f.counter' || it.key === 'f.cabinet' ? '#f4f1ec' : '#faf8f4';
+    const stroke = hl ? (rug ? '#999' : '#444') : rug ? '#bdb5aa' : '#76716a';
     const dash = rug ? ' stroke-dasharray="60 40"' : '';
     if (it.shape === 'circle') {
       s += `<circle cx="${(it.cx * 1000).toFixed(0)}" cy="${(it.cz * 1000).toFixed(0)}" r="${(it.r * 1000).toFixed(0)}" fill="${fill}" stroke="${stroke}" stroke-width="9"${dash}/>`;
@@ -180,7 +181,15 @@ export interface PlanSvgOptions {
   showModuleGrid?: boolean;
   /** 赤で示す位置（木造チェックの「図面で見る」）。線は壁の区間、矩形は部屋・階段・空間 */
   marks?: PlanMark[];
+  /**
+   * 描き方。hl = 御社の図面の表記（グレーの壁と柱、引違い・縦すべりの窓記号、丸端部の寸法、室名＋(帖)、枠付きの図面名）、
+   * color = 床の素材色と家具の色を付けた提案用。既定は hl
+   */
+  style?: 'hl' | 'color';
 }
+
+/** 室名の下に (帖) を書く部屋（御社の図面: 居室・LDK・縁側・納戸・パントリーなど広さを示す部屋。水まわり・ホール・物入には書かない） */
+const TATAMI_ROOMS = new Set<RoomType>(['ldk', 'living', 'dining', 'kitchen', 'japanese', 'bedroom', 'kids', 'study', 'other']);
 
 export interface PlanMark {
   lines?: { a: Vec2; b: Vec2 }[];
@@ -318,6 +327,7 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
 /** 平面図の中身（図枠に流し込む用）。図枠に入れる時は外構・道路を描かない（図面としての密度を優先） */
 export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOptions = {}): PlanParts {
   if (opts.sheet) opts = { showLandscape: false, showRoad: false, ...opts };
+  const hl = (opts.style ?? 'hl') === 'hl';
   const pts = f.outline.flat().concat(f.walls.flatMap((w) => [w.a, w.b]));
   const minX = Math.min(...pts.map((p) => p.x));
   const maxX = Math.max(...pts.map((p) => p.x));
@@ -342,7 +352,7 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const ys0 = r.polygon.map((p) => p.y);
     const wide = Math.max(...xs0) - Math.min(...xs0) >= Math.max(...ys0) - Math.min(...ys0);
     const pat = fin === 'wood' ? `url(#mp-wood-${wide ? 'h' : 'v'})` : fin === 'tile' ? 'url(#mp-tile)' : fin === 'stone' ? 'url(#mp-stone)' : fin === 'deck' ? 'url(#mp-deck)' : FINISH_FILL[fin];
-    const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? '#f1efea' : pat);
+    const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? '#f1efea' : hl ? '#fff' : pat);
     const stroke = opts.highlightRoomId === r.id ? '#d9822b' : 'none';
     s += `<polygon points="${r.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="${fill}" stroke="${stroke}" stroke-width="${stroke === 'none' ? 0 : 60}"/>`;
     if (r.type === 'japanese') {
@@ -353,30 +363,32 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
       const x1 = Math.max(...xs);
       const y0 = Math.min(...ys);
       const y1 = Math.max(...ys);
-      for (let x = x0 + 910; x < x1 - 100; x += 910) s += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#b9bf96" stroke-width="12"/>`;
-      for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#b9bf96" stroke-width="12"/>`;
+      const tc = hl ? '#999' : '#b9bf96';
+      for (let x = x0 + 910; x < x1 - 100; x += 910) s += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
+      for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
     }
   }
   // 家具
-  if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level));
+  if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level), hl);
   // 階段
   for (const st of f.stairs) {
     const lay = stairLayout(st, stairStepCount(f.height || 2900, st));
-    s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
-    for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
+    // 御社の図面: 階段は薄いベージュの塗りに踏面の線、中心線の矢印と UP/DN
+    s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="${hl ? '#f3e6c9' : '#f7f5f0'}" stroke="${hl ? '#777' : '#999'}" stroke-width="${hl ? 8 : 10}"/>`;
+    for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${hl ? '#555' : '#aaa'}" stroke-width="${hl ? 7 : 8}"/>`;
     // 昇る向きの矢印（段の中心をつなぐ）
     const cs = lay.pieces.map((p) => `${((p.minX + p.maxX) / 2).toFixed(0)},${((p.minY + p.maxY) / 2).toFixed(0)}`);
-    if (cs.length > 1) s += `<polyline points="${cs.join(' ')}" fill="none" stroke="#888" stroke-width="12"/>`;
+    if (cs.length > 1) s += `<polyline points="${cs.join(' ')}" fill="none" stroke="${hl ? '#333' : '#888'}" stroke-width="${hl ? 9 : 12}"/>`;
     const last = lay.pieces[lay.pieces.length - 1];
     if (last) {
       const cx = (last.minX + last.maxX) / 2;
       const cy = (last.minY + last.maxY) / 2;
       const d = last.dir;
       const tip = { x: cx + d.x * 160, y: cy + d.y * 160 };
-      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="#888"/>`;
+      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="${hl ? '#333' : '#888'}"/>`;
     }
     const first = lay.pieces[0];
-    if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777">${st.goesUp ? 'UP' : 'DN'}</text>`;
+    if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="${hl ? 190 : 160}" text-anchor="middle" fill="${hl ? '#111' : '#777'}" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? 'UP' : 'DN'}</text>`;
   }
   // 木造モジュールの格子（1 間ごと。部屋の上・壁の下に薄く）
   const mod = model.module;
@@ -408,7 +420,24 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const h = w.thickness / 2;
     for (const [t0, t1] of solid) {
       const p = (t: number, sgn: number) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
-      s += `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
+      // 御社の図面: 壁はグレーの塗りに黒い輪郭
+      s += hl ? `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#5e5e5e" stroke="#111" stroke-width="7"/>` : `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
+    }
+    // 柱（105 角）: 壁の端と窓の両端。木造の図面では柱の位置が見えるように描く
+    if (hl) {
+      const posts: number[] = [0, L];
+      for (const o of ops) if (o.kind === 'window') posts.push(o.t0, o.t1);
+      for (const t of posts) {
+        const cx = w.a.x + ux * t;
+        const cy = w.a.y + uy * t;
+        const q = [
+          [cx + ux * 52 + nx * 52, cy + uy * 52 + ny * 52],
+          [cx - ux * 52 + nx * 52, cy - uy * 52 + ny * 52],
+          [cx - ux * 52 - nx * 52, cy - uy * 52 - ny * 52],
+          [cx + ux * 52 - nx * 52, cy + uy * 52 - ny * 52],
+        ];
+        s += `<polygon points="${q.map(([x, y]) => `${x.toFixed(0)},${y.toFixed(0)}`).join(' ')}" fill="#1a1a1a" stroke="#000" stroke-width="5"/>`;
+      }
     }
     // 建具（設計図の表記: 窓 = 枠の2線＋ガラス、開き戸 = 扉と軌跡、引戸 = 2枚の戸を少しずらして）
     for (const o of ops) {
@@ -420,7 +449,29 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         const q = [P(t0, off - th / 2), P(t1, off - th / 2), P(t1, off + th / 2), P(t0, off + th / 2)];
         return `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="10"/>`;
       };
-      if (o.kind === 'window') {
+      if (o.kind === 'window' && hl) {
+        // 御社の図面の窓記号: 壁の内外面の線、引違いは 2 枚のガラス線をずらして、縦すべり出しは外に三角、FIX は 1 本線
+        const ln = (p0: { x: number; y: number }, p1: { x: number; y: number }, wd = 7, col = '#111') => `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="${col}" stroke-width="${wd}"/>`;
+        for (const k of [-1, 1]) s += ln(P(0, h * k), P(len, h * k));
+        const style = o.windowStyle ?? (len >= 1600 ? 'hakidashi' : len >= 1200 ? 'koshi' : 'small');
+        const sliding = style === 'hakidashi' || style === 'koshi' || (style !== 'small' && style !== 'slit' && style !== 'high' && len >= 1200);
+        if (sliding) {
+          const g = Math.min(28, h * 0.4);
+          s += ln(P(0, -g), P(len * 0.53, -g)) + ln(P(len * 0.47, g), P(len, g));
+          s += ln(P(len * 0.53, -g), P(len * 0.53, g)) + ln(P(len * 0.47, -g), P(len * 0.47, g));
+        } else {
+          s += ln(P(0, 0), P(len, 0));
+          if (style === 'small' || style === 'slit') {
+            // 縦すべり出し窓: 外側に開く三角（頂点が外）
+            const out = w.exterior ? (w.outsideSign ?? 1) : 1;
+            const a0 = P(0, h * out);
+            const a1 = P(len, h * out);
+            const ap = P(len / 2, (h + Math.min(len * 0.45, 420)) * out);
+            s += `<polygon points="${a0.x.toFixed(0)},${a0.y.toFixed(0)} ${ap.x.toFixed(0)},${ap.y.toFixed(0)} ${a1.x.toFixed(0)},${a1.y.toFixed(0)}" fill="none" stroke="#111" stroke-width="6"/>`;
+          }
+        }
+        for (const t of [0, len]) s += ln(P(t, -h), P(t, h));
+      } else if (o.kind === 'window') {
         // 枠（壁の内外面）とガラス
         for (const k of [-1, 1]) {
           const p0 = P(0, h * k);
@@ -452,8 +503,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
           tip,
         ];
         const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-        s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="#555" stroke-width="6"/>`;
-        s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="9"/>`;
+        s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? '#222' : '#555'}" stroke-width="6"/>`;
+        s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="${hl ? 7 : 9}"/>`;
       } else if (o.kind === 'sliding') {
         // 開口の両端の枠（壁の厚みを横切る細線）
         for (const t of [0, len]) {
@@ -491,6 +542,14 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const fs = Math.max(120, Math.min(big ? 230 : 180, (rw * 0.86) / textEm(name), rh * 0.3));
     const tatami = r.labeledTatami ?? r.area / 1.62;
     const halo = `stroke="#fff" stroke-width="${Math.round(fs * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
+    if (hl) {
+      // 御社の図面: 室名の下に (7帖)・(29.4帖)。居室と LDK など広さを示す部屋だけ。整数なら小数を付けない
+      const showTatami = TATAMI_ROOMS.has(r.type) && r.area >= 2.4;
+      const tj = Math.abs(tatami - Math.round(tatami)) < 0.08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
+      s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * 0.15 : fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * 0.08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
+      if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * 0.85}" font-size="${(fs * 0.82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
+      continue;
+    }
     s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * 0.06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
     if (big) s += `<text x="${c.x}" y="${c.y + fs * 0.95}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
   }
@@ -530,10 +589,11 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const ysC = uniq(src.map((p) => p.y));
     const hy = (k: number) => (hSide === 'top' ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500);
     const vx = (k: number) => (vSide === 'left' ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500);
-    if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), `${Math.round(xsC[i + 1] - xsC[i])}`, false, hSide === 'bottom');
-    s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), `${Math.round(ox1 - ox0)}`, false, hSide === 'bottom');
-    if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], `${Math.round(ysC[i + 1] - ysC[i])}`, true, vSide === 'right');
-    s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, `${Math.round(oy1 - oy0)}`, true, vSide === 'right');
+    const fmt = (v: number) => (hl ? Math.round(v).toLocaleString('en-US') : `${Math.round(v)}`);
+    if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, hSide === 'bottom', hl);
+    s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), fmt(ox1 - ox0), false, hSide === 'bottom', hl);
+    if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, vSide === 'right', hl);
+    s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, fmt(oy1 - oy0), true, vSide === 'right', hl);
     // 引出線（外形の角から寸法線まで）
     for (const x of xsC) s += `<line x1="${x}" y1="${hSide === 'top' ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(1) + (hSide === 'top' ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
     for (const y of ysC) s += `<line x1="${vSide === 'left' ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(1) + (vSide === 'left' ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
@@ -622,13 +682,19 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   }
   // 方位
   s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);
-  const title = opts.title ?? `${f.level}階平面図`;
+  const title = opts.title ?? (hl ? `${f.level}階 平面図` : `${f.level}階平面図`);
   // 図面名・床面積・スケール（図面の下。寸法線の下側に置かれた場合はその下）
   const ty = maxY + (dimsBelow ? 2200 : 1500);
   const tx = (minX + maxX) / 2;
-  s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
   const area = f.rooms.reduce((a, r) => a + r.area, 0);
-  s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+  if (hl) {
+    // 御社の図面: 枠に入れた「1階 平面図 S:1/100」（図枠に入れるときは実際の縮尺に置き換わる）
+    s += boxedTitle(tx, ty - 300, `${title} S:1/${opts.sheet ? '{{SCALE}}' : '100'}`, 300);
+    if (!opts.sheet) s += `<text x="${tx}" y="${ty + 720}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+  } else {
+    s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
+    s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+  }
   s += scaleBar(tx - 2500, ty + 620);
   vb.h = Math.max(vb.h, ty + 1100 - vb.y);
   // 建具記号（建具表と対応）
@@ -721,13 +787,14 @@ function textEm(t: string): number {
   return Math.max(1, w);
 }
 
-function dimLine(x1: number, y1: number, x2: number, y2: number, label: string, vertical: boolean, flip = false) {
-  let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#555" stroke-width="8"/>`;
+function dimLine(x1: number, y1: number, x2: number, y2: number, label: string, vertical: boolean, flip = false, hl = false) {
+  let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${hl ? '#222' : '#555'}" stroke-width="8"/>`;
   for (const [x, y] of [
     [x1, y1],
     [x2, y2],
   ])
-    s += `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
+    // 御社の図面は寸法の端を小さな丸で描く
+    s += hl ? `<circle cx="${x}" cy="${y}" r="34" fill="#fff" stroke="#222" stroke-width="10"/>` : `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
   const L = Math.hypot(x2 - x1, y2 - y1);
   const fs = Math.min(150, Math.max(80, L / 4.2));
   const cx = (x1 + x2) / 2;

@@ -5,5 +5,5 @@ import { todayStr, type SheetInfo } from '../drawings/sheet';
 export function sheetInfo(drawing: string, no?: string): SheetInfo {
   const name = (state.name || '').trim();
   const project = /工事|計画|プロジェクト/.test(name) ? name : name ? `${name} 新築工事` : '新築工事';
-  return { project, drawing, date: todayStr(), designer: (state.company || '').trim(), no, logo: state.logo };
+  return { project, drawing, date: todayStr(), designer: (state.designer || '').trim(), company: (state.company || '').trim(), license: (state.license || '').trim(), no, logo: state.logo };
 }

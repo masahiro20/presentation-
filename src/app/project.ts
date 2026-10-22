@@ -23,6 +23,7 @@ export interface ProjectFile {
   companyAddress?: string;
   tel?: string;
   designer?: string;
+  license?: string;
   logo?: string;
   pdfName?: string;
   model: ProjectState['model'];
@@ -78,6 +79,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     companyAddress: state.companyAddress,
     tel: state.tel,
     designer: state.designer,
+    license: state.license,
     logo: state.logo,
     pdfName: state.pdfName,
     model: state.model,
@@ -104,6 +106,7 @@ export function applyProject(p: ProjectFile) {
   state.companyAddress = p.companyAddress ?? state.companyAddress;
   state.tel = p.tel ?? state.tel;
   state.designer = p.designer ?? state.designer;
+  state.license = p.license ?? state.license;
   state.logo = p.logo;
   state.pdfName = p.pdfName;
   state.model = p.model;

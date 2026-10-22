@@ -2,15 +2,15 @@
  * 立面図・断面図の自動作成
  *  - 3D モデルを正投影し、特徴線（稜線・輪郭線）を深度バッファで隠線処理してベクター線に
  *  - 塗り（カラー立面）は同じ正投影のレンダリング画像
- *  - 立面図: GL・各階 FL・軒高・最高高さの寸法、方位名を記入
+ *  - 立面図: 御社の書き方（GL・基礎高・各階 FL・軒高の点線と名前、左右の寸法の連鎖、勾配の記号、枠つきの図面名）
  *  - 断面図: 切断した建物（切り口は濃い塗り）に GL・FL・天井高・最高高さの寸法を記入
  */
-import { exteriorFor, FINISH_CATEGORIES } from '../coordinate/catalog';
+import { exteriorFor } from '../coordinate/catalog';
 import * as THREE from 'three';
 import type { Viewer, SectionSpec } from '../scene/viewer';
-import { wrapSheet, type SheetInfo, type Vb } from './sheet';
+import { wrapSheet, boxedTitle, esc, type SheetInfo, type Vb } from './sheet';
+import { WALL_MARKS } from './finishTable';
 import type { DesignOptions } from '../styles/presets';
-import type { MatSpec } from '../styles/textures';
 
 export type ElevationDir = 'south' | 'north' | 'east' | 'west';
 
@@ -407,125 +407,187 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
   return { lines, weighted, anchors, fillUrl, Wmm: (uMax - uMin) * 1000, Hmm: (yMax - yMin) * 1000, yMax, box };
 }
 
-interface LevelMark {
-  label: string;
-  y: number;
-  /** 寸法の連鎖に使う */
-  dim?: boolean;
+/** 立面図の高さの一覧（m）。御社の立面図の寸法の並び: 基礎高・各階 FL・各階の軒高・最高軒高・最高高さ */
+export interface ElevationHeights {
+  /** 基礎天端（GL から）。3D の基礎は FL−100 まで */
+  foundation: number;
+  /** 階ごと: FL と、その階の軒高（上の階の FL。最上階は外壁の天端） */
+  floors: { level: number; fl: number; eave: number }[];
+  /** 最高軒高 */
+  eaveMax: number;
+  /** 最高高さ（屋根の頂部） */
+  max: number;
 }
 
-/** 注記（GL 線・レベル・高さ寸法・図面名）と SVG の組み立て */
-/** 仕上げの名前（引き出し線の注記） */
-function finishName(m: MatSpec | undefined): string {
-  switch (m?.pattern) {
-    case 'stucco':
-    case 'plaster':
-      return '塗り壁（左官仕上げ）';
-    case 'solido':
-      return 'SOLIDO（セメント板）張り';
-    case 'standingSeam':
-      return 'ガルバリウム鋼板 立平葺き';
-    case 'paint':
-      return '塗装仕上げ';
-    case 'concrete':
-      return 'コンクリート 化粧仕上げ';
-    case 'stone':
-    case 'brick':
-      return 'タイル張り';
-    case 'galvalume':
-      return 'ガルバリウム鋼板 張り';
-    case 'woodSiding':
-    case 'wood':
-      return '木板張り';
-    case 'siding':
-    case 'lapSiding':
-      return '窯業系サイディング';
-    case 'slate':
-      return 'スレート葺き';
-    case 'roofTile':
-      return '瓦葺き';
-    default:
-      return m?.pattern && /galva|metal|seam/i.test(m.pattern) ? 'ガルバリウム鋼板 張り' : m?.pattern && /siding|lap|board|cedar|wood/i.test(m.pattern) ? '外装材 張り' : '仕上げ';
-  }
+export function elevationHeights(viewer: Viewer): ElevationHeights {
+  const st = viewer.state!;
+  const model = st.model;
+  const floors = model.floors.map((f, i) => {
+    const next = model.floors[i + 1];
+    return { level: f.level, fl: f.elevation / 1000, eave: next ? next.elevation / 1000 : st.meta.topY };
+  });
+  const top = floors[floors.length - 1];
+  const eaveMax = top ? top.eave : st.meta.topY;
+  return { foundation: Math.max(0.2, ((model.floors[0]?.elevation ?? 600) - 100) / 1000), floors, eaveMax, max: Math.max(st.roof.maxY, st.meta.topY, eaveMax) };
 }
 
-/** 立面図の材料の注記（外壁・アクセント・屋根・サッシ・基礎） */
-function finishNotes(design: DesignOptions): { cat: MatCat; text: string }[] {
-  const st = exteriorFor(design);
-  const isPlaster = (m?: MatSpec) => m?.pattern === 'stucco' || m?.pattern === 'plaster';
-  // コーディネートで商品を選んでいればメーカー・品番、無ければテイスト名（ジョリパット・そとん壁・Sto）か素材名
-  const product = (catId: string) => {
-    const cat = FINISH_CATEGORIES.find((c) => c.id === catId);
-    const id = design.finishes?.[catId];
-    const p = cat && id ? cat.products.find((x) => x.id === id) : undefined;
-    return p ? `${p.maker} ${p.name}${p.color ? ` ${p.color}` : ''}` : '';
-  };
-  const wallName = product('extWall') || (isPlaster(st.wall) && /ジョリパット|そとん|Sto|塗り壁/.test(st.name) ? `${st.name.replace(/\s*×.*$/, '')}（塗り壁）` : finishName(st.wall));
-  const notes: { cat: MatCat; text: string }[] = [{ cat: 'wall', text: `外壁　${wallName}` }];
-  if (st.accent) notes.push({ cat: 'accent', text: `外壁（アクセント）　${product('accent') || finishName(st.accent)}` });
-  notes.push({ cat: 'roof', text: `屋根　${finishName(st.roof.material)}` });
-  const dark = new THREE.Color(st.frame.color).getHSL({ h: 0, s: 0, l: 0 }).l < 0.3;
-  notes.push({ cat: 'frame', text: `サッシ　アルミ樹脂複合（${dark ? 'ブラック' : 'シルバー'}）` });
-  notes.push({ cat: 'foundation', text: '基礎　コンクリート 化粧モルタル' });
-  return notes;
+interface ComposeOpts {
+  /** 図面名（「南側 立面図」。縮尺は後ろに付く） */
+  title: string;
+  heights: ElevationHeights;
+  /** 屋根勾配（寸）。0 なら勾配の記号を描かない */
+  pitch?: number;
+  /** 材料の面に置く丸数字（外部仕上表の行名と対応） */
+  marks?: { cat: MatCat; text: string }[];
+  /** 右側に足す高さの線（断面図の天井高など） */
+  rightExtra?: { label: string; y: number }[];
+  sheet?: SheetInfo;
 }
 
-function compose(o: OrthoResult, levels: LevelMark[], title: string, subtitle: string, sheet?: SheetInfo, notes: { cat: MatCat; text: string }[] = []): { svg: string; vb: Vb; inner: string } {
+let clipSeq = 0;
+
+/** 線分の SVG パス（M x y L x y）を読む */
+function parseSeg(d: string): { x0: number; y0: number; x1: number; y1: number } | null {
+  const m = /^M(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)L(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)$/.exec(d);
+  return m ? { x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4] } : null;
+}
+
+/**
+ * 注記と SVG の組み立て（御社の立面図の書き方）:
+ *  - GL は一点鎖線、基礎高・各階 FL・軒高は図の裏を通る点線。線の上に名前（左: 軒高・基礎高・GL、右: FL・最上階の軒高）
+ *  - 左に寸法の連鎖 3 本（階ごとの高さ／最高軒高／最高高さ）、右に階高の連鎖（GL→1FL→2FL→軒高）。数字は 3 桁区切り
+ *  - 屋根の斜めの線の上に勾配の記号（10 に対する立ち上がり）
+ *  - 図の下に枠つきの図面名「南側 立面図 S:1/100」（縮尺は図枠に入れるときに決まる）
+ */
+function compose(o: OrthoResult, c: ComposeOpts): { svg: string; vb: Vb; inner: string } {
   const yOf = (worldY: number) => (o.yMax - worldY) * 1000;
+  const fmt = (m: number) => Math.round(m * 1000).toLocaleString('en-US');
+  const H = c.heights;
   const glY = yOf(0);
-  const pad = notes.length ? 6200 : 2600;
-  const vb: Vb = { x: -pad, y: -1400, w: o.Wmm + pad + 2600 + 3600, h: o.Hmm + 1400 + (sheet ? 900 : 1900) };
-  const dimX = o.Wmm + 700;
+  const FS = 190;
+  const xL = -1300;
+  const xR = o.Wmm + 1300;
+  let back = '';
   let ann = '';
-  // GL: 太い地盤線と、その下の斜線（地面）
-  ann += `<line x1="${-1500}" y1="${glY}" x2="${o.Wmm + 1500}" y2="${glY}" stroke="#111" stroke-width="55"/>`;
-  for (let x = -1400; x < o.Wmm + 1500; x += 220) ann += `<line x1="${x}" y1="${glY + 30}" x2="${x - 160}" y2="${glY + 190}" stroke="#777" stroke-width="9"/>`;
-  for (const lv of levels) {
-    const y = yOf(lv.y);
-    ann += `<line x1="${o.Wmm + 100}" y1="${y}" x2="${dimX + 300}" y2="${y}" stroke="#555" stroke-width="10" stroke-dasharray="60 30"/>`;
-    ann += `<text x="${dimX + 380}" y="${y - 40}" font-size="220" fill="#222">${lv.label}</text>`;
+  // GL（一点鎖線）
+  back += `<line x1="${xL - 400}" y1="${glY.toFixed(0)}" x2="${xR + 400}" y2="${glY.toFixed(0)}" stroke="#111" stroke-width="20" stroke-dasharray="500 110 50 110"/>`;
+  // 高さの点線（図の裏）
+  const seen = new Set<number>();
+  const level = (y: number) => {
+    const k = Math.round(y);
+    if (seen.has(k) || Math.abs(y - glY) < 40) return;
+    seen.add(k);
+    back += `<line x1="${xL}" y1="${k}" x2="${xR}" y2="${k}" stroke="#333" stroke-width="9" stroke-dasharray="140 80"/>`;
+  };
+  level(yOf(H.foundation));
+  for (const f of H.floors) {
+    level(yOf(f.fl));
+    level(yOf(f.eave));
   }
-  const dimLv = levels.filter((l) => l.dim !== false).slice().sort((a, b) => a.y - b.y);
-  for (let i = 0; i + 1 < dimLv.length; i++) {
-    const y0 = yOf(dimLv[i].y);
-    const y1 = yOf(dimLv[i + 1].y);
-    if (Math.abs(y0 - y1) < 50) continue;
-    ann += `<line x1="${dimX}" y1="${y0}" x2="${dimX}" y2="${y1}" stroke="#333" stroke-width="12"/>`;
-    for (const y of [y0, y1]) ann += `<line x1="${dimX - 60}" y1="${y + 60}" x2="${dimX + 60}" y2="${y - 60}" stroke="#333" stroke-width="16"/>`;
-    ann += `<text x="${dimX - 90}" y="${(y0 + y1) / 2}" font-size="200" fill="#333" text-anchor="middle" transform="rotate(-90 ${dimX - 90} ${(y0 + y1) / 2})">${Math.round(Math.abs(y0 - y1))}</text>`;
+  for (const e of c.rightExtra ?? []) level(yOf(e.y));
+  const text = (x: number, y: number, t: string, anchor: 'start' | 'middle' | 'end' = 'start', fs = FS, rot = 0) =>
+    `<text x="${x.toFixed(0)}" y="${y.toFixed(0)}" font-size="${fs}" text-anchor="${anchor}" fill="#111"${rot ? ` transform="rotate(${rot} ${x.toFixed(0)} ${y.toFixed(0)})"` : ''}>${esc(t)}</text>`;
+  // 線の名前（左: 軒高・基礎高・GL、右: FL・最上階の軒高）
+  const labelL = (y: number, t: string) => (ann += text(xL + 60, y - 45, t));
+  const labelR = (y: number, t: string) => (ann += text(xR - 60, y - 45, t, 'end'));
+  labelL(glY, 'GL');
+  labelL(yOf(H.foundation), '基礎高');
+  for (const f of H.floors) {
+    labelL(yOf(f.eave), `${f.level}階軒高`);
+    labelR(yOf(f.fl), `${f.level}階FL`);
   }
-  // 仕上げの引き出し線: 材料の面の内側に点、左の余白へ水平に引き出して名前を書く（重ならないよう上から順に詰める）
-  const placed = notes
-    .map((n) => ({ ...n, a: o.anchors[n.cat] }))
-    .filter((n): n is { cat: MatCat; text: string; a: { x: number; y: number } } => !!n.a)
-    .sort((a, b) => a.a.y - b.a.y);
-  let lastY = -Infinity;
-  const tx = -350;
-  for (const n of placed) {
-    const ly = Math.max(n.a.y, lastY + 520);
-    lastY = ly;
-    ann += `<circle cx="${n.a.x.toFixed(0)}" cy="${n.a.y.toFixed(0)}" r="45" fill="#111"/>`;
-    ann += `<polyline points="${n.a.x.toFixed(0)},${n.a.y.toFixed(0)} ${Math.min(n.a.x, 250).toFixed(0)},${ly.toFixed(0)} ${tx},${ly.toFixed(0)}" fill="none" stroke="#111" stroke-width="10"/>`;
-    ann += `<text x="${tx - 60}" y="${(ly + 70).toFixed(0)}" font-size="210" text-anchor="end" fill="#111">${n.text}</text>`;
+  const top = H.floors[H.floors.length - 1];
+  if (top) labelR(yOf(top.eave), `${top.level}階軒高`);
+  for (const e of c.rightExtra ?? []) labelR(yOf(e.y), e.label);
+  // 寸法の連鎖
+  const chain = (x: number, hs: number[], labels: string[], side: 'left' | 'right') => {
+    for (let i = 0; i + 1 < hs.length; i++) {
+      const y0 = yOf(hs[i]);
+      const y1 = yOf(hs[i + 1]);
+      if (Math.abs(y0 - y1) < 5) continue;
+      ann += `<line x1="${x}" y1="${y0.toFixed(0)}" x2="${x}" y2="${y1.toFixed(0)}" stroke="#111" stroke-width="10"/>`;
+      const tx = side === 'left' ? x - 70 : x + 70 + FS * 0.75;
+      ann += text(tx, (y0 + y1) / 2, labels[i], 'middle', FS, -90);
+    }
+    for (const hh of hs) ann += `<circle cx="${x}" cy="${yOf(hh).toFixed(0)}" r="28" fill="#111"/>`;
+    // 線の端の短い水平線（寸法の補助線）
+    for (const hh of hs) {
+      const y = yOf(hh).toFixed(0);
+      ann += side === 'left' ? `<line x1="${x - 120}" y1="${y}" x2="${x + 120}" y2="${y}" stroke="#111" stroke-width="6"/>` : `<line x1="${x - 120}" y1="${y}" x2="${x + 120}" y2="${y}" stroke="#111" stroke-width="6"/>`;
+    }
+  };
+  // 左 1: GL → 基礎高 → 各階の軒高 → 最高高さ
+  const c1 = [0, H.foundation, ...H.floors.map((f) => f.eave), H.max].filter((v, i, a) => i === 0 || v > a[i - 1] + 0.001);
+  chain(-1500, c1, c1.slice(1).map((v, i) => fmt(v - c1[i])), 'left');
+  // 左 2・3: 最高軒高・最高高さ
+  chain(-2050, [0, H.eaveMax], [`${fmt(H.eaveMax)}（最高軒高）`], 'left');
+  chain(-2600, [0, H.max], [`${fmt(H.max)}（最高高さ）`], 'left');
+  // 右: GL → 各階 FL → 最上階の軒高（階高）
+  const cr = [0, ...H.floors.map((f) => f.fl), ...(top ? [top.eave] : [])].filter((v, i, a) => i === 0 || v > a[i - 1] + 0.001);
+  chain(o.Wmm + 1500, cr, cr.slice(1).map((v, i) => (i === 0 ? fmt(v - cr[i]) : `${fmt(v - cr[i])}（階高）`)), 'right');
+  // 屋根勾配の記号: いちばん長い斜めの外形線の上に、水平 10 と立ち上がりの三角
+  if (c.pitch && c.pitch > 0) {
+    let best: { x0: number; y0: number; x1: number; y1: number; len: number } | null = null;
+    const limitY = yOf(H.eaveMax) + 400;
+    for (const d of o.weighted.outline) {
+      const s = parseSeg(d);
+      if (!s) continue;
+      const dx = s.x1 - s.x0;
+      const dy = s.y1 - s.y0;
+      const len = Math.hypot(dx, dy);
+      if (len < 1200 || Math.abs(dx) < 1) continue;
+      const slope = Math.abs(dy / dx);
+      if (slope < 0.03 || slope > 1.6) continue;
+      if (Math.min(s.y0, s.y1) > limitY) continue;
+      if (!best || len > best.len) best = { ...s, len };
+    }
+    if (best) {
+      const [p, q] = best.x0 <= best.x1 ? [{ x: best.x0, y: best.y0 }, { x: best.x1, y: best.y1 }] : [{ x: best.x1, y: best.y1 }, { x: best.x0, y: best.y0 }];
+      const risesRight = q.y < p.y;
+      const base = 1000;
+      const rise = 100 * c.pitch;
+      const mx = (p.x + q.x) / 2;
+      const my = (p.y + q.y) / 2;
+      const ax = mx - base / 2;
+      const ay = my - 420 + rise / 2;
+      const vx = risesRight ? ax + base : ax;
+      ann += `<polyline points="${risesRight ? `${ax},${ay} ${ax + base},${ay} ${vx},${ay - rise} ${ax},${ay}` : `${ax},${ay} ${ax + base},${ay} ${vx},${ay - rise} ${ax},${ay}`}" fill="none" stroke="#111" stroke-width="10"/>`;
+      ann += text(ax + base / 2, ay - rise - 70, '10', 'middle', 170);
+      ann += risesRight ? text(vx + 70, ay - rise / 2 + 60, String(c.pitch), 'start', 170) : text(vx - 70, ay - rise / 2 + 60, String(c.pitch), 'end', 170);
+    }
   }
-  // 図面名と縮尺（下線つき）
-  const ty = glY + 1150;
-  ann += `<text x="${o.Wmm / 2}" y="${ty}" font-size="300" text-anchor="middle" fill="#111" font-weight="bold" letter-spacing="40">${title}</text>`;
-  ann += `<line x1="${o.Wmm / 2 - 1300}" y1="${ty + 110}" x2="${o.Wmm / 2 + 1300}" y2="${ty + 110}" stroke="#111" stroke-width="18"/>`;
-  // 縮尺はシートの表題欄に書く（並べる枚数で縮尺が変わるため）
-  void subtitle;
+  // 材料の丸数字（外部仕上表の行名）
+  for (const m of c.marks ?? []) {
+    const a = o.anchors[m.cat];
+    if (!a) continue;
+    ann += `<circle cx="${a.x.toFixed(0)}" cy="${a.y.toFixed(0)}" r="210" fill="#fff" stroke="#111" stroke-width="14"/>`;
+    ann += text(a.x, a.y + 95, m.text, 'middle', 280);
+  }
+  // 図面名（枠つき）
+  ann += boxedTitle(o.Wmm / 2, glY + 950, `${c.title} S:1/{{SCALE}}`, 300);
+  const vb: Vb = { x: -3100, y: -700, w: o.Wmm + 3100 + 2300, h: glY + 950 + 510 + 250 + 700 };
   const img = o.fillUrl ? `<image href="${o.fillUrl}" x="0" y="0" width="${o.Wmm}" height="${o.Hmm}" preserveAspectRatio="none" opacity="0.8"/>` : '';
   // 線の太さの階層（1/100 で 0.5 / 0.35 / 0.18 / 0.1 mm 相当）
   const W8 = o.weighted;
-  const path = (d: string[], w: number, c = '#111') => (d.length ? `<path d="${d.join('')}" stroke="${c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : '');
-  const inner = img + path(W8.fine, 9, '#333') + path(W8.opening, 16, '#222') + path(W8.step, 26) + path(W8.outline, 45) + ann;
-  if (sheet) return { svg: wrapSheet(inner, vb, sheet), vb, inner };
+  const path = (d: string[], w: number, col = '#111') => (d.length ? `<path d="${d.join('')}" stroke="${col}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : '');
+  // GL より下（基礎の埋まる部分）は描かない
+  const clipId = `elv${(clipSeq = (clipSeq + 1) % 100000)}`;
+  const clip = `<clipPath id="${clipId}"><rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${(glY - vb.y).toFixed(0)}"/></clipPath>`;
+  const inner = back + clip + `<g clip-path="url(#${clipId})">` + img + path(W8.fine, 9, '#333') + path(W8.opening, 16, '#222') + path(W8.step, 26) + path(W8.outline, 45) + '</g>' + ann;
+  if (c.sheet) return { svg: wrapSheet(inner, vb, c.sheet), vb, inner };
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">` +
     `<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>` +
-    inner +
+    inner.replace(/\{\{SCALE\}\}/g, '100') +
     `</svg>`;
   return { svg, vb, inner };
+}
+
+/** 屋根勾配（寸）。陸屋根は 0 */
+export function roofPitchOf(design: DesignOptions): number {
+  const ext = exteriorFor(design);
+  const type = design.roofOverride ?? ext.roof.type;
+  return type === 'flat' ? 0 : (design.roofPitch ?? ext.roof.pitch);
 }
 
 export function renderElevation(viewer: Viewer, dir: ElevationDir, opts: ElevationOptions = {}): ElevationResult {
@@ -533,14 +595,10 @@ export function renderElevation(viewer: Viewer, dir: ElevationDir, opts: Elevati
   const model = st.model;
   const viewDir = elevationViewDir(dir, model.northAngleDeg);
   const o = orthoDrawing(viewer, { viewDir, groups: ['building', 'roof'], mmPerPx: opts.mmPerPx ?? 8, color: opts.color !== false, includeInterior: false });
-  const levels: LevelMark[] = [{ label: '▽GL±0', y: 0 }];
-  for (const f of model.floors) levels.push({ label: `▽${f.level}FL +${f.elevation}`, y: f.elevation / 1000 });
-  const eaveY = st.roof.eaveY || st.meta.topY;
-  levels.push({ label: `▽軒高 +${Math.round(eaveY * 1000)}`, y: eaveY });
-  const maxY = Math.max(st.roof.maxY, st.meta.topY);
-  levels.push({ label: `▽最高高さ +${Math.round(maxY * 1000)}`, y: maxY });
-  const title = `${JP[dir]}立面図`;
-  const { svg, vb, inner } = compose(o, levels, title, 'S = 1 / 100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined, finishNotes(viewer.design));
+  const title = `${JP[dir]}側 立面図`;
+  const ext = exteriorFor(viewer.design);
+  const marks: { cat: MatCat; text: string }[] = ext.accent ? [{ cat: 'accent', text: WALL_MARKS.accent }] : [];
+  const { svg, vb, inner } = compose(o, { title, heights: elevationHeights(viewer), pitch: roofPitchOf(viewer.design), marks, sheet: opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined });
   return { dir, title, svg, widthMm: vb.w, heightMm: vb.h, inner, vb };
 }
 
@@ -583,14 +641,8 @@ export function renderSection(viewer: Viewer, sec: SectionSpec, label: string, o
     dark.dispose();
     viewer.setCut(prevCut);
   }
-  const levels: LevelMark[] = [{ label: '▽GL±0', y: 0 }];
-  for (const f of model.floors) {
-    levels.push({ label: `▽${f.level}FL +${f.elevation}`, y: f.elevation / 1000 });
-    levels.push({ label: `▽${f.level}F 天井 +${f.elevation + f.ceilingHeight}（CH ${f.ceilingHeight}）`, y: (f.elevation + f.ceilingHeight) / 1000 });
-  }
-  const maxY = Math.max(st.roof.maxY, st.meta.topY);
-  levels.push({ label: `▽最高高さ +${Math.round(maxY * 1000)}`, y: maxY });
   const title = `断面図 ${label}-${label}`;
-  const { svg, vb, inner } = compose(o, levels, title, 'S=1/100', opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined);
+  const rightExtra = model.floors.map((f) => ({ label: `${f.level}階 天井（CH ${f.ceilingHeight.toLocaleString('en-US')}）`, y: (f.elevation + f.ceilingHeight) / 1000 }));
+  const { svg, vb, inner } = compose(o, { title, heights: elevationHeights(viewer), rightExtra, sheet: opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined });
   return { dir: 'section', title, svg, widthMm: vb.w, heightMm: vb.h, inner, vb };
 }

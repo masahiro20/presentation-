@@ -23,6 +23,8 @@ export interface ProjectState {
   company: string;
   /** 提案書の締めのページ: 設計担当・連絡先 */
   designer?: string;
+  /** 表題欄の資格・氏名（例: 一級建築士第379471号　伊岐見 恭子） */
+  license?: string;
   /** 会社情報（見積書・資金計画書の発行者欄） */
   companyRep?: string;
   companyAddress?: string;

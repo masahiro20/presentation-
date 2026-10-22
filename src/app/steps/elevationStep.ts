@@ -4,6 +4,7 @@ import type { Step, StepCtx } from '../app';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg, openingTableSvg } from '../../drawings/plan';
 import { composeSheet } from '../../drawings/sheet';
+import { exteriorFinishTableSvg } from '../../drawings/finishTable';
 import { modelToDxf } from '../../drawings/dxf';
 import { sheetInfo } from '../sheetInfo';
 
@@ -25,18 +26,15 @@ function generate(ctx: StepCtx, color: boolean) {
   let no = 1;
   const sheets: { title: string; svg: string }[] = [];
   for (const f of model.floors) {
-    const parts = floorPlanParts(model, f, { sheet: sheetInfo(`${f.level}階平面図`), sectionLines });
+    const parts = floorPlanParts(model, f, { sheet: sheetInfo(`${f.level}階 平面図`), sectionLines });
     const at = areaTableSvg(model, 0, 0);
     const ot = openingTableSvg(f, 0, at.h + 900);
     const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 900 + ot.h };
-    sheets.push({ title: `${f.level}階平面図`, svg: composeSheet([parts], sheetInfo(`${f.level}階平面図`, `A-${no++}`), { right, defs: parts.defs }) });
+    sheets.push({ title: `${f.level}階 平面図`, svg: composeSheet([parts], sheetInfo(`${f.level}階 平面図`, `A-${no++}`), { right, defs: parts.defs }) });
   }
-  // 立面図は 2 面ずつ（1/100 で大きく。仕上げの引き出し線が読める大きさに）
-  for (let i = 0; i < elevs.length; i += 2) {
-    const pair = elevs.slice(i, i + 2);
-    const t = `立面図（${pair.map((r) => r.title.replace('立面図', '')).join('・')}）`;
-    sheets.push({ title: t, svg: composeSheet(pair.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo(t, `A-${no++}`)) });
-  }
+  // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
+  const top = exteriorFinishTableSvg(state.design, 0, 0, 420 * 100 - 2 * 1000);
+  sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200 }) });
   state.sheets = sheets;
 }
 

@@ -14568,6 +14568,32 @@ function exteriorById(id) {
 }
 //#endregion
 //#region src/drawings/sheet.ts
+/** YYYY.MM.DD → 和暦の短い表記（R8.09.13）。令和以外・読めない日付はそのまま */
+function warekiOf(date) {
+	const m = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})/.exec(date);
+	if (!m) return date;
+	const y = +m[1];
+	const mm = m[2].padStart(2, "0");
+	const dd = m[3].padStart(2, "0");
+	if (y >= 2019) return `R${y - 2018}.${mm}.${dd}`;
+	if (y >= 1989) return `H${y - 1988}.${mm}.${dd}`;
+	return date;
+}
+/**
+* 図面名の枠（御社の図面の「1階 平面図 S:1/100」）。中央 cx、上端 y。
+* 文字は字間を空け、枠は細い線。縮尺の数字に {{SCALE}} を入れると図枠に入れるときに実際の縮尺に置き換わる
+*/
+function boxedTitle(cx, y, text, fs = 300) {
+	const w = textWidth(text, fs) + fs * 1.6;
+	const h = fs * 1.7;
+	return `<rect x="${(cx - w / 2).toFixed(0)}" y="${y.toFixed(0)}" width="${w.toFixed(0)}" height="${h.toFixed(0)}" fill="#fff" stroke="#111" stroke-width="${Math.max(10, fs * .05).toFixed(0)}"/><text x="${cx.toFixed(0)}" y="${(y + h * .72).toFixed(0)}" font-size="${fs}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .22).toFixed(0)}">${esc$1(text)}</text>`;
+}
+/** 文字幅の目安（字間込み。全角 = 1 文字分、半角 = 0.6） */
+function textWidth(t, fs) {
+	let w = 0;
+	for (const ch of t) w += /[\x20-\x7e｡-ﾟ]/.test(ch) ? .6 : 1;
+	return w * fs * 1.22;
+}
 var FONT = `'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif`;
 function esc$1(s) {
 	return s.replace(/[&<>]/g, (c) => ({
@@ -14629,8 +14655,8 @@ function wrapSheet(inner, vb, info, opts = {}) {
 * 1/100 → 1/150 → 1/200 … の順で、全体が収まる縮尺を選ぶ。右側に表などを置く場合は right に渡す。
 */
 function composeSheet(panels, info, opts = {}) {
-	const margin = 1200;
-	const titleH = 3200;
+	const MARGIN = 10;
+	const TITLE_H = 22;
 	const gap = opts.gap ?? 1600;
 	const rgap = opts.right ? 1e3 : 0;
 	const rightW = opts.right?.w ?? 0;
@@ -14643,6 +14669,7 @@ function composeSheet(panels, info, opts = {}) {
 		400,
 		500
 	];
+	const topH = (d) => opts.top ? opts.top.h * d / 100 + gap * .6 : 0;
 	const layout = (availW) => {
 		const placed = [];
 		let x = 0;
@@ -14673,8 +14700,10 @@ function composeSheet(panels, info, opts = {}) {
 	let denom = scales[scales.length - 1];
 	let lay = layout(Infinity);
 	for (const d of scales) {
+		const margin = MARGIN * d;
+		const titleH = TITLE_H * d;
 		const availW = 420 * d - margin * 2 - (opts.right ? rightW + rgap : 0);
-		const availH = 297 * d - margin * 2 - titleH;
+		const availH = 297 * d - margin * 2 - titleH - topH(d);
 		const L = layout(availW);
 		if (L.w <= availW && L.h <= availH && (opts.right?.h ?? 0) <= availH) {
 			denom = d;
@@ -14685,69 +14714,77 @@ function composeSheet(panels, info, opts = {}) {
 	}
 	const W = 420 * denom;
 	const H = 297 * denom;
+	const margin = MARGIN * denom;
+	const titleH = TITLE_H * denom;
 	const sw = Math.max(16, denom * .18);
 	const fs = denom * 2.4;
 	const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
-	const areaH = H - margin * 2 - titleH;
+	const areaH = H - margin * 2 - titleH - topH(denom);
 	const ox = margin + Math.max(0, (areaW - lay.w) / 2);
-	const oy = margin + Math.max(0, (areaH - lay.h) / 2);
+	const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
 	let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
 	s += opts.defs ?? "";
 	s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
 	s += `<rect x="${margin * .5}" y="${margin * .5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
 	s += `<rect x="${margin * .5 + sw * 6}" y="${margin * .5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * .6}"/>`;
-	for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner}</g>`;
-	if (opts.right) s += `<g transform="translate(${W - margin - rightW} ${margin})">${opts.right.svg}</g>`;
+	for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+	if (opts.right) s += `<g transform="translate(${W - margin - rightW} ${margin + topH(denom)})">${opts.right.svg}</g>`;
+	if (opts.top) {
+		const k = (W - margin * 2) / opts.top.w;
+		s += `<g transform="translate(${margin} ${margin}) scale(${k.toFixed(4)})">${opts.top.svg}</g>`;
+	}
 	const bx = margin * .5 + sw * 6;
 	const by = H - margin * .5 - sw * 6 - titleH;
 	const bw = W - margin - sw * 12;
 	s += `<rect x="${bx}" y="${by}" width="${bw}" height="${titleH}" fill="#fff" stroke="#111" stroke-width="${sw * 1.2}"/>`;
-	const cells = [
-		{
-			label: "設計",
-			value: info.designer,
-			w: .2
-		},
-		{
-			label: "工事名",
-			value: info.project,
-			w: .28,
-			big: true
-		},
-		{
-			label: "図面名",
-			value: info.drawing,
-			w: .22,
-			big: true
-		},
-		{
-			label: "縮尺",
-			value: `S = 1/${denom}（A3）`,
-			w: .11
-		},
-		{
-			label: "日付",
-			value: info.date,
-			w: .12
-		},
-		{
-			label: "No.",
-			value: info.no ?? "",
-			w: .07
-		}
+	const col = [
+		.235,
+		.06,
+		.29,
+		.045,
+		.045,
+		.265,
+		.06
 	];
-	let x = bx;
-	for (const c of cells) {
-		const cw = bw * c.w;
-		s += `<line x1="${x}" y1="${by}" x2="${x}" y2="${by + titleH}" stroke="#111" stroke-width="${sw * .8}"/>`;
-		s += `<text x="${x + fs * .6}" y="${by + fs * 1.3}" font-size="${fs * .75}" fill="#666" letter-spacing="${fs * .08}">${esc$1(c.label)}</text>`;
-		if (c.label === "設計" && info.logo) {
-			s += `<image href="${info.logo}" x="${x + fs * .6}" y="${by + fs * 1.5}" width="${cw - fs * 1.2}" height="${titleH * .46}" preserveAspectRatio="xMinYMid meet"/>`;
-			s += `<text x="${x + fs * .6}" y="${by + titleH - fs * .6}" font-size="${fs * .8}" fill="#111">${esc$1(c.value)}</text>`;
-		} else if (c.label === "設計") s += `<text x="${x + fs * .6}" y="${by + titleH * .62}" font-size="${fs * 1.1}" font-weight="600" fill="#111" letter-spacing="${fs * .1}">${esc$1(c.value)}</text>`;
-		else s += `<text x="${x + fs * .6}" y="${by + titleH - fs * .9}" font-size="${c.big ? fs * 1.3 : fs}" font-weight="${c.big ? 600 : 400}" fill="#111">${esc$1(c.value)}</text>`;
-		x += cw;
+	const xs = [bx];
+	for (const c of col) xs.push(xs[xs.length - 1] + bw * c);
+	const midY = by + titleH / 2;
+	const lab = (x, y, t) => `<text x="${(x + fs * .35).toFixed(0)}" y="${(y + fs * .95).toFixed(0)}" font-size="${(fs * .62).toFixed(0)}" fill="#111">${esc$1(t)}</text>`;
+	const vline = (x) => `<line x1="${x.toFixed(0)}" y1="${by}" x2="${x.toFixed(0)}" y2="${by + titleH}" stroke="#111" stroke-width="${sw * .8}"/>`;
+	const hline = (x0, x1, y, dash = false) => `<line x1="${x0.toFixed(0)}" y1="${y.toFixed(0)}" x2="${x1.toFixed(0)}" y2="${y.toFixed(0)}" stroke="#111" stroke-width="${sw * .6}"${dash ? " stroke-dasharray=\"40 40\"" : ""}/>`;
+	for (const x of xs.slice(1, -1)) s += vline(x);
+	s += hline(xs[0], xs[1], midY);
+	s += lab(xs[0], by, "工事名") + lab(xs[0], midY, "図面名");
+	s += `<text x="${((xs[0] + xs[1]) / 2).toFixed(0)}" y="${(by + titleH * .36).toFixed(0)}" font-size="${(fs * 1.25).toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .3).toFixed(0)}">${esc$1(info.project)}</text>`;
+	s += `<text x="${((xs[0] + xs[1]) / 2).toFixed(0)}" y="${(by + titleH * .86).toFixed(0)}" font-size="${(fs * 1.15).toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .3).toFixed(0)}">${esc$1(info.drawing)}</text>`;
+	s += hline(xs[1], xs[2], midY);
+	s += lab(xs[1], by, "縮尺") + lab(xs[1], midY, "日付");
+	s += `<text x="${((xs[1] + xs[2]) / 2).toFixed(0)}" y="${(by + titleH * .4).toFixed(0)}" font-size="${(fs * 1.05).toFixed(0)}" text-anchor="middle" fill="#111">1/${denom}</text>`;
+	s += `<text x="${((xs[1] + xs[2]) / 2).toFixed(0)}" y="${(by + titleH * .9).toFixed(0)}" font-size="${(fs * 1).toFixed(0)}" text-anchor="middle" fill="#111">${esc$1(warekiOf(info.date))}</text>`;
+	s += lab(xs[2], by, "図面更新日");
+	for (let k = 1; k <= 4; k++) s += hline(xs[2] + fs * .3, xs[3] - fs * .3, by + titleH * k / 5, true);
+	s += lab(xs[3], by, "設計者") + lab(xs[4], by, "担当者");
+	if (info.designer) s += `<text x="${((xs[3] + xs[4]) / 2).toFixed(0)}" y="${(by + titleH * .7).toFixed(0)}" font-size="${(fs * .9).toFixed(0)}" text-anchor="middle" fill="#111">${esc$1(info.designer)}</text>`;
+	if (info.staff) s += `<text x="${((xs[4] + xs[5]) / 2).toFixed(0)}" y="${(by + titleH * .7).toFixed(0)}" font-size="${(fs * .9).toFixed(0)}" text-anchor="middle" fill="#111">${esc$1(info.staff)}</text>`;
+	{
+		const x0 = xs[5];
+		const cw = xs[6] - xs[5];
+		const logoW = info.logo ? titleH * .72 : 0;
+		if (info.logo) s += `<image href="${info.logo}" x="${(x0 + fs * .8).toFixed(0)}" y="${(by + titleH * .14).toFixed(0)}" width="${logoW.toFixed(0)}" height="${(titleH * .72).toFixed(0)}" preserveAspectRatio="xMidYMid meet"/>`;
+		const name = (info.company ?? info.designer ?? "").trim();
+		const [l1, l2] = name.includes("　") ? name.split("　", 2) : name.includes(" ") ? name.split(" ", 2) : /一級建築士事務所$/.test(name) ? [name.replace(/一級建築士事務所$/, ""), "一級建築士事務所"] : [name, ""];
+		const nx = x0 + fs * .8 + logoW + fs * .8;
+		if (l1) s += `<text x="${nx.toFixed(0)}" y="${(by + titleH * .44).toFixed(0)}" font-size="${(fs * 1.45).toFixed(0)}" fill="#111" letter-spacing="${(fs * .12).toFixed(0)}">${esc$1(l1)}</text>`;
+		if (l2) s += `<text x="${nx.toFixed(0)}" y="${(by + titleH * .84).toFixed(0)}" font-size="${(fs * 1.2).toFixed(0)}" fill="#111" letter-spacing="${(fs * .42).toFixed(0)}">${esc$1(l2)}</text>`;
+		if (info.license) {
+			const parts = info.license.split(/[　 ]+/).filter(Boolean);
+			const lx = x0 + cw - fs * .8;
+			s += `<text x="${lx.toFixed(0)}" y="${(by + titleH * .42).toFixed(0)}" font-size="${(fs * .85).toFixed(0)}" text-anchor="end" fill="#111">${esc$1(parts[0] ?? "")}</text>`;
+			if (parts.length > 1) s += `<text x="${(lx - fs * .6).toFixed(0)}" y="${(by + titleH * .84).toFixed(0)}" font-size="${(fs * 1.05).toFixed(0)}" text-anchor="end" fill="#111" letter-spacing="${(fs * .35).toFixed(0)}">${esc$1(parts.slice(1).join("　"))}</text>`;
+		}
 	}
+	s += lab(xs[6], by, "図面NO");
+	if (info.no) s += `<text x="${((xs[6] + xs[7]) / 2).toFixed(0)}" y="${(by + titleH * .74).toFixed(0)}" font-size="${(fs * 1.5).toFixed(0)}" text-anchor="middle" fill="#111">${esc$1(info.no)}</text>`;
 	s += `</svg>`;
 	return s;
 }
@@ -14805,13 +14842,13 @@ function furnitureOf$1(model, level) {
 	return m.get(level) ?? [];
 }
 /** 家具を平面図の線で描く（高さの低いものから順に重ねる） */
-function furnitureSvg(items) {
+function furnitureSvg(items, hl = false) {
 	let s = "";
 	const sorted = items.slice().sort((a, b) => a.top - b.top);
 	for (const it of sorted) {
 		const rug = it.key === "f.rug";
-		const fill = rug ? "none" : it.key === "f.bedding" || it.key.startsWith("f.fabric") ? "#fdfcfa" : it.key === "f.counter" || it.key === "f.cabinet" ? "#f4f1ec" : "#faf8f4";
-		const stroke = rug ? "#bdb5aa" : "#76716a";
+		const fill = hl ? rug ? "none" : "#fff" : rug ? "none" : it.key === "f.bedding" || it.key.startsWith("f.fabric") ? "#fdfcfa" : it.key === "f.counter" || it.key === "f.cabinet" ? "#f4f1ec" : "#faf8f4";
+		const stroke = hl ? rug ? "#999" : "#444" : rug ? "#bdb5aa" : "#76716a";
 		const dash = rug ? " stroke-dasharray=\"60 40\"" : "";
 		if (it.shape === "circle") {
 			s += `<circle cx="${(it.cx * 1e3).toFixed(0)}" cy="${(it.cz * 1e3).toFixed(0)}" r="${(it.r * 1e3).toFixed(0)}" fill="${fill}" stroke="${stroke}" stroke-width="9"${dash}/>`;
@@ -14887,6 +14924,18 @@ var FINISH_FILL = {
 };
 /** 目地・板目のパターン（mm 単位。複数の図を1ページに並べても同じ定義なので ID は共通） */
 var PLAN_DEFS = "<defs><pattern id=\"mp-wood-h\" patternUnits=\"userSpaceOnUse\" width=\"1820\" height=\"150\"><rect width=\"1820\" height=\"150\" fill=\"#f1e8da\"/><line x1=\"0\" y1=\"0\" x2=\"1820\" y2=\"0\" stroke=\"#e1d3bf\" stroke-width=\"7\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"150\" stroke=\"#e6dac8\" stroke-width=\"5\"/></pattern><pattern id=\"mp-wood-v\" patternUnits=\"userSpaceOnUse\" width=\"150\" height=\"1820\"><rect width=\"150\" height=\"1820\" fill=\"#f1e8da\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1820\" stroke=\"#e1d3bf\" stroke-width=\"7\"/><line x1=\"0\" y1=\"0\" x2=\"150\" y2=\"0\" stroke=\"#e6dac8\" stroke-width=\"5\"/></pattern><pattern id=\"mp-tile\" patternUnits=\"userSpaceOnUse\" width=\"300\" height=\"300\"><rect width=\"300\" height=\"300\" fill=\"#eceeef\"/><path d=\"M0 0H300M0 0V300\" stroke=\"#dcdfe1\" stroke-width=\"6\" fill=\"none\"/></pattern><pattern id=\"mp-stone\" patternUnits=\"userSpaceOnUse\" width=\"600\" height=\"600\"><rect width=\"600\" height=\"600\" fill=\"#e3e0da\"/><path d=\"M0 0H600M0 0V600\" stroke=\"#d2cec6\" stroke-width=\"7\" fill=\"none\"/></pattern><pattern id=\"mp-deck\" patternUnits=\"userSpaceOnUse\" width=\"1000\" height=\"120\"><rect width=\"1000\" height=\"120\" fill=\"#e6ddcf\"/><line x1=\"0\" y1=\"0\" x2=\"1000\" y2=\"0\" stroke=\"#d3c6b2\" stroke-width=\"10\"/></pattern></defs>";
+/** 室名の下に (帖) を書く部屋（御社の図面: 居室・LDK・縁側・納戸・パントリーなど広さを示す部屋。水まわり・ホール・物入には書かない） */
+var TATAMI_ROOMS = /* @__PURE__ */ new Set([
+	"ldk",
+	"living",
+	"dining",
+	"kitchen",
+	"japanese",
+	"bedroom",
+	"kids",
+	"study",
+	"other"
+]);
 var OPENING_KIND_JA = {
 	window: "窓",
 	door: "片開き戸",
@@ -15105,6 +15154,7 @@ function floorPlanParts(model, f, opts = {}) {
 		showRoad: false,
 		...opts
 	};
+	const hl = (opts.style ?? "hl") === "hl";
 	const pts = f.outline.flat().concat(f.walls.flatMap((w) => [w.a, w.b]));
 	const minX = Math.min(...pts.map((p) => p.x));
 	const maxX = Math.max(...pts.map((p) => p.x));
@@ -15132,7 +15182,7 @@ function floorPlanParts(model, f, opts = {}) {
 		const ys0 = r.polygon.map((p) => p.y);
 		const wide = Math.max(...xs0) - Math.min(...xs0) >= Math.max(...ys0) - Math.min(...ys0);
 		const pat = fin === "wood" ? `url(#mp-wood-${wide ? "h" : "v"})` : fin === "tile" ? "url(#mp-tile)" : fin === "stone" ? "url(#mp-stone)" : fin === "deck" ? "url(#mp-deck)" : FINISH_FILL[fin];
-		const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? "#f1efea" : pat);
+		const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? "#f1efea" : hl ? "#fff" : pat);
 		const stroke = opts.highlightRoomId === r.id ? "#d9822b" : "none";
 		s += `<polygon points="${r.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="${fill}" stroke="${stroke}" stroke-width="${stroke === "none" ? 0 : 60}"/>`;
 		if (r.type === "japanese") {
@@ -15142,17 +15192,18 @@ function floorPlanParts(model, f, opts = {}) {
 			const x1 = Math.max(...xs);
 			const y0 = Math.min(...ys);
 			const y1 = Math.max(...ys);
-			for (let x = x0 + 910; x < x1 - 100; x += 910) s += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#b9bf96" stroke-width="12"/>`;
-			for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#b9bf96" stroke-width="12"/>`;
+			const tc = hl ? "#999" : "#b9bf96";
+			for (let x = x0 + 910; x < x1 - 100; x += 910) s += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
+			for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
 		}
 	}
-	if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf$1(model, f.level));
+	if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf$1(model, f.level), hl);
 	for (const st of f.stairs) {
 		const lay = stairLayout(st, stairStepCount(f.height || 2900, st));
-		s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
-		for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
+		s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="${hl ? "#f3e6c9" : "#f7f5f0"}" stroke="${hl ? "#777" : "#999"}" stroke-width="${hl ? 8 : 10}"/>`;
+		for (const p of lay.pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${hl ? "#555" : "#aaa"}" stroke-width="${hl ? 7 : 8}"/>`;
 		const cs = lay.pieces.map((p) => `${((p.minX + p.maxX) / 2).toFixed(0)},${((p.minY + p.maxY) / 2).toFixed(0)}`);
-		if (cs.length > 1) s += `<polyline points="${cs.join(" ")}" fill="none" stroke="#888" stroke-width="12"/>`;
+		if (cs.length > 1) s += `<polyline points="${cs.join(" ")}" fill="none" stroke="${hl ? "#333" : "#888"}" stroke-width="${hl ? 9 : 12}"/>`;
 		const last = lay.pieces[lay.pieces.length - 1];
 		if (last) {
 			const cx = (last.minX + last.maxX) / 2;
@@ -15162,10 +15213,10 @@ function floorPlanParts(model, f, opts = {}) {
 				x: cx + d.x * 160,
 				y: cy + d.y * 160
 			};
-			s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="#888"/>`;
+			s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(cx - d.y * 90).toFixed(0)},${(cy + d.x * 90).toFixed(0)} ${(cx + d.y * 90).toFixed(0)},${(cy - d.x * 90).toFixed(0)}" fill="${hl ? "#333" : "#888"}"/>`;
 		}
 		const first = lay.pieces[0];
-		if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777">${st.goesUp ? "UP" : "DN"}</text>`;
+		if (first) s += `<text x="${((first.minX + first.maxX) / 2).toFixed(0)}" y="${((first.minY + first.maxY) / 2 + 60).toFixed(0)}" font-size="${hl ? 190 : 160}" text-anchor="middle" fill="${hl ? "#111" : "#777"}" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? "UP" : "DN"}</text>`;
 	}
 	const mod = model.module;
 	if (mod && (opts.showModuleGrid ?? !!opts.sheet)) {
@@ -15195,7 +15246,22 @@ function floorPlanParts(model, f, opts = {}) {
 		const h = w.thickness / 2;
 		for (const [t0, t1] of solid) {
 			const p = (t, sgn) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
-			s += `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
+			s += hl ? `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#5e5e5e" stroke="#111" stroke-width="7"/>` : `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
+		}
+		if (hl) {
+			const posts = [0, L];
+			for (const o of ops) if (o.kind === "window") posts.push(o.t0, o.t1);
+			for (const t of posts) {
+				const cx = w.a.x + ux * t;
+				const cy = w.a.y + uy * t;
+				const q = [
+					[cx + ux * 52 + nx * 52, cy + uy * 52 + ny * 52],
+					[cx - ux * 52 + nx * 52, cy - uy * 52 + ny * 52],
+					[cx - ux * 52 - nx * 52, cy - uy * 52 - ny * 52],
+					[cx + ux * 52 - nx * 52, cy + uy * 52 - ny * 52]
+				];
+				s += `<polygon points="${q.map(([x, y]) => `${x.toFixed(0)},${y.toFixed(0)}`).join(" ")}" fill="#1a1a1a" stroke="#000" stroke-width="5"/>`;
+			}
 		}
 		for (const o of ops) {
 			const a = {
@@ -15219,7 +15285,26 @@ function floorPlanParts(model, f, opts = {}) {
 					P(t0, off + th / 2)
 				].map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="10"/>`;
 			};
-			if (o.kind === "window") {
+			if (o.kind === "window" && hl) {
+				const ln = (p0, p1, wd = 7, col = "#111") => `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="${col}" stroke-width="${wd}"/>`;
+				for (const k of [-1, 1]) s += ln(P(0, h * k), P(len, h * k));
+				const style = o.windowStyle ?? (len >= 1600 ? "hakidashi" : len >= 1200 ? "koshi" : "small");
+				if (style === "hakidashi" || style === "koshi" || style !== "small" && style !== "slit" && style !== "high" && len >= 1200) {
+					const g = Math.min(28, h * .4);
+					s += ln(P(0, -g), P(len * .53, -g)) + ln(P(len * .47, g), P(len, g));
+					s += ln(P(len * .53, -g), P(len * .53, g)) + ln(P(len * .47, -g), P(len * .47, g));
+				} else {
+					s += ln(P(0, 0), P(len, 0));
+					if (style === "small" || style === "slit") {
+						const out = w.exterior ? w.outsideSign ?? 1 : 1;
+						const a0 = P(0, h * out);
+						const a1 = P(len, h * out);
+						const ap = P(len / 2, (h + Math.min(len * .45, 420)) * out);
+						s += `<polygon points="${a0.x.toFixed(0)},${a0.y.toFixed(0)} ${ap.x.toFixed(0)},${ap.y.toFixed(0)} ${a1.x.toFixed(0)},${a1.y.toFixed(0)}" fill="none" stroke="#111" stroke-width="6"/>`;
+					}
+				}
+				for (const t of [0, len]) s += ln(P(t, -h), P(t, h));
+			} else if (o.kind === "window") {
 				for (const k of [-1, 1]) {
 					const p0 = P(0, h * k);
 					const p1 = P(len, h * k);
@@ -15261,8 +15346,8 @@ function floorPlanParts(model, f, opts = {}) {
 					tip
 				];
 				const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="#555" stroke-width="6"/>`;
-				s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="9"/>`;
+				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? "#222" : "#555"}" stroke-width="6"/>`;
+				s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="${hl ? 7 : 9}"/>`;
 			} else if (o.kind === "sliding") {
 				for (const t of [0, len]) {
 					const e0 = P(t, -h);
@@ -15294,6 +15379,13 @@ function floorPlanParts(model, f, opts = {}) {
 		const fs = Math.max(120, Math.min(big ? 230 : 180, rw * .86 / textEm(name), rh * .3));
 		const tatami = r.labeledTatami ?? r.area / 1.62;
 		const halo = `stroke="#fff" stroke-width="${Math.round(fs * .22)}" stroke-linejoin="round" paint-order="stroke"`;
+		if (hl) {
+			const showTatami = TATAMI_ROOMS.has(r.type) && r.area >= 2.4;
+			const tj = Math.abs(tatami - Math.round(tatami)) < .08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
+			s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * .15 : fs * .35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
+			if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * .85}" font-size="${(fs * .82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
+			continue;
+		}
 		s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * .35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * .06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
 		if (big) s += `<text x="${c.x}" y="${c.y + fs * .95}" font-size="${(fs * .68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
 	}
@@ -15330,10 +15422,11 @@ function floorPlanParts(model, f, opts = {}) {
 		const ysC = uniq(src.map((p) => p.y));
 		const hy = (k) => hSide === "top" ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500;
 		const vx = (k) => vSide === "left" ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500;
-		if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), `${Math.round(xsC[i + 1] - xsC[i])}`, false, hSide === "bottom");
-		s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), `${Math.round(ox1 - ox0)}`, false, hSide === "bottom");
-		if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], `${Math.round(ysC[i + 1] - ysC[i])}`, true, vSide === "right");
-		s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, `${Math.round(oy1 - oy0)}`, true, vSide === "right");
+		const fmt = (v) => hl ? Math.round(v).toLocaleString("en-US") : `${Math.round(v)}`;
+		if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, hSide === "bottom", hl);
+		s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), fmt(ox1 - ox0), false, hSide === "bottom", hl);
+		if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, vSide === "right", hl);
+		s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, fmt(oy1 - oy0), true, vSide === "right", hl);
 		for (const x of xsC) s += `<line x1="${x}" y1="${hSide === "top" ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(1) + (hSide === "top" ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
 		for (const y of ysC) s += `<line x1="${vSide === "left" ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(1) + (vSide === "left" ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
 	}
@@ -15447,12 +15540,17 @@ function floorPlanParts(model, f, opts = {}) {
 		}
 	}
 	s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);
-	const title = opts.title ?? `${f.level}階平面図`;
+	const title = opts.title ?? (hl ? `${f.level}階 平面図` : `${f.level}階平面図`);
 	const ty = maxY + (dimsBelow ? 2200 : 1500);
 	const tx = (minX + maxX) / 2;
-	s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
 	const area = f.rooms.reduce((a, r) => a + r.area, 0);
-	s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+	if (hl) {
+		s += boxedTitle(tx, ty - 300, `${title} S:1/${opts.sheet ? "{{SCALE}}" : "100"}`, 300);
+		if (!opts.sheet) s += `<text x="${tx}" y="${ty + 720}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+	} else {
+		s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
+		s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+	}
 	s += scaleBar(tx - 2500, ty + 620);
 	vb.h = Math.max(vb.h, ty + 1100 - vb.y);
 	if (opts.tags ?? !!opts.sheet) for (const e of openingSchedule(f)) {
@@ -15562,9 +15660,9 @@ function textEm(t) {
 	for (const ch of t) w += /[\x20-\x7e｡-ﾟ]/.test(ch) ? .6 : 1;
 	return Math.max(1, w);
 }
-function dimLine(x1, y1, x2, y2, label, vertical, flip = false) {
-	let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#555" stroke-width="8"/>`;
-	for (const [x, y] of [[x1, y1], [x2, y2]]) s += `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
+function dimLine(x1, y1, x2, y2, label, vertical, flip = false, hl = false) {
+	let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${hl ? "#222" : "#555"}" stroke-width="8"/>`;
+	for (const [x, y] of [[x1, y1], [x2, y2]]) s += hl ? `<circle cx="${x}" cy="${y}" r="34" fill="#fff" stroke="#222" stroke-width="10"/>` : `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
 	const L = Math.hypot(x2 - x1, y2 - y1);
 	const fs = Math.min(150, Math.max(80, L / 4.2));
 	const cx = (x1 + x2) / 2;

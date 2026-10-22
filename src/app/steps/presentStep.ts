@@ -7,6 +7,7 @@ import { exteriorById, interiorById } from '../../styles/presets';
 import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFailed, currentShots } from './designStep';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { buildSheets } from './elevationStep';
+import { estimateSummary } from './estimateStep';
 import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
 import { externalController, externalSampleY, setExternalMounted } from '../externalBuilding';
@@ -234,6 +235,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
   if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
   if (state.sheets.some((x) => x.title === '立面図')) chapters.push({ en: 'Drawings', ja: '図面' });
+  if (state.deckFunding) chapters.push({ en: 'Budget', ja: '資金計画' });
   if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
   chapters.push({ en: 'Details', ja: '上質を支える納まり' });
   const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
@@ -424,6 +426,36 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     ['Email', state.email],
     ['URL', state.url],
   ];
+  // 資金計画（概算）: 本体工事〜総合計。数字は見積の画面の資金計画書と同じ
+  if (state.deckFunding) {
+    const sm = estimateSummary();
+    if (sm) {
+      const yenJ = (v: number) => `¥${Math.round(v).toLocaleString('ja-JP')}`;
+      const rows: [string, string][] = [
+        ['① 本体工事（税抜）', yenJ(sm.body)],
+        ['② 付帯工事（税抜）', yenJ(sm.sub2)],
+        ['消費税', yenJ(sm.tax)],
+        ['建物工事 合計（税込）', yenJ(sm.contract)],
+        ['④ 土地関連費用', yenJ(sm.sub4)],
+        ['⑤ 諸費用', yenJ(sm.sub5)],
+        ['⑥ ローン諸費用', yenJ(sm.sub6)],
+        ['総合計', yenJ(sm.grand)],
+      ];
+      slides.push(
+        slide(
+          'hl hl-overview hl-budget',
+          h(
+            'div',
+            null,
+            head(no('Budget'), 'Budget Plan', '資金計画（概算）'),
+            h('dl', { class: 'ov' }, ...rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', { class: /合計/.test(k) ? 'total' : '' }, v)])),
+            h('p', { class: 'budget-note' }, `${sm.grade} シリーズ・施工面積 ${sm.tsubo.toFixed(1)} 坪（${sm.constArea.toFixed(2)} ㎡）・坪単価 ${yenJ(sm.tsuboPrice)}（建物工事 税込）。概算です。詳細は御見積書・資金計画書をご覧ください。`),
+          ),
+          h('div', { class: 'ph' }, photo(exts[1] ?? exts[0] ?? hero)),
+        ),
+      );
+    }
+  }
   slides.push(
     slide(
       'hl hl-cover hl-close',
@@ -570,6 +602,7 @@ export const presentStep: Step = {
       h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成（写真品質）'),
       h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
       h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '高品質描画ですばやく資料を完成（数十秒）'),
+      h('label', { class: 'check', style: 'display:flex;gap:8px;align-items:center;margin:10px 0 4px;font-size:12.5px' }, h('input', { type: 'checkbox', checked: !!state.deckFunding, onchange: (e: Event) => { state.deckFunding = (e.target as HTMLInputElement).checked; render(); } }), '資金計画（概算）のページを入れる'),
       section(
         '表紙の情報',
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'プロジェクト名'), h('input', { type: 'text', value: state.name, onchange: (e: Event) => { state.name = (e.target as HTMLInputElement).value; render(); } })),

@@ -27,6 +27,8 @@ export interface ProjectState {
   license?: string;
   /** 読み込み直後の「提案一式をまとめて作る」: 資料の画面を開いたら自動作成を始める（'draft' = 高品質描画で速く） */
   autoRun?: 'draft' | 'photo';
+  /** 提案資料に資金計画（概算）のページを入れる */
+  deckFunding?: boolean;
   /** 会社情報（見積書・資金計画書の発行者欄） */
   companyRep?: string;
   companyAddress?: string;

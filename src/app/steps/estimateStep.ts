@@ -59,6 +59,16 @@ function ensure(): EstimateState {
   return state.estimate;
 }
 
+/** 提案資料の「資金計画（概算）」ページ用のまとめ。見積の画面を開いていなくても、今の間取り・仕様から出す */
+export function estimateSummary(): { grade: Grade; constArea: number; tsubo: number; body: number; sub2: number; tax: number; contract: number; sub4: number; sub5: number; sub6: number; grand: number; tsuboPrice: number } | null {
+  if (!state.model) return null;
+  const es = ensure();
+  const c = compute(es);
+  const t = computeFunding(c.funding);
+  const tsubo = c.areas.constArea / 3.30579;
+  return { grade: es.choice.grade, constArea: c.areas.constArea, tsubo, body: t.body, sub2: t.sub2, tax: t.tax, contract: t.contract, sub4: t.sub4, sub5: t.sub5, sub6: t.sub6, grand: t.grand, tsuboPrice: tsubo > 0 ? t.contract / tsubo : 0 };
+}
+
 /** コーディネートで選んだ商品を見積の行（group の選択）に反映する */
 export function syncEstimateWithFinishes() {
   const es = ensure();

@@ -94,9 +94,65 @@ export interface WallDetectOptions {
   minSegment: number;
   /** 線の太さを使わない（詳細図など、壁の面が細線で描かれた図面） */
   ignoreWidth: boolean;
+  /**
+   * 平面詳細図モード: 壁が「何本もの細い平行線の帯」（壁面・下地・仕上の線が 100〜200mm の幅に並ぶ）で描かれ、
+   * 柱は塗りの正方形になっている図面。帯を壁片として拾う
+   */
+  bands: boolean;
 }
 
-const DEFAULTS: WallDetectOptions = { minThickness: 45, maxThickness: 420, minSegment: 40, ignoreWidth: false };
+const DEFAULTS: WallDetectOptions = { minThickness: 45, maxThickness: 420, minSegment: 40, ignoreWidth: false, bands: false };
+
+/**
+ * 平面詳細図の壁: 同じ向きの細線が 35mm 以内の間隔で 3 本以上並び、全体の幅が 80〜220mm の帯。
+ * 帯の中心を壁芯、幅を壁厚にして、2 本以上の線が重なる区間を壁片にする
+ */
+function bandPieces(lines: Line[][]): WallPiece[] {
+  const out: WallPiece[] = [];
+  lines.forEach((all, g) => {
+    const ls = all.filter((l) => !l.fill && l.t1 - l.t0 >= 150).sort((a, b) => a.o - b.o);
+    const parent = ls.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    for (let i = 0; i < ls.length; i++) {
+      for (let j = i + 1; j < ls.length && ls[j].o - ls[i].o <= 35; j++) {
+        if (Math.min(ls[i].t1, ls[j].t1) - Math.max(ls[i].t0, ls[j].t0) >= 150) {
+          const a = find(i);
+          const b = find(j);
+          if (a !== b) parent[a] = b;
+        }
+      }
+    }
+    const groups = new Map<number, Line[]>();
+    ls.forEach((l, i) => {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r)!.push(l);
+    });
+    for (const band of groups.values()) {
+      if (band.length < 2) continue;
+      const oMin = Math.min(...band.map((l) => l.o));
+      const oMax = Math.max(...band.map((l) => l.o));
+      const d = oMax - oMin;
+      if (d < 80 || d > 220) continue;
+      // 2 本だけの帯は 60cm 以上の長さがあるものだけ（サッシ・棚の線を壁にしない）
+      const span = Math.max(...band.map((l) => l.t1)) - Math.min(...band.map((l) => l.t0));
+      if (band.length === 2 && span < 600) continue;
+      // 2 本以上の線が重なる区間
+      const ev: [number, number][] = [];
+      for (const l of band) ev.push([l.t0, 1], [l.t1, -1]);
+      ev.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+      let depth = 0;
+      let start = 0;
+      for (const [t, dd] of ev) {
+        const before = depth;
+        depth += dd;
+        if (before < 2 && depth >= 2) start = t;
+        else if (before >= 2 && depth < 2 && t - start >= 100) out.push({ g, o: (oMin + oMax) / 2, d, t0: start, t1: t });
+      }
+    }
+  });
+  return out;
+}
 
 function angleOf(s: Seg): number {
   let th = Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x);
@@ -312,7 +368,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   {
     let fillPairLen = 0;
     lines.forEach((ls) => {
-      const fl = ls.filter((l) => l.fill);
+      // 柱の塗り（105〜120mm の正方形）は壁の塗りではないので、40cm 以上の辺だけを見る
+      const fl = ls.filter((l) => l.fill && l.t1 - l.t0 >= 400);
       for (let i = 0; i < fl.length; i++)
         for (let j = i + 1; j < fl.length; j++) {
           const d = fl[j].o - fl[i].o;
@@ -522,6 +579,13 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     }
   }
 
+  // 平面詳細図モード: 細線の帯を壁片に加える（同じ所にある通常の壁片と重なっても mergeAxes でまとまる）
+  if (O.bands) {
+    for (const b of bandPieces(lines)) {
+      pieces.push(b);
+      pieceLines.push([-1, -1]);
+    }
+  }
   // 壁芯線の中に常に線がある図面（芯線表記）では infill を無効化
   const pieceLen = pieces.reduce((s, p) => s + (p.t1 - p.t0), 0);
   const infillLen = infills.reduce((s, p) => s + (p.t1 - p.t0), 0);

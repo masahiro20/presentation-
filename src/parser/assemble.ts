@@ -1962,7 +1962,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       page.segs.length >= 50 || !page.rasterMask
         ? bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]))
         : { minX: 0, minY: 0, maxX: page.rasterMask.w * page.rasterMask.res, maxY: page.rasterMask.h * page.rasterMask.res };
-    let ww = makeWalls(detectWalls(page.segs, page.arcs, {}, page.masks));
+    let ww = makeWalls(detectWalls(page.segs, page.arcs, (globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}, page.masks));
     joinWalls(ww);
     let groups = clusterPlans(ww, pageExt);
     let sketchHeavy: Seg[] | null = null;

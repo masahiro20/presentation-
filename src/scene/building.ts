@@ -57,6 +57,20 @@ export interface BuildingMeta {
   /** 各階の外形（ワールド） */
   outlines: { level: number; y: number; polys: THREE.Vector2[][] }[];
   topY: number;
+  /** 窓の障子 1 枚ごと（立面図の建具記号用）: ガラス面の 4 隅（ワールド）と、開く窓なら記号の三角（丁番側の中点が頂点） */
+  sashes: SashInfo[];
+}
+
+export interface SashInfo {
+  level: number;
+  openingId: string;
+  /** 'fix' = はめ殺し、'side' = 縦すべり出し、'top' = 横すべり出し */
+  kind: 'fix' | 'side' | 'top';
+  /** ガラス面の外向き法線 */
+  outN: THREE.Vector3;
+  corners: [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  /** 開く窓の記号: 丁番側の辺の中点（頂点）と、反対側の辺の両端 */
+  tri?: { apex: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 };
 }
 
 /**
@@ -262,7 +276,7 @@ export function alignUpperWalls(model: BuildingModel): BuildingModel {
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
   model = trimInteriorEnds(alignUpperWalls(model));
   const mb = new MeshBuilder();
-  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [] };
+  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [], sashes: [] };
   const ext = opts.exterior;
   const spec = opts.spec ?? BUILDER_SPECS[0];
   const cutF = opts.cut ? model.floors.find((f) => f.level === opts.cut!.level) : undefined;
@@ -750,6 +764,17 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       const g3 = g0.clone().setY(gy1);
       mb.quad(glassKey, g0, g1, g2, g3);
       mb.quad(glassKey, g1, g0, g3, g2);
+      // 立面図の建具記号: 開く窓は丁番側の辺の中点を頂点にした三角（JIS。外開きは実線）
+      {
+        const sash: SashInfo = { level: f.level, openingId: o.id, kind: cell.vent === 'none' ? 'fix' : cell.vent, outN: outN.clone(), corners: [g0, g1, g2, g3] };
+        if (cell.vent === 'top') sash.tri = { apex: g3.clone().lerp(g2, 0.5), a: g0.clone(), b: g1.clone() };
+        else if (cell.vent === 'side') {
+          // 丁番は壁の端に近い側（最初のセルなら a 側、最後なら b 側）
+          const hingeAtA = k === 0;
+          sash.tri = hingeAtA ? { apex: g0.clone().lerp(g3, 0.5), a: g1.clone(), b: g2.clone() } : { apex: g1.clone().lerp(g2, 0.5), a: g0.clone(), b: g3.clone() };
+        }
+        meta.sashes.push(sash);
+      }
       u += cell.w;
     });
     // 外部の水切り

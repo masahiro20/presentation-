@@ -114,6 +114,8 @@ interface OrthoResult {
   Hmm: number;
   yMax: number;
   box: THREE.Box3;
+  /** ワールドの点 → 図面 mm と見えるか（深度で判定） */
+  project: (p: THREE.Vector3) => { x: number; y: number; visible: boolean };
 }
 
 /** 立面の材料の種類（引き出し線の注記・線の太さに使う） */
@@ -404,7 +406,11 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
       }
     }
   }
-  return { lines, weighted, anchors, fillUrl, Wmm: (uMax - uMin) * 1000, Hmm: (yMax - yMin) * 1000, yMax, box };
+  const project = (q: THREE.Vector3) => {
+    const pp = toPx(q);
+    return { x: pp.x * mmPerPx, y: pp.y * mmPerPx, visible: visible(pp.x, pp.y, pp.depth) };
+  };
+  return { lines, weighted, anchors, fillUrl, Wmm: (uMax - uMin) * 1000, Hmm: (yMax - yMin) * 1000, yMax, box, project };
 }
 
 /** 立面図の高さの一覧（m）。御社の立面図の寸法の並び: 基礎高・各階 FL・各階の軒高・最高軒高・最高高さ */
@@ -441,6 +447,8 @@ interface ComposeOpts {
   marks?: { cat: MatCat; text: string }[];
   /** 右側に足す高さの線（断面図の天井高など） */
   rightExtra?: { label: string; y: number }[];
+  /** 線画に重ねる記号（建具記号など。図面 mm） */
+  symbols?: string;
   sheet?: SheetInfo;
 }
 
@@ -573,7 +581,7 @@ function compose(o: OrthoResult, c: ComposeOpts): { svg: string; vb: Vb; inner: 
   // GL より下（基礎の埋まる部分）は描かない
   const clipId = `elv${(clipSeq = (clipSeq + 1) % 100000)}`;
   const clip = `<clipPath id="${clipId}"><rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${(glY - vb.y).toFixed(0)}"/></clipPath>`;
-  const inner = back + clip + `<g clip-path="url(#${clipId})">` + img + path(W8.fine, 9, '#333') + path(W8.opening, 16, '#222') + path(W8.step, 26) + path(W8.outline, 45) + '</g>' + ann;
+  const inner = back + clip + `<g clip-path="url(#${clipId})">` + img + path(W8.fine, 9, '#333') + path(W8.opening, 16, '#222') + path(W8.step, 26) + path(W8.outline, 45) + (c.symbols ?? '') + '</g>' + ann;
   if (c.sheet) return { svg: wrapSheet(inner, vb, c.sheet), vb, inner };
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">` +
@@ -581,6 +589,25 @@ function compose(o: OrthoResult, c: ComposeOpts): { svg: string; vb: Vb; inner: 
     inner.replace(/\{\{SCALE\}\}/g, '100') +
     `</svg>`;
   return { svg, vb, inner };
+}
+
+/**
+ * 建具記号（JIS・御社の立面図）: 縦すべり出し・横すべり出しの障子に、丁番側の辺の中点を頂点にした三角を実線で描く。
+ * この面を向いていて、手前の物に隠れていない障子だけ
+ */
+function sashSymbols(o: OrthoResult, sashes: { outN: THREE.Vector3; tri?: { apex: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 } }[], viewDir: THREE.Vector3): string {
+  let s = '';
+  for (const sh of sashes) {
+    if (!sh.tri || sh.outN.dot(viewDir) > -0.5) continue;
+    const apex = o.project(sh.tri.apex);
+    const a = o.project(sh.tri.a);
+    const b = o.project(sh.tri.b);
+    if (!apex.visible || !a.visible || !b.visible) continue;
+    // 小さすぎる障子（スリット）は描かない
+    if (Math.hypot(a.x - b.x, a.y - b.y) < 250) continue;
+    s += `<path d="M${a.x.toFixed(0)} ${a.y.toFixed(0)}L${apex.x.toFixed(0)} ${apex.y.toFixed(0)}L${b.x.toFixed(0)} ${b.y.toFixed(0)}" fill="none" stroke="#222" stroke-width="9" stroke-linejoin="round"/>`;
+  }
+  return s;
 }
 
 /** 屋根勾配（寸）。陸屋根は 0 */
@@ -598,7 +625,7 @@ export function renderElevation(viewer: Viewer, dir: ElevationDir, opts: Elevati
   const title = `${JP[dir]}側 立面図`;
   const ext = exteriorFor(viewer.design);
   const marks: { cat: MatCat; text: string }[] = ext.accent ? [{ cat: 'accent', text: WALL_MARKS.accent }] : [];
-  const { svg, vb, inner } = compose(o, { title, heights: elevationHeights(viewer), pitch: roofPitchOf(viewer.design), marks, sheet: opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined });
+  const { svg, vb, inner } = compose(o, { title, heights: elevationHeights(viewer), pitch: roofPitchOf(viewer.design), marks, symbols: sashSymbols(o, st.meta.sashes, viewDir), sheet: opts.sheet ? { ...opts.sheet, drawing: opts.sheet.drawing || title } : undefined });
   return { dir, title, svg, widthMm: vb.w, heightMm: vb.h, inner, vb };
 }
 

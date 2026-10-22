@@ -10705,7 +10705,8 @@ function buildBuilding(model, opts) {
 		outlines: [],
 		topY: 0,
 		doorLeaves: [],
-		doors: []
+		doors: [],
+		sashes: []
 	};
 	const ext = opts.exterior;
 	const spec = opts.spec ?? BUILDER_SPECS[0];
@@ -11190,6 +11191,35 @@ function buildOpening(mb, f, w, o, fl, meta, spec) {
 			const g3 = g0.clone().setY(gy1);
 			mb.quad(glassKey, g0, g1, g2, g3);
 			mb.quad(glassKey, g1, g0, g3, g2);
+			{
+				const sash = {
+					level: f.level,
+					openingId: o.id,
+					kind: cell.vent === "none" ? "fix" : cell.vent,
+					outN: outN.clone(),
+					corners: [
+						g0,
+						g1,
+						g2,
+						g3
+					]
+				};
+				if (cell.vent === "top") sash.tri = {
+					apex: g3.clone().lerp(g2, .5),
+					a: g0.clone(),
+					b: g1.clone()
+				};
+				else if (cell.vent === "side") sash.tri = k === 0 ? {
+					apex: g0.clone().lerp(g3, .5),
+					a: g1.clone(),
+					b: g2.clone()
+				} : {
+					apex: g1.clone().lerp(g2, .5),
+					a: g0.clone(),
+					b: g3.clone()
+				};
+				meta.sashes.push(sash);
+			}
 			u += cell.w;
 		});
 		mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + .01).setY(sill - .02), dir, width + .04, .02, .05);

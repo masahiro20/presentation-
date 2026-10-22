@@ -22,19 +22,26 @@ function generate(ctx: StepCtx, color: boolean) {
   // 断面図は提案の水準に届くまで出さない（切断線も描かない）
   const sectionLines: { nx: number; nz: number; d: number; label: string }[] = [];
   state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
-  // A3 シート: 平面図（階ごと・面積表・建具表）→ 立面図（4 面を 1 枚）
+  // A3 シート（御社の構成）: 平面図は全階を 1 枚（1/100 で 2 階分が横に並ぶ）に面積表、立面図は 4 面を 1 枚、建具表は別の 1 枚
   let no = 1;
   const sheets: { title: string; svg: string }[] = [];
-  for (const f of model.floors) {
-    const parts = floorPlanParts(model, f, { sheet: sheetInfo(`${f.level}階 平面図`), sectionLines });
+  {
+    const parts = model.floors.map((f) => floorPlanParts(model, f, { sheet: sheetInfo('平面図'), sectionLines }));
     const at = areaTableSvg(model, 0, 0);
-    const ot = openingTableSvg(f, 0, at.h + 900);
-    const right = { svg: at.svg + ot.svg, w: Math.max(at.w, ot.w), h: at.h + 900 + ot.h };
-    sheets.push({ title: `${f.level}階 平面図`, svg: composeSheet([parts], sheetInfo(`${f.level}階 平面図`, `A-${no++}`), { right, defs: parts.defs }) });
+    const title = model.floors.length > 1 ? `平面図（${model.floors.map((f) => `${f.level}階`).join('・')}）` : `${model.floors[0]?.level ?? 1}階 平面図`;
+    sheets.push({ title, svg: composeSheet(parts, sheetInfo(title, `A-${no++}`), { right: { svg: at.svg, w: at.w, h: at.h }, defs: parts.map((p) => p.defs ?? '').join(''), gap: 2400 }) });
   }
   // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
   const top = exteriorFinishTableSvg(state.design, 0, 0, 420 * 100 - 2 * 1000);
   sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200 }) });
+  // 建具表（階ごとの表を横に並べる）
+  {
+    const tables = model.floors.map((f) => {
+      const t = openingTableSvg(f, 0, 0, 40);
+      return { inner: t.svg, vb: { x: -200, y: -200, w: t.w + 400, h: t.h + 400 } };
+    });
+    sheets.push({ title: '建具表', svg: composeSheet(tables, sheetInfo('建具表', `A-${no++}`), { gap: 2000 }) });
+  }
   state.sheets = sheets;
 }
 
@@ -67,7 +74,7 @@ export const elevationStep: Step = {
       else download(await svgToPng(svg, 4200), `${state.name}_${name}.png`);
     };
     ctx.side.append(
-      h('h2', null, '立面図'),
+      h('h2', null, '図面（A3 シート）'),
       section(
         '表示',
         segmented(

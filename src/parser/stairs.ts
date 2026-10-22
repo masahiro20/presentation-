@@ -109,6 +109,82 @@ export function detectStairs(segs: Seg[], within: { minX: number; minY: number; 
   return out;
 }
 
+type Side = 'n' | 's' | 'e' | 'w';
+
+/**
+ * 昇り口を図面の矢印（UP／DN の矢印線）から読む。御社の図面（ARCHITREND）は昇り口に UP（上階は DN）の文字を置き、
+ * 階段の中を矢印の線が昇る向きに走り、矢じり（短い 2 本の線）が先端につく。
+ * 矢印の始点には小さな丸が付き、その横に UP／DN の文字が置かれる（丸は細かすぎて線として残らないので文字を使う）。
+ *  1. UP／DN の文字が階段のそばにあれば、文字にいちばん近い辺
+ *  2. 文字が無ければ、階段の中の長い線（矢印の軸）の端の矢じりを探し、軸をたどった反対の端
+ *     （ジグザグの切断線も短い斜め線なので、文字が無いときだけ使う）
+ * 読めなければ null（壁の少ない辺にフォールバック）
+ */
+export function stairEntryFromArrow(r: { minX: number; minY: number; maxX: number; maxY: number }, segs: Seg[], marks: Vec2[]): Side | null {
+  const pad = 160;
+  const inside = (p: Vec2) => p.x >= r.minX - pad && p.x <= r.maxX + pad && p.y >= r.minY - pad && p.y <= r.maxY + pad;
+  const W = r.maxX - r.minX;
+  const H = r.maxY - r.minY;
+  const sideOf = (p: Vec2): Side => {
+    const d: [Side, number][] = [
+      ['n', p.y - r.minY],
+      ['s', r.maxY - p.y],
+      ['w', p.x - r.minX],
+      ['e', r.maxX - p.x],
+    ];
+    return d.sort((a, b) => a[1] - b[1])[0][0];
+  };
+  const L = (q: { a: Vec2; b: Vec2 }) => Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y);
+  const near = (p: Vec2, q: Vec2) => Math.hypot(p.x - q.x, p.y - q.y) <= 45;
+  const inner = segs.filter((q) => !q.dashed && inside(q.a) && inside(q.b));
+  // 軸: 階段の短辺の 6 割以上の長さの線（踏面線は短く多数、軸は少数）
+  // 軸: 階段の短辺の 35% 以上（折り返しの最後の軸は短い）。踏面線も入るが、端に矢じりが無ければ使われない
+  const axes = inner.filter((q) => L(q) >= Math.max(450, Math.min(W, H) * 0.35));
+  // 矢じり: 長さ 60〜420、軸の端に接し、軸と 15〜75° をなす線
+  const heads = inner.filter((q) => L(q) >= 60 && L(q) <= 420);
+  const headAt = (ax: Seg, end: Vec2): number => {
+    const dx = (ax.b.x - ax.a.x) / (L(ax) || 1);
+    const dy = (ax.b.y - ax.a.y) / (L(ax) || 1);
+    let n = 0;
+    for (const h of heads) {
+      if (h === ax) continue;
+      const touch = near(h.a, end) ? h.b : near(h.b, end) ? h.a : null;
+      if (!touch) continue;
+      const hl = Math.hypot(touch.x - end.x, touch.y - end.y) || 1;
+      const c = Math.abs(((touch.x - end.x) * dx + (touch.y - end.y) * dy) / hl);
+      if (c >= 0.25 && c <= 0.97) n++;
+    }
+    return n;
+  };
+  // 文字（UP／DN）の位置
+  const m = marks
+    .map((t) => ({ t, d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY)) }))
+    .filter((q) => q.d <= 500)
+    .sort((a, b) => a.d - b.d)[0];
+  if (m) return sideOf(m.t);
+  let best: { tail: Vec2; n: number } | null = null;
+  for (const ax of axes) {
+    for (const [end, other] of [
+      [ax.a, ax.b],
+      [ax.b, ax.a],
+    ] as [Vec2, Vec2][]) {
+      const n = headAt(ax, end);
+      if (!n) continue;
+      // 折り返し・かね折れ: 軸がつながっていれば、その先の端まで戻る（昇り口は最初の軸の端）
+      let tail = other;
+      const used = new Set<Seg>([ax]);
+      for (let hop = 0; hop < 4; hop++) {
+        const next = axes.find((q) => !used.has(q) && (near(q.a, tail) || near(q.b, tail)));
+        if (!next) break;
+        used.add(next);
+        tail = near(next.a, tail) ? next.b : next.a;
+      }
+      if (!best || n > best.n) best = { tail, n };
+    }
+  }
+  return best ? sideOf(best.tail) : null;
+}
+
 export function rectPoly(r: { minX: number; minY: number; maxX: number; maxY: number }): Vec2[] {
   return [
     { x: r.minX, y: r.minY },

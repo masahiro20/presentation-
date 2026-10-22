@@ -7,6 +7,7 @@
  *  - 出入口の無い部屋、上下階で位置の合わない階段、UB・便所の格子寸法
  *  - 通れない幅（廊下・ホール・階段は柱芯 910 が最小）、幅 550 未満の戸、同じ場所に重なった壁
  *  - 階段の勾配（蹴上 = 階高 ÷ 段数、踏面 = 階段の長さ ÷ 段数。上限 230／150、目安 200／240）
+ *  - 開き戸の前に壁（開く側に戸の幅ぶんの空きが無い）、外壁の半間未満の出入り（柱・基礎・屋根が増える）
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
 import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
@@ -36,6 +37,19 @@ export interface WoodIssue {
 
 const len = (w: { a: Vec2; b: Vec2 }) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
 const m = (mm: number) => (mm / 1000).toFixed(2);
+
+/** 点 o から向き d に伸ばした半直線が線分 ab に当たるまでの距離（当たらなければ null） */
+function raySeg(o: Vec2, d: Vec2, a: Vec2, b: Vec2): number | null {
+  const ex = b.x - a.x;
+  const ey = b.y - a.y;
+  const den = d.x * ey - d.y * ex;
+  if (Math.abs(den) < 1e-9) return null;
+  const ox = a.x - o.x;
+  const oy = a.y - o.y;
+  const t = (ox * ey - oy * ex) / den;
+  const u = (ox * d.y - oy * d.x) / den;
+  return t >= 0 && u >= -1e-6 && u <= 1 + 1e-6 ? t : null;
+}
 
 /** 壁の線分のうち、下階の壁の上に乗っている長さ（200mm ごとに判定） */
 function supportedLength(w: Wall, below: Wall[]): number {
@@ -502,6 +516,94 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         out.push({ id: `steep-${f.level}-${st.id}`, level: f.level, severity: 'info', title: `${f.level}階 階段: 蹴上 ${Math.round(riser)} はやや急です（${n} 段）`, detail: `ゆとりの目安は蹴上 200 以下です。1 段増やすと ${Math.round(rise / (n + 1))} になります`, marks: [{ level: f.level, rects: [rect], label }] });
       }
     }
+  }
+  // (m) 開き戸の前の壁: 開く側に戸の幅ぶんの空きが無いと戸が開き切らない（455 の廊下へ開く戸・壁の前の戸）。
+  //     開く向きが読めている戸だけ（読めない戸は広い側へ開くものとする）。物入へ開く戸は除く
+  for (const f of floors) {
+    const storages = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage');
+    const hits: { seg: { a: Vec2; b: Vec2 }; clear: number; width: number }[] = [];
+    for (const o of f.openings) {
+      if (o.kind !== 'door' && o.kind !== 'entrance') continue;
+      const w = f.walls.find((x) => x.id === o.wallId);
+      if (!w) continue;
+      const L = len(w) || 1;
+      const dx = (w.b.x - w.a.x) / L;
+      const dy = (w.b.y - w.a.y) / L;
+      const width = o.t1 - o.t0;
+      if (width < 500) continue;
+      const tm = (o.t0 + o.t1) / 2;
+      const c = { x: w.a.x + dx * tm, y: w.a.y + dy * tm };
+      const clearance = (sign: 1 | -1) => {
+        const d = { x: -dy * sign, y: dx * sign };
+        // 物入の中へ開く（物入の奥行きぶんしか無い）のは普通
+        const probe = { x: c.x + d.x * 200, y: c.y + d.y * 200 };
+        if (storages.some((r) => pointInPolygon(probe, r.polygon))) return Infinity;
+        let best = Infinity;
+        for (const v of f.walls) {
+          if (v.id === w.id) continue;
+          const t = raySeg(c, d, v.a, v.b);
+          if (t != null && t > 0) best = Math.min(best, t - v.thickness / 2);
+        }
+        return best;
+      };
+      const sides: (1 | -1)[] = o.swingSide ? [o.swingSide] : [1, -1];
+      const clear = Math.max(...sides.map(clearance));
+      if (clear < width - 30) hits.push({ seg: { a: { x: w.a.x + dx * o.t0, y: w.a.y + dy * o.t0 }, b: { x: w.a.x + dx * o.t1, y: w.a.y + dy * o.t1 } }, clear, width });
+    }
+    if (!hits.length) continue;
+    const bad = hits.some((h) => h.clear < h.width * 0.75);
+    out.push({
+      id: `doorwall-${f.level}`,
+      level: f.level,
+      severity: bad ? 'warn' : 'info',
+      title: `${f.level}階: 開いた先に壁がある戸が ${hits.length} か所`,
+      detail: `${hits.map((h) => `幅 ${Math.round(h.width)} の戸の前が ${Math.round(Math.max(0, h.clear))}`).join('・')} mm です。開き戸は開く側に戸の幅ぶん（${hits.map((h) => Math.round(h.width)).join('・')}）の空きが要ります。壁に当たる戸は引戸にするか、開く向きを変えてください。戸の記号（円弧の向き）を読み違えている可能性もあります`,
+      marks: [{ level: f.level, lines: hits.map((h) => h.seg), label: '戸の前に壁' }],
+    });
+  }
+
+  // (o) 外壁の細かい出入り: 外形の辺が半間（455）未満。出入りごとに柱が 2 本と基礎の角が増え、屋根の納まりが複雑になる。
+  //     読み取りの揺れ（二重に読んだ壁・梁の線）で生まれることも多い
+  for (const f of floors) {
+    const short: { a: Vec2; b: Vec2; L: number }[] = [];
+    for (const poly of f.outline) {
+      const n = poly.length;
+      if (n < 4) continue;
+      const dir = (i: number) => {
+        const a = poly[(i + n) % n];
+        const b = poly[(i + 1 + n) % n];
+        const L = len({ a, b }) || 1;
+        return { x: (b.x - a.x) / L, y: (b.y - a.y) / L, L };
+      };
+      for (let i = 0; i < n; i++) {
+        const d = dir(i);
+        if (d.L < 30 || d.L >= 440) continue;
+        // 両隣が折れている（同じ向きに続く線の分割ではない）
+        const p = dir(i - 1);
+        const q = dir(i + 1);
+        const turnP = Math.abs(p.x * d.y - p.y * d.x);
+        const turnQ = Math.abs(q.x * d.y - q.y * d.x);
+        if (turnP < 0.3 || turnQ < 0.3) continue;
+        short.push({ a: poly[i], b: poly[(i + 1) % n], L: d.L });
+      }
+    }
+    if (!short.length) continue;
+    const lens = short.map((x) => Math.round(x.L));
+    const jagged = short.length > 8;
+    const tiny = short.every((x) => x.L < 200);
+    out.push({
+      id: `jog-${f.level}`,
+      level: f.level,
+      // 200 未満ばかりなら壁の厚みの段差（外壁 160 と内壁 130 の差など）か読み取りの揺れ。多すぎれば外形がギザギザ（読み取りの問題）
+      severity: jagged ? 'warn' : tiny ? 'info' : 'warn',
+      title: jagged ? `${f.level}階: 外形がギザギザです（半間未満の段差が ${short.length} か所）` : tiny ? `${f.level}階: 外形に細かな段差が ${short.length} か所（読み取りの揺れの疑い）` : `${f.level}階: 外壁に半間未満の出入りが ${short.length} か所`,
+      detail: jagged
+        ? `${lens.slice(0, 12).join('・')}… mm の段差があります。壁を二重に読んだか、梁・庇の線を外壁と取り違えた可能性が高いので、修正画面で外形を確かめてください`
+        : tiny
+          ? `${lens.join('・')} mm の段差があります。外壁と内壁の厚みの差や、線を二重に読んだ揺れのことが多く、設計上の出入りではありません。気になるときは修正画面で壁を揃えてください`
+          : `${lens.join('・')} mm の出入りがあります。木造では外壁の出入りごとに柱が 2 本と基礎の角が増え、屋根・樋の納まりも複雑になります。意図した出入りなら 455 か 910 に、読み取りの揺れ（二重の壁・梁の線）なら修正画面で外形を直してください`,
+      marks: [{ level: f.level, lines: short.map((x) => ({ a: x.a, b: x.b })), label: jagged ? 'ギザギザ' : '細かい段差' }],
+    });
   }
   return out;
 }

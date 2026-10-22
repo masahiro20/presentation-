@@ -396,6 +396,39 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
             if (ang < halfH * 0.95) score += w.weight;
           }
         }
+        // 家具が画面の端で切れる構図は避ける（ソファ・テーブルが縁で半分になるカット）。
+        // キッチンや収納のような長い物は端で切れても自然なので軽く見る
+        let cut = 0;
+        for (const o of occ) {
+          if (o.maxY < 0.4) continue;
+          const size = Math.max(o.maxX - o.minX, o.maxZ - o.minZ);
+          let inside = 0;
+          let edge = 0;
+          for (const [cx, cz] of [
+            [o.minX, o.minZ],
+            [o.maxX, o.minZ],
+            [o.minX, o.maxZ],
+            [o.maxX, o.maxZ],
+          ]) {
+            const vx = cx - pos.x;
+            const vz = cz - pos.z;
+            const d = Math.hypot(vx, vz);
+            if (d < 0.05) {
+              inside++;
+              continue;
+            }
+            const dot = (vx * dir.x + vz * dir.z) / d;
+            if (dot <= 0) {
+              if (d < diag) edge++;
+              continue;
+            }
+            const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
+            if (ang < halfH) inside++;
+            else if (d < diag) edge++;
+          }
+          if (inside > 0 && edge > 0) cut += size > 2.0 ? 0.35 : 1;
+        }
+        score -= Math.min(cut, 3) * 0.9;
         if (!best || score > best.score) {
           const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + 1.15);
           best = { score, pos, target, mean: ray ? meanDist : Infinity };

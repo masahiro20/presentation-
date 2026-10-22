@@ -8,7 +8,7 @@ import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type Detected
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
-import { detectStairs } from './stairs';
+import { detectStairs, stairEntryFromArrow } from './stairs';
 import { detectSite, translateSite } from './site';
 import { detectSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
@@ -1469,6 +1469,13 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const kind: Stair['kind'] = c.flights >= 2 || Math.max(w, h) / Math.min(w, h) < 1.5 ? 'u' : 'straight';
     // 同じ部屋の UP/DN 記号
     const hasDn = plan.texts.some((t) => parseStairMark(t.str) === 'down' && t.x > r.minX - 300 && t.x < r.maxX + 300 && t.y > r.minY - 300 && t.y < r.maxY + 300);
+    // 昇り口: 図面の矢印（軸と矢じり）か UP/DN の文字の位置から。読めなければ壁の少ない辺
+    const arrowSide = stairEntryFromArrow(
+      r,
+      nonWallSegs,
+      plan.texts.filter((t) => parseStairMark(t.str) != null).map((t) => ({ x: t.x, y: t.y })),
+    );
+    const entry: Stair['entry'] = arrowSide && sideWallRatio(arrowSide) < 0.9 ? arrowSide : sides[0].s;
     // 「14段」などの段数注記（階段の近く）
     const stepNote = plan.texts
       .map((t) => ({ n: parseStepCount(t.str), d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY)) }))
@@ -1481,7 +1488,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       maxX: r.maxX,
       maxY: r.maxY,
       kind,
-      entry: sides[0].s,
+      entry,
       goesUp: !hasDn,
       ...(stepNote ? { steps: stepNote.n! } : {}),
     });

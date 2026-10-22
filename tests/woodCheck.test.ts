@@ -79,4 +79,38 @@ describe('木造の常識チェック', () => {
     stub!.fix!.apply(model);
     expect(f.walls.some((w) => w.id === 'stub-test')).toBe(false);
   }, 60000);
+
+  it('開いた先に壁がある戸と、外壁の半間未満の出入りを見つける', async () => {
+    const model = await parseSample('sample_house_A3.pdf');
+    const f = model.floors[0];
+    // 長い壁の途中に幅 800 の開き戸を置き、その前 400 に平行な壁を足す（開く側へ 400 しか無い）
+    const wall = f.walls.find((w) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) > 2500)!;
+    const L = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y);
+    const dx = (wall.b.x - wall.a.x) / L;
+    const dy = (wall.b.y - wall.a.y) / L;
+    f.openings.push({ id: 'door-front', wallId: wall.id, kind: 'door', t0: 1000, t1: 1800, sill: 0, height: 2000, swingSide: 1 });
+    const nx = -dy * 400;
+    const ny = dx * 400;
+    f.walls.push({ id: 'front-test', a: { x: wall.a.x + nx + dx * 600, y: wall.a.y + ny + dy * 600 }, b: { x: wall.a.x + nx + dx * 2200, y: wall.a.y + ny + dy * 2200 }, thickness: 130, exterior: false } as (typeof f.walls)[number]);
+    // 外形に 150 の段差を足す
+    const poly = f.outline[0];
+    const a = poly[0];
+    const b = poly[1];
+    const ex = (b.x - a.x) / Math.hypot(b.x - a.x, b.y - a.y);
+    const ey = (b.y - a.y) / Math.hypot(b.x - a.x, b.y - a.y);
+    const p1 = { x: a.x + ex * 900, y: a.y + ey * 900 };
+    const p2 = { x: p1.x - ey * 150, y: p1.y + ex * 150 };
+    const p3 = { x: p2.x + ex * 900, y: p2.y + ey * 900 };
+    const p4 = { x: p3.x + ey * 150, y: p3.y - ex * 150 };
+    poly.splice(1, 0, p1, p2, p3, p4);
+    const issues = woodCheck(model);
+    const dw = issues.find((i) => i.id === 'doorwall-1');
+    expect(dw?.severity).toBe('warn');
+    expect(dw?.detail).toContain('幅 800 の戸の前が');
+    expect(dw?.marks?.[0].lines?.length).toBe(1);
+    const jog = issues.find((i) => i.id === 'jog-1');
+    expect(jog).toBeTruthy();
+    expect(jog?.detail).toContain('150');
+    expect(jog?.marks?.[0].lines?.length).toBeGreaterThanOrEqual(2);
+  }, 60000);
 });

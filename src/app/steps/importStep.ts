@@ -55,6 +55,18 @@ export function moduleLabel(model: BuildingModel): string {
   return `${m.size === 910 ? '尺モジュール 910（半間 455 格子）' : 'メーターモジュール 1000（500 格子）'}・壁芯の ${Math.round(m.fit * 100)}% が格子に整合${m.source === 'manual' ? '・手動指定' : ''}`;
 }
 
+/** 表紙の見本（サンプル邸から自動で出したもの。クリックでサンプルを読み込む） */
+const SHOWCASE: { src: string; title: string; sub: string; wide?: boolean }[] = [
+  { src: './showcase/int-ldk.jpg', title: '内観パース', sub: 'テイストを選ぶだけで家具・照明まで', wide: true },
+  { src: './showcase/ext-front.jpg', title: '外観パース', sub: '塗り壁・ガルバ・SOLIDO の質感' },
+  { src: './showcase/sheet-elev.jpg', title: '立面図 4 面＋外部仕上表', sub: '御社の書き方で A3 に' },
+  { src: './showcase/sheet-plan.jpg', title: '平面図（木造の表記）', sub: '柱・建具記号・寸法・帖数' },
+  { src: './showcase/int-bed.jpg', title: '内観パース（個室）', sub: '部屋ごとの見どころを自動で' },
+  { src: './showcase/aerial.jpg', title: '俯瞰の模型', sub: '敷地・道路・車まで', wide: true },
+];
+
+const FLOW = ['図面を読む', 'パース', '図面', '日照', '見積', '動画', '提案資料'];
+
 function dropScreen(ctx: StepCtx) {
   const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf,.json', style: 'display:none' }) as HTMLInputElement;
   const readFile = async (f: File) => {
@@ -69,64 +81,85 @@ function dropScreen(ctx: StepCtx) {
     return loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
   };
   input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
-  const zone = h(
-    'div',
-    { class: 'dropzone' },
-    h('div', { class: 'big' }, '＋'),
-    h('p', null, h('b', null, '平面図の PDF（または CAD の DXF）をここにドロップ'), h('br'), 'または'),
-    h('button', { class: 'btn primary', onclick: () => input.click() }, 'PDF / DXF ファイルを選択'),
-    h('p', { class: 'hint', style: 'margin:10px 0 0' }, '保存したプロジェクト（.madori.json）もここにドロップ、またはこのボタンから開けます'),
-    input,
-  );
-  zone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    zone.classList.add('hover');
-  });
-  zone.addEventListener('dragleave', () => zone.classList.remove('hover'));
-  zone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    zone.classList.remove('hover');
-    const f = e.dataTransfer?.files?.[0];
-    if (f) readFile(f);
-  });
   const sample = async (file: string) => {
     const buf = new Uint8Array(await (await fetch(`./samples/${file}`)).arrayBuffer());
     loadPdf(ctx, buf, 'サンプル邸');
   };
-  return h(
+  // 置き場: 画面のどこに落としても読む（枠の中はハイライト）
+  const zone = h(
     'div',
-    { class: 'drop' },
+    { class: 'dz', role: 'button', tabindex: '0', onclick: () => input.click(), onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } } },
+    h('div', { class: 'dz-ic', html: '<svg viewBox="0 0 48 48" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6h16l10 10v26H12z"/><path d="M28 6v10h10"/><path d="M24 36V22m0 0-5 5m5-5 5 5"/></svg>' }),
+    h('div', { class: 'dz-tx' }, h('b', null, '平面図の PDF / DXF をここに置く'), h('span', null, '保存したプロジェクト（.madori.json）もここから開けます')),
+    h('span', { class: 'btn primary lg' }, 'ファイルを選ぶ'),
+    input,
+  );
+  const root = h(
+    'div',
+    { class: 'landing' },
+    h('div', { class: 'landing-bg' }, h('img', { src: './showcase/ext-evening.jpg', alt: '' })),
     h(
       'div',
-      { class: 'drop-card' },
-      h('h1', null, '図面が、そのまま提案になる。'),
-      h('p', null, '平面図の PDF から壁・開口・部屋を読み取り、模型・パース・断面・図面・日照・動画までを、ひとつの流れで。'),
-      zone,
+      { class: 'landing-in' },
       h(
-        'div',
-        { class: 'btn-row', style: 'justify-content:center;margin-top:14px' },
-        h('span', { style: 'font-size:13px;color:#8b9098;align-self:center' }, 'お試し:'),
-        h('button', { class: 'btn sm', onclick: () => sample('sample_house_A3.pdf') }, 'サンプル平面図（A3・1階2階）'),
-        h('button', { class: 'btn sm', onclick: () => sample('sample_house_pages.pdf') }, 'サンプル平面図（階ごと・方位回転）'),
-        h('button', { class: 'btn sm', onclick: () => sample('sample_house_site.pdf') }, 'サンプル平面図（敷地・道路あり）'),
+        'section',
+        { class: 'hero' },
+        h('div', { class: 'eyebrow' }, h('span', { class: 'latin' }, 'Atelier'), h('i'), (state.company || 'ホームランディック 一級建築士事務所').replace(/[　 ]+/g, ' ')),
+        h('h1', null, '図面が、', h('br'), 'そのまま提案になる。'),
+        h('p', { class: 'hero-sub' }, '平面図の PDF を置くだけ。木造として立ち上げ、御社の書き方の図面・外観／内観パース・日照・見積・動画・提案資料まで、この画面の中で仕上がります。'),
+        zone,
+        h(
+          'div',
+          { class: 'try' },
+          h('span', null, 'サンプルで試す'),
+          h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'A3・1 階 2 階'),
+          h('button', { class: 'lnk', onclick: () => sample('sample_house_pages.pdf') }, '階ごと・方位回転'),
+          h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
+          h('a', { class: 'lnk far', href: './sun.html' }, '3D データで日照だけ検討 →'),
+        ),
       ),
       h(
-        'p',
-        { class: 'sub', style: 'margin:12px 0 0;font-size:12.5px;color:#8b9098' },
-        '設計の 3D データ（3DS など）だけで日当たりを検討する場合は ',
-        h('a', { href: './sun.html', style: 'color:#b8683a;font-weight:600' }, '日照シミュレーション（3D データ読み込み）'),
-        ' へ。地図で場所を指定すると、地形と周辺建物を自動で立ち上げます。',
+        'section',
+        { class: 'showcase' },
+        ...SHOWCASE.map((c) =>
+          h(
+            'figure',
+            { class: `sc${c.wide ? ' wide' : ''}`, onclick: () => sample('sample_house_A3.pdf'), title: 'サンプル邸を読み込んで見る' },
+            h('img', { src: c.src, alt: c.title, loading: 'lazy' }),
+            h('figcaption', null, h('b', null, c.title), h('span', null, c.sub)),
+          ),
+        ),
+        h(
+          'div',
+          { class: 'sc more' },
+          h('b', null, 'そのまま、提案まで。'),
+          h('ul', null, h('li', null, '日照シミュレーション'), h('li', null, '見積・資金計画'), h('li', null, 'ウォークスルー動画'), h('li', null, '提案資料・体験リンク')),
+        ),
       ),
       h(
-        'div',
-        { class: 'flow' },
-        h('div', null, h('b', null, '① 図面を読む'), '壁・開口部・室名・寸法・方位を自動認識'),
-        h('div', null, h('b', null, '② パースを作る'), 'テイストを選ぶだけで外観・内観が完成'),
-        h('div', null, h('b', null, '③ 日当たりを見る'), '航空写真と周辺建物で季節・時刻の日照を検討'),
-        h('div', null, h('b', null, '④ 提案する'), '動画とプレゼン資料をワンクリックで出力'),
+        'footer',
+        { class: 'landing-flow' },
+        ...FLOW.map((t, i) => h('span', null, h('i', null, String(i + 1).padStart(2, '0')), t)),
+        h('button', { class: 'lnk settings', onclick: () => document.body.classList.toggle('cover-settings') }, '事務所の設定・読み取りの辞書・MCP'),
       ),
     ),
   );
+  // ドロップは画面全体で受ける
+  const over = (e: DragEvent) => {
+    e.preventDefault();
+    root.classList.add('hover');
+  };
+  root.addEventListener('dragover', over);
+  root.addEventListener('dragleave', (e) => {
+    if (!root.contains(e.relatedTarget as Node)) root.classList.remove('hover');
+  });
+  root.addEventListener('drop', (e) => {
+    e.preventDefault();
+    root.classList.remove('hover');
+    const f = e.dataTransfer?.files?.[0];
+    if (f) readFile(f);
+  });
+  return root;
 }
 
 export const importStep: Step = {
@@ -134,26 +167,17 @@ export const importStep: Step = {
   label: '図面読込',
   needsModel: false,
   uses3d: false,
+  unmount() {
+    document.body.classList.remove('cover', 'cover-settings');
+  },
   mount(ctx) {
     ctx.stage.style.pointerEvents = 'auto';
+    document.body.classList.toggle('cover', !state.model);
     if (!state.model) {
       ctx.stage.appendChild(dropScreen(ctx));
       ctx.side.append(
-        h('h2', null, 'はじめに'),
-        h('p', { class: 'lead' }, 'CAD（ARCHITREND・Walk in home・JW-CAD など）から出力したベクター形式の PDF に対応しています。1ページに複数階が並んだ図面、階ごとに分かれた図面のどちらも読み込めます。'),
-        section(
-          '読み取りのコツ',
-          h(
-            'ul',
-            { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
-            h('li', null, '「S=1/100」などの縮尺表記、または寸法線と寸法値があると縮尺を自動判定します'),
-            h('li', null, '室名（LDK・洋室・和室・浴室など）と帖数の文字から部屋の用途を判定します'),
-            h('li', null, '方位記号（N）から真北の向きを読み取ります'),
-            h('li', null, '「前面道路」「幅員4.0m」などの文字と敷地境界線から、道路に面する側と敷地の広さを読み取ります'),
-            h('li', null, '「S=1/100」のまま縮小印刷された図面も、帖数表記から実際の縮尺に補正します'),
-            h('li', null, 'スキャン画像の PDF は読み取り精度が下がります'),
-          ),
-        ),
+        h('h2', null, '事務所と設定'),
+        h('p', { class: 'lead' }, '表題欄・ヘッダー・資料に入る事務所の情報と、読み取りの辞書・MCP の設定です。CAD（ARCHITREND・Walk in home・JW-CAD など）から出力したベクター形式の PDF に対応しています。'),
         section(
           'お客様情報',
           field('プロジェクト名', h('input', { type: 'text', value: state.name, oninput: (e: Event) => (state.name = (e.target as HTMLInputElement).value) })),
@@ -166,6 +190,20 @@ export const importStep: Step = {
         ),
         dictCard(),
         mcpCard(),
+        fold(
+          '読み取りのコツ',
+          {},
+          h(
+            'ul',
+            { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
+            h('li', null, '「S=1/100」などの縮尺表記、または寸法線と寸法値があると縮尺を自動判定します'),
+            h('li', null, '室名（LDK・洋室・和室・浴室など）と帖数の文字から部屋の用途を判定します'),
+            h('li', null, '方位記号（N）から真北の向きを読み取ります'),
+            h('li', null, '「前面道路」「幅員4.0m」などの文字と敷地境界線から、道路に面する側と敷地の広さを読み取ります'),
+            h('li', null, '「S=1/100」のまま縮小印刷された図面も、帖数表記から実際の縮尺に補正します'),
+            h('li', null, 'スキャン画像の PDF は読み取り精度が下がります'),
+          ),
+        ),
       );
       return;
     }
@@ -446,6 +484,7 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
 }
 
 function renderResult(ctx: StepCtx) {
+  document.body.classList.remove('cover', 'cover-settings');
   const model = state.model!;
   const view = h('div', { class: 'plan-view' });
   // 木造チェックの「図面で見る」で赤表示する項目（state.plans には入れない: 資料・図面出力には載せない）
@@ -808,7 +847,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ...rows.map((r) =>
       h(
         'div',
-        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}` },
+        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}${r.detail.length > 48 ? ' long' : ''}` },
         h('span', { class: 'ic' }, r.ok === false ? '⚠' : r.ok === null ? 'ℹ' : '✓'),
         h('span', { class: 'lb' }, r.label),
         h('span', { class: 'dt' }, r.detail),
@@ -854,6 +893,8 @@ function logoInput(): HTMLElement {
       toast((e as Error).message, 'error');
     }
   });
+  inp.style.display = 'none';
+  const pick = h('button', { class: 'btn sm', onclick: () => inp.click() }, 'ロゴ画像を選ぶ');
   const clearBtn = h('button', { class: 'btn sm ghost', onclick: () => { state.logo = undefined; prev.style.display = 'none'; forgetOfficeLogo(); emit('project'); } }, 'ロゴを外す');
-  return h('div', null, inp, prev, clearBtn);
+  return h('div', null, prev, h('div', { class: 'btn-row', style: 'margin:4px 0 0' }, pick, clearBtn), inp);
 }

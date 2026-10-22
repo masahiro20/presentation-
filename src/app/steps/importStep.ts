@@ -1,5 +1,6 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
 import { state, emit } from '../state';
+import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser } from '../../parser/browser';
 import { parseDxf, type ModuleMode } from '../../parser';
@@ -158,9 +159,10 @@ export const importStep: Step = {
           field('プロジェクト名', h('input', { type: 'text', value: state.name, oninput: (e: Event) => (state.name = (e.target as HTMLInputElement).value) })),
           field('お客様名', h('input', { type: 'text', value: state.customer, oninput: (e: Event) => (state.customer = (e.target as HTMLInputElement).value) })),
           field('事務所ロゴ（図面の表題欄・ヘッダー・シネマに入ります）', logoInput()),
-          field('事務所名（表題欄のロゴの横。全角スペースで 2 行）', h('input', { type: 'text', value: state.company, placeholder: 'ホームランディック　一級建築士事務所', oninput: (e: Event) => (state.company = (e.target as HTMLInputElement).value) })),
-          field('資格・氏名（表題欄の右。「一級建築士第〇〇号　氏名」）', h('input', { type: 'text', value: state.license ?? '', placeholder: '一級建築士第42260号　伊岐見 優', oninput: (e: Event) => (state.license = (e.target as HTMLInputElement).value) })),
-          field('設計者（表題欄）', h('input', { type: 'text', value: state.designer ?? '', oninput: (e: Event) => (state.designer = (e.target as HTMLInputElement).value) })),
+          field('事務所名（表題欄のロゴの横。全角スペースで 2 行）', h('input', { type: 'text', value: state.company, placeholder: 'ホームランディック　一級建築士事務所', oninput: (e: Event) => { state.company = (e.target as HTMLInputElement).value; rememberOffice(); } })),
+          field('資格・氏名（表題欄の右。「一級建築士第〇〇号　氏名」）', h('input', { type: 'text', value: state.license ?? '', placeholder: '一級建築士第42260号　伊岐見 優', oninput: (e: Event) => { state.license = (e.target as HTMLInputElement).value; rememberOffice(); } })),
+          field('設計者（表題欄）', h('input', { type: 'text', value: state.designer ?? '', oninput: (e: Event) => { state.designer = (e.target as HTMLInputElement).value; rememberOffice(); } })),
+          h('p', { class: 'hint' }, '事務所名・ロゴ・資格・設計者はこのブラウザに覚え、次のプロジェクトでも表題欄に自動で入ります。'),
         ),
         dictCard(),
         mcpCard(),
@@ -844,6 +846,7 @@ function logoInput(): HTMLElement {
       c.height = Math.max(1, Math.round(img.height * k));
       c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
       state.logo = c.toDataURL('image/png');
+      rememberOffice();
       prev.src = state.logo;
       prev.style.display = 'block';
       emit('project');
@@ -851,6 +854,6 @@ function logoInput(): HTMLElement {
       toast((e as Error).message, 'error');
     }
   });
-  const clearBtn = h('button', { class: 'btn sm ghost', onclick: () => { state.logo = undefined; prev.style.display = 'none'; emit('project'); } }, 'ロゴを外す');
+  const clearBtn = h('button', { class: 'btn sm ghost', onclick: () => { state.logo = undefined; prev.style.display = 'none'; forgetOfficeLogo(); emit('project'); } }, 'ロゴを外す');
   return h('div', null, inp, prev, clearBtn);
 }

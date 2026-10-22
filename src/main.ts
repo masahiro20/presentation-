@@ -8,12 +8,14 @@ import { videoStep } from './app/steps/videoStep';
 import { presentStep } from './app/steps/presentStep';
 import { estimateStep } from './app/steps/estimateStep';
 import { state, emit } from './app/state';
+import { restoreOffice } from './app/office';
 import { parsePdfInBrowser } from './parser/browser';
 
 const app = new App(document.getElementById('app')!, [importStep, designStep, elevationStep, sunStep, estimateStep, videoStep, presentStep]);
 (window as unknown as { app: App }).app = app;
 
 async function boot() {
+  restoreOffice();
   const params = new URLSearchParams(location.search);
   const sample = params.get('sample');
   if (sample) {

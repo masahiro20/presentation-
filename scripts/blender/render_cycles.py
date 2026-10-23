@@ -238,7 +238,7 @@ if not os.environ.get('NO_HDRI') and os.path.exists(HDRI) and tod != 'night':
         # 画像の太陽の経度（左端 = -X 方向から反時計回り）を、物理空の太陽方位 rot に合わせる
         mp.inputs['Rotation'].default_value = (0, 0, rot - (sun_lon - math.pi))
         nt.links.new(tc.outputs['Generated'], mp.inputs['Vector']); nt.links.new(mp.outputs['Vector'], env.inputs['Vector'])
-        bg2 = nt.nodes.new('ShaderNodeBackground'); bg2.inputs['Strength'].default_value = k * float(os.environ.get('HDRI_GAIN', '1.0'))
+        bg2 = nt.nodes.new('ShaderNodeBackground'); bg2.inputs['Strength'].default_value = k * float(os.environ.get('HDRI_GAIN', '1.4'))  # 写真の空は少し明るめに見える
         nt.links.new(env.outputs['Color'], bg2.inputs['Color'])
         lp = nt.nodes.new('ShaderNodeLightPath'); mix = nt.nodes.new('ShaderNodeMixShader')
         nt.links.new(lp.outputs['Is Camera Ray'], mix.inputs['Fac']); nt.links.new(bg.outputs['Background'], mix.inputs[1]); nt.links.new(bg2.outputs['Background'], mix.inputs[2])

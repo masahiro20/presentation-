@@ -13788,6 +13788,7 @@ function buildFurniture(model, opts = {}) {
 				emitItem({ ...it }, env);
 				ctx.has.add(it.kind);
 				if (it.kind === "kitchen") ctx.planKitchen = it;
+				if (it.kind === "sofa") (ctx.planSofas ??= []).push(it);
 			}
 			switch (room.type) {
 				case "ldk":
@@ -14533,6 +14534,7 @@ function layoutLDK(ctx, model, f) {
 	if (!ctx.has.has("dining")) place("dining", kf, 0, kDepth + dDepth / 2, ctx.env);
 	if (!hasLiving) return;
 	if (ctx.has.has("sofa")) {
+		dressLiving(ctx);
 		ctx.lights.push({
 			pos: kf.point(0, kDepth + dDepth + (total - kDepth - dDepth) / 2, ceilingY - .02),
 			kind: "ceiling",
@@ -14586,6 +14588,58 @@ function layoutLDK(ctx, model, f) {
 		kind: "ceiling",
 		roomId: ctx.room.id
 	});
+}
+/** 図面どおりに置いたソファの周りを整える: ラグ・ローテーブル・観葉植物、向かいの壁にテレビ台 */
+function dressLiving(ctx) {
+	const sofas = ctx.planSofas ?? [];
+	if (!sofas.length) return;
+	const { R } = ctx;
+	const s = [...sofas].sort((a, b) => (b.w ?? 2.1) - (a.w ?? 2.1))[0];
+	const w = s.w ?? 2.1;
+	const r = s.rot / DEG;
+	const fr = new Frame(ctx.mb, V(s.x * MM, ctx.y, s.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));
+	const front = fr.point(0, .9, 0);
+	const dir = fr.inward;
+	const hit = (lim, p, d) => Math.abs(d) < 1e-6 ? Infinity : (lim - p) / d;
+	const depth = Math.min(...[
+		hit(R.maxX, front.x, dir.x),
+		hit(R.minX, front.x, dir.x),
+		hit(R.maxZ, front.z, dir.z),
+		hit(R.minZ, front.z, dir.z)
+	].filter((t) => t > 0));
+	const free = (u, v, fw, fd) => {
+		const c = fr.point(u, v, 0);
+		const ex = Math.abs(fr.along.x) * fw / 2 + Math.abs(fr.inward.x) * fd / 2;
+		const ez = Math.abs(fr.along.z) * fw / 2 + Math.abs(fr.inward.z) * fd / 2;
+		if (c.x - ex < R.minX || c.x + ex > R.maxX || c.z - ez < R.minZ || c.z + ez > R.maxZ) return false;
+		return !(currentOcc ?? []).some((o) => o.minX < c.x + ex && o.maxX > c.x - ex && o.minZ < c.z + ez && o.maxZ > c.z - ez);
+	};
+	if (!ctx.has.has("rug") && depth >= 1.2) {
+		const rd = +Math.min(2, depth + .35).toFixed(2);
+		place("rug", fr, 0, .55 + rd / 2, ctx.env, {
+			w: +Math.max(2, w + .4).toFixed(2),
+			d: rd
+		});
+	}
+	if (!ctx.has.has("coffeeTable") && depth >= 2 && free(0, 1.65, 1, 1)) place("coffeeTable", fr, 0, 1.65, ctx.env);
+	if (!ctx.has.has("plant")) for (const side of [1, -1]) {
+		const u = side * (w / 2 + .55);
+		if (free(u, .35, .7, .7)) {
+			place("plant", fr, u, .35, ctx.env, { w: 1 });
+			break;
+		}
+	}
+	if (!ctx.has.has("tv") && depth >= 1.5 && depth <= 5.5) {
+		const tvSide = opposite[sideOfRot(s.rot)];
+		const { f: tf, len: tlen } = sideFrame(ctx, tvSide);
+		const u = fr.point(0, 0, 0).sub(tf.origin).dot(tf.along);
+		if (Math.abs(u) < tlen / 2 - 1 && isFree(ctx, tvSide, u - 1, u + 1)) {
+			const c = tf.point(u, .25, 0);
+			const ex = Math.abs(tf.along.x) * .95 + Math.abs(tf.inward.x) * .25;
+			const ez = Math.abs(tf.along.z) * .95 + Math.abs(tf.inward.z) * .25;
+			if (!(currentOcc ?? []).some((o) => o.minX < c.x + ex && o.maxX > c.x - ex && o.minZ < c.z + ez && o.maxZ > c.z - ez)) place("tv", tf, u, .02, ctx.env, { w: 1.8 });
+		}
+	}
 }
 function bed(fr, u, v, w) {
 	const L = 2;

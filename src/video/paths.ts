@@ -417,11 +417,8 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
     dir.y *= s.lookPitch ?? 0.3;
     return p.clone().add(dir.normalize().multiplyScalar(3)).setY(p.y - 0.15 + (s.lookPitch ? 0.1 : 0));
   };
-  let lastTarget = new THREE.Vector3();
-  return {
-    duration: T,
-    captions,
-    sample(t: number): CamSample {
+  /** 生のカメラ位置・視線（時刻 t）。sample() はこれを時間方向に平滑化して返す */
+  const raw = (t: number): { pos: THREE.Vector3; target: THREE.Vector3; fade: number; seg: (typeof timed)[number] } => {
       const s = timed.find((x) => t >= x.t0 && t < x.t1) ?? timed[timed.length - 1];
       const u = Math.max(0, Math.min(1, (t - s.t0) / s.dur));
       let pos: THREE.Vector3;
@@ -433,28 +430,32 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
         const vmax = 1 / (1 - r);
         const e = u < r ? (vmax * u * u) / (2 * r) : u > 1 - r ? 1 - (vmax * (1 - u) * (1 - u)) / (2 * r) : vmax * (u - r / 2);
         pos = s.path!.at(Math.max(0, Math.min(1, e)));
-        // 人の目線: 足取りに合わせたごくわずかな上下（±1cm）と左右の揺れ（速さに比例）
+        // 人の目線: 足取りに合わせたごくわずかな上下（±3mm）。ジンバルで撮った映像のように揺れはほぼ無し
         const gait = u < r ? u / r : u > 1 - r ? (1 - u) / r : 1;
         const ph = t * Math.PI * 2 * 0.9;
-        pos.y += Math.sin(ph * 2) * 0.01 * gait;
-        const fw = s.path!.at(Math.min(1, e + 0.02)).sub(s.path!.at(Math.max(0, e - 0.02)));
-        if (fw.lengthSq() > 1e-6) {
-          fw.normalize();
-          pos.x += -fw.z * Math.sin(ph) * 0.006 * gait;
-          pos.z += fw.x * Math.sin(ph) * 0.006 * gait;
-        }
+        pos.y += Math.sin(ph * 2) * 0.003 * gait;
         target = lookAhead(s, Math.max(0, Math.min(1, e)));
-        // 前後の hold と視線をなめらかにつなぐ
+        // 前後の区間と視線をなめらかにつなぐ
         const idx = timed.indexOf(s);
         const prev = timed[idx - 1];
         const next = timed[idx + 1];
         if (prev?.kind === 'hold' && u < 0.25) target.lerp(prev.look1!, 1 - ease(u / 0.25));
         if (next?.kind === 'hold' && u > 0.75) target.lerp(next.look0!, ease((u - 0.75) / 0.25));
+        // 歩き→歩き（廊下の突き当たりで引き返す等）は、向きが一瞬で変わらないように
+        // 前の区間の終わり 1 秒と次の区間の始まり 1 秒をかけて向きを回す
+        const rb = Math.min(0.35, 1.0 / s.dur);
+        // 前の区間の終わりで半分、次の区間の始まりで残り半分を回す（境目でどちらも中間の向きになり、戻りが出ない）
+        const turnTo = (from: THREE.Vector3, to: THREE.Vector3, k: number) => {
+          const d = from.clone().normalize().lerp(to.clone().normalize(), Math.max(0, Math.min(1, k)));
+          if (d.lengthSq() < 0.01) d.copy(to);
+          return pos.clone().addScaledVector(d.normalize(), 3);
+        };
+        if (prev?.kind === 'move' && u < rb) target = turnTo(lookAhead(prev, 1).sub(prev.path!.at(1)), target.clone().sub(pos), 0.5 + 0.5 * ease(u / rb));
+        if (next?.kind === 'move' && u > 1 - rb) target = turnTo(target.clone().sub(pos), lookAhead(next, 0).sub(next.path!.at(0)), 0.5 * ease((u - (1 - rb)) / rb));
       } else if (s.kind === 'hold') {
         pos = s.pos!.clone();
         target = s.look0!.clone().lerp(s.look1!, ease(u));
       } else {
-        pos = lastTarget.clone();
         const idx = timed.indexOf(s);
         const prev = timed[idx - 1];
         const next = timed[idx + 1];
@@ -462,7 +463,33 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
         target = u < 0.5 ? (prev?.kind === 'move' ? lookAhead(prev, 1) : prev?.look1 ?? pos) : next?.kind === 'move' ? lookAhead(next, 0) : next?.look0 ?? pos;
         fade = 1 - Math.abs(u - 0.5) * 2;
       }
-      lastTarget = target;
+      return { pos, target, fade, seg: s };
+  };
+  return {
+    duration: T,
+    captions,
+    sample(t: number): CamSample {
+      const c0 = raw(t);
+      const pos = c0.pos;
+      let { target, fade } = c0;
+      // 視線の向きは前後 ±0.6 秒の加重平均でなめらかに（手持ちではなくジンバル／ドリーの動き）。
+      // 点ではなく向き（単位ベクトル）を平均する: 点を平均すると曲がり角で注視点が内側に寄り、
+      // 近くを通るときに向きが急に振れる。同じ区間（カットをまたがない）の見本だけを混ぜる
+      if (c0.seg.kind !== 'cut') {
+        const acc = new THREE.Vector3();
+        let wsum = 0;
+        for (let k = -6; k <= 6; k++) {
+          const tk = Math.max(0, Math.min(T - 1e-3, t + k * 0.1));
+          const c = k === 0 ? c0 : raw(tk);
+          if (c.seg.kind === 'cut' || c.pos.distanceToSquared(pos) > 2.25) continue;
+          const d = c.target.clone().sub(c.pos);
+          if (d.lengthSq() < 1e-6) continue;
+          const w = 7 - Math.abs(k);
+          acc.addScaledVector(d.normalize(), w);
+          wsum += w;
+        }
+        if (wsum > 0 && acc.lengthSq() > 1e-6) target = pos.clone().addScaledVector(acc.normalize(), 3);
+      }
       const cap = captions.find((c) => t >= c.t0 && t < c.t1);
       // 扉: 通過の前後だけ開く。覗き込みの間も開ける
       const doors = new Map<string, number>();

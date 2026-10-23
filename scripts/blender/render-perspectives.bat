@@ -31,7 +31,9 @@ echo Blender: %BLENDER%
 echo Model  : %GLB%
 echo Camera : %JSON%
 echo Output : %OUT%
-"%BLENDER%" -b --factory-startup -P "%HERE%render.py" -- --glb "%GLB%" --json "%JSON%" --shot all --out "%OUT%" --hdri "%HERE%..\..\public\hdri\kloofendal_48d_partly_cloudy_puresky_2k.hdr" --samples 256 --width 1920 --height 1080 --gpu
+set "CYCLES_DEVICE=GPU"
+set "MADORI_TEX=%HERE%..\..\public\tex"
+"%BLENDER%" -b --factory-startup -P "%HERE%render_cycles.py" -- "%GLB%" "%JSON%" "%OUT%" "道路側,別アングル,庭側,鳥瞰,ＬＤＫ" 1920 1080 128
 echo.
 echo Done. Images are in: %OUT%
 start "" "%OUT%"

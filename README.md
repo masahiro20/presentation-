@@ -119,6 +119,38 @@ npm test           # テスト（図面解析・地図・地形・3D 読み込�
 - **提案用に保存するパースはすべて写真品質**（GPU パストレーシング：間接光・柔らかな影・ガラスの映り込み、ノイズ除去、写真的なトーン仕上げ、室内は室内に合わせた露出）で書き出します。フルHD〜4K。
 - プレゼン資料の自動作成も写真品質でレンダリングします。確認用の「下書き」を使った場合は、資料に「下書き」の印が付きます。
 
+## Blender（Cycles）で写真品質に描く（任意）
+
+ツール内の写真品質パースに加えて、**Blender のパストレーサー Cycles** で同じモデルを描けます。間接光・ガラス・柔らかい影が実写に近づき、ウォークスルーも 1 コマずつ描いて動画にできます（時間はかかります。CPU で 1 コマ数秒〜数十秒、GPU なら数倍速）。
+
+**手順**
+
+1. アプリの 3D 画面で **「D5・Twinmotion へ渡す 3D モデル（.glb＋カメラ）」** を押し、`〜_3Dモデル.glb` と `〜_カメラ.json` を同じフォルダに保存します。
+2. 静止画: `scripts/blender/render-perspectives.bat` に .glb をドラッグ＆ドロップ（Windows。Blender がインストールされていれば自動で見つけます）。
+   またはコマンドで:
+   ```bash
+   pip install bpy      # Blender 本体を入れずに Python から使う場合（Python 3.11）
+   python scripts/blender/render_cycles.py scene.glb camera.json out "道路側,ＬＤＫ,鳥瞰" 1920 1080 128
+   blender -b --factory-startup -P scripts/blender/render_cycles.py -- scene.glb camera.json out "道路側" 1920 1080 128   # Blender 本体から
+   ```
+   4 つ目は見どころカメラの題名の一部（カンマ区切り）。続けて幅・高さ・サンプル数。`CYCLES_DEVICE=GPU` で GPU を使います。
+3. 動画: 開発環境で `node scripts/blender/export-walk.mjs <図面.pdf> walk.json 24` でウォークスルーのカメラ経路（24 fps）を書き出し、
+   ```bash
+   python scripts/blender/render_cycles.py scene.glb camera.json frames --walk walk.json 0 30 1280 720 32
+   ffmpeg -framerate 24 -i frames/frame_%04d.png -c:v libx264 -crf 18 -pix_fmt yuv420p walk.mp4
+   ```
+   `--walk` の後ろは 経路 JSON・開始秒・終了秒・幅・高さ・サンプル数です。
+
+**中で何をしているか**（`scripts/blender/render_cycles.py`）
+
+- アプリの材料名（外壁・内壁・床・芝・道路…）に `public/tex` の実写テクスチャ（Poly Haven CC0）を割り当て。UV に頼らず物体座標の箱投影で貼るので、書き出し元に UV の無い面があっても崩れません。
+- 光は物理空（多重散乱）＋太陽ランプ。直射:天空光 ≈ 6:1 に校正してあり、晴天の写真と同じく影は空の青で冷たく、日なたは少し暖色になります。
+- 露出はカメラの自動露出（小さな下見レンダーの平均輝度から決める）。外観も内観も同じ手順で明るさが決まり、動画では 0.7 秒の時定数で追従します。
+- 仕上げは AgX（Medium High Contrast）＋弱いブルーム。`LOOK`・`EV_OFFSET` で調整できます。
+- 外構（道路・敷地・遠景）はアプリでは同じ高さに重ねて描いているため、Cycles では層ごとに数 mm ずらします（重なった面が影を遮り合って真っ黒になるのを防ぐ）。
+
+`scripts/blender/render.py` は旧版（HDRI の空を使う版）で、そのまま残してあります。
+
 ## 主な機能と仕組み
 
 ### 1. 平面図 PDF の解析（`src/parser/`）
@@ -260,6 +292,7 @@ src/app/        画面（6ステップ）
 samples/        テスト用平面図 PDF と生成スクリプト
 tests/          テスト（vitest。図面解析・地図・地形・3D 読み込み・位置合わせ・日照解析）
 scripts/        開発用のスクリーンショット・検証スクリプト、サンプル 3DS の生成（make-sample-3ds.mjs）
+scripts/blender/ Blender（Cycles）で描く: render_cycles.py・export-walk.mjs・render-perspectives.bat
 ```
 
 出典: 航空写真・住所検索・建物外形・標高は[国土地理院](https://maps.gsi.go.jp/development/ichiran.html)の地理院タイル／API を利用しています。番地・号の座標は[アドレス・ベース・レジストリ](https://www.digital.go.jp/policies/base_registry_address)（デジタル庁。[Geolonia](https://geolonia.com/) 配信の住所データ、CC BY 4.0）を利用しています。住所の補助検索に [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/) を利用することがあります。周辺建物の形状・高さは[国土交通省 PLATEAU 3D都市モデル](https://www.mlit.go.jp/plateau/)（Project PLATEAU）の建築物モデル（3D Tiles。[PLATEAU 利用規約](https://www.mlit.go.jp/plateau/site-policy/)、政府標準利用規約 2.0／CC BY 4.0 相当）を、データカタログ API の `-latest` エイリアスと `assets.cms.plateau.reearth.io` の配信から直接読んでいます。市区町村の判定は国土地理院 逆ジオコーダ API。テスト用の小さなタイル（`tests/fixtures/plateau/`）も同じ配信からの抜粋で、出典と取得 URL は `tests/fixtures/plateau/README.md` に記載しています。OpenStreetMap のデータは © OpenStreetMap contributors。

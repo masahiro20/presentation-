@@ -85,8 +85,17 @@ ASSIGN = {
     'int.entranceFloor': ('large_floor_tiles_02', 1.2, (0.75, 0.74, 0.72), 0.8),
     'int.wetFloor': ('large_floor_tiles_02', 1.2, (0.9, 0.9, 0.9), 0.8),
     'int.bathWall': ('large_floor_tiles_02', 1.2, (0.95, 0.95, 0.95), 0.7),
+    # 家具・布もの（Poly Haven の布・革・ウール）
+    'f.fabric': ('poly_wool_herringbone', 0.5, (0.95, 0.93, 0.9), 1.0),
+    'f.fabric2': ('rough_linen', 0.5, (0.62, 0.58, 0.52), 1.0),
+    'f.bedding': ('rough_linen', 0.8, (0.97, 0.96, 0.94), 1.0),
+    'f.curtain': ('rough_linen', 0.8, (0.95, 0.94, 0.92), 1.0),
+    'f.rug': ('poly_wool_herringbone', 0.8, (0.7, 0.68, 0.64), 1.0),
+    'f.wood': ('wood_planks', 1.2, (0.95, 0.9, 0.84), 0.8),
+    'f.cabinet': ('laminate_floor_02', 1.5, (0.92, 0.9, 0.86), 0.7),
+    'f.counter': ('marble_01', 1.0, (0.98, 0.97, 0.95), 0.6),
 }
-BUMP = {'leafy_grass': 0.25, 'white_plaster_02': 0.12, 'painted_plaster_wall': 0.05, 'asphalt_02': 0.15, 'concrete_floor_02': 0.1, 'wood_floor': 0.04, 'wood_planks': 0.06, 'large_floor_tiles_02': 0.03}
+BUMP = {'rough_linen': 0.15, 'poly_wool_herringbone': 0.25, 'marble_01': 0.0, 'laminate_floor_02': 0.03, 'leafy_grass': 0.25, 'white_plaster_02': 0.12, 'painted_plaster_wall': 0.05, 'asphalt_02': 0.15, 'concrete_floor_02': 0.1, 'wood_floor': 0.04, 'wood_planks': 0.06, 'large_floor_tiles_02': 0.03}
 EMISSIVE = {'f.downlight': ((1.0, 0.86, 0.68), 60.0), 'f.cove': ((1.0, 0.86, 0.68), 12.0), 'f.lampShade': ((1.0, 0.9, 0.75), 3.0)}
 
 def load_img(path):

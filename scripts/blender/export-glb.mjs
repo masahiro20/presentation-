@@ -1,6 +1,6 @@
 // 図面を読み込み、3D モデル（.glb）とカメラ（.json）を書き出す（all-shots と同じ読み込み方）
 import { chromium } from 'playwright-core';
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 const [pdf, outDir] = process.argv.slice(2);
 const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
@@ -24,7 +24,14 @@ await go.click();
 await page.waitForSelector('.shot-card', { timeout: 180000 });
 await page.waitForTimeout(6000);
 const files = [];
-page.on('download', async (d) => { const f = `${outDir}/${files.length === 0 ? 'scene.glb' : 'camera.json'}`; files.push(f); await d.saveAs(f); console.log('saved', f); });
+page.on('download', async (d) => {
+  const tmp = `${outDir}/dl_${files.length}`;
+  await d.saveAs(tmp);
+  // 到着順は環境で入れ替わるので中身で判定（.glb は 'glTF' のマジックで始まる）
+  const head = readFileSync(tmp).subarray(0, 4).toString('latin1');
+  const f = `${outDir}/${head === 'glTF' ? 'scene.glb' : 'camera.json'}`;
+  renameSync(tmp, f); files.push(f); console.log('saved', f);
+});
 const n = await page.evaluate(() => { const bs = [...document.querySelectorAll('button')].filter((b) => b.textContent.includes('D5・Twinmotion')); bs[0]?.click(); return bs.length; });
 console.log('export buttons', n);
 for (let i = 0; i < 180 && files.length < 2; i++) await page.waitForTimeout(1000);

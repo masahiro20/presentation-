@@ -26,6 +26,8 @@ const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   tileFloor: { id: 'large_floor_tiles_02', tile: 2.4 },
   marble: { id: 'marble_01', tile: 2.4 },
   asphalt: { id: 'asphalt_02', tile: 5, detail: 0.55 },
+  // 布もの（ソファ・クッション・ラグ・寝具）: ヘリンボーンのウール。平均色はテイストの色に合わせる
+  fabric: { id: 'poly_wool_herringbone', tile: 0.5, detail: 0.9 },
 };
 
 interface Loaded {

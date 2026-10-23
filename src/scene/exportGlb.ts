@@ -34,6 +34,10 @@ export function sceneInfo(viewer: Viewer) {
     pos: s.view.pos.toArray(),
     target: s.view.target.toArray(),
     fov: s.view.fov,
+    // 2 点透視（カメラ水平＋レンズシフト）。外部レンダラーでも垂直線を垂直に保つ
+    architectural: !!s.view.architectural,
+    sunDir: s.sunDir?.toArray(),
+    timeOfDay: s.timeOfDay,
   }));
   const cur = viewer.currentView();
   return {
@@ -41,7 +45,7 @@ export function sceneInfo(viewer: Viewer) {
     up: 'Y',
     timeOfDay: viewer.design.timeOfDay,
     sunDir: viewer.sunDir.toArray(),
-    current: { pos: cur.pos.toArray(), target: cur.target.toArray(), fov: cur.fov },
+    current: { pos: cur.pos.toArray(), target: cur.target.toArray(), fov: cur.fov, architectural: !!cur.architectural },
     shots,
     bbox: viewer.state ? { min: viewer.state.meta.bbox.min.toArray(), max: viewer.state.meta.bbox.max.toArray() } : null,
   };

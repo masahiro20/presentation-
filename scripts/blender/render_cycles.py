@@ -190,71 +190,76 @@ for o in bpy.data.objects:
 # 空テクスチャ（多重散乱）は空の明るさと色だけに使い、太陽ディスクは切る（ディスク込みだと太陽ランプが効かず、影の明るさを調整できない）
 # 校正値: 空だけで白い水平面が (2.1, 3.9, 7.0)、太陽ランプ強さ 1 で高度 38° の白い水平面が 0.196（= sinθ/π）
 #   晴天の直射:天空光 ≈ 6:1 になるよう、昼は太陽 120 W/m²（白面 ≈ 23）、夕方は 40
-world = bpy.data.worlds.new('World'); scene.world = world; world.use_nodes = True
-nt = world.node_tree; nt.nodes.clear()
-sky = nt.nodes.new('ShaderNodeTexSky'); sky.sky_type = 'MULTIPLE_SCATTERING'
-sd = to_b(info['sunDir']); sd.normalize()
-elev = math.asin(max(-1, min(1, sd.z)))
-rot = math.atan2(sd.y, sd.x)
-tod = info.get('timeOfDay', 'day')
-sky.sun_elevation = max(math.radians(3), elev)
-sky.sun_rotation = rot
-sky.sun_intensity = 1.0
-sky.sun_size = math.radians(1.0)
-sky.sun_disc = False
-for attr, val in [('altitude', 50), ('air_density', 1.0), ('aerosol_density', 1.6 if tod == 'evening' else 0.9), ('ozone_density', 1.0)]:
-    if hasattr(sky, attr):
-        try: setattr(sky, attr, val)
-        except Exception as e: print('sky attr', attr, e)
-bg = nt.nodes.new('ShaderNodeBackground'); bg.inputs['Strength'].default_value = float(os.environ.get('SKY_STRENGTH', '1.0'))
-outn = nt.nodes.new('ShaderNodeOutputWorld')
-nt.links.new(sky.outputs['Color'], bg.inputs['Color'])
-# 空の見え方だけ実写の HDRI（雲）に: カメラから直接見える光線だけ HDRI、照明は上の物理空のまま。
-# 明るさは「上半球の余弦加重平均」を物理空の実測（白い水平面 ≈ 3.9）に合わせ、太陽の方位も合わせて回す
 HDRI_BY_TOD = {'evening': 'belfast_sunset_puresky_2k.hdr', 'morning': 'kloofendal_misty_morning_puresky_2k.hdr'}
-HDRI = os.environ.get('HDRI', os.path.join(os.path.dirname(TEX), 'hdri', HDRI_BY_TOD.get(tod, 'kloofendal_48d_partly_cloudy_puresky_2k.hdr')))
-if not os.environ.get('NO_HDRI') and os.path.exists(HDRI) and tod != 'night':
-    try:
-        img = bpy.data.images.load(HDRI); iw, ih = img.size
-        px = img.pixels[:]
-        # 上半球（画像の上半分）の緑チャンネルを余弦加重で平均。太陽の画素（上位 0.05%）は除く
-        import statistics
-        vals = []; sun_lon = 0.0; best = -1.0
-        step = max(1, iw // 256)
-        for y in range(0, ih // 2, step):
-            cosw = math.cos((0.5 - (y + 0.5) / ih) * math.pi)  # 仰角の余弦
-            sinw = math.sin((0.5 - (y + 0.5) / ih) * math.pi)  # 余弦加重（水平面への寄与）
-            for x in range(0, iw, step):
-                i = ((ih - 1 - y) * iw + x) * 4  # Blender の画素は下から
-                g = px[i + 1]
-                if g > best: best, sun_lon = g, (x / iw) * 2 * math.pi
-                vals.append((g, cosw * sinw))
-        vals.sort(key=lambda t: t[0]); cut = int(len(vals) * 0.9995)
-        num = sum(g * w for g, w in vals[:cut]); den = sum(w for _, w in vals[:cut])
-        mean_g = (num / den) * 2.0  # 余弦加重の上半球平均（∫cos·sin / ∫sin ≈ 1/2 で正規化）
-        k = 3.9 / max(1e-6, mean_g)
-        env = nt.nodes.new('ShaderNodeTexEnvironment'); env.image = img
-        mp = nt.nodes.new('ShaderNodeMapping'); tc = nt.nodes.new('ShaderNodeTexCoord')
-        # 画像の太陽の経度（左端 = -X 方向から反時計回り）を、物理空の太陽方位 rot に合わせる
-        mp.inputs['Rotation'].default_value = (0, 0, rot - (sun_lon - math.pi))
-        nt.links.new(tc.outputs['Generated'], mp.inputs['Vector']); nt.links.new(mp.outputs['Vector'], env.inputs['Vector'])
-        bg2 = nt.nodes.new('ShaderNodeBackground'); bg2.inputs['Strength'].default_value = k * float(os.environ.get('HDRI_GAIN', '1.4'))  # 写真の空は少し明るめに見える
-        nt.links.new(env.outputs['Color'], bg2.inputs['Color'])
-        lp = nt.nodes.new('ShaderNodeLightPath'); mix = nt.nodes.new('ShaderNodeMixShader')
-        nt.links.new(lp.outputs['Is Camera Ray'], mix.inputs['Fac']); nt.links.new(bg.outputs['Background'], mix.inputs[1]); nt.links.new(bg2.outputs['Background'], mix.inputs[2])
-        nt.links.new(mix.outputs['Shader'], outn.inputs['Surface'])
-        print('hdri background', os.path.basename(HDRI), 'gain %.2f' % k, 'sun lon %.0f deg' % math.degrees(sun_lon))
-    except Exception as e:
-        print('hdri skipped', e); nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
-else:
-    nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
-# 太陽光（空テクスチャの太陽と同じ向き）。少し暖色、影は空の青で冷たく＝写真の見え方
-sun_data = bpy.data.lights.new('Sun', 'SUN'); sun_data.energy = float(os.environ.get('SUN_STRENGTH', '120' if tod != 'evening' else '40'))
-sun_data.color = (1.0, 0.93, 0.84) if tod != 'evening' else (1.0, 0.72, 0.5)
-sun_data.angle = math.radians(1.2)
-sun = bpy.data.objects.new('Sun', sun_data); scene.collection.objects.link(sun)
-# Blender の太陽は -Z 方向に照らす。sd は太陽の方向なので、-sd を向くように
-sun.rotation_euler = (-sd).to_track_quat('-Z', 'Y').to_euler()
+sun = None
+
+def setup_sky(sun_dir3, tod):
+    """カットごとの太陽の向き・時間帯で空と太陽ランプを作り直す"""
+    global sun
+    world = bpy.data.worlds.new('World'); scene.world = world; world.use_nodes = True
+    nt = world.node_tree; nt.nodes.clear()
+    sky = nt.nodes.new('ShaderNodeTexSky'); sky.sky_type = 'MULTIPLE_SCATTERING'
+    sd = to_b(sun_dir3); sd.normalize()
+    elev = math.asin(max(-1, min(1, sd.z)))
+    rot = math.atan2(sd.y, sd.x)
+    sky.sun_elevation = max(math.radians(3), elev)
+    sky.sun_rotation = rot
+    sky.sun_intensity = 1.0
+    sky.sun_size = math.radians(1.0)
+    sky.sun_disc = False
+    for attr, val in [('altitude', 50), ('air_density', 1.0), ('aerosol_density', 1.6 if tod == 'evening' else 0.9), ('ozone_density', 1.0)]:
+        if hasattr(sky, attr):
+            try: setattr(sky, attr, val)
+            except Exception as e: print('sky attr', attr, e)
+    bg = nt.nodes.new('ShaderNodeBackground'); bg.inputs['Strength'].default_value = float(os.environ.get('SKY_STRENGTH', '1.0')) * (0.35 if tod == 'night' else 1.0)
+    outn = nt.nodes.new('ShaderNodeOutputWorld')
+    nt.links.new(sky.outputs['Color'], bg.inputs['Color'])
+    # 空の見え方だけ実写の HDRI（雲）に: カメラから直接見える光線だけ HDRI、照明は上の物理空のまま。
+    # 明るさは「上半球の余弦加重平均」を物理空の実測（白い水平面 ≈ 3.9）に合わせ、太陽の方位も合わせて回す
+    HDRI = os.environ.get('HDRI', os.path.join(os.path.dirname(TEX), 'hdri', HDRI_BY_TOD.get(tod, 'kloofendal_48d_partly_cloudy_puresky_2k.hdr')))
+    linked = False
+    if not os.environ.get('NO_HDRI') and os.path.exists(HDRI) and tod != 'night':
+        try:
+            img = bpy.data.images.get(os.path.basename(HDRI)) or bpy.data.images.load(HDRI); iw, ih = img.size
+            px = img.pixels[:]
+            vals = []; sun_lon = 0.0; best = -1.0
+            step = max(1, iw // 256)
+            for y in range(0, ih // 2, step):
+                cosw = math.cos((0.5 - (y + 0.5) / ih) * math.pi)
+                sinw = math.sin((0.5 - (y + 0.5) / ih) * math.pi)
+                for x in range(0, iw, step):
+                    i = ((ih - 1 - y) * iw + x) * 4
+                    g = px[i + 1]
+                    if g > best: best, sun_lon = g, (x / iw) * 2 * math.pi
+                    vals.append((g, cosw * sinw))
+            vals.sort(key=lambda t: t[0]); cut = int(len(vals) * 0.9995)
+            num = sum(g * w for g, w in vals[:cut]); den = sum(w for _, w in vals[:cut])
+            mean_g = (num / den) * 2.0
+            k = 3.9 / max(1e-6, mean_g)
+            env = nt.nodes.new('ShaderNodeTexEnvironment'); env.image = img
+            mp = nt.nodes.new('ShaderNodeMapping'); tc = nt.nodes.new('ShaderNodeTexCoord')
+            mp.inputs['Rotation'].default_value = (0, 0, rot - (sun_lon - math.pi))
+            nt.links.new(tc.outputs['Generated'], mp.inputs['Vector']); nt.links.new(mp.outputs['Vector'], env.inputs['Vector'])
+            bg2 = nt.nodes.new('ShaderNodeBackground'); bg2.inputs['Strength'].default_value = k * float(os.environ.get('HDRI_GAIN', '1.4'))
+            nt.links.new(env.outputs['Color'], bg2.inputs['Color'])
+            lp = nt.nodes.new('ShaderNodeLightPath'); mix = nt.nodes.new('ShaderNodeMixShader')
+            nt.links.new(lp.outputs['Is Camera Ray'], mix.inputs['Fac']); nt.links.new(bg.outputs['Background'], mix.inputs[1]); nt.links.new(bg2.outputs['Background'], mix.inputs[2])
+            nt.links.new(mix.outputs['Shader'], outn.inputs['Surface']); linked = True
+            print('hdri background', os.path.basename(HDRI), 'gain %.2f' % k, 'sun lon %.0f deg' % math.degrees(sun_lon))
+        except Exception as e:
+            print('hdri skipped', e)
+    if not linked: nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
+    # 太陽光（空テクスチャの太陽と同じ向き）。少し暖色、影は空の青で冷たく＝写真の見え方
+    if sun is None:
+        sun_data = bpy.data.lights.new('Sun', 'SUN'); sun_data.angle = math.radians(1.2)
+        sun = bpy.data.objects.new('Sun', sun_data); scene.collection.objects.link(sun)
+    strength = {'evening': 40.0, 'morning': 70.0, 'night': 0.0}.get(tod, 120.0)
+    sun.data.energy = float(os.environ.get('SUN_STRENGTH', strength))
+    sun.data.color = {'evening': (1.0, 0.72, 0.5), 'morning': (1.0, 0.85, 0.7)}.get(tod, (1.0, 0.93, 0.84))
+    sun.rotation_euler = (-sd).to_track_quat('-Z', 'Y').to_euler()
+
+tod = info.get('timeOfDay', 'day')
+setup_sky(info['sunDir'], tod)
 
 # ---- 地面（モデルに無ければ） ----
 bb = info.get('bbox')
@@ -265,6 +270,63 @@ if bb and os.environ.get('ADD_GROUND'):
     gm = bpy.data.materials.new('Ground'); gm.use_nodes = True
     b = gm.node_tree.nodes['Principled BSDF']; b.inputs['Base Color'].default_value = (0.32, 0.36, 0.22, 1); b.inputs['Roughness'].default_value = 0.95
     g.data.materials.append(gm)
+
+# ---- 角の面取り: CG の鋭い角にハイライトが乗る。外構（地面・道路）とガラスには付けない ----
+if not os.environ.get('NO_BEVEL'):
+    nb = 0
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or not o.data.materials: continue
+        mat = o.data.materials[0].name if o.data.materials[0] else ''
+        if mat.startswith('l.') or 'glass' in mat.lower() or mat == 'distant': continue
+        m = o.modifiers.new('bevel', 'BEVEL'); m.width = 0.004; m.segments = 2; m.limit_method = 'ANGLE'; m.angle_limit = math.radians(40)
+        m.use_clamp_overlap = True; m.harden_normals = True; nb += 1
+    print('bevel on', nb, 'objects')
+
+# ---- ダウンライト: 発光する円盤の位置にスポットライトを置き、配光データ（IES）で本物の光だまりに ----
+IES = os.environ.get('IES', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downlight_36.ies'))
+if not os.environ.get('NO_IES') and os.path.exists(IES):
+    import bmesh as _bm
+    spots = []
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or not o.data.materials: continue
+        if not any(mm and mm.name == 'f.downlight' for mm in o.data.materials): continue
+        bm = _bm.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table()
+        seen = set()
+        for f in bm.faces:
+            if f.index in seen: continue
+            stack = [f]; verts = set()
+            while stack:
+                g = stack.pop()
+                if g.index in seen: continue
+                seen.add(g.index); verts.update(g.verts)
+                for e in g.edges:
+                    for h in e.link_faces:
+                        if h.index not in seen: stack.append(h)
+            c = sum((o.matrix_world @ v.co for v in verts), Vector()) / len(verts)
+            # 書き出しで面ごとに頂点が分かれているので、近い中心（15cm 以内）は同じ器具としてまとめる
+            for sp in spots:
+                if (sp[0] - c).length < 0.15:
+                    sp[0] = (sp[0] * sp[1] + c) / (sp[1] + 1); sp[1] += 1; break
+            else:
+                spots.append([c, 1])
+        bm.free()
+    spots = [sp[0] for sp in spots]
+    ies_txt = bpy.data.texts.load(IES) if os.path.exists(IES) else None
+    for i, c in enumerate(spots):
+        ld = bpy.data.lights.new(f'DL{i}', 'SPOT'); ld.energy = float(os.environ.get('DL_POWER', '30')); ld.color = (1.0, 0.86, 0.72)  # 約 3000K
+        ld.spot_size = math.radians(80); ld.spot_blend = 1.0; ld.shadow_soft_size = 0.04
+        ld.use_nodes = True; lnt = ld.node_tree
+        ies = lnt.nodes.new('ShaderNodeTexIES'); ies.mode = 'INTERNAL'; ies.ies = ies_txt; ies.inputs['Strength'].default_value = 1.0
+        emit = next(n for n in lnt.nodes if n.type == 'EMISSION')
+        lnt.links.new(ies.outputs['Fac'], emit.inputs['Strength'])
+        lo = bpy.data.objects.new(f'DL{i}', ld); scene.collection.objects.link(lo)
+        lo.location = (c.x, c.y, c.z - 0.03); lo.rotation_euler = (0, 0, 0)  # -Z（真下）に照らす
+    print('downlight spots', len(spots))
+    # 発光する円盤自体は弱めに（光はスポットが担う）
+    m = bpy.data.materials.get('f.downlight')
+    if m and m.use_nodes:
+        b = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if b: b.inputs['Emission Strength'].default_value = 12.0
 
 # ---- レンダー設定 ----
 scene.render.engine = 'CYCLES'
@@ -300,11 +362,68 @@ scene.render.threads_mode = 'AUTO'
 cam_data = bpy.data.cameras.new('Cam'); cam = bpy.data.objects.new('Cam', cam_data); scene.collection.objects.link(cam); scene.camera = cam
 cam_data.sensor_fit = 'VERTICAL'; cam_data.sensor_height = 24.0; cam_data.clip_start = 0.05; cam_data.clip_end = 2000
 
-def set_cam(pos3, tgt3, fov):
+def set_cam(pos3, tgt3, fov, architectural=False):
+    """カメラを置く。architectural なら水平に構えてレンズシフトで上下を見せる（垂直線が垂直のまま＝建築写真の 2 点透視）"""
     pos, tgt = to_b(pos3), to_b(tgt3)
     cam.location = pos
-    cam.rotation_euler = (tgt - pos).to_track_quat('-Z', 'Y').to_euler()
     cam_data.lens = (cam_data.sensor_height / 2) / math.tan(math.radians(fov) / 2)
+    cam_data.shift_y = 0.0
+    d = tgt - pos
+    horiz = math.hypot(d.x, d.y)
+    if architectural and horiz > 0.3:
+        # 画面中心が注視点を向くシフト量（画面の長辺に対する比）。大きすぎる仰角は残りを傾きで
+        tan_t = d.z / horiz
+        half = math.tan(math.radians(fov) / 2)
+        lim = half * 0.9
+        use = max(-lim, min(lim, tan_t))
+        aspect = scene.render.resolution_x / scene.render.resolution_y
+        cam_data.shift_y = (use / half) * 0.5 / max(1.0, aspect)
+        rest = math.atan(tan_t) - math.atan(use)
+        flat = Vector((d.x, d.y, 0)).normalized()
+        q = flat.to_track_quat('-Z', 'Y').to_euler()
+        cam.rotation_euler = q
+        if abs(rest) > 1e-4:
+            cam.rotation_euler.rotate_axis('X', rest)
+    else:
+        cam.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
+
+def exposure_blend(exr_path, out_png, ev0, strong=2.2):
+    """窓の白飛びを建築写真の露出ブレンドで抑える: 同じ EXR を EV0 と EV-strong で現像し、明るい所だけ暗い方を混ぜる"""
+    try:
+        import numpy as np
+        from PIL import Image, ImageFilter
+        img = bpy.data.images.load(exr_path)
+        w, h = img.size
+        lin = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1, :, :3]
+        lum = (0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]) * (2.0 ** ev0)
+        # 現像後に白く飛ぶ領域（リニア 1.2 以上）をなだらかに選ぶ
+        mask = np.clip((lum - 1.2) / 2.5, 0, 1)
+        frac = float((mask > 0.5).mean())
+        if frac < 0.004:
+            bpy.data.images.remove(img); return False
+        mimg = Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius=max(2, w // 140)))
+        mask = np.asarray(mimg, dtype=np.float32) / 255.0
+        mask = np.clip(mask * 1.15, 0, 1)
+        # save_render はシーンの出力形式で書くので PNG に戻してから現像する
+        scene.render.image_settings.file_format = 'PNG'; scene.render.image_settings.color_depth = '8'
+        scene.view_settings.exposure = ev0
+        base_p = exr_path[:-4] + '_ev0.png'; dark_p = exr_path[:-4] + '_dark.png'
+        img.save_render(base_p, scene=scene)
+        scene.view_settings.exposure = ev0 - strong
+        img.save_render(dark_p, scene=scene)
+        scene.view_settings.exposure = ev0
+        base = np.asarray(Image.open(base_p).convert('RGB'), dtype=np.float32)
+        dark = np.asarray(Image.open(dark_p).convert('RGB'), dtype=np.float32)
+        out = base * (1 - mask[..., None]) + dark * mask[..., None]
+        Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).save(out_png)
+        for pth in (base_p, dark_p):
+            try: os.remove(pth)
+            except Exception: pass
+        bpy.data.images.remove(img)
+        print('exposure blend', os.path.basename(out_png), 'highlight %.1f%%' % (frac * 100))
+        return True
+    except Exception as e:
+        print('exposure blend skipped', e); return False
 
 def auto_exposure(target=0.18, probe_px=48):
     """カメラの自動露出: 小さな下見（EXR・リニア）の対数平均輝度が target になる露出値（EV）を返す"""
@@ -396,16 +515,30 @@ if which and which[0] == '--walk':
 for s in info['shots']:
     if not any(w in s['title'] for w in which):
         continue
-    pos, tgt = to_b(s['pos']), to_b(s['target'])
-    cam.location = pos
-    cam.rotation_euler = (tgt - pos).to_track_quat('-Z', 'Y').to_euler()
-    cam_data.lens = (cam_data.sensor_height / 2) / math.tan(math.radians(s['fov']) / 2)
+    stod = s.get('timeOfDay') or tod
+    if s.get('sunDir') or stod != tod:
+        setup_sky(s.get('sunDir') or info['sunDir'], stod)
     interior = s['kind'] == 'interior' or '内観' in s['title']
     scene.cycles.samples = SAMPLES * 2 if interior else SAMPLES
-    scene.view_settings.exposure = auto_exposure(0.10 if interior else 0.15) + float(os.environ.get('EV_OFFSET', '0'))
-    print('exposure', s['title'], round(scene.view_settings.exposure, 2))
+    set_cam(s['pos'], s['target'], s['fov'], architectural=bool(s.get('architectural', (not interior) and '鳥瞰' not in s['title'])))
+    ev = auto_exposure(0.10 if interior else 0.15) + float(os.environ.get('EV_OFFSET', '0'))
+    scene.view_settings.exposure = ev
+    print('exposure', s['title'], round(ev, 2), 'shift_y %.3f' % cam_data.shift_y)
     safe = ''.join(c if c.isalnum() else '_' for c in s['title'])[:40]
-    scene.render.filepath = os.path.join(out_dir, f'{safe}.png')
     t0 = time.time()
-    bpy.ops.render.render(write_still=True)
+    if interior and not os.environ.get('NO_BLEND'):
+        # 内観は EXR に描いてから現像（窓の露出ブレンド）
+        scene.render.image_settings.file_format = 'OPEN_EXR'; scene.render.image_settings.color_depth = '16'
+        exr = os.path.join(out_dir, f'{safe}.exr'); scene.render.filepath = exr
+        bpy.ops.render.render(write_still=True)
+        png = os.path.join(out_dir, f'{safe}.png')
+        if not exposure_blend(exr, png, ev):
+            img = bpy.data.images.load(exr); img.save_render(png, scene=scene); bpy.data.images.remove(img)
+        try: os.remove(exr)
+        except Exception: pass
+        scene.render.image_settings.file_format = 'PNG'; scene.render.image_settings.color_depth = '8'
+        scene.render.filepath = png
+    else:
+        scene.render.filepath = os.path.join(out_dir, f'{safe}.png')
+        bpy.ops.render.render(write_still=True)
     print('rendered', s['title'], '->', scene.render.filepath, f'{time.time() - t0:.0f}s')

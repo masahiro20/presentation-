@@ -122,6 +122,8 @@ interface RoomCtx {
   has: Set<FurnitureKind>;
   /** 図面から置いたキッチン（ダイニングの並びに使う） */
   planKitchen?: FurnitureItem;
+  /** 図面から置いたソファ（ラグ・ローテーブル・テレビ台を周りに補う） */
+  planSofas?: FurnitureItem[];
 }
 
 /** 家具を置くときの階の情報 */
@@ -302,6 +304,7 @@ export function buildFurniture(
         emitItem({ ...it }, env);
         ctx.has.add(it.kind);
         if (it.kind === 'kitchen') ctx.planKitchen = it;
+        if (it.kind === 'sofa') (ctx.planSofas ??= []).push(it);
       }
       switch (room.type) {
         case 'ldk':
@@ -899,8 +902,9 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   // ダイニング
   if (!ctx.has.has('dining')) place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
   if (!hasLiving) return;
-  // 図面にソファがあればリビングはそのまま（テレビ台だけソファの向く壁に）
+  // 図面にソファがあればリビングの配置はそのまま。周りにラグ・ローテーブル・観葉植物・テレビ台を補って生活感を出す
   if (ctx.has.has('sofa')) {
+    dressLiving(ctx);
     ctx.lights.push({ pos: kf.point(0, kDepth + dDepth + (total - kDepth - dDepth) / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
     return;
   }
@@ -947,6 +951,59 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   place('sofa', back, 0, 0, ctx.env, { w: 2.1 });
   ctx.lights.push({ pos: tf.point(tvU2, across / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
   void model;
+}
+
+/** 図面どおりに置いたソファの周りを整える: ラグ・ローテーブル・観葉植物、向かいの壁にテレビ台 */
+function dressLiving(ctx: RoomCtx) {
+  const sofas = ctx.planSofas ?? [];
+  if (!sofas.length) return;
+  const { R } = ctx;
+  const s = [...sofas].sort((a, b) => (b.w ?? 2.1) - (a.w ?? 2.1))[0];
+  const w = s.w ?? 2.1;
+  const r = s.rot / DEG;
+  const fr = new Frame(ctx.mb, V(s.x * MM, ctx.y, s.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));
+  // ソファの正面（v = 0.9）から部屋の内側の矩形の縁までの距離
+  const front = fr.point(0, 0.9, 0);
+  const dir = fr.inward;
+  const hit = (lim: number, p: number, d: number) => (Math.abs(d) < 1e-6 ? Infinity : (lim - p) / d);
+  const depth = Math.min(...[hit(R.maxX, front.x, dir.x), hit(R.minX, front.x, dir.x), hit(R.maxZ, front.z, dir.z), hit(R.minZ, front.z, dir.z)].filter((t) => t > 0));
+  // 置き場所が空いているか（部屋の矩形の内側で、置いた家具と重ならない）。ラグは除く
+  const free = (u: number, v: number, fw: number, fd: number) => {
+    const c = fr.point(u, v, 0);
+    const ex = Math.abs(fr.along.x) * fw / 2 + Math.abs(fr.inward.x) * fd / 2;
+    const ez = Math.abs(fr.along.z) * fw / 2 + Math.abs(fr.inward.z) * fd / 2;
+    if (c.x - ex < R.minX || c.x + ex > R.maxX || c.z - ez < R.minZ || c.z + ez > R.maxZ) return false;
+    return !(currentOcc ?? []).some((o) => o.minX < c.x + ex && o.maxX > c.x - ex && o.minZ < c.z + ez && o.maxZ > c.z - ez);
+  };
+  // ラグ: ソファの前半分から前へ 2m（手前の空きに合わせて縮める）
+  if (!ctx.has.has('rug') && depth >= 1.2) {
+    const rd = +Math.min(2.0, depth + 0.35).toFixed(2);
+    place('rug', fr, 0, 0.55 + rd / 2, ctx.env, { w: +Math.max(2.0, w + 0.4).toFixed(2), d: rd });
+  }
+  // ローテーブル: 正面 0.75m 先
+  if (!ctx.has.has('coffeeTable') && depth >= 2.0 && free(0, 1.65, 1.0, 1.0)) place('coffeeTable', fr, 0, 1.65, ctx.env);
+  // 観葉植物: ソファの脇（空いている側）
+  if (!ctx.has.has('plant')) {
+    for (const side of [1, -1]) {
+      const u = side * (w / 2 + 0.55);
+      if (free(u, 0.35, 0.7, 0.7)) {
+        place('plant', fr, u, 0.35, ctx.env, { w: 1.0 });
+        break;
+      }
+    }
+  }
+  // テレビ台: ソファが向く壁（2.4〜5.5m 先）に、開口と家具を避けて
+  if (!ctx.has.has('tv') && depth >= 2.4 - 0.9 && depth <= 5.5) {
+    const tvSide = opposite[sideOfRot(s.rot)];
+    const { f: tf, len: tlen } = sideFrame(ctx, tvSide);
+    const u = fr.point(0, 0, 0).sub(tf.origin).dot(tf.along);
+    if (Math.abs(u) < tlen / 2 - 1.0 && isFree(ctx, tvSide, u - 1.0, u + 1.0)) {
+      const c = tf.point(u, 0.25, 0);
+      const ex = Math.abs(tf.along.x) * 0.95 + Math.abs(tf.inward.x) * 0.25;
+      const ez = Math.abs(tf.along.z) * 0.95 + Math.abs(tf.inward.z) * 0.25;
+      if (!(currentOcc ?? []).some((o) => o.minX < c.x + ex && o.maxX > c.x - ex && o.minZ < c.z + ez && o.maxZ > c.z - ez)) place('tv', tf, u, 0.02, ctx.env, { w: 1.8 });
+    }
+  }
 }
 
 function bed(fr: Frame, u: number, v: number, w: number) {

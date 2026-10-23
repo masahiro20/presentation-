@@ -335,7 +335,7 @@ if which and which[0] == '--walk':
         if f['t'] < t0 or f['t'] > t1:
             continue
         set_cam(f['pos'], f['target'], f['fov'])
-        target = auto_exposure(0.14)
+        target = auto_exposure(0.10)
         ev = target if ev is None else ev + (target - ev) * min(1.0, 1.5 / walk['fps'])
         scene.view_settings.exposure = ev
         scene.render.filepath = os.path.join(out_dir, f'frame_{n:04d}.png')
@@ -354,7 +354,7 @@ for s in info['shots']:
     cam_data.lens = (cam_data.sensor_height / 2) / math.tan(math.radians(s['fov']) / 2)
     interior = s['kind'] == 'interior' or '内観' in s['title']
     scene.cycles.samples = SAMPLES * 2 if interior else SAMPLES
-    scene.view_settings.exposure = auto_exposure(0.14 if interior else 0.15) + float(os.environ.get('EV_OFFSET', '0'))
+    scene.view_settings.exposure = auto_exposure(0.10 if interior else 0.15) + float(os.environ.get('EV_OFFSET', '0'))
     print('exposure', s['title'], round(scene.view_settings.exposure, 2))
     safe = ''.join(c if c.isalnum() else '_' for c in s['title'])[:40]
     scene.render.filepath = os.path.join(out_dir, f'{safe}.png')

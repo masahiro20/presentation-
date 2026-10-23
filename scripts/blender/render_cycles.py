@@ -208,7 +208,46 @@ for attr, val in [('altitude', 50), ('air_density', 1.0), ('aerosol_density', 1.
         except Exception as e: print('sky attr', attr, e)
 bg = nt.nodes.new('ShaderNodeBackground'); bg.inputs['Strength'].default_value = float(os.environ.get('SKY_STRENGTH', '1.0'))
 outn = nt.nodes.new('ShaderNodeOutputWorld')
-nt.links.new(sky.outputs['Color'], bg.inputs['Color']); nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
+nt.links.new(sky.outputs['Color'], bg.inputs['Color'])
+# 空の見え方だけ実写の HDRI（雲）に: カメラから直接見える光線だけ HDRI、照明は上の物理空のまま。
+# 明るさは「上半球の余弦加重平均」を物理空の実測（白い水平面 ≈ 3.9）に合わせ、太陽の方位も合わせて回す
+HDRI_BY_TOD = {'evening': 'belfast_sunset_puresky_2k.hdr', 'morning': 'kloofendal_misty_morning_puresky_2k.hdr'}
+HDRI = os.environ.get('HDRI', os.path.join(os.path.dirname(TEX), 'hdri', HDRI_BY_TOD.get(tod, 'kloofendal_48d_partly_cloudy_puresky_2k.hdr')))
+if not os.environ.get('NO_HDRI') and os.path.exists(HDRI) and tod != 'night':
+    try:
+        img = bpy.data.images.load(HDRI); iw, ih = img.size
+        px = img.pixels[:]
+        # 上半球（画像の上半分）の緑チャンネルを余弦加重で平均。太陽の画素（上位 0.05%）は除く
+        import statistics
+        vals = []; sun_lon = 0.0; best = -1.0
+        step = max(1, iw // 256)
+        for y in range(0, ih // 2, step):
+            cosw = math.cos((0.5 - (y + 0.5) / ih) * math.pi)  # 仰角の余弦
+            sinw = math.sin((0.5 - (y + 0.5) / ih) * math.pi)  # 余弦加重（水平面への寄与）
+            for x in range(0, iw, step):
+                i = ((ih - 1 - y) * iw + x) * 4  # Blender の画素は下から
+                g = px[i + 1]
+                if g > best: best, sun_lon = g, (x / iw) * 2 * math.pi
+                vals.append((g, cosw * sinw))
+        vals.sort(key=lambda t: t[0]); cut = int(len(vals) * 0.9995)
+        num = sum(g * w for g, w in vals[:cut]); den = sum(w for _, w in vals[:cut])
+        mean_g = (num / den) * 2.0  # 余弦加重の上半球平均（∫cos·sin / ∫sin ≈ 1/2 で正規化）
+        k = 3.9 / max(1e-6, mean_g)
+        env = nt.nodes.new('ShaderNodeTexEnvironment'); env.image = img
+        mp = nt.nodes.new('ShaderNodeMapping'); tc = nt.nodes.new('ShaderNodeTexCoord')
+        # 画像の太陽の経度（左端 = -X 方向から反時計回り）を、物理空の太陽方位 rot に合わせる
+        mp.inputs['Rotation'].default_value = (0, 0, rot - (sun_lon - math.pi))
+        nt.links.new(tc.outputs['Generated'], mp.inputs['Vector']); nt.links.new(mp.outputs['Vector'], env.inputs['Vector'])
+        bg2 = nt.nodes.new('ShaderNodeBackground'); bg2.inputs['Strength'].default_value = k * float(os.environ.get('HDRI_GAIN', '1.0'))
+        nt.links.new(env.outputs['Color'], bg2.inputs['Color'])
+        lp = nt.nodes.new('ShaderNodeLightPath'); mix = nt.nodes.new('ShaderNodeMixShader')
+        nt.links.new(lp.outputs['Is Camera Ray'], mix.inputs['Fac']); nt.links.new(bg.outputs['Background'], mix.inputs[1]); nt.links.new(bg2.outputs['Background'], mix.inputs[2])
+        nt.links.new(mix.outputs['Shader'], outn.inputs['Surface'])
+        print('hdri background', os.path.basename(HDRI), 'gain %.2f' % k, 'sun lon %.0f deg' % math.degrees(sun_lon))
+    except Exception as e:
+        print('hdri skipped', e); nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
+else:
+    nt.links.new(bg.outputs['Background'], outn.inputs['Surface'])
 # 太陽光（空テクスチャの太陽と同じ向き）。少し暖色、影は空の青で冷たく＝写真の見え方
 sun_data = bpy.data.lights.new('Sun', 'SUN'); sun_data.energy = float(os.environ.get('SUN_STRENGTH', '120' if tod != 'evening' else '40'))
 sun_data.color = (1.0, 0.93, 0.84) if tod != 'evening' else (1.0, 0.72, 0.5)

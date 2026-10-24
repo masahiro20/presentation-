@@ -122,8 +122,9 @@ export function wrapSheet(inner: string, vb: Vb, info: SheetInfo, opts: { right?
  */
 export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: { svg: string; w: number; h: number }; top?: { svg: string; w: number; h: number }; defs?: string; gap?: number } = {}): string {
   // 余白・表題欄・上の帯は紙の上で一定（余白 10mm、表題欄 22mm）。1/100 の図面 mm で書き、縮尺に合わせて伸ばす
-  const MARGIN = 10;
-  const TITLE_H = 22;
+  // 御社の図枠: 余白は狭め（約 8mm）、表題欄は 20mm。1/100 で A3 に敷地ごと載せるための寸法
+  const MARGIN = 8;
+  const TITLE_H = 20;
   const gap = opts.gap ?? 1600;
   const rgap = opts.right ? 1000 : 0;
   const rightW = opts.right?.w ?? 0;
@@ -172,10 +173,15 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   const sw = Math.max(16, denom * 0.18); // 線の太さ（紙の上で一定）
   const fs = denom * 2.4; // 表題の文字（紙の上で約 2.4mm）
   // 内容の配置: 図枠の中で中央寄せ（右の表がある時はその左の領域で、上の帯がある時はその下で）
-  const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
+  // 御社の図面: 図と右の表（面積表・建築概要）をひとまとまりとして紙の中央に置く（図だけを左の領域の中央に置くと左に寄って小さく見える）
+  const groupW = lay.w + (opts.right ? rightW + rgap : 0);
+  const areaW = W - margin * 2;
   const areaH = H - margin * 2 - titleH - topH(denom);
-  const ox = margin + Math.max(0, (areaW - lay.w) / 2);
+  const ox = margin + Math.max(0, (areaW - groupW) / 2);
   const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
+  // 右の表は図の右隣、縦は図の中央に合わせる（紙からはみ出さない範囲で）
+  const rx = Math.min(W - margin - rightW, ox + lay.w + rgap);
+  const ry = Math.max(margin + topH(denom), Math.min(H - margin - titleH - (opts.right?.h ?? 0), oy + (lay.h - (opts.right?.h ?? 0)) / 2));
   let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
   s += opts.defs ?? '';
   s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
@@ -183,7 +189,7 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   s += `<rect x="${margin * 0.5}" y="${margin * 0.5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
   s += `<rect x="${margin * 0.5 + sw * 6}" y="${margin * 0.5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * 0.6}"/>`;
   for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
-  if (opts.right) s += `<g transform="translate(${W - margin - rightW} ${margin + topH(denom)})">${opts.right.svg}</g>`;
+  if (opts.right) s += `<g transform="translate(${rx.toFixed(0)} ${ry.toFixed(0)})">${opts.right.svg}</g>`;
   if (opts.top) {
     const k = (W - margin * 2) / opts.top.w;
     s += `<g transform="translate(${margin} ${margin}) scale(${k.toFixed(4)})">${opts.top.svg}</g>`;

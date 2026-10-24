@@ -14196,6 +14196,10 @@ function coffeeTable(fr, u, v) {
 function tvSet(fr, u, v, w = 1.8) {
 	fr.box("f.cabinet", u, v, w, .38, .28, .3);
 	fr.box("f.screen", u, v + 0, 1.3, .035, .95, .75);
+	fr.box("f.fabric2", u + w / 2 - .22, v + .2, .24, .18, .58, .022);
+	fr.box("f.white", u + w / 2 - .2, v + .21, .2, .15, .602, .02);
+	fr.box("f.fabric", u + w / 2 - .24, v + .19, .22, .16, .622, .018);
+	fr.cyl("f.white", u - w / 2 + .2, v + .2, .06, .58, .09, 18);
 	plant(fr, u + w / 2 + .35, v + .3, 1);
 }
 function plant(fr, u, v, scale = 1) {
@@ -14239,6 +14243,16 @@ function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 	const td = .9;
 	fr.box("f.wood", u, v - td / 2, tw, td, .68, .04);
 	for (const du of [-tw / 2 + .22, tw / 2 - .22]) fr.box("f.wood", u + du, v - td / 2 + .12, .04, .66, 0, .68);
+	currentModels.push({
+		id: "ceramic_vase_01",
+		pos: fr.point(u + .12, v, .72),
+		rotY: .4,
+		height: .24
+	});
+	for (const du of [-tw / 2 + .3, tw / 2 - .3]) {
+		fr.cyl("f.white", u + du, v - .08, .11, .72, .012, 20);
+		fr.cyl("f.white", u + du, v - .08, .075, .732, .04, 20);
+	}
 	const perSide = tw >= 2.3 ? 3 : 2;
 	const pitch = perSide === 3 ? (tw - .5) / 2 : .9;
 	const chairUs = perSide === 3 ? [

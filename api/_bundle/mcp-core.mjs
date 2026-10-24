@@ -15092,13 +15092,13 @@ function buildLandscape(meta, style, siteData, planExt) {
 			return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, .15).normalize();
 		};
 		const leaves = (a, b, sz) => {
-			const n = 3;
+			const n = 4;
 			for (let i = 0; i < n; i++) {
 				const q = a.clone().lerp(b, .35 + .65 * rnd()).add(V((rnd() - .5) * .12, (rnd() - .5) * .08, (rnd() - .5) * .12));
 				trees.card(leafKey, q, sz * (.75 + rnd() * .5), new THREE.Euler((rnd() - .5) * 1.6, rnd() * Math.PI * 2, (rnd() - .5) * 1.6));
 			}
 		};
-		const leafSize = Math.max(.32, h * .11);
+		const leafSize = Math.max(.36, h * .125);
 		const grow = (a, dir, len, r, level) => {
 			const b = a.clone().addScaledVector(dir, len);
 			trees.tube("l.trunk", a, b, r, r * .72);
@@ -15137,7 +15137,7 @@ function buildLandscape(meta, style, siteData, planExt) {
 		if (drawn.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 2.5)) continue;
 		const span = Math.sqrt(area);
 		const off = Math.min(.9, span * .18);
-		addTree(c.clone().add(V(off * .7, 0, -off * .7)), Math.min(4.6, Math.max(2.8, span * 1.25)), kind, true);
+		addTree(c.clone().add(V(off * .7, 0, -off * .7)), Math.min(3.8, Math.max(2.6, span * 1)), kind, true);
 		shrub(c.clone().add(V(-off, 0, off * .8)), .3);
 		if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), .25);
 	}

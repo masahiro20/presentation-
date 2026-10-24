@@ -294,13 +294,13 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       return out.lerp(up, 0.15).normalize();
     };
     const leaves = (a: THREE.Vector3, b: THREE.Vector3, sz: number) => {
-      const n = 3;
+      const n = 4; // 枝先の葉カード。少ないとパストレーサーで枝だけの木に見える
       for (let i = 0; i < n; i++) {
         const q = a.clone().lerp(b, 0.35 + 0.65 * rnd()).add(V((rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.12));
         trees.card(leafKey, q, sz * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.6, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.6));
       }
     };
-    const leafSize = Math.max(0.32, h * 0.11);
+    const leafSize = Math.max(0.36, h * 0.125);
     const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
       const b = a.clone().addScaledVector(dir, len);
       trees.tube('l.trunk', a, b, r, r * 0.72);
@@ -344,7 +344,8 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     // 木は中心から少し外し（通路や掃き出し窓の正面を空ける）、高さは中庭の広さに合わせる
     const span = Math.sqrt(area);
     const off = Math.min(0.9, span * 0.18);
-    addTree(c.clone().add(V(off * 0.7, 0, -off * 0.7)), Math.min(4.6, Math.max(2.8, span * 1.25)), kind, true);
+    // 高さは軒より少し上まで（高すぎると屋根の上に幹だけが突き出る）
+    addTree(c.clone().add(V(off * 0.7, 0, -off * 0.7)), Math.min(3.8, Math.max(2.6, span * 1.0)), kind, true);
     shrub(c.clone().add(V(-off, 0, off * 0.8)), 0.3);
     if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), 0.25);
   }

@@ -17,6 +17,7 @@ import { pointInPolygon } from '../core/geometry';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../parser/symbolDict';
 import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
+import { chooseModule } from '../parser/module';
 
 type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
@@ -62,6 +63,17 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let changed = false;
   let wallStart: Vec2 | null = null;
   let thickness = 120;
+  // 吸着: 半間（455）／1 間（910）の格子、壁だけ（端点・線・そろえ）、フリー（吸着なし）。Alt を押している間は一時的にフリー
+  type SnapMode = 'half' | 'full' | 'wall' | 'free';
+  let snapMode: SnapMode = 'half';
+  let showGrid = true;
+  try {
+    const sm = localStorage.getItem('madori.peSnap');
+    if (sm === 'half' || sm === 'full' || sm === 'wall' || sm === 'free') snapMode = sm;
+    showGrid = localStorage.getItem('madori.peGrid') !== 'off';
+  } catch {
+    /* 保存できない環境は既定のまま */
+  }
   // 家具: 階ごとの手配置（null = 自動配置）
   const furn = new Map<number, FurnitureItem[] | null>();
   for (const f of model.floors) furn.set(f.level, model.furniture?.find((o) => o.level === f.level)?.items.map((it) => ({ ...it })) ?? null);
@@ -108,8 +120,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const floorTabs = h('div', { class: 'pe-tabs' });
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolDefs: [Tool, string, string][] = [
-    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）'],
-    ['wall', '壁を描く', 'クリックで始点、もう一度クリックで終点。続けて描けます（Esc / 右クリックで終了、Shift で斜め）'],
+    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）。選んだ壁の両端の丸をドラッグすると伸ばせます（方眼の格子に止まる。Alt でフリー）'],
+    ['wall', '壁を描く', 'クリックで始点、もう一度クリックで終点。続けて描けます。方眼の格子（半間 455）に止まります（Esc / 右クリックで終了、Shift で斜め、Alt を押している間はフリー）'],
     ['window', '窓', '壁をクリックすると窓を置きます'],
     ['door', '開き戸', '壁をクリックすると開き戸を置きます'],
     ['sliding', '引戸', '壁をクリックすると引戸を置きます'],
@@ -137,6 +149,42 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     floorTabs,
     tools,
     thickSel,
+    h(
+      'select',
+      {
+        title: 'マウスの吸着先。方眼（尺モジュールなら半間 455・1 間 910、メーターモジュールなら 500・1,000）の格子に止まります。Alt を押している間は一時的にフリー',
+        onchange: (e: Event) => {
+          snapMode = (e.target as HTMLSelectElement).value as SnapMode;
+          try {
+            localStorage.setItem('madori.peSnap', snapMode);
+          } catch {
+            /* 保存できない環境は無視 */
+          }
+          drawGrid();
+        },
+      },
+      ((model.module?.size ?? 910) === 910
+        ? ([['half', '吸着: 半間 455'], ['full', '吸着: 1 間 910'], ['wall', '吸着: 壁だけ'], ['free', 'フリー（吸着なし）']] as [SnapMode, string][])
+        : ([['half', '吸着: 500 格子'], ['full', '吸着: 1,000 格子'], ['wall', '吸着: 壁だけ'], ['free', 'フリー（吸着なし）']] as [SnapMode, string][])).map(([v, l]) => h('option', { value: v, selected: v === snapMode }, l)),
+    ),
+    h(
+      'label',
+      { class: 'check', title: '背景に薄い方眼（半間 455 の線・1 間 910 の線・2 間ごとの濃い線）を敷く' },
+      h('input', {
+        type: 'checkbox',
+        checked: showGrid,
+        onchange: (e: Event) => {
+          showGrid = (e.target as HTMLInputElement).checked;
+          try {
+            localStorage.setItem('madori.peGrid', showGrid ? 'on' : 'off');
+          } catch {
+            /* 保存できない環境は無視 */
+          }
+          drawGrid();
+        },
+      }),
+      '方眼',
+    ),
     h('button', { class: 'btn sm ghost', title: '元に戻す（Ctrl+Z）', onclick: () => doUndo() }, '↶'),
     h('button', { class: 'btn sm ghost', title: 'やり直す（Ctrl+Y）', onclick: () => doRedo() }, '↷'),
     h('button', { class: 'btn sm ghost', title: '全体を表示', onclick: () => fit() }, '全体'),
@@ -150,7 +198,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
 
   // ---- 表示範囲 ----
   let vb = { x: 0, y: 0, w: 10000, h: 8000 };
-  const applyVb = () => svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+  const applyVb = () => {
+    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    drawGrid();
+  };
   const fit = () => {
     const pts = model.floors.flatMap((f) => f.walls.flatMap((w) => [w.a, w.b]));
     if (!pts.length) return;
@@ -177,13 +228,73 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     return { x: p.x, y: p.y };
   };
 
+  // ---- 方眼（木造モジュールの格子） ----
+  // 格子の位相: 読み取りで求めたモジュール（通り芯）。無ければ壁芯から尺モジュールの位相を推定する
+  const gridBase = (() => {
+    const mod = model.module;
+    if (mod) return { size: mod.size, phaseX: mod.phaseX, phaseY: mod.phaseY };
+    const fit = chooseModule(model.floors.flatMap((f) => f.walls.map((w) => ({ a: w.a, b: w.b }))), 'shaku');
+    return { size: 910 as const, phaseX: fit?.phaseX ?? 0, phaseY: fit?.phaseY ?? 0 };
+  })();
+  /** 吸着する格子の間隔（mm）。null = 格子に吸着しない */
+  const snapStep = (): number | null => (snapMode === 'half' ? gridBase.size / 2 : snapMode === 'full' ? gridBase.size : null);
+  const onGrid = (v: number, phase: number, step: number) => phase + Math.round((v - phase) / step) * step;
+  /** 長さの表示（尺モジュールでは「2,730mm（1.5 間）」） */
+  const lenLabel = (L: number) => {
+    const mm = `${Math.round(L).toLocaleString()}mm`;
+    if (gridBase.size !== 910) return mm;
+    const ken = L / 1820;
+    return Math.abs(ken * 4 - Math.round(ken * 4)) < 0.02 ? `${mm}（${+ken.toFixed(2)} 間）` : mm;
+  };
+  const gGrid = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  gGrid.setAttribute('pointer-events', 'none');
+  /** 背景の方眼: 半間（455）のごく薄い線、1 間（910）の薄い線、2 間（3,640 ごと）の少し濃い線。縮小して線が詰まる段は描かない */
+  function drawGrid() {
+    while (gGrid.firstChild) gGrid.removeChild(gGrid.firstChild);
+    if (!showGrid) return;
+    const px = mmPerPx();
+    const half = gridBase.size / 2;
+    const levels: { step: number; color: string; every?: number }[] = [
+      { step: half, color: '#f0ece5' },
+      { step: gridBase.size, color: '#e4dfd6' },
+      { step: gridBase.size * 4, color: '#d5cfc4' },
+    ];
+    const x0 = vb.x;
+    const x1 = vb.x + vb.w;
+    const y0 = vb.y;
+    const y1 = vb.y + vb.h;
+    for (const lv of levels) {
+      if (lv.step / px < 7) continue; // 線が 7px より詰まる段は省く（縮小表示で真っ黒にならないように）
+      const nx = Math.ceil((x1 - x0) / lv.step) + 1;
+      const ny = Math.ceil((y1 - y0) / lv.step) + 1;
+      if (nx + ny > 1200) continue;
+      let d = '';
+      for (let x = onGrid(x0, gridBase.phaseX, lv.step) - lv.step; x <= x1 + lv.step; x += lv.step) d += `M${x} ${y0}V${y1}`;
+      for (let y = onGrid(y0, gridBase.phaseY, lv.step) - lv.step; y <= y1 + lv.step; y += lv.step) d += `M${x0} ${y}H${x1}`;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('stroke', lv.color);
+      path.setAttribute('stroke-width', '1');
+      path.setAttribute('vector-effect', 'non-scaling-stroke');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('shape-rendering', 'crispEdges');
+      gGrid.appendChild(path);
+    }
+  }
+
   // ---- 吸着 ----
-  const snap = (p: Vec2, from: Vec2 | null, free: boolean): { p: Vec2; hint: string } => {
-    const tol = 14 * mmPerPx();
+  /**
+   * マウスの点を吸着させる。優先: 壁の端 > 壁の線の上 > 他の壁の端と縦横そろえ > 方眼の格子。
+   * diag = 斜めを許す（Shift）、loose = 一時的にフリー（Alt）
+   */
+  const snap = (p: Vec2, from: Vec2 | null, free: boolean, loose = false): { p: Vec2; hint: string } => {
+    if (snapMode === 'free' || loose) return { p: { x: Math.round(p.x), y: Math.round(p.y) }, hint: '' };
+    // 吸着の範囲は画面上 14px（縮小表示でも 30cm まで）
+    const tol = Math.min(14 * mmPerPx(), 300);
     const f = W().floor;
     let best: { p: Vec2; d: number; hint: string } | null = null;
     for (const w of f.walls)
-      for (const q of [w.a, w.b]) {
+      for (const q of Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) < 300 ? [] : [w.a, w.b]) {
         const d = Math.hypot(q.x - p.x, q.y - p.y);
         if (d < tol && (!best || d < best.d)) best = { p: { ...q }, d, hint: '壁の端' };
       }
@@ -212,32 +323,41 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         else if (from && !free && Math.abs(q.x - from.x) < 1 && Math.abs(ux) > 0.5) q = { x: from.x, y: w.a.y + (uy * (from.x - w.a.x)) / ux };
         else q = { x: px, y: py };
         hint = '壁の上';
+        // 縦横の壁の上では、壁に沿う向きも方眼の格子に止める
+        const st = snapStep();
+        if (st && !(from && !free)) {
+          if (Math.abs(uy) < 0.01) q.x = onGrid(q.x, gridBase.phaseX, st);
+          else if (Math.abs(ux) < 0.01) q.y = onGrid(q.y, gridBase.phaseY, st);
+        }
         break;
       }
     }
-    // 他の壁の端と縦横をそろえる
+    // 他の壁の端と縦横をそろえる候補（柱の印のような 30cm 未満の短い線は除く）と、方眼の格子の候補のうち、カーソルに近い方に止める
+    const step = snapStep();
+    const lockY = !!from && !free && Math.abs(q.y - from.y) < 1;
+    const lockX = !!from && !free && Math.abs(q.x - from.x) < 1;
     if (!hint) {
-      for (const w of f.walls)
+      let ex: number | null = null;
+      let ey: number | null = null;
+      for (const w of f.walls) {
+        if (Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) < 300) continue;
         for (const e of [w.a, w.b]) {
-          if ((!from || Math.abs(q.y - from.y) > 1 || free) && Math.abs(e.x - q.x) < tol) q.x = e.x;
-          if ((!from || Math.abs(q.x - from.x) > 1 || free) && Math.abs(e.y - q.y) < tol) q.y = e.y;
+          if (!lockX && Math.abs(e.x - q.x) < tol && (ex == null || Math.abs(e.x - q.x) < Math.abs(ex - q.x))) ex = e.x;
+          if (!lockY && Math.abs(e.y - q.y) < tol && (ey == null || Math.abs(e.y - q.y) < Math.abs(ey - q.y))) ey = e.y;
         }
-    }
-    // 木造モジュールの格子（半間 455）に乗せる
-    const mod = model.module;
-    if (!hint && mod) {
-      const gx = mod.phaseX + Math.round((q.x - mod.phaseX) / mod.grid) * mod.grid;
-      const gy = mod.phaseY + Math.round((q.y - mod.phaseY) / mod.grid) * mod.grid;
-      let on = false;
-      if ((!from || Math.abs(q.y - from.y) > 1 || free) && Math.abs(gx - q.x) < tol) {
-        q.x = gx;
-        on = true;
       }
-      if ((!from || Math.abs(q.x - from.x) > 1 || free) && Math.abs(gy - q.y) < tol) {
-        q.y = gy;
-        on = true;
-      }
-      if (on) hint = `${mod.size === 910 ? '尺' : 'メーター'}モジュールの格子`;
+      const gx = step ? onGrid(q.x, gridBase.phaseX, step) : null;
+      const gy = step ? onGrid(q.y, gridBase.phaseY, step) : null;
+      const pick = (v: number, e: number | null, g: number | null): { v: number; by: '' | 'wall' | 'grid' } => {
+        if (e != null && (g == null || Math.abs(e - v) <= Math.abs(g - v))) return { v: e, by: 'wall' };
+        if (g != null) return { v: g, by: 'grid' };
+        return { v, by: '' };
+      };
+      const rx = lockX ? { v: q.x, by: '' as const } : pick(q.x, ex, gx);
+      const ry = lockY ? { v: q.y, by: '' as const } : pick(q.y, ey, gy);
+      q = { x: rx.v, y: ry.v };
+      if (rx.by === 'wall' || ry.by === 'wall') hint = '壁の端とそろえる';
+      else if (rx.by === 'grid' || ry.by === 'grid') hint = `${step === 455 ? '半間' : step === 910 ? '1 間' : `${step}mm`}の格子`;
     }
     return { p: { x: Math.round(q.x), y: Math.round(q.y) }, hint };
   };
@@ -361,7 +481,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const gOps = document.createElementNS(NS, 'g');
   const gLabels = document.createElementNS(NS, 'g');
   const gPreview = document.createElementNS(NS, 'g');
-  svg.append(gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreview);
+  const gPreviewStatic = document.createElementNS(NS, 'g');
+  svg.append(gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreviewStatic, gPreview);
 
   const wallPoly = (w: Wall) => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -371,7 +492,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
     // 他の階（位置合わせの目安）
@@ -443,6 +564,14 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const p = el('polygon', { points: wallPoly(w), fill: on ? '#d9822b' : w.exterior ? '#1f2226' : '#3d424a', class: 'pe-wall' }, gWalls);
       p.dataset.id = w.id;
     }
+    // 選んだ壁の端点のつまみ（ドラッグで伸ばす・縮める。つながった壁の端も一緒に動く）
+    const selWall = sel?.kind === 'wall' ? f.walls.find((x) => x.id === (sel as { id: string }).id) : undefined;
+    if (selWall && tool === 'select')
+      for (const end of ['a', 'b'] as const) {
+        const q = selWall[end];
+        const c = el('circle', { cx: q.x, cy: q.y, r: 7 * mmPerPx(), fill: '#fff', stroke: '#d9822b', 'stroke-width': 2.5 * mmPerPx(), class: 'pe-handle' }, gPreviewStatic);
+        (c as SVGElement).dataset.end = end;
+      }
     for (const op of f.openings) {
       const w = f.walls.find((x) => x.id === op.wallId);
       if (!w) continue;
@@ -838,7 +967,17 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       toast('壁が短すぎて置けません');
       return;
     }
-    const t0 = Math.max(40, Math.min(L - 40 - width, t - width / 2));
+    // 縦横の壁では、窓・戸の中心を方眼（半間）の線に合わせる（910 の柱間に掃き出し、455 ずれで戸）
+    let tc = t;
+    const step = snapStep();
+    if (step) {
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      const half = gridBase.size / 2;
+      if (Math.abs(uy) < 0.01) tc = (onGrid(w.a.x + ux * t, gridBase.phaseX, half) - w.a.x) * ux;
+      else if (Math.abs(ux) < 0.01) tc = (onGrid(w.a.y + uy * t, gridBase.phaseY, half) - w.a.y) * uy;
+    }
+    const t0 = Math.max(40, Math.min(L - 40 - width, tc - width / 2));
     const t1 = t0 + width;
     const f = W().floor;
     if (f.openings.some((o) => o.wallId === w.id && o.t1 > t0 + 10 && o.t0 < t1 - 10)) {
@@ -853,6 +992,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
 
   // ---- 操作 ----
   let pan: { x: number; y: number; vb: typeof vb } | null = null;
+  /** 壁の端点のドラッグ: 動かす端と、同じ点につながった他の壁の端、窓・戸の元の位置（絶対座標） */
+  let endDrag: { moved: boolean; start: Vec2; ends: { w: Wall; end: 'a' | 'b' }[]; ops: { op: Opening; c0: Vec2; c1: Vec2 }[]; anchor: Vec2 } | null = null;
   let spaceDown = false;
   svg.addEventListener('contextmenu', (e) => e.preventDefault());
   svg.addEventListener('wheel', (e) => {
@@ -886,7 +1027,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         return;
       }
       stairSel = null;
-      const a = snap(p, null, true).p;
+      const a = snap(p, null, true, e.altKey).p;
       stairDraw = { a, b: a };
       svg.setPointerCapture(e.pointerId);
       draw();
@@ -918,6 +1059,27 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     }
     if (tool === 'select') {
       const t = e.target as SVGElement;
+      if (t.classList.contains('pe-handle') && sel?.kind === 'wall') {
+        const sw = W().floor.walls.find((x) => x.id === (sel as { id: string }).id);
+        if (sw) {
+          const end = t.dataset.end as 'a' | 'b';
+          const start = { ...sw[end] };
+          const ends: { w: Wall; end: 'a' | 'b' }[] = [];
+          for (const w of W().floor.walls) for (const k of ['a', 'b'] as const) if (Math.hypot(w[k].x - start.x, w[k].y - start.y) < 5) ends.push({ w, end: k });
+          const ops = W()
+            .floor.openings.filter((o) => ends.some((x) => x.w.id === o.wallId))
+            .map((op) => {
+              const w = W().floor.walls.find((x) => x.id === op.wallId)!;
+              const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+              const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+              return { op, c0: { x: w.a.x + u.x * op.t0, y: w.a.y + u.y * op.t0 }, c1: { x: w.a.x + u.x * op.t1, y: w.a.y + u.y * op.t1 } };
+            });
+          const other = end === 'a' ? sw.b : sw.a;
+          endDrag = { moved: false, start, ends, ops, anchor: { ...other } };
+          svg.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       if (t.classList.contains('pe-label')) sel = { kind: 'label', index: +(t.dataset.index ?? -1) };
       else if (t.classList.contains('pe-op')) sel = { kind: 'opening', id: t.dataset.id! };
       else if (t.classList.contains('pe-wall')) sel = { kind: 'wall', id: t.dataset.id! };
@@ -927,7 +1089,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       }
       draw();
     } else if (tool === 'wall') {
-      const s = snap(p, wallStart, e.shiftKey).p;
+      const s = snap(p, wallStart, e.shiftKey, e.altKey).p;
       if (!wallStart) wallStart = s;
       else if (addWall(wallStart, s)) wallStart = s;
     } else if (tool === 'label') {
@@ -951,6 +1113,40 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     const p = toMm(e);
     const px = mmPerPx();
+    if (endDrag) {
+      if (!endDrag.moved && Math.hypot(p.x - endDrag.start.x, p.y - endDrag.start.y) < 3 * px) return;
+      if (!endDrag.moved) {
+        pushUndo();
+        endDrag.moved = true;
+      }
+      // 自分の壁の向き（縦横）を保ったまま、格子・他の壁に吸着（Shift で斜め、Alt でフリー）。つながった壁の端は除いて吸着先を探す
+      const moving = new Set(endDrag.ends.map((x) => x.w));
+      const f = W().floor;
+      const saved = f.walls;
+      f.walls = saved.filter((w) => !moving.has(w));
+      const s = snap(p, endDrag.anchor, e.shiftKey, e.altKey);
+      f.walls = saved;
+      for (const { w, end } of endDrag.ends) w[end] = { ...s.p };
+      for (const { op, c0, c1 } of endDrag.ops) {
+        const w = f.walls.find((x) => x.id === op.wallId)!;
+        const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+        const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+        const proj = (c: Vec2) => (c.x - w.a.x) * u.x + (c.y - w.a.y) * u.y;
+        const t0 = Math.max(0, Math.min(proj(c0), proj(c1)));
+        const t1 = Math.min(L, Math.max(proj(c0), proj(c1)));
+        op.t0 = t0;
+        op.t1 = Math.max(t0, t1);
+      }
+      draw();
+      const sw = f.walls.find((x) => sel?.kind === 'wall' && x.id === sel.id);
+      if (sw) {
+        const L = Math.hypot(sw.b.x - sw.a.x, sw.b.y - sw.a.y);
+        const t = el('text', { x: (sw.a.x + sw.b.x) / 2, y: (sw.a.y + sw.b.y) / 2 - 14 * px, 'font-size': 12 * px, 'text-anchor': 'middle', fill: '#d9822b', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gPreview);
+        t.textContent = lenLabel(L);
+      }
+      status.textContent = s.hint ? `吸着: ${s.hint}（Alt を押している間はフリー）` : '';
+      return;
+    }
     if (stairDrag) {
       const dx = p.x - stairDrag.sx;
       const dy = p.y - stairDrag.sy;
@@ -963,8 +1159,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       if (st) {
         const w = st.maxX - st.minX;
         const d = st.maxY - st.minY;
-        st.minX = Math.round((stairDrag.ox + dx) / 10) * 10;
-        st.minY = Math.round((stairDrag.oy + dy) / 10) * 10;
+        // 方眼の格子に乗せて動かす（Alt で自由に）
+        const step = e.altKey ? null : snapStep();
+        st.minX = step ? onGrid(stairDrag.ox + dx, gridBase.phaseX, step) : Math.round((stairDrag.ox + dx) / 10) * 10;
+        st.minY = step ? onGrid(stairDrag.oy + dy, gridBase.phaseY, step) : Math.round((stairDrag.oy + dy) / 10) * 10;
         st.maxX = st.minX + w;
         st.maxY = st.minY + d;
         changed = true;
@@ -973,7 +1171,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     if (stairDraw) {
-      const s2 = snap(p, null, true);
+      const s2 = snap(p, null, true, e.altKey);
       stairDraw.b = s2.p;
       const x = Math.min(stairDraw.a.x, stairDraw.b.x);
       const y = Math.min(stairDraw.a.y, stairDraw.b.y);
@@ -981,7 +1179,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const d = Math.abs(stairDraw.b.y - stairDraw.a.y);
       el('rect', { x, y, width: w, height: d, fill: '#d9822b', 'fill-opacity': 0.25, stroke: '#d9822b', 'stroke-width': 3 * px }, gPreview);
       const t = el('text', { x: x + w / 2, y: y - 8 * px, 'font-size': 12 * px, 'text-anchor': 'middle', fill: '#d9822b', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gPreview);
-      t.textContent = `${Math.round(w)} × ${Math.round(d)} mm`;
+      t.textContent = `${lenLabel(w)} × ${lenLabel(d)}`;
       status.textContent = s2.hint ? `吸着: ${s2.hint}` : '';
       return;
     }
@@ -1004,14 +1202,22 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     if (tool === 'wall') {
-      const s = snap(p, wallStart, e.shiftKey);
-      el('circle', { cx: s.p.x, cy: s.p.y, r: 5 * px, fill: s.hint ? '#d9822b' : '#22252a' }, gPreview);
+      const s = snap(p, wallStart, e.shiftKey, e.altKey);
+      // 吸着した点の目印（十字）
+      el('line', { x1: s.p.x - 14 * px, y1: s.p.y, x2: s.p.x + 14 * px, y2: s.p.y, stroke: '#d9822b', 'stroke-width': 1.2 * px }, gPreview);
+      el('line', { x1: s.p.x, y1: s.p.y - 14 * px, x2: s.p.x, y2: s.p.y + 14 * px, stroke: '#d9822b', 'stroke-width': 1.2 * px }, gPreview);
+      el('circle', { cx: s.p.x, cy: s.p.y, r: 4 * px, fill: s.hint ? '#d9822b' : '#22252a' }, gPreview);
       if (wallStart) {
         el('line', { x1: wallStart.x, y1: wallStart.y, x2: s.p.x, y2: s.p.y, stroke: '#d9822b', 'stroke-width': thickness, 'stroke-opacity': 0.6 }, gPreview);
         const L = Math.round(Math.hypot(s.p.x - wallStart.x, s.p.y - wallStart.y));
         const t = el('text', { x: (wallStart.x + s.p.x) / 2, y: (wallStart.y + s.p.y) / 2 - 10 * px, 'font-size': 12 * px, 'text-anchor': 'middle', fill: '#d9822b', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gPreview);
-        t.textContent = `${L}mm`;
+        t.textContent = lenLabel(L);
       }
+      status.textContent = s.hint ? `吸着: ${s.hint}（Alt を押している間はフリー）` : e.altKey ? 'フリー（吸着なし）' : '';
+    } else if (tool === 'stairs' && !stairSel) {
+      const s = snap(p, null, true, e.altKey);
+      el('line', { x1: s.p.x - 14 * px, y1: s.p.y, x2: s.p.x + 14 * px, y2: s.p.y, stroke: '#d9822b', 'stroke-width': 1.2 * px }, gPreview);
+      el('line', { x1: s.p.x, y1: s.p.y - 14 * px, x2: s.p.x, y2: s.p.y + 14 * px, stroke: '#d9822b', 'stroke-width': 1.2 * px }, gPreview);
       status.textContent = s.hint ? `吸着: ${s.hint}` : '';
     } else if (tool === 'window' || tool === 'door' || tool === 'sliding') {
       const hit = wallAt(p, 14);
@@ -1020,6 +1226,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     } else status.textContent = '';
   });
   svg.addEventListener('pointerup', () => {
+    if (endDrag) {
+      const d = endDrag;
+      endDrag = null;
+      if (d.moved) {
+        // 長さが無くなった壁・窓は消す
+        const f = W().floor;
+        f.walls = f.walls.filter((w) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) >= 50);
+        f.openings = f.openings.filter((o) => o.t1 - o.t0 >= 100 && f.walls.some((w) => w.id === o.wallId));
+        changed = true;
+        rebuild();
+      }
+      draw();
+    }
     pan = null;
     drag = null;
     stairDrag = null;

@@ -167,7 +167,7 @@ BASE_Z = {'l.far': -0.03, 'l.ground': -0.012, 'l.road': 0.0, 'l.curb': 0.0, 'l.d
 for o in bpy.data.objects:
     if o.type != 'MESH' or not o.data.materials: continue
     mat = o.data.materials[0].name if o.data.materials[0] else ''
-    if not mat.startswith('l.') or mat == 'l.curb': continue
+    if mat not in BASE_Z: continue  # 地面の層だけ（植栽の l.trunk / l.leafSpray を島ごとにずらすと木が縦に伸びる）
     bm = bmesh.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table()
     seen = set(); k = 0
     for f in bm.faces:

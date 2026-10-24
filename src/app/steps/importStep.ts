@@ -1,4 +1,5 @@
-import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
+import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal, useSelect } from '../dom';
+import { useValueOf, applyUseValue } from '../../core/roomUse';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
@@ -7,7 +8,7 @@ import { parseDxf, type ModuleMode } from '../../parser';
 import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
-import { ROOM_TYPE_LABEL, type BuildingModel, type PlanSide, type RoomType } from '../../core/types';
+import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../core/types';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
@@ -691,7 +692,6 @@ function renderResult(ctx: StepCtx) {
   side.append(roadSection(model, drawPlans));
 
   // 部屋
-  const types = Object.keys(ROOM_TYPE_LABEL) as RoomType[];
   for (const f of model.floors) {
     const tbody = h('tbody');
     for (const r of f.rooms) {
@@ -703,11 +703,7 @@ function renderResult(ctx: StepCtx) {
           h(
             'td',
             { style: 'width:34%' },
-            h(
-              'select',
-              { onchange: (e: Event) => { r.type = (e.target as HTMLSelectElement).value as RoomType; emit('model'); drawPlans(); } },
-              types.map((t) => h('option', { value: t, selected: t === r.type }, ROOM_TYPE_LABEL[t])),
-            ),
+            useSelect(useValueOf(r), (v) => { applyUseValue(r, v); emit('model'); drawPlans(); }),
           ),
           h('td', { style: 'text-align:right;color:#8b9098' }, `${(r.labeledTatami ?? r.area / 1.62).toFixed(1)}帖`),
         ),
@@ -827,7 +823,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     action: noWin.length ? { label: '修正画面で窓を置く', fn: openEditor } : undefined,
   });
   // 外形（階ごとの面積の目安）
-  const areas = floors.map((f) => f.rooms.filter((r) => r.type !== 'void' && r.type !== 'balcony' && r.type !== 'porch' && r.type !== 'garage').reduce((a, r) => a + r.area, 0));
+  const areas = floors.map((f) => f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0));
   const odd = areas.findIndex((a, i) => i > 0 && areas[0] > 0 && a > areas[0] * 1.35);
   rows.push({
     ok: odd < 0,

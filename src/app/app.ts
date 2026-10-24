@@ -4,6 +4,7 @@ import { state, on, emit } from './state';
 import { shareDialog } from './share';
 import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project';
 import { Viewer } from '../scene/viewer';
+import { createFurnitureTool } from './furnitureTool';
 
 export interface StepCtx {
   app: App;
@@ -34,6 +35,7 @@ export class App {
   private current: Step | null = null;
   private _viewer: Viewer | null = null;
   modelVersion = 0;
+  private furnTool: ReturnType<typeof createFurnitureTool> | null = null;
   builtVersion = -1;
 
   constructor(
@@ -182,10 +184,16 @@ export class App {
       walk.classList.toggle('on', m === 'walk');
     };
     setMode('orbit');
+    // 家具・造作の置き直し（3D 画面のまま）。家具だけ作り直すので、建物の作り直しは起こさない
+    this.furnTool = createFurnitureTool(v, this.viewerHost, () => {
+      emit('model');
+      this.builtVersion = this.modelVersion;
+    });
     bar.append(
       orbit,
       pan,
       walk,
+      this.furnTool.button,
       h('div', { class: 'nav-sep' }),
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
       h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),
@@ -240,6 +248,7 @@ export class App {
     const s = this.steps.find((x) => x.id === id);
     if (!s || (s.needsModel && !state.model)) return;
     this.current?.unmount?.();
+    if (!s.uses3d) this.furnTool?.setActive(false);
     this.current = s;
     this.renderSteps();
     clear(this.side);

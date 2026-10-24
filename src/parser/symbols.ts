@@ -7,7 +7,7 @@
  *   洗面ボウル 0.7×0.4（D 形） / キッチンのシンク 0.5×0.6 ＋ コンロの輪（0.29×0.06 の弧） / 植栽（ぎざぎざの丸）
  * 認識した家具は自動配置より優先して、図面どおりの位置・向きに置く。
  */
-import type { FurnitureItem, FurnitureKind, Room, RoomType, Vec2, Wall } from '../core/types';
+import { OUTDOOR_TYPES, type FurnitureItem, type FurnitureKind, type Room, type RoomType, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import type { Seg } from './walls';
 import type { MmText } from './assemble';
@@ -593,7 +593,9 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
       const a = axisLong(s);
       const room = roomAt({ x: s.x, y: s.y });
       // 室名の無い区画（メモの文字しか無い区画）に車が置いてあれば、その区画はガレージ
-      if (level === 1 && room && (room.type === 'other' || room.type === 'porch') && !/ポーチ|PORCH/i.test(room.name)) {
+      // 隣の部屋から名前を推定しただけの区画（中庭・ポーチと推定されたものも）に車があれば、それもガレージ
+      if (level === 1 && room && (room.type === 'other' || room.type === 'porch' || (room.inferred && room.type === 'balcony')) && !(!room.inferred && /ポーチ|PORCH/i.test(room.name))) {
+        if (room.inferred) room.name = '室';
         room.name = room.type === 'other' && room.name !== '室' ? `ガレージ（${room.name}）` : 'ガレージ';
         room.type = 'garage';
         room.inferred = true;
@@ -710,7 +712,7 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
   // 壁から離れたカウンターの上にあればアイランド型
   const counters = symbols.filter((s) => s.kind === 'counter' && !usedChair.has(s));
   const usedCounter = new Set<PlanSymbol>();
-  const KITCHEN_NG: RoomType[] = ['toilet', 'bath', 'washroom', 'garage', 'balcony', 'porch', 'void', 'stairs', 'closet', 'entrance', 'hall'];
+  const KITCHEN_NG: RoomType[] = ['toilet', 'bath', 'washroom', 'void', 'stairs', 'closet', 'entrance', 'hall', ...OUTDOOR_TYPES];
   for (const sink of symbols.filter((s) => s.kind === 'sink')) {
     const c = { x: sink.x, y: sink.y };
     const room = roomAt(c);

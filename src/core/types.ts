@@ -30,8 +30,17 @@ export type RoomType =
   | 'balcony'
   | 'porch'
   | 'garage'
+  // 外構（家の外の区画。延床面積に入らない）
+  | 'carport'
+  | 'parking'
+  | 'deck'
+  | 'terrace'
+  | 'shed'
   | 'void'
   | 'other';
+
+/** ガレージの建て方: ビルトイン（家の中）／後付け（家に接して別に建てる。GAW など）／離れ（家から離れて建つ） */
+export type GarageKind = 'builtin' | 'attached' | 'detached';
 
 export type OpeningKind = 'window' | 'door' | 'sliding' | 'entrance' | 'open';
 
@@ -86,6 +95,8 @@ export interface Room {
   stairDir?: 'up' | 'down';
   /** 室名が図面に無く、隣の部屋から推定した名前 */
   inferred?: boolean;
+  /** ガレージの建て方（type が garage のとき。省略時は外形との位置から判定: 家の中ならビルトイン） */
+  garageKind?: GarageKind;
 }
 
 export interface Stair {
@@ -197,7 +208,12 @@ export type FurnitureKind =
   | 'toilet'
   | 'shoeCabinet'
   | 'fridge'
-  | 'cupboard';
+  | 'cupboard'
+  /** 造作家具（本棚・カウンター・テレビボードなど。形は variant） */
+  | 'builtin';
+
+/** 造作家具の形 */
+export type BuiltinVariant = 'wallShelf' | 'shelfDesk' | 'floatTv' | 'openShelf' | 'bench' | 'counter' | 'tallStorage' | 'lowShelf';
 
 /** 置いた家具 1 つ（平面座標 mm。rot は壁に沿う向きの角度（度）: 0 = 東向きに並び手前が南） */
 export interface FurnitureItem {
@@ -213,8 +229,12 @@ export interface FurnitureItem {
   /** 長さ (m)（キッチン・浴槽） */
   len?: number;
   roomId?: string;
-  /** キッチンの型: 対面ペニンシュラ（既定）／アイランド／壁付け I 型／Ⅱ型（壁にコンロ、対面にシンク） */
-  kitchenType?: 'peninsula' | 'island' | 'wall' | 'two';
+  /** キッチンの型: 対面ペニンシュラ（既定）／アイランド／壁付け I 型／Ⅱ型（壁にコンロ、対面にシンク）／L 型（壁にシンク、袖にコンロ） */
+  kitchenType?: 'peninsula' | 'island' | 'wall' | 'two' | 'l';
+  /** 造作家具の形（kind が builtin のとき） */
+  variant?: BuiltinVariant;
+  /** 高さ (m)（造作家具。省略時は形ごとの既定・天井まで） */
+  h?: number;
   /** コンロの位置（部屋側からキッチンを見て左／右。既定: 右） */
   stoveSide?: 'left' | 'right';
   /** 冷蔵庫の位置（背面収納の端。既定: 右） */
@@ -273,9 +293,34 @@ export const ROOM_TYPE_LABEL: Record<RoomType, string> = {
   balcony: 'バルコニー',
   porch: 'ポーチ',
   garage: 'ガレージ',
+  carport: 'カーポート',
+  parking: '駐車場',
+  deck: 'ウッドデッキ',
+  terrace: 'テラス',
+  shed: '物置',
   void: '吹抜',
   other: '居室',
 };
+
+/** 家の外の区画（バルコニー・ポーチ・中庭・ガレージ・外構）。延床面積に入らない */
+export const OUTDOOR_TYPES: readonly RoomType[] = ['balcony', 'porch', 'garage', 'carport', 'parking', 'deck', 'terrace', 'shed'];
+/** 外構（敷地の上に作るもの。屋根・壁は家と別） */
+export const EXTERIOR_WORKS: readonly RoomType[] = ['carport', 'parking', 'deck', 'terrace', 'shed'];
+
+/** 延床面積に入らない区画か（吹抜・バルコニー・ポーチ・ガレージ・外構） */
+export function excludedFromFloorArea(t: RoomType): boolean {
+  return t === 'void' || OUTDOOR_TYPES.includes(t);
+}
+
+/** 外構の区画か（カーポート・駐車場・デッキ・テラス・物置） */
+export function isExteriorWorks(t: RoomType): boolean {
+  return EXTERIOR_WORKS.includes(t);
+}
+
+/** 家とは別に建つガレージ（後付け・離れ）か */
+export function isSeparateGarage(r: { type: RoomType; garageKind?: GarageKind }): boolean {
+  return r.type === 'garage' && (r.garageKind === 'attached' || r.garageKind === 'detached');
+}
 
 /** 居室（人が長く過ごす部屋）か */
 export function isHabitable(t: RoomType): boolean {

@@ -3,7 +3,7 @@
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
 import { takeoff } from '../estimate/areas';
-import type { BuildingModel, Floor, RoomType, Vec2 } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2 } from '../core/types';
 import { stairLayout, stairStepCount } from '../core/stairs';
 import { polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
@@ -134,6 +134,11 @@ const ROOM_COLORS: Partial<Record<RoomType, string>> = {
   balcony: '#e4e4e4',
   porch: '#e4e4e4',
   garage: '#e4e4e4',
+  carport: '#e4e4e4',
+  parking: '#e4e4e4',
+  deck: '#e9dfcf',
+  terrace: '#e6e3dd',
+  shed: '#ece8df',
   void: '#ffffff',
   other: '#f1efea',
 };
@@ -147,7 +152,8 @@ const FINISH: Partial<Record<RoomType, FloorFinish>> = {
   bath: 'tile', washroom: 'tile', toilet: 'tile',
   entrance: 'stone', porch: 'stone',
   balcony: 'deck',
-  garage: 'concrete',
+  garage: 'concrete', carport: 'concrete', parking: 'concrete', shed: 'concrete',
+  deck: 'deck', terrace: 'stone',
   void: 'none',
 };
 const FINISH_FILL: Record<FloorFinish, string> = {
@@ -266,7 +272,7 @@ export function openingSchedule(f: Floor): OpeningScheduleEntry[] {
 
 /** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く */
 export function floorArea(f: Floor): number {
-  return f.rooms.filter((r) => r.type !== 'void' && r.type !== 'balcony' && r.type !== 'porch' && r.type !== 'garage').reduce((a, r) => a + r.area, 0);
+  return f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0);
 }
 
 /** 外形の面積（㎡。穴は引く） */

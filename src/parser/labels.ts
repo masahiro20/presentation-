@@ -5,6 +5,8 @@ import type { RoomType } from '../core/types';
 
 export function normalizeText(s: string): string {
   return s
+    // 半角カナ（ﾗﾝﾄﾞﾘｰ など）は全角に
+    .replace(/[\uff61-\uff9f]+/g, (m) => m.normalize('NFKC'))
     .replace(/[０-９Ａ-Ｚａ-ｚ．，：／＝（）]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/\s+/g, '')
     .toUpperCase();
@@ -32,7 +34,9 @@ const RULES: [RegExp, RoomType][] = [
   [/ファミリーホール|セカンドリビング|フリースペース|多目的|プレイルーム|ファミリールーム/, 'living'],
   [/パウダー|サンルーム|ランドリールーム/, 'washroom'],
   [/ウォークスルー|W\.?T\.?C/, 'closet'],
-  [/クローク|ワインセラー|備蓄/, 'storage'],
+  [/クローク|ワインセラー|備蓄|(ホール|廊下|通路|階段下|洗面|トイレ)収納/, 'storage'],
+  [/リモステ|リモート|ワークスペース/, 'study'],
+  [/シャワー/, 'bath'],
   [/浴室|バスルーム|^バス$|風呂|^UB$|^U\.?B$|ユニットバス|BATH|^浴$/, 'bath'],
   [/洗面|脱衣|ランドリー|家事室|サニタリー|UTILITY|ユーティリティ|^UT$|^U\.?T$|洗濯|^洗$|LAUNDRY|ドレッサー|身支度/, 'washroom'],
   [/トイレ|便所|^W\.?C$|TOILET|^WC\d*$|^トイ$|化粧室/, 'toilet'],
@@ -41,10 +45,16 @@ const RULES: [RegExp, RoomType][] = [
   [/玄関|エントランス|土間|ENTRANCE|^ENT$/, 'entrance'],
   [/ホール|廊下|HALL|ろうか|通路/, 'hall'],
   [/階段|STAIRS?/, 'stairs'],
+  // 外構: 家の外に置く物置・カーポート・駐車場・デッキ・テラス（「ルーフテラス」「インナーテラス」は 2 階のバルコニー）
+  [/外部物置|屋外物置|外物置|物置小屋|ストックヤード|サイクルポート|駐輪/, 'shed'],
   [/納戸|物入|収納|^S$|^P\.?S$|物置|倉庫|STORAGE|^収$|ロフト|LOFT|小屋裏|グルニエ|^ST$/, 'storage'],
+  [/カーポート|CARPORT/, 'carport'],
+  [/駐車場|駐車スペース|パーキング|PARKING/, 'parking'],
+  [/ウッドデッキ|^デッキ|DECK/, 'deck'],
+  [/^テラス|タイルテラス|TERRACE/, 'terrace'],
   [/バルコニー|ベランダ|テラス|ルーフバルコニー|デッキ|BALCONY|屋上|インナーバルコニー|ガーデン|ルーフ|^OPEN$|物干/, 'balcony'],
   [/ポーチ|PORCH|^庇$|^軒下$|^軒$/, 'porch'],
-  [/ガレージ|車庫|ビルトイン|GARAGE|カーポート/, 'garage'],
+  [/ガレージ|車庫|ビルトイン|GARAGE/, 'garage'],
 ];
 
 export function classifyRoomName(raw: string): RoomType | null {

@@ -1,4 +1,5 @@
 /** 小さな DOM ヘルパー */
+import { USE_GROUPS } from '../core/roomUse';
 type Attrs = Record<string, unknown> & { class?: string; style?: string };
 type Child = Node | string | number | null | undefined | false | Child[];
 
@@ -193,4 +194,13 @@ export function segmented<T extends string>(options: { value: T; label: string }
   };
   render(value);
   return wrap;
+}
+
+/** 部屋の用途を選ぶ（居室・水まわり・…・ガレージの建て方・外構をグループで） */
+export function useSelect(current: string, onChange: (value: string) => void): HTMLSelectElement {
+  return h(
+    'select',
+    { onchange: (e: Event) => onChange((e.target as HTMLSelectElement).value) },
+    USE_GROUPS.map((g) => h('optgroup', { label: g.label }, g.options.map((o) => h('option', { value: o.value, selected: o.value === current }, o.label)))),
+  );
 }

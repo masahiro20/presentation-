@@ -7,16 +7,16 @@
  * - 部屋名を置く・変える（用途も選べる）
  * 壁を直すたびに、図面の読み取りと同じ方法で部屋を作り直す。
  */
-import type { BuildingModel, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
+import type { BuildingModel, BuiltinVariant, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
 import { stairLayout, STAIR_KIND_LABEL, STAIR_ENTRY_LABEL, type StairPiece } from '../core/stairs';
 import { furnitureSymbol } from './furnitureSymbols';
 import type { Stair } from '../core/types';
-import { buildFurniture, furnitureDims, FURNITURE_LABEL } from '../scene/furniture';
-import { ROOM_TYPE_LABEL } from '../core/types';
+import { buildFurniture, furnitureDims, FURNITURE_LABEL, BUILTIN_VARIANTS, KITCHEN_TYPES } from '../scene/furniture';
 import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../parser/symbolDict';
-import { h, clear, toast } from './dom';
+import { h, clear, toast, useSelect } from './dom';
+import { useValueOf, applyUseValue } from '../core/roomUse';
 
 type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
@@ -31,6 +31,7 @@ interface FloorWork {
 const ROOM_TINT: Partial<Record<RoomType, string>> = {
   ldk: '#f3e6d6', living: '#f3e6d6', dining: '#f3e6d6', kitchen: '#f3e6d6', japanese: '#e6ead2', bedroom: '#e3e9f1', kids: '#e3eef0', study: '#ece6f1',
   bath: '#dfeaf2', washroom: '#dfeaf2', toilet: '#dfeaf2', entrance: '#e8e3dc', hall: '#efece6', storage: '#ebe7e0', closet: '#ebe7e0', stairs: '#e9e9e9', void: '#f7f7f7', balcony: '#e5e8e2', porch: '#e5e8e2',
+  garage: '#dcdcd8', carport: '#e0e0dc', parking: '#e0e0dc', deck: '#eadfce', terrace: '#e6e2da', shed: '#e2ddd4',
 };
 
 const OPENING_DEFAULT: Record<'window' | 'door' | 'sliding', number> = { window: 1690, door: 780, sliding: 1640 };
@@ -476,7 +477,6 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     for (const [t, b] of toolBtns) b.className = `btn sm ${t === tool ? 'dark' : ''}`;
   };
 
-  const types = Object.keys(ROOM_TYPE_LABEL) as RoomType[];
   const renderPanel = () => {
     clear(panel);
     const f = W().floor;
@@ -579,13 +579,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
           const optSel = (label: string, opts: [string, string][], get: () => string, set: (v: string) => void) =>
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('select', { onchange: (e: Event) => edit(() => set((e.target as HTMLSelectElement).value)) }, opts.map(([v, l]) => h('option', { value: v, selected: v === get() }, l))));
           panel.append(
-            optSel('キッチンの型', [['peninsula', '対面ペニンシュラ（カウンタースタイル）'], ['island', 'アイランド'], ['wall', '壁付け I 型'], ['two', 'Ⅱ型（壁にコンロ・対面にシンク）']], () => it.kitchenType ?? 'peninsula', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.kitchenType = v as FurnitureItem['kitchenType']; }),
+            optSel('キッチンの型', KITCHEN_TYPES, () => it.kitchenType ?? 'peninsula', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.kitchenType = v as FurnitureItem['kitchenType']; }),
             optSel('コンロの位置（部屋側から見て）', [['right', '右'], ['left', '左']], () => it.stoveSide ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.stoveSide = v as FurnitureItem['stoveSide']; }),
             optSel('冷蔵庫', [['right', '右端'], ['left', '左端'], ['none', '置かない（別に配置）']], () => it.fridge ?? 'right', (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.fridge = v as FurnitureItem['fridge']; }),
             optSel('レンジフード', [['on', 'あり'], ['off', 'なし']], () => (it.hood === false ? 'off' : 'on'), (v) => { const x = ensureExplicit(level).find((q) => q.id === it.id)!; x.hood = v === 'on'; }),
             h('p', { class: 'hint' }, 'シンクはコンロの反対側に付きます。記号の矢印が部屋側（手前）です。冷蔵庫を別の場所に置くときは「置かない」にして、一覧の「冷蔵庫」を追加してください。'),
           );
         }
+        if (it.kind === 'builtin')
+          panel.append(
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, '造作の形'), h('select', { onchange: (e: Event) => edit((x) => { x.variant = (e.target as HTMLSelectElement).value as BuiltinVariant; delete x.w; delete x.d; }) }, (Object.keys(BUILTIN_VARIANTS) as BuiltinVariant[]).map((v) => h('option', { value: v, selected: v === (it.variant ?? 'wallShelf') }, BUILTIN_VARIANTS[v].label)))),
+            h('label', { class: 'field' }, h('span', { class: 'field-label' }, '幅 (m)'), h('input', { type: 'number', step: 0.1, min: 0.4, max: 6, value: furnitureDims(it).w, onchange: (e: Event) => edit((x) => (x.w = +(e.target as HTMLInputElement).value)) })),
+            h('p', { class: 'hint' }, BUILTIN_VARIANTS[it.variant ?? 'wallShelf'].note),
+          );
         if (it.kind === 'cupboard')
           panel.append(
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, '幅 (m)'), h('input', { type: 'number', step: 0.1, min: 0.6, max: 4, value: it.w ?? 1.8, onchange: (e: Event) => edit((x) => (x.w = +(e.target as HTMLInputElement).value)) })),
@@ -709,7 +715,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             'label',
             { class: 'field' },
             h('span', { class: 'field-label' }, '用途'),
-            h('select', { onchange: (e: Event) => { pushUndo(); l.type = (e.target as HTMLSelectElement).value as RoomType; rebuild(); draw(); } }, types.map((t) => h('option', { value: t, selected: t === (l.type ?? room?.type) }, ROOM_TYPE_LABEL[t]))),
+            useSelect(l.type ? useValueOf({ type: l.type, garageKind: l.garageKind }) : room ? useValueOf(room) : 'other', (v) => { pushUndo(); applyUseValue(l, v); rebuild(); draw(); }),
           ),
           room ? h('p', { class: 'hint' }, `この部屋: 約${room.area.toFixed(1)}㎡（${(room.labeledTatami ?? room.area / 1.62).toFixed(1)}帖）`) : h('p', { class: 'warn' }, 'このラベルは部屋の外にあります（壁で囲まれていない可能性があります）'),
           h('button', { class: 'btn sm block', onclick: () => deleteSel() }, 'この部屋名を消す（Delete）'),
@@ -892,7 +898,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         pushUndo();
         const list = ensureExplicit(level);
         const id = `fu${++furnSeq}`;
-        const defaults: Partial<FurnitureItem> = addKind === 'sofa' ? { w: 2.1 } : addKind === 'bed' ? { w: 1.4 } : addKind === 'tv' ? { w: 1.8 } : addKind === 'rug' ? { w: 2.2, d: 1.6 } : addKind === 'kitchen' ? { len: 2.7 } : addKind === 'bath' ? { len: 1.6 } : {};
+        const defaults: Partial<FurnitureItem> = addKind === 'sofa' ? { w: 2.1 } : addKind === 'bed' ? { w: 1.4 } : addKind === 'tv' ? { w: 1.8 } : addKind === 'rug' ? { w: 2.2, d: 1.6 } : addKind === 'kitchen' ? { len: 2.7 } : addKind === 'bath' ? { len: 1.6 } : addKind === 'builtin' ? { variant: 'wallShelf' } : {};
         list.push({ id, kind: addKind, x: Math.round(p.x), y: Math.round(p.y), rot: 0, ...defaults });
         furnSel = id;
         addKind = null;

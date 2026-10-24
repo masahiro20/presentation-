@@ -87,7 +87,7 @@ export function defaultGroups(grade: Grade): Record<string, string> {
 export function newChoice(grade: Grade, areas?: Pick<Areas, 'kitchenType'>): EstimateChoice {
   const groups = defaultGroups(grade);
   if (areas?.kitchenType === 'island') groups.kitchen = 'eq.kitchenHlIsland';
-  else if (areas?.kitchenType === 'wall' || areas?.kitchenType === 'two') groups.kitchen = 'eq.kitchenHlWall';
+  else if (areas?.kitchenType === 'wall' || areas?.kitchenType === 'two' || areas?.kitchenType === 'l') groups.kitchen = 'eq.kitchenHlWall';
   return { grade, groups, qty: {}, off: [], extras: [], roundUnit: 10000 };
 }
 

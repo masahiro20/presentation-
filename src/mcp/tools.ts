@@ -10,7 +10,7 @@
  *    そのまま渡せるようにしてある（アプリで保存したプロジェクトファイル .json も渡せる）
  */
 import type { BuildingModel, Floor, FurnitureItem } from '../core/types';
-import { ROOM_TYPE_LABEL } from '../core/types';
+import { ROOM_TYPE_LABEL, OUTDOOR_TYPES } from '../core/types';
 import { parseFloorPlanPdf, parseDxf, type PdfjsLike, type ParseOptions, type ModuleMode } from '../parser';
 import { woodCheck } from '../parser/woodCheck';
 import { floorPlanSvg } from '../drawings/plan';
@@ -127,7 +127,7 @@ export function storeModel(ctx: McpContext, model: BuildingModel): string {
   return id;
 }
 
-const LIVABLE_EXCLUDE = new Set(['void', 'balcony', 'porch', 'garage']);
+const LIVABLE_EXCLUDE = new Set<string>(['void', ...OUTDOOR_TYPES]);
 
 function furnitureOf(model: BuildingModel, f: Floor): FurnitureItem[] {
   return model.furniture?.find((x) => x.level === f.level)?.items ?? f.planItems ?? [];

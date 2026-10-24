@@ -220,7 +220,16 @@ export class Viewer {
       if (!d0 || e.button !== 0 || this.cut) return;
       if (Math.hypot(e.clientX - d0.x, e.clientY - d0.y) > 5 || performance.now() - d0.t > 400) return;
       const r = el.getBoundingClientRect();
-      this.toggleDoorAt(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1));
+      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      // 家具を置く・選ぶモードでは、扉の開閉より先にクリックを渡す
+      if (this.onPick) {
+        const p = this.pickPoint(ndc);
+        if (p) {
+          this.onPick(p);
+          return;
+        }
+      }
+      this.toggleDoorAt(ndc);
     });
     el.addEventListener('pointerdown', (e) => {
       if (this.navMode === 'pan') el.style.cursor = 'grabbing';
@@ -392,6 +401,52 @@ export class Viewer {
     }
     this.controls.update();
     this.camMoved();
+  }
+
+  /** クリックした点を受け取る（家具を置く・選ぶモード）。null で通常（扉の開閉） */
+  onPick: ((p: THREE.Vector3) => void) | null = null;
+
+  /** 画面上の点（NDC）の下にある床・家具の点（ワールド座標）。屋根・天井は透かして、その下の床を探す */
+  pickPoint(ndc: THREE.Vector2): THREE.Vector3 | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const shown = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+      return (o as THREE.Mesh).isMesh === true;
+    };
+    const hits = rc.intersectObjects([this.groups.building, this.groups.furniture, this.groups.cut], true).filter((x) => shown(x.object) && x.distance > 0.05);
+    // 上向きの面（床・家具の天板）か家具の面。下向きの面（天井）は飛ばす
+    const h = hits.find((x) => {
+      const k = String(x.object.userData.matKey ?? '');
+      if (k.startsWith('ext.glass') || k === 'int.ceiling' || k === 'ext.soffit') return false;
+      return true;
+    });
+    if (h) return h.point.clone();
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const p = new THREE.Vector3();
+    return rc.ray.intersectPlane(ground, p) ? p : null;
+  }
+
+  /** 家具だけを作り直す（3D 画面で家具を置き直したとき。建物・屋根・外構はそのまま） */
+  rebuildFurniture(model: BuildingModel) {
+    if (!this.state) return;
+    clearGroup(this.groups.furniture);
+    const resolve = (k: string) => this.registry.get(k);
+    setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
+    setFurnitureVocab(interiorFor(this.design));
+    const fur = buildFurniture(model);
+    this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
+    this.groups.furniture.add(contactShadows(fur.occupancy));
+    const gen = ++this.modelGen;
+    void placeModels(fur.models, this.groups.furniture, () => gen === this.modelGen).then((n) => {
+      if (n) this.dirty = true;
+    });
+    this.state = { ...this.state, model, lights: fur.lights, occupancy: fur.occupancy };
+    this.walkOcc = null;
+    this.updateInteriorLights();
+    this.cutBuilt = null;
+    if (this.cut) this.setCut(this.cut);
+    this.dirty = true;
   }
 
   /** 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う） */

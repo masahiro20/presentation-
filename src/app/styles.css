@@ -792,3 +792,10 @@ body.cinema .main { grid-template-columns: 1fr; }
 /* 読み取りの辞書 */
 .dict-counts { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; color: var(--ink2); }
 .dict-counts b { color: var(--ink); }
+
+/* 3D 画面の家具・造作パネル（右の操作バーの「家具」） */
+.furn-tool { position: absolute; left: 14px; top: 64px; z-index: 4; width: 300px; max-width: calc(100% - 100px); max-height: calc(100% - 200px); overflow-y: auto; background: rgba(251, 250, 248, 0.96); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(0, 0, 0, 0.06); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); font-size: 12px; }
+.furn-tool .furn-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; font-family: var(--serif); letter-spacing: 0.1em; }
+.furn-tool .furn-sel { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 8px 0; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.furn-tool .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.furn-tool .btn-row { display: flex; gap: 4px; flex-wrap: wrap; }

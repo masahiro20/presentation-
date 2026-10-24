@@ -1,7 +1,7 @@
 /**
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
-import type { BuildingModel, Floor, FurnitureKind, Opening, PlanSide, Room, RoomType, Stair, Vec2, Wall, WindowStyle } from '../core/types';
+import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
@@ -9,7 +9,7 @@ import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRaster
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs, stairEntryFromArrow } from './stairs';
-import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate } from './roomKnowledge';
+import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate, ROOM_KNOWLEDGE } from './roomKnowledge';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
 import { detectSymbols, dashedOutlines, dashedCarSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
@@ -437,9 +437,13 @@ function applyWindowVocabulary(openings: Opening[], info: Map<number, { room: Ro
 
 const MAIN_PRIORITY: RoomType[] = ['ldk', 'living', 'dining', 'kitchen', 'japanese', 'bedroom', 'kids', 'study', 'entrance', 'washroom', 'bath', 'toilet', 'balcony', 'garage', 'hall', 'stairs', 'closet', 'storage', 'porch', 'void', 'other'];
 
-/** 1つの領域の室名のうち代表となるもの（居室を優先、同格なら大きい文字） */
-function mainName<T extends { type: RoomType; size: number }>(names: T[]): T | undefined {
-  return names.slice().sort((p, q) => MAIN_PRIORITY.indexOf(p.type) - MAIN_PRIORITY.indexOf(q.type) || q.size - p.size)[0];
+/**
+ * 1つの領域の室名のうち代表となるもの（居室を優先、同格なら大きい文字）。
+ * 領域の広さ（㎡）が分かるときは、その用途としてあり得ない広さの名前（22㎡のトイレなど）を後回しにする
+ */
+function mainName<T extends { type: RoomType; size: number }>(names: T[], areaM2?: number): T | undefined {
+  const fits = (t: RoomType) => areaM2 == null || areaM2 <= ROOM_KNOWLEDGE[t].tatami[1] * 1.62 * 3;
+  return names.slice().sort((p, q) => Number(fits(q.type)) - Number(fits(p.type)) || MAIN_PRIORITY.indexOf(p.type) - MAIN_PRIORITY.indexOf(q.type) || q.size - p.size)[0];
 }
 
 /**
@@ -447,7 +451,7 @@ function mainName<T extends { type: RoomType; size: number }>(names: T[]): T | u
  * 「※」以降の注記・括弧の帖数は除く。
  */
 export function cleanRoomName(raw: string): string | null {
-  let s0 = raw.trim().replace(/[※＊*].*$/, '').replace(/[（(][^）)]*[）)]?$/, '').trim();
+  let s0 = raw.trim().replace(/[\uff61-\uff9f]+/g, (m) => m.normalize('NFKC')).replace(/[※＊*].*$/, '').replace(/[（(][^）)]*[）)]?$/, '').trim();
   if (!s0) return null;
   const n = normalizeText(s0);
   // 説明文: 長い、または助詞・動詞の語尾を含む
@@ -967,6 +971,10 @@ function collinearGaps(walls: WWall[], maxGap: number, axisTol = 30): { a: Vec2;
 export interface FloorHints {
   /** この点を含む区画は中庭（上階の床が無く、ガラス戸に囲まれた室名の無い区画） */
   courtyards?: Vec2[];
+  /** 平屋と分かっている（面積表の 2 階が 0、または「平屋」の表記）。階段の文字が無ければ階段を探さない */
+  singleStorey?: boolean;
+  /** この点を含む区画は家の外（手で外構・後付け／離れのガレージにした区画）。外形に入れない */
+  outdoorAt?: Vec2[];
 }
 
 /** 2 つの部屋が壁を挟んで隣り合うか（壁芯の外形どうしが 300mm 以上重なる辺を持つ） */
@@ -1270,14 +1278,22 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         const e = ends[i];
         const f = ends[j];
         if (e.w === f.w) continue;
-        if (Math.abs(e.w.u.x * f.w.u.x + e.w.u.y * f.w.u.y) < 0.98) continue;
         const dx = f.p.x - e.p.x;
         const dy = f.p.y - e.p.y;
         const L = Math.hypot(dx, dy);
-        // 車庫の出入口 1 ヵ所ぶん（2.4〜6.5m。短い線は玄関の上がり框などを拾う。長い線は敷地の線を拾って外を部屋にしてしまう）
-        if (L < 2400 || L > 6500) continue;
-        // 結ぶ線は壁と直交（壁の向きに沿う成分が小さい）
-        if (Math.abs(dx * e.w.u.x + dy * e.w.u.y) > 60) continue;
+        const parallel = Math.abs(e.w.u.x * f.w.u.x + e.w.u.y * f.w.u.y) >= 0.98;
+        if (parallel) {
+          // 車庫の出入口 1 ヵ所ぶん（2.4〜6.5m。短い線は玄関の上がり框などを拾う。長い線は敷地の線を拾って外を部屋にしてしまう）
+          if (L < 2400 || L > 6500) continue;
+          // 結ぶ線は壁と直交（壁の向きに沿う成分が小さい）
+          if (Math.abs(dx * e.w.u.x + dy * e.w.u.y) > 60) continue;
+        } else {
+          // 袖壁の端から、直交する側壁の端まで（2 台用シャッター・後付けガレージの間口は 7.5m まで）。
+          // 結ぶ線は片方の壁の延長上（袖壁をそのまま伸ばした線）にあること
+          if (L < 2400 || L > 7500) continue;
+          const along = (w: WWall) => Math.abs(dx * w.u.x + dy * w.u.y) >= L - 60;
+          if (!along(e.w) && !along(f.w)) continue;
+        }
         if (!nearGarage(e.p, f.p) || !opensOutside(e.p, f.p) || thinCoverage(e.p, f.p) < 0.6) continue;
         (globalThis as { __closerTrace?: string[] }).__closerTrace?.push(`ends ${Math.round(e.p.x)},${Math.round(e.p.y)}-${Math.round(f.p.x)},${Math.round(f.p.y)} L=${Math.round(L)}`);
         closeWithLine(e.p, f.p, Math.max(e.w.d, f.w.d));
@@ -1499,7 +1515,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       labelPos = { x: main.x, y: main.y };
     } else if (a?.names.length) {
       // 複数の室名が1つの領域に入った場合（LDK＋パントリーなど）は主な部屋を代表にする
-      let main = mainName(a.names)!;
+      let main = mainName(a.names, area)!;
       // 「外部物置」と「庇」が同じ区画に入った軒下のテラス: 物置が 15㎡ を超えることは無いので屋外（庇・ポーチ）を代表にする
       if ((main.type === 'storage' || main.type === 'closet') && area > 15) {
         const outdoor = a.names.find((n) => n.type === 'porch' || n.type === 'balcony');
@@ -1510,6 +1526,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       type = main.type;
       labelPos = { x: main.x, y: main.y };
       if (type === 'balcony' && /庭|COURT/i.test(main.str)) courtLabels.add(l);
+      // 2 階以上のデッキ・テラスはバルコニー
+      if (level >= 2 && (type === 'deck' || type === 'terrace' || type === 'carport' || type === 'parking')) type = 'balcony';
+      // 1 階の外構（カーポート・駐車場・デッキ・テラス・外部物置）は家の外形に入れない
+      if (level <= 1 && isExteriorWorks(type)) courtLabels.add(l);
     } else if (a?.stair) {
       name = '階段';
       type = 'stairs';
@@ -1605,7 +1625,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const er = erodeMask(bm, grid.w, grid.h, Math.max(1, Math.round(extD0 / 2 / res)));
     let cells = 0;
     for (let i = 0; i < er.length; i++) cells += er[i];
-    const excluded = rooms.filter((r) => r.type === 'void' || r.type === 'garage' || (r.type === 'balcony' && !/庭/.test(r.name))).reduce((s0, r) => s0 + r.area, 0);
+    const excluded = rooms.filter((r) => (excludedFromFloorArea(r.type) && r.type !== 'balcony' && r.type !== 'porch') || (r.type === 'balcony' && !/庭/.test(r.name))).reduce((s0, r) => s0 + r.area, 0);
     const A = (cells * res * res) / 1e6 - excluded;
     const err0 = (A - expectedArea) / expectedArea;
     if (err0 > 0.04) {
@@ -1640,6 +1660,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
           if (level <= 1) {
             r.name = open ? 'ポーチ' : '中庭';
             r.type = open ? 'porch' : 'balcony';
+            // 面積表から外した区画の推定名（車が置いてあれば後でガレージに直す）
+            r.inferred = true;
             courtLabels.add(l);
           } else if (open) {
             // 2階以上: 屋外に開いた区画はバルコニー・屋根
@@ -1667,10 +1689,25 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     courtLabels.add(l);
   }
 
+  for (const pt of hints?.outdoorAt ?? []) {
+    const idx = rooms.findIndex((r) => pointInPolygon(pt, r.polygon));
+    const l = idx >= 0 ? labelOfRoom.get(idx) : undefined;
+    if (l != null) courtLabels.add(l);
+  }
+
   // 「玄関ホール」は床のある通路（hall）として読むが、玄関（土間）の室名が無い図面ではそれを玄関にする
   if (level === 1 && !rooms.some((r) => r.type === 'entrance')) {
     const gh = rooms.find((r) => r.type === 'hall' && /玄関/.test(r.name));
     if (gh) gh.type = 'entrance';
+  }
+
+  // トイレ・浴室としてあり得ない広さ（7㎡を超えるトイレなど）の区画は、壁の読めなかった小部屋の名前が廊下に入ったもの → ホール
+  for (const rm of rooms) {
+    if ((rm.type === 'toilet' || rm.type === 'bath') && rm.area > ROOM_KNOWLEDGE[rm.type].tatami[1] * 1.62 * 3) {
+      rm.name = 'ホール';
+      rm.type = 'hall';
+      rm.inferred = true;
+    }
   }
 
   // 室名の無い区画の名前を、隣の部屋から推定する（玄関の隣 → シューズクローク、キッチンの隣 → パントリー、寝室の隣 → WIC …）
@@ -1812,7 +1849,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       let height = 2000;
       let windowStyle: WindowStyle | undefined;
       // 外壁扱いの壁でも、両側が室内（中庭に面する壁の、ホール側の区間など）なら室内の建具として扱う
-      const outdoorType = (t: string | undefined) => !t || t === 'balcony' || t === 'porch' || t === 'garage';
+      const outdoorType = (t: RoomType | undefined) => !t || OUTDOOR_TYPES.includes(t);
       const bothInside = !!inRoom && !!otherRoom && !outdoorType(inRoom.type) && !outdoorType(otherRoom.type);
       if (exterior && !bothInside) {
         if (level === 1 && (op.kind === 'door' || (inRoom?.type === 'entrance' && op.kind !== 'window'))) {
@@ -1895,10 +1932,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   for (const c of detectStairs(nonWallSegs, plan.bbox)) {
     // 「UP・DN・階段」の文字が近くに無いもの（タイル目地・デッキ材など）は階段にしない
     if (stairMarks.length && !stairMarks.some((t) => t.x > c.minX - 900 && t.x < c.maxX + 900 && t.y > c.minY - 900 && t.y < c.maxY + 900)) continue;
+    // 平屋で階段の文字も無い図面の等間隔線は、玄関・土間収納のタイル目地
+    if (hints?.singleStorey && !stairMarks.length) continue;
     {
       const cc = { x: (c.minX + c.maxX) / 2, y: (c.minY + c.maxY) / 2 };
       const rr = roomAt(cc);
-      if (rr && (rr.type === 'balcony' || rr.type === 'garage' || rr.type === 'porch')) continue;
+      if (rr && OUTDOOR_TYPES.includes(rr.type)) continue;
       // 建物の外（寸法線・図面の余白の等間隔線）は階段にしない
       if (!rr && !outline.some((l) => pointInPolygon(cc, l))) continue;
     }
@@ -2017,6 +2056,19 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));
   const mergedItems = sensed.items;
   void (null as FurnitureKind | null);
+  // 車の記号からガレージと分かった区画も含める（記号の読み取りの後）
+  // ガレージの建て方: 家の外形の中ならビルトイン、外形に接していれば後付け、離れていれば離れのガレージ
+  for (const r of rooms) {
+    if (r.type !== 'garage' || r.garageKind) continue;
+    const c = r.polygon.reduce((a0, q) => ({ x: a0.x + q.x / r.polygon.length, y: a0.y + q.y / r.polygon.length }), { x: 0, y: 0 });
+    if (outline.some((l) => pointInPolygon(c, l))) {
+      r.garageKind = 'builtin';
+      continue;
+    }
+    let d = Infinity;
+    for (const l of outline) for (const q of r.polygon) for (let i = 0; i < l.length; i++) d = Math.min(d, distPointSegment(q, l[i], l[(i + 1) % l.length]));
+    r.garageKind = d <= 600 ? 'attached' : 'detached';
+  }
   return {
     level,
     elevation: 0,
@@ -2662,8 +2714,9 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   const thicknesses = new Set<number>();
   let elev = 500;
   const planOf = new Map<Floor, PlanData>();
+  const singleStorey = sorted.length === 1 && (areaTable[2] === 0 || pages.some((pg) => pg.texts.some((t) => /平屋/.test(t.str))));
   for (const p of sorted) {
-    const f = buildFloor(p, levelOf.get(p)!, north, warnings, areaTable[levelOf.get(p)!]);
+    const f = buildFloor(p, levelOf.get(p)!, north, warnings, areaTable[levelOf.get(p)!], { singleStorey });
     planOf.set(f, p);
     // 部屋が取れない図（凡例・断面など）は階として扱わない
     const roomArea = f.rooms.reduce((s0, r) => s0 + r.area, 0);
@@ -2713,7 +2766,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     }
     if (pts.length) {
       const p = planOf.get(f1)!;
-      const nf = buildFloor(p, f1.level, north, warnings, areaTable[f1.level], { courtyards: pts });
+      const nf = buildFloor(p, f1.level, north, warnings, areaTable[f1.level], { courtyards: pts, singleStorey });
       nf.elevation = f1.elevation;
       floors[0] = nf;
     }
@@ -2815,6 +2868,8 @@ export interface RoomLabel {
   y: number;
   /** 用途を手で指定した場合（同じ名前の部屋に引き継ぐ） */
   type?: RoomType;
+  /** ガレージの建て方を手で指定した場合 */
+  garageKind?: GarageKind;
 }
 
 /**
@@ -2886,7 +2941,15 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     sashPolys: [],
     roomFills: [],
   };
-  const nf = buildFloor(plan, f.level, northAngleDeg, warnings);
+  // 手で外構・後付け／離れのガレージにした区画は家の外形から外す。元の読み取りで家の外だったガレージも同じ扱いを保つ
+  const outdoorAt = labels
+    .filter((l) => {
+      if (l.type) return isExteriorWorks(l.type) || (l.type === 'garage' && (l.garageKind === 'attached' || l.garageKind === 'detached'));
+      const prev = f.rooms.find((r) => pointInPolygon({ x: l.x, y: l.y }, r.polygon));
+      return !!prev && (isExteriorWorks(prev.type) || (prev.type === 'garage' && (prev.garageKind === 'attached' || prev.garageKind === 'detached')));
+    })
+    .map((l) => ({ x: l.x, y: l.y }));
+  const nf = buildFloor(plan, f.level, northAngleDeg, warnings, undefined, { outdoorAt });
   // 窓・ドアの種類は、修正前（読み取り結果や手で選んだもの）をそのまま引き継ぐ。
   // 作り直しの自動判定（外壁の引戸→窓、内壁の窓→引戸 など）で、手で選んだ種類が変わらないように
   const center = (fl: Floor, op: Opening) => {
@@ -2951,6 +3014,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
       if (c) r.type = c;
     }
     if (l.type) r.type = l.type;
+    if (r.type === 'garage' && l.garageKind) r.garageKind = l.garageKind;
     r.labelPos = { x: l.x, y: l.y };
   }
   // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す

@@ -9,7 +9,7 @@ import { exteriorById } from '../../styles/presets';
 import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '../../estimate/areas';
 import { CATEGORIES, type Grade } from '../../estimate/catalog';
 import { computeEstimate, newChoice, defaultGroups, unitPriceOf, yen, type EstimateChoice, type EstimateResult } from '../../estimate/calc';
-import { computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
+import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
 import { estimateGroupsFor } from '../../coordinate/catalog';
 
 export interface EstimateState {
@@ -119,6 +119,7 @@ function compute(es: EstimateState): Computed {
       pv: !/pvNone/.test(es.choice.groups.pv ?? ''),
       longLife: true,
       insul: es.choice.grade === 'P' ? 'セルロースファイバー' : '高性能グラスウール',
+      annex: annexRows(state.model),
     });
   }
   es.funding.body = est.subtotal;

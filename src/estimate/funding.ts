@@ -5,6 +5,7 @@
  * 建築請負工事費（税込）= ①＋②＋③、総合計 = ①＋②＋③＋④＋⑤＋⑥
  */
 import type { Grade } from './catalog';
+import type { BuildingModel } from '../core/types';
 
 export interface FundRow {
   id: string;
@@ -56,7 +57,49 @@ export interface FundingTotals {
   loans: { label: string; monthly: number }[];
 }
 
-export function newFunding(opts: { series: Grade; address: string; constArea: number; floors: number; body: number; fireZone: boolean; septic: boolean; waterHeater: string; pv: boolean; longLife: boolean; insul: string }): FundingInput {
+/**
+ * ガレージ・外構の概算（⑤その他工事費に載せる行）。単価は御社の資金計画書の実績から:
+ * 酒井様 3rd プラン「GAWガレージ製作 シャッター込み H3000」約 47㎡ → 7,000,000 円（≒ 150,000 円/㎡）。
+ * カーポート・デッキ・テラス・土間コンは外構の一般的な単価、ビルトインガレージは電動シャッター 1 ヵ所。
+ */
+export const ANNEX_UNIT = {
+  garageSeparate: 150000,
+  builtinShutter: 600000,
+  carport: 25000,
+  parking: 12000,
+  deck: 35000,
+  terrace: 30000,
+  shed: 300000,
+} as const;
+
+export function annexRows(model: BuildingModel | null | undefined): FundRow[] {
+  const f1 = model?.floors.find((f) => f.level === 1);
+  if (!f1) return [];
+  const rooms1 = f1.rooms;
+  const sumArea = (pred: (r: (typeof rooms1)[number]) => boolean) => rooms1.filter(pred).reduce((s, r) => s + r.area, 0);
+  const round = (v: number) => Math.round(v / 10000) * 10000;
+  const rows: FundRow[] = [];
+  const sep = sumArea((r) => r.type === 'garage' && (r.garageKind === 'attached' || r.garageKind === 'detached'));
+  if (sep > 0) {
+    const detached = f1.rooms.some((r) => r.type === 'garage' && r.garageKind === 'detached');
+    rows.push({ id: 'annexGarage', label: `${detached ? '離れのガレージ' : 'ガレージ（後付け・GAW）'}製作 シャッター込み`, amount: round(sep * ANNEX_UNIT.garageSeparate), note: `※概算 約${sep.toFixed(1)}㎡` });
+  }
+  const builtin = f1.rooms.filter((r) => r.type === 'garage' && (r.garageKind ?? 'builtin') === 'builtin').length;
+  if (builtin) rows.push({ id: 'annexShutter', label: 'ビルトインガレージ 電動シャッター', amount: builtin * ANNEX_UNIT.builtinShutter, note: '※概算' });
+  const line = (id: string, label: string, type: 'carport' | 'parking' | 'deck' | 'terrace', unit: number) => {
+    const a = sumArea((r) => r.type === type);
+    if (a > 0) rows.push({ id, label, amount: round(a * unit), note: `※概算 約${a.toFixed(1)}㎡` });
+  };
+  line('annexCarport', 'カーポート', 'carport', ANNEX_UNIT.carport);
+  line('annexParking', '駐車場 土間コンクリート', 'parking', ANNEX_UNIT.parking);
+  line('annexDeck', 'ウッドデッキ', 'deck', ANNEX_UNIT.deck);
+  line('annexTerrace', 'テラス（タイル）', 'terrace', ANNEX_UNIT.terrace);
+  const sheds = f1.rooms.filter((r) => r.type === 'shed').length;
+  if (sheds) rows.push({ id: 'annexShed', label: '物置・サイクルポート', amount: sheds * ANNEX_UNIT.shed, note: '※概算' });
+  return rows;
+}
+
+export function newFunding(opts: { series: Grade; address: string; constArea: number; floors: number; body: number; fireZone: boolean; septic: boolean; waterHeater: string; pv: boolean; longLife: boolean; insul: string; annex?: FundRow[] }): FundingInput {
   const d = new Date();
   return {
     series: opts.series,
@@ -89,6 +132,8 @@ export function newFunding(opts: { series: Grade; address: string; constArea: nu
       { id: 'waterIn', label: '水道引き込み費用', amount: 340000 },
       { id: 'pole', label: '中継ポール', amount: 0, note: '旗竿地の場合' },
       { id: 'demolish', label: '解体費 ※予算組', amount: 0 },
+      // 間取りから分かったガレージ・外構（後付けガレージ・カーポート・デッキ…）の概算
+      ...(opts.annex ?? []),
       { id: 'o7', label: '', amount: 0 },
     ],
     loanFees: [

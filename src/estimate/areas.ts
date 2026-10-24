@@ -112,7 +112,7 @@ export interface Areas {
   soStyle: number;
   travelKm: number;
   /** 図面から読んだキッチンの形（見積のキッチンの既定に使う） */
-  kitchenType?: 'peninsula' | 'island' | 'wall' | 'two';
+  kitchenType?: 'peninsula' | 'island' | 'wall' | 'two' | 'l';
 }
 
 /** 画面で編集できる項目の説明（順番どおりに並べる） */
@@ -464,7 +464,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     doorCloth: 0,
     soStyle: 0,
     travelKm: 0,
-    kitchenType: [...floors.flatMap((f) => f.planItems ?? []), ...(model.furniture ?? []).flatMap((x) => x.items)].find((it) => it.kind === 'kitchen' && it.kitchenType)?.kitchenType,
+    // 3D や修正画面で置き直した家具（キッチンの型を変えた）を図面の記号より優先
+    kitchenType: [...(model.furniture ?? []).flatMap((x) => x.items), ...floors.flatMap((f) => f.planItems ?? [])].find((it) => it.kind === 'kitchen' && it.kitchenType)?.kitchenType,
   };
 }
 

@@ -48,7 +48,12 @@ export const ROOM_KNOWLEDGE: Record<RoomType, RoomKnowledge> = {
   storage: K({ storage: true, openTo: ['entrance'], adjacent: ['entrance', 'kitchen', 'hall', 'stairs', 'ldk'], tatami: [0.3, 4], door: 'out' }),
   balcony: K({ door: 'in', adjacent: ['ldk', 'living', 'bedroom', 'washroom'], tatami: [1, 12] }),
   porch: K({ circulation: true, adjacent: ['entrance'], tatami: [0.5, 4], door: 'none' }),
-  garage: K({ adjacent: ['entrance', 'storage'], tatami: [6, 20], door: 'out' }),
+  garage: K({ adjacent: ['entrance', 'storage'], tatami: [6, 40], door: 'out' }),
+  carport: K({ adjacent: ['porch', 'entrance'], tatami: [6, 40], door: 'none' }),
+  parking: K({ adjacent: ['porch'], tatami: [6, 60], door: 'none' }),
+  deck: K({ adjacent: ['ldk', 'living', 'dining', 'japanese'], tatami: [1, 30], door: 'none' }),
+  terrace: K({ adjacent: ['ldk', 'living', 'dining'], tatami: [1, 30], door: 'none' }),
+  shed: K({ storage: true, tatami: [0.5, 6], door: 'out' }),
   void: K({ door: 'none', tatami: [1, 20] }),
   other: K({}),
 };

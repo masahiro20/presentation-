@@ -3,7 +3,7 @@
  * 単位: m。平面 (x, y[下向き]) → ワールド (X = x, Z = y)、Y が上。
  */
 import * as THREE from 'three';
-import type { BuildingModel, Floor, Opening, Room, Stair, Wall } from '../core/types';
+import { isExteriorWorks, isSeparateGarage, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Wall } from '../core/types';
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -98,6 +98,21 @@ export interface DoorInfo {
 }
 
 const up = new THREE.Vector3(0, 1, 0);
+
+/** 家の外の区画（バルコニー・ポーチ・中庭・外構・後付け／離れのガレージ）。面する壁は外壁の仕上げ */
+function outdoorRoom(r: Room | null): boolean {
+  return !!r && (r.type === 'balcony' || r.type === 'porch' || isExteriorWorks(r.type) || isSeparateGarage(r));
+}
+
+/** 家と別に建つ小さな建物（後付け・離れのガレージ・物置）の高さ（地面から、m）。GAW ガレージは H3000 */
+export const GARAGE_HEIGHT = 3.0;
+export const SHED_HEIGHT = 2.2;
+function annexHeight(r: Room | null): number | null {
+  if (!r) return null;
+  if (isSeparateGarage(r)) return GARAGE_HEIGHT;
+  if (r.type === 'shed') return SHED_HEIGHT;
+  return null;
+}
 
 export function wallTopOf(model: BuildingModel, f: Floor, opts?: { topWallHeight?: number }): number {
   const idx = model.floors.indexOf(f);
@@ -356,7 +371,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       const w = j.w;
       const outdoorAt = (x: number, y: number) => {
         const r = roomAt(f, x, y);
-        return !r || r.type === 'balcony' || r.type === 'porch';
+        return !r || outdoorRoom(r);
       };
       const bothOutdoor = w.exterior && [1, -1].every((sg) => outdoorAt(j.p.x + ((w.b.y - w.a.y) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * -sg * (w.thickness + 80), j.p.y + ((w.b.x - w.a.x) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * sg * (w.thickness + 80)));
       const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
@@ -369,6 +384,11 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     const voids = stairVoidsFor(model, f);
     for (const r of f.rooms) {
       if (r.type === 'void') continue;
+      // 外構・後付け／離れのガレージは地面の高さ（家の床の高さではない）
+      if (f.level === 1 && (outdoorRoom(r) && r.type !== 'balcony' && r.type !== 'porch')) {
+        buildAnnexFloor(mb, f, r, fl);
+        continue;
+      }
       const key = floorKeyFor(r);
       const y = fl + (r.type === 'entrance' ? -0.0 : 0);
       emitFlat(mb, key, r.polygon, voids, y, true);
@@ -389,6 +409,11 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     const upper = model.floors[model.floors.indexOf(f) + 1];
     const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
     for (const r of f.rooms) {
+      if (f.level === 1 && (isSeparateGarage(r) || isExteriorWorks(r.type))) {
+        // 家と別に建つガレージ・物置の屋根、カーポートの屋根（デッキ・テラス・駐車場は空に開く）
+        buildAnnexRoof(mb, f, r);
+        continue;
+      }
       if (r.type === 'void') {
         // 吹抜の上（この階の天井の高さ）にも天井を張る。以前は張っておらず、1 階から見上げると屋根の裏（黒い板金）が見えていた。
         // 1 階の中庭（空に開いた区画）には張らない
@@ -500,6 +525,108 @@ function distToLine(p: { x: number; y: number }, a: THREE.Vector2, b: THREE.Vect
   const dy = b.y - a.y;
   const L = Math.hypot(dx, dy) || 1;
   return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / L;
+}
+
+/** 外構・後付け／離れのガレージの床（地面の高さ。デッキは家の床の少し下、テラスは 1 段上がり） */
+function buildAnnexFloor(mb: MeshBuilder, f: Floor, r: Room, fl: number) {
+  if (r.type === 'deck') {
+    const y = Math.max(0.2, fl - 0.05);
+    emitSlab(mb, 'ext.balcony', r.polygon, [], 0.02, y, 'ext.balcony');
+    emitFlat(mb, 'ext.balcony', r.polygon, [], y, true);
+    return;
+  }
+  if (r.type === 'terrace') {
+    const y = Math.min(0.15, fl - 0.05);
+    emitSlab(mb, 'ext.terrace', r.polygon, [], 0.0, y, 'ext.foundation');
+    emitFlat(mb, 'ext.terrace', r.polygon, [], y, true);
+    return;
+  }
+  emitFlat(mb, 'ext.concrete', r.polygon, [], 0.03, true);
+  void f;
+}
+
+/** 部屋の外形の辺のうち、壁の無い区間（ガレージの出入口）。戻り値は mm の線分 */
+function openEdges(f: Floor, r: Room, minLen = 1800): { a: { x: number; y: number }; b: { x: number; y: number } }[] {
+  const out: { a: { x: number; y: number }; b: { x: number; y: number } }[] = [];
+  const P = r.polygon;
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i];
+    const b = P[(i + 1) % P.length];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < minLen) continue;
+    const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    const cov: [number, number][] = [];
+    for (const w of f.walls) {
+      const tol = w.thickness / 2 + 150;
+      const off = (q: { x: number; y: number }) => Math.abs((q.x - a.x) * -u.y + (q.y - a.y) * u.x);
+      if (off(w.a) > tol || off(w.b) > tol) continue;
+      const ta = (w.a.x - a.x) * u.x + (w.a.y - a.y) * u.y;
+      const tb = (w.b.x - a.x) * u.x + (w.b.y - a.y) * u.y;
+      const s0 = Math.max(0, Math.min(ta, tb));
+      const s1 = Math.min(L, Math.max(ta, tb));
+      if (s1 > s0) cov.push([s0, s1]);
+    }
+    cov.sort((p, q) => p[0] - q[0]);
+    let cur = 0;
+    const gaps: [number, number][] = [];
+    for (const [s0, s1] of cov) {
+      if (s0 > cur) gaps.push([cur, s0]);
+      cur = Math.max(cur, s1);
+    }
+    if (cur < L) gaps.push([cur, L]);
+    for (const [s0, s1] of gaps) if (s1 - s0 >= minLen) out.push({ a: { x: a.x + u.x * s0, y: a.y + u.y * s0 }, b: { x: a.x + u.x * s1, y: a.y + u.y * s1 } });
+  }
+  return out;
+}
+
+/** 後付け／離れのガレージ・物置の陸屋根とシャッター、カーポートの柱と屋根 */
+function buildAnnexRoof(mb: MeshBuilder, f: Floor, r: Room) {
+  const poly = r.polygon.map((p) => ({ x: p.x * MM, y: p.y * MM }));
+  if (isSeparateGarage(r) || r.type === 'shed') {
+    const H = r.type === 'shed' ? SHED_HEIGHT : GARAGE_HEIGHT;
+    // 屋根は壁の外面まで（壁芯の外形を壁厚の半分だけ広げる）
+    const t = Math.max(0.1, ...f.walls.map((w) => w.thickness * MM)) / 2;
+    const roof = offsetPolygon(poly, t).map((p) => ({ x: p.x / MM, y: p.y / MM }));
+    emitSlab(mb, 'ext.soffit', roof, [], H - 0.12, H + 0.05, 'ext.wall');
+    emitFlat(mb, 'ext.roof', roof, [], H + 0.05, true);
+    // 出入口（壁の無い辺）にシャッターと、その上の垂れ壁
+    for (const e of openEdges(f, r)) {
+      const A = V(e.a.x * MM, 0, e.a.y * MM);
+      const B = V(e.b.x * MM, 0, e.b.y * MM);
+      const L = A.distanceTo(B);
+      const dir = new THREE.Vector3().subVectors(B, A).normalize();
+      const mid = A.clone().addScaledVector(dir, L / 2);
+      const head = Math.min(H - 0.45, 2.5);
+      mb.box('ext.shutter', mid.clone().setY(0.02), dir, L, head - 0.02, 0.05);
+      // シャッターボックス（まぐさ）
+      mb.box('ext.wall', mid.clone().setY(head), dir, L, H - 0.12 - head, t * 2);
+      // スラット（横の目地）: 細い溝を数本
+      for (let y = 0.25; y < head - 0.1; y += 0.25) mb.box('ext.frame', mid.clone().setY(y), dir, L - 0.04, 0.008, 0.056);
+    }
+    return;
+  }
+  if (r.type === 'carport') {
+    // 柱（四隅。長い辺は 3 本）と薄い屋根
+    const xs = poly.map((p) => p.x);
+    const zs = poly.map((p) => p.y);
+    const x0 = Math.min(...xs) + 0.15;
+    const x1 = Math.max(...xs) - 0.15;
+    const z0 = Math.min(...zs) + 0.15;
+    const z1 = Math.max(...zs) - 0.15;
+    const H = 2.5;
+    const longX = x1 - x0 >= z1 - z0;
+    const n = Math.max(x1 - x0, z1 - z0) > 6.5 ? 3 : 2;
+    for (let i = 0; i < n; i++) {
+      const s = i / (n - 1);
+      for (const side of [0, 1]) {
+        const p = longX ? V(x0 + (x1 - x0) * s, 0, side ? z1 : z0) : V(side ? x1 : x0, 0, z0 + (z1 - z0) * s);
+        mb.box('ext.canopy', p, V(1, 0, 0), 0.08, H, 0.08);
+      }
+    }
+    const roof = offsetPolygon(poly, 0.15).map((p) => ({ x: p.x / MM, y: p.y / MM }));
+    emitSlab(mb, 'ext.canopy', roof, [], H, H + 0.12, 'ext.canopy');
+    emitFlat(mb, 'ext.canopy', roof, [], H + 0.12, true);
+  }
 }
 
 export function floorKeyFor(r: Room): string {
@@ -741,7 +868,7 @@ function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec:
         ny = -ny;
       }
       const other = roomAt(f, mid.x + nx * 200, mid.y + ny * 200);
-      if (!other || other.type === 'void' || other.type === 'balcony' || other.type === 'porch') continue;
+      if (!other || other.type === 'void' || outdoorRoom(other)) continue;
       const A = V(p.x * MM, 0, p.y * MM);
       const B = V(q.x * MM, 0, q.y * MM);
       const dir = new THREE.Vector3().subVectors(B, A).normalize();
@@ -833,7 +960,7 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     const mid = { x: (w.a.x + w.b.x) / 2 + nPlan.x * sign * (w.thickness / 2 + 80), y: (w.a.y + w.b.y) / 2 + nPlan.y * sign * (w.thickness / 2 + 80) };
     return roomAt(f, mid.x, mid.y);
   };
-  const isOutdoor = (r: Room | null) => !!r && (r.type === 'balcony' || r.type === 'porch');
+  const isOutdoor = outdoorRoom;
   const rPlus = sideRoom(1);
   const rMinus = sideRoom(-1);
   // バルコニーの外周（両側とも屋外）は手すり壁（腰壁＋笠木）、バルコニーと室内の間は外壁
@@ -870,7 +997,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   // 1階の外壁は基礎天端まで下げる。両側とも屋外の塀状の壁（中庭・ポーチの囲い）は外形の外で基礎が無いので地面まで
   const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
   const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
-  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+  // 後付け・離れのガレージ、物置の囲い（両側とも家の外）はその建物の高さまで
+  const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
+  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   if (guard === 'halfGlass') voidGlassOnTop(mb, A, B, fl + 0.9);
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
@@ -1279,7 +1408,7 @@ function curtainWave(mb: MeshBuilder, start: THREE.Vector3, dir: THREE.Vector3, 
 function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
   const ceil = fl + f.ceilingHeight * MM;
   for (const r of f.rooms) {
-    if (['closet', 'storage', 'void', 'balcony', 'porch', 'stairs'].includes(r.type)) continue;
+    if (['closet', 'storage', 'void', 'balcony', 'porch', 'stairs', 'garage'].includes(r.type) || outdoorRoom(r)) continue;
     const xs = r.polygon.map((p) => p.x * MM);
     const zs = r.polygon.map((p) => p.y * MM);
     const x0 = Math.min(...xs);

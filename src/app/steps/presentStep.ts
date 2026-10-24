@@ -3,6 +3,7 @@ import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/
 import { h, clear, toast, progressModal, section, download } from '../dom';
 import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
+import { excludedFromFloorArea } from '../../core/types';
 import { exteriorById, interiorById } from '../../styles/presets';
 import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFailed, currentShots } from './designStep';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
@@ -233,7 +234,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   const today = new Date();
   const dateStr = `${today.getFullYear()}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}`;
   const rooms = model.floors.flatMap((f) => f.rooms);
-  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !['balcony', 'porch', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0), 0);
+  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0), 0);
   const ldk = rooms.find((r) => r.type === 'ldk' || r.type === 'living');
   const tatami = (r: { labeledTatami?: number; area: number }) => (r.labeledTatami ?? r.area / 1.62).toFixed(1);
   const hasVoid = rooms.some((r) => r.type === 'void');
@@ -333,7 +334,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const n = no('Floor Plan');
     model.floors.forEach((f, fi) => {
       const list = f.rooms.filter((r) => r.area > 2 && !['void', 'stairs'].includes(r.type)).sort((a, b) => b.area - a.area);
-      const area = f.rooms.filter((r) => !['balcony', 'porch', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0);
+      const area = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0);
       slides.push(
         slide(
           'drawing plan-one',

@@ -60,6 +60,10 @@ export class MaterialRegistry {
     set('ext.gutter', color(e.roof.fascia, 0.5, 0.2));
     set('ext.canopy', color(e.roof.fascia, 0.5, 0.2));
     set('ext.balcony', M({ pattern: 'woodFloor', color: '#8a7a68', color2: '#76685a', roughness: 0.8 }));
+    // 外構: ガレージ・カーポート・駐車場の土間コンクリート、テラスのタイル、ガレージのシャッター（ガルバの横スラット）
+    set('ext.concrete', color('#b8b5ae', 0.92));
+    set('ext.terrace', M(i.entranceFloor));
+    set('ext.shutter', color('#8e9195', 0.42, 0.55));
     // 透明ガラス: 空と周囲の映り込みをはっきり出す（写真のサッシはガラス面が鏡のように景色を映す）
     const glass = new THREE.MeshPhysicalMaterial({
       color: '#c3cfd4',
@@ -120,6 +124,10 @@ export class MaterialRegistry {
     set('f.hoodDark', color('#1b1b1b', 0.45, 0.6));
     // Y チェアのペーパーコードの座（生成りの紙紐）
     set('f.cord', color('#d8c8a6', 0.95, 0));
+    // 造作本棚に並べる本（落ち着いた色の背表紙）
+    set('f.book1', color('#6f6253', 0.85));
+    set('f.book2', color('#3e4246', 0.8));
+    set('f.book3', color('#a99a83', 0.85));
     // ペンダントの笠（マットな生成りの白。少し光を帯びる）
     set('f.shade', color('#f1ece3', 0.85, 0, { emissive: new THREE.Color('#ffe0b8'), emissiveIntensity: night ? 1.2 : 0.12 }));
     set('f.carcass', color('#3b3b3b', 0.7, 0.1));

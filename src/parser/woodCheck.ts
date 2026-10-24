@@ -10,7 +10,7 @@
  *  - 開き戸の前に壁（開く側に戸の幅ぶんの空きが無い）、外壁の半間未満の出入り（柱・基礎・屋根が増える）
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
-import type { BuildingModel, Floor, Room, Vec2, Wall } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type Floor, type Room, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
 import { stairFrame, stairStepCount } from '../core/stairs';
@@ -296,7 +296,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
   // (d) 梁のスパン: 部屋の内側の矩形の短辺が 2 間（3,640）を超える
   for (const f of floors) {
     for (const r of f.rooms) {
-      if (['void', 'balcony', 'porch', 'garage', 'closet', 'storage', 'stairs'].includes(r.type)) continue;
+      if (excludedFromFloorArea(r.type) || ['closet', 'storage', 'stairs'].includes(r.type)) continue;
       const inner = largestInnerRect(r.polygon, 5);
       if (!inner) continue;
       const short = Math.min(inner.maxX - inner.minX, inner.maxY - inner.minY) + (model.module ? 130 : 0);
@@ -335,7 +335,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
   // (f) 出入口の無い部屋
   for (const f of floors) {
     for (const r of f.rooms) {
-      if (['void', 'balcony', 'porch', 'garage', 'stairs', 'hall', 'other'].includes(r.type)) continue;
+      if (excludedFromFloorArea(r.type) || ['stairs', 'hall', 'other'].includes(r.type)) continue;
       if (r.area < 1.2) continue;
       const { hasDoor, hasOpenEdge } = roomAccess(r, f);
       if (!hasDoor && !hasOpenEdge) out.push({ id: `nodoor-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 出入口が読めていません`, detail: '壁に囲まれていて戸が見つかりません。引戸・開き戸の記号が読めなかったか、壁を読みすぎています。修正画面で戸を置くか壁を消してください', marks: [{ level: f.level, rects: [bboxOf(r.polygon)], label: '出入口なし' }] });
@@ -386,7 +386,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
   // (i) 通れない幅: 廊下・ホール・玄関・階段の一番狭い所と、部屋の幅（物入・収納は 455 でも成り立つので除く）
   for (const f of floors) {
     for (const r of f.rooms) {
-      if (['void', 'balcony', 'porch', 'garage', 'closet', 'storage', 'toilet', 'bath'].includes(r.type)) continue;
+      if (excludedFromFloorArea(r.type) || ['closet', 'storage', 'toilet', 'bath'].includes(r.type)) continue;
       const nw = narrowestWidth(r.polygon);
       if (!nw) continue;
       const clear = nw.width - 130;
@@ -699,7 +699,7 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
     }
     // 収納率: 収納（物入・クローゼット・SIC・パントリー）の面積が床面積の 8% 未満
     const storage = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage').reduce((s, r) => s + r.area, 0);
-    const floorArea = f.rooms.filter((r) => !['void', 'balcony', 'porch', 'garage'].includes(r.type)).reduce((s, r) => s + r.area, 0);
+    const floorArea = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0);
     if (floorArea > 30 && storage / floorArea < 0.08) {
       out.push({ id: `storage-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 収納が床面積の ${Math.round((storage / floorArea) * 100)}% と少なめです`, detail: '戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります' });
     }

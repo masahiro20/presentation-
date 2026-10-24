@@ -3,7 +3,7 @@
  * 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
  */
 import * as THREE from 'three';
-import type { BuildingModel, Floor, Room, FurnitureItem, FurnitureKind } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -163,13 +163,40 @@ export const FURNITURE_LABEL: Record<FurnitureKind, string> = {
   shoeCabinet: '下駄箱',
   fridge: '冷蔵庫',
   cupboard: '背面収納',
+  builtin: '造作家具',
+};
+
+/** キッチンの型（選択肢の表示名） */
+export const KITCHEN_TYPES: [NonNullable<FurnitureItem['kitchenType']>, string][] = [
+  ['peninsula', '対面ペニンシュラ（カウンタースタイル）'],
+  ['island', 'アイランド'],
+  ['wall', '壁付け I 型'],
+  ['two', 'Ⅱ型（壁にコンロ・対面にシンク）'],
+  ['l', 'L 型（壁にシンク・袖にコンロ）'],
+];
+
+/** 造作家具の形（名前・既定の幅 m・奥行 m・説明） */
+export const BUILTIN_VARIANTS: Record<BuiltinVariant, { label: string; w: number; d: number; note: string }> = {
+  wallShelf: { label: '造作本棚（壁一面・天井まで）', w: 2.4, d: 0.35, note: '縦板 600 前後の割り、棚板 350 ピッチ。本と小物を飾る' },
+  shelfDesk: { label: '本棚＋デスク（スタディコーナー）', w: 2.0, d: 0.55, note: '天板 H720 の通しカウンター、上部はオープン棚' },
+  floatTv: { label: 'フロートテレビボード＋飾り棚', w: 2.4, d: 0.42, note: '床から浮かせた箱（H250〜600）と上部の浮き棚' },
+  openShelf: { label: '飾り棚（浮き棚 3 段）', w: 1.6, d: 0.25, note: '壁から持ち出した厚板の棚' },
+  bench: { label: '造作ベンチ（収納付き）', w: 1.8, d: 0.45, note: '窓辺・ダイニング脇。座面 H420、クッション付き' },
+  counter: { label: 'スタディカウンター（壁付け）', w: 2.0, d: 0.5, note: '天板 H720 の持ち出しカウンター' },
+  tallStorage: { label: '壁面収納（扉付き・天井まで）', w: 2.4, d: 0.45, note: 'クロスになじむフラット扉、目地だけ見せる' },
+  lowShelf: { label: '腰高のオープン棚', w: 1.8, d: 0.35, note: '窓下・吹抜の手すり際。H900' },
 };
 
 /** 平面に描くときの外形 (m): 幅 w（並び方向）、奥行 d、基準点から奥行方向への始まり v0 */
 export function furnitureDims(it: FurnitureItem): { w: number; d: number; v0: number } {
   switch (it.kind) {
     case 'kitchen':
+      if (it.kitchenType === 'l') return { w: Math.max(1.8, (it.len ?? 3) - 0.3), d: it.d ? Math.max(1.5, Math.min(2.8, it.d)) : 2.1, v0: 0 };
       return { w: Math.max(1.5, (it.len ?? 3) - 0.3), d: (it.kitchenType ?? 'peninsula') === 'wall' ? 0.7 : (it.d ? Math.max(1.2, Math.min(2.6, it.d)) : 1.52) + 0.45, v0: 0 };
+    case 'builtin': {
+      const b = BUILTIN_VARIANTS[it.variant ?? 'wallShelf'];
+      return { w: it.w ?? b.w, d: it.d ?? b.d, v0: 0 };
+    }
     case 'fridge':
       return { w: 0.68, d: 0.7, v0: 0 };
     case 'cupboard':
@@ -297,7 +324,7 @@ export function buildFurniture(
       const ceilingY = f.ceilingHeight * MM;
       const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - 0.02, (R.minZ + R.maxZ) / 2);
       if (override) {
-        if (!['void', 'balcony', 'porch', 'garage', 'other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
+        if (!excludedFromFloorArea(room.type) && !['other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
         continue;
       }
       // 図面の記号から読んだ家具は、図面どおりの位置・向きに先に置く
@@ -448,6 +475,9 @@ function emitItem(it: FurnitureItem, env: ItemEnv) {
     case 'bookshelf':
       fr.box('f.cabinet', 0, 0, 0.9, 0.32, 0, 1.8);
       for (let i = 1; i < 5; i++) fr.box('f.wood', 0, 0.01, 0.84, 0.3, i * 0.36, 0.02);
+      break;
+    case 'builtin':
+      builtinFurniture(fr, it, env.ceilingY);
       break;
     case 'lowTable':
       fr.box('f.wood', 0, -0.4, 1.2, 0.8, 0.3, 0.05);
@@ -790,6 +820,113 @@ function yChair(fr: Frame, cu: number, cv: number, side: number) {
  * - 背面はカップボード フロアタイプ（D450 H850）＋ 吊戸（H600）、端にトール（H2050 D650）のミックスタイプ。冷蔵庫はその並び
  * - Ⅱ型: 壁に加熱機器キャビネット W1840、対面にシンクキャビネット W1840（D750）
  */
+/** 本の並び（棚板の上、幅 w の中に背の違う本を詰め、ところどころ空けて小物を置く） */
+function books(fr: Frame, u: number, v: number, w: number, d: number, y: number, maxH: number, seed: number) {
+  let s = seed * 9301 + 49297;
+  const rnd = () => {
+    s = (s * 16807) % 2147483647;
+    return s / 2147483647;
+  };
+  const keys = ['f.book1', 'f.book2', 'f.book3', 'f.white'];
+  let x = u - w / 2 + 0.03;
+  const end = u + w / 2 - 0.03;
+  // 段の半分ほどだけ本を詰める（ぎっしりより、余白のある飾り方）
+  const fillTo = x + (end - x) * (0.45 + rnd() * 0.35);
+  while (x < fillTo) {
+    const bw = 0.018 + rnd() * 0.025;
+    const bh = Math.min(maxH - 0.03, 0.18 + rnd() * 0.12);
+    fr.box(keys[Math.floor(rnd() * keys.length)], x + bw / 2, v + 0.02, bw, Math.min(d - 0.04, 0.16 + rnd() * 0.06), y, bh);
+    x += bw + 0.002;
+  }
+  // 残りに器か観葉植物
+  if (end - x > 0.25 && maxH > 0.2) {
+    if (rnd() > 0.5) fr.cyl('f.white', (x + end) / 2, v + d / 2, 0.06, y, Math.min(maxH - 0.04, 0.16));
+    else {
+      fr.cyl('f.pot', (x + end) / 2, v + d / 2, 0.06, y, 0.1);
+      fr.sphere('f.leaf', (x + end) / 2, v + d / 2, y + 0.16, 0.08, 1.2);
+    }
+  }
+}
+
+/** 造作家具（形は variant）。奥行方向 v = 0 が壁 */
+function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
+  const variant = it.variant ?? 'wallShelf';
+  const b = BUILTIN_VARIANTS[variant];
+  const w = it.w ?? b.w;
+  const d = it.d ?? b.d;
+  const T = 0.025; // 板厚
+  const top = Math.min(ceilingY - 0.005, it.h ?? ceilingY);
+  /** 縦板で割ったオープン棚（y0〜y1） */
+  const openShelves = (y0: number, y1: number, dd: number, pitch = 0.35, seed = 1) => {
+    const n = Math.max(1, Math.round(w / 0.75));
+    const cw = w / n;
+    for (let i = 0; i <= n; i++) fr.box('f.wood', -w / 2 + i * cw, 0, T, dd, y0, y1 - y0);
+    const rows = Math.max(1, Math.round((y1 - y0) / pitch));
+    const ph = (y1 - y0) / rows;
+    for (let r = 0; r <= rows; r++) fr.box('f.wood', 0, 0, w, dd, Math.min(y1 - T, y0 + r * ph), T);
+    for (let r = 0; r < rows; r++)
+      for (let i = 0; i < n; i++) if ((r + i + seed) % 3 !== 2) books(fr, -w / 2 + (i + 0.5) * cw, 0, cw - T, dd, y0 + r * ph + T, ph - T, seed * 31 + r * 7 + i);
+  };
+  switch (variant) {
+    case 'wallShelf':
+      fr.box('f.wood', 0, 0, w, 0.01, 0, top); // 背板
+      openShelves(0, top, d, 0.35, 1);
+      break;
+    case 'shelfDesk': {
+      // 天板 H720 の通しカウンター（奥行 d）と、上部のオープン棚（奥行 300）
+      fr.box('f.wood', 0, 0, w, d, 0.7, 0.03);
+      fr.box('f.wood', -w / 2 + T / 2, 0, T, d, 0, 0.7);
+      fr.box('f.wood', w / 2 - T / 2, 0, T, d, 0, 0.7);
+      fr.box('f.cabinet', w / 2 - 0.25, 0, 0.45, d - 0.02, 0.0, 0.7);
+      openShelves(1.15, top, 0.3, 0.33, 2);
+      fr.cyl('f.handle', -w / 4, d * 0.55, 0.015, 0.73, 0.38);
+      fr.sphere('f.shade', -w / 4, d * 0.55, 1.13, 0.07, 0.8);
+      break;
+    }
+    case 'floatTv': {
+      // 床から浮かせた箱（H250〜600）、上部に浮き棚 2 段、テレビ
+      fr.box('f.cabinet', 0, 0, w, d, 0.25, 0.35);
+      fr.box('f.handle', 0, d - 0.003, w - 0.02, 0.006, 0.57, 0.01);
+      for (let k = 1; k < 3; k++) fr.box('f.handle', -w / 2 + (w / 3) * k, d - 0.003, 0.004, 0.006, 0.27, 0.3);
+      fr.box('f.screen', 0, 0.12, Math.min(1.45, w * 0.6), 0.04, 0.85, 0.82);
+      for (const y of [1.85, 2.15]) if (y < top - 0.1) {
+        fr.box('f.wood', -w / 2 + 0.35, 0, 0.6, 0.22, y, 0.03);
+        books(fr, -w / 2 + 0.35, 0, 0.56, 0.22, y + 0.03, 0.24, y * 10);
+      }
+      break;
+    }
+    case 'openShelf':
+      for (const [i, y] of [1.1, 1.45, 1.8].entries()) {
+        fr.box('f.wood', 0, 0, w, d, y, 0.035);
+        books(fr, 0, 0, w, d, y + 0.035, 0.3, i + 5);
+      }
+      break;
+    case 'bench':
+      fr.box('f.cabinet', 0, 0, w, d, 0.06, 0.34);
+      fr.box('int.shadowGap', 0, 0.04, w - 0.08, d - 0.08, 0, 0.06);
+      fr.box('f.fabric', 0, 0.02, w - 0.04, d - 0.04, 0.4, 0.05);
+      for (const du of [-w / 3, w / 3]) fr.box('f.fabric2', du, 0.02, 0.45, 0.14, 0.45, 0.38);
+      break;
+    case 'counter':
+      fr.box('f.wood', 0, 0, w, d, 0.7, 0.03);
+      for (const du of [-w / 2 + 0.1, w / 2 - 0.1]) fr.box('f.metal', du, 0, 0.02, d - 0.05, 0.62, 0.08);
+      fr.box('f.cabinet', w / 2 - 0.25, 0, 0.45, d - 0.02, 0, 0.62);
+      break;
+    case 'tallStorage': {
+      const n = Math.max(2, Math.round(w / 0.6));
+      fr.box('int.shadowGap', 0, 0.04, w - 0.04, d - 0.06, 0, 0.06);
+      fr.box('int.door', 0, 0, w, d, 0.06, top - 0.06);
+      for (let k = 1; k < n; k++) fr.box('f.handle', -w / 2 + (w / n) * k, d - 0.002, 0.004, 0.004, 0.08, top - 0.12);
+      fr.box('f.handle', 0, d - 0.002, w - 0.01, 0.004, 0.95, 0.004);
+      break;
+    }
+    case 'lowShelf':
+      fr.box('f.wood', 0, 0, w, d, 0.88, 0.03);
+      openShelves(0.0, 0.88, d, 0.42, 3);
+      break;
+  }
+}
+
 function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureItem, 'kitchenType' | 'stoveSide' | 'fridge' | 'hood' | 'd'> = {}) {
   const type = opt.kitchenType ?? 'peninsula';
   const stoveSign = (opt.stoveSide ?? 'right') === 'right' ? 1 : -1;
@@ -935,6 +1072,36 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     return;
   }
   const wallW = Math.min(len - 0.3, 3.4);
+  if (type === 'l') {
+    // L 型: 壁沿いにシンク（吊戸つき）、コンロ側の端から袖（D650）を部屋側へ伸ばして加熱機器
+    const legL = opt.d ? Math.max(1.5, Math.min(2.8, opt.d)) : 2.1;
+    const W = Math.min(wallW, 2.75);
+    const cu = 0;
+    const legU = cu + stoveSign * (W / 2 - D / 2);
+    // 壁側（シンク）: 袖と重なる角は袖が受ける
+    const mainW = W - D;
+    const mainU = cu - stoveSign * (D / 2);
+    const n = Math.max(2, Math.round(mainW / 0.6));
+    cabinet(mainU, 0.02, mainW, D, Array.from({ length: n }, (_, i) => ({ w: mainW / n, rows: i === 0 ? 2 : 3 })), 1);
+    sink(mainU - stoveSign * (mainW / 2 - 0.55), 0.02, D, 0.02 + 0.08);
+    fr.box('f.cabinet', mainU, 0.02, mainW, 0.35, 1.45, 0.6);
+    lineH(mainU, 0.37, mainW - 0.02, 1.47, 0.02, 1);
+    // 袖（角から部屋側へ）: 扉は内側（シンク側）
+    fr.box('int.shadowGap', legU, 0.06, D - 0.08, legL - 0.08, 0, KICK);
+    fr.box('f.cabinet', legU, 0.02, D, legL, KICK, H - KICK - TOP);
+    fr.box('f.counter', legU, 0.02, D, legL, H - TOP, TOP);
+    fr.box('f.handle', legU - stoveSign * (D / 2 + 0.003), 0.04, 0.012, legL - 0.06, H - TOP - 0.05, 0.022);
+    const ihV = 0.02 + Math.min(legL - 0.45, 1.05);
+    fr.box('f.screen', legU, ihV - 0.375, 0.52, 0.75, H - 0.002, 0.006);
+    for (const dv of [-0.2, 0.2]) fr.cyl('f.handle', legU + 0.08 * stoveSign, ihV + dv, 0.09, H + 0.004, 0.001, 20);
+    if (hood) {
+      fr.box(hoodKey, legU, ihV - 0.45, 0.5, 0.9, 1.66, 0.22);
+      fr.box(hoodKey, legU, ihV - 0.11, 0.22, 0.22, 1.88, Math.max(0.05, ceilingY - 1.88));
+    }
+    if (fridge !== 'none') fridgeBox(cu - stoveSign * (W / 2 + 0.36));
+    props(mainU, 0.02 + D - 0.2);
+    return;
+  }
   if (type === 'two') {
     // Ⅱ型: 壁に加熱機器キャビネット W1840、対面にシンクキャビネット W1840（カウンタースタイル D750）
     const su = stoveSign * (wallW / 2 - 0.92);

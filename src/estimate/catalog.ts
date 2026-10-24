@@ -9,6 +9,9 @@ import type { Areas } from './areas';
 export type Grade = 'P' | 'S';
 export type Unit = '式' | '㎡' | 'm' | '坪' | '箇所' | '人工' | '日' | '枚' | '組' | '㎥' | 'km';
 
+/** サッシの概算の式数: 御社の見積で 延床 42 坪 → 1.5 式（堀様邸）、33 坪 → 1 式（吉田様邸）。28 坪で 1 式、0.5 式刻み */
+const sashQty = (a: Areas) => Math.max(1, Math.round((a.totalTsubo / 28) * 2) / 2);
+
 export interface LineDef {
   id: string;
   /** 仕様（シートの C 列） */
@@ -127,10 +130,10 @@ export const CATEGORIES: CategoryDef[] = [
     no: 5,
     name: '金属建具工事',
     lines: [
-      { id: 'sash.thermos', spec: 'LIXIL', desc: '【LIXIL】サーモス2H ※概算', unit: '式', cost: 800000, round: -2, group: 'sash', on: ['S'] },
-      { id: 'sash.tw', spec: 'LIXIL', desc: '【LIXIL】TW ※概算', unit: '式', cost: 950000, round: -2, group: 'sash', on: ['P'] },
-      { id: 'sash.thermosFire', spec: 'LIXIL', desc: '【LIXIL】サーモス2H 防火 ※概算', unit: '式', cost: 1200000, round: -2, group: 'sash', on: 'none' },
-      { id: 'sash.twFire', spec: 'LIXIL', desc: '【LIXIL】TW 防火 ※概算', unit: '式', cost: 1400000, round: -2, group: 'sash', on: 'none' },
+      { id: 'sash.thermos', spec: 'LIXIL', desc: '【LIXIL】サーモス2H ※概算', unit: '式', cost: 800000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['S'] },
+      { id: 'sash.tw', spec: 'LIXIL', desc: '【LIXIL】TW ※概算', unit: '式', cost: 950000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['P'] },
+      { id: 'sash.thermosFire', spec: 'LIXIL', desc: '【LIXIL】サーモス2H 防火 ※概算', unit: '式', cost: 1200000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
+      { id: 'sash.twFire', spec: 'LIXIL', desc: '【LIXIL】TW 防火 ※概算', unit: '式', cost: 1400000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
       { id: 'sash.doorVenato', spec: 'YKK', desc: '玄関開き戸 ヴェナートD30 ストレートハンドル', unit: '式', cost: 120000, round: -2, group: 'entDoor', on: 'both' },
       { id: 'sash.doorVenatoFire', spec: 'YKK', desc: '玄関開き戸 ヴェナートD30 ストレートハンドル ※防火', unit: '式', cost: 240000, round: -2, group: 'entDoor', on: 'none' },
       { id: 'sash.doorConcord', spec: 'YKK', desc: '玄関引き戸 コンコード', unit: '式', cost: 280000, round: -2, group: 'entDoor', on: 'none' },
@@ -254,6 +257,8 @@ export const CATEGORIES: CategoryDef[] = [
       { id: 'eq.handwash', spec: '1階トイレ', desc: '手洗いカウンター＋水栓', unit: '式', cost: 75000, margin: 0.8, qty: (a) => (a.handwash ? 1 : 0), optional: true, on: 'both' },
       { id: 'eq.wc2', spec: '2階トイレ', desc: '【TOTO】ZJ1', unit: '式', cost: 70000, margin: 0.8, qty: (a) => Math.max(0, a.toilets - 1), qtyNote: 'トイレ数 − 1', on: 'both' },
       { id: 'eq.kitchenHl', spec: 'システムキッチン', desc: '【HLオリジナル】LINEキッチン ペニンシュラ型', unit: '式', cost: 1000000, margin: 0.8, group: 'kitchen', on: 'both' },
+      { id: 'eq.kitchenHlIsland', spec: 'システムキッチン', desc: '【HLオリジナル】LINEキッチン アイランド型 フロントオープン食洗機600 ※概算', unit: '式', cost: 1650000, margin: 0.8, group: 'kitchen', on: 'none' },
+      { id: 'eq.kitchenHlWall', spec: 'システムキッチン', desc: '【HLオリジナル】LINEキッチン 壁付型＋カップボード ボッシュ食洗機W450', unit: '式', cost: 1147500, margin: 0.8, group: 'kitchen', on: 'none' },
       { id: 'eq.kitchenCustom', spec: 'システムキッチン', desc: '造作キッチン', unit: '式', cost: 3500000, margin: 0.8, group: 'kitchen', on: 'none' },
       { id: 'eq.vent3wall', spec: '換気設備', desc: '第三種 壁式 換気', unit: '式', cost: 85000, group: 'vent', on: ['S'] },
       { id: 'eq.vent3dsdd', spec: '換気設備', desc: '第三種換気 ダクト式 DSDD ※防蟻をセントリコンに変更', unit: '式', cost: 1200000, group: 'vent', on: 'none' },

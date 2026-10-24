@@ -349,8 +349,11 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     const wins = windowsOf(model, ri.floor.level, room, y0);
     const center = new THREE.Vector3((R.minX + R.maxX) / 2, y0 + 1.1, (R.minZ + R.maxZ) / 2);
     let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3; mean: number } | null = null;
-    // 建築写真の広角より気持ち広め（16:9 で水平約 86°、20mm 相当）。部屋を広く見せつつ、端の間延びは抑える
-    const vfov = aspect > 1.4 ? 56 : 64;
+    // 小さな個室（寝室・子供室・和室・書斎）は建築写真の作法どおり、入口か部屋の隅に立って対角を広角で撮る。
+    // 以前は部屋の中の格子点（ベッドから 30cm 離れた所）から選んでいて、ベッドと壁しか写らないカットが多かった
+    const smallRoom = ['bedroom', 'kids', 'japanese', 'study'].includes(room.type) && room.area < 16;
+    // 建築写真の広角より気持ち広め（16:9 で水平約 86°、20mm 相当）。小さな個室はさらに広角（16mm 相当）
+    const vfov = smallRoom ? (aspect > 1.4 ? 66 : 74) : aspect > 1.4 ? 56 : 64;
     const halfH = Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect);
     // 候補位置: 部屋内の格子点（家具・扉の近くは除外）
     const cands: THREE.Vector3[] = [];
@@ -365,6 +368,30 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
         if (meta.doorLeaves.some((d) => Math.abs(d.a.y - y0) < 0.5 && distToSeg2(pos, d.a, d.b) < 0.7)) continue;
         cands.push(pos);
       }
+    if (smallRoom) {
+      // 部屋の 4 隅（壁から 30cm）と、入口の内側（扉の脇 50cm）。背の高い家具のすぐそばだけ避ける
+      const c2: THREE.Vector3[] = [];
+      for (const [x, z] of [
+        [R.minX + 0.3, R.minZ + 0.3],
+        [R.maxX - 0.3, R.minZ + 0.3],
+        [R.minX + 0.3, R.maxZ - 0.3],
+        [R.maxX - 0.3, R.maxZ - 0.3],
+      ])
+        c2.push(new THREE.Vector3(x, y0 + eyeH, z));
+      for (const d of meta.doorLeaves) {
+        if (Math.abs(d.a.y - y0) > 0.5) continue;
+        const mid = d.a.clone().add(d.b).multiplyScalar(0.5);
+        const toC = center.clone().sub(mid).setY(0);
+        if (toC.length() > Math.hypot(W, D) * 0.75) continue;
+        if (mid.x < R.minX - 0.6 || mid.x > R.maxX + 0.6 || mid.z < R.minZ - 0.6 || mid.z > R.maxZ + 0.6) continue;
+        c2.push(mid.clone().addScaledVector(toC.normalize(), 0.5).setY(y0 + eyeH));
+      }
+      for (const p2 of c2) {
+        if (occ.some((o) => o.maxY > 1.4 && p2.x > o.minX - 0.3 && p2.x < o.maxX + 0.3 && p2.z > o.minZ - 0.3 && p2.z < o.maxZ + 0.3)) continue;
+        if (p2.x < R.minX || p2.x > R.maxX || p2.z < R.minZ || p2.z > R.maxZ) continue;
+        cands.push(p2);
+      }
+    }
     const diag = Math.hypot(W, D);
     for (const pos of cands) {
       for (let k = 0; k < 16; k++) {

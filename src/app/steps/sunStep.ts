@@ -697,16 +697,13 @@ export const sunStep: Step = {
     const results = h('div');
     const locEl = h('div', { class: 'hint' });
     // 座標で指定（緯度・経度）: 欄は入力中でなければ今のピンの位置（基準点 + ずらし量）を 10 進で表示し、下に度分秒とコピー
-    const latIn = h('input', { type: 'text', placeholder: '35.21058 または 35°12′38.1″', autocomplete: 'off', spellcheck: false }) as HTMLInputElement;
-    const lonIn = h('input', { type: 'text', placeholder: '136.93831', autocomplete: 'off', spellcheck: false }) as HTMLInputElement;
+    // Google マップで地点を右クリック → 座標をクリックすると「35.21058, 136.93831」がコピーされる。それを 1 欄にそのまま貼る
+    const coordIn = h('input', { type: 'text', placeholder: '35.21058, 136.93831（Google マップの座標をそのまま貼り付け）', autocomplete: 'off', spellcheck: false }) as HTMLInputElement;
     const dmsEl = h('span', { class: 'hint', style: 'margin-top:0' });
     const showCoords = (force = false) => {
       const { lat, lon } = siteLatLon(state.site);
       const focused = document.activeElement;
-      if (force || (focused !== latIn && focused !== lonIn)) {
-        latIn.value = formatDeg(lat);
-        lonIn.value = formatDeg(lon);
-      }
+      if (force || focused !== coordIn) coordIn.value = coordClipText(lat, lon);
       dmsEl.textContent = `度分秒: ${formatDms(lat, 'lat')} ${formatDms(lon, 'lon')}`;
     };
     const showLoc = () => {
@@ -781,7 +778,7 @@ export const sunStep: Step = {
     addr.addEventListener('keydown', (e) => e.key === 'Enter' && search());
     // 座標で指定: 2 つの欄（または緯度欄だけに "緯度, 経度" の 1 行／Google マップの URL）を読んで、その地点を建設地にする
     const applyCoords = async () => {
-      const r = readCoordInput(latIn.value, lonIn.value);
+      const r = readCoordInput(coordIn.value, '');
       if (!r) {
         toast(COORD_PARSE_ERROR, 'error', 8000);
         return;
@@ -795,8 +792,9 @@ export const sunStep: Step = {
       e.preventDefault();
       void applyCoords();
     };
-    latIn.addEventListener('keydown', onCoordKey);
-    lonIn.addEventListener('keydown', onCoordKey);
+    coordIn.addEventListener('keydown', onCoordKey);
+    // 貼り付けたらそのまま建設地にする（読めない文字列ならエラーを出して欄はそのまま）
+    coordIn.addEventListener('paste', () => setTimeout(() => readCoordInput(coordIn.value, '') && void applyCoords(), 0));
     const copyCoords = async () => {
       const { lat, lon } = siteLatLon(state.site);
       const text = coordClipText(lat, lon);
@@ -813,10 +811,10 @@ export const sunStep: Step = {
       // 住所と並ぶ指定方法なので最初から開いておく（閉じれば畳める）
       { style: 'margin:6px 0', open: true },
       h('summary', { class: 'hint', style: 'cursor:pointer' }, '座標で指定（緯度・経度）'),
-      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:6px' }, field('緯度', latIn), field('経度', lonIn)),
+      field('緯度, 経度', coordIn),
       h('button', { class: 'btn sm block', onclick: applyCoords }, 'この座標を建設地にする'),
       h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px' }, dmsEl, h('button', { class: 'btn sm ghost', onclick: copyCoords, title: '今の建設地の座標を「緯度, 経度」の形でコピーします' }, 'コピー')),
-      h('span', { class: 'hint' }, '10 進（35.21058）でも度分秒（35°12′38.1″・35度12分38.1秒）でも入力できます。緯度欄に「緯度, 経度」の 1 行や Google マップの URL を貼り付けても読み取ります。欄には今の建設地（ピンの位置）の座標が表示されます'),
+      h('span', { class: 'hint' }, 'Google マップで建設地を右クリックし、いちばん上の座標をクリックするとコピーされます。それをこの欄に貼り付けるだけで建設地になります。Google マップの URL、度分秒（35°12′38.1″, 136°55′17.9″）でも読めます。欄には今の建設地（ピンの位置）の座標が表示されます'),
     );
     const nudge = (de: number, dn: number) => {
       extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);

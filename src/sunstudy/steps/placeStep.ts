@@ -590,12 +590,12 @@ export const placeStep: StudyStep = {
 
     // 座標で指定（緯度・経度）: 住所の無い分譲地・造成地など、座標が分かっているときに直接ピンを置く。
     // 欄は編集中でなければいつも今のピンの座標（10 進）を示し、下に度分秒とコピー。住所検索の欄より後ろに置く（自動テストは最初の text 入力を住所欄とみなす）
-    const latIn = h('input', { type: 'text', class: 'coord-lat', placeholder: '例: 35.21058 または 35°12′38.1″', autocomplete: 'off' });
-    const lonIn = h('input', { type: 'text', class: 'coord-lon', placeholder: '例: 136.93831', autocomplete: 'off' });
+    // Google マップの座標（右クリック → 座標をクリックでコピーされる「35.21058, 136.93831」）を 1 欄にそのまま貼る
+    const coordIn = h('input', { type: 'text', class: 'coord-latlon', placeholder: '例: 35.21058, 136.93831（Google マップの座標をそのまま貼り付け）', autocomplete: 'off' });
     const dmsOut = h('span', { class: 'coord-dms' });
     const copyBtn = h('button', { class: 'btn sm', title: '今のピンの座標を「緯度, 経度」の形でコピー', onclick: () => void copyCoords() }, 'コピー');
     const applyCoords = () => {
-      const r = readCoordInput(latIn.value, lonIn.value);
+      const r = readCoordInput(coordIn.value, '');
       if (!r) {
         toast('緯度・経度を読み取れませんでした。10 進（35.21058）か度分秒（35°12′38.1″）で、日本国内の座標を入力してください', 'error', 8000);
         return;
@@ -606,8 +606,7 @@ export const placeStep: StudyStep = {
       anchor = null;
       setFrame(p, coordAddress(p));
       // 欄が編集中（Enter で確定）でも、読み取った値を 10 進に揃えて見せる
-      latIn.value = fmtDeg(p.lat);
-      lonIn.value = fmtDeg(p.lon);
+      coordIn.value = `${fmtDeg(p.lat)}, ${fmtDeg(p.lon)}`;
       map?.setCenter(p, 18);
       map?.setPin(p, true);
       refreshAll();
@@ -623,19 +622,20 @@ export const placeStep: StudyStep = {
         toast(`コピーできませんでした（この環境ではクリップボードを使えません）。座標: ${text}`, 'error', 8000);
       }
     };
-    for (const el of [latIn, lonIn])
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          applyCoords();
-        }
-      });
+    coordIn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applyCoords();
+      }
+    });
+    // 貼り付けたら、読める座標ならそのままピンを置く
+    coordIn.addEventListener('paste', () => setTimeout(() => readCoordInput(coordIn.value, '') && applyCoords(), 0));
     side.appendChild(
       fold(
         '座標で指定（緯度・経度）',
         { meta: '住所が無い分譲地など' },
-        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '10 進でも度分秒でも可。「緯度, 経度」の 1 行や Google マップの URL を緯度の欄に貼ってもよいです。'),
-        h('div', { class: 'pos-fields' }, field('緯度', latIn), field('経度', lonIn)),
+        h('p', { class: 'hint', style: 'margin:0 0 4px' }, 'Google マップで建設地を右クリックし、いちばん上の座標をクリックするとコピーされます。それを貼り付けるだけでピンが置かれます。URL や度分秒でも読めます。'),
+        field('緯度, 経度', coordIn),
         h('div', { class: 'coord-row' }, dmsOut, copyBtn),
         h('div', { class: 'btn-row', style: 'margin:6px 0 0' }, h('button', { class: 'btn', onclick: applyCoords }, 'この座標にピンを置く')),
       ),
@@ -798,11 +798,7 @@ export const placeStep: StudyStep = {
     /** 座標の欄: 編集中（どちらかの欄にフォーカス）でなければ今のピンの座標を示す。度分秒の行とコピーはいつも今のピン */
     const refreshCoords = () => {
       const f = study.frame;
-      const editing = document.activeElement === latIn || document.activeElement === lonIn;
-      if (!editing) {
-        latIn.value = f ? fmtDeg(f.lat) : '';
-        lonIn.value = f ? fmtDeg(f.lon) : '';
-      }
+      if (document.activeElement !== coordIn) coordIn.value = f ? `${fmtDeg(f.lat)}, ${fmtDeg(f.lon)}` : '';
       dmsOut.textContent = f ? `度分秒: ${formatDms(f.lat, 'lat')}　${formatDms(f.lon, 'lon')}` : 'ピンを置くと、ここに座標が表示されます';
       copyBtn.disabled = !f;
     };

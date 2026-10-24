@@ -14,6 +14,7 @@ import { renderStudio } from '../scene/studio';
 import { exteriorById, interiorById, type TimeOfDay } from '../styles/presets';
 import type { MatSpec } from '../styles/textures';
 import { resolveSpec } from '../styles/spec';
+import { cutToken, saveCutManifest } from './finishImport';
 
 // ---- ZIP（無圧縮） ----
 const CRC_TABLE = (() => {
@@ -137,8 +138,9 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
   v.setRoomLabels(false);
   const entries: { name: string; data: Uint8Array }[] = [];
   const lines: string[] = [];
-  lines.push(`${state.name}　カット集（AI 仕上げ用）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を画像生成 AI（写真化・リライティング）に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感だけを仕上げる指示になっています。', '');
+  lines.push(`${state.name}　カット集（AI 仕上げ用）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を画像生成 AI（写真化・リライティング）に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感だけを仕上げる指示になっています。仕上がった画像は、パース →「書き出し」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。', '');
   let n = 0;
+  const manifest: { no: number; shot: Shot }[] = [];
   try {
     for (let i = 0; i < shots.length; i++) {
       if (pm.signal.aborted) break;
@@ -148,7 +150,9 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
       await new Promise((r) => setTimeout(r, 40));
       try {
         const url = await renderStudio(v, { width: opts.width, height: opts.height, interior: shot.kind === 'interior', exposure: shot.kind === 'interior' ? 1.9 : 1.0 });
-        const base = `${String(i + 1).padStart(2, '0')}_${safe(shot.title)}`;
+        // 末尾の目印（__c-xxxx）は、仕上げた写真を取り込むときにどのカットかを見分けるため（ファイル名を残して保存すると確実）
+        const base = `${String(i + 1).padStart(2, '0')}_${safe(shot.title)}__${cutToken(shot)}`;
+        manifest.push({ no: i + 1, shot });
         const name = `${base}.jpg`;
         entries.push({ name, data: dataUrlToBytes(url) });
         if (opts.passes) {
@@ -168,6 +172,7 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
     }
     if (opts.passes) entries.push({ name: 'パス/素材IDの色凡例.txt', data: new TextEncoder().encode(`素材ID画像の塗り分け（色コード → 意味）\n\n${segmentLegend()}\n\n使い方: depth=ControlNet の Depth、normal=Normal、lines=Lineart／Canny の代わり、segment=領域ごとの素材指定（Segmentation）。同じファイル名の .jpg（白模型または仕上げ済みの下絵）と組で使います。`) });
     entries.push({ name: 'カット一覧と説明文.txt', data: new TextEncoder().encode(lines.join('\n')) });
+    saveCutManifest(manifest);
     const zip = makeZip(entries);
     const url = URL.createObjectURL(zip);
     download(url, `${safe(state.name)}_カット集.zip`);

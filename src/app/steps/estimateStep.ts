@@ -55,7 +55,8 @@ const GROUP_LABEL: Record<string, string> = {
 };
 
 function ensure(): EstimateState {
-  if (!state.estimate) state.estimate = { choice: newChoice('P'), areasOverride: {}, funding: null };
+  // 図面から読んだキッチンの形（アイランド・壁付け）を見積のキッチンの既定にする
+  if (!state.estimate) state.estimate = { choice: newChoice('P', state.model ? baseAreas('P') : undefined), areasOverride: {}, funding: null };
   return state.estimate;
 }
 
@@ -482,7 +483,7 @@ export const estimateStep: Step = {
       );
       panel.append(
         h('h2', null, '見積・資金計画'),
-        section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g); render(); })),
+        section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g, baseAreas(g)); render(); })),
         section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }], which, (w) => { which = w; render(); })),
         h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　坪単価 ¥${yen(Math.round(est.perTsubo))}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`)),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', onclick: () => window.print() }, '印刷・PDF'), h('button', { class: 'btn', onclick: () => download('data:text/csv;charset=utf-8,' + encodeURIComponent(csvOf(c)), `${state.name}_見積.csv`) }, 'CSV'), h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!es.showAll, onchange: (e: Event) => { es.showAll = (e.target as HTMLInputElement).checked; if (es.showAll) which = 'detail'; render(); } }), '内訳を編集（全行表示）')),

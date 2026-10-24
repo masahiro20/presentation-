@@ -83,8 +83,12 @@ export function defaultGroups(grade: Grade): Record<string, string> {
   return g;
 }
 
-export function newChoice(grade: Grade): EstimateChoice {
-  return { grade, groups: defaultGroups(grade), qty: {}, off: [], extras: [], roundUnit: 10000 };
+/** 新しい見積の選択。areas を渡すと、図面から読んだキッチンの形（アイランド・壁付け）を既定にする */
+export function newChoice(grade: Grade, areas?: Pick<Areas, 'kitchenType'>): EstimateChoice {
+  const groups = defaultGroups(grade);
+  if (areas?.kitchenType === 'island') groups.kitchen = 'eq.kitchenHlIsland';
+  else if (areas?.kitchenType === 'wall' || areas?.kitchenType === 'two') groups.kitchen = 'eq.kitchenHlWall';
+  return { grade, groups, qty: {}, off: [], extras: [], roundUnit: 10000 };
 }
 
 function isOn(l: LineDef, choice: EstimateChoice): boolean {

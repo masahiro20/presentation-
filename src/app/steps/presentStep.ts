@@ -170,10 +170,23 @@ function slide(cls: string, ...children: (Node | null | false | undefined)[]) {
 
 function pick(kind: GalleryItem['kind']) {
   const list = state.gallery.filter((g) => g.kind === kind);
-  // 写真品質を優先し、同じ構図の下書きは除く
-  const photo = list.filter((g) => g.quality === 'photoreal');
-  const drafts = list.filter((g) => g.quality !== 'photoreal' && !photo.some((p) => p.shotId && p.shotId === g.shotId));
-  return [...photo, ...drafts];
+  // 同じ構図は 1 枚に: 写真仕上げ（AI・外部ツールで仕上げて取り込んだもの）＞ 写真品質 ＞ 下書き
+  const baseId = (g: GalleryItem) => g.shotId?.replace(/-ai$/, '');
+  const rank = (g: GalleryItem) => (g.shotId?.endsWith('-ai') ? 2 : g.quality === 'photoreal' ? 1 : 0);
+  const best = new Map<string, GalleryItem>();
+  const loose: GalleryItem[] = [];
+  for (const g of list) {
+    const id = baseId(g);
+    if (!id) {
+      loose.push(g);
+      continue;
+    }
+    const cur = best.get(id);
+    if (!cur || rank(g) > rank(cur)) best.set(id, g);
+  }
+  const chosen = [...best.values(), ...loose];
+  // 写真品質（仕上げ含む）を先に、下書きは後ろ
+  return [...chosen.filter((g) => g.quality === 'photoreal'), ...chosen.filter((g) => g.quality !== 'photoreal')];
 }
 
 /** 下書き画像には印を付け、提案時に気付けるようにする */

@@ -40,8 +40,7 @@ await page.goto(`${base}/sun.html`, { waitUntil: 'domcontentloaded', timeout: 18
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
 
 // 座標で指定 → ピンを置く
-await page.locator('input.coord-lat').fill(String(SITE.lat));
-await page.locator('input.coord-lon').fill(String(SITE.lon));
+await page.locator('input.coord-latlon').fill(`${SITE.lat}, ${SITE.lon}`);
 await page.getByRole('button', { name: 'この座標にピンを置く' }).click();
 await page.waitForFunction(() => !!window.study?.frame, null, { timeout: 30000 });
 await page.waitForTimeout(1200);

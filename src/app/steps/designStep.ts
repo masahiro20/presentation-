@@ -18,6 +18,7 @@ import { renderPhotoreal, PhotorealError } from '../../scene/photoreal';
 import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 import { exportCuts } from '../cuts';
+import { importFinishedImages } from '../finishImport';
 import { startCinema } from '../cinema';
 import { aiSettingsUi, runAiFinish, runAiFinishBatch } from '../aiFinish';
 import { MOODS, moodOf, applyMood } from '../../coordinate/moods';
@@ -725,7 +726,14 @@ export const designStep: Step = {
       };
       side.append(
         section(
-          '写真仕上げ（AI・無料枠）',
+          '写真仕上げ（カット集 → 好きなツール → 取り込み）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '① カット集を保存（ZIP: 各カットの画像と、AI に渡す説明文）→ ② ChatGPT・Gemini・Midjourney・Krea など好きな画像生成ツールで写真に仕上げる → ③ 仕上がった画像をここで取り込むと、同じカットの下書きより優先してプレゼン資料に入ります。'),
+          h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `① カット集を保存（${shots.length}枚・ZIP）`),
+          h('button', { class: 'btn dark block', style: 'margin-top:8px', onclick: () => void importFinishedImages(ctx, shots) }, '③ 仕上げた写真を取り込む（複数可）'),
+          h('p', { class: 'hint' }, 'ファイル名の末尾の「__c-…」を残して保存すると、どのカットの仕上げか自動で分かります。名前が変わっても、取り込むときに一覧で選び直せます。'),
+        ),
+        section(
+          '写真仕上げ（Google AI を直接呼ぶ・無料枠）',
           h('p', { class: 'hint', style: 'margin-top:0' }, '今の構図（高品質描画か、保存済みの写真品質パース）と輪郭の線画を Google の画像生成 AI に渡し、壁・窓・家具の位置を変えないよう指示して写真に仕上げます。仕上がりはギャラリー（プレゼン資料）に入ります。'),
           ...aiSettingsUi(),
           h('button', { class: 'btn primary block', onclick: () => void runAiFinish(ctx, currentAsShot()) }, '✨ この構図を写真に仕上げる'),

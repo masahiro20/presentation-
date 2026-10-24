@@ -327,7 +327,7 @@ export const TOOLS: ToolDef[] = [
       const ext = exteriorById(DEFAULT_DESIGN.exteriorId);
       const roofType = typeof args.roof_type === 'string' && ['gable', 'hip', 'shed', 'flat'].includes(args.roof_type) ? (args.roof_type as 'gable' | 'hip' | 'shed' | 'flat') : ext.roof.type;
       const areas = takeoff(model, { grade, eavesMm: num(args.eaves_mm) ?? ext.roof.eaves, pitch: num(args.pitch) ?? ext.roof.pitch, roofType, solido: ext.accent ? ext.accentRule : 'none' });
-      const est = computeEstimate(areas, newChoice(grade));
+      const est = computeEstimate(areas, newChoice(grade, areas));
       const quantities: Record<string, { label: string; value: number; unit: string }> = {};
       for (const fdef of AREA_FIELDS) quantities[fdef.key] = { label: fdef.label, value: r2(Number(areas[fdef.key]) || 0), unit: fdef.unit };
       const out = {

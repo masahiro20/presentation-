@@ -93,8 +93,7 @@ async function runSite(site) {
     await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000 });
 
     // 座標で指定 → ピンを置く
-    await page.locator('input.coord-lat').fill(String(site.lat));
-    await page.locator('input.coord-lon').fill(String(site.lon));
+    await page.locator('input.coord-latlon').fill(`${site.lat}, ${site.lon}`);
     await page.getByRole('button', { name: 'この座標にピンを置く' }).click();
     await page.waitForFunction(() => !!window.study?.frame, null, { timeout: 30000 });
     await page.waitForTimeout(1200);

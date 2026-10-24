@@ -604,6 +604,11 @@ function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
   // 壁付けの浮いた薄いボードと、壁掛けのテレビ（脚や台座を見せない）
   fr.box('f.cabinet', u, v, w, 0.38, 0.28, 0.3);
   fr.box('f.screen', u, v + 0.0, 1.3, 0.035, 0.95, 0.75);
+  // ボードの上: 本を 3 冊重ねた束と小さな器（テレビの脇）
+  fr.box('f.fabric2', u + w / 2 - 0.22, v + 0.2, 0.24, 0.18, 0.58, 0.022);
+  fr.box('f.white', u + w / 2 - 0.2, v + 0.21, 0.2, 0.15, 0.602, 0.02);
+  fr.box('f.fabric', u + w / 2 - 0.24, v + 0.19, 0.22, 0.16, 0.622, 0.018);
+  fr.cyl('f.white', u - w / 2 + 0.2, v + 0.2, 0.06, 0.58, 0.09, 18);
   plant(fr, u + w / 2 + 0.35, v + 0.3, 1.0);
 }
 
@@ -635,6 +640,12 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   const td = 0.9;
   fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
   for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
+  // 天板の上の小物: 中央に花器（実物モデル）、端に浅い器を 2 つ（写真の「生活感」）
+  currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + 0.12, v, 0.72), rotY: 0.4, height: 0.24 });
+  for (const du of [-tw / 2 + 0.3, tw / 2 - 0.3]) {
+    fr.cyl('f.white', u + du, v - 0.08, 0.11, 0.72, 0.012, 20);
+    fr.cyl('f.white', u + du, v - 0.08, 0.075, 0.732, 0.04, 20);
+  }
   // 椅子: 丸脚の細いオークのフレームに、薄く丸みのある張り座と、ゆるく曲がった薄い背板（マルニ・カリモクの軽い木椅子の形）。長いテーブルは 3 脚ずつ
   const perSide = tw >= 2.3 ? 3 : 2;
   const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;

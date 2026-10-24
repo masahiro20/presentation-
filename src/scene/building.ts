@@ -389,7 +389,12 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     const upper = model.floors[model.floors.indexOf(f) + 1];
     const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
     for (const r of f.rooms) {
-      if (r.type === 'void') continue;
+      if (r.type === 'void') {
+        // 吹抜の上（この階の天井の高さ）にも天井を張る。以前は張っておらず、1 階から見上げると屋根の裏（黒い板金）が見えていた。
+        // 1 階の中庭（空に開いた区画）には張らない
+        if (f.level >= 2) emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+        continue;
+      }
       if (r.type === 'balcony' || r.type === 'porch') {
         // 屋根・上階の下に入るバルコニー・ポーチの天井は軒天（木目など）。中庭は空に開く
         if (/庭|COURT/i.test(r.name)) continue;

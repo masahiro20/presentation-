@@ -178,7 +178,19 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
     const dir = fromDir.clone().negate().normalize(); // カメラの視線方向
     const dist = fitDistance(pts, center, dir, eye, vfov, aspect, 1.3);
     const pos = center.clone().addScaledVector(dir, -dist).setY(eye);
-    const target = center.clone().setY(topY * 0.4);
+    // シフト量は、建物の上端と下端の見かけの高さの真ん中に合わせる（以前は高さの 4 割に固定で、3 階建てでは屋根が切れていた）
+    const fwd = dir.clone().setY(0).normalize();
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const p of pts) {
+      const r = p.clone().sub(pos);
+      const z = r.dot(fwd);
+      if (z < 0.5) continue;
+      lo = Math.min(lo, r.y / z);
+      hi = Math.max(hi, r.y / z);
+    }
+    const midTan = Number.isFinite(lo) ? (lo + hi) / 2 : (topY * 0.4 - eye) / dist;
+    const target = center.clone().setY(eye + midTan * dist);
     // 時間帯ごとの太陽: 昼は高く（38°）、朝は低く横から（長い影と靄）、夕景はさらに低く逆光気味
     const elev = tod === 'morning' ? 16 : tod === 'evening' ? 9 : 38;
     const side = tod === 'morning' ? 88 : tod === 'evening' ? 112 : 55;
@@ -196,7 +208,15 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
       const diag = Math.abs(Math.sin(2 * a)) * 0.15 + 0.85;
       cands.push({ dir: d, score: facadeScore(wins, d) * diag });
     }
-    const roadSide = cands.filter((c) => c.dir.dot(road) > 0.25).sort((a, b) => b.score - a.score);
+    // 道路側の正面: 御社の外観パースは道路から玄関のある面を正面寄りに撮る（堀様邸: 道路に面した細い面と R 壁の玄関）。
+    // 窓の多さだけで選ぶと、道路から 70° 以上振れて窓の多い長手の面を撮ってしまうので、道路から ±50° に絞り、
+    // 道路の正面ほど・玄関が見えるほど高く評価する
+    const maxScore = Math.max(1e-6, ...cands.map((c) => c.score));
+    const entOut = ent ? ent.outward.clone().setY(0).normalize() : null;
+    const roadSide = cands
+      .filter((c) => c.dir.dot(road) > 0.64)
+      .map((c) => ({ ...c, score: (c.score / maxScore) * (0.5 + 0.5 * c.dir.dot(road)) + (entOut ? Math.max(0, entOut.dot(c.dir)) * 0.6 : 0) }))
+      .sort((a, b) => b.score - a.score);
     if (roadSide[0] && roadSide[0].score > 0) frontDir = roadSide[0].dir.clone();
     const rest = cands.filter((c) => c.dir.dot(frontDir) < 0.2).sort((a, b) => b.score - a.score);
     if (rest[0] && rest[0].score > 0) gardenPick = rest[0].dir.clone();
@@ -333,8 +353,12 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
   const rooms = meta.rooms
     .filter((r) => isHabitable(r.room.type) || r.room.type === 'entrance' || r.room.type === 'bath')
     .sort((a, b) => priority.indexOf(a.room.type) - priority.indexOf(b.room.type) || b.room.area - a.room.area);
+  // 個室（寝室・子供室）のカットは、いちばん広い 1 室だけ。御社の内観パースの組は LDK・吹抜・キッチン・書斎・ホールが中心で、
+  // 小さな洋室を何枚も並べても見せ場にならない（ベッドと壁だけのカットが続いていた）
+  let privateShots = 0;
   for (const ri of rooms) {
     const room = ri.room;
+    if ((room.type === 'bedroom' || room.type === 'kids') && privateShots >= 1) continue;
     const inner = largestInnerRect(room.polygon, 5);
     if (!inner) continue;
     const R = { minX: inner.minX * MM, maxX: inner.maxX * MM, minZ: inner.minY * MM, maxZ: inner.maxY * MM };
@@ -495,6 +519,7 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
             : room.type === 'entrance'
               ? '家族やお客様を迎える玄関。収納をしっかり確保しています。'
               : `${tatami.toFixed(1)}帖の${label}。${facing}空間です。`;
+    if (room.type === 'bedroom' || room.type === 'kids') privateShots++;
     shots.push({
       id: `int-${room.id}`,
       kind: 'interior',

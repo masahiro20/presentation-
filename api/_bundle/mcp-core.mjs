@@ -11999,50 +11999,150 @@ function roomsArea(f, types) {
 function outlineArea$1(f) {
 	return f.outline.reduce((s, l) => s + Math.abs(polygonArea(l)) / 1e6, 0);
 }
+/** 点が階の外形の内側か（外形の輪が複数・中庭の穴があっても偶奇で判定） */
+function inFloor(f, x, y) {
+	let inside = false;
+	for (const l of f.outline) for (let i = 0, j = l.length - 1; i < l.length; j = i++) {
+		const a = l[i];
+		const b = l[j];
+		if (a.y > y !== b.y > y && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+	}
+	return inside;
+}
+function centroid(poly) {
+	let x = 0;
+	let y = 0;
+	for (const p of poly) {
+		x += p.x;
+		y += p.y;
+	}
+	return {
+		x: x / poly.length,
+		y: y / poly.length
+	};
+}
+/**
+* 各階の外形を 50mm 格子で重ね合わせて面積を数える（㎡）。
+*  union: どれかの階の外形に入る（建築面積・屋根の平面）
+*  exposedBelow[i]: i 階の外形のうち、すぐ下の階の外形の外にある所（ピロティ・オーバーハング・張り出しの床下）
+*/
+function overlay(floors, step = 50) {
+	const loops = floors.flatMap((f) => f.outline);
+	const xs = loops.flat().map((p) => p.x);
+	const ys = loops.flat().map((p) => p.y);
+	const exposedBelow = floors.map(() => 0);
+	let union = 0;
+	if (!xs.length) return {
+		union,
+		exposedBelow
+	};
+	const cell = step * step / 1e6;
+	for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step) for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step) {
+		const ins = floors.map((f) => inFloor(f, x, y));
+		if (ins.some(Boolean)) union += cell;
+		for (let i = 1; i < floors.length; i++) if (ins[i] && !ins[i - 1]) exposedBelow[i] += cell;
+	}
+	return {
+		union,
+		exposedBelow
+	};
+}
+/** i 階の外周のうち、上の階の外形の下に入っていない長さ（m）: 下屋の屋根の縁（パラペット・軒先になる） */
+function uncoveredEdge(f, upper, step = 100) {
+	let len = 0;
+	for (const l of f.outline) for (let i = 0; i < l.length; i++) {
+		const a = l[i];
+		const b = l[(i + 1) % l.length];
+		const L = Math.hypot(b.x - a.x, b.y - a.y);
+		const n = Math.max(1, Math.round(L / step));
+		for (let k = 0; k < n; k++) {
+			const t = (k + .5) / n;
+			const p = {
+				x: a.x + (b.x - a.x) * t,
+				y: a.y + (b.y - a.y) * t
+			};
+			if (!upper || !inFloor(upper, p.x, p.y)) len += L / n;
+		}
+	}
+	return len / 1e3;
+}
+/** 外形の出隅（外側に尖った角）の数 */
+function convexCorners(f) {
+	let n = 0;
+	for (const l of f.outline) {
+		const sgn = Math.sign(polygonArea(l)) || 1;
+		for (let i = 0; i < l.length; i++) {
+			const a = l[(i - 1 + l.length) % l.length];
+			const b = l[i];
+			const c = l[(i + 1) % l.length];
+			const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+			if (Math.abs(cross) < 1e3) continue;
+			if (Math.sign(cross) === sgn) n++;
+		}
+	}
+	return n;
+}
 /** 間取りから数量を拾う */
 function takeoff(model, opts) {
 	const floors = model.floors.slice().sort((a, b) => a.level - b.level);
 	const fl = (lv) => floors.find((f) => f.level === lv);
-	const floorArea = (f) => f ? Math.max(0, outlineArea$1(f) - roomsArea(f, ["void", "balcony"])) : 0;
+	const floorArea = (f) => {
+		if (!f) return 0;
+		const inner = f.rooms.filter((r) => (r.type === "void" || r.type === "balcony") && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
+		return Math.max(0, outlineArea$1(f) - inner.reduce((s, r) => s + r.area, 0));
+	};
 	const floor1 = r2$1(floorArea(fl(1)));
 	const floor2 = r2$1(floorArea(fl(2)));
 	const floor3 = r2$1(floorArea(fl(3)));
 	const totalArea = r2$1(floor1 + floor2 + floor3);
-	const porch = r2$1(floors.reduce((s, f) => s + roomsArea(f, ["porch"]), 0));
-	const balconyArea = r2$1(floors.reduce((s, f) => s + roomsArea(f, ["balcony"]), 0));
+	const porchRooms = floors.reduce((s, f) => s + roomsArea(f, ["porch"]), 0);
+	const isCourt = (name) => /中庭|坪庭|パティオ|ライトコート|テラス|ドッグラン/.test(name);
+	const balconyArea = r2$1(floors.filter((f) => f.level >= 2).reduce((s, f) => s + f.rooms.filter((r) => r.type === "balcony" && !isCourt(r.name)).reduce((t, r) => t + r.area, 0), 0));
 	const voidArea = r2$1(floors.filter((f) => f.level >= 2).reduce((s, f) => s + roomsArea(f, ["void"]), 0));
-	const extraArea = porch;
+	const ov = overlay(floors);
+	const pilotis = ov.exposedBelow[1] ?? 0;
+	const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0);
+	const extraArea = r2$1(porchRooms + pilotis);
 	const loftArea = 0;
 	const constArea = r2$1(totalArea + extraArea + balconyArea + loftArea + voidArea);
-	const buildArea = r2$1(Math.max(floor1, floor2, floor3, floorArea(fl(1))));
+	const buildArea = r2$1(Math.max(ov.union, floor1));
+	const FOUND_H = .5;
+	const PARAPET_H = .9;
 	let extWall = 0;
 	let corners = 0;
 	for (const f of floors) {
 		const per = f.outline.reduce((s, l) => s + perimeter(l), 0) / 1e3;
-		extWall += per * (f.height / 1e3);
-		corners += f.outline.reduce((s, l) => s + l.length, 0);
+		extWall += per * (f.height / 1e3 + (f.level === 1 ? FOUND_H : 0));
+		corners += convexCorners(f);
 	}
 	const f1 = fl(1);
 	const foundPerim = r2$1(f1 ? f1.outline.reduce((s, l) => s + perimeter(l), 0) / 1e3 : 0);
 	const top = floors[floors.length - 1];
 	const topPerim = top ? top.outline.reduce((s, l) => s + perimeter(l), 0) / 1e3 : 0;
-	if (opts.roofType === "flat" || opts.roofType === "shed") extWall += topPerim * .6;
+	let lowerEdges = 0;
+	for (let i = 0; i < floors.length - 1; i++) lowerEdges += uncoveredEdge(floors[i], floors[i + 1]);
+	if (opts.roofType === "flat" || opts.roofType === "shed") extWall += (topPerim + lowerEdges) * PARAPET_H;
+	else if (opts.roofType === "gable" && top) {
+		const tb = bboxOf(top.outline.flat());
+		const shortSide = Math.min(tb.maxX - tb.minX, tb.maxY - tb.minY) / 1e3;
+		extWall += shortSide / 2 * (shortSide / 2 * (opts.pitch / 10));
+	}
 	extWall = r2$1(Math.max(0, extWall));
 	const eaveOut = opts.roofType === "flat" ? 0 : opts.eavesMm / 1e3;
-	let roofPlan = floorArea(top);
-	for (let i = 0; i < floors.length - 1; i++) roofPlan += Math.max(0, floorArea(floors[i]) - floorArea(floors[i + 1]));
+	const roofPlan = ov.union;
 	const slope = opts.roofType === "flat" ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
-	const roofArea = r2$1((roofPlan + topPerim * eaveOut) * slope * 1.05);
-	const lowerRoofPerim = floors.length >= 2 ? Math.max(0, foundPerim - topPerim) : 0;
-	const overhang = Math.max(0, floor2 - floor1) + Math.max(0, floor3 - floor2);
-	const soffitArea = r2$1((topPerim + lowerRoofPerim) * eaveOut + overhang);
+	const roofArea = r2$1((roofPlan + (topPerim + lowerEdges) * eaveOut) * slope);
+	const overhang = exposedFloors;
+	const soffitArea = r2$1((topPerim + lowerEdges) * eaveOut + overhang);
 	const bb = top ? bboxOf(top.outline.flat()) : null;
 	const longSide = bb ? Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1e3 : 0;
-	const eaveLen = r2$1(opts.roofType === "gable" ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === "shed" ? longSide + 2 * eaveOut : topPerim + 8 * eaveOut);
-	const ridgeLen = r2$1(opts.roofType === "flat" ? 0 : longSide);
-	const insulArea = r2$1(floorArea(top) + overhang);
+	const shortSide = bb ? Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1e3 : 0;
+	const eaveLen = r2$1(opts.roofType === "gable" ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === "shed" ? shortSide + 2 * eaveOut : topPerim + 8 * eaveOut);
+	const ridgeLen = r2$1(opts.roofType === "flat" ? 0 : opts.roofType === "shed" ? 10 : longSide);
+	const insulArea = r2$1(roofPlan + overhang);
 	const siteEdge = r2$1(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1e3 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
 	const doors = floors.reduce((s, f) => s + f.openings.filter((o) => (o.kind === "door" || o.kind === "sliding") && !f.walls.find((w) => w.id === o.wallId)?.exterior).length, 0);
+	const isDoma = (name) => /土間|SIC|シューズ/.test(name);
 	const flooringArea = r2$1(floors.reduce((s, f) => s + roomsArea(f, [
 		"ldk",
 		"living",
@@ -12052,12 +12152,17 @@ function takeoff(model, opts) {
 		"kids",
 		"study",
 		"hall",
-		"closet",
-		"storage",
 		"other"
 	]), 0));
-	const floorTileArea = r2$1(floors.reduce((s, f) => s + roomsArea(f, ["washroom"]), 0));
-	const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "toilet").length, 0));
+	const floorTileArea = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => [
+		"washroom",
+		"toilet",
+		"closet",
+		"storage"
+	].includes(r.type) && !isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
+	const porchIn = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "entrance" || (r.type === "storage" || r.type === "closet") && isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
+	const porchOut = r2$1(porchRooms > 0 ? porchRooms : 2.48);
+	const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "toilet" || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
 	const stairs = Math.max(0, floors.length - 1);
 	const tatami = floors.reduce((s, f) => s + roomsArea(f, ["japanese"]), 0) / 1.62;
 	const totalTsubo = Math.floor(totalArea * T$1 * 100) / 100;
@@ -12079,8 +12184,8 @@ function takeoff(model, opts) {
 		floor3,
 		totalArea,
 		totalTsubo,
-		porchOut: porch,
-		porchIn: porch,
+		porchOut,
+		porchIn,
 		extraArea,
 		balconyArea,
 		voidArea,
@@ -12141,7 +12246,8 @@ function takeoff(model, opts) {
 		handrailLen: 0,
 		doorCloth: 0,
 		soStyle: 0,
-		travelKm: 0
+		travelKm: 0,
+		kitchenType: [...floors.flatMap((f) => f.planItems ?? []), ...(model.furniture ?? []).flatMap((x) => x.items)].find((it) => it.kind === "kitchen" && it.kitchenType)?.kitchenType
 	};
 }
 function bboxOf(pts) {
@@ -13013,7 +13119,10 @@ function buildBuilding(model, opts) {
 		const upper = model.floors[model.floors.indexOf(f) + 1];
 		const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
 		for (const r of f.rooms) {
-			if (r.type === "void") continue;
+			if (r.type === "void") {
+				if (f.level >= 2) emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+				continue;
+			}
 			if (r.type === "balcony" || r.type === "porch") {
 				if (/庭|COURT/i.test(r.name)) continue;
 				emitFlat(mb, "ext.soffit", r.polygon, [], top - (upper ? .25 : .02), false);
@@ -19039,6 +19148,8 @@ function modelToDxf(model) {
 }
 //#endregion
 //#region src/estimate/catalog.ts
+/** サッシの概算の式数: 御社の見積で 延床 42 坪 → 1.5 式（堀様邸）、33 坪 → 1 式（吉田様邸）。28 坪で 1 式、0.5 式刻み */
+var sashQty = (a) => Math.max(1, Math.round(a.totalTsubo / 28 * 2) / 2);
 var T = .3025;
 var CATEGORIES = [
 	{
@@ -19605,6 +19716,8 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 8e5,
 				round: -2,
+				qty: sashQty,
+				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: ["S"]
 			},
@@ -19615,6 +19728,8 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 95e4,
 				round: -2,
+				qty: sashQty,
+				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: ["P"]
 			},
@@ -19625,6 +19740,8 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 12e5,
 				round: -2,
+				qty: sashQty,
+				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: "none"
 			},
@@ -19635,6 +19752,8 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 14e5,
 				round: -2,
+				qty: sashQty,
+				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: "none"
 			},
@@ -20467,6 +20586,26 @@ var CATEGORIES = [
 				on: "both"
 			},
 			{
+				id: "eq.kitchenHlIsland",
+				spec: "システムキッチン",
+				desc: "【HLオリジナル】LINEキッチン アイランド型 フロントオープン食洗機600 ※概算",
+				unit: "式",
+				cost: 165e4,
+				margin: .8,
+				group: "kitchen",
+				on: "none"
+			},
+			{
+				id: "eq.kitchenHlWall",
+				spec: "システムキッチン",
+				desc: "【HLオリジナル】LINEキッチン 壁付型＋カップボード ボッシュ食洗機W450",
+				unit: "式",
+				cost: 1147500,
+				margin: .8,
+				group: "kitchen",
+				on: "none"
+			},
+			{
 				id: "eq.kitchenCustom",
 				spec: "システムキッチン",
 				desc: "造作キッチン",
@@ -21146,10 +21285,14 @@ function defaultGroups(grade) {
 	for (const c of CATEGORIES) for (const l of c.lines) if (l.group && !g[l.group]) g[l.group] = l.id;
 	return g;
 }
-function newChoice(grade) {
+/** 新しい見積の選択。areas を渡すと、図面から読んだキッチンの形（アイランド・壁付け）を既定にする */
+function newChoice(grade, areas) {
+	const groups = defaultGroups(grade);
+	if (areas?.kitchenType === "island") groups.kitchen = "eq.kitchenHlIsland";
+	else if (areas?.kitchenType === "wall" || areas?.kitchenType === "two") groups.kitchen = "eq.kitchenHlWall";
 	return {
 		grade,
-		groups: defaultGroups(grade),
+		groups,
 		qty: {},
 		off: [],
 		extras: [],
@@ -23405,7 +23548,7 @@ var TOOLS = [
 				roofType,
 				solido: ext.accent ? ext.accentRule : "none"
 			});
-			const est = computeEstimate(areas, newChoice(grade));
+			const est = computeEstimate(areas, newChoice(grade, areas));
 			const quantities = {};
 			for (const fdef of AREA_FIELDS) quantities[fdef.key] = {
 				label: fdef.label,

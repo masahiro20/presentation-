@@ -104,11 +104,15 @@ export function addFinished(url: string, shot: Shot | null, fileName: string): G
 /** ファイルを選んで取り込む（対応を一覧で確かめてから入れる） */
 export async function importFinishedImages(ctx: StepCtx, shots: Shot[]) {
   void ctx;
-  const input = h('input', { type: 'file', accept: 'image/*', multiple: true }) as HTMLInputElement;
+  // 画面に置いた（見えない）ファイル欄から選ぶ。置かずに click すると、環境によって選んだ後の change が届かない
+  // （選ぶのをやめた場合に残った前回の欄は、次に開くときに片付ける）
+  for (const old of document.querySelectorAll('input[data-finish-import]')) old.remove();
+  const input = h('input', { type: 'file', accept: 'image/*', multiple: true, 'data-finish-import': '1', style: 'position:fixed;left:-9999px;opacity:0' }) as HTMLInputElement;
+  document.body.appendChild(input);
   const files = await new Promise<File[]>((resolve) => {
-    input.onchange = () => resolve([...(input.files ?? [])]);
+    input.addEventListener('change', () => resolve([...(input.files ?? [])]), { once: true });
     input.click();
-  });
+  }).finally(() => input.remove());
   if (!files.length) return;
   const manifest = loadManifest();
   const rows: { file: File; url: string; sel: HTMLSelectElement }[] = [];

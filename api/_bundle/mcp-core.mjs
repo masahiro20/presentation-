@@ -7686,8 +7686,117 @@ function uniqueSegs(segs) {
 	}
 	return out;
 }
+/**
+* 曲線の壁（R 壁）: 壁色の塗りのうち、細長い帯（両端の短辺 ≈ 壁厚、長辺は多くの短い辺で曲がる）を、
+* 中心線に沿った短い壁の連なりにする。直線の帯は線の検出で拾えているので、曲がっているもの（向きの変化の合計 12° 以上）だけ。
+* 林様邸の階段ヌックの R 壁・2 階の吹抜の曲面壁のような、ARCHITREND の塗りの R 壁に対応する
+*/
+function curvedWallsFromFills(polys, existing) {
+	const out = [];
+	let idx = 0;
+	const lenOf = (c) => c.reduce((s, p, i) => i ? s + Math.hypot(p.x - c[i - 1].x, p.y - c[i - 1].y) : 0, 0);
+	const at = (c, L, t) => {
+		let d = t * L;
+		for (let i = 1; i < c.length; i++) {
+			const s = Math.hypot(c[i].x - c[i - 1].x, c[i].y - c[i - 1].y);
+			if (d <= s || i === c.length - 1) {
+				const f = s ? Math.max(0, Math.min(1, d / s)) : 0;
+				return {
+					x: c[i - 1].x + (c[i].x - c[i - 1].x) * f,
+					y: c[i - 1].y + (c[i].y - c[i - 1].y) * f
+				};
+			}
+			d -= s;
+		}
+		return c[c.length - 1];
+	};
+	for (const poly of polys) {
+		const n = poly.length;
+		if (n < 12 || n > 400) continue;
+		const order = poly.map((p, i) => {
+			const q = poly[(i + 1) % n];
+			return Math.hypot(q.x - p.x, q.y - p.y);
+		}).map((l, i) => ({
+			l,
+			i
+		})).sort((a, b) => b.l - a.l);
+		const [c1, c2] = order;
+		if (!c1 || !c2) continue;
+		if (c1.l < 60 || c1.l > 320 || c2.l < 60 || c2.l > 320) continue;
+		if (order[2] && order[2].l > 160) continue;
+		const gap = Math.abs(c1.i - c2.i);
+		if (gap < 3 || n - gap < 3) continue;
+		const i1 = Math.min(c1.i, c2.i);
+		const i2 = Math.max(c1.i, c2.i);
+		const chainA = [];
+		for (let k = i1 + 1; k <= i2; k++) chainA.push(poly[k % n]);
+		const chainB = [];
+		for (let k = i2 + 1; k <= i1 + n; k++) chainB.push(poly[k % n]);
+		chainB.reverse();
+		const LA = lenOf(chainA);
+		const LB = lenOf(chainB);
+		if (LA < 300 || LB < 300 || LA / LB > 2.2 || LB / LA > 2.2) continue;
+		const K = Math.max(3, Math.round(Math.max(LA, LB) / 120));
+		const center = [];
+		let thick = 0;
+		for (let k = 0; k <= K; k++) {
+			const t = k / K;
+			const a = at(chainA, LA, t);
+			const b = at(chainB, LB, t);
+			center.push({
+				x: (a.x + b.x) / 2,
+				y: (a.y + b.y) / 2
+			});
+			thick += Math.hypot(a.x - b.x, a.y - b.y);
+		}
+		thick /= K + 1;
+		if (thick < 60 || thick > 320) continue;
+		let turn = 0;
+		for (let k = 1; k + 1 < center.length; k++) {
+			const a = Math.atan2(center[k].y - center[k - 1].y, center[k].x - center[k - 1].x);
+			const b = Math.atan2(center[k + 1].y - center[k].y, center[k + 1].x - center[k].x);
+			let d = Math.abs(b - a);
+			if (d > Math.PI) d = 2 * Math.PI - d;
+			turn += d;
+		}
+		if (turn < 12 * Math.PI / 180) continue;
+		if (center.filter((p) => existing.some((w) => distPointSegment(p, w.a, w.b) < w.d / 2 + 30)).length > center.length * .5) continue;
+		const d = Math.round(thick);
+		for (let k = 0; k + 1 < center.length; k++) {
+			const a = center[k];
+			const b = center[k + 1];
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			if (L < 10) continue;
+			const u = {
+				x: (b.x - a.x) / L,
+				y: (b.y - a.y) / L
+			};
+			out.push({
+				a,
+				b,
+				u,
+				n: {
+					x: -u.y,
+					y: u.x
+				},
+				d,
+				t0: 0,
+				t1: L,
+				o: 0,
+				g: -(1e3 + idx),
+				openings: [],
+				joinedA: k > 0,
+				joinedB: k + 2 < center.length
+			});
+			idx++;
+		}
+	}
+	return out;
+}
 function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
-	const walls = plan.walls;
+	const curved = curvedWallsFromFills(plan.wallPolys, plan.walls);
+	const walls = curved.length ? [...plan.walls, ...curved] : plan.walls;
+	if (curved.length) globalThis.__curvedTrace = [...globalThis.__curvedTrace ?? [], curved.length];
 	const res = 20;
 	const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
 	const voidRects = voidRectangles(plan);

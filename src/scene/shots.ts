@@ -562,27 +562,43 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
     }
   }
   // ---- ホール・廊下 ----
+  // 吹抜を囲む L 字・ロの字のホールは「一番大きな内接長方形」が吹抜の上に来てしまうので、
+  // ホールの床の上（吹抜・中庭・他室を除く）を 30cm 刻みで歩き、一番奥まで見通せる端と向きを選ぶ
+  const holes = meta.rooms.filter((r) => r.room.type === 'void' || /中庭|坪庭|パティオ|ライトコート|ドッグラン/.test(r.room.name));
   for (const ri of meta.rooms.filter((r) => r.room.type === 'hall')) {
-    const inner = largestInnerRect(ri.room.polygon, 5);
-    if (!inner) continue;
-    const R = { minX: inner.minX * MM, maxX: inner.maxX * MM, minZ: inner.minY * MM, maxZ: inner.maxY * MM };
-    const W = R.maxX - R.minX;
-    const D = R.maxZ - R.minZ;
-    const L = Math.max(W, D);
-    const S = Math.min(W, D);
-    if (L < 3.0 || S < 0.85) continue;
-    const alongX = W >= D;
-    const axis = new THREE.Vector3(alongX ? 1 : 0, 0, alongX ? 0 : 1);
-    const mid = new THREE.Vector3((R.minX + R.maxX) / 2, ri.floorY + eyeH, (R.minZ + R.maxZ) / 2);
-    // 両端から奥を見て、より遠くまで見通せる向きを選ぶ
-    let best: { pos: THREE.Vector3; dir: THREE.Vector3; see: number } | null = null;
-    for (const sgn of [1, -1]) {
-      const pos = mid.clone().addScaledVector(axis, -sgn * (L / 2 - 0.45));
-      const dir = axis.clone().multiplyScalar(sgn);
-      const see = clear(pos, dir);
-      if (!best || see > best.see) best = { pos, dir, see };
+    if (ri.room.area < 3.2) continue;
+    let bb = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+    for (const p of ri.poly) bb = { minX: Math.min(bb.minX, p.x), maxX: Math.max(bb.maxX, p.x), minZ: Math.min(bb.minZ, p.y), maxZ: Math.max(bb.maxZ, p.y) };
+    if (bb.maxX - bb.minX < 3.0 && bb.maxZ - bb.minZ < 3.0) continue;
+    const others = meta.rooms.filter((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area);
+    const dirs = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)];
+    let best: { pos: THREE.Vector3; dir: THREE.Vector3; see: number; score: number } | null = null;
+    for (let x = bb.minX + 0.45; x <= bb.maxX - 0.45; x += 0.3) {
+      for (let z = bb.minZ + 0.45; z <= bb.maxZ - 0.45; z += 0.3) {
+        if (!inPoly(x, z, ri.poly)) continue;
+        const pos = new THREE.Vector3(x, ri.floorY + eyeH, z);
+        if (distToPoly(pos, ri.poly) < 0.42) continue;
+        if (holes.some((h) => h.floor.level === ri.floor.level && inPoly(x, z, h.poly))) continue;
+        if (others.some((o) => inPoly(x, z, o.poly))) continue;
+        for (const dir of dirs) {
+          const see = clear(pos, dir);
+          // 3.6m 先まで見通せない廊下は見せ場にならない
+          if (see < 3.6) continue;
+          // 見る先の 2.4m は自分の床（吹抜の上を見渡すのではなく、廊下を歩く向き）
+          let walk = true;
+          for (let d = 0.6; d <= 2.4 && walk; d += 0.6) {
+            const q = pos.clone().addScaledVector(dir, d);
+            if (!inPoly(q.x, q.z, ri.poly) || holes.some((h) => h.floor.level === ri.floor.level && inPoly(q.x, q.z, h.poly))) walk = false;
+          }
+          if (!walk) continue;
+          const back = clear(pos, dir.clone().negate());
+          // 廊下の端に立って奥を見る（背中側はすぐ壁）が廊下らしい
+          const score = see + (back < 0.9 ? 0.6 : 0) - back * 0.15;
+          if (!best || score > best.score) best = { pos, dir, see, score };
+        }
+      }
     }
-    if (!best || best.see < 2.6) continue;
+    if (!best) continue;
     const target = best.pos.clone().addScaledVector(best.dir, Math.max(3, best.see * 0.8)).setY(ri.floorY + 1.2);
     out.push({
       id: `int-hall-${ri.room.id}`,

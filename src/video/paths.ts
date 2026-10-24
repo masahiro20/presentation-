@@ -24,6 +24,12 @@ export interface CamSample {
   hour?: number;
   /** 扉の開き具合（開口 ID → 0〜1）。無い扉は閉。undefined = 通常表示 */
   doors?: Map<string, number>;
+  /** 2 点透視（カメラ水平＋レンズシフト）で構える */
+  architectural?: boolean;
+  /** このコマの太陽（カットごとに変える動画用）。無ければそのまま */
+  sunDir?: THREE.Vector3;
+  /** カットの番号（太陽の切り替えなど、カットの変わり目の判定用） */
+  cut?: number;
 }
 
 export interface CameraProgram {
@@ -503,6 +509,76 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
       }
       // 歩く目線は気持ち広角（縦 60° = 16:9 で水平約 92°）。廊下や LDK が広く見える
       return { pos, target, fov: 60, fade, caption: cap?.text, doors };
+    },
+  };
+}
+
+/**
+ * シネマ（カット割り）: 見どころカメラを 1 カット数秒のゆっくりしたドリーでつなぐ。
+ * 参考にした建築の映像はほぼこの作り（長い一続きの歩きではなく、短い定速の移動の積み重ね）。
+ *  - 外観: 横へのスライド／ゆっくり寄る、鳥瞰: 小さく旋回、内観: 寄る／スライド
+ *  - 垂直線が倒れないよう外観・内観とも 2 点透視のまま動かす
+ *  - カットの変わり目は短く黒を挟む。カットごとに見どころの太陽（朝・夕景）に切り替える
+ */
+export function cinematicProgram(shots: Shot[], cutSec = 5): CameraProgram {
+  const ext = shots.filter((s) => s.kind === 'exterior' && !/夜景/.test(s.title));
+  const aerial = shots.filter((s) => s.kind === 'aerial');
+  const ints = shots.filter((s) => s.kind === 'interior');
+  const evening = ext.filter((s) => /夕景/.test(s.title));
+  const day = ext.filter((s) => !/夕景|朝/.test(s.title));
+  const order: Shot[] = [...day.slice(0, 2), ...aerial.slice(0, 1), ...ints.slice(0, 5), ...evening.slice(0, 1)];
+  if (!order.length) order.push(...shots.slice(0, 1));
+  const up = new THREE.Vector3(0, 1, 0);
+  const cuts = order.map((shot, i) => {
+    const p0 = shot.view.pos.clone();
+    const t0 = shot.view.target.clone();
+    const dir = t0.clone().sub(p0);
+    const dist = dir.length();
+    dir.normalize();
+    const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+    // 動きの種類: 外観は交互にスライドと寄り、鳥瞰は旋回、内観は寄りとスライドを交互に
+    const motion: 'push' | 'slide' | 'orbit' = shot.kind === 'aerial' ? 'orbit' : i % 2 === 0 ? 'slide' : 'push';
+    const amp = shot.kind === 'interior' ? 0.7 : shot.kind === 'aerial' ? 0 : 1.8;
+    return { shot, p0, t0, dir, dist, right, motion, amp, t0s: i * cutSec, t1s: (i + 1) * cutSec };
+  });
+  const T = cuts.length * cutSec;
+  const captions = cuts.map((c) => ({ t0: c.t0s + 0.5, t1: c.t1s - 0.4, text: c.shot.title.replace(/パース/g, '').replace(/[（）]/g, ' ').trim() }));
+  return {
+    duration: T,
+    captions,
+    sample(t: number): CamSample {
+      const idx = Math.max(0, Math.min(cuts.length - 1, Math.floor(t / cutSec)));
+      const c = cuts[idx];
+      const u = Math.max(0, Math.min(1, (t - c.t0s) / cutSec));
+      // ゆっくり始まりゆっくり止まる定速寄りの動き（サイン）
+      const e = 0.5 - 0.5 * Math.cos(Math.PI * u);
+      let pos = c.p0.clone();
+      let target = c.t0.clone();
+      if (c.motion === 'push') {
+        pos.addScaledVector(c.dir, e * Math.min(1.5, c.dist * 0.08));
+      } else if (c.motion === 'slide') {
+        pos.addScaledVector(c.right, (e - 0.5) * c.amp);
+        target.addScaledVector(c.right, (e - 0.5) * c.amp * 0.55);
+      } else {
+        const a = ((e - 0.5) * 10 * Math.PI) / 180;
+        const rel = c.p0.clone().sub(c.t0);
+        const x = rel.x * Math.cos(a) - rel.z * Math.sin(a);
+        const z = rel.x * Math.sin(a) + rel.z * Math.cos(a);
+        pos = c.t0.clone().add(new THREE.Vector3(x, rel.y, z));
+      }
+      const fin = 0.3;
+      const fade = t - c.t0s < fin ? 1 - (t - c.t0s) / fin : c.t1s - t < fin ? 1 - (c.t1s - t) / fin : 0;
+      const cap = captions.find((x) => t >= x.t0 && t < x.t1);
+      return {
+        pos,
+        target,
+        fov: c.shot.view.fov,
+        fade: Math.max(0, Math.min(1, fade)),
+        caption: cap?.text,
+        architectural: !!c.shot.view.architectural,
+        sunDir: c.shot.sunDir ?? undefined,
+        cut: idx,
+      };
     },
   };
 }

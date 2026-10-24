@@ -2,16 +2,17 @@ import * as THREE from 'three';
 import { h, toast, progressModal, section, segmented, modal, download } from '../dom';
 import { state } from '../state';
 import type { Step, StepCtx } from '../app';
-import { walkthroughProgram, droneProgram, sunTimelapseProgram, type CameraProgram } from '../../video/paths';
+import { walkthroughProgram, droneProgram, sunTimelapseProgram, cinematicProgram, type CameraProgram } from '../../video/paths';
 import { recordProgram } from '../../video/recorder';
 import { currentShots } from './designStep';
 import { siteLatLon } from '../../sun/geo';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset } from '../../sun/solar';
 
-type Kind = 'walk' | 'drone' | 'sunWinter' | 'sunSummer';
+type Kind = 'walk' | 'cinema' | 'drone' | 'sunWinter' | 'sunSummer';
 
 const LABEL: Record<Kind, string> = {
   walk: 'ウォークスルー',
+  cinema: 'シネマ（カット割り）',
   drone: '外観 360°（ドローン）',
   sunWinter: '日照タイムラプス（冬至）',
   sunSummer: '日照タイムラプス（夏至）',
@@ -26,6 +27,21 @@ function makeProgram(ctx: StepCtx, kind: Kind): { program: CameraProgram; before
     const program = walkthroughProgram(st.model, st.meta, st.site, currentShots(ctx));
     (globalThis as any).__walkProgram = program;
     return { program };
+  }
+  if (kind === 'cinema') {
+    const program = cinematicProgram(currentShots(ctx));
+    (globalThis as any).__walkProgram = program;
+    // カットの変わり目で、その見どころの太陽（朝・夕景）に切り替える
+    let lastCut = -1;
+    const baseSun = v.sunDir.clone();
+    return {
+      program,
+      before: (_t, s) => {
+        if (s.cut == null || s.cut === lastCut) return;
+        lastCut = s.cut;
+        v.setSunDirection(s.sunDir ?? baseSun, true);
+      },
+    };
   }
   if (kind === 'drone') return { program: droneProgram(st.meta) };
   const { lat, lon } = siteLatLon(state.site);
@@ -85,7 +101,7 @@ export const videoStep: Step = {
         const s = program.sample(t);
         before?.(t, s);
         v.setDoors(s.doors ?? null);
-        v.applyView({ pos: s.pos, target: s.target, fov: s.fov });
+        v.applyView({ pos: s.pos, target: s.target, fov: s.fov, architectural: s.architectural });
         capEl.style.display = s.caption ? 'block' : 'none';
         capEl.textContent = s.caption ?? '';
         v.renderer.domElement.style.filter = s.fade > 0 ? `brightness(${1 - s.fade})` : '';
@@ -136,6 +152,7 @@ export const videoStep: Step = {
         segmented<Kind>(
           [
             { value: 'walk', label: 'ウォークスルー' },
+            { value: 'cinema', label: 'シネマ' },
             { value: 'drone', label: '外観360°' },
             { value: 'sunWinter', label: '日照(冬)' },
             { value: 'sunSummer', label: '日照(夏)' },

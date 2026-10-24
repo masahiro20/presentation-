@@ -497,11 +497,15 @@ if which and which[0] == '--walk':
     scene.render.resolution_x = W; scene.render.resolution_y = H
     scene.cycles.samples = SAMPLES
     scene.render.use_motion_blur = False
-    n = 0; ev = None
+    n = 0; ev = None; last_sun = None
     for f in walk['frames']:
         if f['t'] < t0 or f['t'] > t1:
             continue
-        set_cam(f['pos'], f['target'], f['fov'])
+        # カットごとの太陽（シネマ）: 向きが変わったら空と太陽を作り直す
+        sd3 = tuple(f.get('sunDir') or info['sunDir'])
+        if sd3 != last_sun:
+            setup_sky(list(sd3), tod); last_sun = sd3; ev = None
+        set_cam(f['pos'], f['target'], f['fov'], architectural=bool(f.get('architectural')))
         target = auto_exposure(0.10)
         ev = target if ev is None else ev + (target - ev) * min(1.0, 1.5 / walk['fps'])
         scene.view_settings.exposure = ev

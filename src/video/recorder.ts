@@ -125,7 +125,18 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
     viewer.setDoors?.(s.doors ?? null);
     camera.fov = s.fov;
     camera.position.copy(s.pos);
-    camera.lookAt(s.target);
+    if (s.architectural) {
+      // 2 点透視: 水平に構えてレンズシフトで上下を見せる（Viewer.applyView と同じ）
+      const dir = s.target.clone().sub(s.pos);
+      const horiz = Math.hypot(dir.x, dir.z);
+      const tan = dir.y / Math.max(0.001, horiz);
+      const halfTan = Math.tan((s.fov * Math.PI) / 360);
+      camera.shiftY = Math.max(-0.9, Math.min(0.9, tan / halfTan));
+      camera.lookAt(s.target.clone().setY(s.pos.y));
+    } else {
+      camera.shiftY = 0;
+      camera.lookAt(s.target);
+    }
     camera.updateProjectionMatrix();
     viewer.renderFrame();
     comp.draw(renderer.domElement, s.fade, opts.captions !== false ? s.caption : undefined, opts.title);

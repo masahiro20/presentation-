@@ -18,8 +18,9 @@ interface PhotoDef {
 
 /** パターン → 実写素材 */
 const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
-  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.22 },
-  plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.3 },
+  // 塗り壁の粒子感・左官のムラは写真らしさの要（弱すぎると均一な CG に見える）
+  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.34 },
+  plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.48 },
   concrete: { id: 'concrete_floor_02', tile: 4, detail: 0.6 },
   woodFloor: { id: 'wood_floor', tile: 2.0 },
   woodSiding: { id: 'wood_planks', tile: 2.0 },

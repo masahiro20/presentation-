@@ -11387,6 +11387,151 @@ function woodCheck(model) {
 			}]
 		});
 	}
+	out.push(...livabilityChecks(model));
+	return out;
+}
+/**
+* 住まいの常識（使いやすさ・動線・広さ・採光）のチェック。
+* 読み取りの誤りではなく「設計として気になる点」を、お客様に説明できる言葉で出す（severity は info 中心）
+*/
+function livabilityChecks(model) {
+	const out = [];
+	const floors = model.floors;
+	const tatami = (a) => (a / 1.62).toFixed(1);
+	const rectOf = (r) => bboxOf$1(r.polygon);
+	const centerOf = (r) => ({
+		x: (rectOf(r).minX + rectOf(r).maxX) / 2,
+		y: (rectOf(r).minY + rectOf(r).maxY) / 2
+	});
+	const windowsOf = (f, r) => f.openings.filter((o) => {
+		if (o.kind !== "window") return false;
+		const w = f.walls.find((w) => w.id === o.wallId);
+		if (!w) return false;
+		const L = len(w) || 1;
+		const t = (o.t0 + o.t1) / 2 / L;
+		const c = {
+			x: w.a.x + (w.b.x - w.a.x) * t,
+			y: w.a.y + (w.b.y - w.a.y) * t
+		};
+		return r.polygon.some((p, i) => distPointSegment(c, p, r.polygon[(i + 1) % r.polygon.length]) < 250);
+	});
+	for (const f of floors) {
+		for (const r of f.rooms) {
+			const rect = rectOf(r);
+			const w = rect.maxX - rect.minX;
+			const h = rect.maxY - rect.minY;
+			const short = Math.min(w, h);
+			const marks = [{
+				level: f.level,
+				rects: [rect],
+				label: `${tatami(r.area)}帖`
+			}];
+			if ([
+				"bedroom",
+				"kids",
+				"japanese",
+				"study",
+				"living",
+				"ldk",
+				"dining"
+			].includes(r.type) && r.area >= 4 && windowsOf(f, r).length === 0) out.push({
+				id: `nowin-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 ${r.name}: 窓が読めていません`,
+				detail: "居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです",
+				marks
+			});
+			if (r.type === "bedroom" && /主寝室|寝室|MBR|主/.test(r.name) && r.area < 9.5 && r.area > 0) out.push({
+				id: `mbr-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖は主寝室としては少し狭めです`,
+				detail: "ダブルベッド（1,400×1,950）を置いて両側に通路（各 600）を取るには短辺 2,730（6 帖）以上が目安です。クローゼットを別に取れば 6 帖でも成り立ちます",
+				marks
+			});
+			if (r.type === "kids" && r.area < 7 && r.area > 0) out.push({
+				id: `kids-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖はベッドと机を置くと窮屈です`,
+				detail: "シングルベッド（1,000×2,000）と机（1,000×600）を置くには 4.5 帖（2,730×2,730）が目安。3.8 帖でも成り立ちますが、クローゼットは外に取ってください",
+				marks
+			});
+			if ((r.type === "ldk" || r.type === "living") && short > 0 && short < 3500) out.push({
+				id: `ldk-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m はソファとテーブルを並べると窮屈です`,
+				detail: "ダイニングテーブル（通路込み 2,000）とソファ（通路込み 1,700）を横に並べるには短辺 3,640 以上が目安です。縦に並べる間取りなら問題ありません",
+				marks
+			});
+			if (r.type === "washroom" && r.area < 3 && r.area > 0) out.push({
+				id: `wash-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖は洗濯機と洗面台を置くと狭めです`,
+				detail: "洗面台（W750〜900）・洗濯機（W640）・脱衣のスペースで 1 坪（1,820×1,820）が目安です。ランドリーを兼ねるなら 1.5 坪以上をおすすめします",
+				marks
+			});
+			if (r.type === "stairs" && short > 0 && short < 860) out.push({
+				id: `stairw-${f.level}-${r.id}`,
+				level: f.level,
+				severity: "warn",
+				title: `${f.level}階 階段: 幅 ${m(short)} m は狭すぎます`,
+				detail: "階段の幅は柱芯 910（有効 750 以上）が最小です。手すりを付けると有効幅が 50 減ります。読み取りの壁のずれの可能性もあります",
+				marks
+			});
+		}
+		const kitchen = f.rooms.find((r) => r.type === "kitchen" || r.type === "ldk" || r.type === "dining");
+		const wash = f.rooms.find((r) => r.type === "washroom");
+		if (kitchen && wash) {
+			const a = centerOf(kitchen);
+			const b = centerOf(wash);
+			const d = Math.hypot(a.x - b.x, a.y - b.y);
+			if (d > 9e3) out.push({
+				id: `kw-${f.level}`,
+				level: f.level,
+				severity: "info",
+				title: `${f.level}階: キッチンと洗面脱衣室が離れています（約 ${m(d)} m）`,
+				detail: "料理と洗濯を同時に進める家事動線では、キッチン〜洗面脱衣室が近い（回遊できる）と毎日の移動が短くなります。間取りの意図であれば問題ありません",
+				marks: [{
+					level: f.level,
+					lines: [{
+						a,
+						b
+					}],
+					label: "家事動線"
+				}]
+			});
+		}
+		const storage = f.rooms.filter((r) => r.type === "closet" || r.type === "storage").reduce((s, r) => s + r.area, 0);
+		const floorArea = f.rooms.filter((r) => ![
+			"void",
+			"balcony",
+			"porch",
+			"garage"
+		].includes(r.type)).reduce((s, r) => s + r.area, 0);
+		if (floorArea > 30 && storage / floorArea < .08) out.push({
+			id: `storage-${f.level}`,
+			level: f.level,
+			severity: "info",
+			title: `${f.level}階: 収納が床面積の ${Math.round(storage / floorArea * 100)}% と少なめです`,
+			detail: "戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります"
+		});
+	}
+	if (floors.length >= 2) {
+		const up = floors[floors.length - 1];
+		const hasBed = up.rooms.some((r) => r.type === "bedroom" || r.type === "kids");
+		const hasWc = up.rooms.some((r) => r.type === "toilet");
+		if (hasBed && !hasWc) out.push({
+			id: `wc-up-${up.level}`,
+			level: up.level,
+			severity: "info",
+			title: `${up.level}階に寝室がありますがトイレがありません`,
+			detail: "夜間や来客時のために、寝室のある階にトイレ（柱芯 910×1,365）を置くのが一般的です。1 階だけにする場合はお客様に確認を"
+		});
+	}
 	return out;
 }
 //#endregion
@@ -12314,7 +12459,8 @@ var BUILDER_SPECS = [{
 	curtains: "pocket",
 	lighting: "downlight",
 	indirectLighting: true,
-	baseboard: "recessed"
+	baseboard: "recessed",
+	voidGuard: "rail"
 }, {
 	id: "standard",
 	name: "一般的な仕様（比較用）",
@@ -12335,7 +12481,8 @@ var BUILDER_SPECS = [{
 	curtains: "rail",
 	lighting: "ceiling",
 	indirectLighting: false,
-	baseboard: "standard"
+	baseboard: "standard",
+	voidGuard: "half"
 }];
 /** 仕様を反映した開口部の高さ (mm) */
 function effectiveOpening(o, ceilingHeight, spec) {
@@ -12665,6 +12812,7 @@ function buildBuilding(model, opts) {
 			buildWall(mb, f, w, ops, fl, top, !!ext.accent && (ext.accentRule === "upper" && f.level >= 2 || ext.accentRule === "lower" && f.level === 1 || ext.accentRule === "entrance" && w.exterior && isEntranceColumn(w, entranceRanges)) ? "ext.accent" : "ext.wall", isTop, spec);
 			for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec);
 		}
+		buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
 		for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
 			const w = j.w;
 			const outdoorAt = (x, y) => {
@@ -12914,6 +13062,111 @@ function diagonalJoints(walls, onlyExterior = false) {
 	}
 	return out;
 }
+/**
+* 吹抜の縁の鉄骨手すり（御社の標準: 黒皮鉄のフラットバー）。
+* 支柱 FB-12×50 @ ≤1.0m、笠木は丸パイプ φ32（H1100）、縦桟 FB-9×30 @110
+*/
+function buildVoidRail(mb, A, B, fl) {
+	const L = A.distanceTo(B);
+	if (L < .15) return;
+	const dir = new THREE.Vector3().subVectors(B, A).normalize();
+	const H = 1.1;
+	const metal = "f.metal";
+	const nPost = Math.max(2, Math.ceil(L / 1) + 1);
+	for (let i = 0; i < nPost; i++) {
+		const s = .03 + (L - .06) * i / (nPost - 1);
+		mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl), dir, .012, 1.08, .05);
+	}
+	mb.tube(metal, A.clone().setY(fl + H), B.clone().setY(fl + H), .016, .016, 10);
+	for (let s = .14; s < L - .08; s += .11) mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl + .05), dir, .009, 1.01, .03);
+}
+/** 腰壁の上のガラス（H300）と細い黒の笠木 */
+function voidGlassOnTop(mb, A, B, y) {
+	const L = A.distanceTo(B);
+	if (L < .1) return;
+	const dir = new THREE.Vector3().subVectors(B, A).normalize();
+	const mid = A.clone().addScaledVector(dir, L / 2);
+	mb.box("ext.glass", mid.clone().setY(y), dir, L - .02, .3, .012);
+	mb.box("ext.frame", mid.clone().setY(y + .3), dir, L, .03, .04);
+}
+/**
+* 壁の無い吹抜の縁（図面で手すりの細い線だけ、または何も描かれていない縁）にも仕様の落下防止を付ける。
+* 吹抜の多角形の辺ごとに、壁が沿っていなければ、外側（部屋側）に向けて手すり／腰壁／ガラス／壁を作る
+*/
+function buildVoidGuardsOnOpenEdges(mb, f, fl, spec) {
+	if (f.level < 2) return;
+	const distToSeg = (p, a, b) => {
+		const dx = b.x - a.x;
+		const dy = b.y - a.y;
+		const L2 = dx * dx + dy * dy || 1;
+		const u = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+		return Math.hypot(p.x - a.x - dx * u, p.y - a.y - dy * u);
+	};
+	for (const r of f.rooms) {
+		if (r.type !== "void") continue;
+		const poly = r.polygon;
+		for (let i = 0; i < poly.length; i++) {
+			const p = poly[i];
+			const q = poly[(i + 1) % poly.length];
+			const len = Math.hypot(q.x - p.x, q.y - p.y);
+			if (len < 300) continue;
+			const mid = {
+				x: (p.x + q.x) / 2,
+				y: (p.y + q.y) / 2
+			};
+			const ang = Math.atan2(q.y - p.y, q.x - p.x);
+			if (f.walls.some((w) => {
+				let d = Math.abs(Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) - ang) % Math.PI;
+				d = Math.min(d, Math.PI - d);
+				return d < 8 * Math.PI / 180 && distToSeg(mid, w.a, w.b) < 150;
+			})) continue;
+			let nx = -(q.y - p.y) / len;
+			let ny = (q.x - p.x) / len;
+			if (pointInPolygon({
+				x: mid.x + nx * 150,
+				y: mid.y + ny * 150
+			}, poly)) {
+				nx = -nx;
+				ny = -ny;
+			}
+			const other = roomAt(f, mid.x + nx * 200, mid.y + ny * 200);
+			if (!other || other.type === "void" || other.type === "balcony" || other.type === "porch") continue;
+			const A = V(p.x * MM, 0, p.y * MM);
+			const B = V(q.x * MM, 0, q.y * MM);
+			const dir = new THREE.Vector3().subVectors(B, A).normalize();
+			const L = A.distanceTo(B);
+			const midV = A.clone().addScaledVector(dir, L / 2);
+			const inset = new THREE.Vector3(nx, 0, ny).multiplyScalar(.06);
+			if (spec.voidGuard === "rail") buildVoidRail(mb, A.clone().add(inset), B.clone().add(inset), fl);
+			else if (spec.voidGuard === "half") mb.box([
+				"int.wall",
+				"int.wall",
+				"int.wallTop",
+				"int.wallTop",
+				"int.wall",
+				"int.wall"
+			], midV.clone().add(inset).setY(fl), dir, L, 1.1, .12);
+			else if (spec.voidGuard === "halfGlass") {
+				mb.box([
+					"int.wall",
+					"int.wall",
+					"int.wallTop",
+					"int.wallTop",
+					"int.wall",
+					"int.wall"
+				], midV.clone().add(inset).setY(fl), dir, L, .9, .12);
+				voidGlassOnTop(mb, A.clone().add(inset), B.clone().add(inset), fl + .9);
+			} else mb.box([
+				"int.wall",
+				"int.wall",
+				"int.wallTop",
+				"int.wallTop",
+				"int.wall",
+				"int.wall"
+			], midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, .12);
+		}
+	}
+}
 /** 壁を開口部で分割して生成 */
 function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);
@@ -12943,6 +13196,13 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const openMinus = w.exterior && w.outsideSign === -1 || !rMinus || isOutdoor(rMinus);
 	const parapet = openPlus && openMinus && (rPlus?.type === "balcony" || rMinus?.type === "balcony");
 	const facesOutdoor = isOutdoor(rPlus) || isOutdoor(rMinus);
+	const voidPlus = rPlus?.type === "void";
+	const voidMinus = rMinus?.type === "void";
+	const guard = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && !!(voidPlus ? rMinus : rPlus) ? spec.voidGuard : "wall";
+	if (guard === "rail") {
+		buildVoidRail(mb, A, B, fl);
+		return;
+	}
 	const sideKey = (sign) => {
 		if (w.exterior && w.outsideSign === sign) return extKey;
 		const r = sign === 1 ? rPlus : rMinus;
@@ -12955,8 +13215,9 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const kMinus = sideKey(-1);
 	const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
 	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : fl;
-	const wallTop = parapet ? Math.min(top, fl + 1.1) : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
 	const topKey = w.exterior || facesOutdoor ? "ext.wallTop" : "int.wallTop";
+	if (guard === "halfGlass") voidGlassOnTop(mb, A, B, fl + .9);
 	const jambKey = w.exterior ? spec.windows.interiorReveal === "plaster" ? "int.wall" : "int.trim" : spec.doors.frame === "casing" ? "int.trim" : "int.wall";
 	const seg = (s0, s1, y0, y1, startCap, endCap) => {
 		if (s1 - s0 < .005 || y1 - y0 < .005) return;
@@ -17437,7 +17698,17 @@ function floorPlanSvg(model, f, opts = {}) {
 		});
 	}
 	const vb = parts.vb;
-	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${parts.defs}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${parts.inner}</svg>`;
+	let paper = "";
+	if (opts.paper === "grid") {
+		const mod = model.module;
+		const step = mod?.size ?? 910;
+		const half = step / 2;
+		const px = ((mod?.phaseX ?? 0) % step + step) % step;
+		const py = ((mod?.phaseY ?? 0) % step + step) % step;
+		paper = `<defs><pattern id="${`mp-paper-${f.level}`}" patternUnits="userSpaceOnUse" width="${step}" height="${step}" x="${px}" y="${py}"><rect width="${step}" height="${step}" fill="#fbfbf9"/><path d="M${half} 0V${step}M0 ${half}H${step}" stroke="#e6ebef" stroke-width="5" fill="none"/><path d="M0 0H${step}M0 0V${step}" stroke="#d3dbe3" stroke-width="6" fill="none"/><path d="M0 -120V120M-120 0H120M${step} -120V120M${step - 120} 0H${step + 120}M0 ${step - 120}V${step + 120}M-120 ${step}H120M${step} ${step - 120}V${step + 120}M${step - 120} ${step}H${step + 120}" stroke="#aebbc8" stroke-width="9" fill="none"/></pattern></defs>`;
+	}
+	const bg = opts.paper === "grid" ? `url(#mp-paper-${f.level})` : "#fff";
+	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${parts.defs}${paper}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="${bg}"/>${parts.inner}</svg>`;
 }
 /** 平面図の中身（図枠に流し込む用）。図枠に入れる時は外構・道路を描かない（図面としての密度を優先） */
 function floorPlanParts(model, f, opts = {}) {
@@ -17770,8 +18041,19 @@ function floorPlanParts(model, f, opts = {}) {
 					},
 					tip
 				];
-				const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? "#333" : "#555"}" stroke-width="${hl ? 5 : 6}"/>`;
+				{
+					const a0 = Math.atan2(tip.y - hinge.y, tip.x - hinge.x);
+					let a1 = Math.atan2(strike.y - hinge.y, strike.x - hinge.x);
+					while (a1 - a0 > Math.PI) a1 -= Math.PI * 2;
+					while (a1 - a0 < -Math.PI) a1 += Math.PI * 2;
+					const N = 14;
+					const arc = [];
+					for (let k = 0; k <= N; k++) {
+						const ang = a0 + (a1 - a0) * k / N;
+						arc.push(`${(hinge.x + Math.cos(ang) * len).toFixed(0)},${(hinge.y + Math.sin(ang) * len).toFixed(0)}`);
+					}
+					s += `<polyline points="${arc.join(" ")}" fill="none" stroke="${hl ? "#333" : "#555"}" stroke-width="${hl ? 5 : 6}"/>`;
+				}
 				if (hl) {
 					s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="10"/>`;
 					for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
@@ -18172,9 +18454,6 @@ function floorPlanParts(model, f, opts = {}) {
 		vb,
 		defs: PLAN_DEFS
 	};
-}
-function cross(ax, ay, bx, by) {
-	return ax * by - ay * bx;
 }
 function esc(s) {
 	return s.replace(/[&<>]/g, (c) => ({

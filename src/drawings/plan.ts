@@ -194,6 +194,8 @@ export interface PlanSvgOptions {
   sectionLines?: { nx: number; nz: number; d: number; label: string }[];
   /** 木造モジュールの格子（1 間 = 910 ごとの細い点線）を描く（既定: 図枠ありのとき） */
   showModuleGrid?: boolean;
+  /** 背景を方眼紙（半間 455 の薄い格子と、1 間ごとの十字）にする。読み込み直後の確認表示用 */
+  paper?: 'white' | 'grid';
   /** 赤で示す位置（木造チェックの「図面で見る」）。線は壁の区間、矩形は部屋・階段・空間 */
   marks?: PlanMark[];
   /**
@@ -338,7 +340,25 @@ export function floorPlanSvg(model: BuildingModel, f: Floor, opts: PlanSvgOption
     return wrapSheet(parts.inner, parts.vb, opts.sheet, { right, defs: parts.defs });
   }
   const vb = parts.vb;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${parts.defs}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="#fff"/>${parts.inner}</svg>`;
+  // 方眼紙: 半間（455）の薄い線と、1 間（910）の交点に小さな十字。格子は図面のモジュール（通り芯）に合わせる
+  let paper = '';
+  if (opts.paper === 'grid') {
+    const mod = model.module;
+    const step = mod?.size ?? 910;
+    const half = step / 2;
+    const px = ((mod?.phaseX ?? 0) % step + step) % step;
+    const py = ((mod?.phaseY ?? 0) % step + step) % step;
+    const id = `mp-paper-${f.level}`;
+    paper =
+      `<defs><pattern id="${id}" patternUnits="userSpaceOnUse" width="${step}" height="${step}" x="${px}" y="${py}">` +
+      `<rect width="${step}" height="${step}" fill="#fbfbf9"/>` +
+      `<path d="M${half} 0V${step}M0 ${half}H${step}" stroke="#e6ebef" stroke-width="5" fill="none"/>` +
+      `<path d="M0 0H${step}M0 0V${step}" stroke="#d3dbe3" stroke-width="6" fill="none"/>` +
+      `<path d="M0 ${-120}V120M${-120} 0H120M${step} ${-120}V120M${step - 120} 0H${step + 120}M0 ${step - 120}V${step + 120}M${-120} ${step}H120M${step} ${step - 120}V${step + 120}M${step - 120} ${step}H${step + 120}" stroke="#aebbc8" stroke-width="9" fill="none"/>` +
+      `</pattern></defs>`;
+  }
+  const bg = opts.paper === 'grid' ? `url(#mp-paper-${f.level})` : '#fff';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" font-family="'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif">${parts.defs}${paper}<rect x="${vb.x}" y="${vb.y}" width="${vb.w}" height="${vb.h}" fill="${bg}"/>${parts.inner}</svg>`;
 }
 
 /** 平面図の中身（図枠に流し込む用）。図枠に入れる時は外構・道路を描かない（図面としての密度を優先） */
@@ -612,8 +632,21 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
           { x: tip.x + ux * dirU * tk, y: tip.y + uy * dirU * tk },
           tip,
         ];
-        const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-        s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? '#333' : '#555'}" stroke-width="${hl ? 5 : 6}"/>`;
+        // 戸先の軌跡: 吊元を中心にした 1/4 円を、開いた位置（tip）から閉じた位置（strike）まで点で描く。
+        // （SVG の A コマンドは同じ半径の円が 2 つあり、中心が吊元と逆側になって膨らみが反対を向くことがあった）
+        {
+          const a0 = Math.atan2(tip.y - hinge.y, tip.x - hinge.x);
+          let a1 = Math.atan2(strike.y - hinge.y, strike.x - hinge.x);
+          while (a1 - a0 > Math.PI) a1 -= Math.PI * 2;
+          while (a1 - a0 < -Math.PI) a1 += Math.PI * 2;
+          const N = 14;
+          const arc: string[] = [];
+          for (let k = 0; k <= N; k++) {
+            const ang = a0 + ((a1 - a0) * k) / N;
+            arc.push(`${(hinge.x + Math.cos(ang) * len).toFixed(0)},${(hinge.y + Math.sin(ang) * len).toFixed(0)}`);
+          }
+          s += `<polyline points="${arc.join(' ')}" fill="none" stroke="${hl ? '#333' : '#555'}" stroke-width="${hl ? 5 : 6}"/>`;
+        }
         if (hl) {
           // JIS 平面表示記号「片開き戸」: 吊元から戸先へ 90° 開いた扉の線と、戸先の軌跡（1/4 円）。開口の両端は壁面を横切る細線（枠）
           s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="10"/>`;

@@ -170,7 +170,8 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
         };
         const touches = (['n', 's', 'e', 'w'] as const).map((s) => ({ s, v: sideTouch(s) })).sort((a, b) => b.v - a.v);
         if (touches[0].v > 0.3) {
-          const lowSlope = Math.min(ctx.slope, 0.3);
+          // 下屋は御社の立面図（吉田様邸ほか）のとおり 0.5〜1 寸の緩い片流れ（上階の壁から外へ流す。軒ゼロで薄い鼻隠し）
+          const lowSlope = Math.min(ctx.slope, 0.1);
           const y = shedRoof({ ...ctx, slope: lowSlope, gableKey: 'ext.wall' }, R, H, touches[0].s, true);
           info.maxY = Math.max(info.maxY, y);
           continue;

@@ -37,6 +37,11 @@ export interface BuilderSpec {
   indirectLighting: boolean;
   /** 巾木: 入り巾木（ほぼ見えない）/ 一般 */
   baseboard: 'recessed' | 'standard';
+  /**
+   * 吹抜に面する上階の縁（落下防止）: 'rail' = 黒皮鉄のフラットバー手すり（御社の標準）／'half' = 腰壁 H1100／
+   * 'halfGlass' = 腰壁 H900 ＋ ガラス H300／'wall' = 天井までの壁（吹抜を見せない）
+   */
+  voidGuard: 'rail' | 'half' | 'halfGlass' | 'wall';
 }
 
 export const BUILDER_SPECS: BuilderSpec[] = [
@@ -50,6 +55,7 @@ export const BUILDER_SPECS: BuilderSpec[] = [
     lighting: 'downlight',
     indirectLighting: true,
     baseboard: 'recessed',
+    voidGuard: 'rail',
   },
   {
     id: 'standard',
@@ -61,6 +67,7 @@ export const BUILDER_SPECS: BuilderSpec[] = [
     lighting: 'ceiling',
     indirectLighting: false,
     baseboard: 'standard',
+    voidGuard: 'half',
   },
 ];
 
@@ -103,6 +110,8 @@ export interface SpecPatch {
   doorColor?: string;
   /** 天井高 (mm)。未指定なら図面・入力値 */
   ceilingHeight?: number;
+  /** 吹抜に面する上階の縁（手すり／腰壁／腰壁＋ガラス／壁） */
+  voidGuard?: BuilderSpec['voidGuard'];
 }
 
 export function resolveSpec(id: string | undefined, patch: SpecPatch | undefined): BuilderSpec {
@@ -118,5 +127,6 @@ export function resolveSpec(id: string | undefined, patch: SpecPatch | undefined
     windows: { ...base.windows, headAtCeiling: patch.windowHeadAtCeiling ?? base.windows.headAtCeiling },
     indirectLighting: patch.indirectLighting ?? base.indirectLighting,
     curtains: patch.curtains ?? base.curtains,
+    voidGuard: patch.voidGuard ?? base.voidGuard,
   };
 }

@@ -296,6 +296,7 @@ export class Viewer {
     });
 
     this.composer = new EffectComposer(this.renderer);
+    this.applyViewMode();
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.gtao = new GTAOPass(this.scene, this.camera, 1, 1);
     this.gtao.updateGtaoMaterial({ radius: 0.6, distanceExponent: 1.5, thickness: 1.2, scale: 1.2 });
@@ -585,12 +586,40 @@ export class Viewer {
   setViewMode(mode: 'browse' | 'finish') {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
+    this.applyViewMode();
     this.dirty = true;
   }
 
-  /** 画面の解像度（高精細ディスプレイでも 1.5 倍まで。2 倍は描画量が 1.8 倍になり重い） */
+  /**
+   * 表示モードの構造的な違い（閲覧は描く量そのものを減らす）:
+   *  - 室内の点光源: 閲覧の昼・朝は消す（太陽・空・環境光だけ。点光源は画素ごとの計算が重い）。夕景・夜景は雰囲気に要るので残す
+   *  - 影の解像度: 閲覧 2048、仕上げ 4096
+   *  - 画素比: 閲覧は 1（高精細画面でも等倍）、仕上げは 1.5 まで
+   */
+  private applyViewMode() {
+    const browse = this.viewMode === 'browse';
+    const size = browse ? 2048 : 4096;
+    if (this.sun.shadow.mapSize.x !== size) {
+      this.sun.shadow.mapSize.set(size, size);
+      this.sun.shadow.map?.dispose();
+      (this.sun.shadow as unknown as { map: unknown }).map = null;
+    }
+    this.applyLightsVisibility();
+    this.applyPixelRatio(this.fullPR());
+    this.dirty = true;
+  }
+
+  /** 室内の点光源を見せるか（外部モデルで隠している間はそちらが優先） */
+  private applyLightsVisibility() {
+    if (this.pdfGroupsHidden) return;
+    const tod = this.design.timeOfDay;
+    const needed = tod === 'evening' || tod === 'night';
+    this.groups.lights.visible = this.viewMode === 'finish' || needed;
+  }
+
+  /** 画面の解像度（仕上げは高精細ディスプレイでも 1.5 倍まで。閲覧は等倍: 画素数が 2.25 分の 1 になる） */
   private fullPR() {
-    return Math.min(window.devicePixelRatio || 1, 1.5);
+    return Math.min(window.devicePixelRatio || 1, this.viewMode === 'browse' ? 1 : 1.5);
   }
 
   private applyPixelRatio(pr: number) {
@@ -877,8 +906,8 @@ export class Viewer {
       this.groups.building.visible = true;
       this.groups.roof.visible = true;
       this.groups.furniture.visible = this.design.furniture;
-      this.groups.lights.visible = true;
       this.pdfGroupsHidden = false;
+      this.applyLightsVisibility();
     }
     this.dirty = true;
   }
@@ -935,6 +964,7 @@ export class Viewer {
       this.updateInteriorLights();
       this.updateEnvironment();
     }
+    this.applyLightsVisibility();
     void ext;
     this.dirty = true;
   }

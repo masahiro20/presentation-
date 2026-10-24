@@ -474,6 +474,22 @@ export const designStep: Step = {
               spec.curtains,
               (val) => update({ specPatch: { ...state.design.specPatch, curtains: val as 'pocket' | 'rail' | 'none' } }),
             ),
+            ...(v.state!.model.floors.some((f) => f.rooms.some((r) => r.type === 'void'))
+              ? [
+                  h('div', { class: 'field-label', style: 'margin-top:8px' }, '吹抜の 2 階側（落下防止）'),
+                  segmented(
+                    [
+                      { value: 'rail', label: '鉄骨手すり' },
+                      { value: 'half', label: '腰壁' },
+                      { value: 'halfGlass', label: '腰壁＋ガラス' },
+                      { value: 'wall', label: '壁' },
+                    ],
+                    spec.voidGuard,
+                    (val) => update({ specPatch: { ...state.design.specPatch, voidGuard: val as 'rail' | 'half' | 'halfGlass' | 'wall' } }),
+                  ),
+                  h('p', { class: 'hint', style: 'margin:4px 0 0' }, '黒皮鉄のフラットバー手すり（御社の標準）／腰壁 H1100／腰壁 H900 にガラス H300／天井までの壁。図面に線が無い縁にも付けます。'),
+                ]
+              : []),
             h('div', { class: 'field-label', style: 'margin-top:8px' }, '室内ドアの色'),
             h(
               'div',

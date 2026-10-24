@@ -494,7 +494,8 @@ function renderResult(ctx: StepCtx) {
   let shownIssue: WoodIssue | null = null;
   const drawPlans = () => {
     clear(view);
-    state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
+    // 確認表示は設計図書らしく: 方眼紙の背景（通り芯の格子）に、御社の表記（黒塗りの壁・JIS の建具記号）
+    state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f, { paper: 'grid' }) }));
     state.sheets = [];
     if (shownIssue) {
       view.appendChild(
@@ -518,7 +519,7 @@ function renderResult(ctx: StepCtx) {
     }
     for (const f of model.floors) {
       const mk = shownIssue?.marks?.filter((x) => x.level === f.level) ?? [];
-      const svg = mk.length ? floorPlanSvg(model, f, { marks: mk }) : state.plans.find((p) => p.level === f.level)!.svg;
+      const svg = mk.length ? floorPlanSvg(model, f, { marks: mk, paper: 'grid' }) : state.plans.find((p) => p.level === f.level)!.svg;
       view.appendChild(h('div', { class: `sheet level-${f.level} ${mk.length ? 'marked' : ''}`, html: svg }));
     }
   };

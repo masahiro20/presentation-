@@ -629,5 +629,89 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       marks: [{ level: f.level, lines: short.map((x) => ({ a: x.a, b: x.b })), label: jagged ? 'ギザギザ' : '細かい段差' }],
     });
   }
+  out.push(...livabilityChecks(model));
+  return out;
+}
+
+/**
+ * 住まいの常識（使いやすさ・動線・広さ・採光）のチェック。
+ * 読み取りの誤りではなく「設計として気になる点」を、お客様に説明できる言葉で出す（severity は info 中心）
+ */
+function livabilityChecks(model: BuildingModel): WoodIssue[] {
+  const out: WoodIssue[] = [];
+  const floors = model.floors;
+  const tatami = (a: number) => (a / 1.62).toFixed(1);
+  const rectOf = (r: Room) => bboxOf(r.polygon);
+  const centerOf = (r: Room) => ({ x: (rectOf(r).minX + rectOf(r).maxX) / 2, y: (rectOf(r).minY + rectOf(r).maxY) / 2 });
+  // 部屋に面する窓（開口の中心が部屋の境界から 250 以内）
+  const windowsOf = (f: Floor, r: Room) =>
+    f.openings.filter((o) => {
+      if (o.kind !== 'window') return false;
+      const w = f.walls.find((w) => w.id === o.wallId);
+      if (!w) return false;
+      const L = len(w) || 1;
+      const t = (o.t0 + o.t1) / 2 / L;
+      const c = { x: w.a.x + (w.b.x - w.a.x) * t, y: w.a.y + (w.b.y - w.a.y) * t };
+      return r.polygon.some((p, i) => distPointSegment(c, p, r.polygon[(i + 1) % r.polygon.length]) < 250);
+    });
+  for (const f of floors) {
+    for (const r of f.rooms) {
+      const rect = rectOf(r);
+      const w = rect.maxX - rect.minX;
+      const h = rect.maxY - rect.minY;
+      const short = Math.min(w, h);
+      const marks: WoodMark[] = [{ level: f.level, rects: [rect], label: `${tatami(r.area)}帖` }];
+      // 居室の採光: 窓の無い寝室・子供室・和室・書斎（建築基準法の居室は採光が要る。読み取り漏れのこともある）
+      if (['bedroom', 'kids', 'japanese', 'study', 'living', 'ldk', 'dining'].includes(r.type) && r.area >= 4 && windowsOf(f, r).length === 0) {
+        out.push({ id: `nowin-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 窓が読めていません`, detail: '居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです', marks });
+      }
+      // 主寝室の広さ: 6 帖未満だとダブルベッド（W1400）＋通路が苦しい
+      if (r.type === 'bedroom' && /主寝室|寝室|MBR|主/.test(r.name) && r.area < 9.5 && r.area > 0) {
+        out.push({ id: `mbr-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖は主寝室としては少し狭めです`, detail: 'ダブルベッド（1,400×1,950）を置いて両側に通路（各 600）を取るには短辺 2,730（6 帖）以上が目安です。クローゼットを別に取れば 6 帖でも成り立ちます', marks });
+      }
+      // 子供室: 4.5 帖未満はベッド＋机が入らない
+      if (r.type === 'kids' && r.area < 7.0 && r.area > 0) {
+        out.push({ id: `kids-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖はベッドと机を置くと窮屈です`, detail: 'シングルベッド（1,000×2,000）と机（1,000×600）を置くには 4.5 帖（2,730×2,730）が目安。3.8 帖でも成り立ちますが、クローゼットは外に取ってください', marks });
+      }
+      // LDK の短辺: 3,640 未満だとソファとダイニングテーブルが並ばない
+      if ((r.type === 'ldk' || r.type === 'living') && short > 0 && short < 3500) {
+        out.push({ id: `ldk-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m はソファとテーブルを並べると窮屈です`, detail: 'ダイニングテーブル（通路込み 2,000）とソファ（通路込み 1,700）を横に並べるには短辺 3,640 以上が目安です。縦に並べる間取りなら問題ありません', marks });
+      }
+      // 洗面脱衣室: 1 坪未満だと洗濯機＋洗面台＋脱衣スペースが苦しい
+      if (r.type === 'washroom' && r.area < 3.0 && r.area > 0) {
+        out.push({ id: `wash-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: ${tatami(r.area)}帖は洗濯機と洗面台を置くと狭めです`, detail: '洗面台（W750〜900）・洗濯機（W640）・脱衣のスペースで 1 坪（1,820×1,820）が目安です。ランドリーを兼ねるなら 1.5 坪以上をおすすめします', marks });
+      }
+      // 階段の幅: 柱芯 910 未満（内法 780 未満）は上り下りが窮屈で、家具の搬入にも困る
+      if (r.type === 'stairs' && short > 0 && short < 860) {
+        out.push({ id: `stairw-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 階段: 幅 ${m(short)} m は狭すぎます`, detail: '階段の幅は柱芯 910（有効 750 以上）が最小です。手すりを付けると有効幅が 50 減ります。読み取りの壁のずれの可能性もあります', marks });
+      }
+    }
+    // 家事動線: キッチンと洗面脱衣室が遠い（往復の多い組み合わせ）
+    const kitchen = f.rooms.find((r) => r.type === 'kitchen' || r.type === 'ldk' || r.type === 'dining');
+    const wash = f.rooms.find((r) => r.type === 'washroom');
+    if (kitchen && wash) {
+      const a = centerOf(kitchen);
+      const b = centerOf(wash);
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d > 9000) {
+        out.push({ id: `kw-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: キッチンと洗面脱衣室が離れています（約 ${m(d)} m）`, detail: '料理と洗濯を同時に進める家事動線では、キッチン〜洗面脱衣室が近い（回遊できる）と毎日の移動が短くなります。間取りの意図であれば問題ありません', marks: [{ level: f.level, lines: [{ a, b }], label: '家事動線' }] });
+      }
+    }
+    // 収納率: 収納（物入・クローゼット・SIC・パントリー）の面積が床面積の 8% 未満
+    const storage = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage').reduce((s, r) => s + r.area, 0);
+    const floorArea = f.rooms.filter((r) => !['void', 'balcony', 'porch', 'garage'].includes(r.type)).reduce((s, r) => s + r.area, 0);
+    if (floorArea > 30 && storage / floorArea < 0.08) {
+      out.push({ id: `storage-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 収納が床面積の ${Math.round((storage / floorArea) * 100)}% と少なめです`, detail: '戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります' });
+    }
+  }
+  // 2 階建てで寝室が 2 階にあり、2 階にトイレが無い
+  if (floors.length >= 2) {
+    const up = floors[floors.length - 1];
+    const hasBed = up.rooms.some((r) => r.type === 'bedroom' || r.type === 'kids');
+    const hasWc = up.rooms.some((r) => r.type === 'toilet');
+    if (hasBed && !hasWc) {
+      out.push({ id: `wc-up-${up.level}`, level: up.level, severity: 'info', title: `${up.level}階に寝室がありますがトイレがありません`, detail: '夜間や来客時のために、寝室のある階にトイレ（柱芯 910×1,365）を置くのが一般的です。1 階だけにする場合はお客様に確認を' });
+    }
+  }
   return out;
 }

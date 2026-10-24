@@ -345,6 +345,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       buildWall(mb, f, w, ops, fl, top, accentHere ? 'ext.accent' : 'ext.wall', isTop, spec);
       for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec);
     }
+    // 吹抜の縁（壁の無い所）の落下防止
+    buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
     // 斜めの壁の継ぎ目（外側の角のくさび状の隙間）を丸柱で埋める
     for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
       const w = j.w;
@@ -597,6 +599,92 @@ function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; 
   return out;
 }
 
+/**
+ * 吹抜の縁の鉄骨手すり（御社の標準: 黒皮鉄のフラットバー）。
+ * 支柱 FB-12×50 @ ≤1.0m、笠木は丸パイプ φ32（H1100）、縦桟 FB-9×30 @110
+ */
+function buildVoidRail(mb: MeshBuilder, A: THREE.Vector3, B: THREE.Vector3, fl: number) {
+  const L = A.distanceTo(B);
+  if (L < 0.15) return;
+  const dir = new THREE.Vector3().subVectors(B, A).normalize();
+  const H = 1.1;
+  const metal = 'f.metal';
+  const nPost = Math.max(2, Math.ceil(L / 1.0) + 1);
+  for (let i = 0; i < nPost; i++) {
+    const s = 0.03 + ((L - 0.06) * i) / (nPost - 1);
+    mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl), dir, 0.012, H - 0.02, 0.05);
+  }
+  mb.tube(metal, A.clone().setY(fl + H), B.clone().setY(fl + H), 0.016, 0.016, 10);
+  // 縦桟（細い）
+  for (let s = 0.14; s < L - 0.08; s += 0.11) mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl + 0.05), dir, 0.009, H - 0.09, 0.03);
+}
+
+/** 腰壁の上のガラス（H300）と細い黒の笠木 */
+function voidGlassOnTop(mb: MeshBuilder, A: THREE.Vector3, B: THREE.Vector3, y: number) {
+  const L = A.distanceTo(B);
+  if (L < 0.1) return;
+  const dir = new THREE.Vector3().subVectors(B, A).normalize();
+  const mid = A.clone().addScaledVector(dir, L / 2);
+  mb.box('ext.glass', mid.clone().setY(y), dir, L - 0.02, 0.3, 0.012);
+  mb.box('ext.frame', mid.clone().setY(y + 0.3), dir, L, 0.03, 0.04);
+}
+
+/**
+ * 壁の無い吹抜の縁（図面で手すりの細い線だけ、または何も描かれていない縁）にも仕様の落下防止を付ける。
+ * 吹抜の多角形の辺ごとに、壁が沿っていなければ、外側（部屋側）に向けて手すり／腰壁／ガラス／壁を作る
+ */
+function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
+  if (f.level < 2) return;
+  const distToSeg = (p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const L2 = dx * dx + dy * dy || 1;
+    const u = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+    return Math.hypot(p.x - a.x - dx * u, p.y - a.y - dy * u);
+  };
+  for (const r of f.rooms) {
+    if (r.type !== 'void') continue;
+    const poly = r.polygon;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      const len = Math.hypot(q.x - p.x, q.y - p.y);
+      if (len < 300) continue;
+      const mid = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+      const ang = Math.atan2(q.y - p.y, q.x - p.x);
+      // 壁が沿っていれば buildWall 側で処理済み
+      const hasWall = f.walls.some((w) => {
+        let d = Math.abs(Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) - ang) % Math.PI;
+        d = Math.min(d, Math.PI - d);
+        return d < (8 * Math.PI) / 180 && distToSeg(mid, w.a, w.b) < 150;
+      });
+      if (hasWall) continue;
+      // 外向き（吹抜の外）を求め、その側が部屋なら落下防止が要る
+      let nx = -(q.y - p.y) / len;
+      let ny = (q.x - p.x) / len;
+      if (pointInPolygon({ x: mid.x + nx * 150, y: mid.y + ny * 150 }, poly)) {
+        nx = -nx;
+        ny = -ny;
+      }
+      const other = roomAt(f, mid.x + nx * 200, mid.y + ny * 200);
+      if (!other || other.type === 'void' || other.type === 'balcony' || other.type === 'porch') continue;
+      const A = V(p.x * MM, 0, p.y * MM);
+      const B = V(q.x * MM, 0, q.y * MM);
+      const dir = new THREE.Vector3().subVectors(B, A).normalize();
+      const L = A.distanceTo(B);
+      const midV = A.clone().addScaledVector(dir, L / 2);
+      // 縁から部屋側へ少し（6cm）寄せて、床の小口に重ねない
+      const inset = new THREE.Vector3(nx, 0, ny).multiplyScalar(0.06);
+      if (spec.voidGuard === 'rail') buildVoidRail(mb, A.clone().add(inset), B.clone().add(inset), fl);
+      else if (spec.voidGuard === 'half') mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, 1.1, 0.12);
+      else if (spec.voidGuard === 'halfGlass') {
+        mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, 0.9, 0.12);
+        voidGlassOnTop(mb, A.clone().add(inset), B.clone().add(inset), fl + 0.9);
+      } else mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, 0.12);
+    }
+  }
+}
+
 /** 壁を開口部で分割して生成 */
 function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean, spec: BuilderSpec) {
   const A = V(w.a.x * MM, 0, w.a.y * MM);
@@ -623,6 +711,15 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const openMinus = (w.exterior && w.outsideSign === -1) || !rMinus || isOutdoor(rMinus);
   const parapet = openPlus && openMinus && (rPlus?.type === 'balcony' || rMinus?.type === 'balcony');
   const facesOutdoor = isOutdoor(rPlus) || isOutdoor(rMinus);
+  // 吹抜に面する上階の壁: 仕様で 鉄骨手すり／腰壁／腰壁＋ガラス／壁 を選ぶ（片側が吹抜、反対側が部屋のとき）
+  const voidPlus = rPlus?.type === 'void';
+  const voidMinus = rMinus?.type === 'void';
+  const voidEdge = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && !!(voidPlus ? rMinus : rPlus);
+  const guard: BuilderSpec['voidGuard'] = voidEdge ? spec.voidGuard : 'wall';
+  if (guard === 'rail') {
+    buildVoidRail(mb, A, B, fl);
+    return;
+  }
   // 各面の素材
   const sideKey = (sign: 1 | -1): string => {
     if (w.exterior && w.outsideSign === sign) return extKey;
@@ -639,8 +736,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   // 1階の外壁は基礎天端まで下げる。両側とも屋外の塀状の壁（中庭・ポーチの囲い）は外形の外で基礎が無いので地面まで
   const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
   const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
-  const wallTop = parapet ? Math.min(top, fl + 1.1) : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
+  if (guard === 'halfGlass') voidGlassOnTop(mb, A, B, fl + 0.9);
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
   const jambKey = w.exterior
     ? spec.windows.interiorReveal === 'plaster'

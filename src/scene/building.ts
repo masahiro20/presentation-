@@ -330,13 +330,17 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       const m = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
       return !f.outline.some((l) => pointInPolygon(m, l)) && outlineDist(m) < 200;
     };
-    for (const w of f.walls) {
-      if (stub(w)) continue;
+    const pieces: { w: Wall; ops: Opening[] }[] = [];
+    for (const w0 of f.walls) {
+      if (stub(w0)) continue;
       // 仕様に合わせて開口の高さを調整（フルハイトドア・サッシ上端＝天井）
-      const ops = f.openings
-        .filter((o) => o.wallId === w.id)
+      const ops0 = f.openings
+        .filter((o) => o.wallId === w0.id)
         .map((o) => ({ ...o, ...effectiveOpening(o, f.ceilingHeight, spec) }))
         .sort((a, b) => a.t0 - b.t0);
+      pieces.push(...splitAtVoid(f, w0, ops0));
+    }
+    for (const { w, ops } of pieces) {
       const accentHere =
         !!ext.accent &&
         ((ext.accentRule === 'upper' && f.level >= 2) ||
@@ -529,9 +533,74 @@ function emitFlat(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
       else mb.quad(key, a, b, c, d, uA, vA);
     }
   } else {
-    const pts = polyMm.map((p) => V(p.x * MM, y, p.y * MM));
-    mb.polygon(key, pts, n, uA, vA);
+    // 斜めの辺・曲線のある部屋も、階段・吹抜の穴を抜く（以前は矩形の部屋だけ抜いていたので、
+    // 2cm 斜めに読めた階段の部屋で 2 階の床が階段の穴を塞いでいた）
+    for (const piece of polygonMinusRects(polyMm, voidsMm)) {
+      const pts = piece.map((p) => V(p.x * MM, y, p.y * MM));
+      mb.polygon(key, pts, n, uA, vA);
+    }
   }
+}
+
+type P2 = { x: number; y: number };
+/** 多角形を半平面で切る（Sutherland–Hodgman）。axis の値が v 以下（keepLess）／以上の側を残す */
+function clipHalf(poly: P2[], axis: 'x' | 'y', v: number, keepLess: boolean): P2[] {
+  const out: P2[] = [];
+  const inside = (p: P2) => (keepLess ? p[axis] <= v : p[axis] >= v);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ia = inside(a);
+    const ib = inside(b);
+    if (ia) out.push(a);
+    if (ia !== ib) {
+      const t = (v - a[axis]) / (b[axis] - a[axis]);
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  }
+  return out;
+}
+
+function polyArea(p: P2[]) {
+  let s = 0;
+  for (let i = 0; i < p.length; i++) {
+    const a = p[i];
+    const b = p[(i + 1) % p.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+
+/** 多角形から矩形（mm）を引く。矩形の外側を 4 つの凸な領域（左・右・下・上の帯）に分けて、それぞれで切り出す */
+export function polygonMinusRects(poly: P2[], rects: Rect[]): P2[][] {
+  let pieces: P2[][] = [poly];
+  for (const r of rects) {
+    const next: P2[][] = [];
+    for (const pc of pieces) {
+      const xs = pc.map((p) => p.x);
+      const ys = pc.map((p) => p.y);
+      if (Math.max(...xs) <= r.minX || Math.min(...xs) >= r.maxX || Math.max(...ys) <= r.minY || Math.min(...ys) >= r.maxY) {
+        next.push(pc);
+        continue;
+      }
+      const regions: [('x' | 'y'), number, boolean][][] = [
+        [['x', r.minX, true]],
+        [['x', r.maxX, false]],
+        [['x', r.minX, false], ['x', r.maxX, true], ['y', r.minY, true]],
+        [['x', r.minX, false], ['x', r.maxX, true], ['y', r.maxY, false]],
+      ];
+      for (const reg of regions) {
+        let c = pc;
+        for (const [ax, v, less] of reg) {
+          c = clipHalf(c, ax, v, less);
+          if (c.length < 3) break;
+        }
+        if (c.length >= 3 && polyArea(c) > 100) next.push(c);
+      }
+    }
+    pieces = next;
+  }
+  return pieces;
 }
 
 function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y0: number, y1: number, edgeKey = key) {
@@ -686,6 +755,62 @@ function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec:
 }
 
 /** 壁を開口部で分割して生成 */
+/**
+ * 1 本の壁のうち「吹抜とホール・LDK の境」になっている区間を切り出す（その区間は手すり・腰壁になる）。
+ * 堀様邸の 2 階: 吹抜の下辺からホールと中庭の境まで 1 本の外壁として読めていたため、吹抜の縁まで外壁（天井までの壁）になっていた
+ */
+function splitAtVoid(f: Floor, w: Wall, ops: Opening[]): { w: Wall; ops: Opening[] }[] {
+  const whole = [{ w, ops }];
+  if (f.level < 2 || !f.rooms.some((r) => r.type === 'void')) return whole;
+  const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  if (L < 600) return whole;
+  const ux = (w.b.x - w.a.x) / L;
+  const uy = (w.b.y - w.a.y) / L;
+  const nx = -uy;
+  const ny = ux;
+  const off = w.thickness / 2 + 80;
+  const openTypes = ['hall', 'ldk', 'living', 'dining', 'kitchen', 'stairs', 'entrance', 'other'];
+  const hit = (s: number) => {
+    const p = { x: w.a.x + ux * s, y: w.a.y + uy * s };
+    const rp = roomAt(f, p.x + nx * off, p.y + ny * off);
+    const rm = roomAt(f, p.x - nx * off, p.y - ny * off);
+    const vp = rp?.type === 'void';
+    const vm = rm?.type === 'void';
+    if (vp === vm) return false;
+    const other = vp ? rm : rp;
+    return !!other && openTypes.includes(other.type);
+  };
+  const step = 50;
+  let t0 = -1;
+  let t1 = -1;
+  for (let s2 = step / 2; s2 < L; s2 += step) {
+    if (hit(s2)) {
+      if (t0 < 0) t0 = s2 - step / 2;
+      t1 = s2 + step / 2;
+    } else if (t0 >= 0) break;
+  }
+  if (t0 < 0 || t1 - t0 < 300) return whole;
+  t0 = Math.max(0, t0);
+  t1 = Math.min(L, t1);
+  // 吹抜の縁の区間は室内の壁として扱う（外壁の扱いを外す）。前後の区間は元の壁のまま
+  const sub = (a: number, b: number, inner: boolean): { w: Wall; ops: Opening[] } => ({
+    w: {
+      ...w,
+      a: { x: w.a.x + ux * a, y: w.a.y + uy * a },
+      b: { x: w.a.x + ux * b, y: w.a.y + uy * b },
+      exterior: inner ? false : w.exterior,
+      joinedA: a > 0 ? true : w.joinedA,
+      joinedB: b < L ? true : w.joinedB,
+    },
+    ops: ops.filter((o) => o.t0 >= a - 1 && o.t1 <= b + 1).map((o) => ({ ...o, t0: o.t0 - a, t1: o.t1 - a })),
+  });
+  const out: { w: Wall; ops: Opening[] }[] = [];
+  if (t0 > 50) out.push(sub(0, t0, false));
+  out.push(sub(t0, t1, true));
+  if (t1 < L - 50) out.push(sub(t1, L, false));
+  return out;
+}
+
 function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean, spec: BuilderSpec) {
   const A = V(w.a.x * MM, 0, w.a.y * MM);
   const B = V(w.b.x * MM, 0, w.b.y * MM);
@@ -714,7 +839,11 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   // 吹抜に面する上階の壁: 仕様で 鉄骨手すり／腰壁／腰壁＋ガラス／壁 を選ぶ（片側が吹抜、反対側が部屋のとき）
   const voidPlus = rPlus?.type === 'void';
   const voidMinus = rMinus?.type === 'void';
-  const voidEdge = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && !!(voidPlus ? rMinus : rPlus);
+  // 手すり・腰壁にするのは、吹抜とホール・廊下・LDK など開いた場所の境だけ。寝室・子供室・収納・水まわりとの境は
+  // 図面どおり天井までの壁（以前は吹抜に面する壁をすべて手すりにしていて、洋室の壁が消えて手すりが続いていた）
+  const other = voidPlus ? rMinus : rPlus;
+  const openSide = !!other && ['hall', 'ldk', 'living', 'dining', 'kitchen', 'stairs', 'entrance', 'other'].includes(other.type);
+  const voidEdge = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && openSide;
   const guard: BuilderSpec['voidGuard'] = voidEdge ? spec.voidGuard : 'wall';
   if (guard === 'rail') {
     buildVoidRail(mb, A, B, fl);

@@ -127,6 +127,10 @@ export class Viewer {
   private walkPinch: number | null = null;
   /** 目線モードの目の高さ（床から） */
   eyeHeight = 1.5;
+  /** ホイールのズームで残っている移動量（数フレームかけてなめらかに消化する） */
+  private zoomRemain = new THREE.Vector3();
+  /** 操作中の 1 コマにかかった時間の平均（重い環境では操作中だけ解像度を下げる） */
+  private motionFrameMs = 16;
   private lastTick = performance.now();
   private camMoved() {
     this.cullTown();
@@ -194,10 +198,13 @@ export class Viewer {
     this.controls.rotateSpeed = 0.85;
     this.controls.panSpeed = 1.1;
     this.controls.zoomSpeed = 1.2;
-    this.controls.maxPolarAngle = Math.PI * 0.495;
-    // ホイールはカーソルの位置に向かってズーム（見たい所へ寄っていける）
+    // 上も見上げられるように、カメラが回転の中心より下へ回り込むのを許す。床・地面より下には行かず、
+    // 床に当たったら回転の中心のほうを持ち上げて見上げを続ける（clampAboveFloor）
+    this.controls.maxPolarAngle = Math.PI * 0.97;
+    // ホイールは自前で処理する（OrbitControls のズームは中心に近づくほど一歩が小さくなり、途中で進まなくなる）。
+    // 指 2 本のつまみは OrbitControls のまま（カーソル位置へ寄る）
     this.controls.zoomToCursor = true;
-    this.controls.minDistance = 0.2;
+    this.controls.minDistance = 0.05;
     this.controls.addEventListener('change', () => {
       this.camMoved();
     });
@@ -264,7 +271,12 @@ export class Viewer {
     el.addEventListener(
       'wheel',
       (e) => {
-        if (this.navMode !== 'walk') return;
+        if (this.navMode !== 'walk') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.wheelZoom(e);
+          return;
+        }
         e.preventDefault();
         e.stopImmediatePropagation();
         // ホイール 1 目盛りで約 0.6m 前進（なめらかに進む）
@@ -423,6 +435,69 @@ export class Viewer {
     this.controls.update();
   }
 
+  /**
+   * ホイールのズーム: カーソルの下の面までの距離に比例した一歩で、カーソルの方向へ進む／下がる。
+   * 中心に近づいても一歩が小さくなりすぎない（最小 0.25m）ので、途中で止まらずに部屋の奥まで入っていける
+   */
+  private wheelZoom(e: WheelEvent) {
+    const notch = Math.max(-4, Math.min(4, e.deltaMode === 1 ? e.deltaY / 3 : e.deltaMode === 2 ? e.deltaY : e.deltaY / 100));
+    if (!notch) return;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const nx = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
+    const ny = 1 - ((e.clientY - r.top) / Math.max(1, r.height)) * 2;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
+    const d = this.depthAt(e.clientX, e.clientY) ?? this.camera.position.distanceTo(this.controls.target);
+    const k = 0.2 * this.controls.zoomSpeed;
+    const step = Math.max(0.25, Math.min(60, d * k)) * Math.abs(notch);
+    // 寄るときは面の手前 0.3m を目安に（ただし最小の一歩は進めるので、壁の向こうへも抜けられる）
+    const move = notch < 0 ? Math.min(step, Math.max(0.25, d - 0.3)) : -step;
+    this.zoomRemain.addScaledVector(rc.ray.direction, move);
+    this.anim = null;
+    this.lastMove = performance.now();
+  }
+
+  /** ズームの残りを消化する（約 0.12 秒で追いつく指数的な動き。コマ数が少なくても同じ時間で終わる） */
+  private stepZoom(dt: number) {
+    if (this.zoomRemain.lengthSq() < 1e-8) return;
+    const part = 1 - Math.exp(-dt / 0.09);
+    const mv = this.zoomRemain.clone().multiplyScalar(part);
+    this.zoomRemain.sub(mv);
+    if (this.zoomRemain.lengthSq() < 1e-6) {
+      mv.add(this.zoomRemain);
+      this.zoomRemain.set(0, 0, 0);
+    }
+    this.camera.position.add(mv);
+    this.controls.target.add(mv);
+    // 回転の中心が真後ろ・すぐ足元にならないように、視線の先 1.5m 以上に置き直す
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    const ahead = this.controls.target.clone().sub(this.camera.position).dot(dir);
+    if (ahead < 1.5) this.controls.target.copy(this.camera.position).addScaledVector(dir, 1.5);
+    this.clampAboveFloor();
+    this.camMoved();
+  }
+
+  /** カメラが床・地面より下に潜らないようにする。潜った分は回転の中心ごと持ち上げる（＝見上げに変わる） */
+  private clampAboveFloor() {
+    if (this.navMode === 'walk') return;
+    const pos = this.camera.position;
+    let floor = 0;
+    const occ = this.occluder();
+    if (occ) {
+      // 少し上から下へ: 1 コマで床をわずかに突き抜けた場合も、その床を拾う
+      const ray = new THREE.Ray(pos.clone().setY(pos.y + 0.3), new THREE.Vector3(0, -1, 0));
+      const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+      if (hit && hit.distance < 6) floor = hit.point.y;
+    }
+    const minY = floor + 0.25;
+    if (pos.y >= minY) return;
+    const dy = minY - pos.y;
+    pos.y += dy;
+    this.controls.target.y += dy;
+    this.camera.lookAt(this.controls.target);
+  }
+
   /** 水平な前方向 */
   private forwardFlat() {
     const f = new THREE.Vector3();
@@ -552,8 +627,15 @@ export class Viewer {
       // カメラだけが動く: 影は描き直さない
       this._dirty = true;
     }
+    if (this.navMode !== 'walk') this.stepZoom(dt);
+    // 慣性はコマ数ではなく時間で減らす（重い環境でコマが少ないと、慣性がだらだら長く続いて「ズズズ」と滑っていた）。
+    // 60fps で 1 コマ 30% 減衰 ＝ 約 0.1 秒で止まる
+    this.controls.dampingFactor = Math.min(0.9, 1 - Math.pow(0.7, Math.max(0.5, dt * 60)));
     const moved = this.navMode === 'walk' ? false : this.controls.update();
-    if (moved) this.camMoved();
+    if (moved) {
+      this.clampAboveFloor();
+      this.camMoved();
+    }
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
     // 操作中（直近 0.35 秒以内にカメラが動いた）は後処理なしで素早く描き、止まったら後処理込みで 1 枚描く。
     // 解像度は切り替えない（切り替えるたびに後処理のバッファを作り直してカクつくため）
@@ -562,6 +644,7 @@ export class Viewer {
       if (!this._dirty) return;
       this._dirty = false;
       // 操作中は描く画素を減らす（後処理のバッファには触らないので切り替えは軽い）
+      this.motionFrameMs = this.motionFrameMs * 0.8 + dt * 1000 * 0.2;
       this.setMotionPR(true);
       this.renderer.render(this.scene, this.camera);
       this.onAfterRender?.();
@@ -577,7 +660,8 @@ export class Viewer {
 
   /** 操作中だけ描画の解像度を落とす（高精細ディスプレイで 1.5 倍 → 1 倍。画素数が半分以下になる） */
   private setMotionPR(on: boolean) {
-    const want = on ? Math.min(1, this.fullPR()) : this.fullPR();
+    // 操作中は等倍。それでも 1 コマ 30ms を超える重い環境では 0.7 倍まで下げる（止まれば元の精細さで描き直す）
+    const want = on ? Math.min(1, this.fullPR()) * (this.motionFrameMs > 30 ? 0.7 : 1) : this.fullPR();
     if (on === this.motionPR && Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;
     this.motionPR = on;
     if (Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;

@@ -7691,6 +7691,72 @@ function uniqueSegs(segs) {
 * 中心線に沿った短い壁の連なりにする。直線の帯は線の検出で拾えているので、曲がっているもの（向きの変化の合計 12° 以上）だけ。
 * 林様邸の階段ヌックの R 壁・2 階の吹抜の曲面壁のような、ARCHITREND の塗りの R 壁に対応する
 */
+/**
+* 帯状の塗り（R 壁）を、両端の「蓋」で区切った 2 本の縁（片方は逆順にして同じ向き）に分ける。
+*  1. 鋭く曲がる頂点（50° 以上）を近いもの同士でまとめ、ちょうど 2 か所（両端の蓋）に分かれれば、その間の 2 本が縁
+*     （蓋の脇に小さな段差や、まっすぐな壁への継ぎ足しがあっても分けられる。堀様邸の玄関の R 壁）
+*  2. だめなら、いちばん長い 2 辺を蓋とみなす（蓋以外の辺がすべて短い、平坦化した曲線の帯。林様邸）
+*/
+function bandChains(poly, E) {
+	const n = poly.length;
+	const turnAt = (i) => {
+		const a = poly[(i - 1 + n) % n];
+		const b = poly[i];
+		const c = poly[(i + 1) % n];
+		const t1 = Math.atan2(b.y - a.y, b.x - a.x);
+		const t2 = Math.atan2(c.y - b.y, c.x - b.x);
+		let d = Math.abs(t2 - t1);
+		if (d > Math.PI) d = 2 * Math.PI - d;
+		return d;
+	};
+	const split = (i1, i2) => {
+		const A = [];
+		for (let k = i1; k !== i2; k = (k + 1) % n) A.push(poly[k]);
+		A.push(poly[i2]);
+		const B = [];
+		for (let k = i2; k !== i1; k = (k + 1) % n) B.push(poly[k]);
+		B.push(poly[i1]);
+		if (A.length < 3 || B.length < 3) return null;
+		B.reverse();
+		return [A, B];
+	};
+	const sharp = poly.map((_, i) => turnAt(i) > 50 * Math.PI / 180);
+	if (sharp.some(Boolean)) {
+		const start = sharp.findIndex((v) => !v);
+		if (start >= 0) {
+			const runs = [];
+			let cur = null;
+			for (let k = 0; k < n; k++) {
+				const i = (start + k) % n;
+				if (sharp[i]) {
+					if (cur && Math.hypot(poly[i].x - poly[cur[cur.length - 1]].x, poly[i].y - poly[cur[cur.length - 1]].y) < 250) cur.push(i);
+					else {
+						cur = [i];
+						runs.push(cur);
+					}
+				} else if (cur && E[(i - 1 + n) % n] > 40) cur = null;
+			}
+			if (runs.length === 2) {
+				const r = split(runs[0][runs[0].length - 1], runs[1][0]);
+				const r2 = split(runs[1][runs[1].length - 1], runs[0][0]);
+				if (r && r2) return [r[0], r2[0].slice().reverse()];
+			}
+		}
+	}
+	const order = E.map((l, i) => ({
+		l,
+		i
+	})).sort((a, b) => b.l - a.l);
+	const [c1, c2] = order;
+	if (!c1 || !c2) return null;
+	if (c1.l < 60 || c1.l > 320 || c2.l < 60 || c2.l > 320) return null;
+	if (order[2] && order[2].l > 160) return null;
+	const gap = Math.abs(c1.i - c2.i);
+	if (gap < 3 || n - gap < 3) return null;
+	const i1 = Math.min(c1.i, c2.i);
+	const i2 = Math.max(c1.i, c2.i);
+	return split((i1 + 1) % n, i2);
+}
 function curvedWallsFromFills(polys, existing) {
 	const out = [];
 	let idx = 0;
@@ -7713,26 +7779,12 @@ function curvedWallsFromFills(polys, existing) {
 	for (const poly of polys) {
 		const n = poly.length;
 		if (n < 12 || n > 400) continue;
-		const order = poly.map((p, i) => {
+		const chains = bandChains(poly, poly.map((p, i) => {
 			const q = poly[(i + 1) % n];
 			return Math.hypot(q.x - p.x, q.y - p.y);
-		}).map((l, i) => ({
-			l,
-			i
-		})).sort((a, b) => b.l - a.l);
-		const [c1, c2] = order;
-		if (!c1 || !c2) continue;
-		if (c1.l < 60 || c1.l > 320 || c2.l < 60 || c2.l > 320) continue;
-		if (order[2] && order[2].l > 160) continue;
-		const gap = Math.abs(c1.i - c2.i);
-		if (gap < 3 || n - gap < 3) continue;
-		const i1 = Math.min(c1.i, c2.i);
-		const i2 = Math.max(c1.i, c2.i);
-		const chainA = [];
-		for (let k = i1 + 1; k <= i2; k++) chainA.push(poly[k % n]);
-		const chainB = [];
-		for (let k = i2 + 1; k <= i1 + n; k++) chainB.push(poly[k % n]);
-		chainB.reverse();
+		}));
+		if (!chains) continue;
+		const [chainA, chainB] = chains;
 		const LA = lenOf(chainA);
 		const LB = lenOf(chainB);
 		if (LA < 300 || LB < 300 || LA / LB > 2.2 || LB / LA > 2.2) continue;
@@ -12912,12 +12964,16 @@ function buildBuilding(model, opts) {
 			};
 			return !f.outline.some((l) => pointInPolygon(m, l)) && outlineDist(m) < 200;
 		};
-		for (const w of f.walls) {
-			if (stub(w)) continue;
-			const ops = f.openings.filter((o) => o.wallId === w.id).map((o) => ({
+		const pieces = [];
+		for (const w0 of f.walls) {
+			if (stub(w0)) continue;
+			const ops0 = f.openings.filter((o) => o.wallId === w0.id).map((o) => ({
 				...o,
 				...effectiveOpening(o, f.ceilingHeight, spec)
 			})).sort((a, b) => a.t0 - b.t0);
+			pieces.push(...splitAtVoid(f, w0, ops0));
+		}
+		for (const { w, ops } of pieces) {
 			buildWall(mb, f, w, ops, fl, top, !!ext.accent && (ext.accentRule === "upper" && f.level >= 2 || ext.accentRule === "lower" && f.level === 1 || ext.accentRule === "entrance" && w.exterior && isEntranceColumn(w, entranceRanges)) ? "ext.accent" : "ext.wall", isTop, spec);
 			for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec);
 		}
@@ -13088,10 +13144,110 @@ function emitFlat(mb, key, polyMm, voidsMm, y, faceUp) {
 			if (faceUp) mb.quad(key, a, d, c, b, uA, vA);
 			else mb.quad(key, a, b, c, d, uA, vA);
 		}
-	} else {
-		const pts = polyMm.map((p) => V(p.x * MM, y, p.y * MM));
+	} else for (const piece of polygonMinusRects(polyMm, voidsMm)) {
+		const pts = piece.map((p) => V(p.x * MM, y, p.y * MM));
 		mb.polygon(key, pts, n, uA, vA);
 	}
+}
+/** 多角形を半平面で切る（Sutherland–Hodgman）。axis の値が v 以下（keepLess）／以上の側を残す */
+function clipHalf(poly, axis, v, keepLess) {
+	const out = [];
+	const inside = (p) => keepLess ? p[axis] <= v : p[axis] >= v;
+	for (let i = 0; i < poly.length; i++) {
+		const a = poly[i];
+		const b = poly[(i + 1) % poly.length];
+		const ia = inside(a);
+		const ib = inside(b);
+		if (ia) out.push(a);
+		if (ia !== ib) {
+			const t = (v - a[axis]) / (b[axis] - a[axis]);
+			out.push({
+				x: a.x + (b.x - a.x) * t,
+				y: a.y + (b.y - a.y) * t
+			});
+		}
+	}
+	return out;
+}
+function polyArea(p) {
+	let s = 0;
+	for (let i = 0; i < p.length; i++) {
+		const a = p[i];
+		const b = p[(i + 1) % p.length];
+		s += a.x * b.y - b.x * a.y;
+	}
+	return Math.abs(s) / 2;
+}
+/** 多角形から矩形（mm）を引く。矩形の外側を 4 つの凸な領域（左・右・下・上の帯）に分けて、それぞれで切り出す */
+function polygonMinusRects(poly, rects) {
+	let pieces = [poly];
+	for (const r of rects) {
+		const next = [];
+		for (const pc of pieces) {
+			const xs = pc.map((p) => p.x);
+			const ys = pc.map((p) => p.y);
+			if (Math.max(...xs) <= r.minX || Math.min(...xs) >= r.maxX || Math.max(...ys) <= r.minY || Math.min(...ys) >= r.maxY) {
+				next.push(pc);
+				continue;
+			}
+			const regions = [
+				[[
+					"x",
+					r.minX,
+					true
+				]],
+				[[
+					"x",
+					r.maxX,
+					false
+				]],
+				[
+					[
+						"x",
+						r.minX,
+						false
+					],
+					[
+						"x",
+						r.maxX,
+						true
+					],
+					[
+						"y",
+						r.minY,
+						true
+					]
+				],
+				[
+					[
+						"x",
+						r.minX,
+						false
+					],
+					[
+						"x",
+						r.maxX,
+						true
+					],
+					[
+						"y",
+						r.maxY,
+						false
+					]
+				]
+			];
+			for (const reg of regions) {
+				let c = pc;
+				for (const [ax, v, less] of reg) {
+					c = clipHalf(c, ax, v, less);
+					if (c.length < 3) break;
+				}
+				if (c.length >= 3 && polyArea(c) > 100) next.push(c);
+			}
+		}
+		pieces = next;
+	}
+	return pieces;
 }
 function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key) {
 	emitFlat(mb, key, polyMm, voidsMm, y0, false);
@@ -13277,6 +13433,82 @@ function buildVoidGuardsOnOpenEdges(mb, f, fl, spec) {
 	}
 }
 /** 壁を開口部で分割して生成 */
+/**
+* 1 本の壁のうち「吹抜とホール・LDK の境」になっている区間を切り出す（その区間は手すり・腰壁になる）。
+* 堀様邸の 2 階: 吹抜の下辺からホールと中庭の境まで 1 本の外壁として読めていたため、吹抜の縁まで外壁（天井までの壁）になっていた
+*/
+function splitAtVoid(f, w, ops) {
+	const whole = [{
+		w,
+		ops
+	}];
+	if (f.level < 2 || !f.rooms.some((r) => r.type === "void")) return whole;
+	const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+	if (L < 600) return whole;
+	const ux = (w.b.x - w.a.x) / L;
+	const uy = (w.b.y - w.a.y) / L;
+	const nx = -uy;
+	const ny = ux;
+	const off = w.thickness / 2 + 80;
+	const openTypes = [
+		"hall",
+		"ldk",
+		"living",
+		"dining",
+		"kitchen",
+		"stairs",
+		"entrance",
+		"other"
+	];
+	const hit = (s) => {
+		const p = {
+			x: w.a.x + ux * s,
+			y: w.a.y + uy * s
+		};
+		const rp = roomAt(f, p.x + nx * off, p.y + ny * off);
+		const rm = roomAt(f, p.x - nx * off, p.y - ny * off);
+		const vp = rp?.type === "void";
+		if (vp === (rm?.type === "void")) return false;
+		const other = vp ? rm : rp;
+		return !!other && openTypes.includes(other.type);
+	};
+	const step = 50;
+	let t0 = -1;
+	let t1 = -1;
+	for (let s2 = step / 2; s2 < L; s2 += step) if (hit(s2)) {
+		if (t0 < 0) t0 = s2 - step / 2;
+		t1 = s2 + step / 2;
+	} else if (t0 >= 0) break;
+	if (t0 < 0 || t1 - t0 < 300) return whole;
+	t0 = Math.max(0, t0);
+	t1 = Math.min(L, t1);
+	const sub = (a, b, inner) => ({
+		w: {
+			...w,
+			a: {
+				x: w.a.x + ux * a,
+				y: w.a.y + uy * a
+			},
+			b: {
+				x: w.a.x + ux * b,
+				y: w.a.y + uy * b
+			},
+			exterior: inner ? false : w.exterior,
+			joinedA: a > 0 ? true : w.joinedA,
+			joinedB: b < L ? true : w.joinedB
+		},
+		ops: ops.filter((o) => o.t0 >= a - 1 && o.t1 <= b + 1).map((o) => ({
+			...o,
+			t0: o.t0 - a,
+			t1: o.t1 - a
+		}))
+	});
+	const out = [];
+	if (t0 > 50) out.push(sub(0, t0, false));
+	out.push(sub(t0, t1, true));
+	if (t1 < L - 50) out.push(sub(t1, L, false));
+	return out;
+}
 function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);
 	const B = V(w.b.x * MM, 0, w.b.y * MM);
@@ -13307,7 +13539,18 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const facesOutdoor = isOutdoor(rPlus) || isOutdoor(rMinus);
 	const voidPlus = rPlus?.type === "void";
 	const voidMinus = rMinus?.type === "void";
-	const guard = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && !!(voidPlus ? rMinus : rPlus) ? spec.voidGuard : "wall";
+	const other = voidPlus ? rMinus : rPlus;
+	const openSide = !!other && [
+		"hall",
+		"ldk",
+		"living",
+		"dining",
+		"kitchen",
+		"stairs",
+		"entrance",
+		"other"
+	].includes(other.type);
+	const guard = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && openSide ? spec.voidGuard : "wall";
 	if (guard === "rail") {
 		buildVoidRail(mb, A, B, fl);
 		return;
@@ -15539,7 +15782,34 @@ function buildLandscape(meta, style, siteData, planExt) {
 			for (let i = 0; i < n; i++) shrub(a.clone().addScaledVector(dir, (i + .5) * (L / n)), .6);
 		}
 	}
-	const addTree = (p0, h, kind, exact = false) => {
+	/** 点が多角形（x, y = ワールドの x, z）の内側で、縁から m 以上離れているか */
+	const insideInset = (q, poly, m) => {
+		let inside = false;
+		for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+			const a = poly[i];
+			const c = poly[j];
+			if (a.y > q.z !== c.y > q.z && q.x < (c.x - a.x) * (q.z - a.y) / (c.y - a.y) + a.x) inside = !inside;
+		}
+		if (!inside) return false;
+		for (let i = 0; i < poly.length; i++) {
+			const a = poly[i];
+			const c = poly[(i + 1) % poly.length];
+			const dx = c.x - a.x;
+			const dz = c.y - a.y;
+			const L2 = dx * dx + dz * dz || 1;
+			const u = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.z - a.y) * dz) / L2));
+			if (Math.hypot(q.x - a.x - dx * u, q.z - a.y - dz * u) < m) return false;
+		}
+		return true;
+	};
+	const isCourtRoom = (ri) => ri.room.type === "void" || ri.room.type === "balcony" && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name);
+	/** 1 階の部屋のうち、点を含むもの */
+	const roomAt = (q) => meta.rooms.find((ri) => ri.floor.level === 1 && ri.poly.length >= 3 && insideInset(q, ri.poly, 0));
+	/**
+	* clip: 中庭の多角形。中庭の木は枝・葉を中庭の内側（壁から 15cm）に収める。
+	* 以前は図面の記号の大きさのまま植えていて、樹冠が中庭の壁を突き抜け、外から壁に葉が浮いて見えていた
+	*/
+	const addTree = (p0, h, kind, exact = false, clip) => {
 		const r0 = h * .22;
 		const siteC = V((min.x + max.x) / 2, 0, (min.y + max.y) / 2);
 		let p = exact ? p0.clone() : null;
@@ -15564,12 +15834,14 @@ function buildLandscape(meta, style, siteData, planExt) {
 			const n = 4;
 			for (let i = 0; i < n; i++) {
 				const q = a.clone().lerp(b, .35 + .65 * rnd()).add(V((rnd() - .5) * .12, (rnd() - .5) * .08, (rnd() - .5) * .12));
+				if (clip && !insideInset(q, clip, .15 + sz * .45)) continue;
 				trees.card(leafKey, q, sz * (.75 + rnd() * .5), new THREE.Euler((rnd() - .5) * 1.6, rnd() * Math.PI * 2, (rnd() - .5) * 1.6));
 			}
 		};
 		const leafSize = Math.max(.36, h * .125);
 		const grow = (a, dir, len, r, level) => {
 			const b = a.clone().addScaledVector(dir, len);
+			if (clip && !insideInset(b, clip, .15)) return;
 			trees.tube("l.trunk", a, b, r, r * .72);
 			if (level >= 3) {
 				leaves(a, b, leafSize);
@@ -15595,9 +15867,20 @@ function buildLandscape(meta, style, siteData, planExt) {
 	};
 	const kind = style.landscape.trees;
 	const drawn = planExt?.trees ?? [];
-	for (const t of drawn) addTree(V(t.x, 0, t.z), Math.min(5.5, Math.max(2.2, t.r * 4.5)), kind, true);
+	for (const t of drawn) {
+		const p = V(t.x, 0, t.z);
+		const ri = roomAt(p);
+		let h = Math.min(5.5, Math.max(2.2, t.r * 4.5));
+		if (ri && !isCourtRoom(ri)) continue;
+		if (ri) {
+			let area = 0;
+			for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
+			h = Math.min(h, Math.max(2.4, Math.sqrt(Math.abs(area) / 2) * 1));
+		}
+		addTree(p, h, kind, true, ri?.poly);
+	}
 	for (const ri of meta.rooms) {
-		if (!(ri.room.type === "void" || ri.room.type === "balcony" && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name)) || ri.floor.level !== 1 || ri.poly.length < 3) continue;
+		if (!isCourtRoom(ri) || ri.floor.level !== 1 || ri.poly.length < 3) continue;
 		let area = 0;
 		for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
 		area = Math.abs(area) / 2;
@@ -15606,7 +15889,7 @@ function buildLandscape(meta, style, siteData, planExt) {
 		if (drawn.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 2.5)) continue;
 		const span = Math.sqrt(area);
 		const off = Math.min(.9, span * .18);
-		addTree(c.clone().add(V(off * .7, 0, -off * .7)), Math.min(3.8, Math.max(2.6, span * 1)), kind, true);
+		addTree(c.clone().add(V(off * .7, 0, -off * .7)), Math.min(3.8, Math.max(2.6, span * 1)), kind, true, ri.poly);
 		shrub(c.clone().add(V(-off, 0, off * .8)), .3);
 		if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), .25);
 	}

@@ -272,7 +272,34 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   }
 
   // 植栽: シンボルツリー（アプローチ脇）と庭木
-  const addTree = (p0: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern', exact = false) => {
+  /** 点が多角形（x, y = ワールドの x, z）の内側で、縁から m 以上離れているか */
+  const insideInset = (q: THREE.Vector3, poly: THREE.Vector2[], m: number) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const c = poly[j];
+      if (a.y > q.z !== c.y > q.z && q.x < ((c.x - a.x) * (q.z - a.y)) / (c.y - a.y) + a.x) inside = !inside;
+    }
+    if (!inside) return false;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const c = poly[(i + 1) % poly.length];
+      const dx = c.x - a.x;
+      const dz = c.y - a.y;
+      const L2 = dx * dx + dz * dz || 1;
+      const u = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.z - a.y) * dz) / L2));
+      if (Math.hypot(q.x - a.x - dx * u, q.z - a.y - dz * u) < m) return false;
+    }
+    return true;
+  };
+  const isCourtRoom = (ri: (typeof meta.rooms)[number]) => ri.room.type === 'void' || (ri.room.type === 'balcony' && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name));
+  /** 1 階の部屋のうち、点を含むもの */
+  const roomAt = (q: THREE.Vector3) => meta.rooms.find((ri) => ri.floor.level === 1 && ri.poly.length >= 3 && insideInset(q, ri.poly, 0));
+  /**
+   * clip: 中庭の多角形。中庭の木は枝・葉を中庭の内側（壁から 15cm）に収める。
+   * 以前は図面の記号の大きさのまま植えていて、樹冠が中庭の壁を突き抜け、外から壁に葉が浮いて見えていた
+   */
+  const addTree = (p0: THREE.Vector3, h: number, kind: 'natural' | 'japanese' | 'modern', exact = false, clip?: THREE.Vector2[]) => {
     // 敷地の内側で、建物から離れた位置に（だめなら敷地の中心へ寄せて探す。見つからなければ植えない）
     const r0 = h * 0.22;
     const siteC = V((min.x + max.x) / 2, 0, (min.y + max.y) / 2);
@@ -297,12 +324,14 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       const n = 4; // 枝先の葉カード。少ないとパストレーサーで枝だけの木に見える
       for (let i = 0; i < n; i++) {
         const q = a.clone().lerp(b, 0.35 + 0.65 * rnd()).add(V((rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.12));
+        if (clip && !insideInset(q, clip, 0.15 + sz * 0.45)) continue;
         trees.card(leafKey, q, sz * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.6, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.6));
       }
     };
     const leafSize = Math.max(0.36, h * 0.125);
     const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
       const b = a.clone().addScaledVector(dir, len);
+      if (clip && !insideInset(b, clip, 0.15)) return;
       trees.tube('l.trunk', a, b, r, r * 0.72);
       if (level >= 3) {
         leaves(a, b, leafSize);
@@ -330,10 +359,22 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   const kind = style.landscape.trees;
   // 図面に描かれた植栽はその位置に（大きさは記号の半径から）
   const drawn = planExt?.trees ?? [];
-  for (const t of drawn) addTree(V(t.x, 0, t.z), Math.min(5.5, Math.max(2.2, t.r * 4.5)), kind, true);
+  for (const t of drawn) {
+    const p = V(t.x, 0, t.z);
+    const ri = roomAt(p);
+    let h = Math.min(5.5, Math.max(2.2, t.r * 4.5));
+    if (ri && !isCourtRoom(ri)) continue; // 室内に描かれた植物（観葉植物）は家具の側で置く
+    if (ri) {
+      // 中庭: 高さは中庭の広さに合わせる（狭い中庭に 5m の木は入らない）
+      let area = 0;
+      for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
+      h = Math.min(h, Math.max(2.4, Math.sqrt(Math.abs(area) / 2) * 1.0));
+    }
+    addTree(p, h, kind, true, ri?.poly);
+  }
   // 中庭（空に開いた void の区画）にはシンボルツリーと低木を置く（中庭のある平屋の定番。敷地が狭くても植栽が入る）
   for (const ri of meta.rooms) {
-    const isCourt = ri.room.type === 'void' || (ri.room.type === 'balcony' && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name));
+    const isCourt = isCourtRoom(ri);
     if (!isCourt || ri.floor.level !== 1 || ri.poly.length < 3) continue;
     let area = 0;
     for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
@@ -345,7 +386,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     const span = Math.sqrt(area);
     const off = Math.min(0.9, span * 0.18);
     // 高さは軒より少し上まで（高すぎると屋根の上に幹だけが突き出る）
-    addTree(c.clone().add(V(off * 0.7, 0, -off * 0.7)), Math.min(3.8, Math.max(2.6, span * 1.0)), kind, true);
+    addTree(c.clone().add(V(off * 0.7, 0, -off * 0.7)), Math.min(3.8, Math.max(2.6, span * 1.0)), kind, true, ri.poly);
     shrub(c.clone().add(V(-off, 0, off * 0.8)), 0.3);
     if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), 0.25);
   }

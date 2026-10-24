@@ -1012,6 +1012,74 @@ function uniqueSegs(segs: Seg[]): Seg[] {
  * 中心線に沿った短い壁の連なりにする。直線の帯は線の検出で拾えているので、曲がっているもの（向きの変化の合計 12° 以上）だけ。
  * 林様邸の階段ヌックの R 壁・2 階の吹抜の曲面壁のような、ARCHITREND の塗りの R 壁に対応する
  */
+/**
+ * 帯状の塗り（R 壁）を、両端の「蓋」で区切った 2 本の縁（片方は逆順にして同じ向き）に分ける。
+ *  1. 鋭く曲がる頂点（50° 以上）を近いもの同士でまとめ、ちょうど 2 か所（両端の蓋）に分かれれば、その間の 2 本が縁
+ *     （蓋の脇に小さな段差や、まっすぐな壁への継ぎ足しがあっても分けられる。堀様邸の玄関の R 壁）
+ *  2. だめなら、いちばん長い 2 辺を蓋とみなす（蓋以外の辺がすべて短い、平坦化した曲線の帯。林様邸）
+ */
+function bandChains(poly: Vec2[], E: number[]): [Vec2[], Vec2[]] | null {
+  const n = poly.length;
+  const turnAt = (i: number) => {
+    const a = poly[(i - 1 + n) % n];
+    const b = poly[i];
+    const c = poly[(i + 1) % n];
+    const t1 = Math.atan2(b.y - a.y, b.x - a.x);
+    const t2 = Math.atan2(c.y - b.y, c.x - b.x);
+    let d = Math.abs(t2 - t1);
+    if (d > Math.PI) d = 2 * Math.PI - d;
+    return d;
+  };
+  const split = (i1: number, i2: number): [Vec2[], Vec2[]] | null => {
+    // i1 → i2（前向き）と i2 → i1（前向き）の 2 本。どちらも 3 点以上
+    const A: Vec2[] = [];
+    for (let k = i1; k !== i2; k = (k + 1) % n) A.push(poly[k]);
+    A.push(poly[i2]);
+    const B: Vec2[] = [];
+    for (let k = i2; k !== i1; k = (k + 1) % n) B.push(poly[k]);
+    B.push(poly[i1]);
+    if (A.length < 3 || B.length < 3) return null;
+    B.reverse();
+    return [A, B];
+  };
+  // 1. 鋭い角のまとまり
+  const sharp = poly.map((_, i) => turnAt(i) > (50 * Math.PI) / 180);
+  if (sharp.some(Boolean)) {
+    const start = sharp.findIndex((v) => !v);
+    if (start >= 0) {
+      const runs: number[][] = [];
+      let cur: number[] | null = null;
+      for (let k = 0; k < n; k++) {
+        const i = (start + k) % n;
+        // 鋭い角どうしが 250mm 以内に続けば同じ蓋
+        if (sharp[i]) {
+          if (cur && Math.hypot(poly[i].x - poly[cur[cur.length - 1]].x, poly[i].y - poly[cur[cur.length - 1]].y) < 250) cur.push(i);
+          else {
+            cur = [i];
+            runs.push(cur);
+          }
+        } else if (cur && E[(i - 1 + n) % n] > 40) cur = null;
+      }
+      if (runs.length === 2) {
+        const r = split(runs[0][runs[0].length - 1], runs[1][0]);
+        const r2 = split(runs[1][runs[1].length - 1], runs[0][0]);
+        if (r && r2) return [r[0], r2[0].slice().reverse()];
+      }
+    }
+  }
+  // 2. いちばん長い 2 辺が蓋
+  const order = E.map((l, i) => ({ l, i })).sort((a, b) => b.l - a.l);
+  const [c1, c2] = order;
+  if (!c1 || !c2) return null;
+  if (c1.l < 60 || c1.l > 320 || c2.l < 60 || c2.l > 320) return null;
+  if (order[2] && order[2].l > 160) return null;
+  const gap = Math.abs(c1.i - c2.i);
+  if (gap < 3 || n - gap < 3) return null;
+  const i1 = Math.min(c1.i, c2.i);
+  const i2 = Math.max(c1.i, c2.i);
+  return split((i1 + 1) % n, i2);
+}
+
 function curvedWallsFromFills(polys: Vec2[][], existing: WWall[]): WWall[] {
   const out: WWall[] = [];
   let idx = 0;
@@ -1035,21 +1103,9 @@ function curvedWallsFromFills(polys: Vec2[][], existing: WWall[]): WWall[] {
       const q = poly[(i + 1) % n];
       return Math.hypot(q.x - p.x, q.y - p.y);
     });
-    // 端の短辺 2 本（60〜320mm）。それ以外の辺はすべて短い（平坦化した曲線）
-    const order = E.map((l, i) => ({ l, i })).sort((a, b) => b.l - a.l);
-    const [c1, c2] = order;
-    if (!c1 || !c2) continue;
-    if (c1.l < 60 || c1.l > 320 || c2.l < 60 || c2.l > 320) continue;
-    if (order[2] && order[2].l > 160) continue;
-    const gap = Math.abs(c1.i - c2.i);
-    if (gap < 3 || n - gap < 3) continue;
-    const i1 = Math.min(c1.i, c2.i);
-    const i2 = Math.max(c1.i, c2.i);
-    const chainA: Vec2[] = [];
-    for (let k = i1 + 1; k <= i2; k++) chainA.push(poly[k % n]);
-    const chainB: Vec2[] = [];
-    for (let k = i2 + 1; k <= i1 + n; k++) chainB.push(poly[k % n]);
-    chainB.reverse();
+    const chains = bandChains(poly, E);
+    if (!chains) continue;
+    const [chainA, chainB] = chains;
     const LA = lenOf(chainA);
     const LB = lenOf(chainB);
     if (LA < 300 || LB < 300 || LA / LB > 2.2 || LB / LA > 2.2) continue;

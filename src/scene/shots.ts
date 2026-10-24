@@ -513,7 +513,8 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
   };
   const clear = (pos: THREE.Vector3, dir: THREE.Vector3) => (ray ? ray(pos, dir, 9) : 9);
   // ---- 中庭を望む ----
-  const courts = meta.rooms.filter((r) => r.room.type === 'void' || /中庭|坪庭|パティオ|ライトコート|ドッグラン/.test(r.room.name));
+  // 中庭: 1 階の空に開いた区画（2 階の void は室内の吹抜なので含めない）
+  const courts = meta.rooms.filter((r) => (r.room.type === 'void' && r.floor.level === 1) || /中庭|坪庭|パティオ|ライトコート|ドッグラン/.test(r.room.name));
   for (const ct of courts) {
     const cands = meta.rooms
       .filter((r) => r !== ct && r.floor.level === ct.floor.level && isHabitable(r.room.type) && r.room.area >= 6)

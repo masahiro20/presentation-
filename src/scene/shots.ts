@@ -207,6 +207,15 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   // 庭側（道路の反対 or 最も窓の多い面）
   const gardenDir = gardenPick ?? road.clone().negate().multiplyScalar(Math.cos(0.45)).addScaledVector(along, Math.sin(0.45)).normalize();
   shots.push(mk('ext-garden', '外観パース（庭側）', '庭側からの外観。大きな窓からの明るさと、庭とのつながりをイメージしてください。', gardenDir));
+  // 見上げ（御社の提案セットにある、道路際から低い目線で壁と空を見上げるカット）
+  {
+    const dir = frontDir.clone().negate().normalize();
+    const lowEye = 0.6;
+    const dist = fitDistance(pts, center, dir, lowEye, 48, aspect, 1.15) * 1.05;
+    const pos = center.clone().addScaledVector(dir, -dist).setY(lowEye);
+    const target = center.clone().setY(topY * 0.62);
+    shots.push({ id: 'ext-low', kind: 'exterior', title: '外観パース（見上げ）', caption: '道路際から見上げた外観。塗り壁の面と空の広がり、軒の薄さが際立ちます。', view: { pos, target, fov: 48, architectural: false }, sunDir: sunForView(pos, target, -1, 42, 60), timeOfDay: 'day' });
+  }
   shots.push(mk('ext-morning', '朝のパース', '朝の光が横から差し込む外観。長い影と薄い靄が、塗り壁の質感を引き立てます。', frontDir, 'morning'));
   shots.push(mk('ext-evening', '夕景パース', '夕暮れどき、室内の灯りがともる外観。帰宅したくなる佇まいを演出します。', frontDir, 'evening'));
   shots.push(mk('ext-night', '夜景パース', '夜の外観。窓からこぼれる灯りが、暮らしのぬくもりを伝えます。', frontDir, 'night'));
@@ -309,6 +318,10 @@ interface WinInfo {
   center: THREE.Vector3;
   width: number;
   weight: number;
+  /** 窓から部屋の内側へ向かう水平の単位ベクトル */
+  inward: THREE.Vector3;
+  /** 腰高（m）。掃き出し窓は 0 */
+  sill: number;
 }
 
 /** 原点から方向へのレイの到達距離（障害物がなければ far） */
@@ -466,7 +479,160 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
       level: ri.floor.level,
     });
   }
+  shots.push(...extraInteriorShots(model, meta, occupancy, aspect, ray));
   return shots;
+}
+
+/**
+ * 御社の提案セット（服部様・林様・池本様の最終パース）から学んだ追加のカット:
+ *  - 中庭を望む: 中庭に面した一番大きな部屋から、中庭の窓を正面に
+ *  - ホール・廊下: 長い廊下の端から奥へ（突き当たりの窓・中庭の緑を見せる）
+ *  - キッチンから: LDK をキッチン側からダイニング・リビングへ（料理をしながら見える景色）
+ */
+function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy: Map<string, Footprint[]>, aspect: number, ray?: RayFn): Shot[] {
+  const out: Shot[] = [];
+  const vfov = aspect > 1.4 ? 56 : 64;
+  const eyeH = 1.35;
+  const distToPoly = (p: THREE.Vector3, poly: THREE.Vector2[]) => {
+    let best = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      best = Math.min(best, distToSeg2(p, new THREE.Vector3(a.x, 0, a.y), new THREE.Vector3(b.x, 0, b.y)));
+    }
+    return best;
+  };
+  const inPoly = (x: number, z: number, poly: THREE.Vector2[]) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if (a.y > z !== b.y > z && x < ((b.x - a.x) * (z - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  };
+  const clear = (pos: THREE.Vector3, dir: THREE.Vector3) => (ray ? ray(pos, dir, 9) : 9);
+  // ---- 中庭を望む ----
+  const courts = meta.rooms.filter((r) => r.room.type === 'void' || /中庭|坪庭|パティオ|ライトコート|ドッグラン/.test(r.room.name));
+  for (const ct of courts) {
+    const cands = meta.rooms
+      .filter((r) => r !== ct && r.floor.level === ct.floor.level && isHabitable(r.room.type) && r.room.area >= 6)
+      .sort((a, b) => b.room.area - a.room.area);
+    let made = false;
+    for (const ri of cands) {
+      if (made) break;
+      const wins = windowsOf(model, ri.floor.level, ri.room, ri.floorY).filter((w) => distToPoly(w.center, ct.poly) < 0.7);
+      if (!wins.length) continue;
+      // 掃き出し（腰高 0.6m 未満）を優先し、その中で大きい窓。高窓しか無ければ高窓
+      const w = wins.sort((a, b) => (a.sill < 0.6 ? 0 : 1) - (b.sill < 0.6 ? 0 : 1) || b.weight - a.weight)[0];
+      const inner = largestInnerRect(ri.room.polygon, 5);
+      if (!inner) continue;
+      const R = { minX: inner.minX * MM, maxX: inner.maxX * MM, minZ: inner.minY * MM, maxZ: inner.maxY * MM };
+      // 窓の壁の法線に沿って部屋の奥へ下がる（L 字の部屋で中心へ向かうと窓を横から見てしまう）
+      const away = w.inward.clone();
+      const occ = occupancy.get(ri.room.id) ?? [];
+      // 窓から部屋の奥へ下がる（家具に当たらない、部屋の内側にある位置）
+      let pos: THREE.Vector3 | null = null;
+      for (let d = Math.min(4.2, Math.hypot(R.maxX - R.minX, R.maxZ - R.minZ) * 0.75); d >= 1.6; d -= 0.3) {
+        const p = w.center.clone().setY(0).addScaledVector(away, d);
+        p.y = ri.floorY + eyeH;
+        if (!inPoly(p.x, p.z, ri.poly)) continue;
+        // 部屋の多角形が中庭を囲んでいる（穴になっている）ことがあるので、中庭や他の部屋の中は除く
+        if (courts.some((c) => inPoly(p.x, p.z, c.poly))) continue;
+        if (meta.rooms.some((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area && inPoly(p.x, p.z, o.poly))) continue;
+        if (occ.some((o) => o.maxY > 0.5 && p.x > o.minX - 0.3 && p.x < o.maxX + 0.3 && p.z > o.minZ - 0.3 && p.z < o.maxZ + 0.3)) continue;
+        pos = p;
+        break;
+      }
+      if (!pos) continue;
+      const target = w.center.clone().setY(ri.floorY + 1.25);
+      const dir = target.clone().sub(pos).setY(0).normalize();
+      if (clear(pos, dir) < 1.5) continue;
+      out.push({
+        id: `int-court-${ct.room.id}`,
+        kind: 'interior',
+        title: `内観パース（${ri.room.name || ROOM_TYPE_LABEL[ri.room.type]}から${ct.room.name || '中庭'}）`,
+        caption: `${ri.room.name || ROOM_TYPE_LABEL[ri.room.type]}から${ct.room.name || '中庭'}を望む。窓いっぱいの緑と空が、室内の静けさを引き立てます。`,
+        view: { pos, target, fov: vfov, architectural: true },
+        sunDir: null,
+        roomId: ri.room.id,
+        level: ri.floor.level,
+      });
+      made = true;
+    }
+  }
+  // ---- ホール・廊下 ----
+  for (const ri of meta.rooms.filter((r) => r.room.type === 'hall')) {
+    const inner = largestInnerRect(ri.room.polygon, 5);
+    if (!inner) continue;
+    const R = { minX: inner.minX * MM, maxX: inner.maxX * MM, minZ: inner.minY * MM, maxZ: inner.maxY * MM };
+    const W = R.maxX - R.minX;
+    const D = R.maxZ - R.minZ;
+    const L = Math.max(W, D);
+    const S = Math.min(W, D);
+    if (L < 3.0 || S < 0.85) continue;
+    const alongX = W >= D;
+    const axis = new THREE.Vector3(alongX ? 1 : 0, 0, alongX ? 0 : 1);
+    const mid = new THREE.Vector3((R.minX + R.maxX) / 2, ri.floorY + eyeH, (R.minZ + R.maxZ) / 2);
+    // 両端から奥を見て、より遠くまで見通せる向きを選ぶ
+    let best: { pos: THREE.Vector3; dir: THREE.Vector3; see: number } | null = null;
+    for (const sgn of [1, -1]) {
+      const pos = mid.clone().addScaledVector(axis, -sgn * (L / 2 - 0.45));
+      const dir = axis.clone().multiplyScalar(sgn);
+      const see = clear(pos, dir);
+      if (!best || see > best.see) best = { pos, dir, see };
+    }
+    if (!best || best.see < 2.6) continue;
+    const target = best.pos.clone().addScaledVector(best.dir, Math.max(3, best.see * 0.8)).setY(ri.floorY + 1.2);
+    out.push({
+      id: `int-hall-${ri.room.id}`,
+      kind: 'interior',
+      title: `内観パース（${ri.room.name || 'ホール'}）`,
+      caption: `${ri.room.name || 'ホール'}の奥行き。突き当たりの光に向かって歩く、家の中の小さな道です。`,
+      view: { pos: best.pos, target, fov: vfov, architectural: true },
+      sunDir: null,
+      roomId: ri.room.id,
+      level: ri.floor.level,
+    });
+  }
+  // ---- キッチンから（LDK） ----
+  for (const ri of meta.rooms.filter((r) => (r.room.type === 'ldk' || r.room.type === 'kitchen') && r.room.area >= 16)) {
+    const occ = occupancy.get(ri.room.id) ?? [];
+    // 背の高い物（レンジフード・カップボード）がキッチンの目印
+    const tall = occ.filter((o) => o.maxY > 1.4);
+    if (!tall.length) continue;
+    const kb = tall.reduce((b, o) => ({ minX: Math.min(b.minX, o.minX), maxX: Math.max(b.maxX, o.maxX), minZ: Math.min(b.minZ, o.minZ), maxZ: Math.max(b.maxZ, o.maxZ) }), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
+    const kc = new THREE.Vector3((kb.minX + kb.maxX) / 2, 0, (kb.minZ + kb.maxZ) / 2);
+    const rc = ri.center.clone().setY(0);
+    const toRoom = rc.clone().sub(kc).setY(0);
+    if (toRoom.length() < 2.5) continue;
+    toRoom.normalize();
+    // キッチンの前（部屋側）に立ち、ダイニング・リビングの方を見る
+    let pos: THREE.Vector3 | null = null;
+    for (let d = 1.2; d <= 2.4; d += 0.3) {
+      const p = kc.clone().addScaledVector(toRoom, Math.max(kb.maxX - kb.minX, kb.maxZ - kb.minZ) / 2 + d);
+      p.y = ri.floorY + eyeH;
+      if (!inPoly(p.x, p.z, ri.poly)) continue;
+      if (meta.rooms.some((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area && inPoly(p.x, p.z, o.poly))) continue;
+      if (occ.some((o) => o.maxY > 0.5 && p.x > o.minX - 0.25 && p.x < o.maxX + 0.25 && p.z > o.minZ - 0.25 && p.z < o.maxZ + 0.25)) continue;
+      pos = p;
+      break;
+    }
+    if (!pos) continue;
+    const target = pos.clone().addScaledVector(toRoom, Math.max(3, toRoom.length() * 2)).setY(ri.floorY + 1.15);
+    if (clear(pos, toRoom) < 2.5) continue;
+    out.push({
+      id: `int-kitchen-${ri.room.id}`,
+      kind: 'interior',
+      title: '内観パース（キッチンから）',
+      caption: 'キッチンに立ったときの景色。料理をしながら家族と会話し、ダイニングとリビングを見渡せます。',
+      view: { pos, target, fov: vfov, architectural: true },
+      sunDir: null,
+      roomId: ri.room.id,
+      level: ri.floor.level,
+    });
+  }
+  return out;
 }
 
 function windowsOf(model: BuildingModel, level: number, room: Room, y0: number): WinInfo[] {
@@ -491,7 +657,22 @@ function windowsOf(model: BuildingModel, level: number, room: Room, y0: number):
     });
     if (!near) continue;
     const width = (o.t1 - o.t0) * MM;
-    out.push({ center: new THREE.Vector3(cx * MM, y0 + (o.sill + o.height / 2) * MM, cy * MM), width, weight: width * (o.height / 1000) });
+    // 壁の法線のうち、部屋の内側を向く方
+    let nx = -(w.b.y - w.a.y);
+    let ny = w.b.x - w.a.x;
+    const nl = Math.hypot(nx, ny) || 1;
+    nx /= nl;
+    ny /= nl;
+    const probe = { x: cx + nx * 400, y: cy + ny * 400 };
+    let inside = false;
+    const poly = room.polygon;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i];
+      const b = poly[j];
+      if (a.y > probe.y !== b.y > probe.y && probe.x < ((b.x - a.x) * (probe.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    const inward = new THREE.Vector3(inside ? nx : -nx, 0, inside ? ny : -ny);
+    out.push({ center: new THREE.Vector3(cx * MM, y0 + (o.sill + o.height / 2) * MM, cy * MM), width, weight: width * (o.height / 1000), inward, sill: o.sill * MM });
   }
   return out;
 }

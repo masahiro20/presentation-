@@ -15127,6 +15127,20 @@ function buildLandscape(meta, style, siteData, planExt) {
 	const kind = style.landscape.trees;
 	const drawn = planExt?.trees ?? [];
 	for (const t of drawn) addTree(V(t.x, 0, t.z), Math.min(5.5, Math.max(2.2, t.r * 4.5)), kind, true);
+	for (const ri of meta.rooms) {
+		if (!(ri.room.type === "void" || ri.room.type === "balcony" && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name)) || ri.floor.level !== 1 || ri.poly.length < 3) continue;
+		let area = 0;
+		for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
+		area = Math.abs(area) / 2;
+		if (area < 3.5) continue;
+		const c = V(ri.center.x, 0, ri.center.z);
+		if (drawn.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 2.5)) continue;
+		const span = Math.sqrt(area);
+		const off = Math.min(.9, span * .18);
+		addTree(c.clone().add(V(off * .7, 0, -off * .7)), Math.min(4.6, Math.max(2.8, span * 1.25)), kind, true);
+		shrub(c.clone().add(V(-off, 0, off * .8)), .3);
+		if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), .25);
+	}
 	if (ent && drawn.length < 2) {
 		const cornerAlong = parkSign > 0 ? alongMin + 1.3 : alongMax - 1.3;
 		addTree(toWorld(Math.abs(cornerAlong - entAlong) > 1.8 ? cornerAlong : entAlong - 2.2 * parkSign, depthB - 1.1, 0), 4.2, kind);

@@ -331,6 +331,23 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   // 図面に描かれた植栽はその位置に（大きさは記号の半径から）
   const drawn = planExt?.trees ?? [];
   for (const t of drawn) addTree(V(t.x, 0, t.z), Math.min(5.5, Math.max(2.2, t.r * 4.5)), kind, true);
+  // 中庭（空に開いた void の区画）にはシンボルツリーと低木を置く（中庭のある平屋の定番。敷地が狭くても植栽が入る）
+  for (const ri of meta.rooms) {
+    const isCourt = ri.room.type === 'void' || (ri.room.type === 'balcony' && /中庭|坪庭|パティオ|ライトコート/.test(ri.room.name));
+    if (!isCourt || ri.floor.level !== 1 || ri.poly.length < 3) continue;
+    let area = 0;
+    for (let i = 0, j = ri.poly.length - 1; i < ri.poly.length; j = i++) area += ri.poly[j].x * ri.poly[i].y - ri.poly[i].x * ri.poly[j].y;
+    area = Math.abs(area) / 2;
+    if (area < 3.5) continue;
+    const c = V(ri.center.x, 0, ri.center.z);
+    if (drawn.some((t) => Math.hypot(t.x - c.x, t.z - c.z) < 2.5)) continue;
+    // 木は中心から少し外し（通路や掃き出し窓の正面を空ける）、高さは中庭の広さに合わせる
+    const span = Math.sqrt(area);
+    const off = Math.min(0.9, span * 0.18);
+    addTree(c.clone().add(V(off * 0.7, 0, -off * 0.7)), Math.min(4.6, Math.max(2.8, span * 1.25)), kind, true);
+    shrub(c.clone().add(V(-off, 0, off * 0.8)), 0.3);
+    if (area >= 8) shrub(c.clone().add(V(off * 1.3, 0, off * 1.1)), 0.25);
+  }
   if (ent && drawn.length < 2) {
     // シンボルツリーは駐車場と反対側の敷地の角（構図の額縁になる位置）
     const cornerAlong = parkSign > 0 ? alongMin + 1.3 : alongMax - 1.3;

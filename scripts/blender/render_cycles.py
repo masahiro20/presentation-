@@ -509,8 +509,20 @@ if which and which[0] == '--walk':
         target = auto_exposure(0.10)
         ev = target if ev is None else ev + (target - ev) * min(1.0, 1.5 / walk['fps'])
         scene.view_settings.exposure = ev
-        scene.render.filepath = os.path.join(out_dir, f'frame_{n:04d}.png')
-        bpy.ops.render.render(write_still=True)
+        png = os.path.join(out_dir, f'frame_{n:04d}.png')
+        if os.environ.get('NO_BLEND'):
+            scene.render.filepath = png
+            bpy.ops.render.render(write_still=True)
+        else:
+            # 動画も静止画と同じく EXR に描いて現像（窓の露出ブレンド。飛ぶ所が無いコマはそのまま現像）
+            scene.render.image_settings.file_format = 'OPEN_EXR'; scene.render.image_settings.color_depth = '16'
+            exr = os.path.join(out_dir, f'frame_{n:04d}.exr'); scene.render.filepath = exr
+            bpy.ops.render.render(write_still=True)
+            if not exposure_blend(exr, png, ev):
+                img = bpy.data.images.load(exr); img.save_render(png, scene=scene); bpy.data.images.remove(img)
+            try: os.remove(exr)
+            except Exception: pass
+            scene.render.image_settings.file_format = 'PNG'; scene.render.image_settings.color_depth = '8'
         n += 1
         if n % 10 == 0: print('frame', n, 't', f['t'], flush=True)
     print('walk frames', n, 'fps', walk['fps'])

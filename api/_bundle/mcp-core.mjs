@@ -16934,10 +16934,6 @@ function wrapSheet(inner, vb, info, opts = {}) {
 		vb
 	}], info, opts);
 }
-/**
-* 複数の図（パネル）を A3 の図枠に流し込む（左上から右へ並べ、収まらなければ次の段）。
-* 1/100 → 1/150 → 1/200 … の順で、全体が収まる縮尺を選ぶ。右側に表などを置く場合は right に渡す。
-*/
 function composeSheet(panels, info, opts = {}) {
 	const MARGIN = 8;
 	const TITLE_H = 20;

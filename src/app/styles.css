@@ -126,6 +126,9 @@ body.side-hidden .side { border-left: 0; }
 
 /* テイストカード */
 .style-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mood-why { margin-top: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); background: #faf9f6; font-size: 12.5px; line-height: 1.6; }
+.mood-why .k { font-weight: 600; margin-bottom: 3px; }
+.mood-why p { margin: 0 0 4px; }
 .style-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 0; background: #fff; text-align: left; overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s; min-width: 0; }
 .style-card:hover { border-color: var(--ink3); }
 .style-card.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }

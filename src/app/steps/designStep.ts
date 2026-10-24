@@ -19,6 +19,8 @@ import { renderStudio } from '../../scene/studio';
 import { exportGlb, sceneInfo, downloadBlob } from '../../scene/exportGlb';
 import { exportCuts } from '../cuts';
 import { startCinema } from '../cinema';
+import { aiSettingsUi, runAiFinish, runAiFinishBatch } from '../aiFinish';
+import { MOODS, moodOf, applyMood } from '../../coordinate/moods';
 import type { Viewer } from '../../scene/viewer';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
@@ -510,6 +512,32 @@ export const designStep: Step = {
         ),
         section(
           'コーディネート',
+          h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'まず「雰囲気」を選ぶと、外観・内観のテイストと部位ごとの商品がまとめて入れ替わります（御社の事例と SNS で人気の組み合わせ）。そのあと部位ごとに差し替えてください。'),
+          (() => {
+            const cur = moodOf(state.design);
+            const grid = h(
+              'div',
+              { class: 'style-grid mood-grid' },
+              MOODS.map((m) =>
+                styleCard({ id: m.id, name: m.name, catch: m.catch, swatch: m.swatch }, cur?.id === m.id, () => {
+                  update(applyMood(state.design, m));
+                  syncEstimateWithFinishes();
+                }),
+              ),
+            );
+            const why = cur
+              ? h(
+                  'div',
+                  { class: 'mood-why' },
+                  h('div', { class: 'k' }, `${cur.name}: なぜこの組み合わせか`),
+                  h('p', null, cur.why),
+                  h('p', null, h('b', null, '合う間取り・お客様 '), cur.fits),
+                  h('p', null, h('b', null, 'ひとひねり '), cur.twists.join('／')),
+                  h('p', { class: 'hint', style: 'margin:4px 0 0' }, `参考: ${cur.refs}`),
+                )
+              : h('p', { class: 'hint', style: 'margin:4px 0 0' }, '雰囲気を選ぶと、その組み合わせの考え方（お客様に話せる言葉）がここに出ます。');
+            return h('div', { style: 'margin-bottom:10px' }, grid, why);
+          })(),
           h('p', { class: 'hint', style: 'margin:0 0 10px' }, '部位ごとにメーカー・品番を選ぶと、3D の仕上げと見積の該当行が同時に変わります。テイストを変えると標準に戻ります。'),
           ...(['外部', '内部', '設備'] as const).map((part) =>
             h(
@@ -681,6 +709,19 @@ export const designStep: Step = {
       };
       side.append(
         section(
+          '写真仕上げ（AI・無料枠）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '今の構図（高品質描画か、保存済みの写真品質パース）と輪郭の線画を Google の画像生成 AI に渡し、壁・窓・家具の位置を変えないよう指示して写真に仕上げます。仕上がりはギャラリー（プレゼン資料）に入ります。'),
+          ...aiSettingsUi(),
+          h('button', { class: 'btn primary block', onclick: () => void runAiFinish(ctx, currentAsShot()) }, '✨ この構図を写真に仕上げる'),
+          h(
+            'div',
+            { class: 'btn-row' },
+            h('button', { class: 'btn sm', onclick: () => void runAiFinishBatch(ctx, shots.filter((s) => s.kind === 'interior')) }, `内観を一括（${shots.filter((s) => s.kind === 'interior').length}枚）`),
+            h('button', { class: 'btn sm', onclick: () => void runAiFinishBatch(ctx, shots.filter((s) => s.kind === 'exterior' || s.kind === 'aerial')) }, `外観を一括（${shots.filter((s) => s.kind === 'exterior' || s.kind === 'aerial').length}枚）`),
+          ),
+          h('p', { class: 'hint' }, '注意: 図面から作った画像が Google に送られます。守秘のある案件では使う前にご確認ください。AI は窓や家具の位置を変えることがあるので、仕上がりは必ず下絵と見比べてください。さらに上の画質が要るときは「3D モデルを書き出す」→ Blender（README 参照）。'),
+        ),
+        section(
           'カット集（高解像度で一括保存）',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころカメラの構図を高品質描画で一括保存し、ZIP にまとめます。'),
           h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, { width: state.render.width, height: state.render.height }) }, `カット集を保存（${shots.length}枚・ZIP）`),
@@ -788,7 +829,7 @@ export const designStep: Step = {
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
         { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
-        { id: 'export', label: '書き出し', match: /書き出し|カット集|ギャラリー/ },
+        { id: 'export', label: '書き出し', match: /書き出し|カット集|ギャラリー|写真仕上げ/ },
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));

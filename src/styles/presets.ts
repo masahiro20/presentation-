@@ -68,6 +68,13 @@ export interface InteriorStyle {
   };
   /** 照明の色温度 (K) */
   lightKelvin: number;
+  /**
+   * 家具・照明の語彙（ホームランディックの施工事例から）。省略時は id が hl- で始まるテイストは HL の語彙、それ以外は従来。
+   * - pendant: 'ph5' = 白い多層シェード（PH 5 風）1〜2 灯／'dome' = 黒い大きなドーム 1 灯／'globes' = 乳白ガラスの小さな球 2〜3 灯
+   * - chair: 'y' = Y チェア風（曲げ木の笠木＋Y の背＋ペーパーコードの座）／'light' = 軽い木椅子
+   * - table: 'round' = 4 人なら丸テーブル／'plank' = 一枚板
+   */
+  vocab?: { pendant?: 'ph5' | 'dome' | 'globes'; chair?: 'y' | 'light'; table?: 'round' | 'plank' };
 }
 
 const ext = (s: ExteriorStyle) => s;
@@ -688,6 +695,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ---- ホームランディック事例から（実際の施工写真の素材感に合わせる） ----
   int({
     id: 'hl-grey-oak',
+    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
     name: 'グレー壁 × オーク × 木の天井',
     catch: '中間グレーの壁、オークの床、杢の天井',
     description: '中間グレーの壁に、幅広のオークの床と木の天井。黒の細い建具とトラック照明、線状の間接光で陰影をつくる、落ち着いた LDK。',
@@ -714,6 +722,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ホームランディックの標準仕様: オークのフローリング、白の塗り壁、平らな白い天井（木は張らない）、黒の細いサッシ、黒皮鉄の階段。玄関と水まわりはグレーの大判タイル
   int({
     id: 'hl-standard',
+    vocab: { pendant: 'ph5', chair: 'y', table: 'round' },
     name: 'オークの床 × 白壁 × 白天井（標準）',
     catch: '明るいオークのフローリング、白い塗り壁、黒のサッシ',
     description: 'オークのフローリングに、白の塗り壁と平らな白い天井。黒の細いサッシと黒皮鉄の階段、天井際の間接光で陰影をつくる、ホームランディックの標準的な内観。',
@@ -740,6 +749,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // 施工・設計事例（服部様・池本様など）のパースに多い構成: 黒の大判スレートタイル床、白の塗り壁、明るい木の羽目板天井、黒サッシ
   int({
     id: 'hl-slate-cedar',
+    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
     name: '黒スレート床 × 白壁 × 木の羽目板天井',
     catch: '大判の黒いタイル床、白い塗り壁、明るい木の天井',
     description: '600×1200 の黒いスレート調タイルの床に、白の塗り壁と明るい木の羽目板天井。黒の細いサッシと木の柱、中庭の緑を引き立てる、ホームランディックらしい陰影のある空間。',
@@ -765,6 +775,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   }),
   int({
     id: 'hl-dark-stone',
+    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
     name: 'ダークグレーの石目タイル',
     catch: '深いグレーの壁と、大判の石目の床',
     description: '深いグレーの壁と天井に、大判の石目調タイルの床。細い黒サッシの大開口と、床・天井の間接光だけで見せる、陰影の強い上質な空間。',
@@ -867,6 +878,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ---- 線の少ない空間（標準・淡色・ホテルライク） ----
   int({
     id: 'hl-greige-hotel',
+    vocab: { pendant: 'ph5', chair: 'y', table: 'round' },
     name: 'ホテルライク・グレージュ',
     catch: '淡いグレージュ × 大判タイル',
     description: '淡いグレージュの壁と大判タイルの床、天井まで届くフルハイトドアで線を減らした、ホテルのように静かで上質な空間。石目のアクセントウォールと間接照明が陰影を添えます。',

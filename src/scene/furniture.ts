@@ -638,22 +638,36 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   // v = テーブル中心までの距離。無垢の一枚板（厚 4cm）を 2 枚の板脚で受ける、設計事務所らしい端正なテーブル
   const tw = width ?? 1.8;
   const td = 0.9;
-  fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
-  for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
-  // 天板の上の小物: 中央に花器（実物モデル）、端に浅い器を 2 つ（写真の「生活感」）
-  currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + 0.12, v, 0.72), rotY: 0.4, height: 0.24 });
-  for (const du of [-tw / 2 + 0.3, tw / 2 - 0.3]) {
-    fr.cyl('f.white', u + du, v - 0.08, 0.11, 0.72, 0.012, 20);
-    fr.cyl('f.white', u + du, v - 0.08, 0.075, 0.732, 0.04, 20);
-  }
-  // 椅子: 丸脚の細いオークのフレームに、薄く丸みのある張り座と、ゆるく曲がった薄い背板（マルニ・カリモクの軽い木椅子の形）。長いテーブルは 3 脚ずつ
   const perSide = tw >= 2.3 ? 3 : 2;
+  // 御社の事例: 4 人掛けは丸テーブル（φ1.2、1 本脚）に Y チェア。6 人掛けは一枚板
+  const round = vocab.table === 'round' && perSide === 2;
+  if (round) {
+    const R = Math.min(0.62, Math.max(0.52, tw / 2));
+    fr.cyl('f.wood', u, v, R, 0.68, 0.04, 40);
+    fr.cyl('f.wood', u, v, 0.055, 0.02, 0.66, 14);
+    fr.cyl('f.metal', u, v, 0.3, 0, 0.02, 32);
+  } else {
+    fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
+    for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
+  }
+  // 天板の上の小物: 中央に花器（実物モデル）、端に浅い器を 2 つ（写真の「生活感」）
+  currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + (round ? 0 : 0.12), v, 0.72), rotY: 0.4, height: 0.24 });
+  if (!round)
+    for (const du of [-tw / 2 + 0.3, tw / 2 - 0.3]) {
+      fr.cyl('f.white', u + du, v - 0.08, 0.11, 0.72, 0.012, 20);
+      fr.cyl('f.white', u + du, v - 0.08, 0.075, 0.732, 0.04, 20);
+    }
+  // 椅子: 御社の事例は Y チェア（曲げ木の笠木・Y の背・ペーパーコードの座）。従来は丸脚の軽い木椅子。長いテーブルは 3 脚ずつ
   const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;
-  const chairUs = perSide === 3 ? [-pitch, 0, pitch] : [-0.45, 0.45];
+  const chairUs = perSide === 3 ? [-pitch, 0, pitch] : round ? [-0.36, 0.36] : [-0.45, 0.45];
   for (const du of chairUs)
     for (const side of [-1, 1]) {
       const cu = u + du;
-      const cv = v + side * (td / 2 + 0.2);
+      const cv = v + side * ((round ? 0.5 : td / 2) + 0.2);
+      if (vocab.chair === 'y') {
+        yChair(fr, cu, cv, side);
+        continue;
+      }
       // 座（布）と座枠
       fr.box('f.fabric2', cu, cv - 0.22, 0.43, 0.43, 0.42, 0.045);
       fr.box('f.wood', cu, cv - 0.21, 0.41, 0.41, 0.395, 0.025);
@@ -663,7 +677,16 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
       for (const lu of [-0.17, 0.17]) fr.cyl('f.wood', cu + lu, cv + side * 0.17, 0.012, 0.395, 0.32, 10);
       fr.box('f.wood', cu, cv + side * 0.17 - 0.012, 0.4, 0.024, 0.6, 0.12);
     }
-  // ペンダント: 乳白ガラスの球（実物モデル）を 2〜3 灯、天井から細いロッドで吊る。読み込めない環境は黒い小さなドーム
+  // ペンダント: 御社の事例は PH 5 風（白）か黒いドームを 1 灯（長いテーブルは 2 灯）。従来は乳白ガラスの球（実物モデル）を 2〜3 灯
+  if (vocab.pendant !== 'globes') {
+    const us = tw >= 2.3 && !round ? [-tw / 4, tw / 4] : [0];
+    for (const du of us) {
+      const y = 1.5;
+      pendant(fr, u + du, v, y, ceilingY, vocab.pendant);
+      lights.push({ pos: fr.point(u + du, v, y - 0.12), kind: 'pendant', roomId });
+    }
+    return;
+  }
   const n = tw >= 2.3 ? 3 : 2;
   const us = n === 3 ? [-0.62, 0, 0.62] : [-0.42, 0.42];
   for (const du of us) {
@@ -686,6 +709,73 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
 let kitchenFinish = { dark: false };
 export function setKitchenFinish(f: { dark: boolean }) {
   kitchenFinish = f;
+}
+
+/** 家具・照明の語彙（テイストごと）。組み立て前に設定する */
+let vocab: { pendant: 'ph5' | 'dome' | 'globes'; chair: 'y' | 'light'; table: 'round' | 'plank' } = { pendant: 'globes', chair: 'light', table: 'plank' };
+export function setFurnitureVocab(style: { id: string; vocab?: { pendant?: 'ph5' | 'dome' | 'globes'; chair?: 'y' | 'light'; table?: 'round' | 'plank' } }) {
+  const hl = style.id.startsWith('hl-');
+  vocab = {
+    pendant: style.vocab?.pendant ?? (hl ? 'ph5' : 'globes'),
+    chair: style.vocab?.chair ?? (hl ? 'y' : 'light'),
+    table: style.vocab?.table ?? (hl ? 'round' : 'plank'),
+  };
+}
+
+/** 天井から吊る照明（御社の事例の語彙）。y = 器具の下端 */
+function pendant(fr: Frame, u: number, v: number, y: number, ceilingY: number, kind: 'ph5' | 'dome') {
+  const P = (yy: number) => fr.point(u, v, yy);
+  if (kind === 'ph5') {
+    // PH 5 風: 上の大きな笠（φ50）・中のリング（φ33）・下の小さな笠（φ16）を白で重ね、細いロッドで吊る
+    const key = 'f.shade';
+    fr.mb.tube(key, P(y + 0.13), P(y + 0.24), 0.25, 0.1, 28);
+    fr.mb.tube(key, P(y + 0.07), P(y + 0.12), 0.165, 0.11, 24);
+    fr.mb.tube(key, P(y), P(y + 0.05), 0.08, 0.055, 20);
+    fr.cyl('f.lamp', u, v, 0.045, y + 0.05, 0.02, 16);
+    fr.cyl('f.metal', u, v, 0.004, y + 0.24, Math.max(0.05, ceilingY - y - 0.24), 8);
+    fr.cyl('f.metal', u, v, 0.03, ceilingY - 0.015, 0.015, 16);
+  } else {
+    // 黒いドーム（φ42・高さ 20cm）。内側に温かい光
+    const key = 'f.hoodDark';
+    fr.mb.tube(key, P(y), P(y + 0.17), 0.21, 0.13, 28);
+    fr.cyl(key, u, v, 0.13, y + 0.17, 0.035, 20);
+    fr.cyl('f.lamp', u, v, 0.1, y + 0.01, 0.01, 20);
+    fr.cyl('f.metal', u, v, 0.005, y + 0.2, Math.max(0.05, ceilingY - y - 0.2), 8);
+    fr.cyl('f.metal', u, v, 0.03, ceilingY - 0.015, 0.015, 16);
+  }
+}
+
+/** Y チェア風の椅子: 丸脚、ペーパーコードの座、半円に曲げた笠木（肘まで）、Y の背 */
+function yChair(fr: Frame, cu: number, cv: number, side: number) {
+  const W = 0.54;
+  const D = 0.5;
+  const seatY = 0.43;
+  const railY = 0.74;
+  // 座（紙紐の編み）と座枠
+  fr.box('f.cord', cu, cv - D / 2 + 0.03, W - 0.08, D - 0.08, seatY - 0.02, 0.025);
+  fr.box('f.wood', cu, cv - D / 2, W - 0.02, 0.03, seatY - 0.045, 0.03);
+  fr.box('f.wood', cu, cv + D / 2 - 0.03, W - 0.02, 0.03, seatY - 0.045, 0.03);
+  for (const lu of [-1, 1]) fr.box('f.wood', cu + lu * (W / 2 - 0.025), cv - D / 2, 0.03, D, seatY - 0.045, 0.03);
+  // 脚: 後ろ脚は笠木まで伸びる
+  for (const lu of [-1, 1]) {
+    fr.cyl('f.wood', cu + lu * (W / 2 - 0.035), cv - side * (D / 2 - 0.04), 0.015, 0, seatY - 0.02, 10);
+    fr.cyl('f.wood', cu + lu * (W / 2 - 0.035), cv + side * (D / 2 - 0.04), 0.015, 0, railY, 10);
+  }
+  // 笠木: 後ろから両肘へ回る半円（曲げ木）
+  const R = W / 2 - 0.02;
+  const n = 9;
+  let prev: V3 | null = null;
+  for (let k = 0; k <= n; k++) {
+    const a = (Math.PI * k) / n;
+    const pt = fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - 0.02), railY);
+    if (prev) fr.mb.tube('f.wood', prev, pt, 0.017, 0.017, 8);
+    prev = pt;
+  }
+  // Y の背板: 座の後ろ中央から上へ 1 本、途中で 2 本に分かれて笠木へ
+  const b0 = fr.point(cu, cv + side * (D / 2 - 0.03), seatY);
+  const b1 = fr.point(cu, cv + side * (D / 2 - 0.02), seatY + 0.13);
+  fr.mb.tube('f.wood', b0, b1, 0.014, 0.012, 8);
+  for (const lu of [-1, 1]) fr.mb.tube('f.wood', b1, fr.point(cu + lu * 0.07, cv + side * (D / 2 - 0.015), railY - 0.01), 0.012, 0.01, 8);
 }
 
 /**
@@ -763,16 +853,15 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     for (const du of [-0.2, 0.2]) fr.cyl('f.handle', u + du, v + topD / 2 + 0.08, 0.09, H + 0.004, 0.001, 20);
     fr.cyl('f.handle', u, v + topD / 2 - 0.1, 0.08, H + 0.004, 0.001, 20);
   };
-  /** 壁掛けの薄型フード（ASR-3A-9027: W900、前傾の薄い本体 ＋ 天井までのダクトカバー） */
+  /** 壁掛けの薄型フード（御社の事例: 横長の薄い箱 W900 D480 H110、ダクトは壁・天井内で見せない。黒が基本） */
   const wallHood = (u: number) => {
-    fr.box(hoodKey, u, 0.02, 0.9, 0.5, 1.5, 0.05);
-    fr.box(hoodKey, u, 0.02, 0.9, 0.3, 1.55, 0.3);
-    fr.box(hoodKey, u, 0.02, 0.5, 0.3, 1.85, ceilingY - 1.86);
+    fr.box(hoodKey, u, 0.02, 0.9, 0.48, 1.58, 0.11);
+    fr.box(hoodKey, u, 0.02, 0.86, 0.3, 1.69, 0.02);
   };
-  /** 天吊りの箱型フード（TAJIMA FLBT: W900 D600、ステンレス） */
+  /** 天吊りの箱型フード（ペニンシュラ・アイランド: W900 D500 H220 の薄い箱＋細いダクトカバー。黒） */
   const ceilingHood = (u: number, v: number) => {
-    fr.box(hoodKey, u, v - 0.275, 0.9, 0.55, ceilingY - 0.9, 0.32);
-    fr.box(hoodKey, u, v - 0.15, 0.4, 0.3, ceilingY - 0.59, 0.59);
+    fr.box(hoodKey, u, v - 0.25, 0.9, 0.5, 1.66, 0.22);
+    fr.box(hoodKey, u, v - 0.11, 0.22, 0.22, 1.88, Math.max(0.05, ceilingY - 1.88));
   };
   /** 小物: 黒いトレーと器、細い一輪挿し */
   const props = (u: number, v: number) => {
@@ -831,8 +920,13 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     cabinet(cu, 0.02, W, D, secs, 1);
     sink(cu + sinkU, 0.02, D, 0.02 + 0.08);
     ih(cu + stoveU, 0.02, D);
-    fr.box('f.cabinet', cu, 0.02, W, 0.35, 1.45, 0.6);
-    lineH(cu, 0.37, W - 0.02, 1.47, 0.02, 1);
+    // 吊戸はシンク側だけ。加熱機器の上は壁を見せて薄型フードだけ（御社の事例: フードの周りに箱を付けない）
+    const upW = W - 1.05 - 0.08;
+    if (upW >= 0.6) {
+      const uc = cu - stoveSign * ((1.05 + 0.08) / 2);
+      fr.box('f.cabinet', uc, 0.02, upW, 0.35, 1.45, 0.6);
+      lineH(uc, 0.37, upW - 0.02, 1.47, 0.02, 1);
+    }
     if (hood) wallHood(cu + stoveU);
     if (fw) fridgeBox(cu + (fridge === 'right' ? 1 : -1) * (W / 2 + fw / 2));
     props(cu, 0.02 + D - 0.2);

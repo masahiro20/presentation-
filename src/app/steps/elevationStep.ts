@@ -3,7 +3,7 @@ import { state } from '../state';
 import type { Step, StepCtx } from '../app';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg, openingTableSvg } from '../../drawings/plan';
-import { composeSheet } from '../../drawings/sheet';
+import { composeSheet, SHEET_TOP_W } from '../../drawings/sheet';
 import { exteriorFinishTableSvg } from '../../drawings/finishTable';
 import { modelToDxf } from '../../drawings/dxf';
 import { sheetInfo } from '../sheetInfo';
@@ -37,7 +37,7 @@ export function buildSheets(app: StepCtx['app'], color = false) {
     sheets.push({ title, svg: composeSheet(parts, sheetInfo(title, `A-${no++}`), { right: { svg: at.svg, w: at.w, h: at.h }, defs: parts.map((p) => p.defs ?? '').join(''), gap: 2400 }) });
   }
   // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
-  const top = exteriorFinishTableSvg(state.design, 0, 0, 420 * 100 - 2 * 1000);
+  const top = exteriorFinishTableSvg(state.design, 0, 0, SHEET_TOP_W);
   sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200 }) });
   // 建具表（階ごとの表を横に並べる）
   {

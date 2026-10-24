@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { exteriorFinishRows, exteriorFinishTableSvg } from '../src/drawings/finishTable';
 import { DEFAULT_DESIGN } from '../src/styles/presets';
-import { composeSheet, warekiOf } from '../src/drawings/sheet';
+import { composeSheet, warekiOf, SHEET_TOP_W } from '../src/drawings/sheet';
 
 describe('外部仕上表（御社の立面図の帯）', () => {
   it('標準のテイストで 5 組 × 4 行、外壁はジョリパットで色が入る', () => {
@@ -30,7 +30,7 @@ describe('外部仕上表（御社の立面図の帯）', () => {
   });
 
   it('帯の SVG は図枠の上に入り、縮尺が変わっても紙の上で同じ大きさ（縮尺に合わせて拡大）', () => {
-    const top = exteriorFinishTableSvg(DEFAULT_DESIGN, 0, 0, 40000);
+    const top = exteriorFinishTableSvg(DEFAULT_DESIGN, 0, 0, SHEET_TOP_W);
     expect(top.svg).toContain('外');
     expect(top.h).toBeGreaterThan(2000);
     const info = { project: 'テスト様邸 新築工事', drawing: '立面図', date: '2026.10.22', designer: '' };

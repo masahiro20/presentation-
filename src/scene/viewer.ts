@@ -12,7 +12,7 @@ import type { BuildingModel, Room } from '../core/types';
 import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
-import { buildFurniture, setKitchenFinish, type LightPoint, type Footprint } from './furniture';
+import { buildFurniture, setKitchenFinish, setFurnitureVocab, type LightPoint, type Footprint } from './furniture';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
@@ -31,7 +31,8 @@ import { resolveSpec } from '../styles/spec';
 /** 暗い色か（キッチンの扉の色でレンジフードをシルバー／ブラックに振り分ける） */
 function isDarkColor(hex: string): boolean {
   const c = new THREE.Color(hex);
-  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.25;
+  // 御社の事例: グレーの扉でもフードは黒（シルバーは白系の扉のときだけ）
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.45;
 }
 
 export class ArchCamera extends THREE.PerspectiveCamera {
@@ -746,6 +747,7 @@ export class Viewer {
     this.edgeLines = [];
     this.rebuildEdges([this.groups.building, this.groups.roof]);
     setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
+    setFurnitureVocab(interiorFor(this.design));
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
     // 実物のモデル（観葉植物・ラウンジチェア）は読み込み後に追加
@@ -1409,6 +1411,7 @@ export class Viewer {
         if (f) this.groups.cut.add(northMarker(this.state!.meta.bbox, model.northAngleDeg, resolve));
         if (this.design.furniture) {
           setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
+    setFurnitureVocab(interiorFor(this.design));
           const fur = buildFurniture(model, { cut: f ? { level: level!, y: cutY } : undefined, clip: sec ? clip : undefined });
           this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
           const gen = this.modelGen;

@@ -120,11 +120,16 @@ export function wrapSheet(inner: string, vb: Vb, info: SheetInfo, opts: { right?
  * 複数の図（パネル）を A3 の図枠に流し込む（左上から右へ並べ、収まらなければ次の段）。
  * 1/100 → 1/150 → 1/200 … の順で、全体が収まる縮尺を選ぶ。右側に表などを置く場合は right に渡す。
  */
+/** 御社の図枠: 余白は狭め（8mm）、表題欄は 20mm。1/100 で A3 に敷地ごと載せるための寸法（紙の mm） */
+export const SHEET_MARGIN_MM = 8;
+export const SHEET_TITLE_MM = 20;
+/** 図枠の上に入れる帯（外部仕上表など）の幅（1/100 の図面 mm = 紙の幅から余白を引いたもの） */
+export const SHEET_TOP_W = 420 * 100 - 2 * SHEET_MARGIN_MM * 100;
+
 export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: { svg: string; w: number; h: number }; top?: { svg: string; w: number; h: number }; defs?: string; gap?: number } = {}): string {
   // 余白・表題欄・上の帯は紙の上で一定（余白 10mm、表題欄 22mm）。1/100 の図面 mm で書き、縮尺に合わせて伸ばす
-  // 御社の図枠: 余白は狭め（約 8mm）、表題欄は 20mm。1/100 で A3 に敷地ごと載せるための寸法
-  const MARGIN = 8;
-  const TITLE_H = 20;
+  const MARGIN = SHEET_MARGIN_MM;
+  const TITLE_H = SHEET_TITLE_MM;
   const gap = opts.gap ?? 1600;
   const rgap = opts.right ? 1000 : 0;
   const rightW = opts.right?.w ?? 0;

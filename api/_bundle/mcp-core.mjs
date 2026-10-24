@@ -14241,33 +14241,57 @@ function rug(fr, u, v, w, d) {
 function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 	const tw = width ?? 1.8;
 	const td = .9;
-	fr.box("f.wood", u, v - td / 2, tw, td, .68, .04);
-	for (const du of [-tw / 2 + .22, tw / 2 - .22]) fr.box("f.wood", u + du, v - td / 2 + .12, .04, .66, 0, .68);
+	const perSide = tw >= 2.3 ? 3 : 2;
+	const round = vocab.table === "round" && perSide === 2;
+	if (round) {
+		const R = Math.min(.62, Math.max(.52, tw / 2));
+		fr.cyl("f.wood", u, v, R, .68, .04, 40);
+		fr.cyl("f.wood", u, v, .055, .02, .66, 14);
+		fr.cyl("f.metal", u, v, .3, 0, .02, 32);
+	} else {
+		fr.box("f.wood", u, v - td / 2, tw, td, .68, .04);
+		for (const du of [-tw / 2 + .22, tw / 2 - .22]) fr.box("f.wood", u + du, v - td / 2 + .12, .04, .66, 0, .68);
+	}
 	currentModels.push({
 		id: "ceramic_vase_01",
-		pos: fr.point(u + .12, v, .72),
+		pos: fr.point(u + (round ? 0 : .12), v, .72),
 		rotY: .4,
 		height: .24
 	});
-	for (const du of [-tw / 2 + .3, tw / 2 - .3]) {
+	if (!round) for (const du of [-tw / 2 + .3, tw / 2 - .3]) {
 		fr.cyl("f.white", u + du, v - .08, .11, .72, .012, 20);
 		fr.cyl("f.white", u + du, v - .08, .075, .732, .04, 20);
 	}
-	const perSide = tw >= 2.3 ? 3 : 2;
 	const pitch = perSide === 3 ? (tw - .5) / 2 : .9;
 	const chairUs = perSide === 3 ? [
 		-pitch,
 		0,
 		pitch
-	] : [-.45, .45];
+	] : round ? [-.36, .36] : [-.45, .45];
 	for (const du of chairUs) for (const side of [-1, 1]) {
 		const cu = u + du;
-		const cv = v + side * .65;
+		const cv = v + side * ((round ? .5 : td / 2) + .2);
+		if (vocab.chair === "y") {
+			yChair(fr, cu, cv, side);
+			continue;
+		}
 		fr.box("f.fabric2", cu, cv - .22, .43, .43, .42, .045);
 		fr.box("f.wood", cu, cv - .21, .41, .41, .395, .025);
 		for (const lu of [-.17, .17]) for (const lv of [-.17, .17]) fr.cyl("f.wood", cu + lu, cv + lv, .013, 0, .395, 10);
 		for (const lu of [-.17, .17]) fr.cyl("f.wood", cu + lu, cv + side * .17, .012, .395, .32, 10);
 		fr.box("f.wood", cu, cv + side * .17 - .012, .4, .024, .6, .12);
+	}
+	if (vocab.pendant !== "globes") {
+		const us = tw >= 2.3 && !round ? [-tw / 4, tw / 4] : [0];
+		for (const du of us) {
+			pendant(fr, u + du, v, 1.5, ceilingY, vocab.pendant);
+			lights.push({
+				pos: fr.point(u + du, v, 1.38),
+				kind: "pendant",
+				roomId
+			});
+		}
+		return;
 	}
 	const us = (tw >= 2.3 ? 3 : 2) === 3 ? [
 		-.62,
@@ -14300,6 +14324,60 @@ function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 }
 /** キッチンの仕上げ（扉が暗い色か）。レンジフードの色（シルバー／ブラック）を扉に合わせるために、組み立て前に設定する */
 var kitchenFinish = { dark: false };
+/** 家具・照明の語彙（テイストごと）。組み立て前に設定する */
+var vocab = {
+	pendant: "globes",
+	chair: "light",
+	table: "plank"
+};
+/** 天井から吊る照明（御社の事例の語彙）。y = 器具の下端 */
+function pendant(fr, u, v, y, ceilingY, kind) {
+	const P = (yy) => fr.point(u, v, yy);
+	if (kind === "ph5") {
+		const key = "f.shade";
+		fr.mb.tube(key, P(y + .13), P(y + .24), .25, .1, 28);
+		fr.mb.tube(key, P(y + .07), P(y + .12), .165, .11, 24);
+		fr.mb.tube(key, P(y), P(y + .05), .08, .055, 20);
+		fr.cyl("f.lamp", u, v, .045, y + .05, .02, 16);
+		fr.cyl("f.metal", u, v, .004, y + .24, Math.max(.05, ceilingY - y - .24), 8);
+		fr.cyl("f.metal", u, v, .03, ceilingY - .015, .015, 16);
+	} else {
+		const key = "f.hoodDark";
+		fr.mb.tube(key, P(y), P(y + .17), .21, .13, 28);
+		fr.cyl(key, u, v, .13, y + .17, .035, 20);
+		fr.cyl("f.lamp", u, v, .1, y + .01, .01, 20);
+		fr.cyl("f.metal", u, v, .005, y + .2, Math.max(.05, ceilingY - y - .2), 8);
+		fr.cyl("f.metal", u, v, .03, ceilingY - .015, .015, 16);
+	}
+}
+/** Y チェア風の椅子: 丸脚、ペーパーコードの座、半円に曲げた笠木（肘まで）、Y の背 */
+function yChair(fr, cu, cv, side) {
+	const W = .54;
+	const D = .5;
+	const seatY = .43;
+	const railY = .74;
+	fr.box("f.cord", cu, cv - D / 2 + .03, .46, .42, .41, .025);
+	fr.box("f.wood", cu, cv - D / 2, .52, .03, .385, .03);
+	fr.box("f.wood", cu, cv + D / 2 - .03, .52, .03, .385, .03);
+	for (const lu of [-1, 1]) fr.box("f.wood", cu + lu * (W / 2 - .025), cv - D / 2, .03, D, .385, .03);
+	for (const lu of [-1, 1]) {
+		fr.cyl("f.wood", cu + lu * (W / 2 - .035), cv - side * (D / 2 - .04), .015, 0, .41, 10);
+		fr.cyl("f.wood", cu + lu * (W / 2 - .035), cv + side * (D / 2 - .04), .015, 0, railY, 10);
+	}
+	const R = W / 2 - .02;
+	const n = 9;
+	let prev = null;
+	for (let k = 0; k <= n; k++) {
+		const a = Math.PI * k / n;
+		const pt = fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - .02), railY);
+		if (prev) fr.mb.tube("f.wood", prev, pt, .017, .017, 8);
+		prev = pt;
+	}
+	const b0 = fr.point(cu, cv + side * (D / 2 - .03), seatY);
+	const b1 = fr.point(cu, cv + side * (D / 2 - .02), .56);
+	fr.mb.tube("f.wood", b0, b1, .014, .012, 8);
+	for (const lu of [-1, 1]) fr.mb.tube("f.wood", b1, fr.point(cu + lu * .07, cv + side * (D / 2 - .015), .73), .012, .01, 8);
+}
 /**
 * LINE KITCHEN（ホームランディックの標準キッチン）。カタログ・プランニングシートの呼び寸法どおりに作る。
 * - 間口 W2290 / 2440 / 2590（シンクキャビネット 750/900/1050 ＋ 食器洗い機 450 ＋ 加熱機器キャビネット 1050）、高さ H850、キャビネット奥行 650
@@ -14383,16 +14461,15 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 		for (const du of [-.2, .2]) fr.cyl("f.handle", u + du, v + topD / 2 + .08, .09, .854, .001, 20);
 		fr.cyl("f.handle", u, v + topD / 2 - .1, .08, .854, .001, 20);
 	};
-	/** 壁掛けの薄型フード（ASR-3A-9027: W900、前傾の薄い本体 ＋ 天井までのダクトカバー） */
+	/** 壁掛けの薄型フード（御社の事例: 横長の薄い箱 W900 D480 H110、ダクトは壁・天井内で見せない。黒が基本） */
 	const wallHood = (u) => {
-		fr.box(hoodKey, u, .02, .9, .5, 1.5, .05);
-		fr.box(hoodKey, u, .02, .9, .3, 1.55, .3);
-		fr.box(hoodKey, u, .02, .5, .3, 1.85, ceilingY - 1.86);
+		fr.box(hoodKey, u, .02, .9, .48, 1.58, .11);
+		fr.box(hoodKey, u, .02, .86, .3, 1.69, .02);
 	};
-	/** 天吊りの箱型フード（TAJIMA FLBT: W900 D600、ステンレス） */
+	/** 天吊りの箱型フード（ペニンシュラ・アイランド: W900 D500 H220 の薄い箱＋細いダクトカバー。黒） */
 	const ceilingHood = (u, v) => {
-		fr.box(hoodKey, u, v - .275, .9, .55, ceilingY - .9, .32);
-		fr.box(hoodKey, u, v - .15, .4, .3, ceilingY - .59, .59);
+		fr.box(hoodKey, u, v - .25, .9, .5, 1.66, .22);
+		fr.box(hoodKey, u, v - .11, .22, .22, 1.88, Math.max(.05, ceilingY - 1.88));
 	};
 	/** 小物: 黒いトレーと器、細い一輪挿し */
 	const props = (u, v) => {
@@ -14456,8 +14533,12 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 		cabinet(cu, .02, W, D, secs, 1);
 		sink(cu + sinkU, .02, D, .1);
 		ih(cu + stoveU, .02, D);
-		fr.box("f.cabinet", cu, .02, W, .35, 1.45, .6);
-		lineH(cu, .37, W - .02, 1.47, .02, 1);
+		const upW = W - 1.05 - .08;
+		if (upW >= .6) {
+			const uc = cu - stoveSign * ((1.05 + .08) / 2);
+			fr.box("f.cabinet", uc, .02, upW, .35, 1.45, .6);
+			lineH(uc, .37, upW - .02, 1.47, .02, 1);
+		}
 		if (hood) wallHood(cu + stoveU);
 		if (fw) fridgeBox(cu + (fridge === "right" ? 1 : -1) * (W / 2 + fw / 2));
 		props(cu, .67 - .2);
@@ -16858,8 +16939,8 @@ function wrapSheet(inner, vb, info, opts = {}) {
 * 1/100 → 1/150 → 1/200 … の順で、全体が収まる縮尺を選ぶ。右側に表などを置く場合は right に渡す。
 */
 function composeSheet(panels, info, opts = {}) {
-	const MARGIN = 10;
-	const TITLE_H = 22;
+	const MARGIN = 8;
+	const TITLE_H = 20;
 	const gap = opts.gap ?? 1600;
 	const rgap = opts.right ? 1e3 : 0;
 	const rightW = opts.right?.w ?? 0;
@@ -16921,17 +17002,20 @@ function composeSheet(panels, info, opts = {}) {
 	const titleH = TITLE_H * denom;
 	const sw = Math.max(16, denom * .18);
 	const fs = denom * 2.4;
-	const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
+	const groupW = lay.w + (opts.right ? rightW + rgap : 0);
+	const areaW = W - margin * 2;
 	const areaH = H - margin * 2 - titleH - topH(denom);
-	const ox = margin + Math.max(0, (areaW - lay.w) / 2);
+	const ox = margin + Math.max(0, (areaW - groupW) / 2);
 	const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
+	const rx = Math.min(W - margin - rightW, ox + lay.w + rgap);
+	const ry = Math.max(margin + topH(denom), Math.min(H - margin - titleH - (opts.right?.h ?? 0), oy + (lay.h - (opts.right?.h ?? 0)) / 2));
 	let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
 	s += opts.defs ?? "";
 	s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
 	s += `<rect x="${margin * .5}" y="${margin * .5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
 	s += `<rect x="${margin * .5 + sw * 6}" y="${margin * .5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * .6}"/>`;
 	for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
-	if (opts.right) s += `<g transform="translate(${W - margin - rightW} ${margin + topH(denom)})">${opts.right.svg}</g>`;
+	if (opts.right) s += `<g transform="translate(${rx.toFixed(0)} ${ry.toFixed(0)})">${opts.right.svg}</g>`;
 	if (opts.top) {
 		const k = (W - margin * 2) / opts.top.w;
 		s += `<g transform="translate(${margin} ${margin}) scale(${k.toFixed(4)})">${opts.top.svg}</g>`;
@@ -17024,10 +17108,14 @@ function treeSvg(x, y, r, seed) {
 	return `<polygon points="${pts.join(" ")}" fill="#d3dfc4" fill-opacity="0.82" stroke="#8ea47c" stroke-width="12"/><circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${(r * .55).toFixed(0)}" fill="none" stroke="#a9bb98" stroke-width="7" stroke-dasharray="50 40"/><circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="45" fill="#8ea47c"/>`;
 }
 /** 車（平面図の記号） */
-function carSvg(x, y, dx, dy) {
+function carSvg(x, y, dx, dy, hl = false) {
 	const L = 4600;
 	const W = 1760;
 	const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+	if (hl) {
+		const d = "stroke=\"#444\" stroke-width=\"7\" stroke-dasharray=\"55 35\" fill=\"none\"";
+		return `<g transform="translate(${x.toFixed(0)} ${y.toFixed(0)}) rotate(${ang.toFixed(1)})"><rect x="-2300" y="-880" width="${L}" height="${W}" rx="380" ${d}/><path d="M-1012 -760 L-460 -760 L${L * .12} -760 L${L * .34} -760" ${d}/><rect x="-920" y="-730" width="${L * .48}" height="1460" rx="260" ${d}/><line x1="${L * .1}" y1="-730" x2="${L * .1}" y2="${W / 2 - 150}" ${d}/>` + [-1, 1].flatMap((sy) => [-.3, .3].map((k) => `<rect x="${(L * k - 330).toFixed(0)}" y="${(sy * (W / 2 - 140) - 110).toFixed(0)}" width="660" height="220" rx="60" ${d}/>`)).join("") + `</g>`;
+	}
 	return `<g transform="translate(${x.toFixed(0)} ${y.toFixed(0)}) rotate(${ang.toFixed(1)})"><rect x="-2300" y="-880" width="${L}" height="${W}" rx="420" fill="#fff" stroke="#9a958e" stroke-width="12"/><rect x="-828" y="-720" width="${L * .42}" height="1440" rx="200" fill="none" stroke="#b5b0a8" stroke-width="10"/><line x1="${L * .24}" y1="-700" x2="${L * .24}" y2="${W / 2 - 180}" stroke="#b5b0a8" stroke-width="10"/></g>`;
 }
 /** 家具の外形（モデルごとに1回だけ計算） */
@@ -17137,8 +17225,13 @@ var TATAMI_ROOMS = /* @__PURE__ */ new Set([
 	"bedroom",
 	"kids",
 	"study",
-	"other"
+	"other",
+	"washroom",
+	"closet",
+	"storage"
 ]);
+/** 外部・吹抜の区画（中庭・坪庭・吹抜）: 御社の図面では対角線の × を描く */
+var isOpenArea = (r) => r.type === "void" || (r.type === "balcony" || r.type === "other") && /中庭|坪庭|パティオ|ライトコート|ドッグラン|吹抜|吹き抜け/.test(r.name);
 var OPENING_KIND_JA = {
 	window: "窓",
 	door: "片開き戸",
@@ -17352,11 +17445,7 @@ function floorPlanSvg(model, f, opts = {}) {
 }
 /** 平面図の中身（図枠に流し込む用）。図枠に入れる時は外構・道路を描かない（図面としての密度を優先） */
 function floorPlanParts(model, f, opts = {}) {
-	if (opts.sheet) opts = {
-		showLandscape: false,
-		showRoad: false,
-		...opts
-	};
+	const sheetMode = !!opts.sheet;
 	const hl = (opts.style ?? "hl") === "hl";
 	const pts = f.outline.flat().concat(f.walls.flatMap((w) => [w.a, w.b]));
 	const minX = Math.min(...pts.map((p) => p.x));
@@ -17373,11 +17462,11 @@ function floorPlanParts(model, f, opts = {}) {
 	let s = "";
 	const land = f.level === 1 && opts.showLandscape !== false ? landscapeOf(model) : null;
 	if (land) {
-		for (const pv of land.paving) {
+		if (!sheetMode) for (const pv of land.paving) {
 			const pts = pv.pts.map((q) => `${(q.x * 1e3).toFixed(0)},${(q.z * 1e3).toFixed(0)}`).join(" ");
 			s += pv.key === "l.approach" ? `<polygon points="${pts}" fill="url(#mp-stone)" stroke="#c9c4bc" stroke-width="10"/>` : `<polygon points="${pts}" fill="#ebe9e5" stroke="#cfcbc4" stroke-width="10"/>`;
 		}
-		for (const c of land.cars) s += carSvg(c.x * 1e3, c.z * 1e3, c.dirX, c.dirZ);
+		for (const c of land.cars) s += carSvg(c.x * 1e3, c.z * 1e3, c.dirX, c.dirZ, hl);
 	}
 	for (const r of f.rooms) {
 		const fin = FINISH[r.type] ?? "wood";
@@ -17388,6 +17477,13 @@ function floorPlanParts(model, f, opts = {}) {
 		const fill = opts.roomTint?.[r.id] ?? (opts.colorCoded ? ROOM_COLORS[r.type] ?? "#f1efea" : hl ? "#fff" : pat);
 		const stroke = opts.highlightRoomId === r.id ? "#d9822b" : "none";
 		s += `<polygon points="${r.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="${fill}" stroke="${stroke}" stroke-width="${stroke === "none" ? 0 : 60}"/>`;
+		if (hl && isOpenArea(r)) {
+			const x0 = Math.min(...xs0);
+			const x1 = Math.max(...xs0);
+			const y0 = Math.min(...ys0);
+			const y1 = Math.max(...ys0);
+			s += `<path d="M${x0.toFixed(0)} ${y0.toFixed(0)}L${x1.toFixed(0)} ${y1.toFixed(0)}M${x1.toFixed(0)} ${y0.toFixed(0)}L${x0.toFixed(0)} ${y1.toFixed(0)}" fill="none" stroke="#333" stroke-width="5"/>`;
+		}
 		if (r.type === "japanese") {
 			const xs = r.polygon.map((p) => p.x);
 			const ys = r.polygon.map((p) => p.y);
@@ -17552,7 +17648,7 @@ function floorPlanParts(model, f, opts = {}) {
 		}
 	}
 	const mod = model.module;
-	if (mod && (opts.showModuleGrid ?? !!opts.sheet)) {
+	if (mod && (opts.showModuleGrid ?? false)) {
 		const step = mod.size;
 		const gx0 = mod.phaseX + Math.floor((minX - mod.phaseX) / step) * step;
 		const gy0 = mod.phaseY + Math.floor((minY - mod.phaseY) / step) * step;
@@ -17579,9 +17675,9 @@ function floorPlanParts(model, f, opts = {}) {
 		const h = w.thickness / 2;
 		for (const [t0, t1] of solid) {
 			const p = (t, sgn) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
-			s += hl ? `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#5e5e5e" stroke="#111" stroke-width="7"/>` : `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
+			s += hl ? `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#151515" stroke="#151515" stroke-width="4"/>` : `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
 		}
-		if (hl) {
+		if (hl && opts.showPosts) {
 			const posts = [0, L];
 			for (const o of ops) if (o.kind === "window") posts.push(o.t0, o.t1);
 			for (const t of posts) {
@@ -17679,9 +17775,11 @@ function floorPlanParts(model, f, opts = {}) {
 					tip
 				];
 				const sweep = cross(strike.x - hinge.x, strike.y - hinge.y, tip.x - hinge.x, tip.y - hinge.y) > 0 ? 1 : 0;
-				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? "#222" : "#555"}" stroke-width="6"/>`;
-				if (hl) s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="12"/>`;
-				else s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="9"/>`;
+				s += `<path d="M${tip.x.toFixed(0)} ${tip.y.toFixed(0)} A${len} ${len} 0 0 ${sweep} ${strike.x.toFixed(0)} ${strike.y.toFixed(0)}" fill="none" stroke="${hl ? "#333" : "#555"}" stroke-width="${hl ? 5 : 6}"/>`;
+				if (hl) {
+					s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="10"/>`;
+					for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
+				} else s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="9"/>`;
 			} else if (o.kind === "sliding") {
 				for (const t of [0, len]) {
 					const e0 = P(t, -h);
@@ -17691,23 +17789,49 @@ function floorPlanParts(model, f, opts = {}) {
 				const th = 36;
 				const off = Math.min(h * .5, 28);
 				if (hl) {
-					const dotLine = (t0, t1, o) => {
+					const seg = (t0, t1, o, wd = 9) => {
 						const p0 = P(t0, o);
 						const p1 = P(t1, o);
-						return `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="8"/>` + [p0, p1].map((q) => `<circle cx="${q.x.toFixed(0)}" cy="${q.y.toFixed(0)}" r="30" fill="#fff" stroke="#111" stroke-width="6"/>`).join("");
+						return `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="${wd}"/>`;
 					};
-					if (len >= 1200) s += dotLine(0, len * .53, -off) + dotLine(len * .47, len, off);
-					else s += dotLine(0, len, 0);
+					const g = Math.min(h * .45, 34);
+					if (len >= 1200) s += seg(0, len * .54, -g) + seg(len * .46, len, g);
+					else {
+						const side = o.swingSide ?? 1;
+						const pocketAtStart = o.hingeAtStart === false;
+						s += seg(0, len, g * side) + seg(0, len, 0, 4);
+						const q0 = P(pocketAtStart ? -len : len, g * side * 1.9);
+						const q1 = P(pocketAtStart ? 0 : len * 2, g * side * 1.9);
+						s += `<line x1="${q0.x.toFixed(0)}" y1="${q0.y.toFixed(0)}" x2="${q1.x.toFixed(0)}" y2="${q1.y.toFixed(0)}" stroke="#555" stroke-width="5" stroke-dasharray="60 40"/>`;
+					}
 				} else if (len >= 1200) {
 					s += leaf(0, len * .53, -off, th);
 					s += leaf(len * .47, len, off, th);
 				} else s += leaf(0, len, off, th);
-			}
+			} else if (o.kind === "open" && hl) for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
 		}
 	}
 	if (land) {
-		land.shrubs.forEach((t, i) => s += `<circle cx="${(t.x * 1e3).toFixed(0)}" cy="${(t.z * 1e3).toFixed(0)}" r="${(t.r * 1e3).toFixed(0)}" fill="#c9d8b8" fill-opacity="0.85" stroke="#93a982" stroke-width="10"/>` + (i < 0 ? "" : ""));
-		land.trees.forEach((t, i) => s += treeSvg(t.x * 1e3, t.z * 1e3, t.r * 1e3, i * 1.7 + .4));
+		if (sheetMode) {
+			const bnd = model.site?.bounds;
+			land.trees.forEach((t, i) => {
+				const r = t.r * 1e3;
+				if (t.z * 1e3 + r > maxY + 1200) return;
+				if (bnd && (bnd.left != null && t.x * 1e3 - r < bnd.left || bnd.right != null && t.x * 1e3 + r > bnd.right || bnd.top != null && t.z * 1e3 - r < bnd.top || bnd.bottom != null && t.z * 1e3 + r > bnd.bottom)) return;
+				const n = 36;
+				const pts = [];
+				for (let k = 0; k < n; k++) {
+					const a = k / n * Math.PI * 2;
+					const kk = 1 + .06 * Math.sin(a * 6 + i) + .03 * Math.sin(a * 11 + i * 2.1);
+					pts.push(`${(t.x * 1e3 + Math.cos(a) * r * kk).toFixed(0)},${(t.z * 1e3 + Math.sin(a) * r * kk).toFixed(0)}`);
+				}
+				s += `<polygon points="${pts.join(" ")}" fill="none" stroke="#444" stroke-width="6" stroke-dasharray="40 28"/>`;
+				s += `<circle cx="${(t.x * 1e3).toFixed(0)}" cy="${(t.z * 1e3).toFixed(0)}" r="40" fill="#444"/>`;
+			});
+		} else {
+			land.shrubs.forEach((t, i) => s += `<circle cx="${(t.x * 1e3).toFixed(0)}" cy="${(t.z * 1e3).toFixed(0)}" r="${(t.r * 1e3).toFixed(0)}" fill="#c9d8b8" fill-opacity="0.85" stroke="#93a982" stroke-width="10"/>` + (i < 0 ? "" : ""));
+			land.trees.forEach((t, i) => s += treeSvg(t.x * 1e3, t.z * 1e3, t.r * 1e3, i * 1.7 + .4));
+		}
 	}
 	for (const r of f.rooms) {
 		if (r.type === "stairs") continue;
@@ -17723,7 +17847,7 @@ function floorPlanParts(model, f, opts = {}) {
 		const tatami = r.labeledTatami ?? r.area / 1.62;
 		const halo = `stroke="#fff" stroke-width="${Math.round(fs * .22)}" stroke-linejoin="round" paint-order="stroke"`;
 		if (hl) {
-			const showTatami = TATAMI_ROOMS.has(r.type) && r.area >= 2.4;
+			const showTatami = TATAMI_ROOMS.has(r.type) && r.area >= 2 && rh >= 900;
 			const tj = Math.abs(tatami - Math.round(tatami)) < .08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
 			s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * .15 : fs * .35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
 			if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * .85}" font-size="${(fs * .82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
@@ -17786,7 +17910,48 @@ function floorPlanParts(model, f, opts = {}) {
 			maxX: vb.x + vb.w,
 			maxY: vb.y + vb.h
 		};
-		for (const e of siteEdges) {
+		const bnd = model.site.bounds;
+		const clipEdge = (e) => {
+			if (!hl || bnd.left == null || bnd.right == null || bnd.top == null || bnd.bottom == null) return e;
+			const box = {
+				x0: bnd.left - 250,
+				x1: bnd.right + 250,
+				y0: bnd.top - 250,
+				y1: bnd.bottom + 250
+			};
+			let t0 = 0;
+			let t1 = 1;
+			const dx = e.b.x - e.a.x;
+			const dy = e.b.y - e.a.y;
+			for (const [p, q] of [
+				[-dx, e.a.x - box.x0],
+				[dx, box.x1 - e.a.x],
+				[-dy, e.a.y - box.y0],
+				[dy, box.y1 - e.a.y]
+			]) {
+				if (Math.abs(p) < 1e-9) {
+					if (q < 0) return e;
+					continue;
+				}
+				const t = q / p;
+				if (p < 0) t0 = Math.max(t0, t);
+				else t1 = Math.min(t1, t);
+			}
+			if (t0 >= t1) return e;
+			return {
+				...e,
+				a: {
+					x: e.a.x + dx * t0,
+					y: e.a.y + dy * t0
+				},
+				b: {
+					x: e.a.x + dx * t1,
+					y: e.a.y + dy * t1
+				}
+			};
+		};
+		for (const e0 of siteEdges) {
+			const e = clipEdge(e0);
 			const L = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y);
 			if (L < 1) continue;
 			const u = {
@@ -17805,6 +17970,34 @@ function floorPlanParts(model, f, opts = {}) {
 				x: -n.x,
 				y: -n.y
 			};
+			let deg = Math.atan2(u.y, u.x) * 180 / Math.PI;
+			if (deg > 90) deg -= 180;
+			if (deg < -90) deg += 180;
+			if (hl) {
+				s += `<line x1="${e.a.x.toFixed(0)}" y1="${e.a.y.toFixed(0)}" x2="${e.b.x.toFixed(0)}" y2="${e.b.y.toFixed(0)}" stroke="#222" stroke-width="9" stroke-dasharray="320 70 50 70"/>`;
+				for (const p of [e.a, e.b]) s += `<circle cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="26" fill="#fff" stroke="#222" stroke-width="7"/>`;
+				if (L > 1800) {
+					const lab = e.kind === "road" ? `道路境界線${w0 ? `（幅員 ${(w0 / 1e3).toFixed(1)}m）` : ""}` : "隣地境界線";
+					const to = {
+						x: m.x + n.x * 190,
+						y: m.y + n.y * 190
+					};
+					const ti = {
+						x: m.x - n.x * 150,
+						y: m.y - n.y * 150
+					};
+					const up = n.y < 0 || Math.abs(n.y) < 1e-6 && n.x < 0;
+					s += `<text x="${to.x.toFixed(0)}" y="${to.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 0 : 150}" fill="#222" transform="rotate(${deg.toFixed(1)} ${to.x.toFixed(0)} ${to.y.toFixed(0)})">${esc(lab)}</text>`;
+					s += `<text x="${ti.x.toFixed(0)}" y="${ti.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 150 : 0}" fill="#222" transform="rotate(${deg.toFixed(1)} ${ti.x.toFixed(0)} ${ti.y.toFixed(0)})">${(L / 1e3).toFixed(3)}</text>`;
+				}
+				for (const p of [e.a, e.b]) {
+					ext.minX = Math.min(ext.minX, p.x - 500);
+					ext.minY = Math.min(ext.minY, p.y - 500);
+					ext.maxX = Math.max(ext.maxX, p.x + 500);
+					ext.maxY = Math.max(ext.maxY, p.y + 500);
+				}
+				continue;
+			}
 			if (e.kind === "road") {
 				const D = 900;
 				const q = [
@@ -17820,9 +18013,6 @@ function floorPlanParts(model, f, opts = {}) {
 					}
 				];
 				s += `<polygon points="${q.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#e4e2de"/>`;
-				let deg = Math.atan2(u.y, u.x) * 180 / Math.PI;
-				if (deg > 90) deg -= 180;
-				if (deg < -90) deg += 180;
 				const tp = {
 					x: m.x + n.x * D * .5,
 					y: m.y + n.y * D * .5
@@ -17846,7 +18036,7 @@ function floorPlanParts(model, f, opts = {}) {
 		vb.x = ext.minX;
 		vb.y = ext.minY;
 		vb.w = ext.maxX - ext.minX;
-		vb.h = ext.maxY - ext.minY + 1900;
+		vb.h = Math.max(ext.maxY, maxY + 3300) - ext.minY;
 	}
 	if (!siteEdges?.length && model.site?.roads.length && model.floors[0] === f && opts.showRoad !== false) for (const r of model.site.roads) {
 		const bnd = model.site.bounds[r.side];
@@ -17896,7 +18086,7 @@ function floorPlanParts(model, f, opts = {}) {
 	}
 	s += scaleBar(tx - 2500, ty + 620);
 	vb.h = Math.max(vb.h, ty + 1100 - vb.y);
-	if (opts.tags ?? !!opts.sheet) for (const e of openingSchedule(f)) {
+	if (opts.tags === true) for (const e of openingSchedule(f)) {
 		s += `<circle cx="${e.x.toFixed(0)}" cy="${e.y.toFixed(0)}" r="200" fill="#fff" stroke="#333" stroke-width="10"/>`;
 		s += `<text x="${e.x.toFixed(0)}" y="${(e.y + 55).toFixed(0)}" font-size="150" text-anchor="middle" fill="#222">${esc(e.tag)}</text>`;
 	}
@@ -18007,12 +18197,13 @@ function dimLine(x1, y1, x2, y2, label, vertical, flip = false, hl = false) {
 	let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${hl ? "#222" : "#555"}" stroke-width="8"/>`;
 	for (const [x, y] of [[x1, y1], [x2, y2]]) s += hl ? `<circle cx="${x}" cy="${y}" r="34" fill="#fff" stroke="#222" stroke-width="10"/>` : `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
 	const L = Math.hypot(x2 - x1, y2 - y1);
-	const fs = Math.min(150, Math.max(80, L / 4.2));
+	const fs = Math.min(hl ? 180 : 150, Math.max(80, L / 4.2));
 	const cx = (x1 + x2) / 2;
 	const cy = (y1 + y2) / 2;
 	const d = flip ? -70 : 70;
-	if (vertical) s += `<text x="${cx - d}" y="${cy}" font-size="${fs.toFixed(0)}" fill="#444" text-anchor="middle" transform="rotate(-90 ${cx - d} ${cy})" dy="${flip ? fs * .75 : 0}">${label}</text>`;
-	else s += `<text x="${cx}" y="${cy - d}" font-size="${fs.toFixed(0)}" fill="#444" text-anchor="middle" dy="${flip ? fs * .75 : 0}">${label}</text>`;
+	const col = hl ? "#222" : "#444";
+	if (vertical) s += `<text x="${cx - d}" y="${cy}" font-size="${fs.toFixed(0)}" fill="${col}" text-anchor="middle" transform="rotate(-90 ${cx - d} ${cy})" dy="${flip ? fs * .75 : 0}">${label}</text>`;
+	else s += `<text x="${cx}" y="${cy - d}" font-size="${fs.toFixed(0)}" fill="${col}" text-anchor="middle" dy="${flip ? fs * .75 : 0}">${label}</text>`;
 	return s;
 }
 /** スケールバー（0〜5m） */

@@ -118,6 +118,10 @@ export class MaterialRegistry {
     set('f.stainless', color('#b9bbbd', 0.32, 0.9));
     set('f.hoodSilver', color('#c6c7c9', 0.35, 0.85));
     set('f.hoodDark', color('#1b1b1b', 0.45, 0.6));
+    // Y チェアのペーパーコードの座（生成りの紙紐）
+    set('f.cord', color('#d8c8a6', 0.95, 0));
+    // ペンダントの笠（マットな生成りの白。少し光を帯びる）
+    set('f.shade', color('#f1ece3', 0.85, 0, { emissive: new THREE.Color('#ffe0b8'), emissiveIntensity: night ? 1.2 : 0.12 }));
     set('f.carcass', color('#3b3b3b', 0.7, 0.1));
     set('int.shadowGap', color('#3a3836', 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));

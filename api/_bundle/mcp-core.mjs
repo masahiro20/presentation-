@@ -13990,7 +13990,8 @@ var Frame = class {
 				maxX: c.x + ex,
 				minZ: c.z - ez,
 				maxZ: c.z + ez,
-				maxY: y0 + h
+				maxY: y0 + h,
+				baseY: this.origin.y + y0
 			});
 		}
 	}
@@ -14348,7 +14349,8 @@ function emitItem(it, env) {
 				maxX: p.x + .4,
 				minZ: p.z - .4,
 				maxZ: p.z + .4,
-				maxY: .8
+				maxY: p.y + .8,
+				baseY: p.y
 			});
 			break;
 		}
@@ -14520,7 +14522,8 @@ function sofa(fr, u, v, w) {
 		maxX: sp.x + .25,
 		minZ: sp.z - .25,
 		maxZ: sp.z + .25,
-		maxY: .5
+		maxY: sp.y + .5,
+		baseY: sp.y
 	});
 }
 function coffeeTable(fr, u, v) {
@@ -14555,7 +14558,8 @@ function coffeeTable(fr, u, v) {
 		maxX: p.x + .5,
 		minZ: p.z - .5,
 		maxZ: p.z + .5,
-		maxY: .4
+		maxY: p.y + .4,
+		baseY: p.y
 	});
 	if (modelsAvailable) return;
 	fr.box("f.counter", u, v, 1.1, .55, .28, .06);

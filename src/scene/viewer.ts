@@ -13,6 +13,7 @@ import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from 
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, setKitchenFinish, setFurnitureVocab, type LightPoint, type Footprint } from './furniture';
+import { contactShadows } from './contactShadow';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
@@ -73,6 +74,8 @@ export class Viewer {
   readonly composer: EffectComposer;
   readonly sun = new THREE.DirectionalLight('#fff3e0', 3);
   readonly hemi = new THREE.HemisphereLight('#dbe8ff', '#6b6a5e', 0.35);
+  /** 床・壁からの照り返し（下向きの面＝天井・軒裏に当たる光）。空の環境光は下半分が地面の色で暗く、天井が濁って見えるので補う */
+  readonly bounce = new THREE.HemisphereLight('#f6eee2', '#000000', 0.2);
   readonly root = new THREE.Group();
   readonly groups = {
     building: new THREE.Group(),
@@ -286,7 +289,9 @@ export class Viewer {
     this.sun.shadow.bias = -0.0002;
     this.sun.shadow.normalBias = 0.03;
     this.sun.shadow.radius = 3;
-    this.scene.add(this.sun, this.sun.target, this.hemi);
+    // 照り返しは下から上へ（HemisphereLight は position の向きが「空」側）
+    this.bounce.position.set(0, -1, 0);
+    this.scene.add(this.sun, this.sun.target, this.hemi, this.bounce);
 
     this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', clay: design.clay });
     // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
@@ -779,6 +784,7 @@ export class Viewer {
     setFurnitureVocab(interiorFor(this.design));
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
+    this.groups.furniture.add(contactShadows(fur.occupancy));
     // 実物のモデル（観葉植物・ラウンジチェア）は読み込み後に追加
     const gen = ++this.modelGen;
     void placeModels(fur.models, this.groups.furniture, () => gen === this.modelGen).then((n) => {
@@ -1017,6 +1023,11 @@ export class Viewer {
     this.sun.intensity = 5.5 * k;
     this.sun.visible = k > 0.001;
     this.hemi.intensity = night ? 0.03 : 0.08 + 0.12 * Math.min(1, Math.max(0, elev * 3));
+    // 照り返し: 日中は床（明るいオーク・タイル）が太陽と空に照らされて天井を照らす。夕景は暖かく弱く、夜は室内灯だけ
+    const evening = this.design.timeOfDay === 'evening';
+    // 物理的な光の単位（拡散反射で 1/π になる）なので、天井を壁と同じ明るさにするには 2 前後が要る
+    this.bounce.intensity = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
+    this.bounce.color.set(evening ? '#f3d9bd' : '#f4efe8');
     if (envUpdate) this.updateEnvironment();
     this.dirty = true;
   }
@@ -1444,6 +1455,7 @@ export class Viewer {
     setFurnitureVocab(interiorFor(this.design));
           const fur = buildFurniture(model, { cut: f ? { level: level!, y: cutY } : undefined, clip: sec ? clip : undefined });
           this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
+          if (f) this.groups.cut.add(contactShadows(fur.occupancy, new Set(f.rooms.map((r) => r.id))));
           const gen = this.modelGen;
           const built = { key };
           this.cutBuilt = built;

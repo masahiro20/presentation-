@@ -26,6 +26,8 @@ export interface Footprint {
   minZ: number;
   maxZ: number;
   maxY: number;
+  /** 底の高さ（ワールド座標）。床に接している家具の接地影に使う。吊戸棚・レンジフードなど浮いているものは床より上 */
+  baseY?: number;
 }
 let currentOcc: Footprint[] | null = null;
 
@@ -88,7 +90,7 @@ class Frame {
     if (currentOcc && y0 + h > 0.3 && key !== 'f.rug') {
       const ex = Math.abs(this.along.x) * w / 2 + Math.abs(this.inward.x) * d / 2;
       const ez = Math.abs(this.along.z) * w / 2 + Math.abs(this.inward.z) * d / 2;
-      currentOcc.push({ minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, maxY: y0 + h });
+      currentOcc.push({ minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, maxY: y0 + h, baseY: this.origin.y + y0 });
     }
   }
   cyl(key: string, u: number, v: number, r: number, y0: number, h: number, seg = 16) {
@@ -428,7 +430,7 @@ function emitItem(it: FurnitureItem, env: ItemEnv) {
       const p = fr.point(0, 0, 0);
       currentModels.push({ id: 'modern_arm_chair_01', pos: p, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.82 });
       if (currentPlan) currentPlan.push({ key: 'f.fabric', shape: 'box', cx: p.x, cz: p.z, w: 0.75, d: 0.8, ax: fr.along.x, az: fr.along.z, r: 0, top: 0.8, roomId });
-      if (currentOcc) currentOcc.push({ minX: p.x - 0.4, maxX: p.x + 0.4, minZ: p.z - 0.4, maxZ: p.z + 0.4, maxY: 0.8 });
+      if (currentOcc) currentOcc.push({ minX: p.x - 0.4, maxX: p.x + 0.4, minZ: p.z - 0.4, maxZ: p.z + 0.4, maxY: p.y + 0.8, baseY: p.y });
       break;
     }
     case 'bed':
@@ -581,7 +583,7 @@ function sofa(fr: Frame, u: number, v: number, w: number) {
   currentModels.push({ id: 'side_table_01', pos: sp, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.5 });
   currentModels.push({ id: 'ceramic_vase_01', pos: sp.clone().setY(sp.y + 0.5), rotY: 0.7, height: 0.2 });
   if (currentPlan) currentPlan.push({ key: 'f.wood', shape: 'box', cx: sp.x, cz: sp.z, w: 0.45, d: 0.45, ax: fr.along.x, az: fr.along.z, r: 0, top: 0.5, roomId: currentRoomId });
-  if (currentOcc) currentOcc.push({ minX: sp.x - 0.25, maxX: sp.x + 0.25, minZ: sp.z - 0.25, maxZ: sp.z + 0.25, maxY: 0.5 });
+  if (currentOcc) currentOcc.push({ minX: sp.x - 0.25, maxX: sp.x + 0.25, minZ: sp.z - 0.25, maxZ: sp.z + 0.25, maxY: sp.y + 0.5, baseY: sp.y });
 }
 
 function coffeeTable(fr: Frame, u: number, v: number) {
@@ -590,7 +592,7 @@ function coffeeTable(fr: Frame, u: number, v: number) {
   currentModels.push({ id: 'coffee_table_round_01', pos: p, rotY: 0.3, height: 0.4 });
   currentModels.push({ id: 'ceramic_vase_01', pos: p.clone().setY(p.y + 0.4).addScaledVector(fr.along, 0.18), rotY: 1.1, height: 0.26 });
   if (currentPlan) currentPlan.push({ key: 'f.counter', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.48, top: 0.4, roomId: currentRoomId });
-  if (currentOcc) currentOcc.push({ minX: p.x - 0.5, maxX: p.x + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5, maxY: 0.4 });
+  if (currentOcc) currentOcc.push({ minX: p.x - 0.5, maxX: p.x + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5, maxY: p.y + 0.4, baseY: p.y });
   if (modelsAvailable) return;
   // 低い石の天板（トラバーチン調）を、ひと回り小さい台座で浮かせる
   fr.box('f.counter', u, v, 1.1, 0.55, 0.28, 0.06);

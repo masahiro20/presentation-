@@ -208,6 +208,16 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
   viewer.groups.lights.visible = false;
   const hemiVis = viewer.hemi.visible;
   viewer.hemi.visible = false;
+  const bounceVis = viewer.bounce.visible;
+  viewer.bounce.visible = false;
+  // 接地影の板（実時間用の見せかけ）はパストレースでは本物の影が出るので消す
+  const decals: THREE.Object3D[] = [];
+  viewer.root.traverse((o) => {
+    if (o.userData.decal && o.visible) {
+      o.visible = false;
+      decals.push(o);
+    }
+  });
   const sunI = viewer.sun.intensity;
   // HDRI の場合は太陽も空の画像に含まれるので、平行光源の太陽は消す
   viewer.sun.intensity = usingHdri && !night ? 0 : sunI * 1.15;
@@ -401,6 +411,8 @@ export async function renderPhotoreal(viewer: Viewer, opts: PhotorealOptions): P
     scene.backgroundRotation.copy(prevBgRot);
     viewer.groups.lights.visible = lightVis;
     viewer.hemi.visible = hemiVis;
+    viewer.bounce.visible = bounceVis;
+    for (const o of decals) o.visible = true;
     viewer.sun.intensity = sunI;
     renderer.toneMappingExposure = prevExposure;
     renderer.setPixelRatio(prevPR);

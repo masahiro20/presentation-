@@ -135,6 +135,13 @@ export class Viewer {
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
+  /**
+   * 表示の重さ: 'browse'（閲覧。見て回る間は後処理なし・操作中は解像度を落として軽く）／'finish'（仕上げ。止まると GTAO・SMAA 込みで描く）。
+   * 保存・書き出し（capture / renderStudio / renderPhotoreal）は表示モードに関係なく常に高品質
+   */
+  viewMode: 'browse' | 'finish' = 'browse';
+  /** 操作中に解像度を落としている（復帰時に元の解像度へ戻す） */
+  private motionPR = false;
   contextLost = false;
   userData: Record<string, unknown> = {};
   /**
@@ -495,6 +502,7 @@ export class Viewer {
     this.renderer.domElement.style.height = '100%';
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.motionPR = false;
     const pr = this.renderer.getPixelRatio();
     this.composer.setPixelRatio(pr);
     this.composer.setSize(w, h);
@@ -534,17 +542,20 @@ export class Viewer {
       const look = t.clone();
       if (this.camera.shiftY !== 0) look.y = p.y;
       this.camera.lookAt(look);
-      this.dirty = true;
+      // カメラだけが動く: 影は描き直さない
+      this._dirty = true;
     }
     const moved = this.navMode === 'walk' ? false : this.controls.update();
     if (moved) this.camMoved();
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
     // 操作中（直近 0.35 秒以内にカメラが動いた）は後処理なしで素早く描き、止まったら後処理込みで 1 枚描く。
     // 解像度は切り替えない（切り替えるたびに後処理のバッファを作り直してカクつくため）
-    const moving = now - this.lastMove < 350 && this.quality === 'high';
+    const moving = now - this.lastMove < 350;
     if (moving) {
       if (!this._dirty) return;
       this._dirty = false;
+      // 操作中は描く画素を減らす（後処理のバッファには触らないので切り替えは軽い）
+      this.setMotionPR(true);
       this.renderer.render(this.scene, this.camera);
       this.onAfterRender?.();
       this.hqPending = true;
@@ -553,8 +564,28 @@ export class Viewer {
     if (!this._dirty && !this.hqPending) return;
     this._dirty = false;
     this.hqPending = false;
+    this.setMotionPR(false);
     this.renderFrame();
   };
+
+  /** 操作中だけ描画の解像度を落とす（高精細ディスプレイで 1.5 倍 → 1 倍。画素数が半分以下になる） */
+  private setMotionPR(on: boolean) {
+    const want = on ? Math.min(1, this.fullPR()) : this.fullPR();
+    if (on === this.motionPR && Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;
+    this.motionPR = on;
+    if (Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
+    this.renderer.setPixelRatio(want);
+    this.renderer.setSize(w, h, false);
+  }
+
+  /** 表示モード（閲覧＝軽快／仕上げ＝高品質）を切り替える */
+  setViewMode(mode: 'browse' | 'finish') {
+    if (this.viewMode === mode) return;
+    this.viewMode = mode;
+    this.dirty = true;
+  }
 
   /** 画面の解像度（高精細ディスプレイでも 1.5 倍まで。2 倍は描画量が 1.8 倍になり重い） */
   private fullPR() {
@@ -675,8 +706,8 @@ export class Viewer {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
-  renderFrame() {
-    if (this.quality === 'high') this.composer.render();
+  renderFrame(force = false) {
+    if (this.quality === 'high' && (force || this.viewMode === 'finish')) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.onAfterRender?.();
   }
@@ -1414,10 +1445,14 @@ export class Viewer {
     this.applyView(view);
     this.renderer.render(this.scene, this.camera);
     const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
+    // 後処理のバッファ（composer）は触らない: 作り直すたびに GPU メモリを確保し直してカクつく
     this.renderer.setPixelRatio(prev.pr);
     this.renderer.setSize(prevSize.x, prevSize.y, false);
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    this.camera.aspect = Math.max(1, this.container.clientWidth) / Math.max(1, this.container.clientHeight);
+    this.camera.updateProjectionMatrix();
     this.applyView(prevView);
-    this.resize();
     this.dirty = true;
     return url;
   }
@@ -1433,9 +1468,10 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
     const qPrev = this.quality;
     this.quality = 'high';
-    this.renderFrame();
+    this.renderFrame(true);
     const url = this.renderer.domElement.toDataURL(mime, q);
     this.quality = qPrev;
+    this.motionPR = false;
     this.renderer.setPixelRatio(prev.pr);
     this.resize();
     return url;
@@ -1457,6 +1493,13 @@ export function clearGroup(g: THREE.Group) {
     c.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh) m.geometry.dispose();
+      // 札（Sprite）のキャンバス画像とマテリアルはその札だけのもの: 捨てないと GPU メモリに残り続ける
+      const sp = o as THREE.Sprite;
+      if ((sp as unknown as { isSprite?: boolean }).isSprite && o.userData.roomLabel) {
+        const mat = sp.material as THREE.SpriteMaterial;
+        mat.map?.dispose();
+        mat.dispose();
+      }
     });
   }
 }

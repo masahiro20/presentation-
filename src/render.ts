@@ -25,6 +25,7 @@ if (!payload?.model?.floors?.length) throw new Error('JSON に model があり�
 const design: DesignOptions = { ...DEFAULT_DESIGN, ...(payload.design ?? {}) };
 const viewer = new Viewer(document.getElementById('v')!, design);
 viewer.quality = 'high';
+viewer.viewMode = 'finish';
 const sp = sunPosition(localDate(2026, 5, 10, 10), 35.68, 139.77);
 viewer.setSunDirection(sunDirectionWorld(sp.azimuth, sp.elevation, payload.model.northAngleDeg));
 viewer.setModel(payload.model);

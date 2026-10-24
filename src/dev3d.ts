@@ -13,6 +13,7 @@ const model = await parsePdfInBrowser(buf);
 const design = { ...DEFAULT_DESIGN, exteriorId: params.get('ext') ?? DEFAULT_DESIGN.exteriorId, interiorId: params.get('int') ?? DEFAULT_DESIGN.interiorId, timeOfDay: (params.get('tod') as any) ?? 'day' };
 const viewer = new Viewer(document.getElementById('v')!, design);
 viewer.quality = (params.get('q') as any) ?? 'high';
+viewer.viewMode = 'finish';
 const sp = params.get("az") ? { azimuth: +params.get("az")!, elevation: +(params.get("el") ?? 40) } : sunPosition(localDate(2026, 5, 10, +(params.get("h") ?? 10)), 35.68, 139.77);
 viewer.sunDir.copy(sunDirectionWorld(sp.azimuth, sp.elevation, model.northAngleDeg));
 viewer.setModel(model);

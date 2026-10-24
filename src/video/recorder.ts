@@ -12,7 +12,7 @@ export interface RecordTarget {
   camera: THREE.PerspectiveCamera & { shiftY?: number };
   composer: { setPixelRatio(pr: number): void; setSize(w: number, h: number): void };
   pause(p: boolean): void;
-  renderFrame(): void;
+  renderFrame(force?: boolean): void;
   resize(): void;
   /** 扉の開き具合（間取りプレゼンの Viewer だけ） */
   setDoors?(open: Map<string, number> | null): void;
@@ -138,7 +138,7 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
       camera.lookAt(s.target);
     }
     camera.updateProjectionMatrix();
-    viewer.renderFrame();
+    viewer.renderFrame(true);
     comp.draw(renderer.domElement, s.fade, opts.captions !== false ? s.caption : undefined, opts.title);
   };
 

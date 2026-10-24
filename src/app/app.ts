@@ -150,6 +150,31 @@ export class App {
     const orbit = h('button', { class: 'nav-btn', title: '回転（ドラッグで建物の周りを回る。クリックした物を中心に回ります）', onclick: () => setMode('orbit') }, h('span', { class: 'ic' }, '⟲'), '回転');
     const pan = h('button', { class: 'nav-btn', title: '移動（画面を掴んで上下左右にずらす）\nスペースキーを押している間も移動になります', onclick: () => setMode('pan') }, h('span', { class: 'ic' }, '✋'), '移動');
     const walk = h('button', { class: 'nav-btn', title: '目線（人の目の高さで歩く）\nドラッグで見回し、ホイールまたは W/S で前後、A/D で左右。階段も上れます', onclick: () => setMode('walk') }, h('span', { class: 'ic' }, '👁'), '目線');
+    // 表示の重さ: 閲覧（軽快）が既定。仕上げ表示は止まったときだけ GTAO・SMAA 込みで描く。保存・書き出しは常に高品質
+    const finish = h(
+      'button',
+      {
+        class: 'nav-btn',
+        title: '仕上げ表示（止まったときに陰影・輪郭を仕上げて描く。見て回るときは切って軽快に）\n保存するパース・動画は表示に関係なく常に高品質です',
+        onclick: () => {
+          v.setViewMode(v.viewMode === 'finish' ? 'browse' : 'finish');
+          finish.classList.toggle('on', v.viewMode === 'finish');
+          try {
+            localStorage.setItem('madori.viewMode', v.viewMode);
+          } catch {
+            /* 保存できない環境は無視 */
+          }
+        },
+      },
+      h('span', { class: 'ic' }, '✦'),
+      '仕上げ',
+    );
+    try {
+      if (localStorage.getItem('madori.viewMode') === 'finish') v.setViewMode('finish');
+    } catch {
+      /* 保存できない環境は無視 */
+    }
+    finish.classList.toggle('on', v.viewMode === 'finish');
     const setMode = (m: Mode) => {
       v.setNavMode(m);
       orbit.classList.toggle('on', m === 'orbit');
@@ -164,6 +189,8 @@ export class App {
       h('div', { class: 'nav-sep' }),
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
       h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),
+      h('div', { class: 'nav-sep' }),
+      finish,
     );
     bar.title = '左ドラッグ：回転（移動モードでは移動、目線モードでは見回し）／右ドラッグ：移動／ホイール：カーソルの位置へズーム（目線モードでは前後）／W・A・S・D：歩いて移動（Q・E 上下、Shift 速く）';
     // スペースキーを押している間は一時的に「移動」

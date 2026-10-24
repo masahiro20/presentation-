@@ -43,6 +43,9 @@ export function startCinema(viewer: Viewer, stage: HTMLElement, shots: Shot[], o
   const host = h('div', { class: 'view', style: 'pointer-events:none' }, brand, cap, prog, ui);
   stage.appendChild(host);
   document.body.classList.add('cinema');
+  // シネマは見せる場面: 止まったら後処理込みの仕上げ品質で描く（終了時に元の表示モードへ戻す）
+  const prevViewMode = viewer.viewMode;
+  viewer.setViewMode('finish');
   const kindJa = (s: Shot) => (s.kind === 'interior' ? 'Interior' : s.kind === 'aerial' ? 'Aerial' : s.kind === 'cutaway' ? 'Model' : s.kind === 'section' ? 'Section' : 'Exterior');
   const show = () => {
     const s = shots[i];
@@ -91,6 +94,7 @@ export function startCinema(viewer: Viewer, stage: HTMLElement, shots: Shot[], o
     window.clearTimeout(timer);
     window.removeEventListener('keydown', onKey);
     viewer.setDrift(0);
+    viewer.setViewMode(prevViewMode);
     document.body.classList.remove('cinema');
     host.remove();
     active = null;

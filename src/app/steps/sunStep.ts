@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { h, clear, toast, progressModal, section, field, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
+import { h, clear, toast, progressModal, section, field, fold, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
 import { state, emit, type ProjectState } from '../state';
 import type { Step, StepCtx } from '../app';
 import { SunContext, isAbortError, keysInRect, ringArea, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
@@ -20,6 +20,7 @@ import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
 import { GoogleEarthLayer, type EarthFrame, type EarthStatus } from '../../sun/googleEarth';
 import { createPointCloudBlock } from './sunPointCloud';
+import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -42,6 +43,7 @@ const plannedChoice: { preset: PlannedPresetId; sides: PlanSide[] | null } = { p
 
 /** Google 実写 3D（日照ステップを離れるときに止める） */
 let cleanupEarth: (() => void) | null = null;
+let cleanupKey: (() => void) | null = null;
 
 /** 最後に使った日照ステップの周辺環境（プレゼン資料の注記用。日照ステップを開いていなければ null） */
 let activeSc: SunContext | null = null;
@@ -525,6 +527,9 @@ export const sunStep: Step = {
   unmount() {
     cancelAnimationFrame(raf);
     ui.playing = false;
+    cleanupKey?.();
+    cleanupKey = null;
+    document.querySelectorAll('.sun-side').forEach((e) => e.classList.remove('sun-side'));
     cleanupPlace?.();
     cleanupPlace = null;
     cleanupNeighborUI?.();
@@ -688,24 +693,8 @@ export const sunStep: Step = {
     side.append(h('h2', null, '日照シミュレーション'));
 
     // 敷地
-    const googleKeyInput = h('input', {
-      type: 'password',
-      placeholder: 'Google Maps API キー（任意）',
-      value: (() => {
-        try {
-          return localStorage.getItem('googleMapsKey') ?? '';
-        } catch {
-          return '';
-        }
-      })(),
-      onchange: (e: Event) => {
-        try {
-          localStorage.setItem('googleMapsKey', (e.target as HTMLInputElement).value.trim());
-        } catch {
-          // 保存できない環境では入力中だけ使う
-        }
-      },
-    }) as HTMLInputElement;
+    // Google の API キー（住所の番地検索・Google 実写 3D）は「Google の API キー」の欄で 1 か所に入れる
+    const googleKeyInput = { get value() { return getGoogleKey(); } };
     const addr = h('input', { type: 'text', placeholder: '例: 愛知県小牧市小牧4-213（番地まで。Google マップの URL や緯度,経度でも可）', value: state.site.address.includes('（仮）') || isCoordAddress(state.site.address) ? '' : state.site.address }) as HTMLInputElement;
     const results = h('div');
     const locEl = h('div', { class: 'hint' });
@@ -721,7 +710,7 @@ export const sunStep: Step = {
     };
     const showLoc = () => {
       const { lat, lon } = siteLatLon(state.site);
-      locEl.textContent = `${state.site.address}（緯度 ${lat.toFixed(5)}／経度 ${lon.toFixed(5)}）`;
+      locEl.textContent = isCoordAddress(state.site.address) ? `建設地: 緯度 ${lat.toFixed(5)}／経度 ${lon.toFixed(5)}` : `建設地: ${state.site.address}（${lat.toFixed(5)}, ${lon.toFixed(5)}）`;
       showCoords();
     };
     showLoc();
@@ -820,14 +809,16 @@ export const sunStep: Step = {
       }
     };
     const coordBlock = h(
-      'details',
-      // 住所と並ぶ指定方法なので最初から開いておく（閉じれば畳める）
-      { style: 'margin:6px 0', open: true },
-      h('summary', { class: 'hint', style: 'cursor:pointer' }, '座標で指定（緯度・経度）'),
-      field('緯度, 経度', coordIn),
-      h('button', { class: 'btn sm block', onclick: applyCoords }, 'この座標を建設地にする'),
-      h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px' }, dmsEl, h('button', { class: 'btn sm ghost', onclick: copyCoords, title: '今の建設地の座標を「緯度, 経度」の形でコピーします' }, 'コピー')),
-      h('span', { class: 'hint' }, 'Google マップで建設地を右クリックし、いちばん上の座標をクリックするとコピーされます。それをこの欄に貼り付けるだけで建設地になります。Google マップの URL、度分秒（35°12′38.1″, 136°55′17.9″）でも読めます。欄には今の建設地（ピンの位置）の座標が表示されます'),
+      'div',
+      { style: 'margin:10px 0 4px' },
+      field('または 緯度, 経度（Google マップの座標を貼り付け）', coordIn),
+      h('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px' }, h('button', { class: 'btn sm', onclick: applyCoords }, 'この座標にする'), dmsEl, h('button', { class: 'btn sm ghost', onclick: copyCoords, title: '今の建設地の座標を「緯度, 経度」の形でコピーします' }, 'コピー')),
+      h(
+        'details',
+        { class: 'hint-fold' },
+        h('summary', null, '座標の取り方'),
+        h('p', { class: 'hint' }, 'Google マップで建設地を右クリックし、いちばん上の数字（35.21058, 136.93831 のような座標）をクリックするとコピーされます。それを上の欄に貼り付けるだけで建設地になります。Google マップの URL や度分秒（35°12′38.1″）でも読めます。'),
+      ),
     );
     const nudge = (de: number, dn: number) => {
       extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
@@ -927,35 +918,44 @@ export const sunStep: Step = {
       },
       ensureAerial,
     });
+    const keyFold = fold('Google の API キー', { open: false, meta: getGoogleKey() ? '設定済み' : '未設定（任意）', cls: 'sun-key' }, googleKeyPanel());
+    cleanupKey?.();
+    cleanupKey = onGoogleKeyChange((k) => keyFold.setMeta(k ? '設定済み' : '未設定（任意）'));
+    /** 「キーを入れる」から: 欄を開いてそこへ移る */
+    const openKeyFold = () => {
+      keyFold.open = true;
+      (keyFold.querySelector('.gkey') as (HTMLElement & { focusInput?: () => void }) | null)?.focusInput?.();
+    };
     side.append(
-      section(
+      fold(
         '建設地',
+        { open: true, cls: 'sun-main' },
         h('div', { style: 'display:flex;gap:6px' }, addr, h('button', { class: 'btn dark', onclick: search }, '検索')),
+        h('p', { class: 'hint' }, '番地まで出ないときは ', h('button', { class: 'lnk', onclick: openKeyFold }, 'Google の API キー'), ' を入れると正確になります。'),
         results,
-        h(
-          'details',
-          { style: 'margin:6px 0' },
-          h('summary', { class: 'hint', style: 'cursor:pointer' }, '番地まで出ないときは Google の住所検索を使う（API キーを設定）'),
-          googleKeyInput,
-          h('span', { class: 'hint' }, 'Google Cloud で「Geocoding API」を有効にしたキーを貼ると、住居表示の無い地域や新しい番地も特定できます。キーはこのパソコンにだけ保存されます'),
-        ),
         coordBlock,
         locEl,
-        placeBtn,
-        ...twoPointBlock(extPanel),
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, '位置・向きの微調整（建物は図面のまま。航空写真と方位のほうを動かして合わせます）'),
         h(
-          'div',
-          { class: 'btn-row' },
-          h('button', { class: 'btn sm', title: '建物を実際の敷地で北へ 2 m 動かします（画面では航空写真が南へずれます）', onclick: () => nudge(0, 2) }, '北へ2m'),
-          h('button', { class: 'btn sm', title: '建物を実際の敷地で南へ 2 m 動かします（画面では航空写真が北へずれます）', onclick: () => nudge(0, -2) }, '南へ2m'),
-          h('button', { class: 'btn sm', title: '建物を実際の敷地で東へ 2 m 動かします（画面では航空写真が西へずれます）', onclick: () => nudge(2, 0) }, '東へ2m'),
-          h('button', { class: 'btn sm', title: '建物を実際の敷地で西へ 2 m 動かします（画面では航空写真が東へずれます）', onclick: () => nudge(-2, 0) }, '西へ2m'),
-          // 向き: 回るのは航空写真・方位（太陽の通り道・周辺建物）。建物は図面のまま動かないので、写真に対しては建物が逆向きに回って見える
-          h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て反時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は時計回りに回って見えます', onclick: () => rotate(-2) }, '↺ 2°'),
-          h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は反時計回りに回って見えます', onclick: () => rotate(2) }, '↻ 2°'),
+          'details',
+          { class: 'sub-fold' },
+          h('summary', null, '位置・向きを合わせる（航空写真・2 点合わせ・微調整）'),
+          placeBtn,
+          ...twoPointBlock(extPanel),
+          h('div', { class: 'field-label', style: 'margin-top:10px' }, '微調整（航空写真と方位のほうを動かします）'),
+          h(
+            'div',
+            { class: 'btn-row' },
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で北へ 2 m 動かします（画面では航空写真が南へずれます）', onclick: () => nudge(0, 2) }, '北へ2m'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で南へ 2 m 動かします（画面では航空写真が北へずれます）', onclick: () => nudge(0, -2) }, '南へ2m'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で東へ 2 m 動かします（画面では航空写真が西へずれます）', onclick: () => nudge(2, 0) }, '東へ2m'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で西へ 2 m 動かします（画面では航空写真が東へずれます）', onclick: () => nudge(-2, 0) }, '西へ2m'),
+            // 向き: 回るのは航空写真・方位（太陽の通り道・周辺建物）。建物は図面のまま動かないので、写真に対しては建物が逆向きに回って見える
+            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て反時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は時計回りに回って見えます', onclick: () => rotate(-2) }, '↺ 2°'),
+            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は反時計回りに回って見えます', onclick: () => rotate(2) }, '↻ 2°'),
+          ),
         ),
       ),
+      keyFold,
     );
 
     // 周辺環境
@@ -1082,6 +1082,7 @@ export const sunStep: Step = {
       earthStatusEl.textContent =
         s.kind === 'idle' ? '' : s.kind === 'checking' ? 'キーを確認しています…' : s.kind === 'loading' ? 'Google の 3D を読み込み中…（敷地の周りから順に細かくなります）' : s.kind === 'ready' ? '表示中: 敷地の中の既存の建物・樹木は地面に押しつぶしています。実写の建物・樹木は太陽の位置どおりに影を落とします' : s.kind === 'error' ? s.message : '';
       earthStatusEl.style.color = s.kind === 'error' ? '#b3402a' : '';
+      if (s.kind === 'error' && /キー|API/.test(s.message)) earthStatusEl.append(' ', h('button', { class: 'lnk', onclick: openKeyFold }, 'API キーの欄を開く'));
     };
     earth.onStatus = (s) => {
       showEarthStatus(s);
@@ -1139,7 +1140,7 @@ export const sunStep: Step = {
       h('label', { class: 'check', title: 'Google Earth と同じ写真測量の街並み（Photorealistic 3D Tiles）を周辺に敷きます。上の「Google Maps API キー」に、Google Cloud で Map Tiles API を有効にしたキーが必要です（有料 API・無料枠あり）' }, earthCheck, 'Google 実写 3D（Google Earth の街並み）'),
       h('label', { class: 'check', style: 'font-size:12px;margin-left:18px' }, earthShadow, '実写の建物・樹木の影を落とす'),
       earthStatusEl,
-      h('p', { class: 'hint', style: 'margin:2px 0 0' }, '見た目の再現用です。日照時間・日影の数値は、これまでどおり周辺建物（PLATEAU・国土地理院）の形で計算します。Google の利用規約により、実写のデータは保存・書き出しできません。'),
+      h('details', { class: 'hint-fold' }, h('summary', null, '実写 3D について'), h('p', { class: 'hint' }, '見た目の再現用です。日照時間・日影の数値は、これまでどおり周辺建物（PLATEAU・国土地理院）の形で計算します。Google の利用規約により、実写のデータは保存・書き出しできません。使うには「Google の API キー」の欄にキーが必要です。')),
     );
     if (v.userData.googleEarthOn && !earth.active) void setEarth(true);
     else if (earth.active) earth.setFrame(earthFrame());
@@ -2309,17 +2310,33 @@ export const sunStep: Step = {
     // 想定の家の一覧・区画の破線（ステップを出入りしても SunContext と viewer に残っている）
     refreshPlanned();
     side.append(
-      section(
+      fold(
         '周辺環境',
+        { open: true, cls: 'sun-main' },
         h(
           'div',
           { class: 'btn-row' },
           // PLATEAU（実測の高さ・形状）を既定に。国土地理院・OSM は手動で選ぶ退路
-          h('button', { class: 'btn sm primary', title: '国土交通省 PLATEAU 3D都市モデルの実測の高さ・形状。無い地域は国土地理院の建物（高さは推定）に自動で切り替えます', onclick: () => loadNeighbors('plateau') }, NEIGHBOR_SOURCE_BUTTON.plateau),
-          h('button', { class: 'btn sm', onclick: loadAerial }, '航空写真を表示'),
+          h('button', { class: 'btn sm primary', title: '国土交通省 PLATEAU 3D都市モデルの実測の高さ・形状。無い地域は国土地理院の建物（高さは推定）に自動で切り替えます', onclick: () => loadNeighbors('plateau') }, '周辺建物を取得'),
+          h('button', { class: 'btn sm', onclick: loadAerial }, '航空写真'),
+        ),
+        nbNotes,
+        toggles,
+        earthBlock,
+        h(
+          'details',
+          { class: 'sub-fold' },
+          h('summary', null, '取得元を変える（国土地理院・OSM・推定の屋根）'),
+          h(
+            'div',
+            { class: 'btn-row' },
+            h('button', { class: 'btn sm', title: '国土交通省 PLATEAU 3D都市モデル（実測の高さ・形状）', onclick: () => loadNeighbors('plateau') }, NEIGHBOR_SOURCE_BUTTON.plateau),
+            h('button', { class: 'btn sm', title: '国土地理院の地図の建物（高さは建物の種類からの推定）', onclick: () => loadNeighbors('gsi') }, NEIGHBOR_SOURCE_BUTTON.gsi),
+            h('button', { class: 'btn sm', title: 'OpenStreetMap の建物（高さ・階数のタグがあれば使う）', onclick: () => loadNeighbors('osm') }, NEIGHBOR_SOURCE_BUTTON.osm),
+          ),
           h(
             'label',
-            { class: 'check', style: 'font-size:12px', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません）。切り替えると周辺建物を取り直します' },
+            { class: 'check', title: 'PLATEAU の箱形（LOD1）の低層住宅に、実測の最高高さを棟とする寄棟の屋根を推定してかぶせます（実際の屋根の形ではありません）。切り替えると周辺建物を取り直します' },
             h('input', {
               type: 'checkbox',
               checked: sc.roofEstimate,
@@ -2328,24 +2345,29 @@ export const sunStep: Step = {
                 if (sc.state.neighbors.some((n) => n.source !== 'manual')) void loadNeighbors(sc.lastSource);
               },
             }),
-            ' 推定の屋根',
+            ' 箱形の住宅に推定の屋根をかぶせる',
           ),
-          h('button', { class: 'btn sm ghost', title: '国土地理院の地図の建物（高さは建物の種類からの推定）', onclick: () => loadNeighbors('gsi') }, NEIGHBOR_SOURCE_BUTTON.gsi),
-          h('button', { class: 'btn sm ghost', title: 'OpenStreetMap の建物（高さ・階数のタグがあれば使う）', onclick: () => loadNeighbors('osm') }, NEIGHBOR_SOURCE_BUTTON.osm),
+          h('p', { class: 'hint' }, NEIGHBORS_HINT),
         ),
-        nbNotes,
-        toggles,
-        earthBlock,
-        createPointCloudBlock(sc, () => {
-          invalidateResults();
-          apply(true);
-        }),
+        h(
+          'details',
+          { class: 'sub-fold' },
+          h('summary', null, '点群で実測する（航空レーザ・iPhone LiDAR）'),
+          createPointCloudBlock(sc, () => {
+            invalidateResults();
+            apply(true);
+          }),
+        ),
+      ),
+      fold(
+        '周辺建物を直す・隠す・想定の家',
+        { open: false, cls: 'sun-main' },
         hideBtn,
-        h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
+        h('details', { class: 'hint-fold' }, h('summary', null, '隠し方の違い'), h('p', { class: 'hint' }, '「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます')),
         hiddenBox,
         keyBlock,
         plannedBlock,
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, '隣家を手動で追加'),
+        h('div', { class: 'field-label', style: 'margin-top:12px' }, '隣家を手動で追加'),
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px' }, field('方向', dirSel), field('距離 m', distIn), field('高さ m', hIn)),
         h(
           'div',
@@ -2353,13 +2375,12 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); } }, '＋ 隣家を追加'),
           h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
-        h('p', { class: 'hint' }, NEIGHBORS_HINT),
       ),
     );
-    // 3DS のパネルは 建設地 の直後に置く
-    const siteSection = side.querySelector('section.panel-section');
-    if (siteSection) siteSection.after(extPanel.section);
-    else side.appendChild(extPanel.section);
+    // 3DS のパネルは解析の後に畳んで置く（使う人だけ開く）
+    extPanel.section.querySelector('h4')?.remove();
+    extPanel.section.classList.remove('panel-section');
+    const extFold = fold('設計の 3D データ（3DS）で正確な建物にする', { open: false, cls: 'sun-main' }, extPanel.section);
 
     // 解析
     const out = h('div');
@@ -2535,8 +2556,9 @@ export const sunStep: Step = {
       }
     };
     side.append(
-      section(
+      fold(
         '日当たりの解析',
+        { open: true, cls: 'sun-main' },
         h('button', { class: 'btn primary block', onclick: runRooms }, '部屋ごとの日当たりを解析（冬至・春分・夏至）'),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: runHeat }, '日照時間マップ（表示中の日付）'), h('button', { class: 'btn sm', onclick: () => runDiagram(1.5) }, '日影図（GL+1.5m）'), h('button', { class: 'btn sm', onclick: () => runDiagram(4) }, '日影図（GL+4m）')),
         diagramControls(),
@@ -2545,7 +2567,9 @@ export const sunStep: Step = {
         h('button', { class: 'btn sm block', onclick: captureSeasons }, '季節の日当たり比較を撮影（プレゼン用）'),
         out,
       ),
+      extFold,
     );
+    side.classList.add('sun-side');
     renderResults();
     invalidateResults = () => {
       const { sun, hadImages } = clearedSunResults(state.sun);

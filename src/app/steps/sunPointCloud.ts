@@ -127,9 +127,8 @@ export function createPointCloudBlock(sc: SunContext, onApplied: () => void): HT
 
   return h(
     'div',
-    { class: 'pc-block', style: 'margin-top:10px' },
-    h('div', { class: 'field-label' }, '点群で周辺を実測（航空レーザ・iPhone LiDAR）'),
-    h('p', { class: 'hint', style: 'margin:2px 0 4px' }, '自治体が公開している航空レーザの点群（LAS・LAZ）や、iPhone の LiDAR でスキャンした点群（PLY など）から、周辺建物の高さと屋根の形（切妻・寄棟・片流れ・陸屋根）を実測にし、木も影に入れます。ファイルは端末の中だけで処理します。'),
+    { class: 'pc-block' },
+    h('p', { class: 'hint', style: 'margin:2px 0 6px' }, '航空レーザ（LAS・LAZ）や iPhone のスキャン（PLY）から、周辺建物の高さ・屋根の形と木を実測にします。ファイルは端末の中だけで処理します。'),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => fileIn.click() }, '点群ファイルを選ぶ'), clearBtn, fileIn),
     h('div', { style: 'display:flex;gap:12px;flex-wrap:wrap' }, h('label', { class: 'check', style: 'font-size:12px' }, pointsChk, '点を表示'), h('label', { class: 'check', style: 'font-size:12px' }, treesChk, '点群の木を表示')),
     status,

@@ -803,3 +803,35 @@ body.cinema .main { grid-template-columns: 1fr; }
 
 /* Google 実写 3D の帰属表示（Google のロゴ文字と、表示中のタイルの著作権） */
 .earth-attr { position: absolute; left: 14px; bottom: 8px; z-index: 3; font: 500 11px/1.4 Roboto, Arial, sans-serif; color: #fff; text-shadow: 0 0 3px rgba(0, 0, 0, 0.7); pointer-events: none; max-width: 60%; }
+
+/* ---- 日照の右パネル: 大きめの文字・畳める小見出し ---- */
+.sun-side { font-size: 13.5px; }
+.sun-side .hint { font-size: 12.5px; line-height: 1.7; color: var(--ink2); }
+.sun-side .field-label { font-size: 12.5px; }
+.sun-side label.check { font-size: 13px; }
+.sun-side .btn.sm { font-size: 12.5px; }
+.sun-side .panel-section.fold.sun-main > summary { font-size: 14.5px; color: var(--ink); letter-spacing: 0.08em; padding: 15px 0 12px; font-family: var(--serif); }
+.sun-side .panel-section.fold.sun-main .fold-meta { font-family: inherit; font-size: 12px; }
+.sun-side .panel-section.fold.sun-key > summary { font-size: 13px; color: var(--ink2); }
+.sun-side .sub-fold { margin: 10px 0 2px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; background: #f4f2ee; }
+.sun-side .sub-fold > summary { cursor: pointer; padding: 9px 0; font-size: 13px; color: var(--ink2); list-style: none; }
+.sun-side .sub-fold > summary::-webkit-details-marker { display: none; }
+.sun-side .sub-fold > summary::before { content: '＋'; margin-right: 6px; color: var(--ink3); }
+.sun-side .sub-fold[open] > summary::before { content: '－'; }
+.sun-side .sub-fold[open] { padding-bottom: 10px; }
+.sun-side .hint-fold summary { font-size: 12.5px; }
+.sun-side .lnk { font-size: inherit; padding: 0; color: #8a5a2b; text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; }
+
+/* Google の API キーの欄 */
+.gkey-lead { font-size: 12.5px; color: var(--ink2); line-height: 1.7; margin: 0 0 8px; }
+.gkey-status { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+.gkey-row { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.55; }
+.gkey-row b { display: block; font-weight: 500; }
+.gkey-row span:not(.gkey-dot) { color: var(--ink2); word-break: break-word; }
+.gkey-dot { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--line); color: var(--ink2); }
+.gkey-row.ok .gkey-dot { background: #3f7d58; color: #fff; }
+.gkey-row.ng .gkey-dot { background: #b3402a; color: #fff; }
+.gkey-howto { margin-top: 8px; }
+.gkey-howto summary { cursor: pointer; font-size: 12.5px; color: var(--ink2); }
+.gkey-howto ol { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px; line-height: 1.75; color: var(--ink2); }
+.gkey-howto code { font-size: 11.5px; word-break: break-all; background: var(--line); padding: 1px 4px; border-radius: 3px; }

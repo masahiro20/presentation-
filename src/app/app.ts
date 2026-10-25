@@ -74,7 +74,7 @@ export class App {
     const top = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'brand' }, h('div', { class: 'wordmark' }, 'Atelier')),
+      h('div', { class: 'brand' }, h('div', { class: 'wordmark' }, 'Home Landick')),
       office,
       nameInput,
       h('div', { class: 'spacer' }),

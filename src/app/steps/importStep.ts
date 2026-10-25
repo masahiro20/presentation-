@@ -56,17 +56,39 @@ export function moduleLabel(model: BuildingModel): string {
   return `${m.size === 910 ? '尺モジュール 910（半間 455 格子）' : 'メーターモジュール 1000（500 格子）'}・壁芯の ${Math.round(m.fit * 100)}% が格子に整合${m.source === 'manual' ? '・手動指定' : ''}`;
 }
 
-/** 表紙の見本（サンプル邸から自動で出したもの。クリックでサンプルを読み込む） */
-const SHOWCASE: { src: string; title: string; sub: string; wide?: boolean }[] = [
-  { src: './showcase/int-ldk.jpg', title: '内観パース', sub: 'テイストを選ぶだけで家具・照明まで', wide: true },
-  { src: './showcase/ext-front.jpg', title: '外観パース', sub: '塗り壁・ガルバ・SOLIDO の質感' },
-  { src: './showcase/sheet-elev.jpg', title: '立面図 4 面＋外部仕上表', sub: '御社の書き方で A3 に' },
-  { src: './showcase/sheet-plan.jpg', title: '平面図（木造の表記）', sub: '柱・建具記号・寸法・帖数' },
-  { src: './showcase/int-bed.jpg', title: '内観パース（個室）', sub: '部屋ごとの見どころを自動で' },
-  { src: './showcase/aerial.jpg', title: '俯瞰の模型', sub: '敷地・道路・車まで', wide: true },
+/** 表紙の背景（御社の施工事例・ラインナップの写真。ゆっくり寄りながら切り替わる） */
+const BG_PHOTOS = ['./brand/lineup-02.jpg', './brand/works-tower.jpg', './brand/int-ldk.jpg', './brand/works-garage.jpg', './brand/lineup-01.jpg', './brand/int-lounge.jpg', './brand/lineup-03.jpg', './brand/works-white.jpg'];
+/** 御社サイトの背景動画（読めれば写真の上に重ねる。読めないときは写真の切り替えのまま） */
+const BG_VIDEO = 'https://www.homelandick.com/wp-content/themes/Template/data/video/pc/bg-vid.mp4';
+
+/** Works: 御社の家（homelandick.com の施工事例） */
+const WORKS: { src: string; title: string; wide?: boolean }[] = [
+  { src: './brand/works-garage.jpg', title: 'ガレージのある平屋', wide: true },
+  { src: './brand/int-ldk.jpg', title: '吹抜けの LDK・鉄骨階段' },
+  { src: './brand/int-washitsu.jpg', title: '畳の間・格子' },
+  { src: './brand/works-black.jpg', title: 'ガルバリウムの箱' },
+  { src: './brand/works-white.jpg', title: '塗り壁と植栽' },
+  { src: './brand/int-lounge.jpg', title: '中庭に開くラウンジ', wide: true },
 ];
 
-const FLOW = ['図面を読む', 'パース', '図面', '日照', '見積', '動画', '提案資料'];
+/** Proposal: このツールが図面から作るもの（サンプル邸から自動で出したもの。クリックでサンプルを読み込む） */
+const PROPOSAL: { src: string; title: string; wide?: boolean; plan?: boolean }[] = [
+  { src: './showcase/int-ldk.jpg', title: '内観パース — テイストを選ぶだけで家具・照明まで', wide: true },
+  { src: './showcase/ext-front.jpg', title: '外観パース' },
+  { src: './showcase/aerial.jpg', title: '俯瞰の模型・日照' },
+  { src: './showcase/sheet-elev.jpg', title: '立面図 4 面＋外部仕上表', plan: true },
+  { src: './showcase/int-bed.jpg', title: '個室のパース' },
+];
+
+const FLOW: [string, string][] = [
+  ['図面を読む', '平面図の PDF・DXF を置くだけ。壁・建具・室名・階段・方位を読み、木造として立ち上げます。'],
+  ['パース', '外観・内観を御社のテイストで。キッチンや造作家具もその場で入れ替え。'],
+  ['図面', '平面図・立面図・断面図を御社の書き方で A3 に。'],
+  ['日照', '建設地の航空写真と周辺建物で、季節・時刻ごとの日当たりと日影図。'],
+  ['見積・資金計画', '間取りから積算し、見積書と資金計画書まで。'],
+  ['動画', 'ウォークスルーとシネマ。'],
+  ['お客様に渡す', '提案資料と、スマホで歩ける体験リンク。'],
+];
 
 function dropScreen(ctx: StepCtx) {
   const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf,.json', style: 'display:none' }) as HTMLInputElement;
@@ -86,65 +108,124 @@ function dropScreen(ctx: StepCtx) {
     const buf = new Uint8Array(await (await fetch(`./samples/${file}`)).arrayBuffer());
     loadPdf(ctx, buf, 'サンプル邸');
   };
-  // 置き場: 画面のどこに落としても読む（枠の中はハイライト）
-  const zone = h(
+  const pick = () => input.click();
+
+  // 背景: 写真を 7 秒ごとにゆっくり寄りながら切り替え、御社の背景動画が読めればその上に重ねる
+  const bg = h('div', { class: 'lp-bg' }, ...BG_PHOTOS.map((src, i) => h('img', { src, alt: '', class: i === 0 ? 'on' : '', loading: i < 2 ? 'eager' : 'lazy' })));
+  const imgs = [...bg.querySelectorAll('img')];
+  let cur = 0;
+  const timer = window.setInterval(() => {
+    if (!bg.isConnected) return window.clearInterval(timer);
+    imgs[cur].classList.remove('on');
+    cur = (cur + 1) % imgs.length;
+    // アニメーションを最初からかけ直す
+    void imgs[cur].offsetWidth;
+    imgs[cur].classList.add('on');
+  }, 7000);
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const vid = h('video', { muted: true, autoplay: true, loop: true, playsinline: true, preload: 'auto', src: BG_VIDEO }) as HTMLVideoElement;
+    vid.muted = true;
+    vid.addEventListener('playing', () => vid.classList.add('on'), { once: true });
+    vid.addEventListener('error', () => vid.remove(), { once: true });
+    bg.appendChild(vid);
+  }
+
+  const company = (state.company || 'ホームランディック一級建築士事務所').replace(/[　 ]+/g, ' ');
+  const left = h(
     'div',
-    { class: 'dz', role: 'button', tabindex: '0', onclick: () => input.click(), onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } } },
-    h('div', { class: 'dz-ic', html: '<svg viewBox="0 0 48 48" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6h16l10 10v26H12z"/><path d="M28 6v10h10"/><path d="M24 36V22m0 0-5 5m5-5 5 5"/></svg>' }),
-    h('div', { class: 'dz-tx' }, h('b', null, '平面図の PDF / DXF をここに置く'), h('span', null, '保存したプロジェクト（.madori.json）もここから開けます')),
-    h('span', { class: 'btn primary lg' }, 'ファイルを選ぶ'),
-    input,
-  );
-  const root = h(
-    'div',
-    { class: 'landing' },
-    h('div', { class: 'landing-bg' }, h('img', { src: './showcase/ext-evening.jpg', alt: '' })),
+    { class: 'lp-left' },
+    h('div', { class: 'lp-brand' }, 'HOME LANDICK'),
+    h('p', { class: 'lp-catch' }, '強く、賢く、そして美しく。'),
+    h('p', { class: 'lp-catch-en' }, 'Home Landick Architectural Design Office'),
+    h('div', { class: 'lp-tool' }, 'Proposal Studio — 図面から、ご提案まで'),
     h(
       'div',
-      { class: 'landing-in' },
-      h(
-        'section',
-        { class: 'hero' },
-        h('div', { class: 'eyebrow' }, h('span', { class: 'latin' }, 'Atelier'), h('i'), (state.company || 'ホームランディック 一級建築士事務所').replace(/[　 ]+/g, ' ')),
-        h('h1', null, '図面が、', h('br'), 'そのまま提案になる。'),
-        h('p', { class: 'hero-sub' }, '平面図の PDF を置くだけ。木造として立ち上げ、御社の書き方の図面・外観／内観パース・日照・見積・動画・提案資料まで、この画面の中で仕上がります。'),
-        zone,
-        h(
-          'div',
-          { class: 'try' },
-          h('span', null, 'サンプルで試す'),
-          h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'A3・1 階 2 階'),
-          h('button', { class: 'lnk', onclick: () => sample('sample_house_pages.pdf') }, '階ごと・方位回転'),
-          h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
-          h('a', { class: 'lnk far', href: './sun.html' }, '3D データで日照だけ検討 →'),
-        ),
-      ),
-      h(
-        'section',
-        { class: 'showcase' },
-        ...SHOWCASE.map((c) =>
-          h(
-            'figure',
-            { class: `sc${c.wide ? ' wide' : ''}`, onclick: () => sample('sample_house_A3.pdf'), title: 'サンプル邸を読み込んで見る' },
-            h('img', { src: c.src, alt: c.title, loading: 'lazy' }),
-            h('figcaption', null, h('b', null, c.title), h('span', null, c.sub)),
-          ),
-        ),
-        h(
-          'div',
-          { class: 'sc more' },
-          h('b', null, 'そのまま、提案まで。'),
-          h('ul', null, h('li', null, '日照シミュレーション'), h('li', null, '見積・資金計画'), h('li', null, 'ウォークスルー動画'), h('li', null, '提案資料・体験リンク')),
-        ),
-      ),
-      h(
-        'footer',
-        { class: 'landing-flow' },
-        ...FLOW.map((t, i) => h('span', null, h('i', null, String(i + 1).padStart(2, '0')), t)),
-        h('button', { class: 'lnk settings', onclick: () => document.body.classList.toggle('cover-settings') }, '事務所の設定・読み取りの辞書・MCP'),
-      ),
+      { class: 'lp-specs' },
+      h('div', { class: 'lp-spec' }, h('small', null, 'Ua値'), h('b', null, '0.46 以下')),
+      h('div', { class: 'lp-spec' }, h('small', null, 'C値'), h('b', null, '0.5 以下')),
+      h('div', { class: 'lp-spec' }, h('small', null, '耐震等級'), h('b', { class: 's' }, '最高等級3', h('br'), '認定取得')),
     ),
   );
+
+  const drop = h(
+    'div',
+    { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
+    h('b', null, '平面図の PDF をここに置く'),
+    h('span', null, 'DXF・保存したプロジェクト（.madori.json）も開けます'),
+    h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
+    input,
+  );
+  const fig = (c: { src: string; title: string; wide?: boolean; plan?: boolean }, onclick?: () => void) =>
+    h('figure', { class: `${c.wide ? 'w' : ''}${c.plan ? ' plan' : ''}`, onclick, style: onclick ? 'cursor:pointer' : '' }, h('img', { src: c.src, alt: c.title, loading: 'lazy' }), h('figcaption', null, c.title));
+
+  const col = h(
+    'div',
+    { class: 'lp-col' },
+    h(
+      'div',
+      { class: 'lp-hero' },
+      h('img', { src: './brand/works-tower.jpg', alt: '' }),
+      h('div', { class: 'lp-hero-tx' }, h('h1', null, '妥協を知らない', h('br'), 'あなたへの「最適解」を、', h('br'), 'その場でかたちに。'), h('p', null, '間取りの図面から、パース・図面・日照・見積・動画まで。')),
+    ),
+    h(
+      'section',
+      { class: 'lp-sec' },
+      h('h2', null, 'Start', h('small', null, 'はじめる')),
+      h('p', { class: 'lp-lead' }, 'CAD（ARCHITREND・Walk in home・JW-CAD など）から書き出した平面図の PDF を置くと、木造として立ち上げ、ご提案に必要なものがこの画面の中で揃います。'),
+      drop,
+      h(
+        'div',
+        { class: 'lp-samples' },
+        h('span', null, 'サンプルで試す'),
+        h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'A3・1 階 2 階'),
+        h('button', { class: 'lnk', onclick: () => sample('sample_house_pages.pdf') }, '階ごと・方位回転'),
+        h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
+      ),
+    ),
+    h(
+      'section',
+      { class: 'lp-sec' },
+      h('h2', null, 'Works', h('small', null, '施工事例')),
+      h('p', { class: 'lp-lead' }, '設計事務所の洗練されたデザイン力と、高性能工務店の確かな技術力・施工力。パースのテイストも、この家々を基準に整えています。'),
+      h('div', { class: 'lp-works' }, ...WORKS.map((c) => fig(c))),
+      h('div', { class: 'lp-more' }, h('a', { class: 'lp-btn', href: 'https://www.homelandick.com/works/', target: '_blank', rel: 'noopener' }, '施工事例を見る')),
+    ),
+    h(
+      'section',
+      { class: 'lp-sec' },
+      h('h2', null, 'Proposal', h('small', null, '図面からつくるもの')),
+      h('p', { class: 'lp-lead' }, 'サンプル邸の平面図 1 枚から、このツールが自動でつくったものです。写真をクリックするとサンプルを開きます。'),
+      h('div', { class: 'lp-works' }, ...PROPOSAL.map((c) => fig(c, () => sample('sample_house_A3.pdf')))),
+    ),
+    h(
+      'section',
+      { class: 'lp-sec' },
+      h('h2', null, 'Plan', h('small', null, '間取り')),
+      h('p', { class: 'lp-lead' }, '読み取った間取りは、尺モジュールの方眼の上でそのまま直せます。平面図は柱・建具記号・帖数まで御社の書き方で。'),
+      h('div', { class: 'lp-works' }, fig({ src: './showcase/sheet-plan.jpg', title: '平面図（木造の表記）', wide: true, plan: true }, () => sample('sample_house_A3.pdf'))),
+    ),
+    h(
+      'section',
+      { class: 'lp-sec' },
+      h('h2', null, 'Flow', h('small', null, '流れ')),
+      h('ol', { class: 'lp-flow' }, ...FLOW.map(([t, d]) => h('li', null, h('div', null, h('b', null, t), d)))),
+    ),
+    h(
+      'footer',
+      { class: 'lp-foot' },
+      h('button', { class: 'lnk', onclick: () => document.body.classList.toggle('cover-settings') }, '事務所の設定・読み取りの辞書・MCP'),
+      h('a', { class: 'lnk', href: './sun.html' }, '3D データで日照だけ検討'),
+      h('a', { class: 'lnk', href: 'https://www.homelandick.com/', target: '_blank', rel: 'noopener' }, 'homelandick.com'),
+      h('div', { class: 'copy' }, `© ${company}`),
+    ),
+  );
+  const fab = h('div', { class: 'lp-fab' }, h('button', { class: 'main', onclick: pick }, '図面を読み込む'), h('button', { onclick: () => sample('sample_house_A3.pdf') }, 'サンプルで試す'));
+  const scroll = h('div', { class: 'lp-scroll' }, left, col);
+  const root = h('div', { class: 'landing' }, bg, scroll, fab);
+
+  // 欄の小見出しごとに、見えたらふわっと出す
+  const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && e.target.classList.add('in')), { root: scroll, threshold: 0.12 });
+  col.querySelectorAll('.lp-sec').forEach((el) => io.observe(el));
   // ドロップは画面全体で受ける
   const over = (e: DragEvent) => {
     e.preventDefault();

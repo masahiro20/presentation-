@@ -217,6 +217,8 @@ const FRAME = 40;
 
 export interface HeightChanges {
   model: BuildingModel;
+  /** 足した窓の数 */
+  windowsAdded?: number;
   roof: { type: RoofType; pitch: number } | null;
   notes: string[];
   windowsMatched: number;
@@ -245,22 +247,24 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
   // 床の高さ（GL から）: 地面が測れたときだけ 1 階の床高を直す。上の階は 1 階からの差で
   const base = m.groundY;
   const fy = m.floorY;
+  const orig = floors.map((f) => f.elevation);
   if (base != null && fy[0] != null) {
     const e1 = Math.round(((fy[0] - base) / MM) / 10) * 10;
     if (e1 > 100 && e1 < 1500 && Math.abs(e1 - floors[0].elevation) >= 20) {
       notes.push(`1 階の床の高さ GL+${floors[0].elevation} → GL+${e1}`);
-      const d = e1 - floors[0].elevation;
-      for (const f of floors) f.elevation += d;
+      floors[0].elevation = e1;
     }
   }
+  // 上の階: すぐ下の階の床からの差（階高）で。測れなかった階はその下の階に合わせて動かすだけ
   for (let i = 1; i < floors.length; i++) {
-    if (fy[i] == null || fy[0] == null) continue;
-    const rel = Math.round(((fy[i]! - fy[0]) / MM) / 10) * 10;
-    const cur = floors[i].elevation - floors[0].elevation;
-    if (rel > 2200 && rel < 4500 && Math.abs(rel - cur) >= 20) {
-      notes.push(`${floors[i].level} 階の床の高さ（1 階から）${cur} → ${rel}`);
-      floors[i].elevation = floors[0].elevation + rel;
+    const cur = orig[i] - orig[i - 1];
+    let h = cur;
+    if (fy[i] != null && fy[i - 1] != null) {
+      const rel = Math.round(((fy[i]! - fy[i - 1]!) / MM) / 10) * 10;
+      if (rel > 2200 && rel < 4500) h = rel;
     }
+    floors[i].elevation = floors[i - 1].elevation + h;
+    if (Math.abs(h - cur) >= 20) notes.push(`${floors[i - 1].level} 階の階高 ${cur} → ${h}`);
   }
   // 階高は次の階の床までの差
   for (let i = 0; i + 1 < floors.length; i++) {
@@ -303,11 +307,49 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
     }
   });
   if (total) notes.push(`窓の高さ: ${matched} / ${total} か所を 3D データのガラスに合わせました`);
+  // 図面から読めなかった窓: 外壁の上にあるのに、どの開口とも重ならないガラスは窓として足す
+  let added = 0;
+  for (const g of m.glass) {
+    if (used.has(g) || g.width < 0.25) continue;
+    // どの階か: ガラスの下端より下で一番高い床
+    let fi = -1;
+    floors.forEach((f, i) => {
+      const y = fy[i] ?? floorWorldY[i] ?? f.elevation * MM;
+      if (y <= g.yMin + 0.3) fi = i;
+    });
+    if (fi < 0) continue;
+    const f = floors[fi];
+    const floorY = fy[fi] ?? floorWorldY[fi] ?? f.elevation * MM;
+    if (g.yMax - floorY > 3.2) continue;
+    let best: { w: (typeof f.walls)[number]; t: number; L: number; d: number } | null = null;
+    for (const w of f.walls) {
+      if (!w.exterior) continue;
+      const dx = w.b.x - w.a.x;
+      const dy = w.b.y - w.a.y;
+      const L = Math.hypot(dx, dy);
+      if (L < 600 || (Math.abs(dx) >= Math.abs(dy)) !== g.alongX) continue;
+      const px = g.cx / MM - w.a.x;
+      const py = g.cz / MM - w.a.y;
+      const t = (px * dx + py * dy) / L;
+      const d = Math.abs(px * dy - py * dx) / L;
+      if (t < 0 || t > L || d > 350) continue;
+      if (!best || d < best.d) best = { w, t, L, d };
+    }
+    if (!best) continue;
+    const half = (g.width / MM) / 2 + FRAME;
+    const t0 = Math.max(0, Math.round(best.t - half));
+    const t1 = Math.min(best.L, Math.round(best.t + half));
+    if (f.openings.some((o) => o.wallId === best!.w.id && o.t0 < t1 + 50 && o.t1 > t0 - 50)) continue;
+    const sill = Math.max(0, Math.round(((g.yMin - floorY) / MM - FRAME) / 10) * 10);
+    const height = Math.round(((g.yMax - g.yMin) / MM + FRAME * 2) / 10) * 10;
+    f.openings.push({ id: `o3d-${f.level}-${++added}`, wallId: best.w.id, kind: 'window', t0, t1, sill, height, windowStyle: height >= 1800 && sill < 200 ? 'hakidashi' : height <= 700 ? (sill >= 1300 ? 'high' : 'small') : 'koshi', confidence: 0.9 });
+  }
+  if (added) notes.push(`図面から読めなかった窓 ${added} か所を 3D データから足しました`);
   let roof: HeightChanges['roof'] = null;
   if (m.roof) {
     roof = { type: m.roof.type, pitch: m.roof.pitch };
     notes.push(m.roof.type === 'flat' ? '屋根: 陸屋根（傾いた屋根面なし）' : `屋根: ${{ shed: '片流れ', gable: '切妻', hip: '寄棟', flat: '陸屋根' }[m.roof.type]} ${m.roof.pitch} 寸`);
   }
   if (base != null) notes.push(`最高高さ GL+${Math.round((m.topY - base) / MM / 10) * 10}`);
-  return { model: out, roof, notes, windowsMatched: matched, windowsTotal: total };
+  return { model: out, roof, notes, windowsMatched: matched, windowsTotal: total, windowsAdded: added };
 }

@@ -78,3 +78,21 @@ describe('heights from 3D', () => {
     expect(p.find((x) => x.cx < 2)!.width).toBeCloseTo(1.66, 2);
   });
 });
+
+describe('adds windows missing from the plan', () => {
+  it('adds a glass panel on an exterior wall that has no opening there', () => {
+    const { solid } = house('gable');
+    const g: number[] = [];
+    // 図面の窓（x 2.06〜3.63）とは別の位置 x 6.0〜7.2 に、床から 0.3〜2.3 のガラス
+    quad(g, [[2.06, 1.55, 0], [3.63, 1.55, 0], [3.63, 2.6, 0], [2.06, 2.6, 0]]);
+    quad(g, [[6.0, 0.9, 0], [7.2, 0.9, 0], [7.2, 2.9, 0], [6.0, 2.9, 0]]);
+    const m = measure3d(model, solid, new Float32Array(g), [0.5, 3.4]);
+    const ch = applyMeasured(model, m, [0.5, 3.4]);
+    expect(ch.windowsAdded).toBe(1);
+    const add = ch.model.floors[0].openings.find((o) => o.id.startsWith('o3d-'))!;
+    expect(add.t0).toBeCloseTo(5960, -1);
+    expect(add.t1).toBeCloseTo(7240, -1);
+    expect(add.sill).toBe(260);
+    expect(add.height).toBe(2080);
+  });
+});

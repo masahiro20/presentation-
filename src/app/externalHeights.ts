@@ -50,6 +50,8 @@ export function applyHeightsFromExternal(viewer: Viewer, ctrl: ExternalControlle
     if (!n) continue;
     f.elevation = n.elevation;
     f.height = n.height;
+    // 3D データから足した窓
+    for (const no of n.openings) if (no.id.startsWith('o3d-') && !f.openings.some((o) => o.id === no.id)) f.openings.push(no);
     for (const o of f.openings) {
       const no = n.openings.find((x) => x.id === o.id);
       if (no) {

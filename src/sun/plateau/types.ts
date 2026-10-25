@@ -49,6 +49,8 @@ export interface PlateauAttrs {
   /** 正標高 T.P. [m] */
   zmin: number;
   zmax: number;
+  /** 足元の楕円体高 [m]（3D Tiles の頂点の高さの基準。写真の質感つき 3D を地面に合わせるのに使う） */
+  baseEllipH?: number;
   measuredHeight?: number;
   storeys?: number;
   storeysBelow?: number;

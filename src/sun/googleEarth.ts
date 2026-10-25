@@ -34,7 +34,7 @@ export type EarthStatus = { kind: 'idle' } | { kind: 'checking' } | { kind: 'loa
  * キーで root.json を 1 回取って、使えるかを確かめる（Map Tiles API が無効・請求先が無い・キーの制限 などの理由をそのまま返す）
  */
 export async function checkGoogle3dKey(key: string, fetchFn: typeof fetch = fetch): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (!key.trim()) return { ok: false, message: 'Google Maps API キーが入っていません（日照ステップの「敷地」の欄に入れてください）' };
+  if (!key.trim()) return { ok: false, message: 'Google の API キーが入っていません（「建設地」の下の「Google の API キー」の欄に入れてください）' };
   try {
     const res = await fetchFn(`${GOOGLE_3D_ROOT}?key=${encodeURIComponent(key.trim())}`);
     if (res.ok) return { ok: true };
@@ -67,10 +67,17 @@ const SITE_MARGIN = 0.6;
 /** 読み込む範囲の半径 (m)。これより遠いタイルは粗いまま（地平線まで細かく読むと重い） */
 const DETAIL_RADIUS = 260;
 
+/** 実写 3D の出どころ: Google（Photorealistic 3D Tiles・要キー）／PLATEAU（テクスチャ付き LOD2 の 3D Tiles・無料、建物だけで地形なし） */
+export type EarthSource = 'google' | 'plateau';
+
 export class GoogleEarthLayer {
   /** ワールドに置く入れ物（行列で ECEF → 敷地の東北上 → ワールドに変換） */
   readonly group = new THREE.Group();
+  /** 主のタイル（Google 1 つ、PLATEAU は敷地の市区。行列・押しつぶしの基準） */
   private tiles: TilesRenderer | null = null;
+  /** PLATEAU で敷地の周りが隣の市区にかかるときの追加のタイル */
+  private extra: TilesRenderer[] = [];
+  source: EarthSource = 'google';
   private auth: GoogleCloudAuthPlugin | null = null;
   private flatten: TileFlatteningPlugin | null = null;
   private shape: THREE.Mesh | null = null;
@@ -81,6 +88,7 @@ export class GoogleEarthLayer {
   private groundFixed = false;
   /** 地面合わせの回数（最初は粗いタイルで測るので、細かいタイルが届いたら 3 回まで測り直す） */
   private groundFits = 0;
+  private refitTick = 0;
   private draco: DRACOLoader | null = null;
   status: EarthStatus = { kind: 'idle' };
   onStatus: ((s: EarthStatus) => void) | null = null;
@@ -106,11 +114,13 @@ export class GoogleEarthLayer {
   /**
    * 読み込みを始める。sitePoly = 敷地（または計画する家の外形を少し広げたもの）の東・北 (m)。その中の既存の建物は地面に押しつぶす
    */
-  async start(key: string, frame: EarthFrame, sitePoly: { e: number; n: number }[] | null, opts: { url?: string } = {}) {
+  async start(key: string, frame: EarthFrame, sitePoly: { e: number; n: number }[] | null, opts: { url?: string; urls?: string[]; source?: EarthSource; groundEllipH?: number } = {}) {
     this.stop();
     this.setStatus({ kind: 'checking' });
-    // opts.url: Google 以外の 3D Tiles（地球中心の座標のもの。検証用に PLATEAU など）を同じ経路で敷く
-    if (!opts.url) {
+    // opts.urls: Google 以外の 3D Tiles（地球中心の座標のもの。PLATEAU のテクスチャ付き LOD2 など）を同じ経路で敷く
+    const urls = opts.urls ?? (opts.url ? [opts.url] : []);
+    this.source = opts.source ?? (urls.length ? 'plateau' : 'google');
+    if (!urls.length) {
       const chk = await checkGoogle3dKey(key);
       if (!chk.ok) {
         this.setStatus({ kind: 'error', message: chk.message });
@@ -118,17 +128,37 @@ export class GoogleEarthLayer {
       }
     }
     this.frame = frame;
-    const tiles = new TilesRenderer(opts.url ?? GOOGLE_3D_ROOT);
-    if (!opts.url) {
-      this.auth = new GoogleCloudAuthPlugin({ apiToken: key.trim(), autoRefreshToken: true, useRecommendedSettings: true });
+    this.draco = new DRACOLoader().setWorkerLimit(2);
+    const tiles = this.makeTiles(urls[0] ?? GOOGLE_3D_ROOT, !urls.length ? key : null, true);
+    this.extra = urls.slice(1).map((u) => this.makeTiles(u, null, false));
+    this.tiles = tiles;
+    this.group.add(tiles.group, ...this.extra.map((t) => t.group));
+    // 地面の楕円体高が分かっていれば（PLATEAU の周辺建物の足元から）それで合わせ、測り直さない
+    if (opts.groundEllipH != null && Number.isFinite(opts.groundEllipH)) {
+      this.groundY = opts.groundEllipH;
+      this.groundFixed = true;
+    }
+    this.computeBaseMatrix();
+    this.applyMatrix();
+    if (sitePoly && sitePoly.length >= 3) this.setSite(sitePoly);
+    this.setStatus({ kind: 'loading', tiles: 0 });
+  }
+
+  /** 1 つのタイルセット。main = 主（押しつぶしの基準・読み込み完了の判定） */
+  private makeTiles(url: string, googleKey: string | null, main: boolean): TilesRenderer {
+    const tiles = new TilesRenderer(url);
+    if (googleKey) {
+      this.auth = new GoogleCloudAuthPlugin({ apiToken: googleKey.trim(), autoRefreshToken: true, useRecommendedSettings: true });
       tiles.registerPlugin(this.auth);
     }
-    this.draco = new DRACOLoader().setWorkerLimit(2);
-    tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.draco }));
+    tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.draco! }));
     tiles.registerPlugin(new TileCompressionPlugin());
     tiles.registerPlugin(new UnloadTilesPlugin());
-    this.flatten = new TileFlatteningPlugin();
-    tiles.registerPlugin(this.flatten);
+    // 敷地の既存建物の押しつぶしはすべてのタイルセットに（主のプラグインに形を足し、追加分は setSite で同じ形を足す）
+    const fl = new TileFlatteningPlugin();
+    tiles.registerPlugin(fl);
+    if (main) this.flatten = fl;
+    else this.extraFlatten.push(fl);
     // 住宅の日照には敷地の周り数百 m が見えれば十分。細かさは画面上の誤差 12px まで（推奨設定の 20 より細かく）
     tiles.errorTarget = 12;
     tiles.addEventListener('load-model', ({ scene }: { scene: THREE.Object3D }) => {
@@ -147,17 +177,20 @@ export class GoogleEarthLayer {
     tiles.addEventListener('load-error', (e: { error?: Error; url?: string }) => {
       console.warn('Google 3D Tiles load error', e.error?.message, e.url);
     });
-    tiles.addEventListener('tiles-load-end', () => {
-      this.fitGround();
-      this.setStatus({ kind: 'ready', tiles: tiles.visibleTiles.size });
-      this.onChange?.();
-    });
-    this.tiles = tiles;
-    this.group.add(tiles.group);
-    this.computeBaseMatrix();
-    this.applyMatrix();
-    if (sitePoly && sitePoly.length >= 3) this.setSite(sitePoly);
-    this.setStatus({ kind: 'loading', tiles: 0 });
+    if (main)
+      tiles.addEventListener('tiles-load-end', () => {
+        this.fitGround();
+        this.setStatus({ kind: 'ready', tiles: tiles.visibleTiles.size });
+        this.onChange?.();
+      });
+    return tiles;
+  }
+
+  private extraFlatten: TileFlatteningPlugin[] = [];
+  private extraShapes: THREE.Mesh[] = [];
+
+  private get allTiles(): TilesRenderer[] {
+    return this.tiles ? [this.tiles, ...this.extra] : [];
   }
 
   /** 敷地の位置・向きが変わったとき（微調整・建設地の変更）に置き直す。地面の高さは測り直す */
@@ -208,18 +241,41 @@ export class GoogleEarthLayer {
     const rc = new THREE.Raycaster();
     const hs: number[] = [];
     this.group.updateMatrixWorld(true);
-    for (let i = 0; i < 48; i++) {
-      const a = (i / 48) * Math.PI * 2;
-      const r = 12 + (i % 4) * 11;
-      const p = f.origin.clone().addScaledVector(f.east, Math.cos(a) * r).addScaledVector(f.north, Math.sin(a) * r);
-      rc.set(p.setY(this.groundY + 2000), new THREE.Vector3(0, -1, 0));
-      rc.far = 6000;
-      const hit = rc.intersectObject(this.tiles.group, true)[0];
-      if (hit) hs.push(hit.point.y);
+    const groups = this.allTiles.map((t) => t.group);
+    if (this.source === 'plateau') {
+      // PLATEAU は建物だけ（地形も建物の底面も無い）: 敷地の周り 400m の建物のメッシュの一番低い所（＝建物の足元の高さ）を集め、
+      // 下から 1/4 の高さを地面にする（タイルは数十棟ずつまとまっているので、まとまりの最低点 ≒ その辺りの地面）
+      const box = new THREE.Box3();
+      const c = new THREE.Vector3();
+      for (const g of groups)
+        g.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh) return;
+          box.setFromObject(m);
+          if (box.isEmpty()) return;
+          // 敷地から 300m 以内にかかるまとまり（タイルは数百 m 四方あるので中心ではなく範囲で見る）
+          const dx = Math.max(box.min.x - f.origin.x, 0, f.origin.x - box.max.x);
+          const dz = Math.max(box.min.z - f.origin.z, 0, f.origin.z - box.max.z);
+          if (Math.hypot(dx, dz) < 300) hs.push(box.min.y);
+        });
+      if (hs.length < 1) {
+        this.groundFits--;
+        return;
+      }
+    } else {
+      for (let i = 0; i < 48; i++) {
+        const a = (i / 48) * Math.PI * 2;
+        const r = 12 + (i % 4) * 11;
+        const p = f.origin.clone().addScaledVector(f.east, Math.cos(a) * r).addScaledVector(f.north, Math.sin(a) * r);
+        rc.set(p.setY(this.groundY + 2000), new THREE.Vector3(0, -1, 0));
+        rc.far = 6000;
+        const hit = rc.intersectObjects(groups, true)[0];
+        if (hit) hs.push(hit.point.y);
+      }
+      if (hs.length < 12) return;
     }
-    if (hs.length < 12) return;
     hs.sort((x, y) => x - y);
-    const ground = hs[Math.floor(hs.length * 0.15)];
+    const ground = this.source === 'plateau' ? hs[Math.floor(hs.length * 0.25)] : hs[Math.floor(hs.length * 0.15)];
     this.groundY += ground;
     this.groundFixed = this.groundFits >= 3 || Math.abs(ground) < 0.3;
     this.applyMatrix();
@@ -237,6 +293,8 @@ export class GoogleEarthLayer {
       this.shape.geometry.dispose();
       this.shape = null;
     }
+    this.extraFlatten.forEach((fl, i) => this.extraShapes[i] && fl.deleteShape(this.extraShapes[i]));
+    this.extraShapes = [];
     // 外形を少し広げた多角形（重心から外へ）
     const cx = poly.reduce((s, p) => s + p.e, 0) / poly.length;
     const cy = poly.reduce((s, p) => s + p.n, 0) / poly.length;
@@ -264,6 +322,11 @@ export class GoogleEarthLayer {
     const up = new THREE.Vector3(0, 1, 0).transformDirection(inv).normalize();
     // 型定義は古い署名（threshold: number）だが、実装は options オブジェクトを受ける
     (this.flatten.addShape as unknown as (m: THREE.Mesh, d: THREE.Vector3, o: { threshold: number }) => void)(this.shape, up, { threshold: Infinity });
+    for (const fl of this.extraFlatten) {
+      const m = new THREE.Mesh(geo, this.shape.material);
+      (fl.addShape as unknown as (m: THREE.Mesh, d: THREE.Vector3, o: { threshold: number }) => void)(m, up, { threshold: Infinity });
+      this.extraShapes.push(m);
+    }
   }
 
   /** 毎コマ: カメラに合わせてタイルを選び直す。読み込み中は描き直しを続ける（true を返す） */
@@ -279,12 +342,23 @@ export class GoogleEarthLayer {
       tiles.errorTarget = d > DETAIL_RADIUS ? 24 : 12;
     }
     tiles.update();
+    for (const t of this.extra) {
+      if (!t.hasCamera(camera)) t.setCamera(camera);
+      t.setResolutionFromRenderer(camera, renderer);
+      t.errorTarget = tiles.errorTarget;
+      t.update();
+    }
     // isLoading: ダウンロード・解析が残っている間 true（終わると tiles-load-end が出て false に戻る）
     const busy = (tiles as unknown as { isLoading: boolean }).isLoading;
     if (busy && this.status.kind === 'ready') this.setStatus({ kind: 'loading', tiles: tiles.visibleTiles.size });
     else if (!busy && this.status.kind === 'loading' && tiles.visibleTiles.size > 0) {
       this.fitGround();
       this.setStatus({ kind: 'ready', tiles: tiles.visibleTiles.size });
+    } else if (!busy && !this.groundFixed && ++this.refitTick % 30 === 0) {
+      // 細かいタイルが届いてから地面を測り直す（最初の粗いタイルでは敷地の近くに建物が無いことがある）
+      const before = this.groundY;
+      this.fitGround();
+      if (this.groundY !== before) this.onChange?.();
     }
     return busy;
   }
@@ -292,6 +366,7 @@ export class GoogleEarthLayer {
   /** 画面に出す帰属（Google のロゴ・著作権）。表示中のタイルが無ければ空 */
   attributions(): string {
     if (!this.tiles) return '';
+    if (this.source === 'plateau') return '出典: 国土交通省 PLATEAU（3D 都市モデル）';
     const list = this.tiles.getAttributions();
     return list
       .filter((a) => a.type === 'string')
@@ -302,17 +377,21 @@ export class GoogleEarthLayer {
 
   setShadow(on: boolean) {
     this.castShadow = on;
-    this.tiles?.group.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.isMesh) m.castShadow = on;
-    });
+    for (const t of this.allTiles)
+      t.group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) m.castShadow = on;
+      });
   }
 
   stop() {
-    if (this.tiles) {
-      this.group.remove(this.tiles.group);
-      this.tiles.dispose();
+    for (const t of this.allTiles) {
+      this.group.remove(t.group);
+      t.dispose();
     }
+    this.extra = [];
+    this.extraFlatten = [];
+    this.extraShapes = [];
     this.draco?.dispose();
     this.draco = null;
     this.tiles = null;

@@ -646,6 +646,7 @@ export function splitBuildings(tile: DecodedTile, b3dm: B3dm, meta: SplitMeta, o
       anchor: { lat: anchorLat, lon: anchorLon },
       zmin,
       zmax,
+      baseEllipH: Math.round(w.minH * 100) / 100,
       ...(rec.measuredHeight != null ? { measuredHeight: rec.measuredHeight } : {}),
       ...(rec.storeys != null ? { storeys: rec.storeys } : {}),
       ...(rec.storeysBelow != null ? { storeysBelow: rec.storeysBelow } : {}),

@@ -19,6 +19,7 @@ import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_L
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
 import { GoogleEarthLayer, type EarthFrame, type EarthStatus } from '../../sun/googleEarth';
+import { loadPlateauIndex, muniCodesAround } from '../../sun/plateau';
 import { createPointCloudBlock } from './sunPointCloud';
 import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
 
@@ -1080,38 +1081,86 @@ export const sunStep: Step = {
     ctx.stage.append(earthAttr);
     const showEarthStatus = (s: EarthStatus) => {
       earthStatusEl.textContent =
-        s.kind === 'idle' ? '' : s.kind === 'checking' ? 'キーを確認しています…' : s.kind === 'loading' ? 'Google の 3D を読み込み中…（敷地の周りから順に細かくなります）' : s.kind === 'ready' ? '表示中: 敷地の中の既存の建物・樹木は地面に押しつぶしています。実写の建物・樹木は太陽の位置どおりに影を落とします' : s.kind === 'error' ? s.message : '';
+        s.kind === 'idle'
+          ? ''
+          : s.kind === 'checking'
+            ? earth.source === 'plateau' ? 'PLATEAU の 3D を探しています…' : 'キーを確認しています…'
+            : s.kind === 'loading'
+              ? `${earth.source === 'plateau' ? 'PLATEAU' : 'Google'} の 3D を読み込み中…（敷地の周りから順に細かくなります）`
+              : s.kind === 'ready'
+                ? '表示中: 敷地の中の既存の建物は地面に押しつぶしています。周りの建物は太陽の位置どおりに影を落とします'
+                : s.kind === 'error'
+                  ? s.message
+                  : '';
       earthStatusEl.style.color = s.kind === 'error' ? '#b3402a' : '';
-      if (s.kind === 'error' && /キー|API/.test(s.message)) earthStatusEl.append(' ', h('button', { class: 'lnk', onclick: openKeyFold }, 'API キーの欄を開く'));
+      if (s.kind === 'error' && /キー|API/.test(s.message)) {
+        earthStatusEl.append(' ', h('button', { class: 'lnk', onclick: openKeyFold }, 'API キーの欄を開く'));
+        // キーがまだ無いときは、そのまま欄を開いて入れてもらう
+        if (!getGoogleKey()) openKeyFold();
+      }
     };
     earth.onStatus = (s) => {
       showEarthStatus(s);
       if (s.kind === 'error') {
-        earthCheck.checked = false;
+        earthSel.value = 'off';
         v.userData.googleEarthOn = false;
       }
     };
     earth.onChange = () => {
       const t = earth.attributions();
       earthAttr.style.display = earth.active ? '' : 'none';
-      earthAttr.textContent = earth.active ? `Google${t ? ` ・ ${t}` : ''}` : '';
+      earthAttr.textContent = earth.active ? (earth.source === 'plateau' ? t : `Google${t ? ` ・ ${t}` : ''}`) : '';
       v.invalidate();
     };
     const earthHook = () => (earth.active ? earth.update(v.camera, v.renderer) : false);
     v.frameHooks.add(earthHook);
     /** 実写 3D を出している間は、航空写真の板と周辺建物の箱を隠す（実写と重なってちらつく・影が二重になる） */
     let savedVis: { aerial: boolean; neighbors: boolean } | null = null;
-    const setEarth = async (on: boolean) => {
-      v.userData.googleEarthOn = on;
+    /** 敷地の周りの市区の PLATEAU テクスチャ付き LOD2（3D Tiles）の URL。無ければ理由を投げる */
+    const plateauTexUrls = async (): Promise<string[]> => {
+      const { lat, lon } = siteLatLon(state.site);
+      // 半径 1.2km の四隅の市区まで（区の境の近くでも、隣の区の城・駅・アリーナなどが入るように）
+      const [idx, codes] = await Promise.all([loadPlateauIndex(), muniCodesAround(lat, lon, 1200)]);
+      const urls: string[] = [];
+      for (const cd of codes) {
+        const set = idx.areas[cd]?.sets.find((x) => x.lod >= 2 && x.tex);
+        if (set) urls.push(/^https?:/.test(set.url) ? set.url : idx.urlPrefix + set.url);
+      }
+      if (!urls.length) throw new Error('この地域の PLATEAU には写真の質感つきの 3D（LOD2 テクスチャ付き）がまだありません（箱形の LOD1 だけの市区）。城・アリーナなどの形まで出すには「Google 実写 3D」をお使いください');
+      return urls;
+    };
+    const setEarth = async (mode: 'off' | 'plateau' | 'google' | boolean) => {
+      const m = mode === true ? 'google' : mode === false ? 'off' : mode;
+      const on = m !== 'off';
+      v.userData.googleEarthOn = on ? m : false;
       if (on) {
         const key = googleKeyInput.value.trim();
+        let urls: string[] | undefined;
+        // 検証用: window.__earthTilesetUrl があれば Google の代わりにその 3D Tiles を敷く
+        const testUrl = (globalThis as { __earthTilesetUrl?: string }).__earthTilesetUrl;
+        if (m === 'plateau' || testUrl) {
+          try {
+            urls = testUrl ? [testUrl] : await plateauTexUrls();
+          } catch (e) {
+            earth.stop();
+            showEarthStatus({ kind: 'error', message: (e as Error).message });
+            earthSel.value = 'off';
+            v.userData.googleEarthOn = false;
+            return;
+          }
+        }
         savedVis ??= { aerial: sc.state.showAerial, neighbors: sc.state.showNeighbors };
         sc.state.showAerial = false;
         sc.state.showNeighbors = false;
         sc.applyVisibility();
         for (const k of ['showAerial', 'showNeighbors'] as const) if (toggleInputs[k]) toggleInputs[k]!.checked = false;
-        // 検証用: window.__earthTilesetUrl があれば Google の代わりにその 3D Tiles を敷く
-        await earth.start(key, earthFrame(), earthSitePoly(), { url: (globalThis as { __earthTilesetUrl?: string }).__earthTilesetUrl });
+        // PLATEAU: 周辺建物（PLATEAU）の足元の楕円体高の中央値（敷地から 150m 以内）を地面にする
+        const bases = sc.state.neighbors
+          .filter((b) => b.plateau?.baseEllipH != null && Math.hypot(...(() => { const c = b.ring.reduce((a, p) => ({ e: a.e + p.e / b.ring.length, n: a.n + p.n / b.ring.length }), { e: 0, n: 0 }); return [c.e, c.n] as const; })()) < 150)
+          .map((b) => b.plateau!.baseEllipH!)
+          .sort((a, b) => a - b);
+        const groundEllipH = urls && bases.length ? bases[Math.floor(bases.length / 2)] : undefined;
+        await earth.start(key, earthFrame(), earthSitePoly(), { urls, source: urls ? 'plateau' : 'google', groundEllipH });
         if (earth.status.kind === 'error') {
           // 片付け（stop で表示が消える）のあとに、直し方の分かる理由を出し直す
           const err = earth.status;
@@ -1132,17 +1181,23 @@ export const sunStep: Step = {
       }
       apply(true);
     };
-    const earthCheck = h('input', { type: 'checkbox', checked: !!v.userData.googleEarthOn, onchange: (e: Event) => void setEarth((e.target as HTMLInputElement).checked) }) as HTMLInputElement;
+    const earthMode = (v.userData.googleEarthOn === true ? 'google' : v.userData.googleEarthOn || 'off') as 'off' | 'plateau' | 'google';
+    const earthSel = h(
+      'select',
+      { class: 'earth-mode', onchange: () => void (async () => { if (earth.active) await setEarth(false); await setEarth(earthSel.value as 'off' | 'plateau' | 'google'); })() },
+      h('option', { value: 'off', selected: earthMode === 'off' }, '標準（周辺建物の形・航空写真）'),
+      h('option', { value: 'google', selected: earthMode === 'google' }, 'Google 実写 3D（Google Earth の街並み・要 API キー）'),
+    ) as HTMLSelectElement;
     const earthShadow = h('input', { type: 'checkbox', checked: earth.castShadow, onchange: (e: Event) => { earth.setShadow((e.target as HTMLInputElement).checked); v.invalidate(); } }) as HTMLInputElement;
     const earthBlock = h(
       'div',
       { style: 'margin-top:8px' },
-      h('label', { class: 'check', title: 'Google Earth と同じ写真測量の街並み（Photorealistic 3D Tiles）を周辺に敷きます。上の「Google Maps API キー」に、Google Cloud で Map Tiles API を有効にしたキーが必要です（有料 API・無料枠あり）' }, earthCheck, 'Google 実写 3D（Google Earth の街並み）'),
-      h('label', { class: 'check', style: 'font-size:12px;margin-left:18px' }, earthShadow, '実写の建物・樹木の影を落とす'),
+      field('周辺の見た目', earthSel),
+      h('label', { class: 'check', style: 'font-size:12px' }, earthShadow, '実写の建物・樹木の影を落とす'),
       earthStatusEl,
-      h('details', { class: 'hint-fold' }, h('summary', null, '実写 3D について'), h('p', { class: 'hint' }, '見た目の再現用です。日照時間・日影の数値は、これまでどおり周辺建物（PLATEAU・国土地理院）の形で計算します。Google の利用規約により、実写のデータは保存・書き出しできません。使うには「Google の API キー」の欄にキーが必要です。')),
+      h('details', { class: 'hint-fold' }, h('summary', null, '周辺の見た目について'), h('p', { class: 'hint' }, '「Google 実写 3D」は Google Earth と同じ写真測量の街並みで、城・タワー・アリーナなどのランドマークや樹木・地形まで再現します。「Google の API キー」の欄にキーが必要です（利用規約により保存・書き出しはできません）。見た目の再現用で、日照時間・日影の数値は、これまでどおり周辺建物（PLATEAU・国土地理院）の形で計算します。')),
     );
-    if (v.userData.googleEarthOn && !earth.active) void setEarth(true);
+    if (v.userData.googleEarthOn && !earth.active) void setEarth(earthMode);
     else if (earth.active) earth.setFrame(earthFrame());
     cleanupEarth = () => {
       v.frameHooks.delete(earthHook);

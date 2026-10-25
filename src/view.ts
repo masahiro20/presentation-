@@ -17,6 +17,7 @@ import { h, clear } from './app/dom';
 import { upload } from '@vercel/blob/client';
 import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
 import { ROUNDS, shotFor, deltaText, type CustomerPicks } from './coordinate/decisions';
+import { lookOf } from './coordinate/samples';
 
 type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; deltas?: Record<string, Record<string, number | null>>; designer?: string; tel?: string; email?: string; url?: string } };
 
@@ -220,7 +221,11 @@ async function main() {
                     render();
                   },
                 },
-                h('span', { class: 'sw' }, ...p.swatch.map((c) => h('i', { style: `background:${c}` }))),
+                (() => {
+                  // 実物写真（担当者が登録したもの）→ 無ければ質感イメージ → 色見本
+                  const look = lookOf(cat.id, p, design, proj.coord?.samples);
+                  return look ? h('span', { class: `ph ${look.real ? 'real' : ''}` }, h('img', { src: look.url, alt: '' })) : h('span', { class: 'sw' }, ...p.swatch.map((c) => h('i', { style: `background:${c}` })));
+                })(),
                 h('span', { class: 'nm' }, `${p.name}${p.color ? `　${p.color}` : ''}`),
                 d != null && Math.abs(d) >= 1000 ? h('span', { class: 'dl' }, deltaText(d)) : null,
               ),

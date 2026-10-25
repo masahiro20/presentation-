@@ -20,6 +20,7 @@ import { ROUNDS, STATUS_LABEL, DEPENDS, itemOf, setCandidates, decide, progress,
 import { syncEstimateWithFinishes, finishDeltas } from './estimateStep';
 import { currentShots } from './designStep';
 import { shareDialog } from '../share';
+import { lookOf, hasLook, shrinkPhoto, saveLibrarySample, deleteLibrarySample, librarySample } from '../../coordinate/samples';
 import { renderStudio } from '../../scene/studio';
 import { exposureFor } from '../draftCapture';
 import type { DesignOptions } from '../../styles/presets';
@@ -107,8 +108,24 @@ export const coordStep: Step = {
     };
 
     const coord = () => state.coord;
+    /** 事務所の写真庫（このブラウザ）の写真。プロジェクトに入っている写真が優先 */
+    const lib: Record<string, string> = {};
+    const sampleMap = () => ({ ...lib, ...(state.coord.samples ?? {}) });
+    /** 使っている商品（選択中・候補）の写真をプロジェクトに写す（保存ファイル・体験リンクに入るように） */
+    const syncUsedSamples = () => {
+      const used = new Set<string>();
+      for (const cat of FINISH_CATEGORIES) {
+        used.add(selectedProduct(cat, state.design).id);
+        for (const id of itemOf(state.coord, cat.id).candidates ?? []) used.add(id);
+      }
+      const cur = state.coord.samples ?? {};
+      const next: Record<string, string> = {};
+      for (const id of used) if (cur[id] ?? lib[id]) next[id] = cur[id] ?? lib[id];
+      if (JSON.stringify(Object.keys(next).sort()) !== JSON.stringify(Object.keys(cur).sort())) state.coord = { ...state.coord, samples: next };
+    };
     const setCoord = (c: CoordState) => {
       state.coord = c;
+      syncUsedSamples();
     };
 
     /** 商品を選ぶ（3D・見積を同時に）。決定済みの部位を変えたら決定を外し、後から決めた部位に見直しの印 */
@@ -156,6 +173,11 @@ export const coordStep: Step = {
             'figure',
             { class: `coord-cmp ${on ? 'on' : ''}` },
             img ? h('img', { src: img.url }) : h('div', { class: 'sw big' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))),
+            (() => {
+              // 3D の絵の下に、実物写真（無ければ質感イメージ）: 画面の色と実物の差を埋める
+              const look = lookOf(catId, p, base, sampleMap());
+              return look ? h('div', { class: 'sample' }, h('img', { src: look.url }), h('span', { class: look.real ? 'real' : '' }, look.real ? '実物写真' : '質感イメージ（実物はサンプルで）')) : null;
+            })(),
             h(
               'figcaption',
               null,
@@ -333,6 +355,35 @@ export const coordStep: Step = {
       );
     };
 
+    /** 商品の実物写真を登録（事務所の写真庫と、このプロジェクトの両方に）。Shift を押しながらで削除 */
+    const attachPhoto = async (productId: string) => {
+      const input = h('input', { type: 'file', accept: 'image/*', style: 'display:none' }) as HTMLInputElement;
+      document.body.appendChild(input);
+      const file = await new Promise<File | undefined>((resolve) => {
+        input.addEventListener('change', () => resolve(input.files?.[0]), { once: true });
+        input.click();
+      }).finally(() => input.remove());
+      if (!file) return;
+      try {
+        const url = await shrinkPhoto(file);
+        await saveLibrarySample(productId, { url, name: file.name, at: new Date().toISOString() });
+        lib[productId] = url;
+        setCoord({ ...coord(), samples: { ...(coord().samples ?? {}), [productId]: url } });
+        toast('実物写真を登録しました（事務所の写真庫にも入り、他のお客様でも使えます）', 'ok');
+        renderAll();
+      } catch (e) {
+        toast(`写真を読み込めませんでした: ${(e as Error).message}`, 'error');
+      }
+    };
+    const removePhoto = async (productId: string) => {
+      await deleteLibrarySample(productId).catch(() => undefined);
+      delete lib[productId];
+      const next = { ...(coord().samples ?? {}) };
+      delete next[productId];
+      setCoord({ ...coord(), samples: next });
+      renderAll();
+    };
+
     const statusChip = (s: DecisionStatus) => h('span', { class: `coord-st ${s}` }, STATUS_LABEL[s]);
 
     const catRow = (catId: string, adv: Advice[]) => {
@@ -398,8 +449,18 @@ export const coordStep: Step = {
           h(
             'div',
             { class: `coord-prod ${on ? 'on' : ''}`, onclick: () => choose(catId, p.id) },
-            h('div', { class: 'sw' }, ...p.swatch.map((col) => h('span', { style: `background:${col}` }))),
-            h('div', { class: 'body' }, h('div', { class: 'nm' }, productLabel(p)), h('div', { class: 'cd' }, [p.code, p.note].filter(Boolean).join('　'))),
+            (() => {
+              const look = lookOf(catId, p, state.design, sampleMap());
+              return look ? h('div', { class: `thumb ${look.real ? 'real' : ''}`, title: look.real ? '実物写真' : '質感イメージ' }, h('img', { src: look.url })) : h('div', { class: 'sw' }, ...p.swatch.map((col) => h('span', { style: `background:${col}` })));
+            })(),
+            h(
+              'div',
+              { class: 'body' },
+              h('div', { class: 'nm' }, productLabel(p)),
+              h('div', { class: 'cd' }, [p.code, p.note].filter(Boolean).join('　')),
+              hasLook(catId) ? h('button', { class: 'linkbtn photo', title: 'この商品の実物写真（サンプルを撮った写真・メーカーの写真）を登録。事務所の写真庫に入り、他のお客様でも使えます', onclick: (e: Event) => { e.stopPropagation(); void attachPhoto(p.id); } }, sampleMap()[p.id] ? '写真を差し替え' : '＋実物写真') : null,
+              sampleMap()[p.id] ? h('button', { class: 'linkbtn photo', onclick: (e: Event) => { e.stopPropagation(); void removePhoto(p.id); } }, '写真を外す') : null,
+            ),
             h('div', { class: `dl ${deltas[p.id] && deltas[p.id]! > 0 ? 'up' : ''}` }, on ? '選択中' : deltaText(deltas[p.id])),
             isFixed(catId) ? null : star,
           ),
@@ -465,7 +526,10 @@ export const coordStep: Step = {
             h(
               'div',
               { class: `cb-card ${it.status}`, onclick: () => { openCat = id; setMode('3d'); flyTo(id); } },
-              h('div', { class: 'sw' }, ...cur.swatch.map((col) => h('span', { style: `background:${col}` }))),
+              (() => {
+                const look = lookOf(id, cur, state.design, sampleMap());
+                return look ? h('div', { class: `ph ${look.real ? 'real' : ''}` }, h('img', { src: look.url })) : h('div', { class: 'sw' }, ...cur.swatch.map((col) => h('span', { style: `background:${col}` })));
+              })(),
               h('div', { class: 'k' }, cat.label, statusChip(it.status)),
               h('div', { class: 'nm' }, `${cur.name}`),
               h('div', { class: 'cl' }, [cur.color, cur.maker === '—' ? '' : cur.maker].filter(Boolean).join('・')),
@@ -498,7 +562,10 @@ export const coordStep: Step = {
             'tr',
             { class: it.status === 'decided' ? '' : 'pending' },
             h('td', { class: 'k' }, cat.label),
-            h('td', { class: 'sw' }, h('div', null, ...p.swatch.map((col) => h('span', { style: `background:${col}` })))),
+            h('td', { class: 'sw' }, (() => {
+              const real = sampleMap()[p.id];
+              return real ? h('img', { src: real }) : h('div', null, ...p.swatch.map((col) => h('span', { style: `background:${col}` })));
+            })()),
             h('td', null, h('div', null, p.maker === '—' ? '' : p.maker), h('div', { class: 'nm' }, p.name)),
             h('td', null, [p.code, memo].filter(Boolean).join(' ／ ')),
             h('td', null, p.color ?? ''),
@@ -595,6 +662,22 @@ export const coordStep: Step = {
     };
     renderAll();
     if (openCat) flyTo(openCat);
+    // 写真庫を読み込んで、写真のある商品を写真で出し直す
+    void (async () => {
+      let n = 0;
+      for (const cat of FINISH_CATEGORIES)
+        for (const p of cat.products) {
+          const ph = await librarySample(p.id);
+          if (ph) {
+            lib[p.id] = ph.url;
+            n++;
+          }
+        }
+      if (n) {
+        syncUsedSamples();
+        renderAll();
+      }
+    })();
   },
   unmount() {
     document.body.classList.remove('print-coord');

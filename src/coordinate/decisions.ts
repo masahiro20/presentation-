@@ -41,6 +41,8 @@ export interface CoordState {
   shareUrl?: string;
   /** お客様への全体のひとこと（共有リンクから） */
   customerNote?: string;
+  /** 商品の実物写真（商品 id → data URL）。事務所の写真庫から、このプロジェクトで使う分だけ写す */
+  samples?: Record<string, string>;
 }
 
 export interface DecisionRound {

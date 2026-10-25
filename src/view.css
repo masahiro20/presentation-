@@ -55,3 +55,6 @@ model-viewer { width: 1px; height: 1px; position: absolute; left: -10px; top: -1
 .vw-cand .sw i { flex: 1; }
 .vw-cand .dl { font-size: 10.5px; color: #a0522d; white-space: nowrap; }
 .vw-pane textarea { width: 100%; font: inherit; font-size: 12.5px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; margin: 10px 0 8px; box-sizing: border-box; background: var(--paper); }
+.vw-cand .ph { width: 44px; height: 32px; border-radius: 5px; overflow: hidden; flex: none; border: 1px solid rgba(0,0,0,0.1); position: relative; }
+.vw-cand .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vw-cand .ph.real::after { content: '実物'; position: absolute; left: 0; bottom: 0; font-size: 8.5px; background: rgba(0,0,0,0.55); color: #fff; padding: 0 3px; border-top-right-radius: 3px; }

@@ -982,3 +982,17 @@ body.cinema .main { grid-template-columns: 1fr; }
 }
 .slide.hl-finish .cd .st { margin-left: 0.8cqw; color: var(--bronze); }
 .slide.hl-finish .cd .st.ok { color: #3f7a55; }
+/* 実物写真・質感イメージ */
+.coord-prod .thumb { width: 24px; height: 28px; border-radius: 4px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08); }
+.coord-prod .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.coord-prod .thumb.real { outline: 2px solid var(--accent); outline-offset: 0; }
+.coord-prod .linkbtn.photo { border: 0; background: none; padding: 0; margin-right: 10px; font-size: 10.5px; color: var(--accent); cursor: pointer; }
+.coord-prod .linkbtn.photo:hover { text-decoration: underline; }
+.coord-cmp .sample { position: relative; border-top: 1px solid var(--line); }
+.coord-cmp .sample img { display: block; width: 100%; height: 110px; object-fit: cover; aspect-ratio: auto; }
+.coord-cmp .sample span { position: absolute; left: 8px; bottom: 6px; font-size: 10.5px; padding: 2px 7px; border-radius: 9px; background: rgba(255,255,255,0.85); color: var(--ink2); }
+.coord-cmp .sample span.real { background: var(--accent); color: #fff; }
+.cb-card .ph { height: 64px; overflow: hidden; position: relative; }
+.cb-card .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cb-card .ph.real::after { content: '実物写真'; position: absolute; right: 6px; top: 6px; font-size: 9.5px; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.85); color: var(--ink2); }
+.coord-sheet .cs-table td.sw img { width: 7mm; height: 7mm; object-fit: cover; display: block; border: 0.5px solid #ccc; }

@@ -13,6 +13,7 @@ import { solveTwoPoint, normDeg180, ALIGN_COLORS, TWO_POINT_STEPS, TWO_POINT_CAN
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
 import { UNIT_LABEL, type ImportedModel, type LengthUnit } from '../../sunstudy/types';
 import { applyTwoPointToSite, sizeText, snapToOutlineVertex, suggestsMirror, suggestsUnitError, type ExternalFitRecord } from '../externalFit';
+import { applyHeightsFromExternal } from '../externalHeights';
 import { createExternal, externalController, installExternal, loadExternal, loadSampleExternal, setExternalMounted, type ExternalController } from '../externalBuilding';
 
 export interface ExternalPanelDeps {
@@ -331,6 +332,28 @@ export function createExternalPanel(deps: ExternalPanelDeps): ExternalPanel {
       rotBtn('↻ 1°', 1, '上から見て時計回りに 1°'),
     ),
     h('label', { class: 'check' }, replacesCb, '3DS で影を計算する（PDF の建物は隠す）'),
+    h(
+      'button',
+      {
+        class: 'btn sm block',
+        style: 'margin-top:6px',
+        title: 'PDF の平面図には高さが無いので、床の高さ・窓の腰高と高さ・屋根は推定です。位置を合わせた 3DS（ARCHITREND の書き出しなど）から測って、パース・図面・見積の元になる間取りに反映します',
+        onclick: () => {
+          if (!ctrl) return;
+          const ch = applyHeightsFromExternal(v, ctrl);
+          if (!ch) return;
+          // 間取りの 3D を作り直して、3DS をそれに合わせ直す
+          deps.ctx.app.ensureScene();
+          ctrl.sync(v);
+          setExternalMounted(v, true);
+          deps.invalidateResults();
+          deps.applySun();
+          refresh();
+          toast(['3D データの高さを間取りに反映しました', ...ch.notes].join('\n'), 'ok', 9000);
+        },
+      },
+      '3D データの高さ（床・窓・屋根）を間取りに反映',
+    ),
     h('div', { class: 'btn-row', style: 'align-items:center' }, stateLine, resetBtn, removeBtn),
   );
 

@@ -656,9 +656,13 @@ export class Viewer {
     if (!p) this.dirty = true;
   }
 
+  /** 毎コマ呼ぶ処理（Google 実写 3D のタイル選択など）。true を返すと描き直す */
+  readonly frameHooks = new Set<() => boolean>();
+
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
     if (this.paused) return;
+    for (const hook of this.frameHooks) if (hook()) this._dirty = true;
     const now = performance.now();
     const dt = Math.min(0.25, (now - this.lastTick) / 1000);
     this.lastTick = now;

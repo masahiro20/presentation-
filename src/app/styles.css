@@ -800,3 +800,6 @@ body.cinema .main { grid-template-columns: 1fr; }
 .furn-tool .furn-sel { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 8px 0; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
 .furn-tool .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .furn-tool .btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* Google 実写 3D の帰属表示（Google のロゴ文字と、表示中のタイルの著作権） */
+.earth-attr { position: absolute; left: 14px; bottom: 8px; z-index: 3; font: 500 11px/1.4 Roboto, Arial, sans-serif; color: #fff; text-shadow: 0 0 3px rgba(0, 0, 0, 0.7); pointer-events: none; max-width: 60%; }

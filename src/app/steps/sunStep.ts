@@ -18,6 +18,7 @@ import { createRoofEditor } from '../roofEditor';
 import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, pitchSun, plannedAxes, plannedPreset, ridgeFromPitch, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
+import { GoogleEarthLayer, type EarthFrame, type EarthStatus } from '../../sun/googleEarth';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -37,6 +38,9 @@ let heat: THREE.Mesh | null = null;
 const diagramChoice = { regulationId: '', halfHour: false };
 /** 想定の家の選択（置く形・敷地の隣に並べる辺。ステップを出入りしても覚える。sides が null なら既定 = 道路ではない辺） */
 const plannedChoice: { preset: PlannedPresetId; sides: PlanSide[] | null } = { preset: DEFAULT_PLANNED_PRESET, sides: null };
+
+/** Google 実写 3D（日照ステップを離れるときに止める） */
+let cleanupEarth: (() => void) | null = null;
 
 /** 最後に使った日照ステップの周辺環境（プレゼン資料の注記用。日照ステップを開いていなければ null） */
 let activeSc: SunContext | null = null;
@@ -527,6 +531,8 @@ export const sunStep: Step = {
     // 3DS の表示・PDF の建物の非表示は日照ステップの間だけ（他のステップは PDF の建物のまま）
     extPanel?.dispose();
     extPanel = null;
+    cleanupEarth?.();
+    cleanupEarth = null;
   },
   async mount(ctx) {
     const v = ctx.app.viewer;
@@ -550,6 +556,12 @@ export const sunStep: Step = {
     const slider = h('input', { type: 'range', min: 4, max: 20, step: 1 / 60, value: ui.hour }) as HTMLInputElement;
     let lastEnv = 0;
     const apply = (envNow = false) => {
+      const ge = v.userData.googleEarth as GoogleEarthLayer | undefined;
+      if (ge?.active) {
+        const o = sc.toWorld(0, 0);
+        const { lat, lon } = siteLatLon(state.site);
+        ge.setFrame({ lat, lon, origin: o, east: sc.toWorld(1, 0).sub(o).normalize(), north: sc.toWorld(0, 1).sub(o).normalize() });
+      }
       const d = sunDay();
       const sp = sunPosition(localDate(ui.year, ui.month, ui.day, ui.hour), d.lat, d.lon);
       const dir = sunDirectionWorld(sp.azimuth, sp.elevation, d.northAngleDeg);
@@ -1037,6 +1049,104 @@ export const sunStep: Step = {
         ),
       ),
     );
+
+    // ---- Google 実写 3D（Google Earth と同じ写真測量の街並み） ----
+    cleanupEarth?.();
+    const earth: GoogleEarthLayer = (v.userData.googleEarth as GoogleEarthLayer | undefined) ?? new GoogleEarthLayer();
+    v.userData.googleEarth = earth;
+    if (!earth.group.parent) v.groups.context.add(earth.group);
+    const earthFrame = (): EarthFrame => {
+      const o = sc.toWorld(0, 0);
+      const { lat, lon } = siteLatLon(state.site);
+      return { lat, lon, origin: o, east: sc.toWorld(1, 0).sub(o).normalize(), north: sc.toWorld(0, 1).sub(o).normalize() };
+    };
+    /** 押しつぶす範囲: 図面の敷地境界（読めていれば）、無ければ建物の外形を 2 m 広げた範囲（東・北 m） */
+    const earthSitePoly = (): { e: number; n: number }[] => {
+      const st = v.state!;
+      const poly = st.model.site?.polygon;
+      if (poly && poly.length >= 3) return poly.map((p) => sc.fromWorld(new THREE.Vector3(p.x / 1000, 0, p.y / 1000)));
+      const b = st.meta.bbox;
+      const m = 2;
+      return [
+        [b.min.x - m, b.min.z - m],
+        [b.max.x + m, b.min.z - m],
+        [b.max.x + m, b.max.z + m],
+        [b.min.x - m, b.max.z + m],
+      ].map(([x, z]) => sc.fromWorld(new THREE.Vector3(x, 0, z)));
+    };
+    const earthStatusEl = h('p', { class: 'hint earth-status', style: 'margin:4px 0 0' });
+    const earthAttr = h('div', { class: 'earth-attr', style: 'display:none' });
+    ctx.stage.append(earthAttr);
+    const showEarthStatus = (s: EarthStatus) => {
+      earthStatusEl.textContent =
+        s.kind === 'idle' ? '' : s.kind === 'checking' ? 'キーを確認しています…' : s.kind === 'loading' ? 'Google の 3D を読み込み中…（敷地の周りから順に細かくなります）' : s.kind === 'ready' ? '表示中: 敷地の中の既存の建物・樹木は地面に押しつぶしています。実写の建物・樹木は太陽の位置どおりに影を落とします' : s.kind === 'error' ? s.message : '';
+      earthStatusEl.style.color = s.kind === 'error' ? '#b3402a' : '';
+    };
+    earth.onStatus = (s) => {
+      showEarthStatus(s);
+      if (s.kind === 'error') {
+        earthCheck.checked = false;
+        v.userData.googleEarthOn = false;
+      }
+    };
+    earth.onChange = () => {
+      const t = earth.attributions();
+      earthAttr.style.display = earth.active ? '' : 'none';
+      earthAttr.textContent = earth.active ? `Google${t ? ` ・ ${t}` : ''}` : '';
+      v.invalidate();
+    };
+    const earthHook = () => (earth.active ? earth.update(v.camera, v.renderer) : false);
+    v.frameHooks.add(earthHook);
+    /** 実写 3D を出している間は、航空写真の板と周辺建物の箱を隠す（実写と重なってちらつく・影が二重になる） */
+    let savedVis: { aerial: boolean; neighbors: boolean } | null = null;
+    const setEarth = async (on: boolean) => {
+      v.userData.googleEarthOn = on;
+      if (on) {
+        const key = googleKeyInput.value.trim();
+        savedVis ??= { aerial: sc.state.showAerial, neighbors: sc.state.showNeighbors };
+        sc.state.showAerial = false;
+        sc.state.showNeighbors = false;
+        sc.applyVisibility();
+        for (const k of ['showAerial', 'showNeighbors'] as const) if (toggleInputs[k]) toggleInputs[k]!.checked = false;
+        // 検証用: window.__earthTilesetUrl があれば Google の代わりにその 3D Tiles を敷く
+        await earth.start(key, earthFrame(), earthSitePoly(), { url: (globalThis as { __earthTilesetUrl?: string }).__earthTilesetUrl });
+        if (earth.status.kind === 'error') {
+          // 片付け（stop で表示が消える）のあとに、直し方の分かる理由を出し直す
+          const err = earth.status;
+          await setEarth(false);
+          showEarthStatus(err);
+          return;
+        }
+      } else {
+        earth.stop();
+        if (savedVis) {
+          sc.state.showAerial = savedVis.aerial;
+          sc.state.showNeighbors = savedVis.neighbors;
+          for (const k of ['showAerial', 'showNeighbors'] as const) if (toggleInputs[k]) toggleInputs[k]!.checked = sc.state[k];
+          sc.applyVisibility();
+          savedVis = null;
+        }
+        earth.onChange?.();
+      }
+      apply(true);
+    };
+    const earthCheck = h('input', { type: 'checkbox', checked: !!v.userData.googleEarthOn, onchange: (e: Event) => void setEarth((e.target as HTMLInputElement).checked) }) as HTMLInputElement;
+    const earthShadow = h('input', { type: 'checkbox', checked: earth.castShadow, onchange: (e: Event) => { earth.setShadow((e.target as HTMLInputElement).checked); v.invalidate(); } }) as HTMLInputElement;
+    const earthBlock = h(
+      'div',
+      { style: 'margin-top:8px' },
+      h('label', { class: 'check', title: 'Google Earth と同じ写真測量の街並み（Photorealistic 3D Tiles）を周辺に敷きます。上の「Google Maps API キー」に、Google Cloud で Map Tiles API を有効にしたキーが必要です（有料 API・無料枠あり）' }, earthCheck, 'Google 実写 3D（Google Earth の街並み）'),
+      h('label', { class: 'check', style: 'font-size:12px;margin-left:18px' }, earthShadow, '実写の建物・樹木の影を落とす'),
+      earthStatusEl,
+      h('p', { class: 'hint', style: 'margin:2px 0 0' }, '見た目の再現用です。日照時間・日影の数値は、これまでどおり周辺建物（PLATEAU・国土地理院）の形で計算します。Google の利用規約により、実写のデータは保存・書き出しできません。'),
+    );
+    if (v.userData.googleEarthOn && !earth.active) void setEarth(true);
+    else if (earth.active) earth.setFrame(earthFrame());
+    cleanupEarth = () => {
+      v.frameHooks.delete(earthHook);
+      earth.stop();
+      earthAttr.remove();
+    };
 
     // ---- 周辺建物を選んで隠す／戻す・クリックで高さを直す ----
     // 隠した建物は実体を作らない（3D に出ない・影を落とさない・部屋の日当たり・日照時間マップに入らない）。
@@ -2224,6 +2334,7 @@ export const sunStep: Step = {
         ),
         nbNotes,
         toggles,
+        earthBlock,
         hideBtn,
         h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
         hiddenBox,

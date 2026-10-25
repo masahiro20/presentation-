@@ -206,3 +206,72 @@ export function repairEnvelope(f: Floor): EnvelopeReport {
   }
   return rep;
 }
+
+/**
+ * 平面詳細図（1/50 など）の仕上げ線: 壁の芯・構造用合板・石膏ボードの線を別々の壁と読み、同じ場所に平行な壁が
+ * 何本も重なる（3D で壁が分厚く・ちぐはぐになる）。重なりが多い階（20 組以上）だけ、平行で 40〜300mm 離れて
+ * 大半が重なる短い方の壁を長い方へまとめ、壁厚を木造の範囲（90〜200）に収める。
+ * 提案用の平面図（1/100）では重なりはほぼ出ないので、そちらには手を付けない。
+ */
+export function mergeStackedWalls(f: Floor): number {
+  const W = f.walls;
+  const info = (w: Wall) => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    return { L, ux: (w.b.x - w.a.x) / L, uy: (w.b.y - w.a.y) / L };
+  };
+  const pairOf = (A: Wall, B: Wall) => {
+    const a = info(A);
+    const b = info(B);
+    if (Math.abs(a.ux * b.ux + a.uy * b.uy) < 0.99) return null;
+    // B の中点から A の線までの距離
+    const mx = (B.a.x + B.b.x) / 2 - A.a.x;
+    const my = (B.a.y + B.b.y) / 2 - A.a.y;
+    const dist = Math.abs(mx * -a.uy + my * a.ux);
+    if (dist < 40 || dist > 300) return null;
+    const t0 = (B.a.x - A.a.x) * a.ux + (B.a.y - A.a.y) * a.uy;
+    const t1 = (B.b.x - A.a.x) * a.ux + (B.b.y - A.a.y) * a.uy;
+    const lo = Math.max(0, Math.min(t0, t1));
+    const hi = Math.min(a.L, Math.max(t0, t1));
+    if (hi - lo < 0.7 * b.L) return null;
+    return { dist, t0, t1 };
+  };
+  let pairs = 0;
+  for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) if (pairOf(W[i], W[j]) || pairOf(W[j], W[i])) pairs++;
+  if (pairs < 20) return 0;
+  const sorted = [...W].sort((p, q) => info(q).L - info(p).L);
+  const removed = new Set<string>();
+  let merged = 0;
+  for (const A of sorted) {
+    if (removed.has(A.id)) continue;
+    for (const B of sorted) {
+      if (B === A || removed.has(B.id) || info(B).L > info(A).L) continue;
+      const p = pairOf(A, B);
+      if (!p) continue;
+      removed.add(B.id);
+      merged++;
+      A.exterior = A.exterior || B.exterior;
+      if (B.exterior && A.outsideSign == null) A.outsideSign = B.outsideSign;
+      // 開口は A の上の同じ位置へ
+      const flip = p.t1 < p.t0;
+      for (const o of f.openings)
+        if (o.wallId === B.id) {
+          const s0 = flip ? p.t0 - o.t1 : p.t0 + o.t0;
+          const s1 = flip ? p.t0 - o.t0 : p.t0 + o.t1;
+          o.wallId = A.id;
+          o.t0 = Math.max(0, s0);
+          o.t1 = Math.min(info(A).L, s1);
+        }
+    }
+  }
+  f.walls = W.filter((w) => !removed.has(w.id));
+  for (const w of f.walls) w.thickness = Math.min(200, Math.max(90, w.thickness > 260 ? (w.exterior ? 160 : 130) : w.thickness));
+  // 同じ壁に重なった開口は 1 つに
+  const seen: Opening[] = [];
+  f.openings = f.openings.filter((o) => {
+    const dup = seen.find((q) => q.wallId === o.wallId && Math.min(q.t1, o.t1) - Math.max(q.t0, o.t0) > 0.5 * Math.min(q.t1 - q.t0, o.t1 - o.t0));
+    if (dup) return false;
+    seen.push(o);
+    return true;
+  });
+  return merged;
+}

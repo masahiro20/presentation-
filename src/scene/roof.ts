@@ -226,14 +226,21 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       const out: { nx: number; nz: number; d: number }[] = [];
       for (const e of diag) {
         if (Math.max(e.a.x, e.b.x) < r.minX - 50 || Math.min(e.a.x, e.b.x) > r.maxX + 50 || Math.max(e.a.y, e.b.y) < r.minY - 50 || Math.min(e.a.y, e.b.y) > r.maxY + 50) continue;
-        // 切り落とす側の四角形の角が建物の外にあるときだけ（凹んだ側を切って屋根を欠かさない）
-        const corners = [
-          { x: r.minX, y: r.minY },
-          { x: r.maxX, y: r.minY },
-          { x: r.maxX, y: r.maxY },
-          { x: r.minX, y: r.maxY },
-        ].filter((c) => (c.x - e.a.x) * e.nx + (c.y - e.a.y) * e.ny < -50);
-        if (!corners.length || corners.some((c) => insideLoops({ x: c.x - e.nx * 30, y: c.y - e.ny * 30 }, polys))) continue;
+        // 切り落とす側（四角形の中で斜めの線より外）が全部建物の外のときだけ切る。
+        // 外形がギザギザの図面では短い斜めの辺がいくつもあり、線を延ばした半平面で切ると建物の上の屋根まで欠ける
+        let cut = 0;
+        let bad = false;
+        for (let a = 0; a <= 8 && !bad; a++)
+          for (let b = 0; b <= 8; b++) {
+            const p = { x: r.minX + ((r.maxX - r.minX) * a) / 8, y: r.minY + ((r.maxY - r.minY) * b) / 8 };
+            if ((p.x - e.a.x) * e.nx + (p.y - e.a.y) * e.ny >= -60) continue;
+            cut++;
+            if (insideLoops(p, polys)) {
+              bad = true;
+              break;
+            }
+          }
+        if (!cut || bad) continue;
         const off = (style.roof.eaves + extT / MM / 2) * MM;
         out.push({ nx: e.nx, nz: e.ny, d: (e.a.x * e.nx + e.a.y * e.ny) * MM - off });
       }

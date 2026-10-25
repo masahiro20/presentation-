@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { repairEnvelope } from '../src/parser/envelope';
+import { repairEnvelope, mergeStackedWalls } from '../src/parser/envelope';
 import { autoOverhangPosts } from '../src/core/posts';
 import type { Floor, Room, Vec2, Wall } from '../src/core/types';
 
@@ -82,5 +82,31 @@ describe('読み込み時の張り出しの柱', () => {
     // 角 2 本＋7,280 の辺の途中（1.5 間ごと）に 2 本
     expect(autoOverhangPosts(lo, mk(2, rect(0, 0, 7280, 7280))).length).toBe(4);
     expect(autoOverhangPosts(lo, mk(2, rect(0, 0, 7280, 6370)))).toEqual([]);
+  });
+});
+
+describe('平面詳細図の重なった壁', () => {
+  it('重なりが少ない図面（提案用の平面図）には手を付けない', () => {
+    const o = rect(0, 0, 9100, 7280);
+    const f = floor([wall('W1', o[0], o[1]), wall('W2', o[1], o[2]), wall('W3', o[2], o[3]), wall('W4', o[3], o[0]), wall('W5', { x: 0, y: 150 }, { x: 9100, y: 150 }, false)], [], o);
+    expect(mergeStackedWalls(f)).toBe(0);
+    expect(f.walls.length).toBe(5);
+  });
+  it('仕上げ線が何本も重なる階は 1 本にまとめ、開口を付け替える', () => {
+    const walls: Wall[] = [];
+    // 25 本の壁それぞれに 120mm 離れた仕上げ線の壁が重なる
+    for (let i = 0; i < 25; i++) {
+      walls.push(wall(`A${i}`, { x: 0, y: i * 2000 }, { x: 4000, y: i * 2000 }, false));
+      walls.push(wall(`B${i}`, { x: 4000, y: i * 2000 + 120 }, { x: 200, y: i * 2000 + 120 }, false));
+    }
+    const f = floor(walls, [], rect(0, 0, 4000, 50000));
+    f.openings.push({ id: 'O1', wallId: 'B3', kind: 'door', t0: 1000, t1: 1800, sill: 0, height: 2000 });
+    expect(mergeStackedWalls(f)).toBe(25);
+    expect(f.walls.every((w) => w.id.startsWith('A'))).toBe(true);
+    const o = f.openings[0];
+    expect(o.wallId).toBe('A3');
+    // B3 は x=4000 から逆向き: 1000〜1800 は A3 の 2200〜3000
+    expect(Math.round(o.t0)).toBe(2200);
+    expect(Math.round(o.t1)).toBe(3000);
   });
 });

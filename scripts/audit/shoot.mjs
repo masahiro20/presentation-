@@ -56,6 +56,7 @@ for (const f of files) {
     await page.close();
     if (!model) {
       summary.push({ id, ok: false, toast: toastText, errors });
+      console.log(JSON.stringify(summary[summary.length - 1]));
       continue;
     }
     writeFileSync(path.join(outDir, `${id}.model.json`), JSON.stringify(model));

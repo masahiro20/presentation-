@@ -2,7 +2,7 @@
  * 平面図 PDF → 建物モデル
  */
 import { autoOverhangPosts } from '../core/posts';
-import { repairEnvelope } from './envelope';
+import { repairEnvelope, mergeStackedWalls } from './envelope';
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
@@ -205,6 +205,8 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
 
   // 外皮の後処理: 一部だけ外に面する内壁を分け、外形に沿って壁の無い区間を外壁で補う（3D で家に穴が開かないように）
   for (const f of res.floors) {
+    const stacked = mergeStackedWalls(f);
+    if (stacked) warnings.push(`${f.level}階: 平面詳細図の仕上げの線を壁として重ねて読んだ所を ${stacked} 本まとめました（詳細図より提案用の平面図 1/100 の方が正確に立ち上がります）`);
     const r = repairEnvelope(f);
     if (r.added) warnings.push(`${f.level}階: 外形に沿って壁が読めなかった ${r.added} か所（計 ${(r.addedLen / 1000).toFixed(1)} m）に外壁を補いました${r.glazed ? `（うち LDK の ${r.glazed} か所は掃き出し窓）` : ''}。修正画面で確認してください`);
   }

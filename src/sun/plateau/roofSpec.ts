@@ -34,6 +34,8 @@ export interface RoofSpec {
   parapet?: number;
   /** 利用者が直した（推定ではなく手入力） */
   user?: boolean;
+  /** 点群（航空レーザ・スキャン）から当てはめた実測の屋根 */
+  lidar?: boolean;
 }
 
 export interface RectLike {

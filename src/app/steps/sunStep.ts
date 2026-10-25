@@ -19,6 +19,7 @@ import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_L
 import type { EN } from '../../sun/align';
 import type { PlanSide } from '../../core/types';
 import { GoogleEarthLayer, type EarthFrame, type EarthStatus } from '../../sun/googleEarth';
+import { createPointCloudBlock } from './sunPointCloud';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -2335,6 +2336,10 @@ export const sunStep: Step = {
         nbNotes,
         toggles,
         earthBlock,
+        createPointCloudBlock(sc, () => {
+          invalidateResults();
+          apply(true);
+        }),
         hideBtn,
         h('p', { class: 'hint', style: 'margin:2px 0 0' }, '隠し方は 2 通りです。「計算から除外」は解体予定の既存建物・もう無い建物・データの誤りなどに（画面に出さず、影も落とさず、日当たりの解析にも入りません）。「表示だけ隠す」はプレゼンで視点を遮る建物などに（画面には出しませんが、影・解析には残します）。理由と棟数は日影図・解析結果・プレゼン資料に注記されます。いつでも戻せます。ふだんは建物をクリックすると、高さを直したり 1 棟だけ隠したりできます'),
         hiddenBox,

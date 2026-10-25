@@ -11,6 +11,9 @@ import { ALIGN_COLORS, type EN } from './align';
 import { PLANNED_COLORS, PLANNED_DEFAULT_LABEL, buildPlannedHouseGeometry, clampHouse, plannedFootprint, syncPlannedHouse, type PlannedHouse } from './plannedHouse';
 import { fillGapsWith } from './footprint';
 import { rankShadowCasters } from './keyNeighbors';
+import { PointCloudLayer } from './pointcloud/layer';
+import { fitBuildings, type CloudFitResult } from './pointcloud/fit';
+import type { SiteCloud } from './pointcloud/place';
 import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
 
 /** 想定の家（planned 付きの周辺建物） */
@@ -32,6 +35,23 @@ export type NeighborSourceChoice = 'plateau' | 'gsi' | 'osm';
 export const NEIGHBOR_RADIUS_M = 110;
 
 /** SunContext.loadNeighbors の結果 */
+/** 点群の当てはめの結果（日照ステップの表示用） */
+export interface PointCloudSummary {
+  points: number;
+  /** 屋根を実測にした棟数と、その屋根の形の内訳 */
+  fitted: number;
+  kinds: Partial<Record<RoofSpec['kind'], number>>;
+  /** そのままにした棟: PLATEAU LOD2 の実形状・利用者が直した建物 */
+  lod2: number;
+  user: number;
+  /** 点が少ない（点群の端・欠け）・低い（解体済み・空き地の可能性） */
+  few: number;
+  low: number;
+  /** 点群の範囲の外の棟 */
+  outOfRange: number;
+  trees: number;
+}
+
 export interface LoadNeighborsResult {
   /** 取り込んだ棟数（敷地に重なる建物を除いた後。手動の隣家・想定の家は含まない） */
   count: number;
@@ -532,6 +552,12 @@ export class SunContext {
   roofEstimate = true;
   /** 最後の取得の結果（注記・出典の表示用。まだ取っていなければ null） */
   lastLoad: LoadNeighborsResult | null = null;
+  /** 点群（航空レーザ・スキャン）の点と、点群から見つけた木 */
+  readonly cloudLayer = new PointCloudLayer();
+  /** 当てはめに使った点群と結果（origin = 点群の東・北の原点） */
+  cloudData: { cloud: SiteCloud; result: CloudFitResult; origin: LatLon; summary: PointCloudSummary } | null = null;
+  showCloudPoints = true;
+  showCloudTrees = true;
 
   constructor(
     readonly viewer: Viewer,
@@ -539,7 +565,7 @@ export class SunContext {
   ) {
     this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, aerialLoaded: false };
     this.ghostsG.name = 'neighbor-ghosts';
-    this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.pathG, this.sunMarker);
+    this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.pathG, this.sunMarker, this.cloudLayer.group);
     viewer.groups.context.add(this.group);
   }
 
@@ -595,7 +621,7 @@ export class SunContext {
   heightOf(b: NeighborBuilding): number {
     const key = this.keyOf(b);
     const roof = this.edits.roofs.get(key);
-    if (roof && b.plateau && b.mesh) return specTop(roof);
+    if (roof && !b.planned) return specTop(roof);
     return this.edits.heights.get(key) ?? b.height;
   }
 
@@ -604,23 +630,23 @@ export class SunContext {
     const key = this.keyOf(b);
     const roof = this.edits.roofs.get(key);
     const out: NeighborBuilding & { confirmed?: boolean } = { ...b };
-    if (this.edits.heights.has(key) || (roof && b.plateau && b.mesh)) out.heightKind = 'manual';
+    if (this.edits.heights.has(key) || (roof && !b.planned)) out.heightKind = roof?.lidar && !roof.user ? 'measured' : 'manual';
     if (roof && b.plateau && b.mesh) out.plateau = { ...b.plateau, roofEstimate: roof };
     if (this.edits.confirmed.has(key)) out.confirmed = true;
     return out;
   }
 
-  /** 利用者が直した屋根（PLATEAU の建物のみ） */
+  /** 利用者が直した屋根・点群で実測した屋根 */
   roofOf(b: NeighborBuilding): RoofSpec | null {
-    return b.plateau && b.mesh ? (this.edits.roofs.get(this.keyOf(b)) ?? null) : null;
+    return b.planned ? null : (this.edits.roofs.get(this.keyOf(b)) ?? null);
   }
 
   /** 屋根を利用者の仕様にする（null で自動の推定に戻す）。直した高さの記録は外す。取り直しの後も同じ建物に当て直す */
   setRoof(key: string, spec: RoofSpec | null): boolean {
     const b = this.findByKey(key);
-    if (!b || !b.plateau || !b.mesh) return false;
+    if (!b || b.planned || b.ring.length < 3) return false;
     if (spec) {
-      this.edits.roofs.set(key, normalizeSpec({ ...spec, user: true }));
+      this.edits.roofs.set(key, normalizeSpec({ ...spec, user: true, lidar: undefined }));
       this.edits.heights.delete(key);
       const fp = this.footprintOf(b);
       if (fp) this.edits.footprints.set(key, fp);
@@ -1245,17 +1271,20 @@ export class SunContext {
       const key = this.keyOf(b);
       const planned = b.planned ? this.currentPlanned(b as PlannedBuilding) : null;
       // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く。地面は y=0（地盤の高低差は表現しない。計画建物・他の建物と同じ平面）
-      const shaped = !planned && !!b.mesh && !!b.plateau;
+      // 屋根の仕様（手入力・点群の実測）がある建物は、国土地理院・OSM の建物でも仕様どおりに作る
+      const shapedPa = !!b.mesh && !!b.plateau;
+      const specOnly = !planned && !shapedPa && this.edits.roofs.has(key) ? specMesh(b.ring, this.edits.roofs.get(key)!) : null;
+      const shaped = !planned && (shapedPa || !!specOnly);
       let geo: THREE.BufferGeometry;
       if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });
       else if (shaped) {
-        const pa = b.plateau!;
-        const a = toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon);
+        const pa = b.plateau && b.mesh ? b.plateau : null;
+        const a = pa ? toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon) : { e: 0, n: 0 };
         // 直した高さは足元を固定して縦に伸縮（形状の高さ zmax − zmin に対する比）
         // 利用者が直した屋根: anchor 基準の輪郭から仕様どおりに作り直す（高さは仕様の最高点なので伸縮しない）
         const roofSpec = this.edits.roofs.get(key);
-        const specM = roofSpec ? specMesh(b.ring.map((p) => ({ e: p.e - a.e, n: p.n - a.n })), roofSpec) : null;
-        const span = specM ? 0 : pa.zmax - pa.zmin;
+        const specM = specOnly ?? (roofSpec ? specMesh(b.ring.map((p) => ({ e: p.e - a.e, n: p.n - a.n })), roofSpec) : null);
+        const span = specM || !pa ? 0 : pa.zmax - pa.zmin;
         const heightScale = span > 0.01 ? this.heightOf(b) / span : 1;
         // 航空写真があれば屋根に平面投影の UV（勾配屋根にも貼れる）。写真の範囲は ring と同じピン基準の東・北
         const roofUV = ai ? { west: ai.west, east: ai.east, south: ai.south, north: ai.north, toEN: (x: number, z: number) => ({ e: a.e + x, n: a.n - z }) } : null;
@@ -1348,10 +1377,100 @@ export class SunContext {
     const present = new Set(this.state.neighbors.map((b) => this.keyOf(b)));
     for (const k of [...this.highlightKeys]) if (!present.has(k)) this.highlightKeys.delete(k);
     if (this.previewKey && !present.has(this.previewKey)) this.previewKey = null;
+    this.placeCloud();
     this.applyGhosts();
     this.applyVisibility();
     this.viewer.invalidate();
     this.onNeighborsChange?.();
+  }
+
+  /** 点群の東・北の原点（周辺建物の ring と同じ: 取得したときのピン。まだ取っていなければ今のピン） */
+  cloudOrigin(): LatLon {
+    return this.neighborsOrigin ?? siteLatLon(this.state.site);
+  }
+
+  /**
+   * 点群で周辺建物の高さ・屋根を実測にする。cloud は cloudOrigin() を原点にした東・北。
+   * - 当てはめる: 今の一覧の建物（想定の家・利用者が直した高さ／屋根・PLATEAU LOD2 の実形状は除く）
+   * - 結果は屋根の仕様（RoofSpec, lidar）として記録（取り直しても同じ建物に当て直す。手で直せば手入力が勝つ）
+   * - 点群の木は影を落とし、解析にも入る
+   */
+  applyPointCloud(cloud: SiteCloud, origin: LatLon = this.cloudOrigin()): PointCloudSummary {
+    for (const [k, r] of [...this.edits.roofs]) if (r.lidar && !r.user) this.edits.roofs.delete(k);
+    const summary: PointCloudSummary = { points: cloud.count, fitted: 0, kinds: {}, lod2: 0, user: 0, few: 0, low: 0, trees: 0, outOfRange: 0 };
+    const all = this.state.neighbors.filter((b) => !b.planned && b.ring.length >= 3);
+    const d = toLocal(origin.lat, origin.lon, this.cloudOrigin().lat, this.cloudOrigin().lon);
+    // 点群の東・北に合わせた ring（原点が違えばずらす）
+    const ringOf = (b: NeighborBuilding) => b.ring.map((p) => ({ e: p.e - d.e, n: p.n - d.n }));
+    let minE = Infinity;
+    let maxE = -Infinity;
+    let minN = Infinity;
+    let maxN = -Infinity;
+    for (let i = 0; i < cloud.count; i++) {
+      minE = Math.min(minE, cloud.e[i]);
+      maxE = Math.max(maxE, cloud.e[i]);
+      minN = Math.min(minN, cloud.n[i]);
+      maxN = Math.max(maxN, cloud.n[i]);
+    }
+    const targets: { key: string; ring: { e: number; n: number }[]; height: number }[] = [];
+    for (const b of all) {
+      const key = this.keyOf(b);
+      const ring = ringOf(b);
+      const c = ringCentroid(ring);
+      if (c.e < minE || c.e > maxE || c.n < minN || c.n > maxN) {
+        summary.outOfRange++;
+        continue;
+      }
+      if (this.edits.heights.has(key) || this.edits.roofs.get(key)?.user) {
+        summary.user++;
+        continue;
+      }
+      if (b.plateau && b.mesh && (b.plateau.lod ?? b.plateau.datasetLod) >= 2 && !b.plateau.roofEstimate) {
+        summary.lod2++;
+        continue;
+      }
+      targets.push({ key, ring, height: b.height });
+    }
+    const mask = all.map((b) => ({ key: this.keyOf(b), ring: ringOf(b), height: b.height }));
+    // 計画地（建て替える敷地。1m 広げる）: 中の木は数えず、点も出さない
+    const site = this.targetRing();
+    const exclude = site ? grownRing(site.map((p) => ({ e: p.e - d.e, n: p.n - d.n })), 1) : null;
+    const result = fitBuildings(cloud, targets, mask, exclude);
+    for (const [key, f] of result.fits) {
+      this.edits.roofs.set(key, normalizeSpec(f.spec));
+      const b = this.findByKey(key);
+      const fp = b ? this.footprintOf(b) : null;
+      if (fp) this.edits.footprints.set(key, fp);
+      summary.fitted++;
+      summary.kinds[f.spec.kind] = (summary.kinds[f.spec.kind] ?? 0) + 1;
+    }
+    for (const s of result.skipped.values()) {
+      if (s.skip === 'low') summary.low++;
+      else summary.few++;
+    }
+    summary.trees = result.trees.length;
+    this.cloudLayer.setPoints(cloud, result.ground, exclude);
+    this.cloudLayer.setTrees(result.trees);
+    this.cloudData = { cloud, result, origin, summary };
+    this.buildNeighbors();
+    return summary;
+  }
+
+  /** 点群の実測をやめる（屋根の実測・点・木を消す。手で直した屋根は残す） */
+  clearPointCloud() {
+    for (const [k, r] of [...this.edits.roofs]) if (r.lidar && !r.user) this.edits.roofs.delete(k);
+    this.cloudLayer.clear();
+    this.cloudData = null;
+    this.buildNeighbors();
+  }
+
+  /** 点群の置き方を今のピン・真北に合わせる */
+  private placeCloud() {
+    if (!this.cloudData) return;
+    const o = this.cloudOrigin();
+    const d = toLocal(this.cloudData.origin.lat, this.cloudData.origin.lon, o.lat, o.lon);
+    this.cloudLayer.setFrame((e, n, y) => this.toWorld(e + d.e, n + d.n, y));
+    this.cloudLayer.setVisible(this.showCloudPoints, this.showCloudTrees && this.state.showNeighbors);
   }
 
   applyVisibility() {
@@ -1448,4 +1567,15 @@ export class SunContext {
     this.sunMarker.visible = this.state.showSunPath;
     this.viewer.invalidate();
   }
+}
+
+/** 輪郭を重心から外へ m だけ広げる（長方形・凸に近い輪郭向けの簡易版） */
+function grownRing(ring: EN[], m: number): EN[] {
+  const c = ringCentroid(ring);
+  return ring.map((p) => {
+    const dx = p.e - c.e;
+    const dy = p.n - c.n;
+    const d = Math.hypot(dx, dy) || 1;
+    return { e: p.e + (dx / d) * m * Math.SQRT2, n: p.n + (dy / d) * m * Math.SQRT2 };
+  });
 }

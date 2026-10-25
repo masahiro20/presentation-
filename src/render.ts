@@ -11,7 +11,7 @@ import { Viewer } from './scene/viewer';
 import { auditEnvelope, type EnvelopeAudit } from './scene/selfCheck';
 import { DEFAULT_DESIGN, type DesignOptions } from './styles/presets';
 import { sunPosition, sunDirectionWorld, localDate } from './sun/solar';
-import { finishPhoto } from './scene/photoreal';
+import { finishPhoto } from './scene/photoFinish';
 import type { BuildingModel } from './core/types';
 
 interface Payload {

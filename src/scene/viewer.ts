@@ -1106,7 +1106,8 @@ export class Viewer {
     this.design = design;
     this.registry.update(exteriorFor(design), interiorFor(design), {
       wallColor: design.wallColorOverride,
-      doorColor: design.specPatch?.doorColor,
+      // 室内ドアの色: 手で選んだ色 → コーディネートで選んだ建具の商品 → 壁になじませる（既定）
+      doorColor: design.specPatch?.doorColor ?? (design.finishes?.door ? 'preset' : undefined),
       night: design.timeOfDay === 'night',
       clay: design.clay,
     });

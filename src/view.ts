@@ -14,8 +14,11 @@ import type { ProjectFile } from './app/project';
 import { siteLatLon } from './sun/geo';
 import { sunPosition, localDate, sunDirectionWorld } from './sun/solar';
 import { h, clear } from './app/dom';
+import { upload } from '@vercel/blob/client';
+import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
+import { ROUNDS, shotFor, deltaText, type CustomerPicks } from './coordinate/decisions';
 
-type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; designer?: string; tel?: string; email?: string; url?: string } };
+type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; deltas?: Record<string, Record<string, number | null>>; designer?: string; tel?: string; email?: string; url?: string } };
 
 const root = document.getElementById('view')!;
 const head = h('div', { class: 'vw-head' });
@@ -182,6 +185,73 @@ async function main() {
     row('外観', MAIN_EXTERIOR_IDS, EXTERIOR_STYLES, 'exteriorId');
     row('内観', MAIN_INTERIOR_IDS.slice(0, 4), INTERIOR_STYLES, 'interiorId');
   });
+  // 仕様を選ぶ（コーディネーターが絞った候補だけ）: 自分の家の 3D で切り替えて選び、ひとことを添えて担当者に送る
+  const proposed = ROUNDS.flatMap((r) => r.cats)
+    .map((id) => ({ cat: FINISH_CATEGORIES.find((c) => c.id === id)!, it: proj.coord?.items?.[id] }))
+    .filter((x) => x.cat && x.it && (x.it.candidates?.length ?? 0) >= 2 && x.it.status !== 'decided');
+  if (proposed.length && proj.share?.id)
+    addTab('pick', '仕様を選ぶ', (pane) => {
+      const picks: CustomerPicks['picks'] = {};
+      const deltas = proj.share?.deltas ?? {};
+      pane.appendChild(h('div', { class: 'vw-hint' }, `担当者がお選びした候補です（${proposed.length} か所）。押すと、この家の 3D がその仕上げに変わります。気に入ったものを選んで、最後に「担当者に送る」を押してください。`));
+      for (const { cat, it } of proposed) {
+        const box = h('div', { class: 'vw-pick' }, h('div', { class: 'k' }, cat.label));
+        const chips = h('div', { class: 'chips' });
+        const cur = () => picks[cat.id]?.id ?? selectedProduct(cat, design).id;
+        const render = () => {
+          clear(chips);
+          for (const pid of it!.candidates!) {
+            const p = cat.products.find((x) => x.id === pid);
+            if (!p) continue;
+            const d = deltas[cat.id]?.[pid];
+            chips.appendChild(
+              h(
+                'button',
+                {
+                  class: `vw-cand ${cur() === pid ? 'on' : ''}`,
+                  onclick: () => {
+                    picks[cat.id] = { ...(picks[cat.id] ?? {}), id: pid };
+                    design.finishes = { ...(design.finishes ?? {}), [cat.id]: pid };
+                    viewer.setDesign(design);
+                    // 色を比べるときは室内の照明も点ける仕上げ表示（閲覧表示の昼は床・壁が灰色に沈んで見える）
+                    viewer.setViewMode('finish');
+                    const s = shotFor(cat.id, shots());
+                    if (s) goto(s);
+                    render();
+                  },
+                },
+                h('span', { class: 'sw' }, ...p.swatch.map((c) => h('i', { style: `background:${c}` }))),
+                h('span', { class: 'nm' }, `${p.name}${p.color ? `　${p.color}` : ''}`),
+                d != null && Math.abs(d) >= 1000 ? h('span', { class: 'dl' }, deltaText(d)) : null,
+              ),
+            );
+          }
+        };
+        render();
+        const memo = h('input', { type: 'text', placeholder: 'ひとこと（例: もう少し明るい色が好き）', oninput: (e: Event) => { picks[cat.id] = { id: cur(), comment: (e.target as HTMLInputElement).value }; } });
+        box.append(chips, memo);
+        pane.appendChild(box);
+      }
+      const note = h('textarea', { rows: 2, placeholder: '全体へのご要望・ご質問（任意）' }) as HTMLTextAreaElement;
+      const status = h('div', { class: 'vw-hint' });
+      const send = h('button', { class: 'vw-chip primary' }, '担当者に送る') as HTMLButtonElement;
+      send.onclick = async () => {
+        // 触っていない部位は今の選択（担当者のおすすめ）のまま送る
+        for (const { cat } of proposed) if (!picks[cat.id]) picks[cat.id] = { id: selectedProduct(cat, design).id };
+        const body: CustomerPicks = { at: new Date().toISOString(), picks, note: note.value.trim() || undefined };
+        send.disabled = true;
+        status.textContent = '送っています…';
+        try {
+          await upload(`share/${proj.share!.id}/picks.json`, new Blob([JSON.stringify(body)], { type: 'application/json' }), { access: 'public', handleUploadUrl: '/api/share', contentType: 'application/json' });
+          status.textContent = '送りました。ありがとうございます。担当者から次回の打ち合わせでご案内します（何度でも送り直せます）。';
+        } catch (e) {
+          status.textContent = `送れませんでした（${(e as Error).message}）。お手数ですが担当者にご連絡ください。`;
+        } finally {
+          send.disabled = false;
+        }
+      };
+      pane.append(note, send, status);
+    });
   // AR
   // 設計士のメモ（図面の吹き出し）: タップでその場所へ
   const notes = proj.model.floors.flatMap((f) => (f.notes ?? []).map((n) => ({ ...n, level: f.level })));

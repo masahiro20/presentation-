@@ -164,3 +164,28 @@ export async function importFinishedImages(ctx: StepCtx, shots: Shot[]) {
     true,
   );
 }
+
+/**
+ * 外部の動画 AI で作ったルームツアー動画（MP4・MOV・WebM）を取り込む。
+ * 資料の動画のページと「お客様に渡す」リンクに入る（同じ名前の動画は差し替え）
+ */
+export function importFinishedVideos(onDone?: () => void) {
+  const input = h('input', { type: 'file', accept: 'video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm', multiple: true, style: 'display:none' }) as HTMLInputElement;
+  input.addEventListener('change', () => {
+    const files = [...(input.files ?? [])];
+    for (const f of files) {
+      const title = f.name.replace(/\.[a-z0-9]+$/i, '');
+      const ext = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'mp4').toLowerCase();
+      state.videos = state.videos.filter((x) => x.title !== title);
+      state.videos.push({ title, url: URL.createObjectURL(f), ext });
+    }
+    if (files.length) {
+      emit('gallery');
+      toast(`動画を ${files.length} 本取り込みました（プレゼン資料と共有リンクに入ります）`, 'ok');
+    }
+    input.remove();
+    onDone?.();
+  });
+  document.body.appendChild(input);
+  input.click();
+}

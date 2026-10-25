@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import type { Viewer } from './viewer';
 import { loadHdri } from './hdri';
-import { finishPhoto } from './photoreal';
+import { finishPhoto } from './photoFinish';
 
 export interface StudioOptions {
   width: number;

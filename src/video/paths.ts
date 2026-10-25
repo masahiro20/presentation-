@@ -37,6 +37,8 @@ export interface CameraProgram {
   sample(t: number): CamSample;
   /** 字幕の区間 */
   captions: { t0: number; t1: number; text: string }[];
+  /** 立ち止まって見回す区間（ウォークスルーのみ）: 部屋の見せ場。ルームツアーのキーフレームはここから取る */
+  holds?: { t0: number; t1: number; caption: string }[];
 }
 
 const MM = 0.001;
@@ -474,6 +476,7 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
   return {
     duration: T,
     captions,
+    holds: timed.filter((s) => s.kind === 'hold').map((s) => ({ t0: s.t0, t1: s.t1, caption: s.caption ?? '' })),
     sample(t: number): CamSample {
       const c0 = raw(t);
       const pos = c0.pos;

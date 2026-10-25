@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { USDZExporter } from 'three/examples/jsm/exporters/USDZExporter.js';
 import type { Viewer } from './viewer';
-import { prepareMaterials, restoreMaterials } from './photoreal';
+import { prepareMaterials, restoreMaterials } from './photoFinish';
 
 export async function exportUsdz(viewer: Viewer, opts: { landscape?: boolean; scale?: number } = {}): Promise<Uint8Array> {
   const g = viewer.groups;

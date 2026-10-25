@@ -6,6 +6,7 @@ import type { SeasonResult, SunHighlight } from '../sun/report';
 import type { ExternalBuilding } from './externalFit';
 import type { SunDisclosure } from './sunDisclosure';
 import type { EstimateState } from './steps/estimateStep';
+import type { CoordState } from '../coordinate/decisions';
 
 export interface GalleryItem {
   id: string;
@@ -64,6 +65,8 @@ export interface ProjectState {
   external: ExternalBuilding | null;
   /** 見積・資金計画（数量の上書き・仕様の選択・資金計画の入力） */
   estimate: EstimateState | null;
+  /** コーディネートの段取り（部位ごとの候補・決定・お客様の選択） */
+  coord: CoordState;
 }
 
 export const state: ProjectState = {
@@ -82,6 +85,7 @@ export const state: ProjectState = {
   render: { samples: 512, width: 1920, height: 1080 },
   external: null,
   estimate: null,
+  coord: { items: {} },
 };
 
 type Handler = (payload?: unknown) => void;

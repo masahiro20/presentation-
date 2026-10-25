@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { Viewer } from './viewer';
-import { prepareMaterials, restoreMaterials } from './photoreal';
+import { prepareMaterials, restoreMaterials } from './photoFinish';
 
 export async function exportGlb(viewer: Viewer): Promise<ArrayBuffer> {
   const g = viewer.groups;

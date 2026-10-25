@@ -131,14 +131,14 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
     toast('カットがありません');
     return;
   }
-  const pm = progressModal(`AI 仕上げ用のカット集を作成中（${shots.length}枚・${opts.width}×${opts.height}）`);
+  const pm = progressModal(`カット集（Nano Banana Pro 用の下絵）を作成中（${shots.length}枚・${opts.width}×${opts.height}）`);
   const prev = v.currentView();
   // AI 仕上げの下絵に文字を焼き込まない（部屋名の札は消す）
   const prevLabels = v.roomLabelsShown();
   v.setRoomLabels(false);
   const entries: { name: string; data: Uint8Array }[] = [];
   const lines: string[] = [];
-  lines.push(`${state.name}　カット集（AI 仕上げ用）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を画像生成 AI（写真化・リライティング）に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感だけを仕上げる指示になっています。仕上がった画像は、パース →「書き出し」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。', '');
+  lines.push(`${state.name}　カット集（Nano Banana Pro で仕上げる下絵）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を Nano Banana Pro に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚を次のカットから「参考画像」として一緒に渡すと、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。', '');
   let n = 0;
   const manifest: { no: number; shot: Shot }[] = [];
   try {

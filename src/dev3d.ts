@@ -42,7 +42,7 @@ if (shotId) {
 }
 // 写真の仕上げ（グレーディング）だけを試す: grade=1
 if (params.get('grade')) {
-  const { finishPhoto } = await import('./scene/photoreal');
+  const { finishPhoto } = await import('./scene/photoFinish');
   const W = +(params.get('w') ?? 1280);
   const H = +(params.get('hh') ?? 720);
   const url0 = await viewer.capture(W, H, 'image/png');
@@ -58,14 +58,6 @@ if (params.get('grade')) {
   viewer.pause(true);
   document.body.innerHTML = `<img id="ptimg" src="${url}" style="width:100vw;display:block">`;
   await (document.getElementById('ptimg') as HTMLImageElement).decode();
-}
-if (params.get('pt')) {
-  const { renderPhotoreal } = await import('./scene/photoreal');
-  const url = await renderPhotoreal(viewer, { width: +(params.get('w') ?? 480), height: +(params.get('hh') ?? 300), samples: +params.get('pt')!, timeLimit: 3000000, exposure: +(params.get('exp') ?? (params.get('shot')?.startsWith('int') ? 1.9 : 1.0)) });
-  viewer.pause(true);
-  document.body.innerHTML = `<img id="ptimg" src="${url}" style="width:100vw;display:block">`;
-  await (document.getElementById('ptimg') as HTMLImageElement).decode();
-  (window as any).__ptUrl = url;
 }
 if (params.get('elev')) {
   const { renderElevation } = await import('./drawings/elevation');

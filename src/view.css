@@ -44,3 +44,14 @@ body { background: var(--paper); color: var(--ink); font-family: 'Noto Sans JP',
 .vw-media .bar button { appearance: none; border: 1px solid #444; background: transparent; color: #eee; font: inherit; font-size: 12.5px; padding: 7px 12px; border-radius: 6px; white-space: nowrap; }
 .vw-media .bar button.on { background: #eee; color: #111; }
 model-viewer { width: 1px; height: 1px; position: absolute; left: -10px; top: -10px; opacity: 0; pointer-events: none; }
+/* 仕様を選ぶ */
+.vw-pick { width: 100%; padding: 8px 0 10px; border-bottom: 1px solid var(--line); }
+.vw-pick .k { font-size: 11px; letter-spacing: 0.1em; color: #8b8a86; margin-bottom: 6px; }
+.vw-pick .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.vw-pick input { width: 100%; margin-top: 6px; font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); box-sizing: border-box; }
+.vw-cand { appearance: none; display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; padding: 5px 10px 5px 5px; border-radius: 8px; text-align: left; }
+.vw-cand.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.vw-cand .sw { display: inline-flex; flex-direction: column; width: 22px; height: 22px; border-radius: 4px; overflow: hidden; border: 1px solid rgba(0,0,0,0.1); flex: none; }
+.vw-cand .sw i { flex: 1; }
+.vw-cand .dl { font-size: 10.5px; color: #a0522d; white-space: nowrap; }
+.vw-pane textarea { width: 100%; font: inherit; font-size: 12.5px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; margin: 10px 0 8px; box-sizing: border-box; background: var(--paper); }

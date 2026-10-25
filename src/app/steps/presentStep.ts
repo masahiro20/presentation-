@@ -5,7 +5,8 @@ import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { excludedFromFloorArea } from '../../core/types';
 import { exteriorById, interiorById } from '../../styles/presets';
-import { captureShot, clearPhotorealFailure, lastPhotorealFailure, photorealFailed, currentShots } from './designStep';
+import { currentShots } from './designStep';
+import { captureDraft, hasFinished } from '../draftCapture';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { buildSheets } from './elevationStep';
 import { estimateSummary } from './estimateStep';
@@ -39,7 +40,7 @@ export function deckDisclosure(saved: SunDisclosure | undefined, now: SunDisclos
 export const EXCLUDED_ROWS_PER_SLIDE = 12;
 
 /** 足りない素材をすべて自動で作る（一気通貫） */
-export async function autoGenerate(ctx: StepCtx, draft = false) {
+export async function autoGenerate(ctx: StepCtx) {
   const app = ctx.app;
   app.ensureScene();
   const v = app.viewer;
@@ -47,8 +48,7 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
   const prevView = v.currentView();
   const prevDesign = { ...state.design };
   try {
-    // パース
-    // 提案用パース（写真品質）: まだ写真品質のないショットだけ
+    // パース: 外部で仕上げた写真がまだ無いカットだけ、3D の下絵を入れる（仕上げた写真を取り込むと入れ替わる）
     // パース背景の想像の家並みは資料には写さない（白い箱が主役を食うので、遠景の木立だけにする）
     v.setTownVisible(false);
     const all = currentShots(ctx);
@@ -59,27 +59,20 @@ export async function autoGenerate(ctx: StepCtx, draft = false) {
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
       ...all.filter((s) => s.kind === 'cutaway').slice(0, 2),
       ...interiors.filter((s, i) => i < 2 || roomRank(s.title) < 3).slice(0, 4),
-    ].filter((s) => !state.gallery.some((g) => g.shotId === s.id && g.quality === 'photoreal'));
-    if (pick.length) {
-      const shots = pick;
-      const sub = {
-        signal: pm.signal,
-        set: (r: number, msg?: string, preview?: string) => pm.set(r * 0.7, msg, preview),
-      };
-      clearPhotorealFailure();
-      let ok = 0;
-      for (let i = 0; i < shots.length; i++) {
-        if (pm.signal.aborted) return;
-        const it = await captureShot(ctx, shots[i], { quality: draft ? 'studio' : 'photoreal', silent: true, progress: sub, slot: { index: i, total: shots.length } });
-        if (it) ok++;
-        else if (!draft && ok === 0 && lastPhotorealFailure) break;
-        await new Promise((r) => setTimeout(r, 20));
+    ].filter((s) => !hasFinished(s.id) && !state.gallery.some((g) => g.shotId === s.id));
+    for (let i = 0; i < pick.length; i++) {
+      if (pm.signal.aborted) return;
+      pm.set((i / pick.length) * 0.7, `下絵: ${pick[i].title}`);
+      try {
+        await captureDraft(ctx, pick[i]);
+      } catch (e) {
+        console.warn('下絵を描けませんでした', pick[i].title, e);
       }
-      if (lastPhotorealFailure) photorealFailed(ctx, lastPhotorealFailure.e, lastPhotorealFailure.shot);
-      if (prevDesign.timeOfDay !== state.design.timeOfDay) {
-        state.design = prevDesign;
-        v.setDesign(state.design);
-      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (prevDesign.timeOfDay !== state.design.timeOfDay) {
+      state.design = prevDesign;
+      v.setDesign(state.design);
     }
     // 図面
     pm.set(0.72, '立面図・平面図を作成中');
@@ -192,7 +185,7 @@ function pick(kind: GalleryItem['kind']) {
 
 /** 下書き画像には印を付け、提案時に気付けるようにする */
 function draftMark(g: GalleryItem | undefined) {
-  return g && g.quality !== 'photoreal' ? h('div', { class: 'draft' }, '下書き') : null;
+  return g && g.quality !== 'photoreal' ? h('div', { class: 'draft' }, '下絵') : null;
 }
 
 const photo = (g: GalleryItem | undefined) => (g ? h('img', { class: 'photo', src: g.url, alt: g.title }) : null);
@@ -315,7 +308,10 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
           ...FINISH_CATEGORIES.map((cat) => {
             const p = selectedProduct(cat, state.design);
             const memo = state.design.finishNotes?.[cat.id];
-            return h('div', { class: 'finish-row' }, h('div', { class: 'sw' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'k' }, cat.label), h('div', { class: 'v' }, h('div', { class: 'nm' }, `${p.maker}　${p.name}`), h('div', { class: 'cd' }, [memo ?? p.code.replace(/\s*※品番は品番メモに/, ''), p.color].filter(Boolean).join('　'))));
+            // コーディネートの段取り: 決定済みは「決定」、候補を絞った部位は「ご検討中（候補 n 案）」
+            const it = state.coord.items[cat.id];
+            const st = it?.status === 'decided' ? '決定' : (it?.candidates?.length ?? 0) >= 2 ? `ご検討中（候補 ${it!.candidates!.length} 案）` : '';
+            return h('div', { class: 'finish-row' }, h('div', { class: 'sw' }, ...p.swatch.map((c) => h('span', { style: `background:${c}` }))), h('div', { class: 'k' }, cat.label), h('div', { class: 'v' }, h('div', { class: 'nm' }, `${p.maker}　${p.name}`), h('div', { class: 'cd' }, [memo ?? p.code.replace(/\s*※品番は品番メモに/, ''), p.color].filter(Boolean).join('　'), st ? h('span', { class: `st ${it?.status === 'decided' ? 'ok' : ''}` }, st) : null)));
           }),
         ),
       ),
@@ -564,7 +560,7 @@ export const presentStep: Step = {
         h(
           'ul',
           { style: 'font-size:13px;line-height:1.9;color:#5b6068;padding-left:18px;margin:0' },
-          h('li', null, `パース ${state.gallery.length} 枚（写真品質 ${state.gallery.filter((g) => g.quality === 'photoreal').length} 枚）`),
+          h('li', null, `パース ${state.gallery.length} 枚（仕上げ済み ${state.gallery.filter((g) => g.quality === 'photoreal').length} 枚）`),
           h('li', null, `立面図 ${state.elevations.length} 面・平面図 ${state.plans.length} 枚`),
           h('li', null, `日照解析 ${state.sun.seasons.length ? '済' : '未'}／日影図 ${state.sun.diagramSvg ? '済' : '未'}${sunCaption(state.external) ? '（設計 3D データで解析）' : ''}`),
           (() => {
@@ -583,7 +579,7 @@ export const presentStep: Step = {
           })(),
           h('li', null, `動画 ${state.videos.length} 本`),
         ),
-        h('p', { class: 'hint' }, '写真品質のパースがある場合は優先して使われます。印刷は A4 横に最適化されています。')
+        h('p', { class: 'hint' }, '外部で仕上げて取り込んだ写真がある場合は優先して使われます。印刷は A4 横に最適化されています。')
       );
     };
     const render = () => {
@@ -607,15 +603,15 @@ export const presentStep: Step = {
       const mode = state.autoRun;
       state.autoRun = undefined;
       setTimeout(async () => {
-        await autoGenerate(ctx, mode === 'draft');
+        void mode;
+        await autoGenerate(ctx);
         render();
       }, 50);
     }
     ctx.side.append(
       h('h2', null, 'プレゼン資料'),
-      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成（写真品質）'),
-      h('p', { class: 'hint' }, `提案用パース（外観・夕景・鳥瞰・主な部屋）を写真品質でレンダリングします。1枚あたり1〜2分ほどかかります。`),
-      h('button', { class: 'btn sm ghost', onclick: async () => { await autoGenerate(ctx, true); render(); } }, '高品質描画ですばやく資料を完成（数十秒）'),
+      h('button', { class: 'btn primary block', onclick: async () => { await autoGenerate(ctx); render(); } }, '足りない素材を自動作成して資料を完成'),
+      h('p', { class: 'hint' }, 'パースは、外部（Nano Banana Pro）で仕上げて取り込んだ写真を使います。まだ仕上げていないカットには 3D の下絵（「下絵」の印付き）が入り、あとで取り込むと入れ替わります（パース →「仕上げ（外部）」）。'),
       h('label', { class: 'check', style: 'display:flex;gap:8px;align-items:center;margin:10px 0 4px;font-size:12.5px' }, h('input', { type: 'checkbox', checked: !!state.deckFunding, onchange: (e: Event) => { state.deckFunding = (e.target as HTMLInputElement).checked; render(); } }), '資金計画（概算）のページを入れる'),
       section(
         '表紙の情報',

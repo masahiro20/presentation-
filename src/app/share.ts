@@ -7,6 +7,7 @@ import { upload } from '@vercel/blob/client';
 import { state } from './state';
 import { serializeProject } from './project';
 import { h, modal, toast } from './dom';
+import { finishDeltas } from './steps/estimateStep';
 
 export interface ShareVideo {
   title: string;
@@ -32,9 +33,15 @@ export async function shareProject(onProgress?: (msg: string) => void): Promise<
   }
   onProgress?.('プロジェクトを送っています');
   const project = await serializeProject();
-  const data = { ...project, share: { id, videos, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
+  // コーディネートの候補の差額（お客様の「仕様を選ぶ」に出す。見積の計算はこちらで済ませて渡す）
+  const deltas: Record<string, Record<string, number | null>> = {};
+  for (const [catId, it] of Object.entries(state.coord.items)) if ((it.candidates?.length ?? 0) >= 2 && it.status !== 'decided') deltas[catId] = finishDeltas(catId);
+  const data = { ...project, share: { id, videos, deltas, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
   const r = await upload(`share/${id}/project.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }), { access: 'public', handleUploadUrl: '/api/share', contentType: 'application/json' });
-  return `${location.origin}/view.html?p=${encodeURIComponent(r.url)}`;
+  const link = `${location.origin}/view.html?p=${encodeURIComponent(r.url)}`;
+  // コーディネートの「お客様の選択を受け取る」の受け取り先
+  state.coord = { ...state.coord, shareUrl: link };
+  return link;
 }
 
 /** 共有の案内（進み具合 → できたリンク） */
@@ -54,7 +61,7 @@ export async function shareDialog() {
         h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener' }, '自分のパソコンで開く'),
         typeof navigator.share === 'function' ? h('button', { class: 'btn', onclick: () => navigator.share({ title: state.name, url }).catch(() => {}) }, '送る…') : null,
       ),
-      h('p', { class: 'hint' }, `収録: パース ${state.gallery.length} 枚・動画 ${state.videos.length} 本。動画は共有する前に「動画」の工程で作っておいてください。`),
+      h('p', { class: 'hint' }, `収録: パース ${state.gallery.length} 枚・動画 ${state.videos.length} 本。動画は外部で仕上げたルームツアーを、パース →「仕上げ（外部）」で取り込むと入ります。`),
     );
   } catch (e) {
     const err = e as Error & { status?: number };

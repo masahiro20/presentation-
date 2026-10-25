@@ -8,9 +8,9 @@ import type { Step, StepCtx } from '../app';
 import { exteriorById } from '../../styles/presets';
 import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '../../estimate/areas';
 import { CATEGORIES, type Grade } from '../../estimate/catalog';
-import { computeEstimate, newChoice, defaultGroups, unitPriceOf, yen, type EstimateChoice, type EstimateResult } from '../../estimate/calc';
+import { computeEstimate, newChoice, defaultGroups, unitPriceOf, yen, TAX_RATE, type EstimateChoice, type EstimateResult } from '../../estimate/calc';
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
-import { estimateGroupsFor } from '../../coordinate/catalog';
+import { estimateGroupsFor, FINISH_CATEGORIES } from '../../coordinate/catalog';
 
 export interface EstimateState {
   choice: EstimateChoice;
@@ -75,6 +75,29 @@ export function syncEstimateWithFinishes() {
   const es = ensure();
   Object.assign(es.choice.groups, estimateGroupsFor(state.design));
   emit('estimate');
+}
+
+/**
+ * コーディネートの差額: 部位の商品ごとに、今の選択から差し替えたときの見積の差（税込・円）。
+ * 見積の行に対応しない商品（色違いだけ・標準の範囲）は null。図面の数量（外壁面積・床面積）で掛けるので、この家の金額になる
+ */
+export function finishDeltas(catId: string): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  const cat = FINISH_CATEGORIES.find((c) => c.id === catId);
+  if (!state.model || !cat) return out;
+  const es = ensure();
+  const areas = applyOverrides(baseAreas(es.choice.grade), es.areasOverride);
+  const groups = { ...es.choice.groups, ...estimateGroupsFor(state.design) };
+  const now = computeEstimate(areas, { ...es.choice, groups }).rawSubtotal;
+  for (const p of cat.products) {
+    if (!p.estimate) {
+      out[p.id] = null;
+      continue;
+    }
+    const after = computeEstimate(areas, { ...es.choice, groups: { ...groups, [p.estimate.group]: p.estimate.line } }).rawSubtotal;
+    out[p.id] = Math.round((after - now) * (1 + TAX_RATE));
+  }
+  return out;
 }
 
 /** コーディネート側で決まっている group（見積の画面ではそちらで変える） */

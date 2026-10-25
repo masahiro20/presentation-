@@ -10425,6 +10425,108 @@ function parseDxf(text, opts = {}) {
 	return model;
 }
 //#endregion
+//#region src/core/posts.ts
+/**
+* 柱（Floor.posts）の決まりごと（three 非依存の純関数）。
+*
+* - 柱はその階の床から立つ。管柱・独立柱は上の階の床（最上階なら軒の高さ）まで、通し柱は 1 階から最上階の上まで。
+* - 2 階の張り出し（オーバーハング）: 上の階の外形の角が下の階の外形の外に出ている所。張り出しが半間（455）を超えると、
+*   足元（下の階）に柱を立てるのがふつう（1 間 = 910 を超える張り出しを梁だけで持たせるのは在来の木造では無理がある）。
+* - 壁の中に入る柱（壁の芯から壁厚の半分以内）は 3D では壁に隠れるので描かない。図面では□で描く。
+*/
+/** 張り出しの辺に立てる柱の間隔の上限（mm、1.5 間） */
+var OVERHANG_POST_SPACING = 2730;
+function segDist(p, a, b) {
+	const dx = b.x - a.x;
+	const dy = b.y - a.y;
+	const L2 = dx * dx + dy * dy || 1;
+	const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+	return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+/** 点から外形（複数の輪）の辺までの最短距離 */
+function distToOutline(p, loops) {
+	let d = Infinity;
+	for (const l of loops) for (let i = 0; i < l.length; i++) d = Math.min(d, segDist(p, l[i], l[(i + 1) % l.length]));
+	return d;
+}
+function insideOutline(p, loops) {
+	return loops.some((l) => l.length >= 3 && pointInPolygon(p, l));
+}
+/** 上の階の輪が下の階の外形と重なるか（頂点のどちらかが相手の内側か、辺どうしが近い） */
+function touches(loop, low) {
+	if (loop.some((p) => insideOutline(p, low) || distToOutline(p, low) <= 100)) return true;
+	return low.some((l) => l.some((p) => pointInPolygon(p, loop)));
+}
+/**
+* 上の階の外形のうち、下の階の外形の外に出ている点（張り出しの足元の候補）。
+* 角に加え、張り出した辺が 1.5 間を超えるときは途中にも等間隔に置く。
+* - 下の階の壁（車庫・ポーチの袖壁など外形の外の壁も）の上に載る点は壁の柱で受けるので除く
+* - 下の階とまったく重ならない上の階の輪は張り出しではなく読み違い（別棟・凡例など）として除く
+*/
+function overhangPoints(lower, upper) {
+	const low = lower.outline.filter((l) => l.length >= 3);
+	if (!low.length) return [];
+	const out = [];
+	const onWall = (p) => lower.walls.some((w) => segDist(p, w.a, w.b) <= w.thickness / 2 + 150);
+	const off = (p) => !insideOutline(p, low) && distToOutline(p, low) > 100;
+	const outside = (p) => off(p) && !onWall(p);
+	for (const loop of upper.outline) {
+		const n = loop.length;
+		if (n < 3 || !touches(loop, low)) continue;
+		for (let i = 0; i < n; i++) {
+			const a = loop[i];
+			const b = loop[(i + 1) % n];
+			if (outside(a)) out.push({
+				p: {
+					x: Math.round(a.x),
+					y: Math.round(a.y)
+				},
+				depth: distToOutline(a, low),
+				corner: true
+			});
+			if (off(a) && off(b)) {
+				const L = Math.hypot(b.x - a.x, b.y - a.y);
+				const k = Math.ceil(L / OVERHANG_POST_SPACING);
+				for (let j = 1; j < k; j++) {
+					const p = {
+						x: Math.round(a.x + (b.x - a.x) * j / k),
+						y: Math.round(a.y + (b.y - a.y) * j / k)
+					};
+					if (outside(p)) out.push({
+						p,
+						depth: distToOutline(p, low),
+						corner: false
+					});
+				}
+			}
+		}
+	}
+	return out;
+}
+/** その点の近く（300mm 以内）に柱があるか */
+function hasPostNear(posts, p, tol = 300) {
+	return !!posts?.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= tol);
+}
+/** 柱が壁の中に入っているか（壁の芯から壁厚の半分以内。端の少し外まで含む） */
+function postInWall(p, walls) {
+	return walls.some((w) => segDist(p, w.a, w.b) <= w.thickness / 2 + 5);
+}
+/** 柱の高さの範囲（GL からの mm）: 床から、管柱・独立柱は上の階の床（最上階は壁の上端）まで、通し柱は最上階の上まで */
+function postSpan(model, f, p) {
+	const floors = [...model.floors].sort((a, b) => a.level - b.level);
+	const top = floors[floors.length - 1];
+	const next = floors.find((x) => x.level === f.level + 1);
+	const y0 = f.elevation;
+	if (p.kind === "toshi") return {
+		y0,
+		y1: top.elevation + top.height
+	};
+	return {
+		y0,
+		y1: next ? next.elevation : f.elevation + f.height
+	};
+}
+//#endregion
 //#region src/core/rects.ts
 var rectW = (r) => r.maxX - r.minX;
 var rectH = (r) => r.maxY - r.minY;
@@ -11148,6 +11250,32 @@ function woodCheck(model) {
 			});
 		}
 	}
+	for (const up of model.floors) {
+		const lo = model.floors.find((x) => x.level === up.level - 1);
+		if (!lo) continue;
+		const bare = overhangPoints(lo, up).filter((o) => o.depth >= 455 && !hasPostNear(lo.posts, o.p));
+		if (!bare.length) continue;
+		const deep = bare.filter((o) => o.depth >= 910);
+		const maxD = Math.max(...bare.map((o) => o.depth));
+		const rects = bare.map((o) => ({
+			minX: o.p.x - 180,
+			minY: o.p.y - 180,
+			maxX: o.p.x + 180,
+			maxY: o.p.y + 180
+		}));
+		out.push({
+			id: `overhang-post-${up.level}`,
+			level: lo.level,
+			severity: deep.length ? "warn" : "info",
+			title: `${up.level}階の張り出し（最大 ${m(maxD)} m）の足元 ${bare.length} か所に ${lo.level}階の柱がありません`,
+			detail: (deep.length ? `1 間（910）を超える張り出しを梁の持ち出しだけで受けるのは在来の木造では無理があります。修正画面の「柱」で ${lo.level}階に柱を置いてください（「張り出しの足元に柱を置く」で角にまとめて置けます）。柱は立つ階（${lo.level}階）に置きます` : `半間〜1 間の張り出しは梁の持ち出しで納めることもありますが、足元に柱を立てると安心です。修正画面の「柱」で ${lo.level}階に置けます`) + (bare.length >= 12 ? `。か所が多いときは、${lo.level}階と${up.level}階の図面の位置合わせがずれていないかも確かめてください（ピロティ・車庫の上に載る場合はそのまま柱を置きます）` : ""),
+			marks: [{
+				level: lo.level,
+				rects,
+				label: `${up.level}階の張り出しの足元（柱なし）`
+			}]
+		});
+	}
 	for (const f of floors) for (const r of f.rooms) {
 		if (excludedFromFloorArea(r.type) || [
 			"closet",
@@ -11805,7 +11933,7 @@ function livabilityChecks(model) {
 			level: f.level,
 			severity: "info",
 			title: `${f.level}階: 収納が床面積の ${Math.round(storage / floorArea * 100)}% と少なめです`,
-			detail: "戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります"
+			detail: `戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * .1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります`
 		});
 	}
 	if (floors.length >= 2) {
@@ -13337,6 +13465,23 @@ function buildBuilding(model, opts) {
 				if (inside) mb.quad("ext.frame", pa, pb, tb, ta);
 				else mb.quad("ext.frame", pb, pa, ta, tb);
 			}
+		}
+	}
+	for (const f of model.floors) {
+		if (cutF && f.level > cutF.level) continue;
+		const outer = f.outline.filter((l) => l.length >= 3);
+		for (const p of f.posts ?? []) {
+			if (postInWall(p, f.walls)) continue;
+			const { y0, y1 } = postSpan(model, f, p);
+			const outside = !outer.some((l) => pointInPolygon(p, l));
+			const key = outside ? "ext.wall" : "int.wall";
+			const plinth = f.level === 1 && outside ? .15 : 0;
+			const yb = f.level === 1 && outside ? plinth : y0 * MM;
+			const hgt = y1 * MM - yb;
+			if (plinth) mb.box("ext.foundation", V(p.x * MM, -.05, p.y * MM), V(1, 0, 0), p.size * MM + .12, plinth + .05, p.size * MM + .12);
+			const base = V(p.x * MM, yb, p.y * MM);
+			if (p.round) mb.cylinder(key, base, p.size * MM / 2, hgt, 20, true);
+			else mb.box(key, base, V(1, 0, 0), p.size * MM, hgt, p.size * MM);
 		}
 	}
 	for (const f of model.floors) for (const w of f.walls) {
@@ -19051,6 +19196,13 @@ function floorPlanParts(model, f, opts = {}) {
 				} else s += leaf(0, len, off, th);
 			} else if (o.kind === "open" && hl) for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
 		}
+	}
+	const postsHere = [...f.posts ?? [], ...(model.floors.find((x) => x.level === 1 && f.level > 1)?.posts ?? []).filter((p) => p.kind === "toshi")];
+	for (const p of postsHere) {
+		if (postInWall(p, f.walls) && p.kind === "kuda" && !opts.showPosts) continue;
+		const r = p.size / 2;
+		s += p.round ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#151515"/>` : `<rect x="${p.x - r}" y="${p.y - r}" width="${p.size}" height="${p.size}" fill="#151515"/>`;
+		if (p.kind === "toshi") s += `<circle cx="${p.x}" cy="${p.y}" r="${(r * 1.9).toFixed(0)}" fill="none" stroke="#151515" stroke-width="10"/>`;
 	}
 	if (land) {
 		if (sheetMode) {

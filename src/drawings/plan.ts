@@ -2,6 +2,7 @@
  * プレゼン用の清書平面図（SVG）
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
+import { postInWall } from '../core/posts';
 import { takeoff } from '../estimate/areas';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2 } from '../core/types';
 import { stairLayout, stairStepCount } from '../core/stairs';
@@ -699,6 +700,18 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
       }
     }
+  }
+  // 修正画面で置いた柱: 壁から離れた柱（独立柱・張り出しの足元）は塗りの□（丸柱は●）、通し柱は○で囲む（JIS の表記）。
+  // 壁の中の管柱は 1/100 の提案図面では描かない（平面詳細図 showPosts のときは描く）
+  const postsHere = [...(f.posts ?? []), ...(model.floors.find((x) => x.level === 1 && f.level > 1)?.posts ?? []).filter((p) => p.kind === 'toshi')];
+  for (const p of postsHere) {
+    const inWall = postInWall(p, f.walls);
+    if (inWall && p.kind === 'kuda' && !opts.showPosts) continue;
+    const r = p.size / 2;
+    s += p.round
+      ? `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="#151515"/>`
+      : `<rect x="${p.x - r}" y="${p.y - r}" width="${p.size}" height="${p.size}" fill="#151515"/>`;
+    if (p.kind === 'toshi') s += `<circle cx="${p.x}" cy="${p.y}" r="${(r * 1.9).toFixed(0)}" fill="none" stroke="#151515" stroke-width="10"/>`;
   }
   // 植栽
   if (land) {

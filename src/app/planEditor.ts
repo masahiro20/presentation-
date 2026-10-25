@@ -7,7 +7,8 @@
  * - 部屋名を置く・変える（用途も選べる）
  * 壁を直すたびに、図面の読み取りと同じ方法で部屋を作り直す。
  */
-import type { BuildingModel, BuiltinVariant, Floor, FurnitureItem, FurnitureKind, Opening, Room, RoomType, Vec2, Wall } from '../core/types';
+import { POST_KIND_LABEL, type BuildingModel, type BuiltinVariant, type Floor, type FurnitureItem, type FurnitureKind, type Opening, type Post, type PostKind, type Room, type RoomType, type Vec2, type Wall } from '../core/types';
+import { overhangPoints, suggestOverhangPosts, hasPostNear, OVERHANG_POST_MIN, postLabel } from '../core/posts';
 import { stairLayout, STAIR_KIND_LABEL, STAIR_ENTRY_LABEL, type StairPiece } from '../core/stairs';
 import { furnitureSymbol } from './furnitureSymbols';
 import type { Stair } from '../core/types';
@@ -19,7 +20,7 @@ import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 
-type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs';
+type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'label' | 'furniture' | 'stairs' | 'post';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
 
 interface FloorWork {
@@ -86,6 +87,11 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let stairSel: string | null = null;
   let stairDraw: { a: Vec2; b: Vec2 } | null = null;
   let stairDrag: { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null = null;
+  // 柱
+  let postSel: string | null = null;
+  let postKind: PostKind = 'kuda';
+  let postSize = 105;
+  let postRound = false;
   const undo: string[] = [];
   const redo: string[] = [];
   let seq = 0;
@@ -128,6 +134,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['label', '部屋名', '部屋の中をクリックして部屋名を置きます'],
     ['furniture', '家具', '家具をドラッグで移動、R キーで回転（矢印が部屋側・手前）、Delete で削除。右の一覧から追加できます。キッチンは型・コンロ・冷蔵庫・フードを選べます'],
     ['stairs', '階段', '空いている所をドラッグして階段の範囲を描きます。既存の階段はクリックで選び、ドラッグで移動、R キーで昇り口を回転、Delete で削除'],
+    ['post', '柱', 'クリックで柱を置きます（方眼・壁の端に止まる。Alt でフリー）。柱をクリックで選んで種類・太さを変える、Delete で削除。柱はその階の床から立ちます: 2 階の張り出しの足元の柱は「1 階」に置きます（点線が上の階の外形）。通し柱は 1 階に置くと 2 階の上まで通ります'],
   ];
   const tools = h(
     'div',
@@ -482,7 +489,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const gLabels = document.createElementNS(NS, 'g');
   const gPreview = document.createElementNS(NS, 'g');
   const gPreviewStatic = document.createElementNS(NS, 'g');
-  svg.append(gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreviewStatic, gPreview);
+  const gPosts = document.createElementNS(NS, 'g');
+  svg.append(gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gPreviewStatic, gPreview);
 
   const wallPoly = (w: Wall) => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -492,7 +500,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gLabels, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
     // 他の階（位置合わせの目安）
@@ -586,6 +594,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       line.dataset.id = op.id;
       el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: '#fff', 'stroke-width': Math.max(14, w.thickness * 0.25), 'pointer-events': 'none' }, gOps);
     }
+    drawPosts(f);
     W().labels.forEach((l, i) => {
       const on = sel?.kind === 'label' && sel.index === i;
       const t = el('text', { x: l.x, y: l.y, 'font-size': fs, 'text-anchor': 'middle', fill: on ? '#d9822b' : '#22252a', 'font-weight': 600, class: 'pe-label', stroke: '#fff', 'stroke-width': fs * 0.2, 'paint-order': 'stroke' }, gLabels);
@@ -594,6 +603,44 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     });
     renderPanel();
     renderTabs();
+  };
+
+  /** 上の階（張り出しの確認用） */
+  const upperOf = (f: Floor) => works.find((o) => o.floor.level === f.level + 1)?.floor ?? null;
+  const lowerOf = (f: Floor) => works.find((o) => o.floor.level === f.level - 1)?.floor ?? null;
+  /** 柱の形（角柱は正方形、丸柱は円）。通し柱は○で囲む（JIS の表記）、独立柱は×を入れる */
+  const drawPost = (p: Post, parent: Element, opts: { on?: boolean; ghost?: boolean; through?: boolean }) => {
+    const g = el('g', { class: 'pe-post', opacity: opts.ghost ? 0.45 : 1, 'pointer-events': tool === 'post' && !opts.ghost ? 'auto' : 'none' }, parent) as SVGGElement;
+    g.dataset.id = p.id;
+    const s = Math.max(p.size, 11 * mmPerPx());
+    const fill = opts.on ? '#d9822b' : p.kind === 'free' ? '#7a5634' : '#1f2226';
+    if (p.round) el('circle', { cx: p.x, cy: p.y, r: s / 2, fill, stroke: '#fff', 'stroke-width': 1.2 * mmPerPx() }, g);
+    else el('rect', { x: p.x - s / 2, y: p.y - s / 2, width: s, height: s, fill, stroke: '#fff', 'stroke-width': 1.2 * mmPerPx() }, g);
+    if (p.kind === 'toshi' || opts.through) el('circle', { cx: p.x, cy: p.y, r: s * 1.05, fill: 'none', stroke: opts.on ? '#d9822b' : '#1f2226', 'stroke-width': 2 * mmPerPx() }, g);
+    if (p.kind === 'free') {
+      const d = s * 0.32;
+      el('line', { x1: p.x - d, y1: p.y - d, x2: p.x + d, y2: p.y + d, stroke: '#fff', 'stroke-width': 1.2 * mmPerPx() }, g);
+      el('line', { x1: p.x - d, y1: p.y + d, x2: p.x + d, y2: p.y - d, stroke: '#fff', 'stroke-width': 1.2 * mmPerPx() }, g);
+    }
+    // 当たり判定を少し広く
+    el('circle', { cx: p.x, cy: p.y, r: Math.max(s, 12 * mmPerPx()), fill: 'transparent' }, g);
+  };
+  const drawPosts = (f: Floor) => {
+    const px = mmPerPx();
+    // 他の階の柱（薄く）。下の階の通し柱はこの階も通るので○付きで
+    const lower = lowerOf(f);
+    for (const p of lower?.posts ?? []) drawPost(p, gPosts, { ghost: p.kind !== 'toshi', through: p.kind === 'toshi' });
+    const upper = upperOf(f);
+    for (const p of upper?.posts ?? []) drawPost(p, gPosts, { ghost: true });
+    for (const p of f.posts ?? []) drawPost(p, gPosts, { on: tool === 'post' && postSel === p.id });
+    // 柱の道具では、上の階の外形を点線で重ね、張り出しの足元（柱がまだ無い所）に○の目印
+    if (tool === 'post' && upper) {
+      for (const loop of upper.outline) if (loop.length >= 3) el('polygon', { points: loop.map((q) => `${q.x},${q.y}`).join(' '), fill: 'none', stroke: '#d9822b', 'stroke-width': 2 * px, 'stroke-dasharray': `${8 * px} ${5 * px}`, 'pointer-events': 'none' }, gPosts);
+      for (const o of overhangPoints(f, upper)) {
+        if (o.depth < OVERHANG_POST_MIN || hasPostNear(f.posts, o.p)) continue;
+        el('circle', { cx: o.p.x, cy: o.p.y, r: 10 * px, fill: 'none', stroke: '#d9822b', 'stroke-width': 2 * px, 'stroke-dasharray': `${3 * px} ${3 * px}`, 'pointer-events': 'none' }, gPosts);
+      }
+    }
   };
 
   const renderTabs = () => {
@@ -612,6 +659,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     panel.append(h('h3', null, `${f.level}階の修正`));
     const tip = toolDefs.find((t) => t[0] === tool)![2];
     panel.append(h('p', { class: 'hint' }, tip));
+    if (tool === 'post') renderPostPanel(f);
     if (tool === 'stairs') {
       const st = stairSel ? f.stairs.find((x) => x.id === stairSel) : null;
       if (st) {
@@ -865,7 +913,75 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     );
   };
 
+  const renderPostPanel = (f: Floor) => {
+    const p = postSel ? f.posts?.find((x) => x.id === postSel) : undefined;
+    const editPost = (fn: (x: Post) => void) => {
+      pushUndo();
+      const x = W().floor.posts?.find((q) => q.id === postSel);
+      if (x) {
+        fn(x);
+        x.auto = false;
+      }
+      changed = true;
+      draw();
+    };
+    const kindSel = h(
+      'select',
+      {
+        onchange: (e: Event) => {
+          const v = (e.target as HTMLSelectElement).value as PostKind;
+          if (v === 'toshi' && f.level !== 1) {
+            toast('通し柱は 1 階に置きます（1 階から 2 階の上まで通ります）', 'info');
+            (e.target as HTMLSelectElement).value = p?.kind ?? postKind;
+            return;
+          }
+          if (p) editPost((x) => (x.kind = v));
+          else postKind = v;
+        },
+      },
+      ...(['kuda', 'toshi', 'free'] as PostKind[]).map((k) => h('option', { value: k, selected: (p?.kind ?? postKind) === k, disabled: k === 'toshi' && f.level !== 1 }, `${POST_KIND_LABEL[k]}${k === 'kuda' ? '（この階だけ）' : k === 'toshi' ? '（1 階〜2 階の上まで）' : '（壁から離れて立つ・張り出しの足元など）'}`)),
+    ) as HTMLSelectElement;
+    const sizeSel = h(
+      'select',
+      { onchange: (e: Event) => { const v = +(e.target as HTMLSelectElement).value; if (p) editPost((x) => (x.size = v)); else postSize = v; } },
+      ...[105, 120, 150, 180, 240].map((v) => h('option', { value: v, selected: (p?.size ?? postSize) === v }, `${v}`)),
+    ) as HTMLSelectElement;
+    const roundChk = h('input', { type: 'checkbox', checked: p?.round ?? postRound, onchange: (e: Event) => { const v = (e.target as HTMLInputElement).checked; if (p) editPost((x) => (x.round = v)); else postRound = v; } }) as HTMLInputElement;
+    panel.append(
+      h('div', { class: 'field-label' }, p ? `選んだ柱（${f.level}階・${postLabel(p)}${p.auto ? '・自動の提案' : ''}）` : `これから置く柱（${f.level}階）`),
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, '種類'), kindSel),
+      h('div', { style: 'display:flex;gap:10px;align-items:end' }, h('label', { class: 'field', style: 'flex:1' }, h('span', { class: 'field-label' }, '太さ（mm 角／径）'), sizeSel), h('label', { class: 'check' }, roundChk, '丸柱')),
+    );
+    if (p) panel.append(h('button', { class: 'btn sm block', onclick: () => deleteSel() }, 'この柱を消す（Delete）'));
+    const upper = upperOf(f);
+    if (upper) {
+      const sug = suggestOverhangPosts(f, upper, postSize);
+      panel.append(
+        h('div', { class: 'field-label', style: 'margin-top:12px' }, `${upper.level} 階の張り出し`),
+        h('p', { class: 'hint' }, sug.length ? `${upper.level} 階の外形が ${f.level} 階より半間以上張り出している所が ${sug.length} か所あり、足元に柱がありません（図の○）。` : `${upper.level} 階の張り出しの足元には柱があります（または半間未満の張り出しです）。`),
+        sug.length
+          ? h('button', { class: 'btn sm primary block', onclick: () => { pushUndo(); const ff = W().floor; ff.posts = [...(ff.posts ?? []), ...suggestOverhangPosts(ff, upper, postSize)]; changed = true; draw(); toast(`張り出しの足元に柱を ${sug.length} 本置きました（独立柱 ${postSize} 角）`, 'ok'); } }, `張り出しの足元に柱を置く（${sug.length} 本）`)
+          : h('span'),
+      );
+    } else if (lowerOf(f)) {
+      panel.append(h('p', { class: 'hint', style: 'margin-top:10px' }, `${f.level} 階が下の階より張り出している所の柱は、${f.level - 1} 階の画面で置きます（柱は立つ階の床に置く）。`));
+    }
+    const n = f.posts?.length ?? 0;
+    panel.append(h('p', { class: 'hint', style: 'margin-top:10px' }, `この階の柱: ${n} 本${n ? `（管柱 ${f.posts!.filter((x) => x.kind === 'kuda').length}・通し柱 ${f.posts!.filter((x) => x.kind === 'toshi').length}・独立柱 ${f.posts!.filter((x) => x.kind === 'free').length}）` : ''}。壁の中の柱は 3D では壁に隠れ、壁から離れた柱は 3D にも立ちます。`));
+  };
+
   const deleteSel = () => {
+    if (tool === 'post') {
+      if (!postSel) return;
+      pushUndo();
+      const f = W().floor;
+      f.posts = (f.posts ?? []).filter((x) => x.id !== postSel);
+      if (!f.posts.length) delete f.posts;
+      postSel = null;
+      changed = true;
+      draw();
+      return;
+    }
     if (tool === 'stairs') {
       if (!stairSel) return;
       pushUndo();
@@ -916,6 +1032,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     stairSel = null;
     stairDraw = null;
     stairDrag = null;
+    postSel = null;
     svg.style.cursor = t === 'select' || t === 'furniture' ? 'default' : 'crosshair';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
@@ -1016,6 +1133,25 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const p = toMm(e);
+    if (tool === 'post') {
+      const g = (e.target as SVGElement).closest('.pe-post') as SVGGElement | null;
+      const f = W().floor;
+      if (g?.dataset.id && f.posts?.some((x) => x.id === g.dataset.id)) {
+        postSel = g.dataset.id;
+        draw();
+        return;
+      }
+      const q = snap(p, null, true, e.altKey).p;
+      if (hasPostNear(f.posts, q, 60)) return;
+      pushUndo();
+      const kind: PostKind = postKind === 'toshi' && f.level !== 1 ? 'kuda' : postKind;
+      const id = `F${f.level}-P${++seq}-${Math.round(q.x)}-${Math.round(q.y)}`;
+      f.posts = [...(f.posts ?? []), { id, x: Math.round(q.x), y: Math.round(q.y), size: postSize, kind, ...(postRound ? { round: true } : {}) }];
+      postSel = id;
+      changed = true;
+      draw();
+      return;
+    }
     if (tool === 'stairs') {
       const g = (e.target as SVGElement).closest('.pe-stair') as SVGGElement | null;
       if (g?.dataset.id) {
@@ -1214,6 +1350,11 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         t.textContent = lenLabel(L);
       }
       status.textContent = s.hint ? `吸着: ${s.hint}（Alt を押している間はフリー）` : e.altKey ? 'フリー（吸着なし）' : '';
+    } else if (tool === 'post') {
+      const s = snap(p, null, true, e.altKey);
+      const sz = Math.max(postSize, 6 * px);
+      el('rect', { x: s.p.x - sz / 2, y: s.p.y - sz / 2, width: sz, height: sz, fill: '#d9822b', 'fill-opacity': 0.6 }, gPreview);
+      status.textContent = `${W().floor.level}階に${POST_KIND_LABEL[postKind]}（${postSize}）を置く${s.hint ? `・吸着: ${s.hint}` : ''}`;
     } else if (tool === 'stairs' && !stairSel) {
       const s = snap(p, null, true, e.altKey);
       el('line', { x1: s.p.x - 14 * px, y1: s.p.y, x2: s.p.x + 14 * px, y2: s.p.y, stroke: '#d9822b', 'stroke-width': 1.2 * px }, gPreview);
@@ -1283,7 +1424,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     if (e.type !== 'keydown' || typing) return;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel))) {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel) || (tool === 'post' && postSel))) {
       e.preventDefault();
       deleteSel();
     } else if (e.key === 'Escape') {
@@ -1292,6 +1433,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       addKind = null;
       stairSel = null;
       stairDraw = null;
+      postSel = null;
       draw();
     } else if (tool === 'stairs' && stairSel && e.key.toLowerCase() === 'r') {
       e.preventDefault();

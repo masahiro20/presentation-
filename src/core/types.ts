@@ -140,7 +140,31 @@ export interface Floor {
   exterior?: { cars: { x: number; y: number; rot: number }[]; trees: { x: number; y: number; r: number }[] };
   /** 図面に書かれた設計士のメモ（吹き出しの説明文） */
   notes?: { text: string; x: number; y: number; roomId?: string }[];
+  /**
+   * 柱（修正画面で置いた柱）。その階の床から上の階の床（最上階は軒）まで立つ。
+   * 2 階の張り出し（オーバーハング）の足元の柱は 1 階に置く。通し柱は 1 階に置き、2 階の上まで通る
+   */
+  posts?: Post[];
 }
+
+/** 柱の種類: 管柱（その階だけ）・通し柱（1 階から 2 階の上まで）・独立柱（壁から離れて立つ柱。張り出しの足元・ポーチ・吹抜など） */
+export type PostKind = 'kuda' | 'toshi' | 'free';
+
+export interface Post {
+  id: string;
+  /** 柱の芯（図面座標 mm） */
+  x: number;
+  y: number;
+  /** 柱の太さ（角柱の一辺・丸柱の径 mm。105 / 120 / 150 など） */
+  size: number;
+  kind: PostKind;
+  /** 丸柱 */
+  round?: boolean;
+  /** 自動の提案（2 階の張り出しの角など）で置いた柱 */
+  auto?: boolean;
+}
+
+export const POST_KIND_LABEL: Record<PostKind, string> = { kuda: '管柱', toshi: '通し柱', free: '独立柱' };
 
 export interface ParseReport {
   pages: number;

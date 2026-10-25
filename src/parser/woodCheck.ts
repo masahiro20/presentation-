@@ -10,6 +10,7 @@
  *  - 開き戸の前に壁（開く側に戸の幅ぶんの空きが無い）、外壁の半間未満の出入り（柱・基礎・屋根が増える）
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
+import { overhangPoints, hasPostNear, OVERHANG_POST_MIN, OVERHANG_POST_WARN } from '../core/posts';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type Room, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
@@ -291,6 +292,29 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       });
     }
     void extSup;
+  }
+
+  // (p) 張り出し（オーバーハング）の足元の柱: 上の階の外形の角が下の階の外形から出ているのに、下の階に柱が無い
+  for (const up of model.floors) {
+    const lo = model.floors.find((x) => x.level === up.level - 1);
+    if (!lo) continue;
+    const bare = overhangPoints(lo, up).filter((o) => o.depth >= OVERHANG_POST_MIN && !hasPostNear(lo.posts, o.p));
+    if (!bare.length) continue;
+    const deep = bare.filter((o) => o.depth >= OVERHANG_POST_WARN);
+    const maxD = Math.max(...bare.map((o) => o.depth));
+    const rects = bare.map((o) => ({ minX: o.p.x - 180, minY: o.p.y - 180, maxX: o.p.x + 180, maxY: o.p.y + 180 }));
+    out.push({
+      id: `overhang-post-${up.level}`,
+      level: lo.level,
+      severity: deep.length ? 'warn' : 'info',
+      title: `${up.level}階の張り出し（最大 ${m(maxD)} m）の足元 ${bare.length} か所に ${lo.level}階の柱がありません`,
+      detail:
+        (deep.length
+          ? `1 間（910）を超える張り出しを梁の持ち出しだけで受けるのは在来の木造では無理があります。修正画面の「柱」で ${lo.level}階に柱を置いてください（「張り出しの足元に柱を置く」で角にまとめて置けます）。柱は立つ階（${lo.level}階）に置きます`
+          : `半間〜1 間の張り出しは梁の持ち出しで納めることもありますが、足元に柱を立てると安心です。修正画面の「柱」で ${lo.level}階に置けます`) +
+        (bare.length >= 12 ? `。か所が多いときは、${lo.level}階と${up.level}階の図面の位置合わせがずれていないかも確かめてください（ピロティ・車庫の上に載る場合はそのまま柱を置きます）` : ''),
+      marks: [{ level: lo.level, rects, label: `${up.level}階の張り出しの足元（柱なし）` }],
+    });
   }
 
   // (d) 梁のスパン: 部屋の内側の矩形の短辺が 2 間（3,640）を超える
@@ -701,7 +725,7 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
     const storage = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage').reduce((s, r) => s + r.area, 0);
     const floorArea = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0);
     if (floorArea > 30 && storage / floorArea < 0.08) {
-      out.push({ id: `storage-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 収納が床面積の ${Math.round((storage / floorArea) * 100)}% と少なめです`, detail: '戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります' });
+      out.push({ id: `storage-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 収納が床面積の ${Math.round((storage / floorArea) * 100)}% と少なめです`, detail: `戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります` });
     }
   }
   // 2 階建てで寝室が 2 階にあり、2 階にトイレが無い

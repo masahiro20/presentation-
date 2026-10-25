@@ -3020,5 +3020,5 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
   // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す
   const planItems = f.planItems?.map((it) => ({ ...it, roomId: nf.rooms.find((r) => pointInPolygon({ x: it.x, y: it.y }, r.polygon))?.id ?? it.roomId }));
   const notes = f.notes?.map((n) => ({ ...n, roomId: nf.rooms.find((r) => pointInPolygon({ x: n.x, y: n.y }, r.polygon))?.id ?? n.roomId }));
-  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs, planItems, exterior: f.exterior, notes };
+  return { ...nf, elevation: f.elevation, height: f.height, ceilingHeight: f.ceilingHeight, stairs: f.stairs, planItems, exterior: f.exterior, notes, ...(f.posts ? { posts: f.posts } : {}) };
 }

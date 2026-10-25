@@ -3,6 +3,7 @@
  * 単位: m。平面 (x, y[下向き]) → ワールド (X = x, Z = y)、Y が上。
  */
 import * as THREE from 'three';
+import { postInWall, postSpan } from '../core/posts';
 import { isExteriorWorks, isSeparateGarage, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Wall } from '../core/types';
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
@@ -490,6 +491,27 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
         if (inside) mb.quad('ext.frame', pa, pb, tb, ta);
         else mb.quad('ext.frame', pb, pa, ta, tb);
       }
+    }
+  }
+
+  // 柱（修正画面で置いた柱のうち、壁から離れて立つもの。壁の中の柱は壁に隠れる）
+  for (const f of model.floors) {
+    if (cutF && f.level > cutF.level) continue;
+    const outer = f.outline.filter((l) => l.length >= 3);
+    for (const p of f.posts ?? []) {
+      if (postInWall(p, f.walls)) continue;
+      const { y0, y1 } = postSpan(model, f, p);
+      // 外（外形の外 = 張り出しの足元・ポーチ）の柱は外壁の仕上げ、室内の柱は内壁の仕上げ
+      const outside = !outer.some((l) => pointInPolygon(p, l));
+      const key = outside ? 'ext.wall' : 'int.wall';
+      // 1 階の外の柱は地面（GL）の独立基礎の上から立つ（室内の柱は床の上から）
+      const plinth = f.level === 1 && outside ? 0.15 : 0;
+      const yb = f.level === 1 && outside ? plinth : y0 * MM;
+      const hgt = y1 * MM - yb;
+      if (plinth) mb.box('ext.foundation', V(p.x * MM, -0.05, p.y * MM), V(1, 0, 0), p.size * MM + 0.12, plinth + 0.05, p.size * MM + 0.12);
+      const base = V(p.x * MM, yb, p.y * MM);
+      if (p.round) mb.cylinder(key, base, (p.size * MM) / 2, hgt, 20, true);
+      else mb.box(key, base, V(1, 0, 0), p.size * MM, hgt, p.size * MM);
     }
   }
 

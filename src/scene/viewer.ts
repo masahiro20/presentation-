@@ -134,9 +134,23 @@ export class Viewer {
   private lastTick = performance.now();
   private camMoved() {
     this.cullTown();
+    this.syncDayLights();
     this.declutterLabels();
     this._dirty = true;
     this.lastMove = performance.now();
+  }
+  /**
+   * 昼の室内の補助光（点光源）は壁・屋根で遮られないので、外から見ると 2 階の部屋の光が外壁を抜けて
+   * 下の屋根や外壁に光の丸を落とす。カメラが建物の外にいる昼は消す（夕景・夜景は窓の灯りとして点けたまま）
+   */
+  private syncDayLights() {
+    this.applyLightsVisibility();
+  }
+  /** カメラが建物の箱の中（室内の視点）か */
+  private cameraInside(): boolean {
+    const b = this.state?.meta.bbox;
+    const p = this.camera.position;
+    return !!b && p.x > b.min.x + 0.2 && p.x < b.max.x - 0.2 && p.z > b.min.z + 0.2 && p.z < b.max.z - 0.2 && p.y < b.max.y;
   }
   private raf = 0;
   private skyTex: THREE.DataTexture | null = null;
@@ -762,7 +776,7 @@ export class Viewer {
     if (this.pdfGroupsHidden) return;
     const tod = this.design.timeOfDay;
     const needed = tod === 'evening' || tod === 'night';
-    this.groups.lights.visible = this.viewMode === 'finish' || needed;
+    this.groups.lights.visible = needed || (this.viewMode === 'finish' && this.cameraInside());
   }
 
   /** 画面の解像度（仕上げは高精細ディスプレイでも 1.5 倍まで。閲覧は等倍: 画素数が 2.25 分の 1 になる） */
@@ -1371,6 +1385,7 @@ export class Viewer {
       const ext = buildExteriorLights({ meta: this.state.meta, plan: this.state.plan, lights: [], mode: tod, skyE: 1, lampColor: col, physical: false });
       this.groups.lights.add(ext);
     }
+    this.syncDayLights();
     this.dirty = true;
   }
 

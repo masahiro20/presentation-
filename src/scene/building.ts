@@ -108,6 +108,26 @@ function outdoorRoom(r: Room | null): boolean {
 /** 家と別に建つ小さな建物（後付け・離れのガレージ・物置）の高さ（地面から、m）。GAW ガレージは H3000 */
 export const GARAGE_HEIGHT = 3.0;
 export const SHED_HEIGHT = 2.2;
+/** 壁（両端と中点）から階の外形までの最短距離 (mm)。外形の中に入っていれば 0 */
+function distToOutlineMm(f: Floor, w: Wall): number {
+  const loops = f.outline.filter((l) => l.length >= 3);
+  if (!loops.length) return 0;
+  let d = Infinity;
+  for (const p of [w.a, w.b, { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 }]) {
+    if (loops.some((l) => pointInPolygon(p, l))) return 0;
+    for (const l of loops)
+      for (let i = 0; i < l.length; i++) {
+        const a = l[i];
+        const b = l[(i + 1) % l.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+        d = Math.min(d, Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y));
+      }
+  }
+  return d;
+}
+
 function annexHeight(r: Room | null): number | null {
   if (!r) return null;
   if (isSeparateGarage(r)) return GARAGE_HEIGHT;
@@ -1021,7 +1041,10 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
   // 後付け・離れのガレージ、物置の囲い（両側とも家の外）はその建物の高さまで
   const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
-  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+  // 敷地の塀（家から離れて立つ両側とも屋外の壁）は目隠し塀の高さ 1.8m（建物の高さまで立ち上げると敷地が箱で囲まれて見える）。
+  // 家に取り付く・家のすぐそばの囲い（中庭の袖壁・ポーチの壁）は建物と同じ高さのまま
+  const fence = f.level === 1 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
+  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   if (guard === 'halfGlass') voidGlassOnTop(mb, A, B, fl + 0.9);
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
@@ -1041,7 +1064,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   };
 
   let cursor = 0;
-  const firstCap = w.joinedA ? null : jambKey;
+  // 他の壁とつながらない端の小口: 外壁は外装で閉じる（開口の小口と同じ室内の仕上げにすると、外から白い縦の帯に見える）
+  const endKey = w.exterior || facesOutdoor ? extKey : jambKey;
+  const firstCap = w.joinedA ? null : endKey;
   for (let i = 0; i < ops.length; i++) {
     const o = ops[i];
     const s0 = Math.max(0, o.t0 * MM);
@@ -1053,7 +1078,7 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     if (head < wallTop - 0.005) seg(s0, s1, head, wallTop, null, null);
     cursor = s1;
   }
-  seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : jambKey);
+  seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : endKey);
 }
 
 function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number, meta: BuildingMeta, spec: BuilderSpec) {

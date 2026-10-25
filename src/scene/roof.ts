@@ -27,6 +27,13 @@ interface RoofCtx {
   gutter: boolean;
   /** 外周上の辺か判定（mm 座標系の外形） */
   onBoundary: (x0: number, z0: number, x1: number, z1: number) => boolean;
+  /**
+   * 斜めの外壁（隅切り・振れた壁）で屋根面を切り落とす半平面（m）。nx·x + nz·z >= d の側を残す。
+   * 屋根は外形を四角形で覆って架けるので、斜めの壁の外に屋根の角がはみ出す（その下に壁が無く、外から屋根裏が見える）
+   */
+  clips?: { nx: number; nz: number; d: number }[];
+  /** 今の四角形の壁の上端（m）。斜めの壁の上の立ち上がりに使う */
+  wallTopY?: number;
 }
 
 export interface RoofInfo {
@@ -142,16 +149,11 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       if (i < 0 || j < 0) return false;
       return !!m[j * nx + i];
     };
-    for (const r of rects) {
-      const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
-      if (type === 'flat') {
-        flatRoof(ctx, R, H);
-        info.maxY = Math.max(info.maxY, H + 0.5);
-        info.eaveY = Math.max(info.eaveY, H + 0.5);
-        continue;
-      }
-      if (!isTop) {
-        // 上階に接する辺を探す（下屋）
+    // 下屋: 上階に接する辺（いちばん多く接する辺）ごとに四角形をまとめ、まとめた範囲を 1 枚の屋根面にする
+    const lowerSide = new Map<Rect, 'n' | 's' | 'e' | 'w'>();
+    const lowerGroups = new Map<'n' | 's' | 'e' | 'w', Region>();
+    if (!isTop && type !== 'flat') {
+      for (const r of rects) {
         const probe = 150;
         const sideTouch = (side: 'n' | 's' | 'e' | 'w') => {
           let hits = 0;
@@ -168,11 +170,93 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
           }
           return hits / (N - 1);
         };
-        const touches = (['n', 's', 'e', 'w'] as const).map((s) => ({ s, v: sideTouch(s) })).sort((a, b) => b.v - a.v);
-        if (touches[0].v > 0.3) {
-          // 下屋は御社の立面図（吉田様邸ほか）のとおり 0.5〜1 寸の緩い片流れ（上階の壁から外へ流す。軒ゼロで薄い鼻隠し）
+        const best = (['n', 's', 'e', 'w'] as const).map((s) => ({ s, v: sideTouch(s) })).sort((a, b) => b.v - a.v)[0];
+        if (best.v <= 0.3) continue;
+        lowerSide.set(r, best.s);
+      }
+      // 上階に接しない四角形でも、下屋の四角形と重なる・辺を共有するなら同じ屋根面に入れる
+      // （極大矩形は重なり合うので、別の屋根を架けると重なった所で屋根面が交差して斜めの筋が出る）
+      const shareLen = (a: Rect, b: Rect) => {
+        const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+        const oy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+        if (ox < -1 || oy < -1) return 0;
+        return Math.max(ox, oy);
+      };
+      for (let pass = 0; pass < rects.length; pass++) {
+        let changed = false;
+        for (const r of rects) {
+          if (lowerSide.has(r)) continue;
+          let bestS: 'n' | 's' | 'e' | 'w' | null = null;
+          let bestL = 300;
+          for (const [q, sd] of lowerSide) {
+            const L = shareLen(r, q);
+            if (L > bestL) [bestL, bestS] = [L, sd];
+          }
+          if (bestS) {
+            lowerSide.set(r, bestS);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+      for (const [r, sd] of lowerSide) {
+        const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+        const g = lowerGroups.get(sd);
+        lowerGroups.set(sd, g ? { minX: Math.min(g.minX, R.minX), maxX: Math.max(g.maxX, R.maxX), minZ: Math.min(g.minZ, R.minZ), maxZ: Math.max(g.maxZ, R.maxZ) } : R);
+      }
+    }
+    // 斜めの外形の辺: 四角形の中を通るものだけ、その辺から軒の出だけ外の線で屋根を切る
+    const diag: { a: { x: number; y: number }; b: { x: number; y: number }; nx: number; ny: number }[] = [];
+    for (const l of polys)
+      for (let i = 0; i < l.length; i++) {
+        const a = l[i];
+        const b = l[(i + 1) % l.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const L = Math.hypot(dx, dy);
+        if (L < 300 || Math.abs(dx) < 30 || Math.abs(dy) < 30) continue;
+        let nx = -dy / L;
+        let ny = dx / L;
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        if (!insideLoops({ x: mx + nx * 80, y: my + ny * 80 }, polys)) [nx, ny] = [-nx, -ny];
+        diag.push({ a, b, nx, ny });
+      }
+    const clipsFor = (r: Rect) => {
+      const out: { nx: number; nz: number; d: number }[] = [];
+      for (const e of diag) {
+        if (Math.max(e.a.x, e.b.x) < r.minX - 50 || Math.min(e.a.x, e.b.x) > r.maxX + 50 || Math.max(e.a.y, e.b.y) < r.minY - 50 || Math.min(e.a.y, e.b.y) > r.maxY + 50) continue;
+        // 切り落とす側の四角形の角が建物の外にあるときだけ（凹んだ側を切って屋根を欠かさない）
+        const corners = [
+          { x: r.minX, y: r.minY },
+          { x: r.maxX, y: r.minY },
+          { x: r.maxX, y: r.maxY },
+          { x: r.minX, y: r.maxY },
+        ].filter((c) => (c.x - e.a.x) * e.nx + (c.y - e.a.y) * e.ny < -50);
+        if (!corners.length || corners.some((c) => insideLoops({ x: c.x - e.nx * 30, y: c.y - e.ny * 30 }, polys))) continue;
+        const off = (style.roof.eaves + extT / MM / 2) * MM;
+        out.push({ nx: e.nx, nz: e.ny, d: (e.a.x * e.nx + e.a.y * e.ny) * MM - off });
+      }
+      return out;
+    };
+    for (const r of rects) {
+      const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+      ctx.clips = clipsFor(r);
+      ctx.wallTopY = H;
+      if (type === 'flat') {
+        flatRoof(ctx, R, H);
+        info.maxY = Math.max(info.maxY, H + 0.5);
+        info.eaveY = Math.max(info.eaveY, H + 0.5);
+        continue;
+      }
+      if (!isTop) {
+        // 上階に接する辺がある四角形は下屋
+        const side = lowerSide.get(r);
+        if (side) {
+          // 下屋は御社の立面図（吉田様邸ほか）のとおり 0.5〜1 寸の緩い片流れ（上階の壁から外へ流す。軒ゼロで薄い鼻隠し）。
+          // 同じ向きに流す下屋は 1 枚の屋根面にそろえる（四角形ごとに高さ・勾配を決めると、重なった所で屋根面が交差して斜めの筋が出る）
           const lowSlope = Math.min(ctx.slope, 0.1);
-          const y = shedRoof({ ...ctx, slope: lowSlope, gableKey: 'ext.wall' }, R, H, touches[0].s, true);
+          const y = shedRoofPlane({ ...ctx, slope: lowSlope, gableKey: 'ext.wall' }, R, H, side, lowerGroups.get(side)!);
           info.maxY = Math.max(info.maxY, y);
           continue;
         }
@@ -208,8 +292,77 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
 }
 
 /** 屋根面（上面・下面・外周の鼻隠し） */
-function roofPlane(ctx: RoofCtx, top: V3[], eaveEdges: number[], downhill: V3) {
+/** 屋根面（凸多角形）を半平面で切る。辺ごとに元の辺の番号（切り口は -1）を返す */
+function clipRoof(top: V3[], clips: { nx: number; nz: number; d: number }[]): { pts: V3[]; src: number[] } {
+  let pts = top.map((p) => p.clone());
+  let src = top.map((_, i) => i);
+  // 屋根面の高さは元の平面から求め直す
+  const n = new THREE.Vector3().subVectors(top[1], top[0]).cross(new THREE.Vector3().subVectors(top[2], top[0]));
+  const yAt = (x: number, z: number) => (Math.abs(n.y) < 1e-9 ? top[0].y : top[0].y - (n.x * (x - top[0].x) + n.z * (z - top[0].z)) / n.y);
+  for (const c of clips) {
+    const f = (p: V3) => c.nx * p.x + c.nz * p.z - c.d;
+    if (pts.every((p) => f(p) >= -1e-6)) continue;
+    const outP: V3[] = [];
+    const outS: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const fa = f(a);
+      const fb = f(b);
+      if (fa >= 0) {
+        outP.push(a);
+        outS.push(fb >= 0 ? src[i] : src[i]);
+      }
+      if ((fa >= 0) !== (fb >= 0)) {
+        const t = fa / (fa - fb);
+        const x = a.x + (b.x - a.x) * t;
+        const z = a.z + (b.z - a.z) * t;
+        outP.push(new THREE.Vector3(x, yAt(x, z), z));
+        // 入る点から先は元の辺、出る点から先は切り口
+        outS.push(fa >= 0 ? -1 : src[i]);
+      }
+    }
+    pts = outP;
+    src = outS;
+    if (pts.length < 3) break;
+  }
+  return { pts, src };
+}
+
+function roofPlane(ctx: RoofCtx, topIn: V3[], eaveEdgesIn: number[], downhill: V3) {
   const { mb, T } = ctx;
+  let top = topIn;
+  let eaveEdges = eaveEdgesIn;
+  if (ctx.clips?.length) {
+    const c = clipRoof(topIn, ctx.clips);
+    if (c.pts.length < 3) return;
+    if (c.pts.length !== topIn.length || c.src.some((s, i) => s !== i)) {
+      top = c.pts;
+      eaveEdges = c.src.map((s, i) => (s === -1 || eaveEdgesIn.includes(s) ? i : -1)).filter((i) => i >= 0);
+    }
+  }
+  // 斜めの壁で切った辺の下: 壁の上端から屋根の下面まで壁を立ち上げる（隙間から屋根裏・天井が見えないように）
+  if (top !== topIn && ctx.wallTopY != null && ctx.clips) {
+    const pn = new THREE.Vector3().subVectors(top[1], top[0]).cross(new THREE.Vector3().subVectors(top[2], top[0]));
+    const yAt = (x: number, z: number) => (Math.abs(pn.y) < 1e-9 ? top[0].y : top[0].y - (pn.x * (x - top[0].x) + pn.z * (z - top[0].z)) / pn.y);
+    const off = ctx.eaves + ctx.wallT / 2;
+    for (let i = 0; i < top.length; i++) {
+      const a = top[i];
+      const b = top[(i + 1) % top.length];
+      const c = ctx.clips.find((q) => Math.abs(q.nx * a.x + q.nz * a.z - q.d) < 1e-3 && Math.abs(q.nx * b.x + q.nz * b.z - q.d) < 1e-3);
+      if (!c || a.distanceTo(b) < 0.05) continue;
+      // 壁芯の線（切り口から軒の出＋壁厚の半分だけ内側）
+      const ax = a.x + c.nx * off;
+      const az = a.z + c.nz * off;
+      const bx = b.x + c.nx * off;
+      const bz = b.z + c.nz * off;
+      const H = ctx.wallTopY;
+      const ya = yAt(ax, az) - ctx.T + 0.01;
+      const yb = yAt(bx, bz) - ctx.T + 0.01;
+      if (Math.max(ya, yb) - H < 0.02) continue;
+      prism(mb, ctx.gableKey, [V(ax, H - 0.01, az), V(bx, H - 0.01, bz), V(bx, Math.max(H, yb), bz), V(ax, Math.max(H, ya), az)], V(-c.nx, 0, -c.nz), ctx.wallT - inset(), true);
+    }
+  }
   const n = new THREE.Vector3().subVectors(top[1], top[0]).cross(new THREE.Vector3().subVectors(top[2], top[0])).normalize();
   const normal = n.y < 0 ? n.negate() : n;
   const pts = n.y < 0 ? top.slice().reverse() : top;

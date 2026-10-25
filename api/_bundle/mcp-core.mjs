@@ -64,6 +64,548 @@ function isSeparateGarage(r) {
 	return r.type === "garage" && (r.garageKind === "attached" || r.garageKind === "detached");
 }
 //#endregion
+//#region src/core/geometry.ts
+var v = (x, y) => ({
+	x,
+	y
+});
+var add = (a, b) => ({
+	x: a.x + b.x,
+	y: a.y + b.y
+});
+var sub = (a, b) => ({
+	x: a.x - b.x,
+	y: a.y - b.y
+});
+var scale = (a, s) => ({
+	x: a.x * s,
+	y: a.y * s
+});
+var dot = (a, b) => a.x * b.x + a.y * b.y;
+var dist$1 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+var lerp = (a, b, t) => ({
+	x: a.x + (b.x - a.x) * t,
+	y: a.y + (b.y - a.y) * t
+});
+function polygonArea(poly) {
+	let s = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const p = poly[i];
+		const q = poly[(i + 1) % poly.length];
+		s += p.x * q.y - q.x * p.y;
+	}
+	return s / 2;
+}
+function polygonCentroid(poly) {
+	let a = 0;
+	let cx = 0;
+	let cy = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const p = poly[i];
+		const q = poly[(i + 1) % poly.length];
+		const f = p.x * q.y - q.x * p.y;
+		a += f;
+		cx += (p.x + q.x) * f;
+		cy += (p.y + q.y) * f;
+	}
+	if (Math.abs(a) < 1e-9) return scale(poly.reduce((acc, p) => add(acc, p), v(0, 0)), 1 / Math.max(1, poly.length));
+	return {
+		x: cx / (3 * a),
+		y: cy / (3 * a)
+	};
+}
+/** 輪郭が他の輪郭の内側にある（＝穴）か */
+function isHoleLoop(loop, loops) {
+	const p = loop[0];
+	let n = 0;
+	for (const l of loops) if (l !== loop && pointInPolygon(p, l)) n++;
+	return n % 2 === 1;
+}
+function pointInPolygon(p, poly) {
+	let inside = false;
+	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+		const a = poly[i];
+		const b = poly[j];
+		if (a.y > p.y !== b.y > p.y && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+	}
+	return inside;
+}
+function bboxOf$2(points) {
+	const b = {
+		minX: Infinity,
+		minY: Infinity,
+		maxX: -Infinity,
+		maxY: -Infinity
+	};
+	for (const p of points) {
+		if (p.x < b.minX) b.minX = p.x;
+		if (p.y < b.minY) b.minY = p.y;
+		if (p.x > b.maxX) b.maxX = p.x;
+		if (p.y > b.maxY) b.maxY = p.y;
+	}
+	return b;
+}
+function bboxGap(a, b) {
+	const dx = Math.max(0, a.minX - b.maxX, b.minX - a.maxX);
+	const dy = Math.max(0, a.minY - b.maxY, b.minY - a.maxY);
+	return Math.hypot(dx, dy);
+}
+/** 点と線分の距離 */
+function distPointSegment(p, a, b) {
+	const ab = sub(b, a);
+	const l2 = dot(ab, ab);
+	if (l2 === 0) return dist$1(p, a);
+	return dist$1(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
+}
+/** Douglas-Peucker による閉多角形の簡略化 */
+function simplifyClosed(poly, tol) {
+	if (poly.length <= 4) return poly;
+	let i0 = 0;
+	let i1 = 0;
+	let best = -1;
+	for (let i = 0; i < poly.length; i++) {
+		const d = dist$1(poly[0], poly[i]);
+		if (d > best) {
+			best = d;
+			i1 = i;
+		}
+	}
+	const part1 = poly.slice(i0, i1 + 1);
+	const part2 = poly.slice(i1).concat([poly[0]]);
+	const s1 = simplifyOpen(part1, tol);
+	const s2 = simplifyOpen(part2, tol);
+	return removeCollinear(s1.slice(0, -1).concat(s2.slice(0, -1)), tol * .5);
+}
+function simplifyOpen(pts, tol) {
+	if (pts.length <= 2) return pts.slice();
+	const keep = new Uint8Array(pts.length);
+	keep[0] = 1;
+	keep[pts.length - 1] = 1;
+	const stack = [[0, pts.length - 1]];
+	while (stack.length) {
+		const [s, e] = stack.pop();
+		let md = -1;
+		let mi = -1;
+		for (let i = s + 1; i < e; i++) {
+			const d = distPointSegment(pts[i], pts[s], pts[e]);
+			if (d > md) {
+				md = d;
+				mi = i;
+			}
+		}
+		if (md > tol && mi > 0) {
+			keep[mi] = 1;
+			stack.push([s, mi], [mi, e]);
+		}
+	}
+	return pts.filter((_, i) => keep[i]);
+}
+function removeCollinear(poly, tol) {
+	let out = poly.slice();
+	let changed = true;
+	while (changed && out.length > 3) {
+		changed = false;
+		for (let i = 0; i < out.length; i++) {
+			const a = out[(i - 1 + out.length) % out.length];
+			const b = out[i];
+			const c = out[(i + 1) % out.length];
+			if (distPointSegment(b, a, c) < tol || dist$1(a, b) < tol) {
+				out.splice(i, 1);
+				changed = true;
+				break;
+			}
+		}
+	}
+	return out;
+}
+/** 区間の和集合 */
+function mergeIntervals(iv, gap = 0) {
+	const s = iv.filter((x) => x[1] > x[0]).sort((a, b) => a[0] - b[0]);
+	const out = [];
+	for (const x of s) {
+		const last = out[out.length - 1];
+		if (last && x[0] <= last[1] + gap) last[1] = Math.max(last[1], x[1]);
+		else out.push([x[0], x[1]]);
+	}
+	return out;
+}
+/** 区間 a から区間集合 b を差し引く */
+function subtractIntervals(a, b) {
+	let parts = [[a[0], a[1]]];
+	for (const [s, e] of b) {
+		const next = [];
+		for (const [ps, pe] of parts) if (e <= ps || s >= pe) next.push([ps, pe]);
+		else {
+			if (s > ps) next.push([ps, s]);
+			if (e < pe) next.push([e, pe]);
+		}
+		parts = next;
+	}
+	return parts;
+}
+function intervalsLength(iv) {
+	return iv.reduce((s, [a, b]) => s + Math.max(0, b - a), 0);
+}
+/** 張り出しの辺に立てる柱の間隔の上限（mm、1.5 間） */
+var OVERHANG_POST_SPACING = 2730;
+function segDist$1(p, a, b) {
+	const dx = b.x - a.x;
+	const dy = b.y - a.y;
+	const L2 = dx * dx + dy * dy || 1;
+	const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+	return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+/** 点から外形（複数の輪）の辺までの最短距離 */
+function distToOutline(p, loops) {
+	let d = Infinity;
+	for (const l of loops) for (let i = 0; i < l.length; i++) d = Math.min(d, segDist$1(p, l[i], l[(i + 1) % l.length]));
+	return d;
+}
+function insideOutline$1(p, loops) {
+	return loops.some((l) => l.length >= 3 && pointInPolygon(p, l));
+}
+/** 上の階の輪が下の階の外形と重なるか（頂点のどちらかが相手の内側か、辺どうしが近い） */
+function touches(loop, low) {
+	if (loop.some((p) => insideOutline$1(p, low) || distToOutline(p, low) <= 100)) return true;
+	return low.some((l) => l.some((p) => pointInPolygon(p, loop)));
+}
+/**
+* 上の階の外形のうち、下の階の外形の外に出ている点（張り出しの足元の候補）。
+* 角に加え、張り出した辺が 1.5 間を超えるときは途中にも等間隔に置く。
+* - 下の階の壁（車庫・ポーチの袖壁など外形の外の壁も）の上に載る点は壁の柱で受けるので除く
+* - 下の階とまったく重ならない上の階の輪は張り出しではなく読み違い（別棟・凡例など）として除く
+*/
+function overhangPoints(lower, upper) {
+	const low = lower.outline.filter((l) => l.length >= 3);
+	if (!low.length) return [];
+	const out = [];
+	const onWall = (p) => lower.walls.some((w) => segDist$1(p, w.a, w.b) <= w.thickness / 2 + 150);
+	const off = (p) => !insideOutline$1(p, low) && distToOutline(p, low) > 100;
+	const outside = (p) => off(p) && !onWall(p);
+	for (const loop of upper.outline) {
+		const n = loop.length;
+		if (n < 3 || !touches(loop, low)) continue;
+		for (let i = 0; i < n; i++) {
+			const a = loop[i];
+			const b = loop[(i + 1) % n];
+			if (outside(a)) out.push({
+				p: {
+					x: Math.round(a.x),
+					y: Math.round(a.y)
+				},
+				depth: distToOutline(a, low),
+				corner: true
+			});
+			if (off(a) && off(b)) {
+				const L = Math.hypot(b.x - a.x, b.y - a.y);
+				const k = Math.ceil(L / OVERHANG_POST_SPACING);
+				for (let j = 1; j < k; j++) {
+					const p = {
+						x: Math.round(a.x + (b.x - a.x) * j / k),
+						y: Math.round(a.y + (b.y - a.y) * j / k)
+					};
+					if (outside(p)) out.push({
+						p,
+						depth: distToOutline(p, low),
+						corner: false
+					});
+				}
+			}
+		}
+	}
+	return out;
+}
+/** その点の近く（300mm 以内）に柱があるか */
+function hasPostNear(posts, p, tol = 300) {
+	return !!posts?.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= tol);
+}
+/** 張り出しの足元に立てる柱の提案（下の階に置く独立柱）。既に柱がある所は除く */
+function suggestOverhangPosts(lower, upper, size = 105) {
+	const out = [];
+	let k = 0;
+	for (const o of overhangPoints(lower, upper)) {
+		if (o.depth < 455) continue;
+		if (hasPostNear(lower.posts, o.p) || out.some((q) => Math.hypot(q.x - o.p.x, q.y - o.p.y) < 300)) continue;
+		out.push({
+			id: `F${lower.level}-P-oh${++k}-${o.p.x}-${o.p.y}`,
+			x: o.p.x,
+			y: o.p.y,
+			size,
+			kind: "free",
+			auto: true
+		});
+	}
+	return out;
+}
+/** 柱が壁の中に入っているか（壁の芯から壁厚の半分以内。端の少し外まで含む） */
+function postInWall(p, walls) {
+	return walls.some((w) => segDist$1(p, w.a, w.b) <= w.thickness / 2 + 5);
+}
+/** 柱の高さの範囲（GL からの mm）: 床から、管柱・独立柱は上の階の床（最上階は壁の上端）まで、通し柱は最上階の上まで */
+function postSpan(model, f, p) {
+	const floors = [...model.floors].sort((a, b) => a.level - b.level);
+	const top = floors[floors.length - 1];
+	const next = floors.find((x) => x.level === f.level + 1);
+	const y0 = f.elevation;
+	if (p.kind === "toshi") return {
+		y0,
+		y1: top.elevation + top.height
+	};
+	return {
+		y0,
+		y1: next ? next.elevation : f.elevation + f.height
+	};
+}
+/**
+* 読み込み直後に置く張り出しの柱: 1 間（910）を超える張り出しの角は梁の持ち出しでは受けられないので、下の階に独立柱を立てる
+* （柱が無いと 3D で 2 階が宙に浮いて見える。ピロティ・ビルトイン車庫の上の 2 階など）。
+* 張り出しの点が多すぎる（11 か所以上）ときは階の位置合わせの読み違いの疑いが強いので置かない
+*/
+function autoOverhangPosts(lower, upper, size = 120) {
+	const pts = overhangPoints(lower, upper).filter((o) => o.depth >= 455);
+	if (!pts.length || pts.length > 10) return [];
+	return suggestOverhangPosts(lower, upper, size).filter((p) => pts.some((o) => o.depth > 960 && Math.hypot(o.p.x - p.x, o.p.y - p.y) < 1));
+}
+//#endregion
+//#region src/parser/envelope.ts
+/**
+* 外皮（外壁のつながり）の後処理。読み取った壁と外形（outline）を突き合わせ、3D で家に穴が開く読み落としを直す。
+*
+* 1. 一部だけ外周に面する内壁を分ける: 長い内壁の一部が外形の辺に重なっている（例: 玄関ポーチの奥で外に面するトイレの壁）と、
+*    壁全体が「内壁」として作られ、外から見ると室内の仕上げが見える。外に面する区間を外壁として切り出す。
+* 2. 外形の辺に壁が無い区間を外壁で補う: 中庭に面した LDK のガラス面・土間収納の外側などで壁の線が読めないと、
+*    外から室内が素通しになる。半間（455）以上の抜けには外壁を足す。LDK・リビングの長い抜けは中庭・庭に面した
+*    掃き出しのガラス面のことが多いので、掃き出し窓を入れる。車庫・カーポート・ポーチの面は開いたままにする（車の出入口）。
+*/
+var OPEN_SIDE = /* @__PURE__ */ new Set([
+	"garage",
+	"carport",
+	"parking",
+	"porch",
+	"deck",
+	"terrace",
+	"balcony"
+]);
+var GLAZED = /* @__PURE__ */ new Set([
+	"ldk",
+	"living",
+	"dining"
+]);
+function insideOutline(p, loops) {
+	return loops.filter((l) => l.length >= 3 && pointInPolygon(p, l)).length % 2 === 1;
+}
+function segDist(p, a, b) {
+	const dx = b.x - a.x;
+	const dy = b.y - a.y;
+	const L2 = dx * dx + dy * dy || 1;
+	const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
+	return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+function roomAt$1(rooms, p) {
+	return rooms.find((r) => pointInPolygon(p, r.polygon));
+}
+function repairEnvelope(f) {
+	const rep = {
+		split: 0,
+		added: 0,
+		addedLen: 0,
+		glazed: 0
+	};
+	const loops = f.outline.filter((l) => l.length >= 3);
+	if (!loops.length) return rep;
+	const extT = (() => {
+		const ts = f.walls.filter((w) => w.exterior).map((w) => w.thickness).sort((a, b) => a - b);
+		return ts.length ? ts[Math.floor(ts.length / 2)] : 160;
+	})();
+	let seq = f.walls.length + 1;
+	const newId = () => {
+		let id = `F${f.level}-W${seq++}`;
+		while (f.walls.some((w) => w.id === id)) id = `F${f.level}-W${seq++}`;
+		return id;
+	};
+	const outsideSide = (w, t) => {
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		const ux = (w.b.x - w.a.x) / L;
+		const uy = (w.b.y - w.a.y) / L;
+		const nx = -uy;
+		const ny = ux;
+		const p = {
+			x: w.a.x + ux * t,
+			y: w.a.y + uy * t
+		};
+		const off = w.thickness / 2 + 120;
+		const plusOut = !insideOutline({
+			x: p.x + nx * off,
+			y: p.y + ny * off
+		}, loops);
+		if (plusOut === !insideOutline({
+			x: p.x - nx * off,
+			y: p.y - ny * off
+		}, loops)) return 0;
+		return plusOut ? 1 : -1;
+	};
+	const walls = [];
+	for (const w of f.walls) {
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+		if (w.exterior || L < 900) {
+			walls.push(w);
+			continue;
+		}
+		const step = 100;
+		const states = [];
+		for (let t = step / 2; t < L; t += step) states.push(outsideSide(w, t));
+		const runs = [];
+		states.forEach((s, i) => {
+			const t0 = i * step;
+			const last = runs[runs.length - 1];
+			if (last && last.s === s) last.t1 = Math.min(L, t0 + step);
+			else runs.push({
+				t0,
+				t1: Math.min(L, t0 + step),
+				s
+			});
+		});
+		for (const r of runs) if (r.s !== 0 && r.t1 - r.t0 < 455) r.s = 0;
+		const merged = [];
+		for (const r of runs) {
+			const last = merged[merged.length - 1];
+			if (last && last.s === r.s) last.t1 = r.t1;
+			else merged.push({ ...r });
+		}
+		if (!merged.some((r) => r.s !== 0)) {
+			walls.push(w);
+			continue;
+		}
+		const ops = f.openings.filter((o) => o.wallId === w.id);
+		for (let i = 1; i < merged.length; i++) {
+			let t = merged[i].t0;
+			for (const o of ops) if (t > o.t0 && t < o.t1) t = t - o.t0 < o.t1 - t ? o.t0 : o.t1;
+			merged[i - 1].t1 = t;
+			merged[i].t0 = t;
+		}
+		const ux = (w.b.x - w.a.x) / L;
+		const uy = (w.b.y - w.a.y) / L;
+		const at = (t) => ({
+			x: Math.round(w.a.x + ux * t),
+			y: Math.round(w.a.y + uy * t)
+		});
+		merged.filter((r) => r.t1 - r.t0 > 1).forEach((r, i, arr) => {
+			const id = i === 0 ? w.id : newId();
+			const piece = {
+				...w,
+				id,
+				a: at(r.t0),
+				b: at(r.t1),
+				exterior: r.s !== 0,
+				outsideSign: r.s !== 0 ? r.s : void 0,
+				joinedA: i === 0 ? w.joinedA : true,
+				joinedB: i === arr.length - 1 ? w.joinedB : true
+			};
+			if (r.s !== 0) piece.thickness = Math.max(w.thickness, extT);
+			walls.push(piece);
+			for (const o of ops) if (o.t0 >= r.t0 - 1 && o.t1 <= r.t1 + 1) {
+				o.wallId = id;
+				o.t0 -= r.t0;
+				o.t1 -= r.t0;
+			}
+		});
+		rep.split++;
+	}
+	f.walls = walls;
+	const covered = (p, ux, uy) => f.walls.some((w) => {
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		return Math.abs((w.b.x - w.a.x) / L * ux + (w.b.y - w.a.y) / L * uy) > .97 && segDist(p, w.a, w.b) <= w.thickness / 2 + 90;
+	});
+	const added = [];
+	for (const loop of loops) for (let i = 0; i < loop.length; i++) {
+		const a = loop[i];
+		const b = loop[(i + 1) % loop.length];
+		const L = Math.hypot(b.x - a.x, b.y - a.y);
+		if (L < 455) continue;
+		const ux = (b.x - a.x) / L;
+		const uy = (b.y - a.y) / L;
+		const step = 50;
+		let run = null;
+		const runs = [];
+		for (let t = 0; t <= L; t += step) if (!covered({
+			x: a.x + ux * t,
+			y: a.y + uy * t
+		}, ux, uy)) {
+			if (!run) run = [t, t];
+			run[1] = t;
+		} else if (run) {
+			runs.push(run);
+			run = null;
+		}
+		if (run) runs.push(run);
+		for (const [r0, r1] of runs) {
+			const t0 = r0 <= step ? 0 : r0 - step;
+			const t1 = r1 >= L - step ? L : r1 + step;
+			if (t1 - t0 < 455) continue;
+			const mid = (t0 + t1) / 2;
+			const pm = {
+				x: a.x + ux * mid,
+				y: a.y + uy * mid
+			};
+			let nx = -uy;
+			let ny = ux;
+			if (!insideOutline({
+				x: pm.x + nx * 300,
+				y: pm.y + ny * 300
+			}, loops)) [nx, ny] = [-nx, -ny];
+			const room = roomAt$1(f.rooms, {
+				x: pm.x + nx * 450,
+				y: pm.y + ny * 450
+			});
+			if (room && OPEN_SIDE.has(room.type)) continue;
+			const w = {
+				id: newId(),
+				a: {
+					x: Math.round(a.x + ux * t0),
+					y: Math.round(a.y + uy * t0)
+				},
+				b: {
+					x: Math.round(a.x + ux * t1),
+					y: Math.round(a.y + uy * t1)
+				},
+				thickness: extT,
+				exterior: true,
+				joinedA: true,
+				joinedB: true
+			};
+			w.outsideSign = -uy * -nx + ux * -ny > 0 ? 1 : -1;
+			const ops = [];
+			const len = t1 - t0;
+			if (room && GLAZED.has(room.type) && len >= 1365) {
+				const m = Math.min(455, Math.max(150, len * .08));
+				ops.push({
+					id: `${w.id}-O1`,
+					wallId: w.id,
+					kind: "window",
+					t0: m,
+					t1: len - m,
+					sill: 0,
+					height: 2200,
+					windowStyle: "hakidashi",
+					confidence: .4
+				});
+				rep.glazed++;
+			}
+			added.push({
+				w,
+				ops
+			});
+			rep.added++;
+			rep.addedLen += len;
+		}
+	}
+	for (const { w, ops } of added) {
+		f.walls.push(w);
+		f.openings.push(...ops);
+	}
+	return rep;
+}
+//#endregion
 //#region src/parser/textMerge.ts
 var CJK = /^[぀-ヿ㐀-鿿ｦ-ﾟ々ー・（）()]$/;
 function sameDir(a, b) {
@@ -632,189 +1174,6 @@ function detectScale(pages) {
 		source: "default",
 		matches: 0
 	};
-}
-//#endregion
-//#region src/core/geometry.ts
-var v = (x, y) => ({
-	x,
-	y
-});
-var add = (a, b) => ({
-	x: a.x + b.x,
-	y: a.y + b.y
-});
-var sub = (a, b) => ({
-	x: a.x - b.x,
-	y: a.y - b.y
-});
-var scale = (a, s) => ({
-	x: a.x * s,
-	y: a.y * s
-});
-var dot = (a, b) => a.x * b.x + a.y * b.y;
-var dist$1 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-var lerp = (a, b, t) => ({
-	x: a.x + (b.x - a.x) * t,
-	y: a.y + (b.y - a.y) * t
-});
-function polygonArea(poly) {
-	let s = 0;
-	for (let i = 0; i < poly.length; i++) {
-		const p = poly[i];
-		const q = poly[(i + 1) % poly.length];
-		s += p.x * q.y - q.x * p.y;
-	}
-	return s / 2;
-}
-function polygonCentroid(poly) {
-	let a = 0;
-	let cx = 0;
-	let cy = 0;
-	for (let i = 0; i < poly.length; i++) {
-		const p = poly[i];
-		const q = poly[(i + 1) % poly.length];
-		const f = p.x * q.y - q.x * p.y;
-		a += f;
-		cx += (p.x + q.x) * f;
-		cy += (p.y + q.y) * f;
-	}
-	if (Math.abs(a) < 1e-9) return scale(poly.reduce((acc, p) => add(acc, p), v(0, 0)), 1 / Math.max(1, poly.length));
-	return {
-		x: cx / (3 * a),
-		y: cy / (3 * a)
-	};
-}
-/** 輪郭が他の輪郭の内側にある（＝穴）か */
-function isHoleLoop(loop, loops) {
-	const p = loop[0];
-	let n = 0;
-	for (const l of loops) if (l !== loop && pointInPolygon(p, l)) n++;
-	return n % 2 === 1;
-}
-function pointInPolygon(p, poly) {
-	let inside = false;
-	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-		const a = poly[i];
-		const b = poly[j];
-		if (a.y > p.y !== b.y > p.y && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
-	}
-	return inside;
-}
-function bboxOf$2(points) {
-	const b = {
-		minX: Infinity,
-		minY: Infinity,
-		maxX: -Infinity,
-		maxY: -Infinity
-	};
-	for (const p of points) {
-		if (p.x < b.minX) b.minX = p.x;
-		if (p.y < b.minY) b.minY = p.y;
-		if (p.x > b.maxX) b.maxX = p.x;
-		if (p.y > b.maxY) b.maxY = p.y;
-	}
-	return b;
-}
-function bboxGap(a, b) {
-	const dx = Math.max(0, a.minX - b.maxX, b.minX - a.maxX);
-	const dy = Math.max(0, a.minY - b.maxY, b.minY - a.maxY);
-	return Math.hypot(dx, dy);
-}
-/** 点と線分の距離 */
-function distPointSegment(p, a, b) {
-	const ab = sub(b, a);
-	const l2 = dot(ab, ab);
-	if (l2 === 0) return dist$1(p, a);
-	return dist$1(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
-}
-/** Douglas-Peucker による閉多角形の簡略化 */
-function simplifyClosed(poly, tol) {
-	if (poly.length <= 4) return poly;
-	let i0 = 0;
-	let i1 = 0;
-	let best = -1;
-	for (let i = 0; i < poly.length; i++) {
-		const d = dist$1(poly[0], poly[i]);
-		if (d > best) {
-			best = d;
-			i1 = i;
-		}
-	}
-	const part1 = poly.slice(i0, i1 + 1);
-	const part2 = poly.slice(i1).concat([poly[0]]);
-	const s1 = simplifyOpen(part1, tol);
-	const s2 = simplifyOpen(part2, tol);
-	return removeCollinear(s1.slice(0, -1).concat(s2.slice(0, -1)), tol * .5);
-}
-function simplifyOpen(pts, tol) {
-	if (pts.length <= 2) return pts.slice();
-	const keep = new Uint8Array(pts.length);
-	keep[0] = 1;
-	keep[pts.length - 1] = 1;
-	const stack = [[0, pts.length - 1]];
-	while (stack.length) {
-		const [s, e] = stack.pop();
-		let md = -1;
-		let mi = -1;
-		for (let i = s + 1; i < e; i++) {
-			const d = distPointSegment(pts[i], pts[s], pts[e]);
-			if (d > md) {
-				md = d;
-				mi = i;
-			}
-		}
-		if (md > tol && mi > 0) {
-			keep[mi] = 1;
-			stack.push([s, mi], [mi, e]);
-		}
-	}
-	return pts.filter((_, i) => keep[i]);
-}
-function removeCollinear(poly, tol) {
-	let out = poly.slice();
-	let changed = true;
-	while (changed && out.length > 3) {
-		changed = false;
-		for (let i = 0; i < out.length; i++) {
-			const a = out[(i - 1 + out.length) % out.length];
-			const b = out[i];
-			const c = out[(i + 1) % out.length];
-			if (distPointSegment(b, a, c) < tol || dist$1(a, b) < tol) {
-				out.splice(i, 1);
-				changed = true;
-				break;
-			}
-		}
-	}
-	return out;
-}
-/** 区間の和集合 */
-function mergeIntervals(iv, gap = 0) {
-	const s = iv.filter((x) => x[1] > x[0]).sort((a, b) => a[0] - b[0]);
-	const out = [];
-	for (const x of s) {
-		const last = out[out.length - 1];
-		if (last && x[0] <= last[1] + gap) last[1] = Math.max(last[1], x[1]);
-		else out.push([x[0], x[1]]);
-	}
-	return out;
-}
-/** 区間 a から区間集合 b を差し引く */
-function subtractIntervals(a, b) {
-	let parts = [[a[0], a[1]]];
-	for (const [s, e] of b) {
-		const next = [];
-		for (const [ps, pe] of parts) if (e <= ps || s >= pe) next.push([ps, pe]);
-		else {
-			if (s > ps) next.push([ps, s]);
-			if (e < pe) next.push([e, pe]);
-		}
-		parts = next;
-	}
-	return parts;
-}
-function intervalsLength(iv) {
-	return iv.reduce((s, [a, b]) => s + Math.max(0, b - a), 0);
 }
 //#endregion
 //#region src/parser/walls.ts
@@ -10203,6 +10562,9 @@ function dxfToPages(text) {
 }
 //#endregion
 //#region src/parser/index.ts
+/**
+* 平面図 PDF → 建物モデル
+*/
 async function loadPdfVectors(data, pdfjs, opts = {}) {
 	const doc = await pdfjs.getDocument({
 		data,
@@ -10376,6 +10738,18 @@ function modelFromVectors(pages, opts = {}) {
 		"階段"
 	].includes(r.name))) warnings.push("室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください");
 	if (sc.source === "default" && scaleSource === "default" && !scanned) warnings.push("縮尺を特定できなかったため 1/100 として解析しました");
+	for (const f of res.floors) {
+		const r = repairEnvelope(f);
+		if (r.added) warnings.push(`${f.level}階: 外形に沿って壁が読めなかった ${r.added} か所（計 ${(r.addedLen / 1e3).toFixed(1)} m）に外壁を補いました${r.glazed ? `（うち LDK の ${r.glazed} か所は掃き出し窓）` : ""}。修正画面で確認してください`);
+	}
+	for (const up of res.floors) {
+		const lo = res.floors.find((x) => x.level === up.level - 1);
+		if (!lo) continue;
+		const add = autoOverhangPosts(lo, up);
+		if (!add.length) continue;
+		lo.posts = [...lo.posts ?? [], ...add];
+		warnings.push(`${up.level}階の 1 間を超える張り出しの足元に、${lo.level}階の柱を ${add.length} 本立てました（修正画面の「柱」で変更・削除できます）`);
+	}
 	const { thicknesses, ...model } = res;
 	return {
 		...model,
@@ -10423,108 +10797,6 @@ function parseDxf(text, opts = {}) {
 	model.report.scaleDenominator = null;
 	model.report.warnings = model.report.warnings.filter((w) => !/縮尺/.test(w));
 	return model;
-}
-//#endregion
-//#region src/core/posts.ts
-/**
-* 柱（Floor.posts）の決まりごと（three 非依存の純関数）。
-*
-* - 柱はその階の床から立つ。管柱・独立柱は上の階の床（最上階なら軒の高さ）まで、通し柱は 1 階から最上階の上まで。
-* - 2 階の張り出し（オーバーハング）: 上の階の外形の角が下の階の外形の外に出ている所。張り出しが半間（455）を超えると、
-*   足元（下の階）に柱を立てるのがふつう（1 間 = 910 を超える張り出しを梁だけで持たせるのは在来の木造では無理がある）。
-* - 壁の中に入る柱（壁の芯から壁厚の半分以内）は 3D では壁に隠れるので描かない。図面では□で描く。
-*/
-/** 張り出しの辺に立てる柱の間隔の上限（mm、1.5 間） */
-var OVERHANG_POST_SPACING = 2730;
-function segDist(p, a, b) {
-	const dx = b.x - a.x;
-	const dy = b.y - a.y;
-	const L2 = dx * dx + dy * dy || 1;
-	const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2));
-	return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
-}
-/** 点から外形（複数の輪）の辺までの最短距離 */
-function distToOutline(p, loops) {
-	let d = Infinity;
-	for (const l of loops) for (let i = 0; i < l.length; i++) d = Math.min(d, segDist(p, l[i], l[(i + 1) % l.length]));
-	return d;
-}
-function insideOutline(p, loops) {
-	return loops.some((l) => l.length >= 3 && pointInPolygon(p, l));
-}
-/** 上の階の輪が下の階の外形と重なるか（頂点のどちらかが相手の内側か、辺どうしが近い） */
-function touches(loop, low) {
-	if (loop.some((p) => insideOutline(p, low) || distToOutline(p, low) <= 100)) return true;
-	return low.some((l) => l.some((p) => pointInPolygon(p, loop)));
-}
-/**
-* 上の階の外形のうち、下の階の外形の外に出ている点（張り出しの足元の候補）。
-* 角に加え、張り出した辺が 1.5 間を超えるときは途中にも等間隔に置く。
-* - 下の階の壁（車庫・ポーチの袖壁など外形の外の壁も）の上に載る点は壁の柱で受けるので除く
-* - 下の階とまったく重ならない上の階の輪は張り出しではなく読み違い（別棟・凡例など）として除く
-*/
-function overhangPoints(lower, upper) {
-	const low = lower.outline.filter((l) => l.length >= 3);
-	if (!low.length) return [];
-	const out = [];
-	const onWall = (p) => lower.walls.some((w) => segDist(p, w.a, w.b) <= w.thickness / 2 + 150);
-	const off = (p) => !insideOutline(p, low) && distToOutline(p, low) > 100;
-	const outside = (p) => off(p) && !onWall(p);
-	for (const loop of upper.outline) {
-		const n = loop.length;
-		if (n < 3 || !touches(loop, low)) continue;
-		for (let i = 0; i < n; i++) {
-			const a = loop[i];
-			const b = loop[(i + 1) % n];
-			if (outside(a)) out.push({
-				p: {
-					x: Math.round(a.x),
-					y: Math.round(a.y)
-				},
-				depth: distToOutline(a, low),
-				corner: true
-			});
-			if (off(a) && off(b)) {
-				const L = Math.hypot(b.x - a.x, b.y - a.y);
-				const k = Math.ceil(L / OVERHANG_POST_SPACING);
-				for (let j = 1; j < k; j++) {
-					const p = {
-						x: Math.round(a.x + (b.x - a.x) * j / k),
-						y: Math.round(a.y + (b.y - a.y) * j / k)
-					};
-					if (outside(p)) out.push({
-						p,
-						depth: distToOutline(p, low),
-						corner: false
-					});
-				}
-			}
-		}
-	}
-	return out;
-}
-/** その点の近く（300mm 以内）に柱があるか */
-function hasPostNear(posts, p, tol = 300) {
-	return !!posts?.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= tol);
-}
-/** 柱が壁の中に入っているか（壁の芯から壁厚の半分以内。端の少し外まで含む） */
-function postInWall(p, walls) {
-	return walls.some((w) => segDist(p, w.a, w.b) <= w.thickness / 2 + 5);
-}
-/** 柱の高さの範囲（GL からの mm）: 床から、管柱・独立柱は上の階の床（最上階は壁の上端）まで、通し柱は最上階の上まで */
-function postSpan(model, f, p) {
-	const floors = [...model.floors].sort((a, b) => a.level - b.level);
-	const top = floors[floors.length - 1];
-	const next = floors.find((x) => x.level === f.level + 1);
-	const y0 = f.elevation;
-	if (p.kind === "toshi") return {
-		y0,
-		y1: top.elevation + top.height
-	};
-	return {
-		y0,
-		y1: next ? next.elevation : f.elevation + f.height
-	};
 }
 //#endregion
 //#region src/core/rects.ts
@@ -13063,6 +13335,31 @@ function outdoorRoom(r) {
 	return !!r && (r.type === "balcony" || r.type === "porch" || isExteriorWorks(r.type) || isSeparateGarage(r));
 }
 var SHED_HEIGHT = 2.2;
+/** 壁（両端と中点）から階の外形までの最短距離 (mm)。外形の中に入っていれば 0 */
+function distToOutlineMm(f, w) {
+	const loops = f.outline.filter((l) => l.length >= 3);
+	if (!loops.length) return 0;
+	let d = Infinity;
+	for (const p of [
+		w.a,
+		w.b,
+		{
+			x: (w.a.x + w.b.x) / 2,
+			y: (w.a.y + w.b.y) / 2
+		}
+	]) {
+		if (loops.some((l) => pointInPolygon(p, l))) return 0;
+		for (const l of loops) for (let i = 0; i < l.length; i++) {
+			const a = l[i];
+			const b = l[(i + 1) % l.length];
+			const dx = b.x - a.x;
+			const dy = b.y - a.y;
+			const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+			d = Math.min(d, Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y));
+		}
+	}
+	return d;
+}
 function annexHeight(r) {
 	if (!r) return null;
 	if (isSeparateGarage(r)) return 3;
@@ -14082,7 +14379,8 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
 	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : fl;
 	const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
-	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+	const fence = f.level === 1 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
+	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
 	const topKey = w.exterior || facesOutdoor ? "ext.wallTop" : "int.wallTop";
 	if (guard === "halfGlass") voidGlassOnTop(mb, A, B, fl + .9);
 	const jambKey = w.exterior ? spec.windows.interiorReveal === "plaster" ? "int.wall" : "int.trim" : spec.doors.frame === "casing" ? "int.trim" : "int.wall";
@@ -14099,7 +14397,8 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		], base, dir, s1 - s0, y1 - y0, t);
 	};
 	let cursor = 0;
-	const firstCap = w.joinedA ? null : jambKey;
+	const endKey = w.exterior || facesOutdoor ? extKey : jambKey;
+	const firstCap = w.joinedA ? null : endKey;
 	for (let i = 0; i < ops.length; i++) {
 		const o = ops[i];
 		const s0 = Math.max(0, o.t0 * MM);
@@ -14111,7 +14410,7 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		if (head < wallTop - .005) seg(s0, s1, head, wallTop, null, null);
 		cursor = s1;
 	}
-	seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : jambKey);
+	seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : endKey);
 }
 function buildOpening(mb, f, w, o, fl, meta, spec) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);

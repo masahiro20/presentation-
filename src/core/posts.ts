@@ -121,3 +121,15 @@ export function postLabel(p: Post): string {
   const k = p.kind === 'toshi' ? '通し柱' : p.kind === 'free' ? '独立柱' : '管柱';
   return `${k} ${p.round ? `φ${p.size}` : `${p.size}角`}`;
 }
+
+/**
+ * 読み込み直後に置く張り出しの柱: 1 間（910）を超える張り出しの角は梁の持ち出しでは受けられないので、下の階に独立柱を立てる
+ * （柱が無いと 3D で 2 階が宙に浮いて見える。ピロティ・ビルトイン車庫の上の 2 階など）。
+ * 張り出しの点が多すぎる（11 か所以上）ときは階の位置合わせの読み違いの疑いが強いので置かない
+ */
+export function autoOverhangPosts(lower: Floor, upper: Floor, size = 120): Post[] {
+  const pts = overhangPoints(lower, upper).filter((o) => o.depth >= OVERHANG_POST_MIN);
+  if (!pts.length || pts.length > 10) return [];
+  // ちょうど 1 間（910）の持ち出しは梁で納めるのがふつうなので、それを超える（+50 の読み取りの誤差を見込む）ときだけ
+  return suggestOverhangPosts(lower, upper, size).filter((p) => pts.some((o) => o.depth > OVERHANG_POST_WARN + 50 && Math.hypot(o.p.x - p.x, o.p.y - p.y) < 1));
+}

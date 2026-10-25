@@ -4,6 +4,7 @@ import { state, on, emit } from './state';
 import { shareDialog } from './share';
 import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project';
 import { Viewer } from '../scene/viewer';
+import { auditEnvelope } from '../scene/selfCheck';
 import { createFurnitureTool } from './furnitureTool';
 
 export interface StepCtx {
@@ -226,7 +227,30 @@ export class App {
     if (this.builtVersion !== this.modelVersion) {
       v.setModel(state.model);
       this.builtVersion = this.modelVersion;
+      this.selfCheck(v);
     }
+  }
+
+  /**
+   * 3D を作った直後の自己点検: 外から見て外壁が抜けている所・屋根の穴を数え、あれば知らせる
+   * （読み取りの崩れを、お客様に見せる前にここで気づけるように）
+   */
+  private selfCheck(v: Viewer) {
+    const ver = this.modelVersion;
+    window.setTimeout(() => {
+      if (ver !== this.modelVersion || !state.model) return;
+      try {
+        const a = auditEnvelope(v);
+        const wallM = a.walls.reduce((s, x) => s + x.len, 0);
+        const roofN = a.roofs.reduce((s, x) => s + x.n, 0);
+        if (!a.walls.length && roofN === 0) return;
+        const where = [...new Set(a.walls.map((x) => `${x.level}階${x.room ? `・${x.room}` : ''}`))].slice(0, 3).join('、');
+        const parts = [a.walls.length ? `外壁が抜けている所 ${a.walls.length} か所（計 ${wallM.toFixed(1)} m${where ? `：${where}` : ''}）` : '', roofN ? `屋根の穴 ${roofN} 点` : ''].filter(Boolean);
+        toast(`外観の自己点検: ${parts.join('・')}。「図面読込」の「間取りを手で修正する」で壁を描き足せます`, 'info', 9000);
+      } catch (e) {
+        console.warn('自己点検に失敗', e);
+      }
+    }, 600);
   }
 
   renderSteps() {

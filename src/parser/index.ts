@@ -1,6 +1,8 @@
 /**
  * 平面図 PDF → 建物モデル
  */
+import { autoOverhangPosts } from '../core/posts';
+import { repairEnvelope } from './envelope';
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
@@ -200,6 +202,22 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     warnings.push('室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください');
   }
   if (sc.source === 'default' && scaleSource === 'default' && !scanned) warnings.push('縮尺を特定できなかったため 1/100 として解析しました');
+
+  // 外皮の後処理: 一部だけ外に面する内壁を分け、外形に沿って壁の無い区間を外壁で補う（3D で家に穴が開かないように）
+  for (const f of res.floors) {
+    const r = repairEnvelope(f);
+    if (r.added) warnings.push(`${f.level}階: 外形に沿って壁が読めなかった ${r.added} か所（計 ${(r.addedLen / 1000).toFixed(1)} m）に外壁を補いました${r.glazed ? `（うち LDK の ${r.glazed} か所は掃き出し窓）` : ''}。修正画面で確認してください`);
+  }
+
+  // 1 間を超える張り出しの足元に柱を立てる（修正画面の「柱」で変更・削除できる）
+  for (const up of res.floors) {
+    const lo = res.floors.find((x) => x.level === up.level - 1);
+    if (!lo) continue;
+    const add = autoOverhangPosts(lo, up);
+    if (!add.length) continue;
+    lo.posts = [...(lo.posts ?? []), ...add];
+    warnings.push(`${up.level}階の 1 間を超える張り出しの足元に、${lo.level}階の柱を ${add.length} 本立てました（修正画面の「柱」で変更・削除できます）`);
+  }
 
   const { thicknesses, ...model } = res;
   return {

@@ -353,7 +353,7 @@ export const coordStep: Step = {
           section(
             'お客様に選んでもらう',
             h('p', { class: 'hint', style: 'margin-top:0' }, `候補を絞った部位: ${proposed}。体験リンクの「仕様を選ぶ」に、候補だけが並びます（お客様は自分の家の 3D で切り替えて見比べ、ひとことを添えて送れます）。`),
-            h('button', { class: 'btn primary block', onclick: () => void shareDialog() }, '候補を体験リンクで送る'),
+            h('button', { class: 'btn primary block', onclick: () => void shareDialog(ctx.app) }, '候補を体験リンクで送る'),
             h('button', { class: 'btn dark block', style: 'margin-top:8px', onclick: () => void receivePicks() }, 'お客様の選択を受け取る'),
             c.customerNote ? h('div', { class: 'coord-cust' }, h('b', null, 'お客様から: '), c.customerNote) : null,
             c.shareUrl ? h('p', { class: 'hint' }, `受け取り先: 最後に作った体験リンク`) : null,

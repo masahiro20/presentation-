@@ -12,6 +12,8 @@ import { auditEnvelope, type EnvelopeAudit } from './scene/selfCheck';
 import { DEFAULT_DESIGN, type DesignOptions } from './styles/presets';
 import { sunPosition, sunDirectionWorld, localDate } from './sun/solar';
 import { finishPhoto } from './scene/photoFinish';
+import { exportAr } from './scene/exportAr';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { BuildingModel } from './core/types';
 
 interface Payload {
@@ -73,4 +75,21 @@ w.__renderShot = async (id, W, H, grade) => {
   return viewer.capture(W, H, 'image/png');
 };
 (w as unknown as { __auditScene: () => EnvelopeAudit }).__auditScene = () => auditEnvelope(viewer);
+/** 点検用: AR のデータ（体験リンクで使う）を書き出し、大きさと置き方（中心が原点・地盤面が 0）を返す */
+(w as unknown as { __checkAr: (fmt: 'glb' | 'usdz', scale: number, o?: { furniture?: boolean; tex?: number }) => Promise<{ bytes: number; box?: number[]; tris?: number; tex?: number }> }).__checkAr = async (fmt, scale, o) => {
+  const data = await exportAr(viewer, fmt, scale, o);
+  if (fmt !== 'glb') return { bytes: data.byteLength };
+  const gltf = await new GLTFLoader().parseAsync(data.slice().buffer, '');
+  const b = new THREE.Box3().setFromObject(gltf.scene);
+  let tris = 0;
+  const texs = new Set<unknown>();
+  gltf.scene.traverse((m) => {
+    const mesh = m as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    tris += (mesh.geometry.index?.count ?? mesh.geometry.attributes.position.count) / 3;
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    for (const t of [mat.map, mat.normalMap, mat.roughnessMap]) if (t) texs.add(t.image);
+  });
+  return { tris: Math.round(tris), tex: texs.size, bytes: data.byteLength, box: [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map((v) => +v.toFixed(2)) };
+};
 w.__ready = true;

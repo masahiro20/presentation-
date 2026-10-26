@@ -133,7 +133,7 @@ export class App {
       { class: 'proj-btns' },
       h('button', { class: 'btn sm ghost', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '保存'),
       h('button', { class: 'btn sm ghost', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '開く'),
-      h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog() }, 'お客様に渡す'),
+      h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog(this) }, 'お客様に渡す'),
       input,
     );
   }

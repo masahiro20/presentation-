@@ -9,6 +9,7 @@ import { Viewer } from './scene/viewer';
 import type { Shot } from './scene/shots';
 import { exportGlb } from './scene/exportGlb';
 import { exportUsdz } from './scene/exportUsdz';
+import { sceneViewerUrl, type ArFiles } from './scene/exportAr';
 import { EXTERIOR_STYLES, INTERIOR_STYLES, MAIN_EXTERIOR_IDS, MAIN_INTERIOR_IDS, type DesignOptions } from './styles/presets';
 import type { ProjectFile } from './app/project';
 import { siteLatLon } from './sun/geo';
@@ -19,7 +20,7 @@ import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
 import { ROUNDS, shotFor, deltaText, type CustomerPicks } from './coordinate/decisions';
 import { lookOf } from './coordinate/samples';
 
-type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; deltas?: Record<string, Record<string, number | null>>; designer?: string; tel?: string; email?: string; url?: string } };
+type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; designer?: string; tel?: string; email?: string; url?: string } };
 
 const root = document.getElementById('view')!;
 const head = h('div', { class: 'vw-head' });
@@ -281,49 +282,70 @@ async function main() {
       pane.appendChild(h('div', { class: 'vw-hint' }, '図面に書き込んだ、この家の見どころです。'));
     });
   addTab('ar', 'AR', (pane) => {
-    const mv = document.createElement('model-viewer') as HTMLElement & { activateAR: () => Promise<void>; canActivateAR: boolean };
-    mv.setAttribute('ar', '');
-    mv.setAttribute('ar-modes', 'webxr scene-viewer quick-look');
-    mv.setAttribute('ar-scale', 'fixed');
-    mv.setAttribute('ar-placement', 'floor');
-    document.body.appendChild(mv);
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const android = /Android/.test(navigator.userAgent);
+    const ar = proj.share?.ar ?? {};
+    const title = `${proj.name || 'わが家'}`;
     const status = h('div', { class: 'vw-hint' }, '敷地に立って「原寸で置く」を押すと、カメラの中に家が建ちます。机の上なら「1/50 の模型」。');
-    let busy = false;
-    const launch = async (scale: number) => {
-      if (busy) return;
-      busy = true;
-      status.textContent = '3D データを用意しています（少しお待ちください）…';
-      try {
-        const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-        if (ios) {
-          const usdz = await exportUsdz(viewer, { scale });
-          const url = URL.createObjectURL(new Blob([usdz as BlobPart], { type: 'model/vnd.usdz+zip' }));
-          const a = document.createElement('a');
-          a.setAttribute('rel', 'ar');
-          a.href = url;
-          a.appendChild(document.createElement('img'));
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        } else {
-          const glb = await exportGlb(viewer);
-          if (scale !== 1) {
-            // 模型スケール: glb をそのまま使い、model-viewer 側で縮める
-            mv.setAttribute('scale', `${scale} ${scale} ${scale}`);
-          } else mv.removeAttribute('scale');
-          const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
-          mv.setAttribute('src', url);
-          await new Promise((r) => setTimeout(r, 800));
-          await mv.activateAR();
-        }
-        status.textContent = 'AR を開きました。うまく開かない場合は、Safari（iPhone）または Chrome（Android）でお試しください。';
-      } catch (e) {
-        status.textContent = `AR を開けませんでした: ${(e as Error).message}`;
-      } finally {
-        busy = false;
+    // 体験リンクを作ったときに用意した AR のデータ（公開 URL）をタップで直接開く。
+    // iPhone の Quick Look・Android の Scene Viewer は、タップの直後でないと開かないので、ここでは待ち時間を挟まない
+    const openReady = (model: boolean): boolean => {
+      if (ios) {
+        const u = model ? ar.usdzModel : ar.usdz;
+        if (!u) return false;
+        const a = document.createElement('a');
+        a.setAttribute('rel', 'ar');
+        a.href = `${u}#allowsContentScaling=${model ? 1 : 0}`;
+        a.appendChild(document.createElement('img'));
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
       }
+      if (android) {
+        const u = model ? ar.glbModel : ar.glb;
+        if (!u) return false;
+        location.href = sceneViewerUrl(u, title, location.href);
+        return true;
+      }
+      return false;
     };
-    pane.append(h('button', { class: 'vw-chip primary', onclick: () => launch(1) }, '敷地に原寸で置く'), h('button', { class: 'vw-chip', onclick: () => launch(0.02) }, '1/50 の模型を机に置く'), status);
+    // 古い体験リンク（AR のデータが無い）: ここで書き出してから、もう一度タップしてもらう
+    let prepared: { model: boolean; url: string } | null = null;
+    const prepare = async (model: boolean) => {
+      status.textContent = '3D データを用意しています（少しお待ちください）…';
+      const scale = model ? 0.02 : 1;
+      const data = ios ? await exportUsdz(viewer, { scale }) : await exportGlb(viewer);
+      const url = URL.createObjectURL(new Blob([data as BlobPart], { type: ios ? 'model/vnd.usdz+zip' : 'model/gltf-binary' }));
+      prepared = { model, url };
+      status.textContent = '用意ができました。もう一度ボタンを押すと AR が開きます。';
+    };
+    const launch = (model: boolean) => {
+      if (!ios && !android) {
+        status.textContent = 'AR はスマートフォン（iPhone の Safari、Android の Chrome）で開いてください。パソコンでは開けません。';
+        return;
+      }
+      if (openReady(model)) {
+        status.textContent = 'AR を開いています。開かないときは、iPhone は Safari、Android は Chrome でこのページを開き直してください。';
+        return;
+      }
+      if (prepared && prepared.model === model && ios) {
+        const a = document.createElement('a');
+        a.setAttribute('rel', 'ar');
+        a.href = prepared.url;
+        a.appendChild(document.createElement('img'));
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
+      if (!ios) {
+        status.textContent = 'この体験リンクには Android 用の AR データがありません。担当者に体験リンクの作り直しをご依頼ください。';
+        return;
+      }
+      void prepare(model).catch((e) => (status.textContent = `AR を用意できませんでした: ${(e as Error).message}`));
+    };
+    pane.append(h('button', { class: 'vw-chip primary', onclick: () => launch(false) }, '敷地に原寸で置く'), h('button', { class: 'vw-chip', onclick: () => launch(true) }, '1/50 の模型を机に置く'), status);
   });
   // 動画・パース
   const videos = proj.share?.videos ?? [];

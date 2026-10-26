@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { USDZExporter } from 'three/examples/jsm/exporters/USDZExporter.js';
 import type { Viewer } from './viewer';
 import { prepareMaterials, restoreMaterials } from './photoFinish';
+import { stripUnexportableTextures } from './exportAr';
 
 export async function exportUsdz(viewer: Viewer, opts: { landscape?: boolean; scale?: number } = {}): Promise<Uint8Array> {
   const g = viewer.groups;
@@ -18,7 +19,12 @@ export async function exportUsdz(viewer: Viewer, opts: { landscape?: boolean; sc
     if (opts.scale && opts.scale !== 1) holder.scale.setScalar(opts.scale);
     holder.updateMatrixWorld(true);
     const exporter = new USDZExporter();
-    return await exporter.parseAsync(holder, { maxTextureSize: 1024, quickLookCompatible: true });
+    const restore = stripUnexportableTextures(holder);
+    try {
+      return await exporter.parseAsync(holder, { maxTextureSize: 1024, quickLookCompatible: true });
+    } finally {
+      restore();
+    }
   } finally {
     roots.forEach((r, i) => parents[i]?.add(r));
     restoreMaterials(saved);

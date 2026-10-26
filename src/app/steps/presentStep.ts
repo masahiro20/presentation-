@@ -16,7 +16,6 @@ import { externalController, externalSampleY, setExternalMounted } from '../exte
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
-import { resolveSpec } from '../../styles/spec';
 import { activeSunContext } from './sunStep';
 import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine, type SunDisclosure } from '../sunDisclosure';
 
@@ -57,7 +56,6 @@ export async function autoGenerate(ctx: StepCtx) {
     const interiors = all.filter((s) => s.kind === 'interior').sort((a, b) => roomRank(a.title) - roomRank(b.title));
     const pick = [
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
-      ...all.filter((s) => s.kind === 'cutaway').slice(0, 2),
       ...interiors.filter((s, i) => i < 2 || roomRank(s.title) < 3).slice(0, 4),
     ].filter((s) => !hasFinished(s.id) && !state.gallery.some((g) => g.shotId === s.id));
     for (let i = 0; i < pick.length; i++) {
@@ -183,13 +181,7 @@ function pick(kind: GalleryItem['kind']) {
   return [...chosen.filter((g) => g.quality === 'photoreal'), ...chosen.filter((g) => g.quality !== 'photoreal')];
 }
 
-/** 下書き画像には印を付け、提案時に気付けるようにする */
-function draftMark(g: GalleryItem | undefined) {
-  return g && g.quality !== 'photoreal' ? h('div', { class: 'draft' }, '下絵') : null;
-}
-
 const photo = (g: GalleryItem | undefined) => (g ? h('img', { class: 'photo', src: g.url, alt: g.title }) : null);
-const cleanTitle = (t: string) => t.replace(/^(外観|内観|鳥瞰)[:：]?/, '').replace(/(内観|外観)?パース[（(]?/, '').replace(/[）)]$/, '').trim() || t;
 
 /** 見出し（ホームランディックの提案書の書式: 小さな英字の見出し・和文・短い線。番号は付けない） */
 function head(_no: number, en: string, ja: string) {
@@ -214,13 +206,11 @@ function sunNote(d: SunDisclosure, target: 'deck' | 'diagram') {
 export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTMLElement[] {
   const model = state.model!;
   const { ext, int } = stylesFor(state.design);
-  const spec = resolveSpec(state.design.specId, state.design.specPatch);
   const extAll = pick('exterior');
   const exts = extAll.filter((g) => !/夕景|夜景/.test(g.title)).concat(extAll.filter((g) => /夕景|夜景/.test(g.title)));
   const ints = pick('interior');
   const aerial = pick('aerial')[0];
-  // 輪切りの模型だけ（断面パースは資料の水準に届かないので載せない）
-  const cuts = pick('cutaway').slice(0, 2);
+  // 輪切りの模型・断面パースは資料に載せない（作りかけに見える。間取りは平面図のページで伝える）
   const hero = exts[0] ?? aerial ?? ints[0];
   const slides: HTMLElement[] = [];
   const brand = state.company || '';
@@ -238,13 +228,11 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   // 章立て（素材のあるものだけ）
   const chapters: { en: string; ja: string }[] = [{ en: 'Concept', ja: 'コンセプト' }];
   if (exts.length || aerial) chapters.push({ en: 'Exterior', ja: '外観' });
-  if (cuts.length) chapters.push({ en: 'Model', ja: '間取り模型' });
   if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
   if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
-  if (state.sheets.some((x) => x.title === '立面図')) chapters.push({ en: 'Drawings', ja: '図面' });
+  if (state.elevations.length) chapters.push({ en: 'Drawings', ja: '図面' });
   if (state.deckFunding) chapters.push({ en: 'Budget', ja: '資金計画' });
   if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
-  chapters.push({ en: 'Details', ja: '上質を支える納まり' });
   const no = (en: string) => chapters.findIndex((c) => c.en === en) + 1;
 
   const office = state.company || 'ホームランディック一級建築士事務所';
@@ -320,10 +308,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   void copy;
   void lines;
   void chapters;
-  // パース: 1 枚ずつ全面に（言葉は添えず、画で見せる。左下に小さく場所の名前だけ）
-  const full = (g: GalleryItem) => slide('hl full', photo(g), h('div', { class: 'hl-tag' }, cleanTitle(g.title)), draftMark(g));
+  // パース: 1 枚ずつ全面に、画だけで見せる（「道路側」「下絵」などの社内向けの文字は載せない）
+  const full = (g: GalleryItem) => slide('hl full', photo(g));
   for (const g of [...exts, ...(aerial ? [aerial] : [])]) slides.push(full(g));
-  for (const g of cuts) slides.push(full(g));
   for (const g of ints) slides.push(full(g));
   // 間取り: 1 階ずつ 1 枚に、図面を大きく。左に階の部屋と広さ
   if (state.plans.length) {
@@ -348,11 +335,12 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       );
     });
   }
-  // 図面（御社の書き方の A3 シート: 立面図 4 面＋外部仕上表、平面図）
-  const elevSheet = state.sheets.find((x) => x.title === '立面図');
-  if (elevSheet) {
+  // 立面図: 間取りのページと同じく、図面枠・表題欄の付いたシートではなく 4 面の絵だけを抜き出して大きく
+  if (state.elevations.length) {
     const n = no('Drawings');
-    slides.push(slide('drawing', h('div', { style: 'min-height:0;overflow:hidden' }, head(n, 'Drawings', '立面図'), h('p', null, '東西南北の 4 面と、屋根・外壁・サッシ・玄関ドアの仕上げ（外部仕上表）です。')), h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: elevSheet.svg }))));
+    const order = ['south', 'east', 'north', 'west'];
+    const els = [...state.elevations].sort((a, b) => order.indexOf(a.dir) - order.indexOf(b.dir));
+    slides.push(slide('drawing elev-grid', h('div', { style: 'min-height:0;overflow:hidden' }, head(n, 'Elevation', '立面図'), h('p', null, '東西南北の 4 面です。屋根のかたち・窓の並び・高さの関係をご覧ください。')), h('div', { class: 'elev4' }, ...els.map((e) => h('div', { class: 'svgbox', html: e.svg })))));
   }
   // 光と日当たり
   if (state.sun.seasons.length || state.sun.images.length) {
@@ -407,24 +395,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       );
     }
   }
-  // 上質を支える納まり
-  const items: { k: string; t: string; d: string }[] = [];
-  if (spec.doors.fullHeight) items.push({ k: 'Full-height Door', t: 'フルハイトドア', d: '天井まで届く扉で、上枠や下がり壁のない、すっきりとした開口に。' });
-  if (spec.windows.headAtCeiling) items.push({ k: 'Window Line', t: '天井にそろう窓', d: 'サッシの高さを天井にそろえ、窓まわりの線を消して光を深く導きます。' });
-  if (spec.windows.interiorReveal === 'plaster') items.push({ k: 'Plaster Reveal', t: '塗り回しの窓まわり', d: '額縁を設けず、壁と同じ仕上げで包み込む静かな納まり。' });
-  if (spec.curtains === 'pocket') items.push({ k: 'Curtain Pocket', t: 'カーテンボックス', d: 'レールを天井に納め、布のひだだけが美しく見えるように。' });
-  if (spec.lighting === 'downlight') items.push({ k: 'Lighting', t: 'ダウンライト計画', d: '器具の存在を消し、必要な場所に光だけを置く照明計画。' });
-  if (spec.indirectLighting) items.push({ k: 'Indirect Light', t: '間接照明', d: '天井際をやわらかく照らし、夜の空間に奥行きを生みます。' });
-  if (spec.baseboard === 'recessed') items.push({ k: 'Baseboard', t: '入り巾木', d: '巾木を壁面より奥に納め、床と壁の境目を細い影の線だけに。' });
-  if (items.length) {
-    slides.push(
-      slide(
-        'details',
-        h('div', { style: 'display:flex;flex-direction:column;justify-content:center' }, head(no('Details'), 'Details', '上質を支える納まり'), h('p', null, '仕上げの色だけでなく、見えない部分の納まりが空間の品格を決めます。線を一本ずつ減らし、素材と光が主役になる空間をつくります。')),
-        h('div', { class: 'list' }, ...items.slice(0, 6).map((it) => h('div', { class: 'item' }, h('div', { class: 'k latin' }, it.k), h('h4', { class: 'serif' }, it.t), h('p', null, it.d)))),
-      ),
-    );
-  }
+  // 「上質を支える納まり」のページは載せない（お客様には仕上げ・パースで伝わる）
   // 動画
   if (state.videos.length) {
     slides.push(slide('full', h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Movie'), h('h3', { class: 'serif' }, state.videos[0].title))));

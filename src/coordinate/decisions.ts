@@ -219,7 +219,8 @@ export function shotFor(catId: string, shots: Shot[]): Shot | undefined {
   if (cat.part === '外部') return front();
   if (catId === 'wetFloor') return ints.find((s) => /洗面|脱衣|玄関/.test(s.title)) ?? ints[0];
   if (catId === 'stair') return ints.find((s) => /階段|ホール/.test(s.title)) ?? ints.find((s) => /LDK|リビング/.test(s.title)) ?? ints[0];
-  return ints.find((s) => /LDK|リビング|キッチン/.test(s.title)) ?? ints[0];
+  // 室内の部位は LDK 全体の広いカット（「キッチンから」は向きが限られるので、LDK のカットが無いときだけ）
+  return ints.find((s) => /LDK|ＬＤＫ|リビング/.test(s.title) && !/キッチンから/.test(s.title)) ?? ints.find((s) => /LDK|ＬＤＫ|リビング|キッチン/.test(s.title)) ?? ints[0];
 }
 
 /** 差額の表示（税込） */

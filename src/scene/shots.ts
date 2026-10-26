@@ -700,8 +700,23 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
       break;
     }
     if (!pos) continue;
-    const target = pos.clone().addScaledVector(toRoom, Math.max(3, toRoom.length() * 2)).setY(ri.floorY + 1.15);
-    if (clear(pos, toRoom) < 2.5) continue;
+    // ダイニング・リビングの方を向くが、正面や画角の内側（斜め 25°）がすぐ壁なら少し振って一番ひらけた向きにする。
+    // どの向きも壁が近い（キッチンと居間が壁で仕切られている）なら、このカットは作らない
+    const rot = (v: THREE.Vector3, deg: number) => {
+      const a = (deg * Math.PI) / 180;
+      return new THREE.Vector3(v.x * Math.cos(a) - v.z * Math.sin(a), 0, v.x * Math.sin(a) + v.z * Math.cos(a));
+    };
+    let look: { dir: THREE.Vector3; score: number } | null = null;
+    for (const deg of [0, 15, -15, 30, -30]) {
+      const dir = rot(toRoom, deg);
+      const c0 = clear(pos, dir);
+      const c1 = Math.min(clear(pos, rot(dir, 25)), clear(pos, rot(dir, -25)));
+      if (c0 < 4 || c1 < 2.2) continue;
+      const score = c0 + c1 * 0.8 - Math.abs(deg) * 0.03;
+      if (!look || score > look.score) look = { dir, score };
+    }
+    if (!look) continue;
+    const target = pos.clone().addScaledVector(look.dir, 4).setY(ri.floorY + 1.15);
     out.push({
       id: `int-kitchen-${ri.room.id}`,
       kind: 'interior',

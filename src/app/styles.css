@@ -404,6 +404,10 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .slide.drawing .sheet { position: relative; background: #fff; border: 1px solid var(--hair); min-width: 0; min-height: 0; display: grid; gap: 1px; }
 .slide.drawing .sheet .svgbox { position: relative; display: grid; place-items: center; padding: 1.2cqw; min-height: 0; background: #fff; }
 .slide.drawing .sheet .svgbox svg { width: 100%; height: 100%; }
+.slide.drawing.elev-grid { grid-template-columns: 17cqw 1fr; gap: 2.4cqw; padding: 3.6cqw 3.2cqw 4.2cqw 4.2cqw; }
+.slide.drawing.elev-grid .elev4 { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1.6cqw 2.4cqw; min-width: 0; min-height: 0; }
+.slide.drawing.elev-grid .elev4 .svgbox { display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; }
+.slide.drawing.elev-grid .elev4 .svgbox svg { width: 100%; height: 100%; mix-blend-mode: multiply; }
 .slide.drawing.plan-one { grid-template-columns: 19cqw 1fr; gap: 2.4cqw; padding: 3.6cqw 3.2cqw 4.2cqw 4.2cqw; }
 .slide.drawing.plan-one .sheet { background: transparent; border: 0; }
 .slide.drawing.plan-one .sheet .svgbox { background: transparent; padding: 0; }

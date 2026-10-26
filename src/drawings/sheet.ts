@@ -126,14 +126,30 @@ export const SHEET_TITLE_MM = 20;
 /** 図枠の上に入れる帯（外部仕上表など）の幅（1/100 の図面 mm = 紙の幅から余白を引いたもの） */
 export const SHEET_TOP_W = 420 * 100 - 2 * SHEET_MARGIN_MM * 100;
 
-export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: { svg: string; w: number; h: number }; top?: { svg: string; w: number; h: number }; defs?: string; gap?: number } = {}): string {
+export interface ComposeOpts {
+  right?: { svg: string; w: number; h: number };
+  top?: { svg: string; w: number; h: number };
+  defs?: string;
+  gap?: number;
+  /** 試す縮尺（分母）。既定は 1/100 から順に */
+  scales?: number[];
+}
+
+/** この内容が収まる縮尺（分母）。scales のどれにも収まらなければ 0 */
+export function sheetScale(panels: Panel[], opts: ComposeOpts = {}): number {
+  let found = 0;
+  composeSheet(panels, { project: '', drawing: '', date: '', designer: '' }, { ...opts, onScale: (d, fits) => (found = fits ? d : 0) });
+  return found;
+}
+
+export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts & { onScale?: (d: number, fits: boolean) => void } = {}): string {
   // 余白・表題欄・上の帯は紙の上で一定（余白 10mm、表題欄 22mm）。1/100 の図面 mm で書き、縮尺に合わせて伸ばす
   const MARGIN = SHEET_MARGIN_MM;
   const TITLE_H = SHEET_TITLE_MM;
   const gap = opts.gap ?? 1600;
   const rgap = opts.right ? 1000 : 0;
   const rightW = opts.right?.w ?? 0;
-  const scales = [100, 150, 200, 250, 300, 400, 500];
+  const scales = opts.scales ?? [100, 150, 200, 250, 300, 400, 500];
   // 上の帯（外部仕上表など）は 1/100 の幅で作ってあり、縮尺に合わせて k 倍（紙の上で同じ大きさ）
   const topH = (d: number) => (opts.top ? (opts.top.h * d) / 100 + gap * 0.6 : 0);
   type Placed = { p: Panel; x: number; y: number };
@@ -158,6 +174,7 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   };
   let denom = scales[scales.length - 1];
   let lay = layout(Infinity);
+  let fits = false;
   for (const d of scales) {
     const margin = MARGIN * d;
     const titleH = TITLE_H * d;
@@ -167,9 +184,14 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
     if (L.w <= availW && L.h <= availH && (opts.right?.h ?? 0) <= availH) {
       denom = d;
       lay = L;
+      fits = true;
       break;
     }
     lay = L;
+  }
+  if (opts.onScale) {
+    opts.onScale(denom, fits);
+    return '';
   }
   const W = 420 * denom;
   const H = 297 * denom;
@@ -179,14 +201,14 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: { right?: {
   const fs = denom * 2.4; // 表題の文字（紙の上で約 2.4mm）
   // 内容の配置: 図枠の中で中央寄せ（右の表がある時はその左の領域で、上の帯がある時はその下で）
   // 御社の図面: 図と右の表（面積表・建築概要）をひとまとまりとして紙の中央に置く（図だけを左の領域の中央に置くと左に寄って小さく見える）
-  const groupW = lay.w + (opts.right ? rightW + rgap : 0);
-  const areaW = W - margin * 2;
+  // 右の表（面積表など）は、どのシートでも図枠の右上の同じ位置に置く（図に合わせて上下させると、シートごとに位置が変わって見づらい）。
+  // 図はその左の領域の中央
+  const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
   const areaH = H - margin * 2 - titleH - topH(denom);
-  const ox = margin + Math.max(0, (areaW - groupW) / 2);
+  const ox = margin + Math.max(0, (areaW - lay.w) / 2);
   const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
-  // 右の表は図の右隣、縦は図の中央に合わせる（紙からはみ出さない範囲で）
-  const rx = Math.min(W - margin - rightW, ox + lay.w + rgap);
-  const ry = Math.max(margin + topH(denom), Math.min(H - margin - titleH - (opts.right?.h ?? 0), oy + (lay.h - (opts.right?.h ?? 0)) / 2));
+  const rx = W - margin - rightW - sw * 8;
+  const ry = margin + topH(denom) + sw * 10;
   let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
   s += opts.defs ?? '';
   s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;

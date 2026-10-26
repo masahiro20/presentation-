@@ -19013,7 +19013,7 @@ function composeSheet(panels, info, opts = {}) {
 	const gap = opts.gap ?? 1600;
 	const rgap = opts.right ? 1e3 : 0;
 	const rightW = opts.right?.w ?? 0;
-	const scales = [
+	const scales = opts.scales ?? [
 		100,
 		150,
 		200,
@@ -19052,6 +19052,7 @@ function composeSheet(panels, info, opts = {}) {
 	};
 	let denom = scales[scales.length - 1];
 	let lay = layout(Infinity);
+	let fits = false;
 	for (const d of scales) {
 		const margin = MARGIN * d;
 		const titleH = TITLE_H * d;
@@ -19061,9 +19062,14 @@ function composeSheet(panels, info, opts = {}) {
 		if (L.w <= availW && L.h <= availH && (opts.right?.h ?? 0) <= availH) {
 			denom = d;
 			lay = L;
+			fits = true;
 			break;
 		}
 		lay = L;
+	}
+	if (opts.onScale) {
+		opts.onScale(denom, fits);
+		return "";
 	}
 	const W = 420 * denom;
 	const H = 297 * denom;
@@ -19071,13 +19077,12 @@ function composeSheet(panels, info, opts = {}) {
 	const titleH = TITLE_H * denom;
 	const sw = Math.max(16, denom * .18);
 	const fs = denom * 2.4;
-	const groupW = lay.w + (opts.right ? rightW + rgap : 0);
-	const areaW = W - margin * 2;
+	const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
 	const areaH = H - margin * 2 - titleH - topH(denom);
-	const ox = margin + Math.max(0, (areaW - groupW) / 2);
+	const ox = margin + Math.max(0, (areaW - lay.w) / 2);
 	const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
-	const rx = Math.min(W - margin - rightW, ox + lay.w + rgap);
-	const ry = Math.max(margin + topH(denom), Math.min(H - margin - titleH - (opts.right?.h ?? 0), oy + (lay.h - (opts.right?.h ?? 0)) / 2));
+	const rx = W - margin - rightW - sw * 8;
+	const ry = margin + topH(denom) + sw * 10;
 	let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
 	s += opts.defs ?? "";
 	s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
@@ -19541,7 +19546,7 @@ function floorPlanParts(model, f, opts = {}) {
 	const maxX = Math.max(...pts.map((p) => p.x));
 	const minY = Math.min(...pts.map((p) => p.y));
 	const maxY = Math.max(...pts.map((p) => p.y));
-	const pad = 1800;
+	const pad = 2300;
 	const vb = {
 		x: minX - pad,
 		y: minY - pad,
@@ -19950,7 +19955,7 @@ function floorPlanParts(model, f, opts = {}) {
 		const rw = Math.max(...xs) - Math.min(...xs);
 		const rh = Math.max(...ys) - Math.min(...ys);
 		const big = r.area > 4;
-		const fs = Math.max(120, Math.min(big ? 230 : 180, rw * .86 / textEm(name), rh * .3));
+		const fs = Math.max(140, Math.min(big ? 270 : 210, rw * .86 / textEm(name), rh * .3));
 		const tatami = r.labeledTatami ?? r.area / 1.62;
 		const halo = `stroke="#fff" stroke-width="${Math.round(fs * .22)}" stroke-linejoin="round" paint-order="stroke"`;
 		if (hl) {
@@ -19967,42 +19972,49 @@ function floorPlanParts(model, f, opts = {}) {
 	if (opts.showDims !== false) {
 		const op = f.outline.flat();
 		const src = op.length ? op : pts;
-		const ox0 = Math.min(...src.map((p) => p.x));
-		const ox1 = Math.max(...src.map((p) => p.x));
-		const oy0 = Math.min(...src.map((p) => p.y));
-		const oy1 = Math.max(...src.map((p) => p.y));
-		const edges = model.floors[0] === f ? model.site?.edges ?? [] : [];
-		const clearance = (side) => {
-			let best = Infinity;
-			for (const e of edges) for (let i = 0; i <= 20; i++) {
-				const x = e.a.x + (e.b.x - e.a.x) * i / 20;
-				const y = e.a.y + (e.b.y - e.a.y) * i / 20;
-				if (side === "top" && x > ox0 && x < ox1 && y < oy0) best = Math.min(best, oy0 - y);
-				if (side === "bottom" && x > ox0 && x < ox1 && y > oy1) best = Math.min(best, y - oy1);
-				if (side === "left" && y > oy0 && y < oy1 && x < ox0) best = Math.min(best, ox0 - x);
-				if (side === "right" && y > oy0 && y < oy1 && x > ox1) best = Math.min(best, x - ox1);
-			}
-			return best;
-		};
-		const hSide = clearance("top") >= Math.min(1600, clearance("bottom")) ? "top" : "bottom";
-		dimsBelow = hSide === "bottom";
-		const vSide = clearance("left") >= Math.min(1600, clearance("right")) ? "left" : "right";
+		const ox0 = Math.min(minX, ...src.map((p) => p.x));
+		const ox1 = Math.max(maxX, ...src.map((p) => p.x));
+		const oy0 = Math.min(minY, ...src.map((p) => p.y));
+		const oy1 = Math.max(maxY, ...src.map((p) => p.y));
+		model.floors[0] === f && model.site?.edges;
+		dimsBelow = true;
 		const uniq = (v) => {
 			const out = [];
 			for (const x of [...v].sort((p, q) => p - q)) if (!out.length || x - out[out.length - 1] > 150) out.push(x);
 			return out;
 		};
-		const xsC = uniq(src.map((p) => p.x));
-		const ysC = uniq(src.map((p) => p.y));
-		const hy = (k) => hSide === "top" ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500;
-		const vx = (k) => vSide === "left" ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500;
 		const fmt = (v) => hl ? Math.round(v).toLocaleString("en-US") : `${Math.round(v)}`;
-		if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, hSide === "bottom", hl);
-		s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), fmt(ox1 - ox0), false, hSide === "bottom", hl);
-		if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, vSide === "right", hl);
-		s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, fmt(oy1 - oy0), true, vSide === "right", hl);
-		for (const x of xsC) s += `<line x1="${x}" y1="${hSide === "top" ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(1) + (hSide === "top" ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
-		for (const y of ysC) s += `<line x1="${vSide === "left" ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(1) + (vSide === "left" ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
+		const near = (side) => {
+			const tol = 1300;
+			if (side === "top") return uniq(src.filter((p) => p.y - oy0 < tol).map((p) => p.x));
+			if (side === "bottom") return uniq(src.filter((p) => oy1 - p.y < tol).map((p) => p.x));
+			if (side === "left") return uniq(src.filter((p) => p.x - ox0 < tol).map((p) => p.y));
+			return uniq(src.filter((p) => ox1 - p.x < tol).map((p) => p.y));
+		};
+		for (const side of ["top", "bottom"]) {
+			const xsC = uniq([
+				ox0,
+				ox1,
+				...near(side)
+			]);
+			const hy = (k) => side === "top" ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500;
+			const two = xsC.length > 2;
+			if (two) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, side === "bottom", hl);
+			s += dimLine(ox0, hy(two ? 1 : 0), ox1, hy(two ? 1 : 0), fmt(ox1 - ox0), false, side === "bottom", hl);
+			for (const x of xsC) s += `<line x1="${x}" y1="${side === "top" ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(two ? 1 : 0) + (side === "top" ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
+		}
+		for (const side of ["left", "right"]) {
+			const ysC = uniq([
+				oy0,
+				oy1,
+				...near(side)
+			]);
+			const vx = (k) => side === "left" ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500;
+			const two = ysC.length > 2;
+			if (two) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, side === "right", hl);
+			s += dimLine(vx(two ? 1 : 0), oy0, vx(two ? 1 : 0), oy1, fmt(oy1 - oy0), true, side === "right", hl);
+			for (const y of ysC) s += `<line x1="${side === "left" ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(two ? 1 : 0) + (side === "left" ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
+		}
 	}
 	const siteEdges = model.floors[0] === f && opts.showRoad !== false ? model.site?.edges : void 0;
 	if (siteEdges?.length) {
@@ -20179,7 +20191,7 @@ function floorPlanParts(model, f, opts = {}) {
 			vb.y = near;
 		}
 	}
-	s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);
+	s += northArrow(maxX + 1700, minY - 1500, model.northAngleDeg);
 	const title = opts.title ?? (hl ? `${f.level}階 平面図` : `${f.level}階平面図`);
 	const ty = maxY + (dimsBelow ? 2200 : 1500);
 	const tx = (minX + maxX) / 2;
@@ -20301,7 +20313,7 @@ function dimLine(x1, y1, x2, y2, label, vertical, flip = false, hl = false) {
 	let s = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${hl ? "#222" : "#555"}" stroke-width="8"/>`;
 	for (const [x, y] of [[x1, y1], [x2, y2]]) s += hl ? `<circle cx="${x}" cy="${y}" r="34" fill="#fff" stroke="#222" stroke-width="10"/>` : `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
 	const L = Math.hypot(x2 - x1, y2 - y1);
-	const fs = Math.min(hl ? 180 : 150, Math.max(80, L / 4.2));
+	const fs = Math.min(hl ? 200 : 150, Math.max(90, L / 4.2));
 	const cx = (x1 + x2) / 2;
 	const cy = (y1 + y2) / 2;
 	const d = flip ? -70 : 70;

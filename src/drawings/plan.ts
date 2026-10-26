@@ -378,7 +378,7 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   const maxX = Math.max(...pts.map((p) => p.x));
   const minY = Math.min(...pts.map((p) => p.y));
   const maxY = Math.max(...pts.map((p) => p.y));
-  const pad = 1800;
+  const pad = 2300;
   const vb = { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 + 900 };
   let s = '';
   const land = f.level === 1 && opts.showLandscape !== false ? landscapeOf(model) : null;
@@ -750,7 +750,7 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const rw = Math.max(...xs) - Math.min(...xs);
     const rh = Math.max(...ys) - Math.min(...ys);
     const big = r.area > 4;
-    const fs = Math.max(120, Math.min(big ? 230 : 180, (rw * 0.86) / textEm(name), rh * 0.3));
+    const fs = Math.max(140, Math.min(big ? 270 : 210, (rw * 0.86) / textEm(name), rh * 0.3));
     const tatami = r.labeledTatami ?? r.area / 1.62;
     const halo = `stroke="#fff" stroke-width="${Math.round(fs * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
     if (hl) {
@@ -769,10 +769,11 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   if (opts.showDims !== false) {
     const op = f.outline.flat();
     const src = op.length ? op : pts;
-    const ox0 = Math.min(...src.map((p) => p.x));
-    const ox1 = Math.max(...src.map((p) => p.x));
-    const oy0 = Math.min(...src.map((p) => p.y));
-    const oy1 = Math.max(...src.map((p) => p.y));
+    // 寸法線は壁全体（外形に入らないガレージ・袖壁も）の外に置く。刻みは外形の角
+    const ox0 = Math.min(minX, ...src.map((p) => p.x));
+    const ox1 = Math.max(maxX, ...src.map((p) => p.x));
+    const oy0 = Math.min(minY, ...src.map((p) => p.y));
+    const oy1 = Math.max(maxY, ...src.map((p) => p.y));
     const edges = model.floors[0] === f ? model.site?.edges ?? [] : [];
     // 側ごとの空き（建物の外形から敷地境界・道路までの距離）
     const clearance = (side: 'top' | 'bottom' | 'left' | 'right') => {
@@ -788,26 +789,39 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         }
       return best;
     };
-    const hSide = clearance('top') >= Math.min(1600, clearance('bottom')) ? 'top' : 'bottom';
-    dimsBelow = hSide === 'bottom';
-    const vSide = clearance('left') >= Math.min(1600, clearance('right')) ? 'left' : 'right';
+    // 御社の図面: 寸法は四周に入れる（外壁の通り芯ごとの寸法と、その外に全体寸法）
+    void clearance;
+    dimsBelow = true;
     const uniq = (v: number[]) => {
       const out: number[] = [];
       for (const x of [...v].sort((p, q) => p - q)) if (!out.length || x - out[out.length - 1] > 150) out.push(x);
       return out;
     };
-    const xsC = uniq(src.map((p) => p.x));
-    const ysC = uniq(src.map((p) => p.y));
-    const hy = (k: number) => (hSide === 'top' ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500);
-    const vx = (k: number) => (vSide === 'left' ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500);
     const fmt = (v: number) => (hl ? Math.round(v).toLocaleString('en-US') : `${Math.round(v)}`);
-    if (xsC.length > 2) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, hSide === 'bottom', hl);
-    s += dimLine(ox0, hy(xsC.length > 2 ? 1 : 0), ox1, hy(xsC.length > 2 ? 1 : 0), fmt(ox1 - ox0), false, hSide === 'bottom', hl);
-    if (ysC.length > 2) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, vSide === 'right', hl);
-    s += dimLine(vx(ysC.length > 2 ? 1 : 0), oy0, vx(ysC.length > 2 ? 1 : 0), oy1, fmt(oy1 - oy0), true, vSide === 'right', hl);
-    // 引出線（外形の角から寸法線まで）
-    for (const x of xsC) s += `<line x1="${x}" y1="${hSide === 'top' ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(1) + (hSide === 'top' ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
-    for (const y of ysC) s += `<line x1="${vSide === 'left' ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(1) + (vSide === 'left' ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
+    // 辺ごとに、その辺から見える外形の角だけを刻む（反対側の凹凸の通り芯まで拾うと、寸法が細切れになる）
+    const near = (side: 'top' | 'bottom' | 'left' | 'right') => {
+      const tol = 1300;
+      if (side === 'top') return uniq(src.filter((p) => p.y - oy0 < tol).map((p) => p.x));
+      if (side === 'bottom') return uniq(src.filter((p) => oy1 - p.y < tol).map((p) => p.x));
+      if (side === 'left') return uniq(src.filter((p) => p.x - ox0 < tol).map((p) => p.y));
+      return uniq(src.filter((p) => ox1 - p.x < tol).map((p) => p.y));
+    };
+    for (const side of ['top', 'bottom'] as const) {
+      const xsC = uniq([ox0, ox1, ...near(side)]);
+      const hy = (k: number) => (side === 'top' ? oy0 - 600 - k * 500 : oy1 + 600 + k * 500);
+      const two = xsC.length > 2;
+      if (two) for (let i = 0; i + 1 < xsC.length; i++) s += dimLine(xsC[i], hy(0), xsC[i + 1], hy(0), fmt(xsC[i + 1] - xsC[i]), false, side === 'bottom', hl);
+      s += dimLine(ox0, hy(two ? 1 : 0), ox1, hy(two ? 1 : 0), fmt(ox1 - ox0), false, side === 'bottom', hl);
+      for (const x of xsC) s += `<line x1="${x}" y1="${side === 'top' ? oy0 - 150 : oy1 + 150}" x2="${x}" y2="${hy(two ? 1 : 0) + (side === 'top' ? -100 : 100)}" stroke="#999" stroke-width="6"/>`;
+    }
+    for (const side of ['left', 'right'] as const) {
+      const ysC = uniq([oy0, oy1, ...near(side)]);
+      const vx = (k: number) => (side === 'left' ? ox0 - 600 - k * 500 : ox1 + 600 + k * 500);
+      const two = ysC.length > 2;
+      if (two) for (let i = 0; i + 1 < ysC.length; i++) s += dimLine(vx(0), ysC[i], vx(0), ysC[i + 1], fmt(ysC[i + 1] - ysC[i]), true, side === 'right', hl);
+      s += dimLine(vx(two ? 1 : 0), oy0, vx(two ? 1 : 0), oy1, fmt(oy1 - oy0), true, side === 'right', hl);
+      for (const y of ysC) s += `<line x1="${side === 'left' ? ox0 - 150 : ox1 + 150}" y1="${y}" x2="${vx(two ? 1 : 0) + (side === 'left' ? -100 : 100)}" y2="${y}" stroke="#999" stroke-width="6"/>`;
+    }
   }
   // 敷地境界線（図面の「道路境界線」「隣地境界線」）: 1階のみ
   const siteEdges = model.floors[0] === f && opts.showRoad !== false ? model.site?.edges : undefined;
@@ -940,7 +954,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     }
   }
   // 方位
-  s += northArrow(maxX + 900, minY - 600, model.northAngleDeg);
+  // 方位（四周の寸法線の外、右上の角）
+  s += northArrow(maxX + 1700, minY - 1500, model.northAngleDeg);
   const title = opts.title ?? (hl ? `${f.level}階 平面図` : `${f.level}階平面図`);
   // 図面名・床面積・スケール（図面の下。寸法線の下側に置かれた場合はその下）
   const ty = maxY + (dimsBelow ? 2200 : 1500);
@@ -1056,7 +1071,7 @@ function dimLine(x1: number, y1: number, x2: number, y2: number, label: string, 
     s += hl ? `<circle cx="${x}" cy="${y}" r="34" fill="#fff" stroke="#222" stroke-width="10"/>` : `<line x1="${x - 55}" y1="${y + 55}" x2="${x + 55}" y2="${y - 55}" stroke="#333" stroke-width="14"/>`;
   const L = Math.hypot(x2 - x1, y2 - y1);
   // 御社の図面: 寸法の文字は紙の上で約 1.8mm（1/100 で 180）
-  const fs = Math.min(hl ? 180 : 150, Math.max(80, L / 4.2));
+  const fs = Math.min(hl ? 200 : 150, Math.max(90, L / 4.2));
   const cx = (x1 + x2) / 2;
   const cy = (y1 + y2) / 2;
   const d = flip ? -70 : 70;

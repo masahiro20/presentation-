@@ -135,12 +135,13 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
  */
 export function exteriorFinishTableSvg(design: DesignOptions, x: number, y: number, w: number, opts: { rowH?: number; fs?: number } = {}): { svg: string; w: number; h: number } {
   const groups = exteriorFinishRows(design);
-  const rowH = opts.rowH ?? 560;
-  const fs = opts.fs ?? 135;
+  // 紙の上で文字 2.2mm（以前の 1.35mm は印刷すると読めなかった）
+  const rowH = opts.rowH ?? 860;
+  const fs = opts.fs ?? 220;
   const rows = 4;
   const h = rowH * rows;
-  const headW = 620; // 縦書き「外部仕上表」
-  const labW = 820;
+  const headW = 760; // 縦書き「外部仕上表」
+  const labW = 1150;
   const gw = (w - headW) / groups.length;
   const sw = 12;
   const thin = 6;
@@ -149,7 +150,7 @@ export function exteriorFinishTableSvg(design: DesignOptions, x: number, y: numb
   // 縦書きの見出し
   s += `<line x1="${x + headW}" y1="${y}" x2="${x + headW}" y2="${y + h}" stroke="#111" stroke-width="${sw}"/>`;
   const head = '外部仕上表';
-  const hfs = 190;
+  const hfs = 280;
   const hy0 = y + h / 2 - ((head.length - 1) * hfs * 1.25) / 2;
   for (let i = 0; i < head.length; i++) s += `<text x="${x + headW / 2}" y="${(hy0 + i * hfs * 1.25 + hfs * 0.35).toFixed(0)}" font-size="${hfs}" text-anchor="middle" fill="#111">${esc(head[i])}</text>`;
   groups.forEach((g, gi) => {

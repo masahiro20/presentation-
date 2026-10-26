@@ -2,8 +2,8 @@ import { h, clear, section, segmented, download, svgToDataUrl, svgToPng, toast }
 import { state } from '../state';
 import type { Step, StepCtx } from '../app';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
-import { floorPlanSvg, floorPlanParts, areaTableSvg, openingTableSvg } from '../../drawings/plan';
-import { composeSheet, SHEET_TOP_W } from '../../drawings/sheet';
+import { floorPlanSvg, floorPlanParts, areaTableSvg } from '../../drawings/plan';
+import { composeSheet, sheetScale, SHEET_TOP_W } from '../../drawings/sheet';
 import { exteriorFinishTableSvg } from '../../drawings/finishTable';
 import { modelToDxf } from '../../drawings/dxf';
 import { sheetInfo } from '../sheetInfo';
@@ -14,7 +14,7 @@ function generate(ctx: StepCtx, color: boolean) {
   buildSheets(ctx.app, color);
 }
 
-/** 図面一式（平面図シート・立面図シート・建具表）を 3D から作って state に入れる。資料の自動作成からも呼ぶ */
+/** 図面一式（平面図シート・立面図シート）を 3D から作って state に入れる。資料の自動作成からも呼ぶ */
 export function buildSheets(app: StepCtx['app'], color = false) {
   // 提案用の図面は線画が標準（面ごとの張り分け・色塗りはしない）
   app.ensureScene();
@@ -27,26 +27,24 @@ export function buildSheets(app: StepCtx['app'], color = false) {
   // 断面図は提案の水準に届くまで出さない（切断線も描かない）
   const sectionLines: { nx: number; nz: number; d: number; label: string }[] = [];
   state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
-  // A3 シート（御社の構成）: 平面図は全階を 1 枚（1/100 で 2 階分が横に並ぶ）に面積表、立面図は 4 面を 1 枚、建具表は別の 1 枚
+  // A3 シート（御社の構成）: 平面図は 1/100（全階が 1 枚に収まれば 1 枚、収まらなければ階ごとに 1 枚）。面積表はどのシートも右上。
+  // 立面図は 4 面を 1 枚。建具表のシートは提案には付けない（平面図・立面図の 2 種類）
   let no = 1;
   const sheets: { title: string; svg: string }[] = [];
   {
     const parts = model.floors.map((f) => floorPlanParts(model, f, { sheet: sheetInfo('平面図'), sectionLines }));
     const at = areaTableSvg(model, 0, 0);
-    const title = model.floors.length > 1 ? `平面図（${model.floors.map((f) => `${f.level}階`).join('・')}）` : `${model.floors[0]?.level ?? 1}階 平面図`;
-    sheets.push({ title, svg: composeSheet(parts, sheetInfo(title, `A-${no++}`), { right: { svg: at.svg, w: at.w, h: at.h }, defs: parts.map((p) => p.defs ?? '').join(''), gap: 2400 }) });
+    const opts = { right: { svg: at.svg, w: at.w, h: at.h }, defs: parts.map((p) => p.defs ?? '').join(''), gap: 2400 };
+    const groups = sheetScale(parts, { ...opts, scales: [100] }) ? [model.floors.map((_, i) => i)] : model.floors.map((_, i) => [i]);
+    for (const g of groups) {
+      const fl = g.map((i) => model.floors[i]);
+      const title = fl.length > 1 ? `平面図（${fl.map((f) => `${f.level}階`).join('・')}）` : `${fl[0]?.level ?? 1}階 平面図`;
+      sheets.push({ title, svg: composeSheet(g.map((i) => parts[i]), sheetInfo(title, `A-${no++}`), { ...opts, defs: g.map((i) => parts[i].defs ?? '').join('') }) });
+    }
   }
   // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
   const top = exteriorFinishTableSvg(state.design, 0, 0, SHEET_TOP_W);
   sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200 }) });
-  // 建具表（階ごとの表を横に並べる）
-  {
-    const tables = model.floors.map((f) => {
-      const t = openingTableSvg(f, 0, 0, 40);
-      return { inner: t.svg, vb: { x: -200, y: -200, w: t.w + 400, h: t.h + 400 } };
-    });
-    sheets.push({ title: '建具表', svg: composeSheet(tables, sheetInfo('建具表', `A-${no++}`), { gap: 2000 }) });
-  }
   state.sheets = sheets;
 }
 

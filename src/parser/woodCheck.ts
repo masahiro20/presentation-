@@ -14,7 +14,7 @@ import { overhangPoints, hasPostNear, OVERHANG_POST_MIN, OVERHANG_POST_WARN } fr
 import { excludedFromFloorArea, type BuildingModel, type Floor, type Room, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
-import { stairFrame, stairStepCount } from '../core/stairs';
+import { effectiveStair, stairFrame, stairStepCount } from '../core/stairs';
 import { classifyRoomName } from './labels';
 import { mustSeparate } from './roomKnowledge';
 
@@ -516,7 +516,8 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
   //     ゆとりの目安は蹴上 200 以下・踏面 240 以上。図面の矩形が短いと踏面が浅くなる（3D では昇り口側へ延ばして補っている）
   for (let fi = 0; fi + 1 < floors.length; fi++) {
     const f = floors[fi];
-    for (const st of f.stairs.filter((x) => x.goesUp)) {
+    for (const st0 of f.stairs.filter((x) => x.goesUp)) {
+      const st = effectiveStair(st0);
       const rise = f.height || 2900;
       const n = stairStepCount(rise, st);
       const riser = rise / n;

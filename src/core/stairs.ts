@@ -44,6 +44,17 @@ export function stairFrame(s: Stair) {
   }
 }
 
+/**
+ * 図面の読み取りで「折り返し・かね折れ」となっていても、幅（昇る向きと直交する寸法）が 1.4m に満たない矩形では
+ * 2 列に段を並べられない（1 列 45cm の段になり、人が通れない）。そういう階段は直階段として段を割る
+ */
+export function effectiveStair(s: Stair): Stair {
+  if (s.kind === 'straight') return s;
+  const { Lt } = stairFrame(s);
+  if (Lt < 1400) return { ...s, kind: 'straight' };
+  return s;
+}
+
 /** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
 /** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
 export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps'> | null) {
@@ -58,7 +69,8 @@ export const MIN_TREAD = 240;
  * 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
  * 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
  */
-export function stairRunExtended(s: Stair, n: number): Stair {
+export function stairRunExtended(s0: Stair, n: number): Stair {
+  const s = effectiveStair(s0);
   const F = stairFrame(s);
   const { Ls, Lt } = F;
   let need = 0;
@@ -98,7 +110,7 @@ export function stairRunExtended(s: Stair, n: number): Stair {
 }
 
 export function stairLayout(s0: Stair, n = 14): StairLayout {
-  const s = stairRunExtended(s0, n);
+  const s = stairRunExtended(effectiveStair(s0), n);
   const F = stairFrame(s);
   const P = (sv: number, tv: number) => ({ x: F.o.x + F.u.x * sv + F.r.x * tv, y: F.o.y + F.u.y * sv + F.r.y * tv });
   const rect = (s0: number, s1: number, t0: number, t1: number) => {

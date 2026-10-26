@@ -165,7 +165,9 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   const shots: Shot[] = [];
   // 目の高さ 1.5m、35mm 相当の画角（広角の歪みを避ける）、建物のまわりに余白を取る
   const eye = 1.5;
-  const vfov = 38;
+  // スマホの縦長の画面では、横の画角が狭いぶん家が遠く小さくなる（芝生ばかりの絵になっていた）。縦の画角を広げ、余白も詰める
+  const portrait = aspect < 1;
+  const vfov = portrait ? 62 : 38;
   // 道路側から、玄関が見える向きに 35° 振る
   const ent = meta.entrance;
   const along = new THREE.Vector3(-road.z, 0, road.x);
@@ -176,7 +178,7 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   const entSide = Math.abs(along.dot(south)) > 0.3 ? southSide : ent ? Math.sign(ent.pos.clone().sub(center).dot(along)) || 1 : 1;
   const mk = (id: string, title: string, caption: string, fromDir: THREE.Vector3, tod: Shot['timeOfDay'] = 'day', sideSign = -1): Shot => {
     const dir = fromDir.clone().negate().normalize(); // カメラの視線方向
-    const dist = fitDistance(pts, center, dir, eye, vfov, aspect, 1.3);
+    const dist = fitDistance(pts, center, dir, eye, vfov, aspect, portrait ? 1.08 : 1.3);
     const pos = center.clone().addScaledVector(dir, -dist).setY(eye);
     // シフト量は、建物の上端と下端の見かけの高さの真ん中に合わせる（以前は高さの 4 割に固定で、3 階建てでは屋根が切れていた）
     const fwd = dir.clone().setY(0).normalize();

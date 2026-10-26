@@ -72,7 +72,8 @@ async function main() {
       shot = { ...s, view: { ...s.view, fov: Math.min(100, vfov) } };
     }
     viewer.applyShot(shot, true);
-    tag.textContent = s.title.replace(/パース/g, '').replace(/[（）()]/g, ' ').trim();
+    // お客様向けの言葉に（「道路側」→「正面」など、社内の呼び方を出さない）
+    tag.textContent = s.title.replace(/パース/g, '').replace(/[（）()]/g, ' ').replace(/道路側/g, '正面').replace(/^(外観|内観)\s+\1/, '$1').trim();
   };
   const first = shots().find((s) => s.kind === 'exterior') ?? shots()[0];
   if (first) goto(first);
@@ -100,7 +101,7 @@ async function main() {
 
   // 外観
   addTab('ext', '外観', (pane) => {
-    for (const s of shots().filter((x) => x.kind === 'exterior' || x.kind === 'aerial')) pane.appendChild(h('button', { class: 'vw-chip', onclick: () => goto(s) }, s.title.replace(/外観パース|パース/g, '').replace(/[（）()]/g, '').trim() || '外観'));
+    for (const s of shots().filter((x) => x.kind === 'exterior' || x.kind === 'aerial')) pane.appendChild(h('button', { class: 'vw-chip', onclick: () => goto(s) }, s.title.replace(/外観パース|パース/g, '').replace(/[（）()]/g, '').replace(/道路側/g, '正面').trim() || '外観'));
   });
   // 内観（部屋）
   addTab('int', '内観', (pane) => {

@@ -14735,7 +14735,8 @@ function buildOpening(mb, f, w, o, fl, meta, spec) {
 		mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + .01).setY(sill - .02), dir, width + .04, .02, .05);
 		if (o.sill > 0 && spec.windows.sillBoard) mb.box("int.trim", mid.clone().addScaledVector(outN, -t / 2 + .01).setY(sill - .02), dir, width + .06, .02, .06);
 		const inRoom = roomAt(f, (mid.x - outN.x * (t / 2 + .2)) / MM, (mid.z - outN.z * (t / 2 + .2)) / MM);
-		if (spec.curtains !== "none" && inRoom && [
+		const curtainable = o.sill * .001 <= 1.2 && o.height * .001 >= .8;
+		if (spec.curtains !== "none" && curtainable && inRoom && [
 			"ldk",
 			"living",
 			"dining",
@@ -22374,10 +22375,13 @@ function roundDown(v, digits) {
 	const k = Math.pow(10, -digits);
 	return Math.floor(v / k) * k;
 }
-function unitPriceOf(l) {
-	if (l.fixedPrice != null) return l.fixedPrice;
-	return roundDown(l.cost / (l.margin ?? .7), l.round ?? -1);
+function unitPriceOf(l, costOverride) {
+	if (l.fixedPrice != null && costOverride == null) return l.fixedPrice;
+	return roundDown((costOverride ?? l.cost) / (l.margin ?? .7), l.round ?? -1);
 }
+/** 追加の行・選択肢の売価（原価 ÷ 粗利係数、十円切り捨て） */
+var priceFromCost = (cost, margin) => roundDown(cost / Math.max(.05, margin || .7), -1);
+var extraPrice = (x) => x.margin != null ? priceFromCost(x.cost, x.margin) : x.price;
 /** group の既定（グレードごと） */
 function defaultGroups(grade) {
 	const g = {};
@@ -22424,7 +22428,8 @@ function computeEstimate(areasIn, choice) {
 			const selected = isOn(l, choice);
 			const qtyAuto = l.qty ? Math.max(0, l.qty(a)) : 1;
 			const qty = selected ? choice.qty[l.id] ?? qtyAuto : 0;
-			const unitPrice = unitPriceOf(l);
+			const unitCost = choice.costOverride?.[l.id] ?? l.cost;
+			const unitPrice = unitPriceOf(l, choice.costOverride?.[l.id]);
 			const amount = roundDown(unitPrice * qty, AMOUNT_ROUND[def.id] ?? -1);
 			return {
 				def: l,
@@ -22434,33 +22439,61 @@ function computeEstimate(areasIn, choice) {
 				desc: l.desc,
 				unit: l.unit,
 				unitPrice,
-				unitCost: l.cost,
+				unitCost,
 				qty,
 				qtyAuto,
 				qtyNote: l.qtyNote,
 				amount,
-				cost: l.cost * qty,
+				cost: unitCost * qty,
 				selected,
 				group: l.group,
 				optional: !!l.optional
 			};
 		});
-		for (const x of choice.extras.filter((e) => e.cat === def.id)) lines.push({
-			id: x.id,
-			cat: def.id,
-			spec: "追加",
-			desc: x.desc,
-			unit: x.unit,
-			unitPrice: x.price,
-			unitCost: x.cost,
-			qty: x.qty,
-			qtyAuto: x.qty,
-			amount: roundDown(x.price * x.qty, -1),
-			cost: x.cost * x.qty,
-			selected: x.qty > 0,
-			optional: true,
-			extra: true
-		});
+		for (const x of (choice.customLines ?? []).filter((e) => e.cat === def.id)) {
+			const baseDef = def.lines.find((l) => l.id === x.base) ?? CATEGORIES.flatMap((c) => c.lines).find((l) => l.id === x.base);
+			const selected = (choice.groups[x.group] ?? "") === x.id && !choice.off.includes(x.id);
+			const qtyAuto = baseDef?.qty ? Math.max(0, baseDef.qty(a)) : 1;
+			const qty = selected ? choice.qty[x.id] ?? qtyAuto : 0;
+			const unitPrice = priceFromCost(x.cost, x.margin);
+			lines.push({
+				id: x.id,
+				cat: def.id,
+				spec: x.spec,
+				desc: x.desc,
+				unit: x.unit,
+				unitPrice,
+				unitCost: x.cost,
+				qty,
+				qtyAuto,
+				qtyNote: baseDef?.qtyNote,
+				amount: roundDown(unitPrice * qty, AMOUNT_ROUND[def.id] ?? -1),
+				cost: x.cost * qty,
+				selected,
+				group: x.group,
+				optional: false,
+				extra: true
+			});
+		}
+		for (const x of choice.extras.filter((e) => e.cat === def.id)) {
+			const price = extraPrice(x);
+			lines.push({
+				id: x.id,
+				cat: def.id,
+				spec: x.spec || "追加",
+				desc: x.desc,
+				unit: x.unit,
+				unitPrice: price,
+				unitCost: x.cost,
+				qty: x.qty,
+				qtyAuto: x.qty,
+				amount: roundDown(price * x.qty, -1),
+				cost: x.cost * x.qty,
+				selected: x.qty > 0,
+				optional: true,
+				extra: true
+			});
+		}
 		return {
 			def,
 			lines,

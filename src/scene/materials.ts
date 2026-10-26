@@ -64,14 +64,14 @@ export class MaterialRegistry {
     set('ext.concrete', color('#b8b5ae', 0.92));
     set('ext.terrace', M(i.entranceFloor));
     set('ext.shutter', color('#8e9195', 0.42, 0.55));
-    // 透明ガラス: 空と周囲の映り込みをはっきり出す（写真のサッシはガラス面が鏡のように景色を映す）
+    // 透明ガラス（Low-E クリア）: ほぼ無色で、映り込みは控えめに。色付き・濃い不透明度だとスモークガラスのように外が曇って見える
     const glass = new THREE.MeshPhysicalMaterial({
-      color: '#c3cfd4',
+      color: '#f2f6f7',
       metalness: 0,
       roughness: 0.02,
       transparent: true,
-      opacity: night ? 0.14 : 0.34,
-      envMapIntensity: 1.7,
+      opacity: night ? 0.08 : 0.13,
+      envMapIntensity: 1.1,
       side: THREE.DoubleSide,
       depthWrite: false,
       ior: 1.5,

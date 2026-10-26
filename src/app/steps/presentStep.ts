@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
-import { h, clear, toast, progressModal, section, download } from '../dom';
+import { h, clear, toast, progressModal, section, download, setPrintPage } from '../dom';
 import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { excludedFromFloorArea } from '../../core/types';
@@ -547,7 +547,11 @@ export const presentStep: Step = {
   short: '資料',
   needsModel: true,
   uses3d: false,
+  unmount() {
+    setPrintPage(null);
+  },
   mount(ctx) {
+    setPrintPage('A4 landscape');
     const deck = h('div', { class: 'deck view' });
     ctx.stage.appendChild(deck);
     // 解析結果に写しが無いときは、今の周辺建物の扱いで注記する

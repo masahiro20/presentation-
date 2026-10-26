@@ -455,7 +455,11 @@ body.presenting .main { grid-template-columns: 1fr; }
 .present-nav { position: fixed; bottom: 14px; right: 18px; z-index: 160; display: flex; gap: 8px; }
 
 @media print {
-  @page { size: A4 landscape; margin: 0; }
+  /* 既定の用紙は A4 縦（見積・仕様決定書）。資料のスライドは名前付きの用紙で A4 横。
+     既定を横にしていると、名前付きの用紙（見積）の間に既定の横向きが紛れ込むことがある（Chrome） */
+  @page { size: A4 portrait; margin: 0; }
+  @page slide { size: A4 landscape; margin: 0; }
+  .slide { page: slide; }
   body { overflow: visible; background: #fff; }
   #app { display: block; height: auto; }
   .topbar, .side, .deck-tools, #toasts, .view-tools { display: none !important; }
@@ -764,7 +768,41 @@ body.cinema .main { grid-template-columns: 1fr; }
 .loan-row { display: grid; grid-template-columns: 1fr 64px 44px 56px; gap: 6px; align-items: center; font-size: 11.5px; margin-bottom: 4px; }
 .loan-row input { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; text-align: right; min-width: 0; }
 .chk { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; margin-left: 6px; }
-@media screen { .est-sheet.funding { zoom: 0.78; } }
+@media screen { .est-sheet.funding:not(.measuring) { zoom: 0.78; } }
+/* 資金計画書: A3 横 1 枚（中身が高いときは --fit で縮める。fitFunding が測って入れる） */
+.est-sheet.funding { height: 297mm; min-height: 0; overflow: hidden; }
+.est-sheet.funding.measuring { height: auto; overflow: visible; zoom: 1; }
+.est-sheet.funding > * { zoom: var(--fit, 1); }
+.est-sheet.detail .est-title.cont { font-size: 10pt; letter-spacing: 0.3em; margin: 0 0 4mm; color: #777; }
+/* 内訳書の編集: 原価の列・行の追加 */
+.est-table .cost { width: 30mm; white-space: nowrap; }
+.est-table .cost-box { display: inline-flex; gap: 1mm; align-items: center; }
+.est-table input.cost-in { width: 20mm; text-align: right; font: inherit; border: 1px solid #ccc; border-radius: 3px; padding: 0 1mm; }
+.est-table input.cost-in.changed { border-color: #b08a3a; background: #fff8e8; }
+.est-table input.margin-in { width: 11mm; font: inherit; border: 1px solid #ccc; border-radius: 3px; padding: 0 0.5mm; }
+.est-table .margin { color: #999; font-size: 7.5pt; }
+.est-table .extra-desc { display: inline-flex; gap: 1mm; width: 100%; }
+.est-table .extra-desc input { flex: 1; min-width: 0; font: inherit; border: 1px solid #ccc; border-radius: 3px; padding: 0 1mm; }
+.add-row-form { display: flex; flex-wrap: wrap; gap: 1.5mm; align-items: center; padding: 1mm 0; }
+.add-row-form input, .add-row-form select { font: inherit; font-size: 8.5pt; border: 1px solid #ccc; border-radius: 3px; padding: 0.5mm 1mm; }
+.add-row-form .f-spec { width: 24mm; }
+.add-row-form .f-desc { flex: 1; min-width: 50mm; }
+.add-row-form .f-qty { width: 12mm; text-align: right; }
+.add-row-form .f-cost { width: 22mm; text-align: right; }
+.add-row-form .f-margin { width: 12mm; }
+.add-row-form .f-price { color: #7a6a4f; font-size: 8pt; min-width: 26mm; }
+.group-list .grp-tools { display: flex; gap: 8px; align-items: center; margin-top: 3px; font-size: 11.5px; }
+.group-list .custom-opt { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; padding: 8px; border: 1px dashed var(--line); border-radius: 6px; background: #fbfaf7; }
+.group-list .custom-opt input { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.group-list .custom-opt .row2 { display: grid; grid-template-columns: 1fr 70px; gap: 6px; }
+@media print {
+  /* 用紙ちょうど（297mm）だと端数で次のページにはみ出し、表が途中で切れる。1mm 低くして 1 枚を 1 ページに */
+  .est-sheet.detail, .est-sheet.coord-sheet { min-height: 0; height: 296mm; overflow: hidden; break-inside: avoid; }
+  .est-sheet.quote { break-inside: avoid; }
+  .est-sheet.funding { height: 296mm; break-inside: avoid; }
+  .est-table .cost, .add-row-form, .extra-desc button { display: none !important; }
+  .est-sheet.funding { break-after: auto; }
+}
 @page estimate { size: A4 portrait; margin: 0; }
 @page fundingPage { size: A3 landscape; margin: 0; }
 @media print {

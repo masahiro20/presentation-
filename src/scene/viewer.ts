@@ -517,8 +517,10 @@ export class Viewer {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
     const d = this.depthAt(e.clientX, e.clientY) ?? this.camera.position.distanceTo(this.controls.target);
-    const k = 0.2 * this.controls.zoomSpeed;
-    const step = Math.max(0.25, Math.min(60, d * k)) * Math.abs(notch);
+    // 室内（目の前の面が近い）は一歩を小さく、外観は大きく。1 回のホイールで 2 目盛りぶんまで
+    const inside = d < 8;
+    const k = (inside ? 0.11 : 0.2) * this.controls.zoomSpeed;
+    const step = Math.max(inside ? 0.12 : 0.25, Math.min(60, d * k)) * Math.min(2, Math.abs(notch));
     // 寄るときは面の手前 0.3m を目安に（ただし最小の一歩は進めるので、壁の向こうへも抜けられる）
     const move = notch < 0 ? Math.min(step, Math.max(0.25, d - 0.3)) : -step;
     this.zoomRemain.addScaledVector(rc.ray.direction, move);
@@ -702,8 +704,14 @@ export class Viewer {
     }
     if (this.navMode !== 'walk') this.stepZoom(dt);
     // 慣性はコマ数ではなく時間で減らす（重い環境でコマが少ないと、慣性がだらだら長く続いて「ズズズ」と滑っていた）。
-    // 60fps で 1 コマ 30% 減衰 ＝ 約 0.1 秒で止まる
-    this.controls.dampingFactor = Math.min(0.9, 1 - Math.pow(0.7, Math.max(0.5, dt * 60)));
+    // 60fps で 1 コマ 20% 減衰 ＝ 約 0.2 秒で止まる（0.1 秒だと止まり方が急で雑に見えた）
+    this.controls.dampingFactor = Math.min(0.9, 1 - Math.pow(0.8, Math.max(0.5, dt * 60)));
+    // 回転の速さ: 室内（回転の中心が近い）はゆっくり、外観は速め。室内で少し動かしただけで大きく振れる「雑な」動きを抑える
+    {
+      const dist = this.camera.position.distanceTo(this.controls.target);
+      this.controls.rotateSpeed = dist < 6 ? 0.42 : dist < 14 ? 0.6 : 0.8;
+      this.controls.panSpeed = dist < 6 ? 0.7 : 1.1;
+    }
     const moved = this.navMode === 'walk' ? false : this.controls.update();
     if (moved) {
       this.clampAboveFloor();

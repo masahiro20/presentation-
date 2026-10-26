@@ -2,15 +2,15 @@
  * 見積・資金計画: 読み込んだ間取りから数量を拾い、社内の積算（価格表）で見積を出し、資金計画書まで一気に作る。
  * 画面の左（ステージ）に御見積書・内訳書・資金計画書の清書、右（パネル）に数量・仕様の選択・資金計画の入力。
  */
-import { h, clear, section, fold, field, segmented, toast, download } from '../dom';
+import { h, clear, section, fold, field, segmented, toast, download, setPrintPage } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { exteriorById } from '../../styles/presets';
 import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '../../estimate/areas';
 import { CATEGORIES, type Grade } from '../../estimate/catalog';
-import { computeEstimate, newChoice, defaultGroups, unitPriceOf, yen, TAX_RATE, type EstimateChoice, type EstimateResult } from '../../estimate/calc';
+import { computeEstimate, newChoice, defaultGroups, groupOptions, priceFromCost, yen, TAX_RATE, type EstimateChoice, type EstimateResult, type LineResult } from '../../estimate/calc';
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
-import { estimateGroupsFor, FINISH_CATEGORIES } from '../../coordinate/catalog';
+import { estimateGroupsFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 
 export interface EstimateState {
   choice: EstimateChoice;
@@ -198,7 +198,9 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
   const customer = es.customerView !== false && !es.showAll;
   const anyQty = customer && est.categories.some((cat) => cat.lines.some((l) => es.showQty?.[l.id]));
   const showCols = !customer || anyQty;
-  const cols = showCols ? 7 : 4;
+  // 編集中は原価の列（原価を直すと売価 = 原価 ÷ 粗利係数 で単価が決まる）
+  const edit = !!es.showAll;
+  const cols = (showCols ? 7 : 4) + (edit ? 1 : 0);
   const newPage = () => {
     cur = h('div', { class: 'est-sheet detail' }, h('div', { class: 'est-title small' }, '内　訳　書'));
     sheets.push(cur);
@@ -219,10 +221,10 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
             value: num(l.qty, 3),
             onchange: (e: Event) => {
               const v = Number((e.target as HTMLInputElement).value);
-              if (l.extra) {
-                const x = es.choice.extras.find((x) => x.id === l.id);
-                if (x) x.qty = v;
-              } else if (Math.abs(v - l.qtyAuto) < 1e-9 && l.selected) delete es.choice.qty[l.id];
+              const x = l.extra ? es.choice.extras.find((x) => x.id === l.id) : undefined;
+              if (x) x.qty = v;
+              else if (l.extra) es.choice.qty[l.id] = v;
+              else if (Math.abs(v - l.qtyAuto) < 1e-9 && l.selected) delete es.choice.qty[l.id];
               else es.choice.qty[l.id] = v;
               if (v > 0 && !l.selected && l.def && !l.def.group) es.choice.off = es.choice.off.filter((id) => id !== l.id);
               rerender();
@@ -251,9 +253,10 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
           { class: l.selected && l.qty > 0 ? '' : 'off' },
           h('td', { class: 'sel' }, sel),
           h('td', { class: 'spec' }, l.spec),
-          h('td', { class: 'desc' }, l.desc, l.qtyNote && es.showAll ? h('span', { class: 'qn' }, `（${l.qtyNote}）`) : null, qtyToggle),
+          h('td', { class: 'desc' }, extraDesc(l, es, rerender) ?? l.desc, l.qtyNote && es.showAll ? h('span', { class: 'qn' }, `（${l.qtyNote}）`) : null, qtyToggle),
           showCols ? h('td', { class: 'qty' }, qtyShown ? qtyCell : '') : null,
           showCols ? h('td', { class: 'unit' }, qtyShown ? l.unit : '') : null,
+          edit ? h('td', { class: 'cost' }, costCell(l, es, rerender)) : null,
           showCols ? h('td', { class: 'amt' }, qtyShown ? yen(l.unitPrice) : '') : null,
           h('td', { class: 'amt' }, fmt(l.amount)),
         ),
@@ -264,13 +267,7 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
         h(
           'tr',
           { class: 'add' },
-          h('td', { colspan: cols }, h('button', { class: 'linkbtn', onclick: () => {
-            const desc = prompt('追加する項目の内容（例: 造作テレビボード W2400）');
-            if (!desc) return;
-            const price = Number(prompt('売価（円・税抜）', '100000') ?? 0);
-            es.choice.extras.push({ id: `x${Date.now().toString(36)}`, cat: cat.def.id, desc, unit: '式', price: price || 0, cost: Math.round((price || 0) * 0.7), qty: 1 });
-            rerender();
-          } }, '＋ この工事に行を追加')),
+          h('td', { colspan: cols }, addRowForm(cat.def.id, es, rerender)),
         ),
       );
     }
@@ -278,7 +275,7 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
       h(
         'table',
         { class: 'est-table detail' },
-        h('thead', null, h('tr', { class: 'cat' }, h('th', { colspan: cols }, `${cat.def.no}. ${cat.def.name}`)), h('tr', null, h('th', { class: 'sel' }, ''), h('th', null, '仕様'), h('th', null, '内容'), showCols ? h('th', { class: 'qty' }, '数量') : null, showCols ? h('th', null, '単位') : null, showCols ? h('th', { class: 'amt' }, '単価') : null, h('th', { class: 'amt' }, '金額'))),
+        h('thead', null, h('tr', { class: 'cat' }, h('th', { colspan: cols }, `${cat.def.no}. ${cat.def.name}`)), h('tr', null, h('th', { class: 'sel' }, ''), h('th', null, '仕様'), h('th', null, '内容'), showCols ? h('th', { class: 'qty' }, '数量') : null, showCols ? h('th', null, '単位') : null, edit ? h('th', { class: 'cost' }, '原価 ÷ 係数') : null, showCols ? h('th', { class: 'amt' }, '単価') : null, h('th', { class: 'amt' }, '金額'))),
         tbody,
         h('tfoot', null, h('tr', null, h('td', { colspan: cols - 1 }, '小計'), h('td', { class: 'amt' }, yen(cat.amount)))),
       ),
@@ -294,6 +291,136 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
     ),
   );
   return sheets;
+}
+
+/** 1mm の px（画面の 96dpi） */
+const MM_PX = 96 / 25.4;
+
+/**
+ * 内訳書を A4 縦のページに区切り直す: 実際の高さを測って、工事（表）の切れ目で改ページする。
+ * 1 つの工事が 1 ページに収まらないときだけ、その表を行の途中で分ける（ブラウザの印刷に任せる）
+ */
+function paginateDetail(view: HTMLElement) {
+  const sheets = [...view.querySelectorAll<HTMLElement>('.est-sheet.detail')];
+  if (!sheets.length) return;
+  const blocks = sheets.flatMap((s) => [...s.children].filter((c) => !c.classList.contains('est-title'))) as HTMLElement[];
+  const title = sheets[0].querySelector('.est-title')!.cloneNode(true) as HTMLElement;
+  for (const s of sheets) s.remove();
+  // 用紙の上端から、最後の表の下端までが 297mm − 下の余白 14mm に収まるか（用紙は min-height で 297mm あるので中身の下端で測る）
+  const limit = 297 * MM_PX - 14 * MM_PX - 4;
+  let page: HTMLElement | null = null;
+  const newPage = (first: boolean) => {
+    page = h('div', { class: 'est-sheet detail' }, first ? title : h('div', { class: 'est-title small cont' }, '内　訳　書（つづき）'));
+    view.appendChild(page);
+  };
+  newPage(true);
+  for (const b of blocks) {
+    page!.appendChild(b);
+    const used = b.getBoundingClientRect().bottom - page!.getBoundingClientRect().top;
+    if (used > limit && page!.children.length > 2) {
+      b.remove();
+      newPage(false);
+      page!.appendChild(b);
+    }
+  }
+}
+
+/** 資金計画書を A3 横 1 枚に収める（中身が高いときは全体を縮める） */
+function fitFunding(view: HTMLElement) {
+  const sheet = view.querySelector<HTMLElement>('.est-sheet.funding');
+  if (!sheet) return;
+  sheet.style.setProperty('--fit', '1');
+  sheet.classList.add('measuring');
+  const hgt = sheet.scrollHeight;
+  sheet.classList.remove('measuring');
+  const k = Math.min(1, (297 * MM_PX - 2) / Math.max(1, hgt));
+  sheet.style.setProperty('--fit', k.toFixed(3));
+}
+
+/** 原価の入力（編集中）: 価格表の行は原価の上書き、追加の行・選択肢は原価と粗利係数 */
+function costCell(l: LineResult, es: EstimateState, rerender: () => void): HTMLElement {
+  const extra = es.choice.extras.find((x) => x.id === l.id);
+  const custom = es.choice.customLines?.find((x) => x.id === l.id);
+  const target = extra ?? custom;
+  const changed = !target && es.choice.costOverride?.[l.id] != null;
+  const cost = h('input', {
+    type: 'number',
+    class: `cost-in ${changed ? 'changed' : ''}`,
+    step: 'any',
+    value: Math.round(l.unitCost),
+    title: changed ? `価格表の原価 ¥${yen(l.def?.cost ?? 0)} を上書き中（空にすると戻ります）` : '原価単価（税抜）。売価の単価 = 原価 ÷ 係数',
+    onchange: (e: Event) => {
+      const raw = (e.target as HTMLInputElement).value.trim();
+      const v = Number(raw);
+      if (target) {
+        target.cost = v || 0;
+        if (extra && extra.margin == null) extra.margin = 0.7;
+      } else {
+        const co = { ...(es.choice.costOverride ?? {}) };
+        if (raw === '' || (l.def && Math.abs(v - l.def.cost) < 1e-9)) delete co[l.id];
+        else co[l.id] = v;
+        es.choice.costOverride = co;
+      }
+      rerender();
+    },
+  });
+  const m = target ? (extra ? (extra.margin ?? 0.7) : custom!.margin) : (l.def?.margin ?? 0.7);
+  const margin = target
+    ? h('input', { type: 'number', class: 'margin-in', step: 0.01, min: 0.3, max: 1, value: m, title: '粗利係数（原価 ÷ 係数 = 売価）。0.7 = 粗利 30%、設備は 0.8', onchange: (e: Event) => { const v = Number((e.target as HTMLInputElement).value) || 0.7; if (extra) extra.margin = v; else custom!.margin = v; rerender(); } })
+    : h('span', { class: 'margin' }, `÷${m}`);
+  return h('span', { class: 'cost-box' }, cost, margin, changed ? h('button', { class: 'linkbtn', title: '価格表の原価に戻す', onclick: () => { const co = { ...(es.choice.costOverride ?? {}) }; delete co[l.id]; es.choice.costOverride = co; rerender(); } }, '↺') : null);
+}
+
+/** 追加の行の内容（編集中は書き換え・削除できる） */
+function extraDesc(l: LineResult, es: EstimateState, rerender: () => void): HTMLElement | null {
+  if (!es.showAll) return null;
+  const x = es.choice.extras.find((e) => e.id === l.id);
+  if (!x) return null;
+  return h(
+    'span',
+    { class: 'extra-desc' },
+    h('input', { type: 'text', value: x.desc, onchange: (e: Event) => { x.desc = (e.target as HTMLInputElement).value; rerender(); } }),
+    h('button', { class: 'linkbtn', title: 'この行を消す', onclick: () => { es.choice.extras = es.choice.extras.filter((e) => e.id !== x.id); rerender(); } }, '削除'),
+  );
+}
+
+/** 工事に行を足す（造作・オプション）: 内容・数量・単位・原価・係数 → 売価は原価 ÷ 係数 */
+function addRowForm(catId: string, es: EstimateState, rerender: () => void): HTMLElement {
+  const spec = h('input', { type: 'text', placeholder: '仕様（例: 造作家具）', class: 'f-spec' }) as HTMLInputElement;
+  const desc = h('input', { type: 'text', placeholder: '内容（例: テレビボード W2400 オーク突板）', class: 'f-desc' }) as HTMLInputElement;
+  const qty = h('input', { type: 'number', value: 1, step: 'any', class: 'f-qty' }) as HTMLInputElement;
+  const unit = h('select', { class: 'f-unit' }, ...['式', '箇所', '㎡', 'm', '枚', '組', '台', '坪'].map((u) => h('option', { value: u }, u))) as HTMLSelectElement;
+  const cost = h('input', { type: 'number', placeholder: '原価', step: 'any', class: 'f-cost' }) as HTMLInputElement;
+  const margin = h('input', { type: 'number', value: 0.7, step: 0.01, min: 0.3, max: 1, class: 'f-margin', title: '粗利係数' }) as HTMLInputElement;
+  const price = h('span', { class: 'f-price' });
+  const upd = () => (price.textContent = cost.value ? `→ 単価 ¥${yen(priceFromCost(Number(cost.value), Number(margin.value)))}` : '');
+  cost.addEventListener('input', upd);
+  margin.addEventListener('input', upd);
+  return h(
+    'div',
+    { class: 'add-row-form' },
+    spec,
+    desc,
+    qty,
+    unit,
+    cost,
+    h('span', null, '÷'),
+    margin,
+    price,
+    h('button', {
+      class: 'btn sm',
+      onclick: () => {
+        if (!desc.value.trim() || !cost.value) {
+          toast('内容と原価を入れてください', 'info');
+          return;
+        }
+        const c = Number(cost.value);
+        const mg = Number(margin.value) || 0.7;
+        es.choice.extras.push({ id: `x${Date.now().toString(36)}`, cat: catId, spec: spec.value.trim() || '追加', desc: desc.value.trim(), unit: unit.value, price: priceFromCost(c, mg), cost: c, margin: mg, qty: Number(qty.value) || 1 });
+        rerender();
+      },
+    }, '＋ 行を追加'),
+  );
 }
 
 /** 資金計画書 */
@@ -425,18 +552,77 @@ export const estimateStep: Step = {
   short: '見積',
   needsModel: true,
   uses3d: false,
+  unmount() {
+    setPrintPage(null);
+  },
   mount(ctx: StepCtx) {
     const es = ensure();
     const view = h('div', { class: 'est-view' });
     ctx.stage.appendChild(view);
     let which: 'quote' | 'detail' | 'funding' = 'quote';
     const panel = h('div', null);
+    /** 選択肢を足すフォームを開いている group */
+    let addingGroup: string | null = null;
+    /**
+     * 仕様の選択を変える。コーディネートの商品に連動している項目は、同じ見積の行になる商品にコーディネート側も合わせる
+     * （合う商品が無ければコーディネートの連動を外して、見積の選択を優先）
+     */
+    const setGroup = (group: string, lineId: string) => {
+      es.choice.groups[group] = lineId;
+      const fin = { ...(state.design.finishes ?? {}) };
+      let touched = false;
+      for (const cat of FINISH_CATEGORIES) {
+        const p = selectedProduct(cat, state.design);
+        if (p.estimate?.group !== group || fin[cat.id] == null) continue;
+        const match = cat.products.find((x) => x.estimate?.group === group && x.estimate.line === lineId);
+        if (match) fin[cat.id] = match.id;
+        else delete fin[cat.id];
+        touched = true;
+      }
+      if (touched) {
+        state.design = { ...state.design, finishes: fin };
+        emit('design');
+      }
+    };
+    const customOptionForm = (group: string, base: string, catId: string, margin0: number, unit0: string) => {
+      const desc = h('input', { type: 'text', placeholder: '商品（例: YKK AP APW 430 トリプルガラス）' }) as HTMLInputElement;
+      const cost = h('input', { type: 'number', placeholder: '原価（単位あたり）', step: 'any' }) as HTMLInputElement;
+      const margin = h('input', { type: 'number', value: margin0, step: 0.01, min: 0.3, max: 1, title: '粗利係数' }) as HTMLInputElement;
+      return h(
+        'div',
+        { class: 'custom-opt' },
+        desc,
+        h('div', { class: 'row2' }, cost, margin),
+        h('p', { class: 'hint' }, `数量は今の選択と同じ（${unit0}）。売価の単価 = 原価 ÷ 係数`),
+        h('button', {
+          class: 'btn sm',
+          onclick: () => {
+            if (!desc.value.trim() || !cost.value) {
+              toast('商品と原価を入れてください', 'info');
+              return;
+            }
+            const id = `c${Date.now().toString(36)}`;
+            const baseLine = CATEGORIES.flatMap((c) => c.lines).find((x) => x.id === base);
+            es.choice.customLines = [...(es.choice.customLines ?? []), { id, group, cat: catId, base, spec: baseLine?.spec ?? '', desc: desc.value.trim(), unit: unit0, cost: Number(cost.value), margin: Number(margin.value) || margin0 }];
+            setGroup(group, id);
+            addingGroup = null;
+            render();
+          },
+        }, 'この選択肢を追加して選ぶ'),
+      );
+    };
     const render = () => {
       const c = compute(es);
       clear(view);
+      setPrintPage(which === 'funding' ? 'A3 landscape' : 'A4 portrait');
       if (which === 'quote') view.appendChild(quoteSheet(c));
-      else if (which === 'detail') for (const s of detailSheets(c, es, render)) view.appendChild(s);
-      else view.appendChild(fundingSheet(c));
+      else if (which === 'detail') {
+        for (const s of detailSheets(c, es, render)) view.appendChild(s);
+        paginateDetail(view);
+      } else {
+        view.appendChild(fundingSheet(c));
+        fitFunding(view);
+      }
       renderPanel(c);
       emit('estimate');
     };
@@ -476,11 +662,14 @@ export const estimateStep: Step = {
         for (const l of cat.lines) {
           if (!l.group || seen.has(l.group)) continue;
           seen.add(l.group);
-          const options = CATEGORIES.flatMap((cc) => cc.lines).filter((x) => x.group === l.group);
-          const cur = es.choice.groups[l.group] ?? defaultGroups(es.choice.grade)[l.group];
-          const driven = finishDrivenGroups().has(l.group);
-          const sel = h('select', { disabled: driven, onchange: (e: Event) => { es.choice.groups[l.group!] = (e.target as HTMLSelectElement).value; render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur }, `${o.desc}　¥${yen(unitPriceOf(o))}/${o.unit}`)));
-          groupBody.appendChild(field(GROUP_LABEL[l.group] ?? l.group, sel, driven ? 'パースの「コーディネート」で選んだ商品' : undefined));
+          const group = l.group;
+          const options = groupOptions(group, es.choice);
+          const cur = es.choice.groups[group] ?? defaultGroups(es.choice.grade)[group];
+          const driven = finishDrivenGroups().has(group);
+          // コーディネートで選んだ商品に連動している項目も、ここで選び直せる（コーディネート側の選択も合わせて変える）
+          const sel = h('select', { onchange: (e: Event) => { setGroup(group, (e.target as HTMLSelectElement).value); render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur }, `${o.custom ? '［追加］' : ''}${o.desc}　¥${yen(o.price)}/${o.unit}`)));
+          const addOpt = h('button', { class: 'linkbtn', title: '新しいメーカー・商品を選択肢に足す（例: サッシに APW 430、エクセルシャノン）。原価を入れると売価は原価 ÷ 係数', onclick: () => { addingGroup = addingGroup === group ? null : group; render(); } }, '＋ 選択肢を追加');
+          groupBody.appendChild(field(GROUP_LABEL[group] ?? group, h('div', null, sel, h('div', { class: 'grp-tools' }, addOpt, driven ? h('span', { class: 'hint' }, 'コーディネートの商品と連動') : null), addingGroup === group ? customOptionForm(group, l.id, cat.id, l.margin ?? 0.7, l.unit) : null)));
         }
       // 資金計画
       const fundBody = h('div', { class: 'fund-form' });

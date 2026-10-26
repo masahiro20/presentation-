@@ -1191,7 +1191,10 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     if (o.sill > 0 && spec.windows.sillBoard) mb.box('int.trim', mid.clone().addScaledVector(outN, -t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.06, 0.02, 0.06);
     // カーテン（居室の掃き出し・腰窓）
     const inRoom = roomAt(f, (mid.x - outN.x * (t / 2 + 0.2)) / MM, (mid.z - outN.z * (t / 2 + 0.2)) / MM);
-    if (spec.curtains !== 'none' && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
+    // 高窓（下端が床から 1.2m より上・天井付けの横長窓）と小窓（高さ 0.8m 未満）にはカーテンを付けない。
+    // 天井付けの細い窓に床までのカーテンが下がっていると、窓の無い所に布がある不自然な絵になる
+    const curtainable = o.sill * MM <= 1.2 && o.height * MM >= 0.8;
+    if (spec.curtains !== 'none' && curtainable && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
       const ceil = fl + f.ceilingHeight * MM;
       const inner = mid.clone().addScaledVector(outN, -t / 2 - 0.12);
       // 束ねたカーテンが窓の脇の壁の外（建物の角の先）に出る場合は、窓の内側に寄せる

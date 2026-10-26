@@ -204,3 +204,21 @@ export function useSelect(current: string, onChange: (value: string) => void): H
     USE_GROUPS.map((g) => h('optgroup', { label: g.label }, g.options.map((o) => h('option', { value: o.value, selected: o.value === current }, o.label)))),
   );
 }
+
+/**
+ * 印刷の用紙を、いま表示している書類に合わせる（見積・内訳書 = A4 縦、資金計画書 = A3 横、資料 = A4 横）。
+ * CSS の名前付き用紙（page:）は Chrome で 1 ページ目に効かないことがあるので、既定の @page を差し替える。null で外す
+ */
+export function setPrintPage(size: string | null) {
+  let el = document.getElementById('print-page-size') as HTMLStyleElement | null;
+  if (!size) {
+    el?.remove();
+    return;
+  }
+  if (!el) {
+    el = document.createElement('style');
+    el.id = 'print-page-size';
+    document.head.appendChild(el);
+  }
+  el.textContent = `@media print { @page { size: ${size}; margin: 0; } }`;
+}

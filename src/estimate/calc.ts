@@ -11,10 +11,31 @@ export interface EstimateChoice {
   qty: Record<string, number>;
   /** 外した行 */
   off: string[];
-  /** 自由追加の行 */
-  extras: { id: string; cat: string; desc: string; unit: string; price: number; cost: number; qty: number }[];
+  /**
+   * 自由追加の行（造作・オプションなど）。margin があれば売価 = 原価 ÷ margin（十円切り捨て）、無ければ price（以前の保存データ）
+   */
+  extras: { id: string; cat: string; spec?: string; desc: string; unit: string; price: number; cost: number; margin?: number; qty: number }[];
+  /** 価格表の行の原価の上書き（行 id → 原価単価）。売価はその行の粗利係数で計算し直す */
+  costOverride?: Record<string, number>;
+  /**
+   * 差し替え（group）に足した選択肢（例: サッシに APW 430・エクセルシャノン）。数量は base の行と同じ式で出す
+   */
+  customLines?: CustomLine[];
   /** 端数調整の単位（円）。税抜の小計をこの単位に切り捨てる（0 = 調整しない）。既定 10,000 */
   roundUnit?: number;
+}
+
+export interface CustomLine {
+  id: string;
+  group: string;
+  cat: string;
+  /** 数量の式を借りる価格表の行 */
+  base: string;
+  spec: string;
+  desc: string;
+  unit: string;
+  cost: number;
+  margin: number;
 }
 
 export interface LineResult {
@@ -65,9 +86,21 @@ export function roundDown(v: number, digits: number): number {
   return Math.floor(v / k) * k;
 }
 
-export function unitPriceOf(l: LineDef): number {
-  if (l.fixedPrice != null) return l.fixedPrice;
-  return roundDown(l.cost / (l.margin ?? 0.7), l.round ?? -1);
+export function unitPriceOf(l: LineDef, costOverride?: number): number {
+  if (l.fixedPrice != null && costOverride == null) return l.fixedPrice;
+  return roundDown((costOverride ?? l.cost) / (l.margin ?? 0.7), l.round ?? -1);
+}
+
+/** 追加の行・選択肢の売価（原価 ÷ 粗利係数、十円切り捨て） */
+export const priceFromCost = (cost: number, margin: number) => roundDown(cost / Math.max(0.05, margin || 0.7), -1);
+export const extraPrice = (x: { price: number; cost: number; margin?: number }) => (x.margin != null ? priceFromCost(x.cost, x.margin) : x.price);
+
+/** group の選択肢（価格表の行＋足した選択肢） */
+export function groupOptions(group: string, choice: Pick<EstimateChoice, 'customLines' | 'costOverride'>): { id: string; desc: string; unit: string; price: number; custom?: CustomLine }[] {
+  const out: { id: string; desc: string; unit: string; price: number; custom?: CustomLine }[] = [];
+  for (const c of CATEGORIES) for (const l of c.lines) if (l.group === group) out.push({ id: l.id, desc: l.desc, unit: l.unit, price: unitPriceOf(l, choice.costOverride?.[l.id]) });
+  for (const x of choice.customLines ?? []) if (x.group === group) out.push({ id: x.id, desc: x.desc, unit: x.unit, price: priceFromCost(x.cost, x.margin), custom: x });
+  return out;
 }
 
 /** group の既定（グレードごと） */
@@ -112,12 +145,23 @@ export function computeEstimate(areasIn: Areas, choice: EstimateChoice): Estimat
       const selected = isOn(l, choice);
       const qtyAuto = l.qty ? Math.max(0, l.qty(a)) : 1;
       const qty = selected ? (choice.qty[l.id] ?? qtyAuto) : 0;
-      const unitPrice = unitPriceOf(l);
+      const unitCost = choice.costOverride?.[l.id] ?? l.cost;
+      const unitPrice = unitPriceOf(l, choice.costOverride?.[l.id]);
       const amount = roundDown(unitPrice * qty, AMOUNT_ROUND[def.id] ?? -1);
-      return { def: l, id: l.id, cat: def.id, spec: l.spec, desc: l.desc, unit: l.unit, unitPrice, unitCost: l.cost, qty, qtyAuto, qtyNote: l.qtyNote, amount, cost: l.cost * qty, selected, group: l.group, optional: !!l.optional };
+      return { def: l, id: l.id, cat: def.id, spec: l.spec, desc: l.desc, unit: l.unit, unitPrice, unitCost, qty, qtyAuto, qtyNote: l.qtyNote, amount, cost: unitCost * qty, selected, group: l.group, optional: !!l.optional };
     });
+    // 差し替えに足した選択肢（選んでいるときだけ数量が入る）
+    for (const x of (choice.customLines ?? []).filter((e) => e.cat === def.id)) {
+      const baseDef = def.lines.find((l) => l.id === x.base) ?? CATEGORIES.flatMap((c) => c.lines).find((l) => l.id === x.base);
+      const selected = (choice.groups[x.group] ?? '') === x.id && !choice.off.includes(x.id);
+      const qtyAuto = baseDef?.qty ? Math.max(0, baseDef.qty(a)) : 1;
+      const qty = selected ? (choice.qty[x.id] ?? qtyAuto) : 0;
+      const unitPrice = priceFromCost(x.cost, x.margin);
+      lines.push({ id: x.id, cat: def.id, spec: x.spec, desc: x.desc, unit: x.unit, unitPrice, unitCost: x.cost, qty, qtyAuto, qtyNote: baseDef?.qtyNote, amount: roundDown(unitPrice * qty, AMOUNT_ROUND[def.id] ?? -1), cost: x.cost * qty, selected, group: x.group, optional: false, extra: true });
+    }
     for (const x of choice.extras.filter((e) => e.cat === def.id)) {
-      lines.push({ id: x.id, cat: def.id, spec: '追加', desc: x.desc, unit: x.unit, unitPrice: x.price, unitCost: x.cost, qty: x.qty, qtyAuto: x.qty, amount: roundDown(x.price * x.qty, -1), cost: x.cost * x.qty, selected: x.qty > 0, optional: true, extra: true });
+      const price = extraPrice(x);
+      lines.push({ id: x.id, cat: def.id, spec: x.spec || '追加', desc: x.desc, unit: x.unit, unitPrice: price, unitCost: x.cost, qty: x.qty, qtyAuto: x.qty, amount: roundDown(price * x.qty, -1), cost: x.cost * x.qty, selected: x.qty > 0, optional: true, extra: true });
     }
     return { def, lines, amount: lines.reduce((s, l) => s + l.amount, 0), cost: lines.reduce((s, l) => s + l.cost, 0) };
   });

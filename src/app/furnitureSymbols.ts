@@ -21,7 +21,8 @@ const WHITE = '#fbfaf8';
 /** 家具 1 つの記号（局所座標、m） */
 export function furnitureSymbol(it: FurnitureItem): Prim[] {
   const P: Prim[] = [];
-  const rect = (u: number, v: number, w: number, d: number, extra: Partial<Extract<Prim, { t: 'rect' }>> = {}) => P.push({ t: 'rect', u, v, w, d, ...extra });
+  // 短い家具（ミニキッチンなど）で幅が負にならないように
+  const rect = (u: number, v: number, w: number, d: number, extra: Partial<Extract<Prim, { t: 'rect' }>> = {}) => P.push({ t: 'rect', u, v, w: Math.max(0.05, w), d: Math.max(0.05, d), ...extra });
   const circle = (u: number, v: number, r: number, extra: Partial<Extract<Prim, { t: 'circle' }>> = {}) => P.push({ t: 'circle', u, v, r, ...extra });
   const line = (u1: number, v1: number, u2: number, v2: number, extra: Partial<Extract<Prim, { t: 'line' }>> = {}) => P.push({ t: 'line', u1, v1, u2, v2, ...extra });
   const text = (u: number, v: number, s: string, size = 0.16) => P.push({ t: 'text', u, v, text: s, size });
@@ -54,7 +55,7 @@ export function furnitureSymbol(it: FurnitureItem): Prim[] {
         text(stoveU, cv + 0.62, hood ? 'コンロ・フード' : 'コンロ', 0.13);
       };
       if (type === 'wall') {
-        const cw = Math.min(len - 0.3, 3.0) - (fridge === 'none' ? 0 : 0.75);
+        const cw = Math.max(0.6, Math.min(len - 0.3, 3.0) - (fridge === 'none' ? 0 : 0.75));
         const cu = fridge === 'none' ? 0 : fridge === 'right' ? -0.375 : 0.375;
         rect(cu, 0, cw, 0.65, { fill: BODY });
         fittings(cu, 0, cw);
@@ -66,7 +67,7 @@ export function furnitureSymbol(it: FurnitureItem): Prim[] {
         break;
       }
       const bw = Math.min(len - 0.3, 2.7);
-      const cabW = fridge === 'none' ? bw : bw - 0.75;
+      const cabW = Math.max(0.3, fridge === 'none' ? bw : bw - 0.75);
       const cabU = fridge === 'none' ? 0 : fridge === 'right' ? -0.375 : 0.375;
       cabinetSym(cabU, 0, cabW, 0.45);
       text(cabU, 0.3, '背面収納', 0.12);
@@ -75,7 +76,7 @@ export function furnitureSymbol(it: FurnitureItem): Prim[] {
         rect(fu, 0, 0.68, 0.7, { fill: WHITE, stroke: '#4a4e55' });
         text(fu, 0.42, '冷蔵庫', 0.12);
       }
-      const cw = Math.min(len - 0.4, 2.55);
+      const cw = Math.max(0.6, Math.min(len - 0.4, 2.55));
       const cv = it.d ? Math.max(1.2, Math.min(2.6, it.d)) - 0.17 : 1.35;
       rect(0, cv, cw, type === 'island' ? 0.95 : 0.75, { fill: BODY });
       if (type === 'peninsula') line(-cw / 2, cv + 0.75, cw / 2, cv + 0.75, { stroke: '#4a4e55' });

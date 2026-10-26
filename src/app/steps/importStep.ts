@@ -1,5 +1,4 @@
-import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal, useSelect } from '../dom';
-import { useValueOf, applyUseValue } from '../../core/roomUse';
+import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
@@ -13,6 +12,9 @@ import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
 import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
+import { ACCEPT_EXT } from '../../sunstudy/importModel';
+import { createExternal, installExternal, loadExternal, setExternalMounted } from '../externalBuilding';
+import { applyHeightsFromExternal } from '../externalHeights';
 
 async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto') {
   const pm = progressModal('平面図を解析しています', false);
@@ -50,6 +52,48 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
 }
 
 let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf'; moduleMode?: ModuleMode } | null = null;
+
+/** 設計の 3D データ（ARCHITREND の 3DS など） */
+const is3dFile = (f: File) => ACCEPT_EXT.includes((f.name.split('.').pop() ?? '').toLowerCase());
+
+/**
+ * 図面と一緒に置いた 3D データで、床・窓の腰高と高さ・屋根を最初から 3D のとおりにする。
+ * 間取りの外形に自動で合わせてから測る（合わなければ何も変えず、日照の画面で手で合わせる案内を出す）
+ */
+async function heightsFrom3dFile(ctx: StepCtx, f: File): Promise<boolean> {
+  if (!state.model) return false;
+  const pm = progressModal('3D データから高さを測っています', false);
+  try {
+    pm.set(0.15, f.name);
+    const m = await loadExternal(f);
+    pm.set(0.6, '間取りの外形に合わせています…');
+    await new Promise((r) => setTimeout(r, 0));
+    ctx.app.ensureScene();
+    const v = ctx.app.viewer;
+    const ctrl = installExternal(v, createExternal(m));
+    if (!ctrl) return false;
+    const r: unknown = ctrl.autoFitToPlan(v);
+    setExternalMounted(v, false);
+    if (r === false || ctrl.ext.fit?.unitSuspect) {
+      const why = ctrl.fitError ?? (ctrl.ext.fit?.unitSuspect ? '大きさが合わず、単位の違いの疑いがあります' : '');
+      toast(`${f.name} を間取りの外形に自動で合わせられませんでした${why ? `（${why}）` : ''}。日照の画面で位置を合わせてから「3D データの高さを間取りに反映」を押してください`, 'info', 10000);
+      return false;
+    }
+    ctrl.ext.manual = false;
+    pm.set(0.85, '床・窓・屋根の高さを測っています…');
+    const ch = applyHeightsFromExternal(v, ctrl);
+    ctx.app.ensureScene();
+    ctrl.sync(v);
+    setExternalMounted(v, false);
+    if (ch) toast([`${f.name} から高さを反映しました`, ...ch.notes].join('\n'), 'ok', 9000);
+    return !!ch;
+  } catch (e) {
+    toast(`3D データを読めませんでした: ${(e as Error).message}`, 'error', 8000);
+    return false;
+  } finally {
+    pm.close();
+  }
+}
 
 /** モジュールの表示名 */
 export function moduleLabel(model: BuildingModel): string {
@@ -92,7 +136,19 @@ const FLOW: [string, string][] = [
 ];
 
 function dropScreen(ctx: StepCtx) {
-  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,.dxf,.json', style: 'display:none' }) as HTMLInputElement;
+  const input = h('input', { type: 'file', multiple: true, accept: ['application/pdf', '.pdf', '.dxf', '.json', ...ACCEPT_EXT.map((e) => '.' + e)].join(','), style: 'display:none' }) as HTMLInputElement;
+  // 平面図（PDF・DXF）と 3D データ（3DS など）は一緒に置ける: 図面を読んでから、3D で高さを合わせる
+  const readFiles = async (files: File[]) => {
+    const plan = files.find((f) => !is3dFile(f));
+    const ext = files.find(is3dFile);
+    if (!plan) {
+      if (ext) toast('3D データ（3DS など）は、平面図の PDF と一緒に置いてください（図面の間取りに合わせて高さを測ります）', 'info', 8000);
+      return;
+    }
+    const before = state.model;
+    await readFile(plan);
+    if (ext && state.model && state.model !== before && (await heightsFrom3dFile(ctx, ext))) void ctx.app.go('import');
+  };
   const readFile = async (f: File) => {
     if (isProjectFile(f)) {
       try {
@@ -104,7 +160,11 @@ function dropScreen(ctx: StepCtx) {
     }
     return loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name.replace(/\.(pdf|dxf)$/i, ''), undefined, /\.dxf$/i.test(f.name) ? 'dxf' : 'pdf');
   };
-  input.addEventListener('change', () => input.files?.[0] && readFile(input.files[0]));
+  input.addEventListener('change', () => {
+    const fs = [...(input.files ?? [])];
+    input.value = '';
+    if (fs.length) void readFiles(fs);
+  });
   const sample = async (file: string) => {
     const buf = new Uint8Array(await (await fetch(`./samples/${file}`)).arrayBuffer());
     loadPdf(ctx, buf, 'サンプル邸');
@@ -152,7 +212,7 @@ function dropScreen(ctx: StepCtx) {
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
     h('b', null, '平面図の PDF をここに置く'),
-    h('span', null, 'DXF・保存したプロジェクト（.madori.json）も開けます'),
+    h('span', null, 'DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、床・窓・屋根の高さも 3D のとおりに'),
     h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
     input,
   );
@@ -239,8 +299,8 @@ function dropScreen(ctx: StepCtx) {
   root.addEventListener('drop', (e) => {
     e.preventDefault();
     root.classList.remove('hover');
-    const f = e.dataTransfer?.files?.[0];
-    if (f) readFile(f);
+    const fs = [...(e.dataTransfer?.files ?? [])];
+    if (fs.length) void readFiles(fs);
   });
   return root;
 }
@@ -252,6 +312,7 @@ export const importStep: Step = {
   uses3d: false,
   unmount() {
     document.body.classList.remove('cover', 'cover-settings');
+    resultCleanup?.();
   },
   mount(ctx) {
     ctx.stage.style.pointerEvents = 'auto';
@@ -566,8 +627,12 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
     box.append(...parts.filter((x): x is HTMLElement => !!x));
   };
   render();
-  return section('接道・敷地', box);
+  const roads = model.site?.roads ?? [];
+  return fold('接道・敷地', { meta: roads.length ? `道路 ${roads.length} 面` : '' }, box);
 }
+
+/** 図面読込の結果画面で開いている方眼の修正（ステップを離れるときに外す） */
+let resultCleanup: (() => void) | null = null;
 
 function renderResult(ctx: StepCtx) {
   document.body.classList.remove('cover', 'cover-settings');
@@ -575,7 +640,9 @@ function renderResult(ctx: StepCtx) {
   const view = h('div', { class: 'plan-view' });
   // 木造チェックの「図面で見る」で赤表示する項目（state.plans には入れない: 資料・図面出力には載せない）
   let shownIssue: WoodIssue | null = null;
+  let plansStale = false;
   const drawPlans = () => {
+    plansStale = false;
     clear(view);
     // 確認表示は設計図書らしく: 方眼紙の背景（通り芯の格子）に、御社の表記（黒塗りの壁・JIS の建具記号）
     state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f, { paper: 'grid' }) }));
@@ -606,62 +673,93 @@ function renderResult(ctx: StepCtx) {
       view.appendChild(h('div', { class: `sheet level-${f.level} ${mk.length ? 'marked' : ''}`, html: svg }));
     }
   };
+  /** 図面で見ている間だけ描き直す（方眼で直している間は、離れるときにまとめて作る） */
+  const redrawPlans = () => {
+    if (mode === 'sheet') drawPlans();
+    else plansStale = true;
+  };
+
+  // 表示: 方眼の上でそのまま直す（既定）／仕上がりの図面で見る
+  let mode: 'edit' | 'sheet' = 'edit';
+  resultCleanup?.();
+  const editor = openPlanEditor(ctx.stage, model, () => {}, state.pdfName ?? '', {
+    embedded: true,
+    onCommit: () => {
+      plansStale = true;
+      emit('model');
+      refreshSummary();
+    },
+  });
+  resultCleanup = () => {
+    editor.destroy();
+    if (plansStale && state.model === model) state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f) }));
+    resultCleanup = null;
+  };
+  view.hidden = true;
+  ctx.stage.appendChild(view);
+  const modeSeg = h('div', { class: 'segmented imp-mode' });
+  const setMode = (m: 'edit' | 'sheet') => {
+    mode = m;
+    editor.el.hidden = m !== 'edit';
+    view.hidden = m !== 'sheet';
+    if (m === 'sheet') drawPlans();
+    clear(modeSeg);
+    for (const [v, l] of [['edit', '方眼で直す'], ['sheet', '図面で見る']] as const) modeSeg.appendChild(h('button', { class: v === mode ? 'on' : '', onclick: () => setMode(v) }, l));
+  };
+  setMode('edit');
   const showMarks = (issue: WoodIssue | null) => {
     shownIssue = issue;
-    drawPlans();
+    setMode('sheet');
     const lv = issue?.marks?.[0]?.level;
     if (lv != null) view.querySelector(`.sheet.level-${lv}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  drawPlans();
-  ctx.stage.appendChild(view);
+  const openEditor = () => setMode('edit');
 
   const rep = model.report;
-  const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
-  const openings = model.floors.reduce((s, f) => s + f.openings.length, 0);
-  const totalArea = model.floors.reduce((s, f) => s + f.rooms.reduce((a, r) => a + r.area, 0), 0);
   const scaleLabel = rep.scaleDenominator ? `1/${rep.scaleDenominator}` : `約1/${Math.round(rep.mmPerPt / 0.3528)}`;
   const srcLabel: Record<string, string> = { dimension: '寸法線から判定', text: '縮尺表記から判定', area: '帖数から推定', module: '壁の間隔から推定', default: '既定値', manual: '手動指定' };
+
+  // 要点（直すたびに更新）: 階・部屋・窓とドア・延床と、読み取りチェック
+  const summary = h('div', { class: 'imp-summary' });
+  const checkHost = h('div');
+  function refreshSummary() {
+    const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
+    const openings = model.floors.reduce((s, f) => s + f.openings.length, 0);
+    const totalArea = model.floors.reduce((s, f) => s + f.rooms.reduce((a, r) => a + r.area, 0), 0);
+    clear(summary);
+    summary.append(
+      h('b', null, `${model.floors.length}階・${rooms}部屋・窓とドア ${openings}`),
+      h('span', null, `延床 約${(totalArea / 3.30579).toFixed(1)}坪（${totalArea.toFixed(1)}㎡）／縮尺 ${scaleLabel}／${moduleLabel(model).replace(/（.*$/, '')}`),
+    );
+    clear(checkHost);
+    checkHost.append(
+      checkCard(
+        model,
+        openEditor,
+        () => {
+          northFold.open = true;
+          northInput?.focus();
+        },
+        () => {
+          emit('model');
+          toast('読み取りを修正しました', 'ok');
+          ctx.app.go('import');
+        },
+        showMarks,
+        (level) => {
+          setMode('edit');
+          editor.showLevel(level);
+        },
+      ),
+    );
+  }
 
   const side = ctx.side;
   side.append(
     h('h2', null, '図面の解析結果'),
-    h('p', { class: 'lead' }, `${state.pdfName ?? ''} を読み込みました。部屋名や用途が違う場合はここで修正できます（3D・パース・日照に反映されます）。`),
-    h(
-      'div',
-      { class: 'stats' },
-      h('div', { class: 'stat' }, h('b', null, `${model.floors.length}`), h('span', null, '階')),
-      h('div', { class: 'stat' }, h('b', null, `${rooms}`), h('span', null, '部屋')),
-      h('div', { class: 'stat' }, h('b', null, `${openings}`), h('span', null, '窓・ドア')),
-    ),
-    h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `縮尺 ${scaleLabel}（${srcLabel[rep.scaleSource]}）／延床 約${totalArea.toFixed(1)}㎡（${(totalArea / 3.30579).toFixed(1)}坪）／壁厚 ${rep.wallThicknesses.slice(0, 4).join('・')}mm`),
-    h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `木造モジュール: ${moduleLabel(model)}${model.module ? '（壁芯・部屋・階段を格子にそろえ、壁厚は外壁 160・内壁 130 の在来木造標準）' : ''}`),
-    ...rep.warnings.map((w) => h('div', { class: 'warn' }, w)),
-  );
-  const openEditor = () => {
-    ctx.side.style.pointerEvents = 'none';
-    ctx.side.style.opacity = '0.45';
-    openPlanEditor(ctx.stage, model, (changed) => {
-      ctx.side.style.pointerEvents = '';
-      ctx.side.style.opacity = '';
-      if (changed) {
-        emit('model');
-        toast('間取りの修正を反映しました（3D・パース・日照に反映されます）', 'ok');
-        ctx.app.go('import');
-      }
-    }, state.pdfName ?? '');
-  };
-  side.append(
-    checkCard(
-      model,
-      openEditor,
-      () => northInput?.focus(),
-      () => {
-        emit('model');
-        toast('読み取りを修正しました', 'ok');
-        ctx.app.go('import');
-      },
-      showMarks,
-    ),
+    summary,
+    modeSeg,
+    h('p', { class: 'hint imp-hint' }, '方眼の上でそのまま直せます（壁・窓・戸・部屋名・家具・階段・柱）。部屋名や用途は、名前をクリック。'),
     h('div', { class: 'btn-row' }, h('button', { class: 'btn primary block', onclick: () => ctx.app.go('design') }, '3D パースを作成する →')),
     h(
       'div',
@@ -679,21 +777,24 @@ function renderResult(ctx: StepCtx) {
         '提案一式をまとめて作る（パース・図面・資料）',
       ),
     ),
-    h(
-      'div',
-      { class: 'edit-callout' },
-      h('b', null, '読み取りが違う所は、平面の上で直せます'),
-      h('p', null, '部屋がつながっている・壁が足りない・余分な壁がある・窓やドアが無い・部屋名が違う、といった所を、壁を描く／消す、窓・ドアを置く、部屋名を置くだけで修正できます。'),
-      h('button', { class: 'btn dark block', onclick: openEditor }, '間取りを手で修正する'),
-    ),
+    checkHost,
   );
+  if (rep.warnings.length)
+    side.append(
+      fold(
+        '読み取りのメモ',
+        { meta: `${rep.warnings.length} 件` },
+        h('div', { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' }, `縮尺 ${scaleLabel}（${srcLabel[rep.scaleSource]}）／壁厚 ${rep.wallThicknesses.slice(0, 4).join('・')}mm`),
+        ...rep.warnings.map((w) => h('div', { class: 'warn' }, w)),
+      ),
+    );
 
   // 方位
   const northVal = h('span', null, `${model.northAngleDeg}°`);
   let northInput: HTMLInputElement | null = null;
-  side.append(
-    section(
+  const northFold = fold(
       '方位・高さ',
+      { meta: `真北 ${model.northAngleDeg}°・1階床 GL+${model.floors[0]?.elevation ?? 500}` },
       field(
         '真北の向き（図面の上から時計回り）',
         (northInput = h('input', {
@@ -708,7 +809,7 @@ function renderResult(ctx: StepCtx) {
           },
           onchange: () => {
             emit('model');
-            drawPlans();
+            redrawPlans();
           },
         }) as HTMLInputElement),
       ),
@@ -736,7 +837,7 @@ function renderResult(ctx: StepCtx) {
               model.site.roads = model.site.roads.filter((r) => r.source !== 'manual');
               if (val !== 'auto') model.site.roads.unshift({ side: val, source: 'manual', label: '手入力' });
               emit('model');
-              drawPlans();
+              redrawPlans();
             },
           ),
           h('span', { class: 'hint' }, lbl),
@@ -767,32 +868,11 @@ function renderResult(ctx: StepCtx) {
           emit('model');
         })),
       ),
-    ),
   );
+  side.append(northFold);
 
   // 接道・敷地
-  side.append(roadSection(model, drawPlans));
-
-  // 部屋
-  for (const f of model.floors) {
-    const tbody = h('tbody');
-    for (const r of f.rooms) {
-      tbody.appendChild(
-        h(
-          'tr',
-          null,
-          h('td', { style: 'width:44%' }, h('input', { value: r.name, onchange: (e: Event) => { r.name = (e.target as HTMLInputElement).value; emit('model'); drawPlans(); } })),
-          h(
-            'td',
-            { style: 'width:34%' },
-            useSelect(useValueOf(r), (v) => { applyUseValue(r, v); emit('model'); drawPlans(); }),
-          ),
-          h('td', { style: 'text-align:right;color:#8b9098' }, `${(r.labeledTatami ?? r.area / 1.62).toFixed(1)}帖`),
-        ),
-      );
-    }
-    side.append(section(`${f.level}階の部屋`, h('table', { class: 'room-table' }, tbody)));
-  }
+  side.append(roadSection(model, redrawPlans));
 
   // 再読み込み
   const scaleSel = h(
@@ -814,9 +894,20 @@ function renderResult(ctx: StepCtx) {
       ] as [ModuleMode, string][]
     ).map(([v, l]) => h('option', { value: v, selected: v === curModule }, l)),
   ) as HTMLSelectElement;
+  const ext3dIn = h('input', { type: 'file', accept: ACCEPT_EXT.map((e) => '.' + e).join(','), style: 'display:none' }) as HTMLInputElement;
+  ext3dIn.addEventListener('change', async () => {
+    const f = ext3dIn.files?.[0];
+    ext3dIn.value = '';
+    if (!f) return;
+    // 方眼の修正を先に間取りへ入れてから測る
+    resultCleanup?.();
+    await heightsFrom3dFile(ctx, f);
+    void ctx.app.go('import');
+  });
   side.append(
-    section(
-      '読み込みのやり直し',
+    fold(
+      '読み込みのやり直し・保存',
+      {},
       field('縮尺を指定して再解析', scaleSel, '縮尺がずれている場合に指定してください'),
       field('木造モジュール', moduleSel, '壁芯を 455（尺）／500（メーター）の格子にそろえます。自動で判定できない図面は指定してください'),
       h(
@@ -824,10 +915,19 @@ function renderResult(ctx: StepCtx) {
         { class: 'btn-row' },
         h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind, moduleSel.value as ModuleMode) }, '再解析'),
         h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, 'プロジェクトを保存'),
+        h('button', { class: 'btn sm ghost', title: '読み取り精度の評価用に、自動の読み取り結果と、直した正解の間取りを1つのファイルに保存します', onclick: () => editor.saveTruth() }, '評価用に保存'),
+      ),
+      h('p', { class: 'hint', style: 'margin:10px 0 4px' }, 'ARCHITREND の 3DS など、設計の 3D データがあれば、床・窓の腰高と高さ・屋根を 3D のとおりに直せます。'),
+      h(
+        'div',
+        { class: 'btn-row', style: 'margin-top:0' },
+        h('button', { class: 'btn sm', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
+        ext3dIn,
         h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),
   );
+  refreshSummary();
 }
 
 function numInput(v: number, onChange: (v: number) => void) {
@@ -838,7 +938,7 @@ function numInput(v: number, onChange: (v: number) => void) {
  * 読み込み直後の確認カード: 階・玄関・方位・階段・部屋・窓ドアを一目で確認し、
  * 怪しい所は修正画面へ直接飛べるようにする
  */
-function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void, showMarks: (issue: WoodIssue | null) => void): HTMLElement {
+function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void, showMarks: (issue: WoodIssue | null) => void, openLevel: (level: number) => void): HTMLElement {
   type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void }; action2?: { label: string; fn: () => void } };
   const rows: Row[] = [];
   const floors = model.floors;
@@ -849,7 +949,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ok: floors.length > 0 && thin.length === 0,
     label: '階',
     detail: !floors.length ? '階が読み取れていません' : thin.length ? `${thin.map((f) => `${f.level}階`).join('・')}の部屋がほとんど読めていません（縮尺・壁線の太さを確認）` : floors.map((f) => `${f.level}階 ${f.rooms.filter((r) => r.type !== 'void').length}室`).join('　'),
-    action: thin.length ? { label: '修正画面で確認', fn: openEditor } : undefined,
+    action: thin.length ? { label: '方眼で確認', fn: () => openLevel(thin[0].level) } : undefined,
   });
   // 玄関
   const entF = floors.find((f) => f.openings.some((o) => o.kind === 'entrance'));
@@ -858,7 +958,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ok: !!entF,
     label: '玄関',
     detail: entF ? `${entF.level}階に玄関ドア${entRoom ? `（${entRoom.name}）` : ''}` : entRoom ? `「${entRoom.name}」はありますが玄関ドアが読めていません` : '玄関が見つかりません',
-    action: entF ? undefined : { label: '修正画面で玄関を置く', fn: openEditor },
+    action: entF ? undefined : { label: '方眼で玄関を置く', fn: openEditor },
   });
   // 方位
   const nd = model.report.northDetected;
@@ -881,7 +981,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ok: multi ? f1stairs > 0 : true,
     label: '階段',
     detail: multi ? (f1stairs ? `${stairsPerFloor.join('・')} か所` : '1階に上り階段が見つかりません（ウォークスルー・吹抜に影響）') : '平屋（階段なし）',
-    action: multi && !f1stairs ? { label: '修正画面で階段を描く', fn: openEditor } : undefined,
+    action: multi && !f1stairs ? { label: '方眼で階段を描く', fn: openEditor } : undefined,
   });
   // 部屋名
   // 名前の無い細い区画（線の読み違いの隙間）は数えない
@@ -902,7 +1002,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ok: noWin.length === 0,
     label: '窓・ドア',
     detail: noWin.length ? `${noWin.map((f) => `${f.level}階`).join('・')}に窓が読めていません` : opCount.join('　'),
-    action: noWin.length ? { label: '修正画面で窓を置く', fn: openEditor } : undefined,
+    action: noWin.length ? { label: '方眼で窓を置く', fn: openEditor } : undefined,
   });
   // 外形（階ごとの面積の目安）
   const areas = floors.map((f) => f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0));
@@ -911,7 +1011,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ok: odd < 0,
     label: '広さ',
     detail: odd < 0 ? areas.map((a, i) => `${floors[i].level}階 ${(a / 3.30579).toFixed(1)}坪`).join('　') : `${floors[odd].level}階が1階より大きく読めています（壁の読み落としの可能性）`,
-    action: odd < 0 ? undefined : { label: '修正画面で確認', fn: openEditor },
+    action: odd < 0 ? undefined : { label: '方眼で確認', fn: openEditor },
   });
 
   // 木造（在来軸組）の常識: 壁の端・直下率・梁のスパン・耐力壁・出入口・階段・UB の寸法
@@ -934,20 +1034,21 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
               onFix();
             },
           }
-        : { label: '修正画面で確認', fn: openEditor },
+        : { label: '方眼で確認', fn: openEditor },
       action2: it.marks?.length ? { label: '図面で見る', fn: () => showMarks(it) } : undefined,
     });
   }
 
   const ng = rows.filter((r) => r.ok === false).length;
-  const head = h('div', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? 'の項目はパース・動画の出来に影響します' : '階・玄関・階段・部屋・窓が揃っています'));
+  // 問題が無ければ 1 行に畳む（開くと項目ごとの結果）
+  const head = h('summary', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? '⚠ の項目はパースの出来に影響します' : '階・玄関・階段・部屋・窓が揃っています（開くと詳細）'));
   const list = h(
     'div',
     { class: 'check-rows' },
     ...rows.map((r) =>
       h(
         'div',
-        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}${r.detail.length > 48 ? ' long' : ''}` },
+        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}${r.detail.length > 48 || r.action || r.action2 ? ' long' : ''}` },
         h('span', { class: 'ic' }, r.ok === false ? '⚠' : r.ok === null ? 'ℹ' : '✓'),
         h('span', { class: 'lb' }, r.label),
         h('span', { class: 'dt' }, r.detail),
@@ -957,7 +1058,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       ),
     ),
   );
-  return h('div', { class: `check-card ${ng ? 'has-ng' : ''}` }, head, list);
+  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 }, head, list);
 }
 
 

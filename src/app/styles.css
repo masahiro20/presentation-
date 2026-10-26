@@ -996,3 +996,22 @@ body.cinema .main { grid-template-columns: 1fr; }
 .cb-card .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cb-card .ph.real::after { content: '実物写真'; position: absolute; right: 6px; top: 6px; font-size: 9.5px; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.85); color: var(--ink2); }
 .coord-sheet .cs-table td.sw img { width: 7mm; height: 7mm; object-fit: cover; display: block; border: 0.5px solid #ccc; }
+
+/* 図面読込: 方眼の上でそのまま直す（修正画面を埋め込み） */
+.pe-root.pe-embedded { z-index: 2; }
+.pe-root[hidden], .plan-view[hidden], .pe-panel[hidden] { display: none; }
+.pe-embedded .pe-body { grid-template-columns: 1fr; position: relative; }
+.pe-embedded .pe-panel { position: absolute; top: 44px; right: 12px; width: 280px; max-height: calc(100% - 56px); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px rgba(31, 34, 38, 0.14); }
+.pe-tip { position: absolute; left: 12px; top: 10px; max-width: min(720px, calc(100% - 24px)); font-size: 12px; line-height: 1.6; color: var(--ink2); background: rgba(255, 255, 255, 0.9); border: 1px solid #ece8e0; padding: 4px 10px; border-radius: 6px; pointer-events: none; }
+.imp-summary { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 12px; }
+.imp-summary b { font-size: 15px; font-weight: 600; }
+.imp-summary span { font-size: 12px; color: var(--ink2); }
+.imp-mode { margin-bottom: 6px; }
+.imp-hint { margin: 0 0 4px; }
+details.check-card > summary { list-style: none; cursor: pointer; }
+details.check-card > summary::-webkit-details-marker { display: none; }
+details.check-card:not([open]) > summary { border-bottom: 0; }
+@media (max-width: 900px) { .pe-embedded .pe-panel { position: static; width: auto; max-height: 40vh; box-shadow: none; border-radius: 0; } }
+.pe-embedded .pe-bar { flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding: 7px 10px; }
+.pe-embedded .pe-bar > * { flex-shrink: 0; }
+.pe-embedded .pe-tools { padding-left: 6px; }

@@ -26,7 +26,7 @@ describe('外部仕上表（御社の立面図の帯）', () => {
     expect(acc.cell.a).toContain('通気パネル');
     expect(acc.cell.b).toContain('SOLIDO');
     const door = groups[3][0];
-    expect(door.cell.br).toContain('ショコラウォールナット');
+    expect(door.cell.br).toContain('木目（濃）');
   });
 
   it('帯の SVG は図枠の上に入り、縮尺が変わっても紙の上で同じ大きさ（縮尺に合わせて拡大）', () => {

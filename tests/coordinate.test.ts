@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { harmonyCheck, lightness } from '../src/coordinate/harmony';
 import { reconcileDecided, newCoord, setCandidates, decide, progress, blockedBy, applyCustomerPicks, picksUrlFor, needsReview, ROUNDS } from '../src/coordinate/decisions';
-import { FINISH_CATEGORIES } from '../src/coordinate/catalog';
+import { FINISH_CATEGORIES, selectedProduct } from '../src/coordinate/catalog';
 import { DEFAULT_DESIGN } from '../src/styles/presets';
 import { MOODS, applyMood } from '../src/coordinate/moods';
 
@@ -27,9 +27,16 @@ describe('harmony', () => {
 });
 
 describe('decisions', () => {
-  it('rounds cover every category exactly once', () => {
+  it('rounds cover every category exactly once (equipment is checked separately)', () => {
     const ids = ROUNDS.flatMap((r) => r.cats).sort();
-    expect(ids).toEqual(FINISH_CATEGORIES.map((c) => c.id).sort());
+    expect(ids).toEqual(FINISH_CATEGORIES.filter((c) => !c.equipment).map((c) => c.id).sort());
+    expect(FINISH_CATEGORIES.filter((c) => c.equipment).map((c) => c.id).sort()).toEqual(['ac', 'pv', 'toilet', 'vent', 'water']);
+  });
+  it('every mood points at real products, and old product ids still resolve', () => {
+    for (const m of MOODS)
+      for (const [cat, id] of Object.entries(m.finishes)) expect(FINISH_CATEGORIES.find((x) => x.id === cat)?.products.some((p) => p.id === id), `${m.id} ${cat}=${id}`).toBe(true);
+    const floor = FINISH_CATEGORIES.find((c) => c.id === 'floor')!;
+    expect(selectedProduct(floor, { ...DEFAULT_DESIGN, finishes: { floor: 'floor.nagoya.600' } }).id).toBe('floor.denver');
   });
   it('candidates → decide → progress', () => {
     let c = newCoord();
@@ -63,7 +70,7 @@ describe('decisions', () => {
     const before = { ...DEFAULT_DESIGN, finishes: { floor: 'floor.channel.oak' } };
     const after = { ...DEFAULT_DESIGN, finishes: { floor: 'floor.iemon.mocha' } };
     const r = reconcileDecided(c, before, after);
-    expect(r.undone).toEqual(['床材']);
+    expect(r.undone).toEqual(['床材（LDK・居室）']);
     expect(r.coord.items.floor.status).toBe('open');
     expect(r.coord.items.bath.status).toBe('decided');
   });

@@ -57,33 +57,36 @@ export interface DecisionRound {
   prepare: string;
 }
 
-/** 決める順番。前の回で決めたものが次の回の選び方を決める（依存の向き） */
+/** 決める順番。前の回で決めたものが次の回の選び方を決める（依存の向き）。設備（給湯・換気・空調・太陽光・トイレ）は入れない（仕様の確認だけ） */
 export const ROUNDS: DecisionRound[] = [
   {
     no: 1,
     title: '外まわり',
-    why: '外壁の色が決まると、サッシ・玄関ドア・軒天の「合う色」が自然に絞れます。確認申請・サッシの発注にも関わるので最初に。',
-    cats: ['extWall', 'accent', 'roof', 'soffit', 'sash', 'entDoor'],
+    why: '外壁の色が決まると、サッシ・玄関ドア・軒天・玄関まわりのタイルの「合う色」が自然に絞れます。確認申請・サッシの発注にも関わるので最初に。',
+    cats: ['extWall', 'accent', 'roof', 'soffit', 'sash', 'entDoor', 'entFloor'],
     deadline: '着工の約 2 か月前（サッシの発注）',
     prepare: '外壁は A4 より大きいサンプルを屋外の光で（室内の照明では濃く見えます）',
   },
   {
     no: 2,
-    title: 'LDK の床・キッチン・建具',
-    why: '床がいちばん面積が大きく、建具・キッチンの扉・カップボード・階段の踏板の色は床に合わせて決まります。床から順に。',
-    cats: ['floor', 'kitchen', 'cupboard', 'door', 'stair', 'wall', 'light'],
+    title: 'LDK の床・壁・建具・キッチン・照明',
+    why: '床がいちばん面積が大きく、建具・巾木・キッチンの扉・カップボード・階段の踏板の色は床に合わせて決まります。床 → 壁・天井 → 建具・巾木 → キッチン → 照明の順に。',
+    cats: ['floor', 'wall', 'accentWall', 'ceiling', 'door', 'baseboard', 'stair', 'kitchen', 'cupboard', 'pendant', 'light'],
     deadline: '着工の約 1 か月前（キッチンの発注）',
-    prepare: 'キッチンはショールームで高さ（850／900）と引き出しの使い勝手を確認。床はサンプルを自然光で',
+    prepare: 'キッチンはショールームで高さ（850／900）と引き出しの使い勝手を確認。床・塗り壁はサンプルを自然光で',
   },
   {
     no: 3,
-    title: '水まわり・設備',
-    why: '浴室・洗面・トイレ・給湯・換気は標準で決まっていることが多く、変える所だけ話せば短時間で終わります。',
-    cats: ['wetFloor', 'bath', 'vanity', 'toilet', 'water', 'vent', 'ac', 'pv'],
+    title: '水まわり',
+    why: '洗面・脱衣・トイレの床と壁、洗面台、浴室。LDK の床・壁の色が決まっていると、続きの色で選べます。',
+    cats: ['wetFloor', 'washWall', 'vanity', 'bath'],
     deadline: '上棟の頃（内装・設備の発注）',
-    prepare: '浴室は TOTO ショールームでサイズ（1616／1620）と浴槽の形を',
+    prepare: '浴室は TOTO ショールームでサイズ（1616／1620）と壁パネルの色を',
   },
 ];
+
+/** 設備（コーディネートではなく仕様の確認。見積には反映する） */
+export const EQUIPMENT_CATS = FINISH_CATEGORIES.filter((c) => c.equipment).map((c) => c.id);
 
 /** 先に決めてほしい部位（この部位はあの部位が決まってから） */
 export const DEPENDS: Record<string, string[]> = {
@@ -91,11 +94,17 @@ export const DEPENDS: Record<string, string[]> = {
   soffit: ['extWall'],
   sash: ['extWall'],
   entDoor: ['extWall', 'sash'],
+  entFloor: ['extWall'],
+  wall: ['floor'],
+  accentWall: ['wall'],
+  ceiling: ['wall'],
   door: ['floor', 'wall'],
+  baseboard: ['floor', 'door'],
   kitchen: ['floor'],
   cupboard: ['kitchen'],
   stair: ['floor'],
   wetFloor: ['floor'],
+  washWall: ['wetFloor'],
 };
 
 export function categoryById(id: string): FinishCategory | undefined {
@@ -196,16 +205,19 @@ export function picksUrlFor(shareOrProjectUrl: string): string | null {
   }
 }
 
-/** 3D で見比べられない部位（設備は見た目が変わらない） */
-export const NON_VISUAL = new Set(['bath', 'vanity', 'toilet', 'water', 'vent', 'ac', 'pv']);
+/** 3D で見比べられない部位（設備・3D に出ない細部は色見本と写真で比べる） */
+export const NON_VISUAL = new Set(['bath', 'vanity', 'washWall', 'baseboard', 'toilet', 'water', 'vent', 'ac', 'pv']);
 
 /** 部位の見える構図（外部 → 道路側の外観、内部 → LDK、玄関・水まわりの床 → 玄関、階段 → 階段・ホール） */
 export function shotFor(catId: string, shots: Shot[]): Shot | undefined {
   const cat = categoryById(catId);
   if (!cat || NON_VISUAL.has(catId)) return undefined;
-  if (cat.part === '外部') return shots.find((s) => s.id === 'ext-front') ?? shots.find((s) => s.kind === 'exterior');
   const ints = shots.filter((s) => s.kind === 'interior');
-  if (catId === 'wetFloor') return ints.find((s) => /玄関|洗面|脱衣/.test(s.title)) ?? ints[0];
+  const front = () => shots.find((s) => s.id === 'ext-front') ?? shots.find((s) => s.kind === 'exterior');
+  // 玄関土間: 玄関の内観が無ければ、ポーチの見える道路側の外観
+  if (catId === 'entFloor') return ints.find((s) => /玄関/.test(s.title)) ?? front();
+  if (cat.part === '外部') return front();
+  if (catId === 'wetFloor') return ints.find((s) => /洗面|脱衣|玄関/.test(s.title)) ?? ints[0];
   if (catId === 'stair') return ints.find((s) => /階段|ホール/.test(s.title)) ?? ints.find((s) => /LDK|リビング/.test(s.title)) ?? ints[0];
   return ints.find((s) => /LDK|リビング|キッチン/.test(s.title)) ?? ints[0];
 }

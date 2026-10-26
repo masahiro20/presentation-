@@ -22521,48 +22521,98 @@ var stainless = () => ({
 	roughness: .32,
 	metalness: .9
 });
+/** 挽板・無垢のフローリング */
+var wood = (color, color2, size, roughness = .5) => ({
+	pattern: "woodFloor",
+	color,
+	color2,
+	roughness,
+	size
+});
+/** 大判の床タイル・フロアタイル（a × b m、目地の濃さは tile） */
+var tile = (color, a, b = a, color2, roughness = .45) => ({
+	pattern: "tileFloor",
+	color,
+	color2: color2 ?? color,
+	roughness,
+	size: a,
+	size2: b,
+	tile: Math.max(a, b) * 2
+});
+/** モールテックス（目地の無い薄塗りのモルタル）: 床・壁・カウンター */
+var mortex = (color, color2) => ({
+	pattern: "plaster",
+	color,
+	color2,
+	roughness: .62,
+	normalStrength: .16
+});
+/** 杉の羽目板（チャネルオリジナル 杉羽目板 自然塗装） */
+var sugi = () => ({
+	pattern: "woodSiding",
+	color: "#b08d66",
+	color2: "#977550",
+	roughness: .78,
+	size: .105
+});
+/** 外壁の塗り壁（ジョリパット・Sto・そとん壁）: 色と肌理の粗さ */
+var plaster = (color, color2, coarse = .3) => (s) => {
+	s.ext.wall = {
+		...s.ext.wall,
+		pattern: "stucco",
+		color,
+		color2,
+		roughness: .97,
+		normalStrength: coarse
+	};
+};
+var solido = (color) => (s) => {
+	s.ext.accent = {
+		pattern: "solido",
+		color,
+		roughness: .92,
+		normalStrength: .6
+	};
+	if (s.ext.accentRule === "none") s.ext.accentRule = "entrance";
+};
+/**
+* 部位の並びと商品。表記は御社の図面（立面図・内部仕上表・床仕様書・建具表）の書き方に合わせている:
+*   塗り壁材 ジョリパット ミーティア仕上げ／塗り壁材 Sto ミーティア仕上げ／【ケイミュー】SOLIDO typeM LAP（灰・鉄黒）／
+*   【チャネルオリジナル】杉羽目板 自然塗装／【LIXIL】TW 樹脂アルミ複合サッシ 3+16+3 Low-E クリア／【YKK】ヴェナート D30 D2 仕様／
+*   【イエモン】ジャイロオーク W158 塗装：クリア／【サンゲツ】IS-2071 ワイドモルタル・IS-2033 モルテストーン／
+*   【神谷コーポレーション】フルハイトドア／【TOTO】サザナ HT シリーズ S タイプ など
+* 色名・品番がメーカーの資料で確かめられないものは書かず、「品番メモ」に正確な品番を入れてもらう。
+*/
 var FINISH_CATEGORIES = [
 	{
 		id: "extWall",
 		label: "外壁",
 		part: "外部",
-		defaultFor: (d) => /galva|gl/.test(d.exteriorId) ? "ext.gl.black" : "ext.jp.mid",
+		defaultFor: (d) => /galva|gl/.test(d.exteriorId) ? "ext.gl.black" : /sto/.test(d.exteriorId) ? "ext.sto.white" : /soton/.test(d.exteriorId) ? "ext.soton" : "ext.jp.mid",
 		products: [
 			{
 				id: "ext.jp.white",
 				maker: "アイカ工業",
-				name: "ジョリパット",
-				code: "JP-100 ゆず肌",
+				name: "塗り壁材 ジョリパット",
+				code: "ミーティア仕上げ",
 				color: "ホワイト",
 				swatch: ["#e8e6e0"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#e8e6e0",
-						color2: "#e2e0da"
-					};
-				},
+				apply: plaster("#e8e6e0", "#e2e0da"),
 				estimate: {
 					group: "extwall",
 					line: "ext.jolypat"
-				}
+				},
+				note: "色番号はジョリパットの色見本で（例: N-25 合わせ）",
+				used: "外壁（N-25 合わせ など）"
 			},
 			{
 				id: "ext.jp.light",
 				maker: "アイカ工業",
-				name: "ジョリパット",
-				code: "JP-100 ゆず肌",
+				name: "塗り壁材 ジョリパット",
+				code: "ミーティア仕上げ",
 				color: "ライトグレー",
 				swatch: ["#cfcdc7"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#cfcdc7",
-						color2: "#c8c6c0"
-					};
-				},
+				apply: plaster("#cfcdc7", "#c8c6c0"),
 				estimate: {
 					group: "extwall",
 					line: "ext.jolypat"
@@ -22571,18 +22621,11 @@ var FINISH_CATEGORIES = [
 			{
 				id: "ext.jp.mid",
 				maker: "アイカ工業",
-				name: "ジョリパット",
-				code: "JP-100 ゆず肌",
+				name: "塗り壁材 ジョリパット",
+				code: "ミーティア仕上げ",
 				color: "中間グレー",
 				swatch: ["#9a9893"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#9a9893",
-						color2: "#93918c"
-					};
-				},
+				apply: plaster("#9a9893", "#93918c"),
 				estimate: {
 					group: "extwall",
 					line: "ext.jolypat"
@@ -22591,18 +22634,24 @@ var FINISH_CATEGORIES = [
 			{
 				id: "ext.jp.dark",
 				maker: "アイカ工業",
-				name: "ジョリパット",
-				code: "JP-100 ゆず肌",
+				name: "塗り壁材 ジョリパット",
+				code: "ミーティア仕上げ",
 				color: "ダークグレー",
 				swatch: ["#5d5c59"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#5d5c59",
-						color2: "#575653"
-					};
-				},
+				apply: plaster("#5d5c59", "#575653"),
+				estimate: {
+					group: "extwall",
+					line: "ext.jolypat"
+				}
+			},
+			{
+				id: "ext.jp.beige",
+				maker: "アイカ工業",
+				name: "塗り壁材 ジョリパット",
+				code: "ミーティア仕上げ",
+				color: "サンドベージュ",
+				swatch: ["#cbbfab"],
+				apply: plaster("#cbbfab", "#c3b7a3"),
 				estimate: {
 					group: "extwall",
 					line: "ext.jolypat"
@@ -22611,19 +22660,26 @@ var FINISH_CATEGORIES = [
 			{
 				id: "ext.sto.white",
 				maker: "Sto",
-				name: "StoColor Lotusan（塗り壁）",
-				code: "Sto 塗り壁 シリコン",
+				name: "塗り壁材 Sto",
+				code: "ミーティア仕上げ",
 				color: "オフホワイト",
 				swatch: ["#ebe9e3"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#ebe9e3",
-						color2: "#e5e3dd",
-						normalStrength: .25
-					};
+				apply: plaster("#ebe9e3", "#e5e3dd", .25),
+				estimate: {
+					group: "extwall",
+					line: "ext.sto"
 				},
+				note: "色番号は Sto の色見本で（例: T4005 合わせ）",
+				used: "外壁・軒裏（ケイカル板＋Sto）"
+			},
+			{
+				id: "ext.sto.light",
+				maker: "Sto",
+				name: "塗り壁材 Sto",
+				code: "ミーティア仕上げ",
+				color: "ライトグレー",
+				swatch: ["#c9c8c3"],
+				apply: plaster("#c9c8c3", "#c2c1bc", .25),
 				estimate: {
 					group: "extwall",
 					line: "ext.sto"
@@ -22632,29 +22688,35 @@ var FINISH_CATEGORIES = [
 			{
 				id: "ext.sto.grey",
 				maker: "Sto",
-				name: "StoColor Lotusan（塗り壁）",
-				code: "Sto 塗り壁 シリコン",
+				name: "塗り壁材 Sto",
+				code: "ミーティア仕上げ",
 				color: "グレージュ",
 				swatch: ["#b3aea4"],
-				apply: (s) => {
-					s.ext.wall = {
-						...s.ext.wall,
-						pattern: "stucco",
-						color: "#b3aea4",
-						color2: "#aca79d",
-						normalStrength: .25
-					};
-				},
+				apply: plaster("#b3aea4", "#aca79d", .25),
 				estimate: {
 					group: "extwall",
 					line: "ext.sto"
 				}
 			},
 			{
+				id: "ext.soton",
+				maker: "高千穂",
+				name: "塗り壁材 そとん壁W",
+				code: "掻き落とし仕上げ",
+				color: "グレー系",
+				swatch: ["#a8a59e"],
+				apply: plaster("#a8a59e", "#9f9c95", .55),
+				estimate: {
+					group: "extwall",
+					line: "ext.jolypat"
+				},
+				note: "粗い肌理で陰影が出ます。見積はジョリパットと同じ単価で仮置き"
+			},
+			{
 				id: "ext.gl.black",
-				maker: "アイジー工業",
-				name: "ガルバリウム鋼板 Kスパン",
-				code: "SGL ガルスパン",
+				maker: "—",
+				name: "ガルバリウム鋼板 Kスパン（縦張り）",
+				code: "GL 鋼板 ＋ PB×2",
 				color: "ブラック",
 				swatch: ["#2b2c2e"],
 				apply: (s) => {
@@ -22672,10 +22734,10 @@ var FINISH_CATEGORIES = [
 			},
 			{
 				id: "ext.gl.silver",
-				maker: "アイジー工業",
-				name: "ガルバリウム鋼板 Kスパン",
-				code: "SGL ガルスパン",
-				color: "銀黒",
+				maker: "—",
+				name: "ガルバリウム鋼板 Kスパン（縦張り）",
+				code: "GL 鋼板 ＋ PB×2",
+				color: "シルバー",
 				swatch: ["#6b6d70"],
 				apply: (s) => {
 					s.ext.wall = {
@@ -22701,7 +22763,7 @@ var FINISH_CATEGORIES = [
 			{
 				id: "acc.none",
 				maker: "—",
-				name: "アクセントなし",
+				name: "アクセントなし（外壁一色）",
 				code: "",
 				swatch: ["#dddbd5"],
 				apply: (s) => {
@@ -22713,66 +22775,36 @@ var FINISH_CATEGORIES = [
 			{
 				id: "acc.solido.black",
 				maker: "ケイミュー",
-				name: "SOLIDO typeF LAP",
-				code: "SOLIDO LAP",
+				name: "SOLIDO typeM LAP",
+				code: "窯業系 通気パネル工法 防火 PC030BE-4146(1)",
 				color: "鉄黒",
 				swatch: ["#3f3d3a"],
-				apply: (s) => {
-					s.ext.accent = {
-						pattern: "solido",
-						color: "#3f3d3a",
-						roughness: .92,
-						normalStrength: .6
-					};
-					if (s.ext.accentRule === "none") s.ext.accentRule = "entrance";
-				}
+				apply: solido("#3f3d3a"),
+				used: "外壁の一部（窯業系平形ストレート 通気パネル工法）"
 			},
 			{
 				id: "acc.solido.grey",
 				maker: "ケイミュー",
-				name: "SOLIDO typeF LAP",
-				code: "SOLIDO LAP",
+				name: "SOLIDO typeM LAP",
+				code: "窯業系 通気パネル工法 防火 PC030BE-4146(1)",
 				color: "灰",
 				swatch: ["#8d8b86"],
-				apply: (s) => {
-					s.ext.accent = {
-						pattern: "solido",
-						color: "#8d8b86",
-						roughness: .92,
-						normalStrength: .6
-					};
-					if (s.ext.accentRule === "none") s.ext.accentRule = "entrance";
-				}
-			},
-			{
-				id: "acc.solido.rust",
-				maker: "ケイミュー",
-				name: "SOLIDO typeF LAP",
-				code: "SOLIDO LAP",
-				color: "錆茶",
-				swatch: ["#6a5345"],
-				apply: (s) => {
-					s.ext.accent = {
-						pattern: "solido",
-						color: "#6a5345",
-						roughness: .92,
-						normalStrength: .6
-					};
-					if (s.ext.accentRule === "none") s.ext.accentRule = "entrance";
-				}
+				apply: solido("#8d8b86"),
+				used: "リビングの壁にも"
 			},
 			{
 				id: "acc.wood",
 				maker: "チャネルオリジナル",
-				name: "ウイルウォール（木板）",
-				code: "レッドシダー",
-				color: "ナチュラル",
-				swatch: ["#9c7b58"],
+				name: "杉羽目板",
+				code: "木板 杉板",
+				color: "自然塗装",
+				used: "軒裏・外壁の一部",
+				swatch: ["#a5845f"],
 				apply: (s) => {
 					s.ext.accent = {
 						pattern: "wood",
-						color: "#9c7b58",
-						color2: "#86683f",
+						color: "#a5845f",
+						color2: "#8d6d4a",
 						roughness: .8
 					};
 					if (s.ext.accentRule === "none") s.ext.accentRule = "entrance";
@@ -22786,9 +22818,9 @@ var FINISH_CATEGORIES = [
 		part: "外部",
 		products: [{
 			id: "roof.gl.black",
-			maker: "日鉄鋼板",
-			name: "ガルバリウム鋼板 立平葺き",
-			code: "ニスクカラー GL0.35",
+			maker: "—",
+			name: "カラーガルバリウム鋼板 立平葺",
+			code: "t0.35 防火 NM-8697",
 			color: "ブラック",
 			swatch: ["#2a2b2d"],
 			apply: (s) => {
@@ -22802,9 +22834,9 @@ var FINISH_CATEGORIES = [
 			}
 		}, {
 			id: "roof.gl.silver",
-			maker: "日鉄鋼板",
-			name: "ガルバリウム鋼板 立平葺き",
-			code: "ニスクカラー GL0.35",
+			maker: "—",
+			name: "カラーガルバリウム鋼板 立平葺",
+			code: "t0.35 防火 NM-8697",
 			color: "シルバー",
 			swatch: ["#9a9c9e"],
 			apply: (s) => {
@@ -22825,8 +22857,8 @@ var FINISH_CATEGORIES = [
 			{
 				id: "soffit.same",
 				maker: "—",
-				name: "外壁と同色の塗り壁",
-				code: "",
+				name: "ケイ酸カルシウム板 t10 ＋ 外壁と同じ塗り壁",
+				code: "防火 QF030RS-0134",
 				color: "外壁同色",
 				swatch: ["#9a9893"],
 				apply: (s) => {
@@ -22840,9 +22872,9 @@ var FINISH_CATEGORIES = [
 			},
 			{
 				id: "soffit.white",
-				maker: "ケイミュー",
-				name: "軒天ボード（無塗装板 塗装）",
-				code: "軒天 12mm",
+				maker: "—",
+				name: "ケイ酸カルシウム板 t10（塗装軒天ボード）",
+				code: "防火 QF030RS-0134",
 				color: "ホワイト",
 				swatch: ["#efeeea"],
 				apply: (s) => {
@@ -22855,9 +22887,9 @@ var FINISH_CATEGORIES = [
 			},
 			{
 				id: "soffit.black",
-				maker: "ケイミュー",
-				name: "軒天ボード（無塗装板 塗装）",
-				code: "軒天 12mm",
+				maker: "—",
+				name: "ケイ酸カルシウム板 t10（塗装軒天ボード）",
+				code: "防火 QF030RS-0134",
 				color: "ブラック",
 				swatch: ["#2c2c2d"],
 				apply: (s) => {
@@ -22871,9 +22903,9 @@ var FINISH_CATEGORIES = [
 			{
 				id: "soffit.cedar",
 				maker: "チャネルオリジナル",
-				name: "レッドシダー 軒天羽目板",
-				code: "ウイルウォール 軒天",
-				color: "ナチュラル",
+				name: "杉羽目板（軒天）",
+				code: "木板 杉板",
+				color: "自然塗装",
 				swatch: ["#a88762"],
 				apply: (s) => {
 					s.ext.roof.soffit = {
@@ -22883,24 +22915,8 @@ var FINISH_CATEGORIES = [
 						roughness: .75,
 						size: .1
 					};
-				}
-			},
-			{
-				id: "soffit.oak",
-				maker: "ニチハ",
-				name: "軒天 木目調ボード",
-				code: "センターサイディング 軒天",
-				color: "ライトオーク",
-				swatch: ["#c2a37a"],
-				apply: (s) => {
-					s.ext.roof.soffit = {
-						pattern: "woodSiding",
-						color: "#c2a37a",
-						color2: "#ad8f66",
-						roughness: .7,
-						size: .1
-					};
-				}
+				},
+				note: "準防火地域では軒裏の防火仕様を確認"
 			}
 		]
 	},
@@ -22912,9 +22928,9 @@ var FINISH_CATEGORIES = [
 			{
 				id: "sash.tw.black",
 				maker: "LIXIL",
-				name: "TW（高性能樹脂複合）",
-				code: "TW トリプルガラス",
-				color: "ブラック",
+				name: "TW（樹脂アルミ複合サッシ）",
+				code: "3+16+3 Low-E クリア ＋ 網戸",
+				color: "外ブラック・内ブラック",
 				swatch: ["#1f1f1f"],
 				apply: (s) => {
 					s.ext.frame = {
@@ -22930,8 +22946,8 @@ var FINISH_CATEGORIES = [
 			{
 				id: "sash.tw.silver",
 				maker: "LIXIL",
-				name: "TW（高性能樹脂複合）",
-				code: "TW トリプルガラス",
+				name: "TW（樹脂アルミ複合サッシ）",
+				code: "3+16+3 Low-E クリア ＋ 網戸",
 				color: "ナチュラルシルバー",
 				swatch: ["#b9bcbf"],
 				apply: (s) => {
@@ -22948,8 +22964,8 @@ var FINISH_CATEGORIES = [
 			{
 				id: "sash.tw.white",
 				maker: "LIXIL",
-				name: "TW（高性能樹脂複合）",
-				code: "TW トリプルガラス",
+				name: "TW（樹脂アルミ複合サッシ）",
+				code: "3+16+3 Low-E クリア ＋ 網戸",
 				color: "ホワイト",
 				swatch: ["#f0f0ee"],
 				apply: (s) => {
@@ -22967,7 +22983,7 @@ var FINISH_CATEGORIES = [
 				id: "sash.thermos.black",
 				maker: "LIXIL",
 				name: "サーモスⅡ-H",
-				code: "サーモス2H ペアガラス",
+				code: "Low-E 複層ガラス",
 				color: "ブラック",
 				swatch: ["#1f1f1f"],
 				apply: (s) => {
@@ -22986,7 +23002,7 @@ var FINISH_CATEGORIES = [
 				id: "sash.thermos.silver",
 				maker: "LIXIL",
 				name: "サーモスⅡ-H",
-				code: "サーモス2H ペアガラス",
+				code: "Low-E 複層ガラス",
 				color: "ナチュラルシルバー",
 				swatch: ["#b9bcbf"],
 				apply: (s) => {
@@ -23011,7 +23027,7 @@ var FINISH_CATEGORIES = [
 				id: "door.venato.black",
 				maker: "YKK AP",
 				name: "ヴェナート D30 片開き",
-				code: "D30 ストレートハンドル",
+				code: "D2 仕様（断熱）ストレートハンドル",
 				color: "ブラック",
 				swatch: ["#2a2a2a"],
 				apply: (s) => {
@@ -23023,11 +23039,26 @@ var FINISH_CATEGORIES = [
 				}
 			},
 			{
+				id: "door.venato.grey",
+				maker: "YKK AP",
+				name: "ヴェナート D30 片開き",
+				code: "D2 仕様（断熱）ストレートハンドル",
+				color: "ディープグレイ",
+				swatch: ["#4a4c4f"],
+				apply: (s) => {
+					s.ext.entranceDoor = paint("#4a4c4f", .5);
+				},
+				estimate: {
+					group: "entDoor",
+					line: "sash.doorVenato"
+				}
+			},
+			{
 				id: "door.venato.walnut",
 				maker: "YKK AP",
 				name: "ヴェナート D30 片開き",
-				code: "D30 ストレートハンドル",
-				color: "ショコラウォールナット",
+				code: "D2 仕様（断熱）ストレートハンドル",
+				color: "木目（濃）",
 				swatch: ["#5a3d2b"],
 				apply: (s) => {
 					s.ext.entranceDoor = {
@@ -23040,14 +23071,15 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "entDoor",
 					line: "sash.doorVenato"
-				}
+				},
+				note: "木目の色名はヴェナートの色見本で"
 			},
 			{
 				id: "door.venato.oak",
 				maker: "YKK AP",
 				name: "ヴェナート D30 片開き",
-				code: "D30 ストレートハンドル",
-				color: "キャラメルチーク",
+				code: "D2 仕様（断熱）ストレートハンドル",
+				color: "木目（明）",
 				swatch: ["#a2764d"],
 				apply: (s) => {
 					s.ext.entranceDoor = {
@@ -23060,7 +23092,8 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "entDoor",
 					line: "sash.doorVenato"
-				}
+				},
+				note: "木目の色名はヴェナートの色見本で"
 			},
 			{
 				id: "door.concord.black",
@@ -23080,8 +23113,77 @@ var FINISH_CATEGORIES = [
 		]
 	},
 	{
+		id: "entFloor",
+		label: "玄関土間・ポーチ",
+		part: "内部",
+		products: [
+			{
+				id: "ent.denver",
+				maker: "名古屋モザイク工業",
+				name: "デンバーストン",
+				code: "PST-X3640 600角 t10",
+				swatch: ["#8c8a85"],
+				apply: (s) => {
+					s.int.entranceFloor = tile("#8c8a85", .6, .6, "#85837e", .55);
+				},
+				used: "玄関・LDK・中庭（ポーチは 20 厚 PST-X3240G）"
+			},
+			{
+				id: "ent.nagoya.9840",
+				maker: "名古屋モザイク工業",
+				name: "磁器質タイル",
+				code: "PST-X9840G",
+				swatch: ["#6f6d69"],
+				apply: (s) => {
+					s.int.entranceFloor = tile("#6f6d69", .6, .6, "#6a6864", .55);
+				},
+				used: "玄関・ポーチ",
+				note: "色はサンプルで確認"
+			},
+			{
+				id: "ent.hirata.qtz",
+				maker: "平田タイル",
+				name: "磁器質タイル",
+				code: "QTZ-6060D-9T 598×598×9",
+				color: "ストーンホワイト",
+				swatch: ["#d7d4cd"],
+				apply: (s) => {
+					s.int.entranceFloor = tile("#d7d4cd", .6, .6, "#d0cdc6", .5);
+				},
+				used: "玄関土間（目地：ダークグレー）"
+			},
+			{
+				id: "ent.sanwa.dust",
+				maker: "サンワカンパニー",
+				name: "ダスト601",
+				code: "TL76511 601×601×9",
+				color: "パール",
+				swatch: ["#c9c6bf"],
+				apply: (s) => {
+					s.int.entranceFloor = tile("#c9c6bf", .6, .6, "#c2bfb8", .5);
+				},
+				used: "土間・ポーチ（目地揃え・目地カラーはタイル合わせ）"
+			},
+			{
+				id: "ent.mortar",
+				maker: "—",
+				name: "モルタル金ごて仕上げ",
+				code: "土間",
+				swatch: ["#8f8d88"],
+				apply: (s) => {
+					s.int.entranceFloor = {
+						pattern: "concrete",
+						color: "#8f8d88",
+						roughness: .75
+					};
+				},
+				used: "玄関土間・ポーチ"
+			}
+		]
+	},
+	{
 		id: "floor",
-		label: "床材",
+		label: "床材（LDK・居室）",
 		part: "内部",
 		defaultFor: (d) => /slate|tile/.test(d.interiorId) ? "floor.tile.black" : "floor.channel.oak",
 		products: [
@@ -23093,13 +23195,7 @@ var FINISH_CATEGORIES = [
 				color: "ナチュラル（自然塗装）",
 				swatch: ["#c9a97c"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#c9a97c",
-						color2: "#b8976c",
-						roughness: .55,
-						size: .15
-					};
+					s.int.floor = wood("#c9a97c", "#b8976c", .15, .55);
 				},
 				estimate: {
 					group: "floor",
@@ -23109,39 +23205,44 @@ var FINISH_CATEGORIES = [
 			{
 				id: "floor.iemon.clear",
 				maker: "イエモン",
-				name: "ジャイロオーク 挽板",
-				code: "挽板 t15 W158",
-				color: "クリア",
+				name: "ジャイロオーク W158（複合フローリング・挽板）",
+				code: "GY-C158-IE-05 15×158×乱尺",
+				color: "塗装：クリア",
 				swatch: ["#cdb089"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#cdb089",
-						color2: "#bd9e77",
-						roughness: .5,
-						size: .158
-					};
+					s.int.floor = wood("#cdb089", "#bd9e77", .158);
 				},
 				estimate: {
 					group: "floor",
 					line: "ib.floorIemonClear"
-				}
+				},
+				used: "1・2 階フローリングの定番（上框・笠木も同じイエモンで）"
+			},
+			{
+				id: "floor.iemon.latte",
+				maker: "イエモン",
+				name: "ジャイロオーク W158（複合フローリング・挽板）",
+				code: "15×158×乱尺",
+				color: "塗装：ラテ",
+				swatch: ["#bfa17d"],
+				apply: (s) => {
+					s.int.floor = wood("#bfa17d", "#ae906c", .158);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorIemonClear"
+				},
+				used: "1 階ベース（建具巾木はストーンホワイト）"
 			},
 			{
 				id: "floor.iemon.smoke",
 				maker: "イエモン",
-				name: "ジャイロオーク 挽板",
-				code: "挽板 t15 W158",
-				color: "スモーク",
+				name: "ジャイロオーク W158（複合フローリング・挽板）",
+				code: "15×158×乱尺",
+				color: "塗装：スモーク",
 				swatch: ["#a88f6c"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#a88f6c",
-						color2: "#98805f",
-						roughness: .5,
-						size: .158
-					};
+					s.int.floor = wood("#a88f6c", "#98805f", .158);
 				},
 				estimate: {
 					group: "floor",
@@ -23151,23 +23252,51 @@ var FINISH_CATEGORIES = [
 			{
 				id: "floor.iemon.mocha",
 				maker: "イエモン",
-				name: "ジャイロオーク 挽板",
-				code: "挽板 t15 W158",
-				color: "モカ",
+				name: "ジャイロオーク W158（複合フローリング・挽板）",
+				code: "15×158×乱尺",
+				color: "塗装：モカ",
 				swatch: ["#8c7152"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#8c7152",
-						color2: "#7c6347",
-						roughness: .5,
-						size: .158
-					};
+					s.int.floor = wood("#8c7152", "#7c6347", .158);
 				},
 				estimate: {
 					group: "floor",
 					line: "ib.floorIemonMocha"
 				}
+			},
+			{
+				id: "floor.prairie.whiteoak",
+				maker: "プレイリーホームズ",
+				name: "ナチュラルフローリング ホワイトオーク",
+				code: "PHFL1278 15×150",
+				color: "クランプオイル（クリア）",
+				swatch: ["#d0b48c"],
+				apply: (s) => {
+					s.int.floor = wood("#d0b48c", "#bfa27a", .15, .6);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorIoc"
+				},
+				used: "1 階ベース",
+				note: "見積は無垢床の単価で仮置き"
+			},
+			{
+				id: "floor.prairie.nara",
+				maker: "プレイリーホームズ",
+				name: "ナラ 120 キャラクター",
+				code: "PHFL1407 W120",
+				color: "キャラクターグレード（節あり）",
+				swatch: ["#bf9d72"],
+				apply: (s) => {
+					s.int.floor = wood("#bf9d72", "#a9875d", .12, .62);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorIoc"
+				},
+				used: "1・2 階フローリング",
+				note: "見積は無垢床の単価で仮置き"
 			},
 			{
 				id: "floor.ioc.oak",
@@ -23177,13 +23306,7 @@ var FINISH_CATEGORIES = [
 				color: "ナチュラル",
 				swatch: ["#d2b58d"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#d2b58d",
-						color2: "#c2a47c",
-						roughness: .6,
-						size: .12
-					};
+					s.int.floor = wood("#d2b58d", "#c2a47c", .12, .6);
 				},
 				estimate: {
 					group: "floor",
@@ -23192,233 +23315,115 @@ var FINISH_CATEGORIES = [
 				note: "無垢。床塗装の行（任意）も"
 			},
 			{
-				id: "floor.tile.black",
-				maker: "サンワカンパニー",
-				name: "磁器質タイル 600角",
-				code: "セメント調 600×600",
-				color: "チャコール",
-				swatch: ["#3b3a38"],
-				apply: (s) => {
-					s.int.floor = {
-						pattern: "tileFloor",
-						color: "#3b3a38",
-						roughness: .4,
-						size: .6,
-						size2: .6,
-						tile: 1.2
-					};
-				},
-				estimate: {
-					group: "floor",
-					line: "ib.floorChannel"
-				},
-				note: "LDK タイル床は「室内タイル床」の数量で別途"
-			},
-			{
-				id: "floor.nagoya.600",
-				maker: "名古屋モザイク工業",
-				name: "磁器質タイル 600角（内床用）",
-				code: "600×600 ※品番は品番メモに",
-				color: "グレー",
-				swatch: ["#8b8984"],
-				apply: (s) => {
-					s.int.floor = {
-						pattern: "tileFloor",
-						color: "#8b8984",
-						color2: "#84827d",
-						roughness: .42,
-						size: .6,
-						size2: .6,
-						tile: 1.2
-					};
-				},
-				estimate: {
-					group: "floor",
-					line: "ib.floorChannel"
-				},
-				note: "LDK タイル床は「室内タイル床」の数量で別途"
-			},
-			{
-				id: "floor.sangetsu.ft.stone",
+				id: "floor.sangetsu.widemortar",
 				maker: "サンゲツ",
-				name: "フロアタイル（ストーン調）",
-				code: "IS シリーズ 457×457 ※品番は品番メモに",
-				color: "ライムストーン",
-				swatch: ["#c9c3b8"],
+				name: "フロアタイル ワイドモルタル",
+				code: "IS-2071 t2.5",
+				color: "モルタル調グレー",
+				swatch: ["#a7a49e"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "tileFloor",
-						color: "#c9c3b8",
-						color2: "#c1bbb0",
-						roughness: .5,
-						size: .457,
-						size2: .457,
-						tile: .914
-					};
+					s.int.floor = tile("#a7a49e", .914, .914, "#a09d97", .55);
 				},
 				estimate: {
 					group: "floor",
 					line: "ib.floorChannel"
 				},
+				used: "玄関ホール・ホール・FC・DK（塩化ビニルタイル）",
 				note: "フロアタイルは単価が下がるので「任意の項目」で調整"
 			},
 			{
-				id: "floor.sangetsu.ft.wood",
+				id: "floor.sangetsu.mortestone",
 				maker: "サンゲツ",
-				name: "フロアタイル（ウッド調）",
-				code: "WD シリーズ 152×914 ※品番は品番メモに",
-				color: "グレージュオーク",
-				swatch: ["#b7a289"],
+				name: "フロアタイル モルテストーン",
+				code: "IS-2033-A 609.6×609.6 t2.5",
+				swatch: ["#b9b5ad"],
 				apply: (s) => {
-					s.int.floor = {
-						pattern: "woodFloor",
-						color: "#b7a289",
-						color2: "#a89276",
-						roughness: .55,
-						size: .152,
-						size2: .914
-					};
+					s.int.floor = tile("#b9b5ad", .6096, .6096, "#b2aea6", .52);
 				},
 				estimate: {
 					group: "floor",
 					line: "ib.floorChannel"
-				}
-			}
-		]
-	},
-	{
-		id: "wetFloor",
-		label: "玄関・水まわりの床",
-		part: "内部",
-		products: [
-			{
-				id: "wet.nagoya.600.grey",
-				maker: "名古屋モザイク工業",
-				name: "磁器質タイル 600角",
-				code: "600×600 ※品番は品番メモに",
-				color: "グレー",
-				swatch: ["#8e8c88"],
-				apply: (s) => {
-					s.int.wetFloor = {
-						pattern: "tileFloor",
-						color: "#8e8c88",
-						roughness: .45,
-						size: .6,
-						size2: .6,
-						tile: 1.2
-					};
-					s.int.entranceFloor = {
-						pattern: "tileFloor",
-						color: "#6f6d69",
-						roughness: .55,
-						size: .6,
-						size2: 1.2,
-						tile: 2.4
-					};
-				}
+				},
+				used: "FC・脱衣室・DK・トイレ"
 			},
 			{
-				id: "wet.nagoya.600.charcoal",
+				id: "floor.denver",
 				maker: "名古屋モザイク工業",
+				name: "デンバーストン（磁器質タイル）",
+				code: "PST-X3640 600角 t10",
+				swatch: ["#8c8a85"],
+				apply: (s) => {
+					s.int.floor = tile("#8c8a85", .6, .6, "#85837e", .42);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorChannel"
+				},
+				used: "LDK・玄関（床暖房と相性がよい）",
+				note: "LDK タイル床は「室内タイル床」の数量で別途"
+			},
+			{
+				id: "floor.hirata.qtz",
+				maker: "平田タイル",
+				name: "磁器質タイル",
+				code: "QTZ-6060D-9T 598×598×9",
+				color: "ストーンホワイト",
+				swatch: ["#d7d4cd"],
+				apply: (s) => {
+					s.int.floor = tile("#d7d4cd", .6, .6, "#d0cdc6", .4);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorChannel"
+				},
+				note: "LDK タイル床は「室内タイル床」の数量で別途"
+			},
+			{
+				id: "floor.tile.black",
+				maker: "サンワカンパニー",
 				name: "磁器質タイル 600角",
-				code: "600×600 ※品番は品番メモに",
+				code: "セメント調 600×600 ※品番は品番メモに",
 				color: "チャコール",
-				swatch: ["#44423f"],
+				swatch: ["#3b3a38"],
 				apply: (s) => {
-					s.int.wetFloor = {
-						pattern: "tileFloor",
-						color: "#5a5855",
-						roughness: .45,
-						size: .6,
-						size2: .6,
-						tile: 1.2
-					};
-					s.int.entranceFloor = {
-						pattern: "tileFloor",
-						color: "#44423f",
-						roughness: .55,
-						size: .6,
-						size2: 1.2,
-						tile: 2.4
-					};
-				}
+					s.int.floor = tile("#3b3a38", .6, .6, "#3b3a38", .4);
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorChannel"
+				},
+				note: "LDK タイル床は「室内タイル床」の数量で別途"
 			},
 			{
-				id: "wet.nagoya.300",
-				maker: "名古屋モザイク工業",
-				name: "磁器質タイル 300角",
-				code: "300×300 ※品番は品番メモに",
-				color: "ベージュグレー",
-				swatch: ["#b3aa9c"],
+				id: "floor.mortex",
+				maker: "Beal International",
+				name: "モールテックス（床）",
+				code: "薄塗りモルタル",
+				color: "セージライト",
+				swatch: ["#b7b5a8"],
 				apply: (s) => {
-					s.int.wetFloor = {
-						pattern: "tileFloor",
-						color: "#b3aa9c",
-						roughness: .5,
-						size: .3,
-						size2: .3,
-						tile: 1.2
-					};
-					s.int.entranceFloor = {
-						pattern: "tileFloor",
-						color: "#9c9387",
-						roughness: .55,
-						size: .3,
-						size2: .3,
-						tile: 1.2
-					};
-				}
-			},
-			{
-				id: "wet.sangetsu.ft",
-				maker: "サンゲツ",
-				name: "フロアタイル（ストーン調）",
-				code: "IS シリーズ 457×457 ※品番は品番メモに",
-				color: "グレー",
-				swatch: ["#a9a6a0"],
-				apply: (s) => {
-					s.int.wetFloor = {
-						pattern: "tileFloor",
-						color: "#a9a6a0",
-						color2: "#a19e98",
-						roughness: .5,
-						size: .457,
-						size2: .457,
-						tile: .914
-					};
-				}
-			},
-			{
-				id: "wet.sangetsu.cf",
-				maker: "サンゲツ",
-				name: "クッションフロア（石目）",
-				code: "H-FLOOR ※品番は品番メモに",
-				color: "ホワイトマーブル",
-				swatch: ["#dcd9d3"],
-				apply: (s) => {
-					s.int.wetFloor = {
-						pattern: "marble",
-						color: "#dcd9d3",
-						color2: "#cfccc6",
-						roughness: .35,
-						size: .6,
-						size2: .6
-					};
-				}
+					s.int.floor = mortex("#b7b5a8", "#aeac9f");
+				},
+				estimate: {
+					group: "floor",
+					line: "ib.floorChannel"
+				},
+				used: "ホール・土間・玄関框（巾木もモールテックス）",
+				note: "左官工事。「任意の項目」で数量を入れてください"
 			}
 		]
 	},
 	{
 		id: "wall",
-		label: "内壁",
+		label: "内壁（ベース）",
 		part: "内部",
 		products: [
 			{
 				id: "wall.cloth.white",
 				maker: "サンゲツ",
-				name: "ビニールクロス AA級",
-				code: "SP シリーズ",
-				color: "ホワイト（石目）",
+				name: "ビニールクロス（量産・AA 級）",
+				code: "SP シリーズ ※品番は品番メモに（例: SP-2564）",
+				color: "ホワイト",
 				swatch: ["#efede8"],
 				apply: (s) => {
 					s.int.wall = {
@@ -23432,13 +23437,14 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "cloth",
 					line: "it.clothAA"
-				}
+				},
+				used: "特記なきベースのクロス（天井・壁）"
 			},
 			{
 				id: "wall.cloth.grey",
 				maker: "サンゲツ",
-				name: "ビニールクロス AA級",
-				code: "SP シリーズ",
+				name: "ビニールクロス（量産・AA 級）",
+				code: "SP シリーズ ※品番は品番メモに",
 				color: "ライトグレー",
 				swatch: ["#dcdad5"],
 				apply: (s) => {
@@ -23458,7 +23464,7 @@ var FINISH_CATEGORIES = [
 			{
 				id: "wall.cloth.greige",
 				maker: "サンゲツ",
-				name: "ビニールクロス AA級",
+				name: "ビニールクロス（量産・AA 級）",
 				code: "SP シリーズ ※品番は品番メモに",
 				color: "グレージュ",
 				swatch: ["#cfc8bd"],
@@ -23477,9 +23483,30 @@ var FINISH_CATEGORIES = [
 				}
 			},
 			{
+				id: "wall.cloth.beige",
+				maker: "サンゲツ",
+				name: "ビニールクロス（量産・AA 級）",
+				code: "SP シリーズ ※品番は品番メモに",
+				color: "ペールベージュ",
+				swatch: ["#e6ddd0"],
+				apply: (s) => {
+					s.int.wall = {
+						pattern: "plaster",
+						color: "#e6ddd0",
+						color2: "#ded5c8",
+						roughness: .95,
+						normalStrength: .18
+					};
+				},
+				estimate: {
+					group: "cloth",
+					line: "it.clothAA"
+				}
+			},
+			{
 				id: "wall.lilycolor",
 				maker: "リリカラ",
-				name: "ビニールクロス（LV）",
+				name: "ビニールクロス",
 				code: "LV シリーズ ※品番は品番メモに",
 				color: "オフホワイト",
 				swatch: ["#ece9e3"],
@@ -23500,7 +23527,7 @@ var FINISH_CATEGORIES = [
 			{
 				id: "wall.sincol",
 				maker: "シンコール",
-				name: "ビニールクロス（BB）",
+				name: "ビニールクロス",
 				code: "BB シリーズ ※品番は品番メモに",
 				color: "ホワイト",
 				swatch: ["#f0eeea"],
@@ -23520,10 +23547,10 @@ var FINISH_CATEGORIES = [
 			},
 			{
 				id: "wall.porters.stone",
-				maker: "PORTER’S PAINTS",
-				name: "ポーターズペイント",
-				code: "ストーンペイント",
-				color: "ライムストーン",
+				maker: "ポーターズペイント",
+				name: "塗装仕上げ（塗り壁用クロスの上）",
+				code: "ストーン ※色番号は品番メモに",
+				color: "ライムストーン系",
 				swatch: ["#d9d4c8"],
 				apply: (s) => {
 					s.int.wall = {
@@ -23539,16 +23566,214 @@ var FINISH_CATEGORIES = [
 		]
 	},
 	{
+		id: "accentWall",
+		label: "アクセント壁（LDK のテレビ壁など）",
+		part: "内部",
+		products: [
+			{
+				id: "aw.none",
+				maker: "—",
+				name: "アクセントなし（ベースと同じ）",
+				code: "",
+				swatch: ["#efede8"],
+				apply: (s) => {
+					s.int.accentWall = void 0;
+				}
+			},
+			{
+				id: "aw.cloth.greige",
+				maker: "サンゲツ",
+				name: "アクセントクロス",
+				code: "FE・RE シリーズ ※品番は品番メモに",
+				color: "グレージュ",
+				swatch: ["#b9b0a3"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "plaster",
+						color: "#b9b0a3",
+						color2: "#b2a99c",
+						roughness: .95,
+						normalStrength: .2
+					};
+				},
+				used: "LDK・寝室の一面（FE-76519 など）"
+			},
+			{
+				id: "aw.cloth.charcoal",
+				maker: "サンゲツ",
+				name: "アクセントクロス",
+				code: "FE・RE シリーズ ※品番は品番メモに",
+				color: "チャコール",
+				swatch: ["#55534f"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "plaster",
+						color: "#55534f",
+						color2: "#4f4d49",
+						roughness: .95,
+						normalStrength: .2
+					};
+				}
+			},
+			{
+				id: "aw.cloth.green",
+				maker: "サンゲツ",
+				name: "アクセントクロス",
+				code: "FE・RE シリーズ ※品番は品番メモに",
+				color: "くすみグリーン",
+				swatch: ["#7f8a76"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "plaster",
+						color: "#7f8a76",
+						color2: "#78836f",
+						roughness: .95,
+						normalStrength: .2
+					};
+				}
+			},
+			{
+				id: "aw.cloth.terracotta",
+				maker: "サンゲツ",
+				name: "アクセントクロス",
+				code: "FE・RE シリーズ ※品番は品番メモに",
+				color: "テラコッタ",
+				swatch: ["#b07a5c"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "plaster",
+						color: "#b07a5c",
+						color2: "#a87254",
+						roughness: .95,
+						normalStrength: .2
+					};
+				}
+			},
+			{
+				id: "aw.mortex.grey",
+				maker: "Beal International",
+				name: "モールテックス（壁）",
+				code: "薄塗りモルタル",
+				color: "グレー",
+				swatch: ["#9d9b95"],
+				apply: (s) => {
+					s.int.accentWall = mortex("#9d9b95", "#95938d");
+				},
+				note: "「室内塗り壁」の面積を入れると見積に反映"
+			},
+			{
+				id: "aw.porters",
+				maker: "ポーターズペイント",
+				name: "塗装仕上げ（塗り壁用クロスの上）",
+				code: "ストーン ※色番号は品番メモに",
+				color: "ライムストーン系",
+				swatch: ["#cfc8b8"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "plaster",
+						color: "#cfc8b8",
+						color2: "#c7c0b0",
+						roughness: .97,
+						normalStrength: .38
+					};
+				},
+				note: "「室内塗り壁」の面積を入れると見積に反映"
+			},
+			{
+				id: "aw.solido",
+				maker: "ケイミュー",
+				name: "SOLIDO（室内壁）",
+				code: "600×600 張り",
+				color: "灰",
+				swatch: ["#8d8b86"],
+				apply: (s) => {
+					s.int.accentWall = {
+						pattern: "solido",
+						color: "#8d8b86",
+						roughness: .92,
+						normalStrength: .55
+					};
+				},
+				note: "「室内 SOLIDO 壁」の面積を入れると見積に反映"
+			},
+			{
+				id: "aw.sugi",
+				maker: "チャネルオリジナル",
+				name: "杉羽目板（壁）",
+				code: "木板 杉板",
+				color: "自然塗装",
+				swatch: ["#b08d66"],
+				apply: (s) => {
+					s.int.accentWall = sugi();
+				}
+			}
+		]
+	},
+	{
+		id: "ceiling",
+		label: "天井",
+		part: "内部",
+		products: [
+			{
+				id: "ceil.cloth",
+				maker: "サンゲツ",
+				name: "ビニールクロス（壁と同じ）",
+				code: "SP シリーズ",
+				color: "ホワイト",
+				swatch: ["#f1efeb"],
+				apply: (s) => {
+					s.int.ceiling = {
+						pattern: "plaster",
+						color: "#f1efeb",
+						color2: "#ebe9e4",
+						roughness: .96,
+						normalStrength: .12
+					};
+				}
+			},
+			{
+				id: "ceil.sugi",
+				maker: "チャネルオリジナル",
+				name: "杉羽目板（天井）",
+				code: "木板 杉板",
+				color: "自然塗装",
+				swatch: ["#b08d66"],
+				apply: (s) => {
+					s.int.ceiling = sugi();
+				},
+				note: "LDK・吹抜の天井に。勾配天井と相性がよい"
+			},
+			{
+				id: "ceil.dark",
+				maker: "サンゲツ",
+				name: "ビニールクロス",
+				code: "※品番は品番メモに",
+				color: "チャコール",
+				swatch: ["#4d4c49"],
+				apply: (s) => {
+					s.int.ceiling = {
+						pattern: "plaster",
+						color: "#4d4c49",
+						color2: "#484744",
+						roughness: .95,
+						normalStrength: .12
+					};
+				},
+				note: "天井を暗くすると落ち着いた「こもり感」が出ます（天井高 2,400 以上で）"
+			}
+		]
+	},
+	{
 		id: "door",
-		label: "建具",
+		label: "建具（室内ドア）",
 		part: "内部",
 		products: [
 			{
 				id: "door.kamiya.cube",
 				maker: "神谷コーポレーション",
-				name: "フルハイトドア キューブ",
-				code: "CUBE 天井高 2,400",
-				color: "壁と同色（クロス巻き）",
+				name: "フルハイトドア F/S 片開",
+				code: "W07/H25（天井まで）ノブ YH クローム",
+				color: "クロス巻き（壁と同色）",
 				swatch: ["#efede8"],
 				apply: (s) => {
 					s.int.door = {
@@ -23560,14 +23785,15 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "door",
 					line: "ib.doorKamiya"
-				}
+				},
+				used: "個室・トイレ・収納の基本"
 			},
 			{
 				id: "door.kamiya.black",
 				maker: "神谷コーポレーション",
-				name: "フルハイトドア キューブ",
-				code: "CUBE 天井高 2,400",
-				color: "ブラック",
+				name: "フルハイトドア F/S 片開",
+				code: "W07/H25（天井まで）",
+				color: "サタンブラック",
 				swatch: ["#2a2a2a"],
 				apply: (s) => {
 					s.int.door = paint("#2a2a2a", .5);
@@ -23575,14 +23801,52 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "door",
 					line: "ib.doorKamiya"
-				}
+				},
+				used: "LDK の入口・アクセントに"
+			},
+			{
+				id: "door.kamiya.glass",
+				maker: "神谷コーポレーション",
+				name: "フルハイトドア CUBE アウトセット片引",
+				code: "W16/H25 CG-9",
+				color: "透明ガラス・サタンブラック枠",
+				swatch: ["#2a2a2a", "#cfd8dc"],
+				apply: (s) => {
+					s.int.door = paint("#2a2a2a", .45);
+				},
+				estimate: {
+					group: "door",
+					line: "ib.doorKamiya"
+				},
+				used: "リビング入口（光と視線を通す）"
+			},
+			{
+				id: "door.custom.oak",
+				maker: "造作（家具工事）",
+				name: "造作建具",
+				code: "オーク集成材",
+				color: "クリア塗装",
+				swatch: ["#c3a06f"],
+				apply: (s) => {
+					s.int.door = {
+						pattern: "wood",
+						color: "#c3a06f",
+						color2: "#ae8b5d",
+						roughness: .55
+					};
+				},
+				estimate: {
+					group: "door",
+					line: "ib.doorKamiya"
+				},
+				used: "猫用開口・プッシュラッチなど特注の扉"
 			},
 			{
 				id: "door.lixil.lasissa",
 				maker: "LIXIL",
 				name: "ラシッサ D",
 				code: "ラシッサD パレット",
-				color: "クリエモカ",
+				color: "木目（明）",
 				swatch: ["#b89572"],
 				apply: (s) => {
 					s.int.door = {
@@ -23596,13 +23860,13 @@ var FINISH_CATEGORIES = [
 					group: "door",
 					line: "ib.doorLixil"
 				},
-				note: "S シリーズ向け"
+				note: "S シリーズ向け。色名はラシッサの色見本で"
 			},
 			{
 				id: "door.panasonic.veritis",
 				maker: "パナソニック",
 				name: "ベリティス",
-				code: "ベリティス ハイドア（H2400）",
+				code: "ハイドア（H2400）",
 				color: "ホワイトオーク柄",
 				swatch: ["#d8c6a8"],
 				apply: (s) => {
@@ -23618,21 +23882,48 @@ var FINISH_CATEGORIES = [
 					line: "ib.doorLixil"
 				},
 				note: "S シリーズ向け"
+			}
+		]
+	},
+	{
+		id: "baseboard",
+		label: "巾木・見切り",
+		part: "内部",
+		products: [
+			{
+				id: "bb.kamiya.white",
+				maker: "神谷コーポレーション",
+				name: "巾木",
+				code: "t7×H30",
+				color: "ストーンホワイト",
+				swatch: ["#ece9e2"],
+				used: "基本（壁に溶ける細い巾木）"
 			},
 			{
-				id: "door.woodone.doretus",
-				maker: "ウッドワン",
-				name: "ドレタス",
-				code: "ドレタス ハイドア（H2400）",
-				color: "グレー塗装",
-				swatch: ["#9a9893"],
-				apply: (s) => {
-					s.int.door = paint("#9a9893", .55);
-				},
-				estimate: {
-					group: "door",
-					line: "ib.doorLixil"
-				}
+				id: "bb.kamiya.black",
+				maker: "神谷コーポレーション",
+				name: "巾木",
+				code: "t7×H30",
+				color: "ブラック",
+				swatch: ["#2a2a2a"],
+				used: "濃い床・黒い建具と合わせて"
+			},
+			{
+				id: "bb.kamiya.grey",
+				maker: "神谷コーポレーション",
+				name: "巾木",
+				code: "t7×H30",
+				color: "フラットグレー",
+				swatch: ["#9a9893"]
+			},
+			{
+				id: "bb.soken.alumi",
+				maker: "創建",
+				name: "アルミ巾木",
+				code: "アルミ平角 3×10",
+				color: "アルマイトシルバー",
+				swatch: ["#c4c6c8"],
+				used: "玄関ホール・LDK（モールテックス・タイルの床に）"
 			}
 		]
 	},
@@ -23651,12 +23942,24 @@ var FINISH_CATEGORIES = [
 				group: "stair",
 				line: "ib.stairSt"
 			}
+		}, {
+			id: "stair.wood",
+			maker: "造作",
+			name: "木製スケルトン階段",
+			code: "側板 黒塗りつぶし塗装 ＋ 木踏板",
+			color: "ブラック・オーク",
+			swatch: ["#2a2a2a", "#c9a97c"],
+			estimate: {
+				group: "stair",
+				line: "ib.stairSt"
+			},
+			note: "見積は鉄骨階段の行で仮置き"
 		}]
 	},
 	{
 		id: "kitchen",
 		label: "キッチン",
-		part: "設備",
+		part: "内部",
 		defaultFor: (d) => /slate|grey|cedar|dark/.test(d.interiorId) ? "kitchen.hl.line.mortablack" : "kitchen.hl.line.mortalight",
 		products: [
 			{
@@ -23673,7 +23976,8 @@ var FINISH_CATEGORIES = [
 				estimate: {
 					group: "kitchen",
 					line: "eq.kitchenHl"
-				}
+				},
+				used: "天板・扉：モルタライト（定番）"
 			},
 			{
 				id: "kitchen.hl.line.mortablack",
@@ -23802,7 +24106,7 @@ var FINISH_CATEGORIES = [
 				maker: "LIXIL",
 				name: "リシェルSI ペニンシュラ I 型",
 				code: "W2585 セラミックトップ",
-				color: "グレースモーク × 扉 ウォールナット",
+				color: "セラミック グレー系 × 扉 木目（濃）",
 				swatch: ["#7d7b78", "#6e5542"],
 				apply: (s) => {
 					s.int.furniture.counter = ceramic("#7d7b78", "#747270");
@@ -23817,12 +24121,12 @@ var FINISH_CATEGORIES = [
 					group: "kitchen",
 					line: "eq.kitchenHl"
 				},
-				note: "LINE キッチンと同等の金額として見積に載せます"
+				note: "LINE キッチンと同等の金額として見積に載せます。色名はショールームで"
 			},
 			{
 				id: "kitchen.panasonic.lclass",
 				maker: "パナソニック",
-				name: "Lクラス フラット対面",
+				name: "L クラス フラット対面",
 				code: "W2600 有機ガラス系ワークトップ",
 				color: "ホワイト × 扉 ライトグレー",
 				swatch: ["#ecebe8", "#c6c5c1"],
@@ -23866,8 +24170,8 @@ var FINISH_CATEGORIES = [
 				id: "kitchen.graftekt",
 				maker: "グラフテクト",
 				name: "メルクリオ ペニンシュラ",
-				code: "W2600 エバルト（ラミネート）",
-				color: "ベトングレー × 扉 同色",
+				code: "W2600 ラミネート天板",
+				color: "グレー系 × 扉 同色",
 				swatch: ["#9a9893", "#9a9893"],
 				apply: (s) => {
 					s.int.furniture.counter = {
@@ -23883,7 +24187,7 @@ var FINISH_CATEGORIES = [
 					group: "kitchen",
 					line: "eq.kitchenHl"
 				},
-				note: "LINE キッチンと同等の金額として見積に載せます"
+				note: "LINE キッチンと同等の金額として見積に載せます。色名はショールームで"
 			},
 			{
 				id: "kitchen.custom.oak",
@@ -23910,13 +24214,29 @@ var FINISH_CATEGORIES = [
 					group: "kitchen",
 					line: "eq.kitchenCustom"
 				}
+			},
+			{
+				id: "kitchen.custom.mortex",
+				maker: "造作（家具工事）",
+				name: "造作キッチン",
+				code: "モールテックス仕上げ ＋ ステンレス天板",
+				color: "モールテックス グレー",
+				swatch: ["#b9bbbd", "#a3a19b"],
+				apply: (s) => {
+					s.int.furniture.counter = stainless();
+					s.int.furniture.cabinet = mortex("#a3a19b", "#9b9993");
+				},
+				estimate: {
+					group: "kitchen",
+					line: "eq.kitchenCustom"
+				}
 			}
 		]
 	},
 	{
 		id: "cupboard",
 		label: "カップボード（背面収納）",
-		part: "設備",
+		part: "内部",
 		products: [
 			{
 				id: "cup.line.same",
@@ -23971,70 +24291,280 @@ var FINISH_CATEGORIES = [
 		]
 	},
 	{
+		id: "pendant",
+		label: "ダイニングの照明",
+		part: "内部",
+		products: [
+			{
+				id: "pend.ph5",
+				maker: "Louis Poulsen",
+				name: "PH 5",
+				code: "ペンダント",
+				color: "ホワイト",
+				swatch: ["#f2f0ea"],
+				apply: (s) => {
+					s.int.vocab = {
+						...s.int.vocab ?? {},
+						pendant: "ph5"
+					};
+				},
+				note: "施主支給・照明計画の器具で。白い多層シェードで手元に柔らかい光"
+			},
+			{
+				id: "pend.dome",
+				maker: "—",
+				name: "ドーム型ペンダント（大）",
+				code: "照明計画の器具 ※品番は品番メモに",
+				color: "ブラック",
+				swatch: ["#2a2a2a"],
+				apply: (s) => {
+					s.int.vocab = {
+						...s.int.vocab ?? {},
+						pendant: "dome"
+					};
+				}
+			},
+			{
+				id: "pend.globes",
+				maker: "—",
+				name: "ガラスの小さな球 2〜3 灯",
+				code: "照明計画の器具 ※品番は品番メモに",
+				color: "乳白ガラス",
+				swatch: ["#efece4"],
+				apply: (s) => {
+					s.int.vocab = {
+						...s.int.vocab ?? {},
+						pendant: "globes"
+					};
+				}
+			}
+		]
+	},
+	{
+		id: "light",
+		label: "照明の色（色温度）",
+		part: "内部",
+		products: [
+			{
+				id: "light.3000",
+				maker: "DAIKO／パナソニック",
+				name: "ダウンライト・間接照明 一式",
+				code: "電球色 3000K",
+				color: "3000K",
+				swatch: ["#ffd9a8"],
+				apply: (s) => {
+					s.int.lightKelvin = 3e3;
+				}
+			},
+			{
+				id: "light.2700",
+				maker: "DAIKO／パナソニック",
+				name: "ダウンライト・間接照明 一式",
+				code: "電球色 2700K",
+				color: "2700K",
+				swatch: ["#ffc98a"],
+				apply: (s) => {
+					s.int.lightKelvin = 2700;
+				}
+			},
+			{
+				id: "light.3500",
+				maker: "DAIKO／パナソニック",
+				name: "ダウンライト・間接照明 一式",
+				code: "温白色 3500K",
+				color: "3500K",
+				swatch: ["#ffe7c4"],
+				apply: (s) => {
+					s.int.lightKelvin = 3500;
+				}
+			}
+		]
+	},
+	{
+		id: "wetFloor",
+		label: "水まわり・トイレの床",
+		part: "内部",
+		products: [
+			{
+				id: "wet.sangetsu.is2033",
+				maker: "サンゲツ",
+				name: "フロアタイル モルテストーン",
+				code: "IS-2033-A 609.6×609.6 t2.5",
+				swatch: ["#b9b5ad"],
+				apply: (s) => {
+					s.int.wetFloor = tile("#b9b5ad", .6096, .6096, "#b2aea6", .5);
+				},
+				used: "FC・脱衣室・トイレの定番"
+			},
+			{
+				id: "wet.sangetsu.is2032",
+				maker: "サンゲツ",
+				name: "フロアタイル モルテストーン",
+				code: "IS-2032 304.8×609.6 t2.5（馬目地）",
+				swatch: ["#a9a59d"],
+				apply: (s) => {
+					s.int.wetFloor = tile("#a9a59d", .3048, .6096, "#a29e96", .5);
+				},
+				used: "トイレ（馬目地）・ランドリー（デザイン貼り）"
+			},
+			{
+				id: "wet.sangetsu.is2071",
+				maker: "サンゲツ",
+				name: "フロアタイル ワイドモルタル",
+				code: "IS-2071 t2.5",
+				swatch: ["#a7a49e"],
+				apply: (s) => {
+					s.int.wetFloor = tile("#a7a49e", .914, .914, "#a09d97", .52);
+				},
+				used: "脱衣ランドリー・トイレ"
+			},
+			{
+				id: "wet.denver",
+				maker: "名古屋モザイク工業",
+				name: "デンバーストン（磁器質タイル）",
+				code: "PST-X3640 600角 t10",
+				swatch: ["#8c8a85"],
+				apply: (s) => {
+					s.int.wetFloor = tile("#8c8a85", .6, .6, "#85837e", .45);
+				},
+				note: "LDK と同じタイルで続けると広く見えます"
+			},
+			{
+				id: "wet.sangetsu.cf",
+				maker: "サンゲツ",
+				name: "クッションフロア（石目）",
+				code: "H-FLOOR ※品番は品番メモに",
+				color: "ホワイトマーブル",
+				swatch: ["#dcd9d3"],
+				apply: (s) => {
+					s.int.wetFloor = {
+						pattern: "marble",
+						color: "#dcd9d3",
+						color2: "#cfccc6",
+						roughness: .35,
+						size: .6,
+						size2: .6
+					};
+				}
+			}
+		]
+	},
+	{
+		id: "washWall",
+		label: "洗面の壁",
+		part: "内部",
+		products: [
+			{
+				id: "ww.cloth",
+				maker: "サンゲツ",
+				name: "ビニールクロス（ベースと同じ）",
+				code: "",
+				color: "ホワイト",
+				swatch: ["#efede8"]
+			},
+			{
+				id: "ww.danto.mov",
+				maker: "ダントータイル",
+				name: "磁器質タイル",
+				code: "MOV-102 300×600",
+				swatch: ["#c9c5bd"],
+				used: "洗面・脱衣ランドリーの壁（タイル張り）",
+				note: "色はサンプルで確認"
+			},
+			{
+				id: "ww.mirror",
+				maker: "—",
+				name: "一面鏡（接着張り）＋ 上下の間接照明",
+				code: "ブラックミラーも可",
+				swatch: ["#9aa3a8"],
+				used: "洗面ホール（ブラックミラー張り）"
+			}
+		]
+	},
+	{
+		id: "vanity",
+		label: "洗面台",
+		part: "内部",
+		products: [
+			{
+				id: "vanity.custom1200",
+				maker: "造作",
+				name: "造作洗面 W1200",
+				code: "メラミンカウンター ＋ 実験用シンク",
+				color: "ホワイト",
+				swatch: ["#e6e4df"],
+				estimate: {
+					group: "vanity",
+					line: "cu.vanity1200"
+				}
+			},
+			{
+				id: "vanity.custom750",
+				maker: "造作",
+				name: "造作洗面 W750",
+				code: "メラミンカウンター ＋ 実験用シンク",
+				color: "ホワイト",
+				swatch: ["#e6e4df"],
+				estimate: {
+					group: "vanity",
+					line: "cu.vanity750"
+				}
+			},
+			{
+				id: "vanity.aica",
+				maker: "アイカ工業",
+				name: "スマートサニタリー（スタイリッシュカウンター）",
+				code: "オンボウルタイプ メラミン",
+				swatch: ["#e9e7e2"],
+				estimate: {
+					group: "vanity",
+					line: "cu.vanity1200"
+				},
+				used: "1 階洗面",
+				note: "見積は造作洗面 W1200 の行で仮置き"
+			}
+		]
+	},
+	{
 		id: "bath",
 		label: "浴室",
-		part: "設備",
+		part: "内部",
 		products: [{
 			id: "bath.toto.sazana1616",
 			maker: "TOTO",
 			name: "サザナ 1616",
-			code: "HT シリーズ Tタイプ",
+			code: "HT シリーズ S タイプ",
 			color: "ほっカラリ床 × アクセントパネル",
 			swatch: ["#e9e7e2", "#8e8c88"],
 			estimate: {
 				group: "bath",
 				line: "eq.bath1616"
-			}
+			},
+			note: "壁パネルの色はショールームで"
 		}, {
 			id: "bath.toto.sazana1620",
 			maker: "TOTO",
 			name: "サザナ 1620",
-			code: "HT シリーズ Tタイプ",
+			code: "HT シリーズ S タイプ",
 			color: "ほっカラリ床 × アクセントパネル",
 			swatch: ["#e9e7e2", "#8e8c88"],
 			estimate: {
 				group: "bath",
 				line: "eq.bath1620"
-			}
-		}]
-	},
-	{
-		id: "vanity",
-		label: "洗面",
-		part: "設備",
-		products: [{
-			id: "vanity.custom1200",
-			maker: "造作",
-			name: "造作洗面 W1200",
-			code: "メラミンカウンター ＋ 実験用シンク",
-			color: "ホワイト",
-			swatch: ["#e6e4df"],
-			estimate: {
-				group: "vanity",
-				line: "cu.vanity1200"
-			}
-		}, {
-			id: "vanity.custom750",
-			maker: "造作",
-			name: "造作洗面 W750",
-			code: "メラミンカウンター ＋ 実験用シンク",
-			color: "ホワイト",
-			swatch: ["#e6e4df"],
-			estimate: {
-				group: "vanity",
-				line: "cu.vanity750"
-			}
+			},
+			note: "壁パネルの色はショールームで"
 		}]
 	},
 	{
 		id: "toilet",
 		label: "トイレ",
 		part: "設備",
+		equipment: true,
 		products: [{
 			id: "toilet.toto",
 			maker: "TOTO",
-			name: "1階 NJ1 ／ 2階 ZJ1",
-			code: "NJ1・ZJ1",
+			name: "1 階 NJ1 ／ 2 階 ZJ1",
+			code: "NJ1・ZJ1（ZJ2 も可）",
 			color: "ホワイト",
 			swatch: ["#f4f3f0"]
 		}]
@@ -24043,6 +24573,7 @@ var FINISH_CATEGORIES = [
 		id: "water",
 		label: "給湯",
 		part: "設備",
+		equipment: true,
 		products: [
 			{
 				id: "water.ecocute360",
@@ -24095,11 +24626,12 @@ var FINISH_CATEGORIES = [
 		id: "vent",
 		label: "換気",
 		part: "設備",
+		equipment: true,
 		products: [
 			{
 				id: "vent.lufro",
 				maker: "日本住環境",
-				name: "ルフロ400（ダクト式第三種）",
+				name: "ルフロ 400（ダクト式第三種）",
 				code: "LUFRO 400",
 				swatch: ["#dcdcdc"],
 				estimate: {
@@ -24146,6 +24678,7 @@ var FINISH_CATEGORIES = [
 		id: "ac",
 		label: "空調",
 		part: "設備",
+		equipment: true,
 		products: [{
 			id: "ac.floor",
 			maker: "ダイキン／三菱",
@@ -24172,9 +24705,10 @@ var FINISH_CATEGORIES = [
 		id: "pv",
 		label: "太陽光",
 		part: "設備",
+		equipment: true,
 		products: [{
 			id: "pv.qcells",
-			maker: "Qセルズ",
+			maker: "Q セルズ",
 			name: "太陽光 4.3kW",
 			code: "Q.TRON パワコン込",
 			swatch: ["#1c2a3a"],
@@ -24193,46 +24727,6 @@ var FINISH_CATEGORIES = [
 				line: "eq.pvNone"
 			}
 		}]
-	},
-	{
-		id: "light",
-		label: "照明",
-		part: "設備",
-		products: [
-			{
-				id: "light.3000",
-				maker: "DAIKO／パナソニック",
-				name: "ダウンライト・間接照明 一式",
-				code: "電球色 3000K",
-				color: "3000K",
-				swatch: ["#ffd9a8"],
-				apply: (s) => {
-					s.int.lightKelvin = 3e3;
-				}
-			},
-			{
-				id: "light.2700",
-				maker: "DAIKO／パナソニック",
-				name: "ダウンライト・間接照明 一式",
-				code: "電球色 2700K",
-				color: "2700K",
-				swatch: ["#ffc98a"],
-				apply: (s) => {
-					s.int.lightKelvin = 2700;
-				}
-			},
-			{
-				id: "light.3500",
-				maker: "DAIKO／パナソニック",
-				name: "ダウンライト・間接照明 一式",
-				code: "温白色 3500K",
-				color: "3500K",
-				swatch: ["#ffe7c4"],
-				apply: (s) => {
-					s.int.lightKelvin = 3500;
-				}
-			}
-		]
 	}
 ];
 //#endregion

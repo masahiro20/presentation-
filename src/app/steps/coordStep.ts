@@ -13,10 +13,10 @@ import { h, clear, section, fold, toast, modal, download } from '../dom';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import type { Shot } from '../../scene/shots';
-import { FINISH_CATEGORIES, selectedProduct, type FinishCategory, type Product } from '../../coordinate/catalog';
+import { FINISH_CATEGORIES, selectedProduct, catalogUrl, type FinishCategory, type Product } from '../../coordinate/catalog';
 import { MOODS, moodOf, applyMood } from '../../coordinate/moods';
 import { harmonyCheck, adviceFor, type Advice } from '../../coordinate/harmony';
-import { ROUNDS, STATUS_LABEL, DEPENDS, itemOf, setCandidates, decide, progress, blockedBy, needsReview, isFixed, categoryById, applyCustomerPicks, picksUrlFor, reconcileDecided, shotFor, deltaText, NON_VISUAL, type CoordState, type DecisionStatus, type CustomerPicks } from '../../coordinate/decisions';
+import { ROUNDS, EQUIPMENT_CATS, STATUS_LABEL, DEPENDS, itemOf, setCandidates, decide, progress, blockedBy, needsReview, isFixed, categoryById, applyCustomerPicks, picksUrlFor, reconcileDecided, shotFor, deltaText, NON_VISUAL, type CoordState, type DecisionStatus, type CustomerPicks } from '../../coordinate/decisions';
 import { syncEstimateWithFinishes, finishDeltas } from './estimateStep';
 import { currentShots } from './designStep';
 import { shareDialog } from '../share';
@@ -47,10 +47,40 @@ function candidatesOf(c: CoordState, cat: FinishCategory, d: DesignOptions): str
   return [cur, ...rest].slice(0, 3);
 }
 
+/**
+ * コーディネートの定点カメラ: 間取りごとに 1 度だけ決めて使い回す（部位を開くたび・見比べのたびに構図が変わらないように）。
+ * 室内は LDK を少し広角（建築写真の 20mm → 16mm 相当）で、部屋全体が入るように
+ */
+type FixedKey = 'ldk' | 'ext' | 'ent' | 'wet' | 'stair';
+let fixedViews: { model: unknown; views: Partial<Record<FixedKey, Shot>> } | null = null;
+const FIXED_OF: Record<FixedKey, string> = { ldk: 'floor', ext: 'extWall', ent: 'entFloor', wet: 'wetFloor', stair: 'stair' };
+function fixedView(ctx: StepCtx, key: FixedKey): Shot | undefined {
+  // 建物を作り直したとき（間取りの修正）だけ決め直す。家具・照明の差し替えでは変えない
+  const key0 = ctx.app.viewer.state?.meta;
+  if (!fixedViews || fixedViews.model !== key0) {
+    const shots = currentShots(ctx);
+    const views: Partial<Record<FixedKey, Shot>> = {};
+    for (const k of Object.keys(FIXED_OF) as FixedKey[]) {
+      const s0 = shotFor(FIXED_OF[k], shots);
+      if (!s0) continue;
+      views[k] = s0.kind === 'interior' ? { ...s0, view: { ...s0.view, fov: Math.min(78, s0.view.fov + 10) } } : s0;
+    }
+    fixedViews = { model: key0, views };
+  }
+  return fixedViews.views[key];
+}
+/** 部位 → 定点（外部は道路側の外観、玄関土間は玄関、水まわりは洗面、階段は階段、他は LDK） */
+function viewFor(ctx: StepCtx, catId: string): Shot | undefined {
+  if (NON_VISUAL.has(catId)) return undefined;
+  const cat = categoryById(catId);
+  const key: FixedKey = catId === 'entFloor' ? 'ent' : catId === 'wetFloor' ? 'wet' : catId === 'stair' ? 'stair' : cat?.part === '外部' ? 'ext' : 'ldk';
+  return fixedView(ctx, key) ?? fixedView(ctx, 'ldk');
+}
+
 /** 見比べの絵（同じ構図・同じ光で、部位だけ差し替えて描く） */
 async function renderCompare(ctx: StepCtx, catId: string, ids: string[], w = 960, hgt = 540): Promise<{ id: string; url: string }[]> {
   const v = ctx.app.viewer;
-  const shot = shotFor(catId, currentShots(ctx));
+  const shot = viewFor(ctx, catId);
   if (!shot) return [];
   const keep = state.design;
   const prevView = v.currentView();
@@ -99,6 +129,11 @@ export const coordStep: Step = {
         ['doc', '仕様決定書'],
       ] as const)
         modeBar.appendChild(h('button', { class: `btn ${stageMode === m ? 'on' : ''}`, onclick: () => setMode(m) }, label));
+      if (stageMode === '3d') {
+        modeBar.appendChild(h('span', { class: 'sep' }));
+        for (const [k, label] of [['ldk', 'LDK 広角'], ['ext', '外観'], ['ent', '玄関'], ['wet', '水まわり']] as const)
+          if (fixedView(ctx, k)) modeBar.appendChild(h('button', { class: 'btn', title: '決まった構図（定点）で見る。部位を開いたときも同じ構図に戻ります', onclick: () => showFixed(k) }, label));
+      }
       if (stageMode === 'doc') modeBar.appendChild(h('button', { class: 'btn primary', onclick: () => window.print() }, '印刷・PDF'));
     };
     const setMode = (m: StageMode) => {
@@ -149,7 +184,12 @@ export const coordStep: Step = {
 
     const flyTo = (catId: string) => {
       if (stageMode !== '3d') return;
-      const s = shotFor(catId, currentShots(ctx));
+      const s = viewFor(ctx, catId);
+      if (s) v.applyShot(s, true);
+    };
+    /** 定点で見せる（お客様と画面を見るとき、動かしすぎない） */
+    const showFixed = (key: FixedKey) => {
+      const s = fixedView(ctx, key);
       if (s) v.applyShot(s, true);
     };
 
@@ -321,6 +361,25 @@ export const coordStep: Step = {
         );
       }
 
+      // 設備: 色で選ぶものではないので、仕様の確認だけ（見積に反映）
+      side.appendChild(
+        fold(
+          '設備の仕様（確認だけ）',
+          { meta: EQUIPMENT_CATS.map((id) => selectedProduct(categoryById(id)!, state.design).name.replace(/（.*?）/g, '')).join('・') },
+          h('p', { class: 'hint', style: 'margin-top:0' }, '太陽光・給湯・換気・空調・トイレは、色や柄のコーディネートではなく仕様の確認です。変えると見積に反映します。'),
+          ...EQUIPMENT_CATS.map((id) => {
+            const cat = categoryById(id)!;
+            const cur = selectedProduct(cat, state.design);
+            return h(
+              'label',
+              { class: 'field' },
+              h('span', { class: 'field-label' }, cat.label),
+              h('select', { onchange: (e: Event) => choose(id, (e.target as HTMLSelectElement).value) }, cat.products.map((p) => h('option', { value: p.id, selected: p.id === cur.id }, `${p.maker === '—' ? '' : `${p.maker} `}${p.name}${p.code ? `（${p.code}）` : ''}`))),
+            );
+          }),
+        ),
+      );
+
       // 書類
       side.appendChild(
         section(
@@ -458,6 +517,8 @@ export const coordStep: Step = {
               { class: 'body' },
               h('div', { class: 'nm' }, productLabel(p)),
               h('div', { class: 'cd' }, [p.code, p.note].filter(Boolean).join('　')),
+              p.used ? h('div', { class: 'used' }, `御社の採用例: ${p.used}`) : null,
+              catalogUrl(p) ? h('a', { class: 'linkbtn', href: catalogUrl(p), target: '_blank', rel: 'noopener', title: 'メーカーのサイトでこの商品のカタログ・色見本を探します（別のタブ）', onclick: (e: Event) => e.stopPropagation() }, 'カタログ ↗') : null,
               hasLook(catId) ? h('button', { class: 'linkbtn photo', title: 'この商品の実物写真（サンプルを撮った写真・メーカーの写真）を登録。事務所の写真庫に入り、他のお客様でも使えます', onclick: (e: Event) => { e.stopPropagation(); void attachPhoto(p.id); } }, sampleMap()[p.id] ? '写真を差し替え' : '＋実物写真') : null,
               sampleMap()[p.id] ? h('button', { class: 'linkbtn photo', onclick: (e: Event) => { e.stopPropagation(); void removePhoto(p.id); } }, '写真を外す') : null,
             ),
@@ -496,6 +557,7 @@ export const coordStep: Step = {
               : h('button', { class: 'btn sm primary', onclick: () => { setCoord(decide(coord(), catId)); emit('coord'); renderAll(); } }, 'この内容で決定'),
           ),
           isFixed(catId) ? h('p', { class: 'hint' }, '標準仕様で決まっている部位です（変更はご相談で）。') : h('p', { class: 'hint' }, '☆ で候補に入れると、お客様の体験リンクにはその候補だけが並びます。行を押すと 3D と見積がその商品に変わります。'),
+          hasLook(catId) ? h('p', { class: 'hint' }, '左の小さな見本: 「実物」の印があるものは登録した実物写真（サンプルを撮った写真）、無いものは 3D と同じ素材から作った質感イメージです。正確な色・柄は「カタログ ↗」（メーカーのサイト）と実物のサンプルで。') : null,
         ),
       );
       return row;
@@ -560,7 +622,7 @@ export const coordStep: Step = {
           const memo = state.design.finishNotes?.[id];
           return h(
             'tr',
-            { class: it.status === 'decided' ? '' : 'pending' },
+            { class: it.status === 'decided' || cat.equipment ? '' : 'pending' },
             h('td', { class: 'k' }, cat.label),
             h('td', { class: 'sw' }, (() => {
               const real = sampleMap()[p.id];
@@ -569,7 +631,7 @@ export const coordStep: Step = {
             h('td', null, h('div', null, p.maker === '—' ? '' : p.maker), h('div', { class: 'nm' }, p.name)),
             h('td', null, [p.code, memo].filter(Boolean).join(' ／ ')),
             h('td', null, p.color ?? ''),
-            h('td', { class: 'st' }, it.status === 'decided' ? `決定 ${it.decidedAt ?? ''}` : STATUS_LABEL[it.status]),
+            h('td', { class: 'st' }, cat.equipment ? '仕様' : it.status === 'decided' ? `決定 ${it.decidedAt ?? ''}` : STATUS_LABEL[it.status]),
           );
         });
       const co = { name: state.company || 'ホームランディック', designer: state.designer ?? '' };
@@ -591,6 +653,7 @@ export const coordStep: Step = {
             h('table', { class: 'cs-table' }, h('thead', null, h('tr', null, ...['部位', '色', 'メーカー・商品', '品番', '色・柄', '状態'].map((t) => h('th', null, t)))), h('tbody', null, ...rowsFor(r.cats))),
           ),
         ),
+        h('div', { class: 'cs-block' }, h('div', { class: 'cs-h' }, '設備の仕様'), h('table', { class: 'cs-table' }, h('thead', null, h('tr', null, ...['部位', '', 'メーカー・商品', '品番', '', ''].map((t) => h('th', null, t)))), h('tbody', null, ...rowsFor(EQUIPMENT_CATS)))),
         h('p', { class: 'cs-note' }, '※ 色見本は画面・印刷の色です。実物のサンプルでご確認ください。「決定」以外の部位は次回までにお決めいただく項目です。決定後の変更は、発注の状況により費用・工期に影響する場合があります。'),
         h('div', { class: 'cs-sign' }, h('div', null, h('span', null, 'ご確認日'), h('i', null, '　　年　　月　　日')), h('div', null, h('span', null, 'お客様ご署名'), h('i', null, '')), h('div', null, h('span', null, '担当'), h('i', null, co.designer))),
       );
@@ -639,7 +702,7 @@ export const coordStep: Step = {
     const orderCsv = () => {
       const c = coord();
       const lines = ['"順番","部位","メーカー","商品","品番","品番メモ","色・柄","状態","決定日","お客様のひとこと"'];
-      for (const r of ROUNDS)
+      for (const r of [...ROUNDS, { title: '設備の仕様', cats: EQUIPMENT_CATS }])
         for (const id of r.cats) {
           const cat = categoryById(id)!;
           const it = itemOf(c, id);
@@ -661,7 +724,12 @@ export const coordStep: Step = {
       side.scrollTop = scroll;
     };
     renderAll();
+    // 最初は LDK の広角の定点（部屋全体が見える）。開いている部位があればその構図
     if (openCat) flyTo(openCat);
+    else {
+      const s = fixedView(ctx, 'ldk');
+      if (s) v.applyShot(s);
+    }
     // 写真庫を読み込んで、写真のある商品を写真で出し直す
     void (async () => {
       let n = 0;

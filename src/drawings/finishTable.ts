@@ -50,14 +50,14 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
     ? /ジョリパット/.test(wallP.name)
       ? '塗り壁材 ジョリパット ミーティア仕上げ'
       : /Sto/.test(wallP.name)
-        ? '塗り壁材 Sto ロータサン 仕上げ'
+        ? '塗り壁材 Sto ミーティア仕上げ'
         : /ガルバ/.test(wallP.name)
           ? 'ガルバリウム鋼板 Kスパン 縦張り'
           : `${wallP.name}`
     : /そとん/.test(st.name)
       ? '塗り壁材 そとん壁 掻き落とし仕上げ'
       : /Sto/.test(st.name)
-        ? '塗り壁材 Sto ロータサン 仕上げ'
+        ? '塗り壁材 Sto ミーティア仕上げ'
         : isPlaster
           ? '塗り壁材 ジョリパット ミーティア仕上げ'
           : pat === 'standingSeam' || pat === 'galvalume'

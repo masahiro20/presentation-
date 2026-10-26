@@ -294,6 +294,8 @@ export interface BuildingModel {
   northAngleDeg: number;
   /** 接道・敷地（読み取れた場合） */
   site?: SiteData;
+  /** 高さの出どころ（立面図の寸法・設計の 3D データ）。無ければ標準値の推定 */
+  heights?: { source: 'elevation' | '3d'; floor1?: number; storyHeights?: number[]; maxHeight?: number; maxEave?: number; roofPitch?: number };
   report: ParseReport;
 }
 

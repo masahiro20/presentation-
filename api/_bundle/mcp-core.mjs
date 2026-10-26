@@ -82,7 +82,7 @@ var scale = (a, s) => ({
 	y: a.y * s
 });
 var dot = (a, b) => a.x * b.x + a.y * b.y;
-var dist$1 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+var dist$2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 var lerp = (a, b, t) => ({
 	x: a.x + (b.x - a.x) * t,
 	y: a.y + (b.y - a.y) * t
@@ -154,8 +154,8 @@ function bboxGap(a, b) {
 function distPointSegment(p, a, b) {
 	const ab = sub(b, a);
 	const l2 = dot(ab, ab);
-	if (l2 === 0) return dist$1(p, a);
-	return dist$1(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
+	if (l2 === 0) return dist$2(p, a);
+	return dist$2(p, lerp(a, b, Math.max(0, Math.min(1, dot(sub(p, a), ab) / l2))));
 }
 /** Douglas-Peucker による閉多角形の簡略化 */
 function simplifyClosed(poly, tol) {
@@ -164,7 +164,7 @@ function simplifyClosed(poly, tol) {
 	let i1 = 0;
 	let best = -1;
 	for (let i = 0; i < poly.length; i++) {
-		const d = dist$1(poly[0], poly[i]);
+		const d = dist$2(poly[0], poly[i]);
 		if (d > best) {
 			best = d;
 			i1 = i;
@@ -209,7 +209,7 @@ function removeCollinear(poly, tol) {
 			const a = out[(i - 1 + out.length) % out.length];
 			const b = out[i];
 			const c = out[(i + 1) % out.length];
-			if (distPointSegment(b, a, c) < tol || dist$1(a, b) < tol) {
+			if (distPointSegment(b, a, c) < tol || dist$2(a, b) < tol) {
 				out.splice(i, 1);
 				changed = true;
 				break;
@@ -674,6 +674,106 @@ function mergeStackedWalls(f) {
 		return true;
 	});
 	return merged;
+}
+//#endregion
+//#region src/parser/elevationText.ts
+var num$2 = (s) => Number(s.replace(/[,，]/g, ""));
+var z2h = (s) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/ＦＬ/g, "FL").replace(/（/g, "(").replace(/）/g, ")");
+/** ページの文字から立面図の高さを読む。立面図のページが無ければ null */
+function readElevationHeights(pages) {
+	for (const page of pages) {
+		const texts = page.texts.map((t) => ({
+			...t,
+			s: z2h(t.str).replace(/\s+/g, "")
+		}));
+		if (!texts.some((t) => /立面図/.test(t.s))) continue;
+		const fl = (n) => texts.filter((t) => new RegExp(`^${n}階FL$`).test(t.s));
+		const stories = texts.filter((t) => /^[\d,]{3,6}\(階高\)$/.test(t.s)).map((t) => ({
+			v: num$2(t.s.replace(/\(階高\)/, "")),
+			p: {
+				x: t.cx,
+				y: t.cy
+			}
+		}));
+		let best = null;
+		for (const f1 of fl(1)) {
+			const f2 = fl(2).sort((a, b) => dist$1(a, f1) - dist$1(b, f1))[0];
+			if (!f2 || dist$1(f1, f2) > 400) continue;
+			const o = {
+				x: f1.cx,
+				y: f1.cy
+			};
+			const dx = f2.cx - f1.cx;
+			const dy = f2.cy - f1.cy;
+			const L = Math.hypot(dx, dy);
+			const u = {
+				x: dx / L,
+				y: dy / L
+			};
+			const levels = [0, 1];
+			for (let n = 3; n <= 4; n++) {
+				const fn = fl(n).map((t) => proj(t, o, u, L)).filter((q) => Math.abs(q.off) < .6 && q.t > levels[levels.length - 1]).sort((a, b) => a.t - b.t)[0];
+				if (fn) levels.push(fn.t);
+			}
+			const along = stories.map((s) => ({
+				...s,
+				q: proj(s.p, o, u, L)
+			})).filter((s) => Math.abs(s.q.off) < .6 && s.q.t > -.2 && s.q.t < levels[levels.length - 1] + 1.6);
+			const hs = [];
+			for (let i = 0; i < levels.length; i++) {
+				const lo = levels[i];
+				const hi = levels[i + 1] ?? lo + 1.4;
+				const c = along.filter((s) => s.q.t > lo - .15 && s.q.t < hi + .05).sort((a, b) => Math.abs(a.q.t - (lo + hi) / 2) - Math.abs(b.q.t - (lo + hi) / 2))[0];
+				if (!c || c.v < 2e3 || c.v > 4500) break;
+				hs.push(c.v);
+			}
+			const r = {
+				storyHeights: hs,
+				floor1: texts.filter((t) => /^\d{3,4}$/.test(t.s) && num$2(t.s) >= 300 && num$2(t.s) <= 1200).map((t) => ({
+					v: num$2(t.s),
+					q: proj({
+						x: t.cx,
+						y: t.cy
+					}, o, u, L)
+				})).filter((t) => t.q.t > -.6 && t.q.t < .25 && Math.abs(t.q.off) < .6).sort((a, b) => Math.hypot(a.q.t, a.q.off) - Math.hypot(b.q.t, b.q.off))[0]?.v
+			};
+			if (!best || hs.length > best.storyHeights.length) best = r;
+		}
+		if (!best) best = { storyHeights: [] };
+		const tagged = (re) => {
+			const t = texts.find((x) => re.test(x.s));
+			return t ? num$2(t.s.replace(re, "$1")) : void 0;
+		};
+		best.maxHeight = tagged(/^([\d,]{3,6})\(最高高さ\)$/);
+		best.maxEave = tagged(/^([\d,]{3,6})\(最高軒高\)$/);
+		const tens = texts.filter((t) => t.s === "10");
+		const votes = /* @__PURE__ */ new Map();
+		for (const t of texts) {
+			if (!/^\d+(\.\d+)?$/.test(t.s) || t.s === "10") continue;
+			const v = Number(t.s);
+			if (v < .3 || v > 12) continue;
+			if (!tens.some((x) => dist$1(x, t) < Math.max(25, t.size * 4))) continue;
+			votes.set(v, (votes.get(v) ?? 0) + 1);
+		}
+		const pitch = [...votes.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0];
+		if (pitch != null) best.roofPitch = pitch;
+		if (best.storyHeights.length || best.floor1 || best.maxHeight || best.roofPitch != null) return best;
+	}
+	return null;
+}
+function dist$1(a, b) {
+	return Math.hypot(a.cx - b.cx, a.cy - b.cy);
+}
+/** 1 階 FL から 2 階 FL を 1 とした座標（t）と、線からの横ずれ（off、同じ単位） */
+function proj(p, o, u, L) {
+	const x = "cx" in p ? p.cx : p.x;
+	const y = "cy" in p ? p.cy : p.y;
+	const vx = x - o.x;
+	const vy = y - o.y;
+	return {
+		t: (vx * u.x + vy * u.y) / L,
+		off: (vx * -u.y + vy * u.x) / L
+	};
 }
 //#endregion
 //#region src/parser/textMerge.ts
@@ -10822,9 +10922,31 @@ function modelFromVectors(pages, opts = {}) {
 		lo.posts = [...lo.posts ?? [], ...add];
 		warnings.push(`${up.level}階の 1 間を超える張り出しの足元に、${lo.level}階の柱を ${add.length} 本立てました（修正画面の「柱」で変更・削除できます）`);
 	}
+	const elev = readElevationHeights(pages);
+	let heights;
+	if (elev) {
+		const fl = [...res.floors].sort((a, b) => a.level - b.level);
+		if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
+		for (let i = 0; i < fl.length; i++) {
+			const h = elev.storyHeights[i];
+			if (h) fl[i].height = h;
+			if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
+		}
+		heights = {
+			source: "elevation",
+			...elev
+		};
+		warnings.push(`立面図の寸法から高さを読みました（${[
+			elev.floor1 ? `1 階床 GL+${elev.floor1}` : "",
+			elev.storyHeights.length ? `階高 ${elev.storyHeights.join(" / ")}` : "",
+			elev.maxHeight ? `最高高さ ${elev.maxHeight}` : "",
+			elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ""
+		].filter(Boolean).join("・")}）`);
+	}
 	const { thicknesses, ...model } = res;
 	return {
 		...model,
+		...heights ? { heights } : {},
 		report: {
 			pages: pages.length,
 			scaleDenominator: sc.denominator,

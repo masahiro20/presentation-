@@ -34,6 +34,8 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
       return;
     }
     state.model = model;
+    // 立面図の屋根勾配が読めたら、外観の屋根に使う（形は外観テイストのまま）
+    if (model.heights?.roofPitch != null) state.design = { ...state.design, roofPitch: model.heights.roofPitch };
     state.pdfName = name;
     lastPdf = { data, name, kind, moduleMode };
     emit('model');

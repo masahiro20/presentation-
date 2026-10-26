@@ -60,6 +60,8 @@ export function applyHeightsFromExternal(viewer: Viewer, ctrl: ExternalControlle
       }
     }
   }
+  const fl = [...model.floors].sort((a, b) => a.level - b.level);
+  model.heights = { source: '3d', floor1: fl[0]?.elevation, storyHeights: fl.slice(0, -1).map((f) => f.height), roofPitch: ch.roof?.pitch, maxHeight: measured.groundY != null ? Math.round((measured.topY - measured.groundY) / MM) : undefined };
   if (ch.roof) state.design = { ...state.design, roofOverride: ch.roof.type, roofPitch: ch.roof.type === 'flat' ? undefined : ch.roof.pitch };
   viewer.setDesign(state.design);
   emit('model');

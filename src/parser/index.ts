@@ -3,6 +3,7 @@
  */
 import { autoOverhangPosts } from '../core/posts';
 import { repairEnvelope, mergeStackedWalls } from './envelope';
+import { readElevationHeights } from './elevationText';
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
@@ -221,9 +222,25 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     warnings.push(`${up.level}階の 1 間を超える張り出しの足元に、${lo.level}階の柱を ${add.length} 本立てました（修正画面の「柱」で変更・削除できます）`);
   }
 
+  // 立面図のページがあれば、そこに書かれた高さ（GL から 1 階床・階高・最高高さ・屋根勾配）を使う（無ければ標準値）
+  const elev = readElevationHeights(pages);
+  let heights: BuildingModel['heights'];
+  if (elev) {
+    const fl = [...res.floors].sort((a, b) => a.level - b.level);
+    if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
+    for (let i = 0; i < fl.length; i++) {
+      const h = elev.storyHeights[i];
+      if (h) fl[i].height = h;
+      if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
+    }
+    heights = { source: 'elevation', ...elev };
+    warnings.push(`立面図の寸法から高さを読みました（${[elev.floor1 ? `1 階床 GL+${elev.floor1}` : '', elev.storyHeights.length ? `階高 ${elev.storyHeights.join(' / ')}` : '', elev.maxHeight ? `最高高さ ${elev.maxHeight}` : '', elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ''].filter(Boolean).join('・')}）`);
+  }
+
   const { thicknesses, ...model } = res;
   return {
     ...model,
+    ...(heights ? { heights } : {}),
     report: {
       pages: pages.length,
       scaleDenominator: sc.denominator,

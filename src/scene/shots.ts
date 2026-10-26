@@ -644,6 +644,18 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
             if (!inPoly(q.x, q.z, ri.poly) || holes.some((h) => h.floor.level === ri.floor.level && inPoly(q.x, q.z, h.poly))) walk = false;
           }
           if (!walk) continue;
+          // 幅 90cm の廊下の真ん中からだと両脇の壁が画面の大半を占め、壁の中に立っているような絵になる。
+          // 両脇あわせて 1.5m 以上ひらけている（広いホール・吹抜や階段に面した廊下）所だけを撮る
+          const side = new THREE.Vector3(-dir.z, 0, dir.x);
+          const l = clear(pos, side);
+          const r = clear(pos, side.clone().negate());
+          if (Math.min(l, r) < 0.4 || l + r < 1.5) continue;
+          // 画角の内側（斜め 25°・45°）もすぐ壁だと、画面の半分が壁の絵になる
+          const diag = [25, -25, 45, -45].map((deg) => {
+            const a = (deg * Math.PI) / 180;
+            return clear(pos, new THREE.Vector3(dir.x * Math.cos(a) - dir.z * Math.sin(a), 0, dir.x * Math.sin(a) + dir.z * Math.cos(a)));
+          });
+          if (Math.min(diag[0], diag[1]) < 1.6 || Math.min(diag[2], diag[3]) < 0.8) continue;
           const back = clear(pos, dir.clone().negate());
           // 廊下の端に立って奥を見る（背中側はすぐ壁）が廊下らしい
           const score = see + (back < 0.9 ? 0.6 : 0) - back * 0.15;

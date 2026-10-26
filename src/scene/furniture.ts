@@ -3,7 +3,7 @@
  * 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
  */
 import * as THREE from 'three';
-import { excludedFromFloorArea, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -28,6 +28,8 @@ export interface Footprint {
   maxY: number;
   /** 底の高さ（ワールド座標）。床に接している家具の接地影に使う。吊戸棚・レンジフードなど浮いているものは床より上 */
   baseY?: number;
+  /** 点検用: 置いた物の材質キー */
+  key?: string;
 }
 let currentOcc: Footprint[] | null = null;
 
@@ -90,7 +92,7 @@ class Frame {
     if (currentOcc && y0 + h > 0.3 && key !== 'f.rug') {
       const ex = Math.abs(this.along.x) * w / 2 + Math.abs(this.inward.x) * d / 2;
       const ez = Math.abs(this.along.z) * w / 2 + Math.abs(this.inward.z) * d / 2;
-      currentOcc.push({ minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, maxY: y0 + h, baseY: this.origin.y + y0 });
+      currentOcc.push({ minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, maxY: y0 + h, baseY: this.origin.y + y0, key });
     }
   }
   cyl(key: string, u: number, v: number, r: number, y0: number, h: number, seg = 16) {
@@ -134,6 +136,8 @@ interface ItemEnv {
   y: number;
   ceilingY: number;
   lights: LightPoint[];
+  /** この階の壁（自動で置いた家具が壁にめり込んだら押し戻す） */
+  walls?: Wall[];
 }
 /** この階に置いた家具（手修正の初期値・平面図に使う） */
 let currentItems: FurnitureItem[] | null = null;
@@ -298,7 +302,7 @@ export function buildFurniture(
     items.set(f.level, currentItems);
     // 手で置き直した階は、その家具だけを置く（天井の照明は自動のまま）
     const override = model.furniture?.find((o) => o.level === f.level);
-    const env: ItemEnv = { mb, y: f.elevation * MM, ceilingY: f.ceilingHeight * MM, lights };
+    const env: ItemEnv = { mb, y: f.elevation * MM, ceilingY: f.ceilingHeight * MM, lights, walls: f.walls };
     for (const room of f.rooms) {
       let inner = largestInnerRect(room.polygon, 5);
       if (!inner) continue;
@@ -384,7 +388,7 @@ export function buildFurniture(
         currentRoomId = room?.id ?? '';
         if (currentRoomId && !occupancy.has(currentRoomId)) occupancy.set(currentRoomId, []);
         currentOcc = currentRoomId ? occupancy.get(currentRoomId)! : null;
-        emitItem({ ...it, roomId: currentRoomId || undefined }, env);
+        emitItem({ ...it, roomId: currentRoomId || undefined }, { ...env, walls: undefined });
       }
     }
   }
@@ -413,8 +417,123 @@ function place(kind: FurnitureKind, fr: Frame, u: number, v: number, env: ItemEn
   emitItem(it, env);
 }
 
-/** 記録した家具 1 つの形を作る */
+/**
+ * 足した占有範囲が壁の面からどれだけ中へ入り込んでいるか（m）と、押し戻す向き。
+ * 壁の芯を 5cm おきにたどり、家具の外形（AABB）を壁厚の半分だけ広げた中に入る点の深さを見る
+ */
+function wallIntrusion(fps: Footprint[], walls: Wall[]): { pen: number; push: THREE.Vector2 } {
+  let pen = 0;
+  const push = new THREE.Vector2();
+  for (const fp of fps) {
+    for (const w of walls) {
+      const ax = w.a.x * MM, az = w.a.y * MM, bx = w.b.x * MM, bz = w.b.y * MM;
+      const L = Math.hypot(bx - ax, bz - az);
+      if (L < 0.05) continue;
+      const t = (w.thickness || 120) * MM * 0.5;
+      if (Math.max(ax, bx) < fp.minX - t || Math.min(ax, bx) > fp.maxX + t || Math.max(az, bz) < fp.minZ - t || Math.min(az, bz) > fp.maxZ + t) continue;
+      const n = Math.max(2, Math.ceil(L / 0.05));
+      let wp = 0;
+      for (let i = 0; i <= n; i++) {
+        const x = ax + ((bx - ax) * i) / n;
+        const z = az + ((bz - az) * i) / n;
+        const dx = Math.min(x - fp.minX, fp.maxX - x);
+        const dz = Math.min(z - fp.minZ, fp.maxZ - z);
+        if (dx > -t && dz > -t) wp = Math.max(wp, Math.min(dx, dz) + t);
+      }
+      if (wp > pen) {
+        pen = wp;
+        // 壁の法線のうち、家具の中心の側
+        const nx = -(bz - az) / L, nz = (bx - ax) / L;
+        const cx = (fp.minX + fp.maxX) / 2 - ax, cz = (fp.minZ + fp.maxZ) / 2 - az;
+        const sgn = nx * cx + nz * cz >= 0 ? 1 : -1;
+        push.set(nx * sgn, nz * sgn);
+      }
+    }
+  }
+  return { pen, push };
+}
+
+/** これ以上壁に入り込んだら置き直す（m）。薄い巾木・額縁ぶんの誤差は見逃す */
+const WALL_TOL = 0.03;
+/** 置き直しても入り込むとき、無くても困らない物は置かない */
+const OPTIONAL_KINDS = new Set<FurnitureKind>(['fridge', 'plant', 'chair', 'nightstand', 'desk', 'bookshelf', 'cabinet', 'cupboard', 'tv', 'coffeeTable', 'rug', 'lowTable', 'builtin']);
+
+/**
+ * 記録した家具 1 つの形を作る。自動で置いた家具が壁を突き抜けていたら（図面の読み違い・狭い部屋）、
+ * 壁から離れる向きに押し戻して置き直し、それでも突き抜ける小物は置かない
+ */
 function emitItem(it: FurnitureItem, env: ItemEnv) {
+  if (!env.walls?.length || !currentOcc) {
+    emitItemRaw(it, env);
+    return;
+  }
+  const snap = () => ({ mb: env.mb.mark(), occ: currentOcc!.length, items: currentItems?.length ?? 0, lights: env.lights.length, models: currentModels.length, plan: currentPlan?.length ?? 0 });
+  const back = (s: ReturnType<typeof snap>) => {
+    env.mb.restore(s.mb);
+    currentOcc!.length = s.occ;
+    if (currentItems) currentItems.length = s.items;
+    env.lights.length = s.lights;
+    currentModels.length = s.models;
+    if (currentPlan) currentPlan.length = s.plan;
+  };
+  const s0 = snap();
+  emitItemRaw(it, env);
+  let res = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+  if (res.pen <= WALL_TOL) return;
+  if (it.kind === 'kitchen') {
+    // キッチンは動かさず（カップボード・照明の位置がキッチンから決まる）、端の冷蔵庫・背面収納を詰めて収める
+    const variants: Partial<FurnitureItem>[] = [{ fridge: 'none' }, { fridge: 'none', len: Math.max(2.4, (it.len ?? 3) - 0.6) }];
+    let best: { pen: number; v: Partial<FurnitureItem> } = { pen: res.pen, v: {} };
+    for (const v of variants) {
+      back(s0);
+      emitItemRaw({ ...it, ...v }, env);
+      const r = wallIntrusion(currentOcc.slice(s0.occ), env.walls).pen;
+      if (r < best.pen - 0.02) best = { pen: r, v };
+      if (r <= WALL_TOL) break;
+    }
+    // それでも当たるときは、壁から 30cm までの範囲でキッチンごと押し戻す
+    for (let k = 0, cur = { ...best.v }; k < 3 && best.pen > WALL_TOL; k++) {
+      back(s0);
+      emitItemRaw({ ...it, ...cur }, env);
+      const r = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+      if (r.pen < best.pen - 0.02) best = { pen: r.pen, v: { ...cur } };
+      const nx = (cur.x ?? it.x) + Math.round((r.push.x * (r.pen + 0.01)) / MM);
+      const ny = (cur.y ?? it.y) + Math.round((r.push.y * (r.pen + 0.01)) / MM);
+      if (Math.hypot(nx - it.x, ny - it.y) > 300) break;
+      cur = { ...cur, x: nx, y: ny };
+    }
+    back(s0);
+    Object.assign(it, best.v);
+    emitItemRaw(it, env);
+    return;
+  }
+  // 幅はそのまま → 部屋より長いソファ・造作（図面の記号の読み違い）は幅を詰めて、それぞれ壁から押し戻す
+  const w0 = it.w ?? (it.kind === 'dining' ? 1.8 : it.kind === 'sofa' ? 2.1 : undefined);
+  const widths = w0 && w0 > 1 ? [it.w, ...[0.92, 0.84, 0.76, 0.68].map((k) => +(w0 * k).toFixed(2))] : [it.w];
+  let best = { pen: res.pen, x: it.x, y: it.y, w: it.w };
+  for (const w of widths) {
+    let cur = { x: it.x, y: it.y, w };
+    for (let k = 0; k < 4; k++) {
+      if (k > 0 || w !== it.w) {
+        back(s0);
+        emitItemRaw({ ...it, ...cur }, env);
+        res = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+      }
+      if (res.pen < best.pen - 0.005) best = { pen: res.pen, ...cur };
+      if (res.pen <= WALL_TOL) {
+        Object.assign(it, cur);
+        return;
+      }
+      cur = { ...cur, x: Math.round(cur.x + (res.push.x * (res.pen + 0.01)) / MM), y: Math.round(cur.y + (res.push.y * (res.pen + 0.01)) / MM) };
+    }
+  }
+  back(s0);
+  if (best.pen > 0.12 && OPTIONAL_KINDS.has(it.kind)) return;
+  Object.assign(it, best);
+  emitItemRaw(it, env);
+}
+
+function emitItemRaw(it: FurnitureItem, env: ItemEnv) {
   currentItems?.push(it);
   const r = it.rot / DEG;
   const fr = new Frame(env.mb, V(it.x * MM, env.y, it.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));
@@ -1172,7 +1291,12 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   const dDepth = total >= 6.5 ? 2.4 : 2.1;
   const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== 'dining' && ctx.room.type !== 'kitchen';
   const { f: kf, len: klen } = sideFrame(ctx, kSide);
-  if (!ctx.has.has('kitchen')) place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
+  // キッチン（I 型でも間口 1.8m・通路込みの奥行 2m）が収まらない区画は、読み違いの小部屋なので何も置かない
+  // （以前は間口 0.8m の区画にも背面収納ごとキッチンを置き、冷蔵庫・トール収納が壁を突き抜けていた）
+  if (!ctx.planKitchen && (klen < 1.8 || total < 2.0)) return;
+  // 居間・食堂だけの部屋（プレイルーム・セカンドリビングなど）は、家にキッチン・LDK が別にあればキッチンを置かない
+  const kitchenElsewhere = ctx.room.type !== 'ldk' && ctx.room.type !== 'kitchen' && model.floors.some((fl) => fl.rooms.some((r) => r !== ctx.room && (r.type === 'ldk' || r.type === 'kitchen')));
+  if (!ctx.has.has('kitchen') && !kitchenElsewhere) place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
   // ダイニング
   if (!ctx.has.has('dining')) place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
   if (!hasLiving) return;

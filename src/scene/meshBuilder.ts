@@ -399,6 +399,26 @@ export class MeshBuilder {
     return this.buckets.size === 0;
   }
 
+  /** 今の頂点数の印（restore で、この後に足した形を取り消す） */
+  mark(): Map<string, number> {
+    const m = new Map<string, number>();
+    for (const [k, b] of this.buckets) m.set(k, b.pos.length);
+    return m;
+  }
+
+  restore(m: Map<string, number>) {
+    for (const [k, b] of this.buckets) {
+      const n = m.get(k);
+      if (n == null) {
+        this.buckets.delete(k);
+        continue;
+      }
+      b.pos.length = n;
+      b.nor.length = n;
+      b.uv.length = (n / 3) * 2;
+    }
+  }
+
   /** Mesh 群を生成。マテリアルはキーから解決（userData.matKey に保存） */
   build(resolve: (key: string) => THREE.Material, opts: { castShadow?: boolean; receiveShadow?: boolean; name?: string } = {}): THREE.Group {
     const g = new THREE.Group();

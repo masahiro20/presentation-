@@ -13398,6 +13398,24 @@ var MeshBuilder = class {
 	isEmpty() {
 		return this.buckets.size === 0;
 	}
+	/** 今の頂点数の印（restore で、この後に足した形を取り消す） */
+	mark() {
+		const m = /* @__PURE__ */ new Map();
+		for (const [k, b] of this.buckets) m.set(k, b.pos.length);
+		return m;
+	}
+	restore(m) {
+		for (const [k, b] of this.buckets) {
+			const n = m.get(k);
+			if (n == null) {
+				this.buckets.delete(k);
+				continue;
+			}
+			b.pos.length = n;
+			b.nor.length = n;
+			b.uv.length = n / 3 * 2;
+		}
+	}
 	/** Mesh 群を生成。マテリアルはキーから解決（userData.matKey に保存） */
 	build(resolve, opts = {}) {
 		const g = new THREE.Group();
@@ -15187,6 +15205,10 @@ function steelStairDetails(mb, lay, rh, y0, f) {
 }
 //#endregion
 //#region src/scene/furniture.ts
+/**
+* 家具・設備の自動配置
+* 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
+*/
 var currentOcc = null;
 var currentPlan = null;
 var currentModels = [];
@@ -15244,7 +15266,8 @@ var Frame = class {
 				minZ: c.z - ez,
 				maxZ: c.z + ez,
 				maxY: y0 + h,
-				baseY: this.origin.y + y0
+				baseY: this.origin.y + y0,
+				key
 			});
 		}
 	}
@@ -15392,7 +15415,8 @@ function buildFurniture(model, opts = {}) {
 			mb,
 			y: f.elevation * MM,
 			ceilingY: f.ceilingHeight * MM,
-			lights
+			lights,
+			walls: f.walls
 		};
 		for (const room of f.rooms) {
 			let inner = largestInnerRect(room.polygon, 5);
@@ -15542,7 +15566,10 @@ function buildFurniture(model, opts = {}) {
 			emitItem({
 				...it,
 				roomId: currentRoomId || void 0
-			}, env);
+			}, {
+				...env,
+				walls: void 0
+			});
 		}
 	}
 	currentOcc = null;
@@ -15579,8 +15606,184 @@ function place(kind, fr, u, v, env, extra = {}) {
 		...extra
 	}, env);
 }
-/** 記録した家具 1 つの形を作る */
+/**
+* 足した占有範囲が壁の面からどれだけ中へ入り込んでいるか（m）と、押し戻す向き。
+* 壁の芯を 5cm おきにたどり、家具の外形（AABB）を壁厚の半分だけ広げた中に入る点の深さを見る
+*/
+function wallIntrusion(fps, walls) {
+	let pen = 0;
+	const push = new THREE.Vector2();
+	for (const fp of fps) for (const w of walls) {
+		const ax = w.a.x * MM, az = w.a.y * MM, bx = w.b.x * MM, bz = w.b.y * MM;
+		const L = Math.hypot(bx - ax, bz - az);
+		if (L < .05) continue;
+		const t = (w.thickness || 120) * MM * .5;
+		if (Math.max(ax, bx) < fp.minX - t || Math.min(ax, bx) > fp.maxX + t || Math.max(az, bz) < fp.minZ - t || Math.min(az, bz) > fp.maxZ + t) continue;
+		const n = Math.max(2, Math.ceil(L / .05));
+		let wp = 0;
+		for (let i = 0; i <= n; i++) {
+			const x = ax + (bx - ax) * i / n;
+			const z = az + (bz - az) * i / n;
+			const dx = Math.min(x - fp.minX, fp.maxX - x);
+			const dz = Math.min(z - fp.minZ, fp.maxZ - z);
+			if (dx > -t && dz > -t) wp = Math.max(wp, Math.min(dx, dz) + t);
+		}
+		if (wp > pen) {
+			pen = wp;
+			const nx = -(bz - az) / L, nz = (bx - ax) / L;
+			const cx = (fp.minX + fp.maxX) / 2 - ax, cz = (fp.minZ + fp.maxZ) / 2 - az;
+			const sgn = nx * cx + nz * cz >= 0 ? 1 : -1;
+			push.set(nx * sgn, nz * sgn);
+		}
+	}
+	return {
+		pen,
+		push
+	};
+}
+/** これ以上壁に入り込んだら置き直す（m）。薄い巾木・額縁ぶんの誤差は見逃す */
+var WALL_TOL = .03;
+/** 置き直しても入り込むとき、無くても困らない物は置かない */
+var OPTIONAL_KINDS = /* @__PURE__ */ new Set([
+	"fridge",
+	"plant",
+	"chair",
+	"nightstand",
+	"desk",
+	"bookshelf",
+	"cabinet",
+	"cupboard",
+	"tv",
+	"coffeeTable",
+	"rug",
+	"lowTable",
+	"builtin"
+]);
+/**
+* 記録した家具 1 つの形を作る。自動で置いた家具が壁を突き抜けていたら（図面の読み違い・狭い部屋）、
+* 壁から離れる向きに押し戻して置き直し、それでも突き抜ける小物は置かない
+*/
 function emitItem(it, env) {
+	if (!env.walls?.length || !currentOcc) {
+		emitItemRaw(it, env);
+		return;
+	}
+	const snap = () => ({
+		mb: env.mb.mark(),
+		occ: currentOcc.length,
+		items: currentItems?.length ?? 0,
+		lights: env.lights.length,
+		models: currentModels.length,
+		plan: currentPlan?.length ?? 0
+	});
+	const back = (s) => {
+		env.mb.restore(s.mb);
+		currentOcc.length = s.occ;
+		if (currentItems) currentItems.length = s.items;
+		env.lights.length = s.lights;
+		currentModels.length = s.models;
+		if (currentPlan) currentPlan.length = s.plan;
+	};
+	const s0 = snap();
+	emitItemRaw(it, env);
+	let res = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+	if (res.pen <= WALL_TOL) return;
+	if (it.kind === "kitchen") {
+		const variants = [{ fridge: "none" }, {
+			fridge: "none",
+			len: Math.max(2.4, (it.len ?? 3) - .6)
+		}];
+		let best = {
+			pen: res.pen,
+			v: {}
+		};
+		for (const v of variants) {
+			back(s0);
+			emitItemRaw({
+				...it,
+				...v
+			}, env);
+			const r = wallIntrusion(currentOcc.slice(s0.occ), env.walls).pen;
+			if (r < best.pen - .02) best = {
+				pen: r,
+				v
+			};
+			if (r <= WALL_TOL) break;
+		}
+		for (let k = 0, cur = { ...best.v }; k < 3 && best.pen > WALL_TOL; k++) {
+			back(s0);
+			emitItemRaw({
+				...it,
+				...cur
+			}, env);
+			const r = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+			if (r.pen < best.pen - .02) best = {
+				pen: r.pen,
+				v: { ...cur }
+			};
+			const nx = (cur.x ?? it.x) + Math.round(r.push.x * (r.pen + .01) / MM);
+			const ny = (cur.y ?? it.y) + Math.round(r.push.y * (r.pen + .01) / MM);
+			if (Math.hypot(nx - it.x, ny - it.y) > 300) break;
+			cur = {
+				...cur,
+				x: nx,
+				y: ny
+			};
+		}
+		back(s0);
+		Object.assign(it, best.v);
+		emitItemRaw(it, env);
+		return;
+	}
+	const w0 = it.w ?? (it.kind === "dining" ? 1.8 : it.kind === "sofa" ? 2.1 : void 0);
+	const widths = w0 && w0 > 1 ? [it.w, ...[
+		.92,
+		.84,
+		.76,
+		.68
+	].map((k) => +(w0 * k).toFixed(2))] : [it.w];
+	let best = {
+		pen: res.pen,
+		x: it.x,
+		y: it.y,
+		w: it.w
+	};
+	for (const w of widths) {
+		let cur = {
+			x: it.x,
+			y: it.y,
+			w
+		};
+		for (let k = 0; k < 4; k++) {
+			if (k > 0 || w !== it.w) {
+				back(s0);
+				emitItemRaw({
+					...it,
+					...cur
+				}, env);
+				res = wallIntrusion(currentOcc.slice(s0.occ), env.walls);
+			}
+			if (res.pen < best.pen - .005) best = {
+				pen: res.pen,
+				...cur
+			};
+			if (res.pen <= WALL_TOL) {
+				Object.assign(it, cur);
+				return;
+			}
+			cur = {
+				...cur,
+				x: Math.round(cur.x + res.push.x * (res.pen + .01) / MM),
+				y: Math.round(cur.y + res.push.y * (res.pen + .01) / MM)
+			};
+		}
+	}
+	back(s0);
+	if (best.pen > .12 && OPTIONAL_KINDS.has(it.kind)) return;
+	Object.assign(it, best);
+	emitItemRaw(it, env);
+}
+function emitItemRaw(it, env) {
 	currentItems?.push(it);
 	const r = it.rot / DEG;
 	const fr = new Frame(env.mb, V(it.x * MM, env.y, it.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));
@@ -16438,7 +16641,9 @@ function layoutLDK(ctx, model, f) {
 	const dDepth = total >= 6.5 ? 2.4 : 2.1;
 	const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== "dining" && ctx.room.type !== "kitchen";
 	const { f: kf, len: klen } = sideFrame(ctx, kSide);
-	if (!ctx.has.has("kitchen")) place("kitchen", kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
+	if (!ctx.planKitchen && (klen < 1.8 || total < 2)) return;
+	const kitchenElsewhere = ctx.room.type !== "ldk" && ctx.room.type !== "kitchen" && model.floors.some((fl) => fl.rooms.some((r) => r !== ctx.room && (r.type === "ldk" || r.type === "kitchen")));
+	if (!ctx.has.has("kitchen") && !kitchenElsewhere) place("kitchen", kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
 	if (!ctx.has.has("dining")) place("dining", kf, 0, kDepth + dDepth / 2, ctx.env);
 	if (!hasLiving) return;
 	if (ctx.has.has("sofa")) {

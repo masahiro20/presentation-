@@ -712,9 +712,17 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
     for (const deg of [0, 15, -15, 30, -30]) {
       const dir = rot(toRoom, deg);
       const c0 = clear(pos, dir);
-      const c1 = Math.min(clear(pos, rot(dir, 25)), clear(pos, rot(dir, -25)));
-      if (c0 < 4 || c1 < 2.2) continue;
-      const score = c0 + c1 * 0.8 - Math.abs(deg) * 0.03;
+      // 画角いっぱい（±35°）を 5° 刻みに見渡し、3.5m 以上ひらけている向きが 8 割以上あること
+      // （正面だけ抜けていて両脇が壁の板、という絵になっていた）
+      let open = 0;
+      let sum = 0;
+      for (let a = -35; a <= 35; a += 5) {
+        const c = clear(pos, rot(dir, a));
+        sum += Math.min(c, 9);
+        if (c >= 3.5) open++;
+      }
+      if (c0 < 4.5 || open < 12) continue;
+      const score = sum - Math.abs(deg) * 0.3;
       if (!look || score > look.score) look = { dir, score };
     }
     if (!look) continue;

@@ -16654,8 +16654,23 @@ function layoutLDK(ctx, model, f) {
 	const total = kSide === "e" || kSide === "w" ? W : D;
 	const kDepth = total >= 6.5 ? 2.5 : 2.3;
 	const dDepth = total >= 6.5 ? 2.4 : 2.1;
-	const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== "dining" && ctx.room.type !== "kitchen";
 	const { f: kf, len: klen } = sideFrame(ctx, kSide);
+	let livStartPlan = null;
+	if (ctx.planKitchen || ctx.has.has("dining")) {
+		let used = 0;
+		for (const o of currentOcc ?? []) {
+			const corners = [
+				V(o.minX, 0, o.minZ),
+				V(o.maxX, 0, o.minZ),
+				V(o.minX, 0, o.maxZ),
+				V(o.maxX, 0, o.maxZ)
+			];
+			if (!corners.some((c) => Math.abs(c.clone().sub(kf.origin).dot(kf.along)) <= klen / 2 + .3)) continue;
+			for (const c of corners) used = Math.max(used, c.clone().sub(kf.origin).dot(kf.inward));
+		}
+		livStartPlan = Math.min(total, Math.max(0, used + .5));
+	}
+	const hasLiving = (livStartPlan != null ? total - livStartPlan : total - kDepth - dDepth) >= 2.4 && ctx.room.type !== "dining" && ctx.room.type !== "kitchen";
 	if (!ctx.planKitchen && (klen < 1.8 || total < 2)) return;
 	const kitchenElsewhere = ctx.room.type !== "ldk" && ctx.room.type !== "kitchen" && model.floors.some((fl) => fl.rooms.some((r) => r !== ctx.room && (r.type === "ldk" || r.type === "kitchen")));
 	if (!ctx.has.has("kitchen") && !kitchenElsewhere) place("kitchen", kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
@@ -16670,7 +16685,7 @@ function layoutLDK(ctx, model, f) {
 		});
 		return;
 	}
-	const livStart = kDepth + dDepth;
+	const livStart = livStartPlan ?? kDepth + dDepth;
 	const livDepth = total - livStart;
 	const endSide = opposite[kSide];
 	const { f: ef, len: elen } = sideFrame(ctx, endSide);

@@ -10,8 +10,10 @@ import { renderStudio } from '../scene/studio';
 
 /** 室内・夕景・夜景は露出を上げる（写真と同じ考え方） */
 export function exposureFor(kind: string | undefined, tod: string): number {
-  if (kind === 'interior') return tod === 'night' ? 1.5 : 1.9;
-  if (tod === 'night') return 1.4;
+  // 内観は 1.9 だと壁が真っ白に飛び、AI 仕上げの手掛かり（壁と天井の境・陰影）が消えていた
+  if (kind === 'interior') return tod === 'night' ? 1.5 : 1.6;
+  // 夜景は建物が真っ黒な影になっていた（窓だけ光る）。空の残光で外壁の形が読める明るさに
+  if (tod === 'night') return 2.2;
   if (tod === 'evening') return 1.15;
   if (tod === 'morning') return 1.05;
   return 1.0;

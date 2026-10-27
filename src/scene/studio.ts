@@ -20,6 +20,28 @@ export interface StudioOptions {
   interior?: boolean;
 }
 
+const skyTexCache = new WeakMap<THREE.Texture, THREE.Texture>();
+/** HDRI を貼った空の球。球の UV は正距円筒の向きと左右が逆なので、テクスチャを左右反転して貼る */
+function skyDome(tex: THREE.Texture, rotY: number, intensity: number, radius: number): THREE.Mesh {
+  let t = skyTexCache.get(tex);
+  if (!t) {
+    t = tex.clone();
+    t.wrapS = THREE.RepeatWrapping;
+    t.repeat.x = -1;
+    t.offset.x = 1;
+    t.needsUpdate = true;
+    skyTexCache.set(tex, t);
+  }
+  const mat = new THREE.MeshBasicMaterial({ map: t, side: THREE.BackSide, fog: false, depthWrite: false, toneMapped: true });
+  mat.color.setScalar(intensity);
+  const m = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 32), mat);
+  m.rotation.y = rotY;
+  m.frustumCulled = false;
+  m.renderOrder = -1000;
+  m.name = 'studioSky';
+  return m;
+}
+
 export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise<string> {
   const renderer = viewer.renderer;
   const scene = viewer.scene;
@@ -38,22 +60,35 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     shadowType: renderer.shadowMap.type,
     radius: viewer.sun.shadow.radius,
     lights: viewer.groups.lights.visible,
+    hemi: viewer.hemi.intensity,
+    env: scene.environmentIntensity,
   };
+  let skyMesh: THREE.Mesh | null = null;
   try {
     const hdri = await loadHdri(viewer.design.timeOfDay);
     if (hdri) {
       // 背景だけを実写の空に（環境光はリアルタイム描画で確実に動く手続き的な空のまま。浮動小数のテクスチャを
-      // 環境光に変換できない GPU があるため）
+      // 環境光に変換できない GPU があるため）。
+      // three.js の scene.background（箱）は、建築写真の水平なカメラ（あおり補正）で空が真っ青な塊になる不具合があるので、
+      // カメラを包む大きな球に貼って描く（普通の形なので、どんなカメラでも正しく写る）
       const sd = viewer.sunDir;
       const rot = hdri.sunAzimuth - (night ? 0 : Math.atan2(sd.z, sd.x));
-      scene.background = hdri.texture;
-      scene.backgroundRotation.set(0, rot, 0);
-      scene.backgroundIntensity = Math.min(4, (night ? 0.3 : 1.1) / Math.max(0.02, hdri.irradiance / Math.PI));
+      const intensity = Math.min(4, (night ? 0.45 : 1.1) / Math.max(0.02, hdri.irradiance / Math.PI));
+      skyMesh = skyDome(hdri.texture, rot, intensity, viewer.camera.far * 0.5);
+      skyMesh.position.copy(viewer.camera.position);
+      scene.add(skyMesh);
+      scene.background = null;
     }
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     viewer.sun.shadow.radius = 5;
     renderer.shadowMap.needsUpdate = true;
-    if (opts.interior) viewer.groups.lights.visible = true;
+    // 室内の照明: 内観はもちろん、夜景の外観も点ける（窓の明かりが夜景の主役）
+    if (opts.interior || night) viewer.groups.lights.visible = true;
+    if (night && !opts.interior) {
+      // 夜景の外観: 建物が真っ黒な影になっていた。空の残光と街の明かりの分だけ周囲光を足し、外壁の形が読めるようにする
+      viewer.hemi.intensity = 0.35;
+      scene.environmentIntensity = 0.6;
+    }
     renderer.toneMappingExposure = (opts.exposure ?? 1) * (opts.interior ? 0.75 : 0.95);
     const url = await viewer.capture(W, H, 'image/png');
     // 縮小して写真の仕上げ
@@ -69,6 +104,7 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     g.drawImage(img, 0, 0, opts.width, opts.height);
     return finishPhoto(c, { interior: !!opts.interior, tod: viewer.design.timeOfDay });
   } finally {
+    if (skyMesh) scene.remove(skyMesh);
     scene.background = prev.bg;
     scene.backgroundIntensity = prev.bgI;
     scene.backgroundRotation.copy(prev.bgRot);
@@ -77,6 +113,8 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     viewer.sun.shadow.radius = prev.radius;
     renderer.shadowMap.needsUpdate = true;
     viewer.groups.lights.visible = prev.lights;
+    viewer.hemi.intensity = prev.hemi;
+    scene.environmentIntensity = prev.env;
     viewer.invalidate();
   }
 }

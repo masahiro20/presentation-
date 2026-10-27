@@ -1289,8 +1289,22 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   const total = kSide === 'e' || kSide === 'w' ? W : D;
   const kDepth = total >= 6.5 ? 2.5 : 2.3;
   const dDepth = total >= 6.5 ? 2.4 : 2.1;
-  const hasLiving = total - kDepth - dDepth >= 2.4 && ctx.room.type !== 'dining' && ctx.room.type !== 'kitchen';
   const { f: kf, len: klen } = sideFrame(ctx, kSide);
+  // 図面にキッチン・ダイニングがあるときは、それらが矩形の中でどこまで占めているかを測って居間の余地を出す。
+  // L 字の LDK では図面のキッチンが矩形の外（袖の部分）にあることが多く、以前は「K → D → L が矩形に収まらない」と
+  // 判定して 29 帖の LDK にソファが無かった
+  let livStartPlan: number | null = null;
+  if (ctx.planKitchen || ctx.has.has('dining')) {
+    let used = 0;
+    for (const o of currentOcc ?? []) {
+      const corners = [V(o.minX, 0, o.minZ), V(o.maxX, 0, o.minZ), V(o.minX, 0, o.maxZ), V(o.maxX, 0, o.maxZ)];
+      const inAlong = corners.some((c) => Math.abs(c.clone().sub(kf.origin).dot(kf.along)) <= klen / 2 + 0.3);
+      if (!inAlong) continue;
+      for (const c of corners) used = Math.max(used, c.clone().sub(kf.origin).dot(kf.inward));
+    }
+    livStartPlan = Math.min(total, Math.max(0, used + 0.5));
+  }
+  const hasLiving = (livStartPlan != null ? total - livStartPlan : total - kDepth - dDepth) >= 2.4 && ctx.room.type !== 'dining' && ctx.room.type !== 'kitchen';
   // キッチン（I 型でも間口 1.8m・通路込みの奥行 2m）が収まらない区画は、読み違いの小部屋なので何も置かない
   // （以前は間口 0.8m の区画にも背面収納ごとキッチンを置き、冷蔵庫・トール収納が壁を突き抜けていた）
   if (!ctx.planKitchen && (klen < 1.8 || total < 2.0)) return;
@@ -1307,7 +1321,7 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
     return;
   }
   // リビング: 反対側の壁 or 窓のない長辺
-  const livStart = kDepth + dDepth;
+  const livStart = livStartPlan ?? kDepth + dDepth;
   const livDepth = total - livStart;
   const endSide = opposite[kSide];
   const { f: ef, len: elen } = sideFrame(ctx, endSide);

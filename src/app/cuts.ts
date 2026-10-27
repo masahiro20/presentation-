@@ -12,7 +12,11 @@ import { progressModal, toast, download } from './dom';
 import type { Shot } from '../scene/shots';
 import { renderStudio } from '../scene/studio';
 import { exteriorById, interiorById, type TimeOfDay } from '../styles/presets';
-import type { MatSpec } from '../styles/textures';
+import { selectedProduct, type Product } from '../coordinate/catalog';
+import { categoryById } from '../coordinate/decisions';
+import { boardEntries, renderMaterialBoard } from './materialBoard';
+import { librarySample } from '../coordinate/samples';
+import { exposureFor } from './draftCapture';
 import { resolveSpec } from '../styles/spec';
 import { cutToken, saveCutManifest } from './finishImport';
 
@@ -75,49 +79,144 @@ function dataUrlToBytes(url: string): Uint8Array {
 }
 
 // ---- 説明文 ----
-const PATTERN_JA: Record<string, string> = {
-  plaster: '塗り壁（左官）', stucco: '塗り壁', paint: '塗装', galvalume: 'ガルバリウム鋼板の縦張り', standingSeam: 'ガルバリウム鋼板（立平葺き）', woodSiding: '木の板張り', lapSiding: '板張り', siding: 'サイディング',
-  concrete: 'コンクリート', stone: '石', brick: 'レンガ', tileFloor: 'タイル', marble: '大理石', wood: '木', woodFloor: '無垢のフローリング', herringbone: 'ヘリンボーンの床', tatami: '畳', gravel: '砂利', grass: '芝生', paving: '舗装', roofTile: '瓦', slate: 'スレート', fabric: 'ファブリック', leather: 'レザー',
-};
-const PATTERN_EN: Record<string, string> = {
-  plaster: 'hand-troweled plaster', stucco: 'stucco', paint: 'painted', galvalume: 'vertical galvalume steel siding', standingSeam: 'standing-seam galvalume metal roof', woodSiding: 'wood siding', lapSiding: 'lap siding', siding: 'siding',
-  concrete: 'concrete', stone: 'stone', brick: 'brick', tileFloor: 'large-format tile', marble: 'marble', wood: 'wood', woodFloor: 'solid oak flooring', herringbone: 'herringbone wood floor', tatami: 'tatami', gravel: 'gravel', grass: 'lawn', paving: 'paving', roofTile: 'roof tile', slate: 'slate', fabric: 'linen fabric', leather: 'leather',
-};
-const mat = (m: MatSpec | undefined, lang: 'ja' | 'en') => (m ? `${(lang === 'ja' ? PATTERN_JA : PATTERN_EN)[m.pattern] ?? m.pattern} ${m.color}` : '');
+// 画像生成 AI に渡す素材の言葉は、3D の色コード（#8f8e8a）ではなく、コーディネートで選んだ実在の商品（メーカー・商品名・色）で書く。
+// 英語は商品名だけでは伝わらないので、商品ごとの「見た目の言葉」（LOOK）を添える
+const LOOK_EN: [RegExp, string][] = [
+  [/^ext\.jp\./, 'Jolypat fine-textured mineral plaster render, matte, hand-troweled "Meteor" finish'],
+  [/^ext\.sto\./, 'Sto fine-grained mineral plaster render, matte, hand-troweled "Meteor" finish'],
+  [/^ext\.soton/, 'Shirasu volcanic plaster (Soton-kabe), scratched "kakiotoshi" finish, warm off-white'],
+  [/^ext\.gl\./, 'vertical standing-rib galvalume steel siding (K-span), narrow ribs'],
+  [/^acc\.solido\./, 'SOLIDO fiber-cement lap siding, horizontal boards with a mottled, cement-like, slightly uneven surface'],
+  [/^acc\.wood|^soffit\.cedar|^aw\.sugi|^ceil\.sugi/, 'Japanese cedar (sugi) boards, natural clear finish with visible grain'],
+  [/^roof\.gl\./, 'standing-seam galvalume metal roof, thin edge, almost no eaves'],
+  [/^soffit\./, 'flat painted calcium-silicate soffit board'],
+  [/^sash\./, 'slim aluminium-resin composite window frames, flush glazing'],
+  [/^door\.venato\./, 'flush insulated steel entrance door with a long vertical pull handle'],
+  [/^door\.concord/, 'sliding entrance door with vertical slats'],
+  [/^ent\.denver|^floor\.denver/, 'large-format (600×600) matte porcelain tile with a soft stone pattern'],
+  [/^ent\.|^floor\.hirata|^floor\.tile/, 'large-format matte porcelain tile, thin grout lines'],
+  [/^floor\.(channel|iemon|prairie|ioc)/, 'wide-plank oak flooring with natural grain, matte oil finish'],
+  [/^floor\.sangetsu/, 'matte vinyl floor tile with a mortar / concrete look'],
+  [/^floor\.mortex|^aw\.mortex/, 'Mortex micro-cement (seamless, trowel marks, soft cloudy grey)'],
+  [/^wall\.cloth|^ceil\.cloth|^ceil\.dark|^aw\.cloth/, 'smooth matte wallpaper, very fine texture'],
+  [/^wall\.porters|^aw\.porters/, 'Porter\'s Paints matte mineral paint with subtle brush movement'],
+  [/^aw\.solido/, 'SOLIDO fiber-cement panels used on an interior wall, mottled cement surface'],
+  [/^door\.kamiya\.glass/, 'full-height frameless glass door with a slim black frame'],
+  [/^door\.kamiya|^door\.lixil|^door\.panasonic/, 'full-height flush interior door without casing, same color as the wall'],
+  [/^door\.custom/, 'custom oak veneer door, flush, no casing'],
+  [/^bb\./, 'very thin baseboard, almost invisible'],
+  [/^stair\.steel/, 'open-riser steel stair: black steel stringer and flat-bar balusters, thick oak treads'],
+  [/^stair\.wood/, 'open-riser wooden stair with oak treads and a slim black handrail'],
+  [/^kit\.|^kitchen/, 'minimal flat-front kitchen with a thin counter, no visible handles, integrated hood'],
+  [/^cup\./, 'matching flat-front back cabinets with floating wall units'],
+  [/^pend\.ph5/, 'Louis Poulsen PH5 pendant above the dining table'],
+  [/^pend\.dome/, 'black dome pendant above the dining table'],
+  [/^pend\.globes/, 'cluster of small frosted glass globe pendants above the dining table'],
+  [/^wet\./, 'matte porcelain / vinyl tile floor'],
+  [/^wash\./, 'small matte tiles behind the washbasin with a plain mirror'],
+  [/^van\./, 'minimal counter-top washbasin with an under-counter cabinet'],
+  [/^bath\./, 'Japanese unit bath with dark matte walls'],
+];
+function lookEn(p: Product): string {
+  const hit = LOOK_EN.find(([re]) => re.test(p.id));
+  return hit ? hit[1] : p.name;
+}
+/** 部位 1 つの言葉: ja = 「外壁: Sto 塗り壁材 Sto ミーティア仕上げ グレー」、en = 商品名 + 見た目 */
+function partWords(catId: string): { ja: string; en: string } | null {
+  const cat = categoryById(catId);
+  if (!cat) return null;
+  const p = selectedProduct(cat, state.design);
+  if (/\.none$/.test(p.id)) return null;
+  const maker = p.maker && p.maker !== '—' ? `${p.maker} ` : '';
+  const ja = `${maker}${p.name}${p.color ? `（${p.color}）` : ''}`;
+  const en = `${maker}${p.name}${p.color ? ` [${p.color}]` : ''} — ${lookEn(p)}`;
+  return { ja, en };
+}
+const list = (ids: [string, string, string][], lang: 'ja' | 'en') =>
+  ids
+    .map(([id, ja, en]) => {
+      const w = partWords(id);
+      return w ? `${lang === 'ja' ? ja : en}: ${w[lang]}` : '';
+    })
+    .filter(Boolean)
+    .join(lang === 'ja' ? '。' : '; ');
 const TOD_JA: Record<TimeOfDay, string> = { morning: '朝（低い横からの光・薄い靄）', day: '昼（自然光）', evening: '夕方（マジックアワー）', night: '夜（室内照明）' };
-const TOD_EN: Record<TimeOfDay, string> = { morning: 'early morning, low raking sunlight, light mist', day: 'daytime natural light', evening: 'golden hour', night: 'night, warm interior lighting' };
+const TOD_EN: Record<TimeOfDay, string> = { morning: 'early morning, low raking sunlight, light mist', day: 'daytime natural light with soft shadows', evening: 'golden hour, warm low sun', night: 'blue hour, warm interior lighting glowing through the windows' };
+
+const EXT_PARTS: [string, string, string][] = [
+  ['extWall', '外壁', 'Exterior wall'],
+  ['accent', 'アクセント外壁', 'Accent wall'],
+  ['roof', '屋根', 'Roof'],
+  ['soffit', '軒天', 'Soffit'],
+  ['sash', 'サッシ', 'Windows'],
+  ['entDoor', '玄関ドア', 'Entrance door'],
+  ['entFloor', 'ポーチ・玄関土間', 'Porch / entrance floor'],
+];
+const INT_PARTS: [string, string, string][] = [
+  ['floor', '床', 'Floor'],
+  ['wall', '壁', 'Walls'],
+  ['accentWall', 'アクセント壁', 'Accent wall'],
+  ['ceiling', '天井', 'Ceiling'],
+  ['door', '建具', 'Interior doors'],
+  ['baseboard', '巾木', 'Baseboard'],
+  ['stair', '階段', 'Stair'],
+  ['kitchen', 'キッチン', 'Kitchen'],
+  ['cupboard', 'カップボード', 'Back cabinets'],
+  ['pendant', 'ダイニングの照明', 'Dining pendant'],
+];
+const WET_PARTS: [string, string, string][] = [
+  ['wetFloor', '床', 'Floor'],
+  ['washWall', '洗面の壁', 'Wall behind the basin'],
+  ['vanity', '洗面台', 'Vanity'],
+  ['bath', '浴室', 'Bathroom'],
+];
 
 export function cutPrompt(shot: Shot, index: number): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);
   const int = interiorById(state.design.interiorId);
   const spec = resolveSpec(state.design.specId, state.design.specPatch);
   const tod = shot.timeOfDay ?? state.design.timeOfDay;
-  const room = shot.roomId && state.model ? state.model.floors.flatMap((f) => f.rooms).find((r) => r.id === shot.roomId) : undefined;
+  const model = state.model;
+  const room = shot.roomId && model ? model.floors.flatMap((f) => f.rooms).find((r) => r.id === shot.roomId) : undefined;
+  const floors = model?.floors.length ?? 2;
   const clayJa = state.design.clay ? '下絵は白い模型（クレイ）なので、材質は次の指定どおりに着彩してください。' : '';
   const clayEn = state.design.clay ? ' The base image is a white clay model; apply the materials specified below.' : '';
   const common = {
-    ja: '住宅の建築パース（下絵）です。' + clayJa + '構図・カメラ位置・間取り・壁と窓とドアの位置・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。人物・文字・余計な小物は加えないでください。',
-    en: 'This is an architectural visualization base image of a house.' + clayEn + ' Keep the composition, camera, floor plan, wall/window/door positions and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. No people, no text, no extra props.',
+    ja:
+      '住宅の建築パース（下絵）です。' +
+      clayJa +
+      '構図・カメラ位置・画角・間取り・壁と窓とドアの位置と数・屋根の形・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。窓やドアを増やさない・減らさない。人物・文字・余計な小物・看板は加えないでください。同梱の「素材ボード」の写真と同じ色・質感にしてください。',
+    en:
+      'This is an architectural visualization base image of a Japanese detached house.' +
+      clayEn +
+      ' Keep the composition, camera position, field of view, floor plan, the position and number of walls, windows and doors, the roof shape and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. Do not add or remove windows or doors. No people, no text, no signage, no extra props. Match the colors and textures of the attached material board photo.',
   };
   if (shot.kind === 'interior') {
     const name = room ? `${room.name}（${(room.labeledTatami ?? room.area / 1.62).toFixed(1)}帖）` : shot.title;
-    const ja = `${common.ja}\n内観: ${name}。床は${mat(int.floor, 'ja')}、壁は${mat(int.wall, 'ja')}、天井は${mat(int.ceiling, 'ja')}、建具は${mat(int.door, 'ja')}（${spec.doors.fullHeight ? 'フルハイトの枠無し' : '標準の枠付き'}）。窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}で、サッシ色は${ext.frame.color}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光とレンズ 24mm 相当の広角、建築写真の水平な垂直線。`;
-    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. Floor: ${mat(int.floor, 'en')}; walls: ${mat(int.wall, 'en')}; ceiling: ${mat(int.ceiling, 'en')}; doors: ${mat(int.door, 'en')} (${spec.doors.fullHeight ? 'full-height frameless' : 'standard casing'}); window frames ${ext.frame.color}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural photography, 24mm lens, vertical lines kept vertical, soft natural light.`;
+    const wet = !!room && ['washroom', 'bath', 'toilet'].includes(room.type);
+    // その部屋にある物だけを書く（寝室の説明にキッチンや階段が混ざっていた）
+    const ldk = !room || ['ldk', 'living', 'dining', 'kitchen'].includes(room.type) || /LDK|ＬＤＫ|キッチン|リビング/.test(shot.title);
+    const stairy = /階段|ホール|吹抜/.test(shot.title) || (!!room && room.type === 'hall');
+    const base = INT_PARTS.filter(([id]) => !['stair', 'kitchen', 'cupboard', 'pendant'].includes(id));
+    const parts: [string, string, string][] = wet ? WET_PARTS : ldk ? INT_PARTS : stairy ? [...base, INT_PARTS.find(([id]) => id === 'stair')!] : room?.type === 'entrance' ? [['entFloor', '玄関土間', 'Entrance floor'], ...base] : base;
+    const ja = `${common.ja}\n内観: ${name}。${list(parts, 'ja')}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。`;
+    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(parts, 'en')}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.`;
     return { ja, en };
   }
   if (shot.kind === 'cutaway') {
-    const ja = `${common.ja}\n輪切り模型（${shot.level ?? ''}階）: 壁を床から約 1.35m の高さで水平に切り、斜め上から見下ろした建築模型のカット。切り口は白いまま、壁の厚みも残してください。床は${mat(int.floor, 'ja')}、壁は${mat(int.wall, 'ja')}、建具は${mat(int.door, 'ja')}。家具・キッチン・階段の配置と大きさはそのまま。外構: 地面は${mat(ext.landscape.ground, 'ja')}。時間帯は${TOD_JA[tod]}。柔らかい自然光で、建築模型を撮った写真のように仕上げてください。`;
-    const en = `${common.en}\nDollhouse section (floor ${shot.level ?? ''}): walls cut horizontally about 1.35 m above the floor, seen from above at an oblique angle, like an architectural model. Keep the white cut faces and wall thickness. Floor: ${mat(int.floor, 'en')}; walls: ${mat(int.wall, 'en')}; doors: ${mat(int.door, 'en')}; furniture, kitchen and stairs exactly as placed; ground ${mat(ext.landscape.ground, 'en')}. Lighting: ${TOD_EN[tod]}. Soft natural light, photorealistic architectural model photography.`;
+    const ja = `${common.ja}\n輪切り模型（${shot.level ?? ''}階）: 壁を床から約 1.35m の高さで水平に切り、斜め上から見下ろした建築模型のカット。切り口は白いまま、壁の厚みも残してください。${list(INT_PARTS.slice(0, 5), 'ja')}。家具・キッチン・階段の配置と大きさはそのまま。時間帯は${TOD_JA[tod]}。柔らかい自然光で、建築模型を撮った写真のように仕上げてください。`;
+    const en = `${common.en}\nDollhouse section (floor ${shot.level ?? ''}): walls cut horizontally about 1.35 m above the floor, seen from above at an oblique angle, like an architectural model. Keep the white cut faces and wall thickness. ${list(INT_PARTS.slice(0, 5), 'en')}; furniture, kitchen and stairs exactly as placed. Lighting: ${TOD_EN[tod]}. Soft natural light, photorealistic architectural model photography.`;
     return { ja, en };
   }
   if (shot.kind === 'section') {
-    const ja = `${common.ja}\n断面パース: 建物を鉛直の面で切り、切り口（白い断面）側から少し見上げ気味に見た建築断面のカット。切り口は白いまま、壁・床・屋根の厚みを残してください。床は${mat(int.floor, 'ja')}、壁は${mat(int.wall, 'ja')}、天井は${mat(int.ceiling, 'ja')}、外壁は${mat(ext.wall, 'ja')}、屋根は${mat(ext.roof.material, 'ja')}。家具・階段の配置はそのまま。時間帯は${TOD_JA[tod]}。柔らかい自然光で、建築雑誌の断面パースのように仕上げてください。`;
-    const en = `${common.en}\nSection perspective: the building is cut by a vertical plane and seen from the cut side, slightly from above. Keep the white cut faces and the thickness of walls, floors and roof. Floor: ${mat(int.floor, 'en')}; walls: ${mat(int.wall, 'en')}; ceiling: ${mat(int.ceiling, 'en')}; exterior walls ${mat(ext.wall, 'en')}; roof ${mat(ext.roof.material, 'en')}; furniture and stairs exactly as placed. Lighting: ${TOD_EN[tod]}. Soft natural light, like a section perspective in an architecture magazine.`;
+    const ja = `${common.ja}\n断面パース: 建物を鉛直の面で切り、切り口（白い断面）側から少し見上げ気味に見た建築断面のカット。切り口は白いまま、壁・床・屋根の厚みを残してください。${list([...INT_PARTS.slice(0, 4), EXT_PARTS[0], EXT_PARTS[2]], 'ja')}。家具・階段の配置はそのまま。時間帯は${TOD_JA[tod]}。柔らかい自然光で、建築雑誌の断面パースのように仕上げてください。`;
+    const en = `${common.en}\nSection perspective: the building is cut by a vertical plane and seen from the cut side, slightly from above. Keep the white cut faces and the thickness of walls, floors and roof. ${list([...INT_PARTS.slice(0, 4), EXT_PARTS[0], EXT_PARTS[2]], 'en')}; furniture and stairs exactly as placed. Lighting: ${TOD_EN[tod]}. Soft natural light, like a section perspective in an architecture magazine.`;
     return { ja, en };
   }
   const roofJa = ext.roof.type === 'shed' ? '片流れ' : ext.roof.type === 'gable' ? '切妻' : ext.roof.type === 'hip' ? '寄棟' : '陸屋根';
-  const ja = `${common.ja}\n外観${shot.kind === 'aerial' ? '（鳥瞰）' : ''}: 外壁は${mat(ext.wall, 'ja')}${ext.accent ? `、アクセントに${mat(ext.accent, 'ja')}` : ''}。屋根は${roofJa}（${mat(ext.roof.material, 'ja')}）、軒の出 ${ext.roof.eaves}mm。サッシは${ext.frame.color}の細いフレーム、玄関ドアは${mat(ext.entranceDoor, 'ja')}。外構: 地面は${mat(ext.landscape.ground, 'ja')}、アプローチは${mat(ext.landscape.approach, 'ja')}。テイスト「${ext.name}」: ${ext.catch}。時間帯は${TOD_JA[tod]}。建築写真のように、周囲は落ち着いた住宅地、空は自然に。`;
-  const en = `${common.en}\nExterior${shot.kind === 'aerial' ? ' (aerial)' : ''}: walls ${mat(ext.wall, 'en')}${ext.accent ? `, accent ${mat(ext.accent, 'en')}` : ''}; ${ext.roof.type} roof in ${mat(ext.roof.material, 'en')} with ${ext.roof.eaves}mm eaves; slim ${ext.frame.color} window frames; entrance door ${mat(ext.entranceDoor, 'en')}; ground ${mat(ext.landscape.ground, 'en')}, approach ${mat(ext.landscape.approach, 'en')}. Style: ${ext.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural photography, quiet residential surroundings, natural sky.`;
+  const roofEn = ext.roof.type === 'shed' ? 'mono-pitch (shed)' : ext.roof.type === 'gable' ? 'gable' : ext.roof.type === 'hip' ? 'hip' : 'flat';
+  const ja = `${common.ja}\n外観${shot.kind === 'aerial' ? '（鳥瞰）' : ''}: ${floors}階建ての木造住宅、屋根は${roofJa}で軒の出 ${ext.roof.eaves}mm。${list(EXT_PARTS, 'ja')}。テイスト「${ext.name}」: ${ext.catch}。時間帯は${TOD_JA[tod]}。建築写真のように、周囲は落ち着いた日本の住宅地（隣家は低く控えめに）、道路はアスファルト、空は自然に、植栽は株立ちの落葉樹と下草を少し。`;
+  const en = `${common.en}\nExterior${shot.kind === 'aerial' ? ' (aerial view)' : ''}: ${floors}-story timber house with a ${roofEn} roof and ${ext.roof.eaves} mm eaves. ${list(EXT_PARTS, 'en')}. Style: ${ext.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural exterior photography, quiet Japanese residential neighborhood with low, unobtrusive neighboring houses, asphalt road, natural sky, a multi-stem deciduous tree and low ground-cover planting.`;
   void index;
   return { ja, en };
 }
@@ -125,23 +224,48 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
 const safe = (s: string) => s.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim();
 
 /** 見どころカメラを高品質描画で一括保存して ZIP にする */
-export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: number; height: number; passes?: boolean }) {
+export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: number; height: number; passes?: boolean }) {
   const v = ctx.app.viewer;
+  // 輪切り模型・断面パースは外部で仕上げても資料に使わない（お客様向けの資料から外した）ので、まとめて出すときは入れない。
+  // 「この構図だけ」のように 1 枚を指定したときはそのまま
+  const shots = shotsIn.length > 1 ? shotsIn.filter((s) => s.kind !== 'cutaway' && s.kind !== 'section') : shotsIn;
   if (!shots.length) {
     toast('カットがありません');
     return;
   }
   const pm = progressModal(`カット集（Nano Banana Pro 用の下絵）を作成中（${shots.length}枚・${opts.width}×${opts.height}）`);
   const prev = v.currentView();
-  // AI 仕上げの下絵に文字を焼き込まない（部屋名の札は消す）
+  // AI 仕上げの下絵に文字を焼き込まない（部屋名の札は消す）。想像の家並みの白い箱も写さない（空に大きな塊が写り、AI が建物と誤解する）
   const prevLabels = v.roomLabelsShown();
   v.setRoomLabels(false);
+  v.setTownVisible(false);
   const entries: { name: string; data: Uint8Array }[] = [];
   const lines: string[] = [];
-  lines.push(`${state.name}　カット集（Nano Banana Pro で仕上げる下絵）`, `作成: ${new Date().toLocaleString('ja-JP')}`, '', '使い方: 各画像を Nano Banana Pro に渡し、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚を次のカットから「参考画像」として一緒に渡すと、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。', '');
+  lines.push(
+    `${state.name}　カット集（Nano Banana Pro で仕上げる下絵）`,
+    `作成: ${new Date().toLocaleString('ja-JP')}`,
+    '',
+    '使い方: 各画像を Nano Banana Pro に渡し、「00_素材ボード.jpg」も一緒に参考画像として添えて、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚（LDK・外観）を次のカットから参考画像に加えると、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。',
+    '',
+  );
   let n = 0;
   const manifest: { no: number; shot: Shot }[] = [];
   try {
+    // 素材ボード（コーディネートで選んだ商品の見本。実物写真があれば写真庫から）
+    try {
+      pm.set(0, '素材ボード');
+      const samples: Record<string, string> = { ...(state.coord.samples ?? {}) };
+      const entriesB = boardEntries(samples);
+      for (const e of entriesB) if (!samples[e.product.id]) {
+        const s = await librarySample(e.product.id).catch(() => undefined);
+        if (s) samples[e.product.id] = s.url;
+      }
+      const board = await renderMaterialBoard(boardEntries(samples));
+      entries.push({ name: '00_素材ボード.jpg', data: dataUrlToBytes(board) });
+      lines.push('■ 00_素材ボード.jpg', '（コーディネートで選んだ仕上げの見本。すべてのカットで参考画像として一緒に渡してください。「実物」の印は実物の写真、それ以外は 3D と同じ質感のイメージです）', '');
+    } catch (e) {
+      console.warn('素材ボードを作れませんでした', e);
+    }
     for (let i = 0; i < shots.length; i++) {
       if (pm.signal.aborted) break;
       const shot = shots[i];
@@ -149,7 +273,8 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
       v.applyShot(shot);
       await new Promise((r) => setTimeout(r, 40));
       try {
-        const url = await renderStudio(v, { width: opts.width, height: opts.height, interior: shot.kind === 'interior', exposure: shot.kind === 'interior' ? 1.9 : 1.0 });
+        const tod = shot.timeOfDay ?? v.design.timeOfDay;
+        const url = await renderStudio(v, { width: opts.width, height: opts.height, interior: shot.kind === 'interior', exposure: exposureFor(shot.kind, tod) });
         // 末尾の目印（__c-xxxx）は、仕上げた写真を取り込むときにどのカットかを見分けるため（ファイル名を残して保存すると確実）
         const base = `${String(i + 1).padStart(2, '0')}_${safe(shot.title)}__${cutToken(shot)}`;
         manifest.push({ no: i + 1, shot });
@@ -181,6 +306,7 @@ export async function exportCuts(ctx: StepCtx, shots: Shot[], opts: { width: num
   } finally {
     pm.close();
     v.setRoomLabels(prevLabels);
+    v.setTownVisible(true);
     v.applyView(prev);
   }
 }

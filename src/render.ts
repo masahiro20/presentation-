@@ -13,6 +13,8 @@ import { DEFAULT_DESIGN, type DesignOptions } from './styles/presets';
 import { sunPosition, sunDirectionWorld, localDate } from './sun/solar';
 import { finishPhoto } from './scene/photoFinish';
 import { exportAr } from './scene/exportAr';
+import { renderStudio } from './scene/studio';
+import { loadHdri } from './scene/hdri';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { BuildingModel } from './core/types';
 
@@ -92,4 +94,21 @@ w.__renderShot = async (id, W, H, grade) => {
   });
   return { tris: Math.round(tris), tex: texs.size, bytes: data.byteLength, box: [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map((v) => +v.toFixed(2)) };
 };
+/** 点検用: カット集と同じ高品質描画（実写の空・柔らかい影）で 1 カット */
+(w as unknown as { __renderStudio: (id: string, W: number, H: number, exposure?: number) => Promise<string> }).__renderStudio = async (id, W, H, exposure) => {
+  const s = viewer.shots(W / H).find((x) => x.id === id);
+  if (!s) throw new Error(`カット ${id} がありません`);
+  viewer.applyShot(s);
+  await new Promise((r) => setTimeout(r, 300));
+  return renderStudio(viewer, { width: W, height: H, interior: s.kind === 'interior', exposure });
+};
+(w as unknown as { __hdri: typeof loadHdri }).__hdri = loadHdri;
+(w as unknown as { __studioNow: (W: number, H: number) => Promise<string> }).__studioNow = (W, H) => renderStudio(viewer, { width: W, height: H, interior: false, exposure: 1 });
+(w as unknown as { __studioView: (pos: number[], target: number[], fov: number, W: number, H: number) => Promise<string> }).__studioView = async (pos, target, fov, W, H) => {
+  viewer.setCut(null);
+  viewer.applyView({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov, architectural: false });
+  await new Promise((r) => setTimeout(r, 200));
+  return renderStudio(viewer, { width: W, height: H, interior: false, exposure: 1 });
+};
+(w as unknown as { THREE: typeof THREE }).THREE = THREE;
 w.__ready = true;

@@ -419,18 +419,25 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
       }
     }
     const diag = Math.hypot(W, D);
+    // 構図の採点を調べるためのデバッグ出力（裏の Chrome から globalThis.__shotDebugOn = true にすると集める）
+    const dbgOn = !!(globalThis as unknown as { __shotDebugOn?: boolean }).__shotDebugOn;
+    const dbg: Record<string, unknown>[] = [];
     for (const pos of cands) {
       for (let k = 0; k < 16; k++) {
         const yaw = (k / 16) * Math.PI * 2;
         const dir = new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw));
         let score: number;
         let meanDist = Infinity;
+        const parts: Record<string, number> = {};
         if (ray) {
           // 視野内のレイで開放感・近接障害物・外の眺め（窓）を評価
           let sum = 0;
           let minC = Infinity;
           let outside = 0;
           let centerOut = false;
+          // 画面の端（左右それぞれ）のレイが当たった距離（すぐ横の壁や階段の側面で埋まっていないか）
+          const edgeL: number[] = [];
+          const edgeR: number[] = [];
           const N = 13;
           for (let r = 0; r < N; r++) {
             const a = -halfH * 0.95 + (2 * halfH * 0.95 * r) / (N - 1);
@@ -443,6 +450,7 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
               if (Math.abs(a) < halfH * 0.45) minC = Math.min(minC, dist);
               if (dist > diag + 0.8 && dy === 0) outside++;
               if (dist > diag + 0.8 && dy === 0 && Math.abs(a) < halfH * 0.2) centerOut = true;
+              if (dy === 0 && Math.abs(a) > halfH * 0.5) (a < 0 ? edgeL : edgeR).push(dist);
             }
           }
           const mean = sum / (N * 2);
@@ -450,9 +458,25 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
           const cornerBonus = Math.min(Math.abs(pos.x - center.x) / (W / 2), 1) * Math.min(Math.abs(pos.z - center.z) / (D / 2), 1);
           // 窓は視野の端に入るのが良い（正面に窓だけが見える逆光の構図は避ける）
           score = mean * 1.4 + Math.min(outside, 3) * 0.3 + cornerBonus * 1.5 - (minC < 1.6 ? (1.6 - minC) * 6 : 0) - (centerOut ? 2.5 : 0);
+          // 画面の片側 1/3 が、すぐ横の壁や階段の側面で塗りつぶされる構図は避ける（LDK の左 1/3 が白い壁だけだった）。
+          // 「近い」は部屋の奥行きに対して（見通しの平均の 4 割以内）。小さな個室は隅から撮るので片側の壁が近いのは当然
+          const nearThr = Math.min(2.9, mean * 0.45);
+          const nearL = edgeL.filter((d) => d < nearThr).length;
+          const nearR = edgeR.filter((d) => d < nearThr).length;
+          if (!smallRoom) score -= (Math.max(nearL, nearR) >= 2 ? 2.0 : 0) + (nearL >= 2 && nearR >= 2 ? 1.0 : 0);
           // 部屋の中心方向を向いているほど良い
           const toC = center.clone().sub(pos).setY(0);
           if (toC.lengthSq() > 0.01) score += toC.normalize().dot(dir) * 2.0;
+          // 窓が画面に入る構図を優先（寝室がベッドと扉だけの絵になっていた）。正面ど真ん中の逆光は避け、脇〜端に入るのが良い
+          let winIn = 0;
+          for (const w of wins) {
+            const v = w.center.clone().sub(pos).setY(0);
+            if (v.lengthSq() < 0.04) continue;
+            const ang = Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir))));
+            if (ang < halfH * 0.95) winIn += ang > halfH * 0.2 ? 1 : 0.4;
+          }
+          score += Math.min(winIn, 2) * 1.3;
+          if (dbgOn) Object.assign(parts, { mean: +mean.toFixed(2), minC: +minC.toFixed(2), outside, centerOut: +centerOut, corner: +cornerBonus.toFixed(2), winIn, nearL, nearR, eL: edgeL.map((d) => +d.toFixed(1)) as unknown as number, eR: edgeR.map((d) => +d.toFixed(1)) as unknown as number });
         } else {
           const toC = center.clone().sub(pos).setY(0);
           score = toC.length() * 1.5 + (toC.lengthSq() > 0.01 ? toC.normalize().dot(dir) * 2 : 0);
@@ -462,14 +486,17 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
             if (ang < halfH * 0.95) score += w.weight;
           }
         }
-        // 家具が画面の端で切れる構図は避ける（ソファ・テーブルが縁で半分になるカット）。
-        // キッチンや収納のような長い物は端で切れても自然なので軽く見る
+        // 家具が画面の左右の端で切れる構図は避ける（ソファ・テーブルが縁で半分になるカット）。
+        // 手前の家具が画面の下端で切れる（カメラの脇にある）のは建築写真として自然なので数えない。
+        // キッチンや収納のような長い物、椅子の脚・小物のような小さい物は端で切れても気にならないので軽く見る
         let cut = 0;
+        const cutKeys: string[] = [];
         for (const o of occ) {
           if (o.maxY < 0.4) continue;
           const size = Math.max(o.maxX - o.minX, o.maxZ - o.minZ);
           let inside = 0;
           let edge = 0;
+          let behind = 0;
           for (const [cx, cz] of [
             [o.minX, o.minZ],
             [o.maxX, o.minZ],
@@ -480,21 +507,27 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
             const vz = cz - pos.z;
             const d = Math.hypot(vx, vz);
             if (d < 0.05) {
-              inside++;
+              behind++;
               continue;
             }
             const dot = (vx * dir.x + vz * dir.z) / d;
             if (dot <= 0) {
-              if (d < diag) edge++;
+              behind++;
               continue;
             }
             const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
             if (ang < halfH) inside++;
-            else if (d < diag) edge++;
+            else if (d < diag && d > 1.2) edge++;
           }
-          if (inside > 0 && edge > 0) cut += size > 2.0 ? 0.35 : 1;
+          if (inside > 0 && edge > 0 && behind === 0) {
+            // キッチン・カップボード・収納の部品（扉・天板・取っ手…）は 1 台で何個も数えてしまうので軽く
+            const unit = /cabinet|counter|handle|carcass|stainless|hood|screen|cupboard/.test(o.key ?? '');
+            cut += unit ? 0.15 : size > 2.0 || size < 0.6 ? 0.35 : 1;
+            if (dbgOn) cutKeys.push(`${o.key ?? '?'}:${inside}/${edge}/${size.toFixed(1)}`);
+          }
         }
         score -= Math.min(cut, 3) * 0.9;
+        if (dbgOn) dbg.push({ score: +score.toFixed(2), x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), yaw: Math.round((yaw * 180) / Math.PI), cut, cutKeys, ...parts });
         if (!best || score > best.score) {
           const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + 1.15);
           best = { score, pos, target, mean: ray ? meanDist : Infinity };
@@ -504,6 +537,8 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     if (!best) {
       best = { score: 0, pos: new THREE.Vector3(R.minX + 0.3, y0 + eyeH, R.minZ + 0.3), target: center.clone(), mean: Infinity };
     }
+    const g = globalThis as unknown as { __shotDebug?: Record<string, unknown> };
+    if (dbgOn) (g.__shotDebug ??= {})[room.name || room.type] = { R, poly: room.polygon, occ: occ.map((o) => [o.minX, o.minZ, o.maxX, o.maxZ, o.maxY, o.key]), walls: model.floors[ri.floor.level]?.walls?.map((w) => [w.a.x, w.a.y, w.b.x, w.b.y]), top: dbg.sort((a, b) => (b.score as number) - (a.score as number)).slice(0, 8) };
     // どこを向いても壁がすぐ目の前（狭い玄関・土間など）になる部屋は、パースとして成立しないので外す。
     // 玄関は廊下状の土間・SIC だと見せ場にならないので、ゆとりのある玄関ホールだけ
     if (best.mean < (room.type === 'entrance' ? 2.4 : 1.7)) continue;

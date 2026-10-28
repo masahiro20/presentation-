@@ -141,6 +141,8 @@ export class App {
   get viewer(): Viewer {
     if (!this._viewer) {
       this._viewer = new Viewer(this.viewerHost, state.design);
+      // 点検用（裏の Chrome から構図を確かめる）
+      (globalThis as unknown as { __viewer: Viewer }).__viewer = this._viewer;
       this.buildNavBar(this._viewer);
     }
     return this._viewer;

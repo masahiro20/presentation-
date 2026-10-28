@@ -9,6 +9,7 @@
  * ③ファイル名にカットの題名が含まれるか、の順に推し量り、最後は一覧で人が選び直せる。
  */
 import type { StepCtx } from './app';
+import { harmonizeBatch } from './photoHarmonize';
 import { state, emit, uid, type GalleryItem } from './state';
 import { h, modal, toast } from './dom';
 import type { Shot } from '../scene/shots';
@@ -146,16 +147,33 @@ export async function importFinishedImages(ctx: StepCtx, shots: Shot[]) {
       ),
     ),
   );
+  const harmonize = h('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
   modal(
     `仕上げた写真を取り込む（${rows.length}枚）`,
-    h('div', null, h('p', { class: 'hint', style: 'margin-top:0' }, 'どのカットの仕上げかを確かめてください（ファイル名から推し量っています）。取り込むと、同じカットの下書きより優先してプレゼン資料に使われます。'), list),
+    h(
+      'div',
+      null,
+      h('p', { class: 'hint', style: 'margin-top:0' }, 'どのカットの仕上げかを確かめてください（ファイル名から推し量っています）。取り込むと、同じカットの下書きより優先してプレゼン資料に使われます。'),
+      list,
+      h('label', { class: 'check', style: 'margin-top:10px;display:flex;gap:6px;align-items:center' }, harmonize, '写真どうしの明るさ・色味を軽くそろえる（外観・内観それぞれ。1 枚ずつ仕上げたときのばらつきを抑えます）'),
+    ),
     [
       { label: 'やめる' },
       {
         label: '取り込む',
         primary: true,
-        onClick: () => {
-          for (const r of rows) addFinished(r.url, shots.find((s) => s.id === r.sel.value) ?? null, r.file.name);
+        onClick: async () => {
+          const picked = rows.map((r) => ({ r, shot: shots.find((s) => s.id === r.sel.value) ?? null }));
+          let urls = rows.map((r) => r.url);
+          if (harmonize.checked) {
+            try {
+              const existing = state.gallery.filter((g) => g.quality === 'photoreal' && !picked.some((p) => p.shot && g.shotId === `${p.shot.id}-ai`)).map((g) => ({ url: g.url, kind: g.kind }));
+              urls = await harmonizeBatch(picked.map((p) => ({ url: p.r.url, kind: p.shot?.kind ?? 'other' })), existing);
+            } catch (e) {
+              console.warn('色味をそろえられませんでした', e);
+            }
+          }
+          picked.forEach((p, i) => addFinished(urls[i], p.shot, p.r.file.name));
           emit('gallery');
           toast(`${rows.length}枚の仕上げ写真をギャラリー（プレゼン資料）に入れました`, 'ok', 6000);
         },
@@ -189,3 +207,4 @@ export function importFinishedVideos(onDone?: () => void) {
   document.body.appendChild(input);
   input.click();
 }
+(globalThis as unknown as { __harmonizeBatch: typeof harmonizeBatch }).__harmonizeBatch = harmonizeBatch;

@@ -16,6 +16,7 @@ import { selectedProduct, type Product } from '../coordinate/catalog';
 import { categoryById } from '../coordinate/decisions';
 import { boardEntries, renderMaterialBoard } from './materialBoard';
 import { librarySample } from '../coordinate/samples';
+import { listRefs, REF_KIND_LABEL, type StyleRef, type RefKind } from './styleRefs';
 import { exposureFor } from './draftCapture';
 import { resolveSpec } from '../styles/spec';
 import { cutToken, saveCutManifest } from './finishImport';
@@ -171,6 +172,9 @@ const WET_PARTS: [string, string, string][] = [
   ['bath', '浴室', 'Bathroom'],
 ];
 
+/** 説明文に「お手本と同じ写りで」を入れるための、同梱したお手本（exportCuts が設定） */
+let refsForPrompt: StyleRef[] | null = null;
+
 export function cutPrompt(shot: Shot, index: number): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);
   const int = interiorById(state.design.interiorId);
@@ -181,15 +185,19 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
   const floors = model?.floors.length ?? 2;
   const clayJa = state.design.clay ? '下絵は白い模型（クレイ）なので、材質は次の指定どおりに着彩してください。' : '';
   const clayEn = state.design.clay ? ' The base image is a white clay model; apply the materials specified below.' : '';
+  const refKind: RefKind = shot.kind === 'interior' ? 'interior' : 'exterior';
+  const hasRef = (refsForPrompt ?? []).some((r) => r.kind === refKind);
   const common = {
     ja:
       '住宅の建築パース（下絵）です。' +
       clayJa +
-      '構図・カメラ位置・画角・間取り・壁と窓とドアの位置と数・屋根の形・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。窓やドアを増やさない・減らさない。人物・文字・余計な小物・看板は加えないでください。同梱の「素材ボード」の写真と同じ色・質感にしてください。',
+      '構図・カメラ位置・画角・間取り・壁と窓とドアの位置と数・屋根の形・家具の配置と大きさは、この画像のとおりに変えずに、質感と光だけを写真のようにリアルに仕上げてください。窓やドアを増やさない・減らさない。人物・文字・余計な小物・看板は加えないでください。同梱の「素材ボード」の写真と同じ色・質感にしてください。' +
+      (hasRef ? `同梱の「お手本（${REF_KIND_LABEL[refKind]}）」の写真と同じ写り（色味・光の柔らかさ・コントラスト・植栽や空の雰囲気）に仕上げてください。お手本の建物や間取りは真似しないでください。` : ''),
     en:
       'This is an architectural visualization base image of a Japanese detached house.' +
       clayEn +
-      ' Keep the composition, camera position, field of view, floor plan, the position and number of walls, windows and doors, the roof shape and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. Do not add or remove windows or doors. No people, no text, no signage, no extra props. Match the colors and textures of the attached material board photo.',
+      ' Keep the composition, camera position, field of view, floor plan, the position and number of walls, windows and doors, the roof shape and the furniture layout exactly as in the image; only upgrade materials and lighting to photorealistic quality. Do not add or remove windows or doors. No people, no text, no signage, no extra props. Match the colors and textures of the attached material board photo.' +
+      (hasRef ? ' Match the photographic look of the attached reference photo (color grading, softness of light, contrast, mood of planting and sky) — but do not copy its building or layout.' : ''),
   };
   if (shot.kind === 'interior') {
     const name = room ? `${room.name}（${(room.labeledTatami ?? room.area / 1.62).toFixed(1)}帖）` : shot.title;
@@ -245,7 +253,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     `${state.name}　カット集（Nano Banana Pro で仕上げる下絵）`,
     `作成: ${new Date().toLocaleString('ja-JP')}`,
     '',
-    '使い方: 各画像を Nano Banana Pro に渡し、「00_素材ボード.jpg」も一緒に参考画像として添えて、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚（LDK・外観）を次のカットから参考画像に加えると、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。',
+    '使い方: 各画像を Nano Banana Pro に渡し、「00_素材ボード.jpg」（あれば「00_お手本_…」も）を一緒に参考画像として添えて、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚（LDK・外観）を次のカットから参考画像に加えると、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。',
     '',
   );
   let n = 0;
@@ -265,6 +273,22 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
       lines.push('■ 00_素材ボード.jpg', '（コーディネートで選んだ仕上げの見本。すべてのカットで参考画像として一緒に渡してください。「実物」の印は実物の写真、それ以外は 3D と同じ質感のイメージです）', '');
     } catch (e) {
       console.warn('素材ボードを作れませんでした', e);
+    }
+    // お手本の写真（御社の仕上げパース）: 外観・内観それぞれ最大 3 枚
+    try {
+      const refs = await listRefs();
+      const picked: StyleRef[] = [];
+      for (const kind of ['exterior', 'interior'] as RefKind[]) picked.push(...refs.filter((r) => r.kind === kind).slice(-3));
+      refsForPrompt = picked;
+      const no: Record<RefKind, number> = { exterior: 0, interior: 0 };
+      for (const r of picked) {
+        no[r.kind]++;
+        entries.push({ name: `00_お手本_${REF_KIND_LABEL[r.kind]}_${no[r.kind]}.jpg`, data: dataUrlToBytes(r.url) });
+      }
+      if (picked.length) lines.push(`■ 00_お手本_…jpg（${picked.length} 枚）`, '（御社の仕上げパース。外観のカットには「お手本_外観」、内観には「お手本_内観」を参考画像として一緒に渡すと、写り（色味・光・植栽）がそろいます。建物そのものは真似させない指示が説明文に入っています）', '');
+    } catch (e) {
+      refsForPrompt = null;
+      console.warn('お手本の写真を読めませんでした', e);
     }
     for (let i = 0; i < shots.length; i++) {
       if (pm.signal.aborted) break;
@@ -304,6 +328,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     toast(`カット集を保存しました（${n}枚・${(zip.size / 1024 / 1024).toFixed(1)} MB）`, 'ok', 6000);
   } finally {
+    refsForPrompt = null;
     pm.close();
     v.setRoomLabels(prevLabels);
     v.setTownVisible(true);

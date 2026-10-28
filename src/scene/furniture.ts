@@ -1425,6 +1425,9 @@ function bed(fr: Frame, u: number, v: number, w: number) {
   fr.box('f.bedding', u, v + 0.02, w, L, 0.3, 0.2);
   fr.box('f.fabric2', u, v + 0.75, w + 0.02, L - 0.72, 0.48, 0.05); // 掛け布団
   fr.box('f.fabric2', u, v + 1.75, w + 0.04, 0.3, 0.3, 0.2);
+  // 足元に畳んだスロー（濃い色の布）を掛ける（写真の「生活感」。真っ平らな掛け布団だけだと展示場のベッドに見える）
+  fr.box('f.fabric', u, v + 1.4, w + 0.08, 0.55, 0.53, 0.035);
+  fr.box('f.fabric', u, v + 1.4, w + 0.08, 0.3, 0.565, 0.02);
   const np = w > 1.2 ? 2 : 1;
   for (let i = 0; i < np; i++) {
     const pu = np === 2 ? u + (i === 0 ? -w / 4 : w / 4) : u;
@@ -1437,6 +1440,10 @@ function nightstand(fr: Frame, u: number, v: number, lights: LightPoint[], roomI
   fr.cyl('f.metal', u, v + 0.2, 0.06, 0.5, 0.02);
   fr.cyl('f.metal', u, v + 0.2, 0.01, 0.52, 0.3);
   fr.cyl('f.lampShade', u, v + 0.2, 0.12, 0.72, 0.2);
+  // 読みかけの本とカップ
+  fr.box('f.fabric2', u - 0.1, v - 0.05, 0.17, 0.13, 0.5, 0.022);
+  fr.box('f.white', u - 0.1, v - 0.05, 0.15, 0.11, 0.522, 0.012);
+  fr.cyl('f.white', u + 0.14, v - 0.08, 0.035, 0.5, 0.07, 16);
   lights.push({ pos: fr.point(u, v + 0.2, 0.8), kind: 'lamp', roomId });
 }
 

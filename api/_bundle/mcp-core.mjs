@@ -16791,6 +16791,8 @@ function bed(fr, u, v, w) {
 	fr.box("f.bedding", u, v + .02, w, L, .3, .2);
 	fr.box("f.fabric2", u, v + .75, w + .02, 1.28, .48, .05);
 	fr.box("f.fabric2", u, v + 1.75, w + .04, .3, .3, .2);
+	fr.box("f.fabric", u, v + 1.4, w + .08, .55, .53, .035);
+	fr.box("f.fabric", u, v + 1.4, w + .08, .3, .565, .02);
 	const np = w > 1.2 ? 2 : 1;
 	for (let i = 0; i < np; i++) {
 		const pu = np === 2 ? u + (i === 0 ? -w / 4 : w / 4) : u;
@@ -16802,6 +16804,9 @@ function nightstand(fr, u, v, lights, roomId) {
 	fr.cyl("f.metal", u, v + .2, .06, .5, .02);
 	fr.cyl("f.metal", u, v + .2, .01, .52, .3);
 	fr.cyl("f.lampShade", u, v + .2, .12, .72, .2);
+	fr.box("f.fabric2", u - .1, v - .05, .17, .13, .5, .022);
+	fr.box("f.white", u - .1, v - .05, .15, .11, .522, .012);
+	fr.cyl("f.white", u + .14, v - .08, .035, .5, .07, 16);
 	lights.push({
 		pos: fr.point(u, v + .2, .8),
 		kind: "lamp",

@@ -14,6 +14,7 @@ import { EXTERIOR_STYLES, INTERIOR_STYLES, MAIN_EXTERIOR_IDS, MAIN_INTERIOR_IDS,
 import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { exportCuts } from '../cuts';
+import { listRefs, addRef, deleteRef, REF_KIND_LABEL, type RefKind } from '../styleRefs';
 import { importFinishedImages, importFinishedVideos } from '../finishImport';
 import { exportRoomTour, previewRoomTour } from '../roomTour';
 import { startCinema } from '../cinema';
@@ -438,6 +439,36 @@ export const designStep: Step = {
           tourBtn.textContent = '▶ 経路を 3D で確かめる';
         });
       };
+      // お手本の写真（事務所の写真庫）
+      const refsBox = h('div', { class: 'gallery refs' });
+      const renderRefs = async () => {
+        clear(refsBox);
+        const refs = await listRefs();
+        if (!refs.length) refsBox.appendChild(h('p', { class: 'hint', style: 'grid-column:1/-1;margin:0' }, 'まだ登録されていません。'));
+        for (const r of refs)
+          refsBox.appendChild(
+            h(
+              'figure',
+              null,
+              h('img', { src: r.url, alt: r.name ?? '' }),
+              h('figcaption', null, `${REF_KIND_LABEL[r.kind]}${r.name ? `　${r.name}` : ''}`),
+              h('button', { class: 'btn xs ghost del', title: 'この お手本を写真庫から外す', onclick: async () => { await deleteRef(r.id); await renderRefs(); } }, '外す'),
+            ),
+          );
+      };
+      const pickRef = (kind: RefKind) => {
+        const input = h('input', { type: 'file', accept: 'image/*', multiple: true, style: 'display:none' }) as HTMLInputElement;
+        input.onchange = async () => {
+          const files = [...(input.files ?? [])].slice(0, 3);
+          for (const f of files) await addRef(f, kind);
+          toast(`お手本（${REF_KIND_LABEL[kind]}）を ${files.length} 枚登録しました`, 'ok');
+          await renderRefs();
+        };
+        document.body.appendChild(input);
+        input.click();
+        input.remove();
+      };
+      void renderRefs();
       side.append(
         section(
           '仕上げ（外部）① パースのカット集',
@@ -452,6 +483,12 @@ export const designStep: Step = {
           ),
           h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '下絵のサイズ'), sizeSel),
           h('p', { class: 'hint' }, 'こつ: 最初に仕上げた 1 枚（LDK など）を、次のカットから「参考画像」として一緒に渡すと、床・壁・光の色が全カットでそろいます。'),
+        ),
+        section(
+          'お手本の写真（御社の仕上げパース）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '御社の仕上げパースや竣工写真を外観・内観それぞれ 1〜3 枚登録しておくと、カット集に「この写りで」と同梱され、色味・光・植栽の雰囲気が御社らしくそろいます。事務所の写真庫（このパソコン）に入り、どのお客様でも使われます。'),
+          refsBox,
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void pickRef('exterior') }, '＋外観のお手本'), h('button', { class: 'btn sm', onclick: () => void pickRef('interior') }, '＋内観のお手本')),
         ),
         section(
           '仕上げ（外部）② ルームツアー動画の素材',
@@ -513,7 +550,7 @@ export const designStep: Step = {
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
         { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
-        { id: 'export', label: '仕上げ（外部）', match: /仕上げ（外部）/ },
+        { id: 'export', label: '仕上げ（外部）', match: /仕上げ（外部）|お手本の写真/ },
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));

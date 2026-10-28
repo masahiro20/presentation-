@@ -12,6 +12,9 @@ import { makeMaterial, type MatSpec } from '../styles/textures';
 
 const DB = 'madori-library';
 const STORE = 'samples';
+/** 事務所の写真庫の棚: samples = 商品の実物写真、refs = お手本の写真（御社の仕上げパース） */
+export type LibraryStore = 'samples' | 'refs';
+const STORES: LibraryStore[] = ['samples', 'refs'];
 
 export interface SamplePhoto {
   url: string;
@@ -22,18 +25,21 @@ export interface SamplePhoto {
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const r = indexedDB.open(DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+    const r = indexedDB.open(DB, 2);
+    r.onupgradeneeded = () => {
+      for (const st of STORES) if (!r.result.objectStoreNames.contains(st)) r.result.createObjectStore(st);
+    };
     r.onsuccess = () => resolve(r.result);
     r.onerror = () => reject(r.error);
   });
 }
 
-async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+/** 写真庫の 1 操作（store の棚で fn を実行） */
+export async function libraryTx<T>(store: LibraryStore, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await open();
   try {
     return await new Promise<T>((resolve, reject) => {
-      const req = fn(db.transaction(STORE, mode).objectStore(STORE));
+      const req = fn(db.transaction(store, mode).objectStore(store));
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -41,6 +47,7 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
     db.close();
   }
 }
+const tx = <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>) => libraryTx(STORE, mode, fn);
 
 /** 写真庫から読む（無ければ undefined） */
 export async function librarySample(productId: string): Promise<SamplePhoto | undefined> {

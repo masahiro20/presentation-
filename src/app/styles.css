@@ -1072,12 +1072,12 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .check-rows.wishes .check-row { grid-template-columns: 18px 72px 1fr; }
 .check-rows.wishes .check-row.na { color: #8a8f98; }
 .check-rows.wishes .check-row .dt b { font-weight: 600; color: #222; }
-.slide.hl-wishes .wish-table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: 11.5px; }
-.slide.hl-wishes .wish-table td { padding: 3px 4px; border-top: 1px solid #ece8e1; vertical-align: top; line-height: 1.3; }
+.slide.hl-wishes .wish-table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: 11.5px; table-layout: fixed; }
+.slide.hl-wishes .wish-table td { padding: 4px 4px; border-top: 1px solid #ece8e1; vertical-align: top; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slide.hl-wishes .wish-table td.m { width: 16px; text-align: center; font-weight: 700; padding-left: 0; }
 .slide.hl-wishes .wish-table td b { font-weight: 600; }
 .slide.hl-wishes .wish-table tr.ok td.m { color: #2f7d4a; }
 .slide.hl-wishes .wish-table tr.check td.m { color: #c28a12; }
 .slide.hl-wishes .wish-table tr.ng td.m { color: #b4473d; }
-.slide.hl-wishes .wish-table .ev { display: block; color: #666; font-size: 10.5px; }
+.slide.hl-wishes .wish-table .ev { display: inline; color: #666; font-size: 10.5px; margin-left: 8px; }
 .slide.hl-wishes .wish-notes { font-size: 11.5px; color: #666; margin-top: 8px; }

@@ -346,7 +346,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const order: Record<WishResult['status'], number> = { ok: 0, check: 1, ng: 2, na: 3 };
     rs.sort((a, b) => order[a.status] - order[b.status]);
     const judged = rs.filter((r) => r.status !== 'na');
-    const shown = judged.slice(0, 9);
+    const shown = judged.slice(0, 8);
     const rest = judged.length - shown.length;
     const notes = rs.filter((r) => r.status === 'na').slice(0, 5);
     if (shown.length || notes.length) {

@@ -346,7 +346,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const order: Record<WishResult['status'], number> = { ok: 0, check: 1, ng: 2, na: 3 };
     rs.sort((a, b) => order[a.status] - order[b.status]);
     const judged = rs.filter((r) => r.status !== 'na');
-    const shown = judged.slice(0, 8);
+    // 入っていない・要確認は打合せの肝なので必ず載せ、残りを「叶っています」で埋める（表示は叶っている → 要確認 → 入っていない）
+    const must = judged.filter((r) => r.status !== 'ok').slice(0, 5);
+    const shown = [...must, ...judged.filter((r) => r.status === 'ok')].slice(0, 8).sort((a, b) => order[a.status] - order[b.status]);
     const rest = judged.length - shown.length;
     const notes = rs.filter((r) => r.status === 'na').slice(0, 5);
     if (shown.length || notes.length) {

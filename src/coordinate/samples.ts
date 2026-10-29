@@ -6,7 +6,8 @@
  *   保存ファイル・体験リンク（お客様のスマホ）にも届く。
  * - 質感イメージ: 写真が無い商品は、3D と同じ実写テクスチャから小さな見本板を描く（色と質感の目安。実物はサンプルで確かめる）。
  */
-import { FINISH_CATEGORIES, type Product } from './catalog';
+import { FINISH_CATEGORIES, resolveProductId, type Product } from './catalog';
+import { officeSamples } from '../app/officeAssets';
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 import { makeMaterial, type MatSpec } from '../styles/textures';
 
@@ -164,12 +165,26 @@ export function lookOf(catId: string, p: Product, d: DesignOptions, samples: Rec
 /** プロジェクトで使う商品（選択中・候補）の写真を写真庫から state に写す */
 export async function fillSamplesFromLibrary(ids: string[], into: Record<string, string>): Promise<number> {
   let n = 0;
+  let office: Record<string, string> | null = null;
   for (const id of ids) {
     if (into[id]) continue;
     const s = await librarySample(id);
     if (s) {
       into[id] = s.url;
       n++;
+      continue;
+    }
+    // 事務所の既定（メーカーの商品写真）。資料・決定書で使うので data URL にして持つ
+    office ??= await officeSamples();
+    const url = office[id] ?? office[resolveProductId(id)];
+    if (url) {
+      try {
+        const blob = await (await fetch(url)).blob();
+        into[id] = await shrinkPhoto(blob, 900);
+        n++;
+      } catch {
+        // 取れなければ質感イメージのまま
+      }
     }
   }
   return n;

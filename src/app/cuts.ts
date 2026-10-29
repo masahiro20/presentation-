@@ -17,6 +17,7 @@ import { categoryById } from '../coordinate/decisions';
 import { boardEntries, renderMaterialBoard } from './materialBoard';
 import { librarySample } from '../coordinate/samples';
 import { listRefs, REF_KIND_LABEL, type StyleRef, type RefKind } from './styleRefs';
+import { imageBytes } from './officeAssets';
 import { exposureFor } from './draftCapture';
 import { resolveSpec } from '../styles/spec';
 import { cutToken, saveCutManifest } from './finishImport';
@@ -283,7 +284,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
       const no: Record<RefKind, number> = { exterior: 0, interior: 0 };
       for (const r of picked) {
         no[r.kind]++;
-        entries.push({ name: `00_お手本_${REF_KIND_LABEL[r.kind]}_${no[r.kind]}.jpg`, data: dataUrlToBytes(r.url) });
+        entries.push({ name: `00_お手本_${REF_KIND_LABEL[r.kind]}_${no[r.kind]}.jpg`, data: await imageBytes(r.url) });
       }
       if (picked.length) lines.push(`■ 00_お手本_…jpg（${picked.length} 枚）`, '（御社の仕上げパース。外観のカットには「お手本_外観」、内観には「お手本_内観」を参考画像として一緒に渡すと、写り（色味・光・植栽）がそろいます。建物そのものは真似させない指示が説明文に入っています）', '');
     } catch (e) {

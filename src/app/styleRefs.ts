@@ -4,6 +4,7 @@
  * 色味・光・植栽の雰囲気が御社の提案らしくそろう。事務所の写真庫（このブラウザ）に入り、どのお客様でも使う。
  */
 import { libraryTx, shrinkPhoto } from '../coordinate/samples';
+import { officeRefs } from './officeAssets';
 
 export type RefKind = 'exterior' | 'interior';
 
@@ -13,17 +14,23 @@ export interface StyleRef {
   url: string;
   name?: string;
   at: string;
+  /** 事務所の既定（Blob の office/ にあるもの。このパソコンからは外せない） */
+  office?: boolean;
 }
 
 export const REF_KIND_LABEL: Record<RefKind, string> = { exterior: '外観', interior: '内観' };
 
+/** 事務所の既定（先）＋このパソコンで登録したもの（後。カット集は後ろから 3 枚を使うのでパソコンの登録が優先） */
 export async function listRefs(): Promise<StyleRef[]> {
+  let mine: StyleRef[] = [];
   try {
     const all = await libraryTx<StyleRef[]>('refs', 'readonly', (s) => s.getAll() as IDBRequest<StyleRef[]>);
-    return all.sort((a, b) => a.at.localeCompare(b.at));
+    mine = all.sort((a, b) => a.at.localeCompare(b.at));
   } catch {
-    return [];
+    mine = [];
   }
+  const office = (await officeRefs()).map<StyleRef>((r) => ({ id: r.id, kind: r.kind, url: r.url, name: r.name, at: '', office: true }));
+  return [...office, ...mine];
 }
 
 export async function addRef(file: File, kind: RefKind): Promise<StyleRef> {

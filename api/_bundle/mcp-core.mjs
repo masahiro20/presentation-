@@ -10759,14 +10759,14 @@ async function loadPdfVectors(data, pdfjs, opts = {}) {
 		const imagePlan = opts.rasterImages && bigImages.length > 0;
 		if (pv.segments.length < 50 && (pv.imageCount ?? 0) > 0 || imagePlan) try {
 			opts.onProgress?.(`${i}/${n} ページ: スキャン画像を解析中`, (i - .5) / n * .5);
-			pv.raster = await renderThickMask(page, doc.canvasFactory, pv.width, pv.height, imagePlan ? bigImages : void 0);
+			pv.raster = await renderThickMask(page, doc.canvasFactory, pv.width, pv.height, imagePlan ? bigImages : void 0, bigImages);
 		} catch {}
 		pages.push(pv);
 	}
 	return pages;
 }
 /** ページを約150dpi（最大 600万画素）で描画し、太い線だけの2値画像にする */
-async function renderThickMask(page, factory, wPt, hPt, only) {
+async function renderThickMask(page, factory, wPt, hPt, only, images) {
 	const scale = Math.min(150 / 72, Math.sqrt(6e6 / (wPt * hPt)));
 	const vp = page.getViewport({ scale });
 	const w = Math.ceil(vp.width);
@@ -10794,6 +10794,12 @@ async function renderThickMask(page, factory, wPt, hPt, only) {
 		canvas
 	}).promise;
 	const rgba = ctx.getImageData(0, 0, w, h).data;
+	if (!isDrawingLike(rgba, w, h, (images ?? []).map((r) => ({
+		x0: r.x0 * scale,
+		y0: r.y0 * scale,
+		x1: r.x1 * scale,
+		y1: r.y1 * scale
+	})))) return void 0;
 	const gray = new Uint8Array(w * h);
 	for (let i = 0; i < gray.length; i++) gray[i] = rgba[i * 4] * .3 + rgba[i * 4 + 1] * .59 + rgba[i * 4 + 2] * .11 | 0;
 	const k = Math.max(1, Math.round(2 * (scale / (150 / 72))));
@@ -10814,6 +10820,43 @@ async function renderThickMask(page, factory, wPt, hPt, only) {
 		h,
 		scale
 	};
+}
+/**
+* 描画したページ（または貼られた画像の範囲）が図面らしいか。
+* 図面は白地に細い線で、中間調（灰色）の画素がほとんど無い。写真（航空写真・パース・内観）は中間調が半分以上を占める。
+* 計測例: 航空写真の範囲 = 白 0.3・中間調 0.5〜0.6、線画の図面 = 白 0.99・中間調 0.00
+*/
+function isDrawingLike(rgba, w, h, rects) {
+	const areas = rects.length ? rects : [{
+		x0: 0,
+		y0: 0,
+		x1: w,
+		y1: h
+	}];
+	let n = 0;
+	let white = 0;
+	let mid = 0;
+	const step = 3;
+	for (const r of areas) {
+		const x0 = Math.max(0, Math.floor(r.x0));
+		const x1 = Math.min(w, Math.ceil(r.x1));
+		const y0 = Math.max(0, Math.floor(r.y0));
+		const y1 = Math.min(h, Math.ceil(r.y1));
+		for (let y = y0; y < y1; y += step) for (let x = x0; x < x1; x += step) {
+			const i = (y * w + x) * 4;
+			const R = rgba[i];
+			const G = rgba[i + 1];
+			const B = rgba[i + 2];
+			n++;
+			if (R > 225 && G > 225 && B > 225) white++;
+			else {
+				const l = .3 * R + .59 * G + .11 * B;
+				if (l > 60 && l < 200) mid++;
+			}
+		}
+	}
+	if (!n) return true;
+	return mid / n < .35 || white / n >= .6;
 }
 function modelFromVectors(pages, opts = {}) {
 	const t0 = performance.now();

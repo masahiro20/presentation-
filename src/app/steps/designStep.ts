@@ -451,8 +451,8 @@ export const designStep: Step = {
               'figure',
               null,
               h('img', { src: r.url, alt: r.name ?? '' }),
-              h('figcaption', null, `${REF_KIND_LABEL[r.kind]}${r.name ? `　${r.name}` : ''}`),
-              h('button', { class: 'btn xs ghost del', title: 'この お手本を写真庫から外す', onclick: async () => { await deleteRef(r.id); await renderRefs(); } }, '外す'),
+              h('figcaption', null, `${REF_KIND_LABEL[r.kind]}${r.name ? `　${r.name}` : ''}${r.office ? '　（事務所の既定）' : ''}`),
+              r.office ? null : h('button', { class: 'btn xs ghost del', title: 'この お手本を写真庫から外す', onclick: async () => { await deleteRef(r.id); await renderRefs(); } }, '外す'),
             ),
           );
       };
@@ -486,7 +486,7 @@ export const designStep: Step = {
         ),
         section(
           'お手本の写真（御社の仕上げパース）',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '御社の仕上げパースや竣工写真を外観・内観それぞれ 1〜3 枚登録しておくと、カット集に「この写りで」と同梱され、色味・光・植栽の雰囲気が御社らしくそろいます。事務所の写真庫（このパソコン）に入り、どのお客様でも使われます。'),
+          h('p', { class: 'hint', style: 'margin-top:0' }, '御社の仕上げパースが「事務所の既定」として最初から入っています（カット集に「この写りで」と同梱され、色味・光・植栽の雰囲気が御社らしくそろいます）。このパソコンで別の写真を登録すると、そちらが優先して使われます（外観・内観それぞれ 3 枚まで）。'),
           refsBox,
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => void pickRef('exterior') }, '＋外観のお手本'), h('button', { class: 'btn sm', onclick: () => void pickRef('interior') }, '＋内観のお手本')),
         ),

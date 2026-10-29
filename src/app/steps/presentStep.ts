@@ -345,8 +345,10 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const rs = checkWishes(model, ws, { narrowIssues: narrow });
     const order: Record<WishResult['status'], number> = { ok: 0, check: 1, ng: 2, na: 3 };
     rs.sort((a, b) => order[a.status] - order[b.status]);
-    const shown = rs.filter((r) => r.status !== 'na').slice(0, 12);
-    const notes = rs.filter((r) => r.status === 'na').slice(0, 6);
+    const judged = rs.filter((r) => r.status !== 'na');
+    const shown = judged.slice(0, 9);
+    const rest = judged.length - shown.length;
+    const notes = rs.filter((r) => r.status === 'na').slice(0, 5);
     if (shown.length || notes.length) {
       const mark = (st: WishResult['status']) => (st === 'ok' ? '✓' : st === 'check' ? '△' : st === 'ng' ? '－' : '…');
       slides.push(
@@ -358,7 +360,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
             head(no('Wishes'), 'Your Requests', 'ご要望との照合'),
             h('p', null, 'お聞きしたご要望が、この間取りにどう入っているかをまとめました。△・－ の項目は次回の打合せでご相談します。'),
             h('table', { class: 'wish-table' }, h('tbody', null, ...shown.map((r) => h('tr', { class: r.status }, h('td', { class: 'm' }, mark(r.status)), h('td', null, h('b', null, r.wish.label), h('span', { class: 'ev' }, r.evidence)))))),
-            notes.length ? h('p', { class: 'wish-notes' }, `打合せで確認: ${notes.map((r) => r.wish.label).join('／')}`) : null,
+            rest > 0 || notes.length ? h('p', { class: 'wish-notes' }, [rest > 0 ? `ほか ${rest} 件` : '', notes.length ? `打合せで確認: ${notes.map((r) => r.wish.label).join('／')}` : ''].filter(Boolean).join('　')) : null,
           ),
           h('div', { class: 'ph' }, photo(ints[0] ?? exts[0] ?? hero)),
         ),

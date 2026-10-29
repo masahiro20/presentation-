@@ -50,13 +50,39 @@ export async function libraryTx<T>(store: LibraryStore, mode: IDBTransactionMode
 }
 const tx = <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>) => libraryTx(STORE, mode, fn);
 
-/** 写真庫から読む（無ければ undefined） */
-export async function librarySample(productId: string): Promise<SamplePhoto | undefined> {
-  try {
-    return (await tx<SamplePhoto | undefined>('readonly', (s) => s.get(productId) as IDBRequest<SamplePhoto | undefined>)) ?? undefined;
-  } catch {
-    return undefined;
+/** 事務所の既定の実物写真（メーカーの商品写真）を data URL にしたもの。商品 id → 写真 */
+const officeCache = new Map<string, Promise<SamplePhoto | undefined>>();
+
+async function officeSample(productId: string): Promise<SamplePhoto | undefined> {
+  const id = resolveProductId(productId);
+  if (!officeCache.has(id)) {
+    officeCache.set(
+      id,
+      (async () => {
+        const office = await officeSamples();
+        const url = office[id];
+        if (!url) return undefined;
+        try {
+          const blob = await (await fetch(url)).blob();
+          return { url: await shrinkPhoto(blob, 900), name: 'メーカーの商品写真（事務所の既定）', at: '' };
+        } catch {
+          return undefined;
+        }
+      })(),
+    );
   }
+  return officeCache.get(id)!;
+}
+
+/** 写真庫から読む（このパソコンの登録 → 事務所の既定 の順。無ければ undefined） */
+export async function librarySample(productId: string): Promise<SamplePhoto | undefined> {
+  let mine: SamplePhoto | undefined;
+  try {
+    mine = (await tx<SamplePhoto | undefined>('readonly', (s) => s.get(productId) as IDBRequest<SamplePhoto | undefined>)) ?? undefined;
+  } catch {
+    mine = undefined;
+  }
+  return mine ?? (await officeSample(productId));
 }
 
 export async function saveLibrarySample(productId: string, photo: SamplePhoto): Promise<void> {
@@ -165,26 +191,12 @@ export function lookOf(catId: string, p: Product, d: DesignOptions, samples: Rec
 /** プロジェクトで使う商品（選択中・候補）の写真を写真庫から state に写す */
 export async function fillSamplesFromLibrary(ids: string[], into: Record<string, string>): Promise<number> {
   let n = 0;
-  let office: Record<string, string> | null = null;
   for (const id of ids) {
     if (into[id]) continue;
     const s = await librarySample(id);
     if (s) {
       into[id] = s.url;
       n++;
-      continue;
-    }
-    // 事務所の既定（メーカーの商品写真）。資料・決定書で使うので data URL にして持つ
-    office ??= await officeSamples();
-    const url = office[id] ?? office[resolveProductId(id)];
-    if (url) {
-      try {
-        const blob = await (await fetch(url)).blob();
-        into[id] = await shrinkPhoto(blob, 900);
-        n++;
-      } catch {
-        // 取れなければ質感イメージのまま
-      }
     }
   }
   return n;

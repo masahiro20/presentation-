@@ -519,7 +519,7 @@ export const coordStep: Step = {
               h('div', { class: 'cd' }, [p.code, p.note].filter(Boolean).join('　')),
               p.used ? h('div', { class: 'used' }, `御社の採用例: ${p.used}`) : null,
               catalogUrl(p) ? h('a', { class: 'linkbtn', href: catalogUrl(p), target: '_blank', rel: 'noopener', title: 'メーカーのサイトでこの商品のカタログ・色見本を探します（別のタブ）', onclick: (e: Event) => e.stopPropagation() }, 'カタログ ↗') : null,
-              hasLook(catId) ? h('button', { class: 'linkbtn photo', title: 'この商品の実物写真（サンプルを撮った写真・メーカーの写真）を登録。事務所の写真庫に入り、他のお客様でも使えます', onclick: (e: Event) => { e.stopPropagation(); void attachPhoto(p.id); } }, sampleMap()[p.id] ? '写真を差し替え' : '＋実物写真') : null,
+              h('button', { class: 'linkbtn photo', title: 'この商品の実物写真（サンプルを撮った写真・メーカーの写真）を登録。事務所の写真庫に入り、他のお客様でも使えます', onclick: (e: Event) => { e.stopPropagation(); void attachPhoto(p.id); } }, sampleMap()[p.id] ? '写真を差し替え' : '＋実物写真'),
               sampleMap()[p.id] ? h('button', { class: 'linkbtn photo', onclick: (e: Event) => { e.stopPropagation(); void removePhoto(p.id); } }, '写真を外す') : null,
             ),
             h('div', { class: `dl ${deltas[p.id] && deltas[p.id]! > 0 ? 'up' : ''}` }, on ? '選択中' : deltaText(deltas[p.id])),

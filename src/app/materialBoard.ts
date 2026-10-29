@@ -5,7 +5,7 @@
  * （文字で「オーク」と書くより、実物の板の写真を見せた方が仕上がりの色・木目が決まる）。
  */
 import { FINISH_CATEGORIES, selectedProduct, type Product } from '../coordinate/catalog';
-import { lookOf, hasLook } from '../coordinate/samples';
+import { lookOf } from '../coordinate/samples';
 import { state } from './state';
 
 export interface BoardEntry {
@@ -26,7 +26,8 @@ export function boardEntries(samples: Record<string, string> | undefined): Board
     if (!cat) continue;
     const p = selectedProduct(cat, state.design);
     if (/^(acc|aw)\.none$/.test(p.id)) continue;
-    const look = hasLook(id) ? lookOf(id, p, state.design, samples) : undefined;
+    // 実物写真があれば部位を問わず載せる（キッチン・浴室・照明はメーカーの商品写真が事務所の既定に入る）
+    const look = lookOf(id, p, state.design, samples);
     out.push({ catId: id, label: cat.label.replace(/（.*?）/g, ''), product: p, url: look?.url, real: !!look?.real });
   }
   return out;

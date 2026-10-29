@@ -361,7 +361,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
             null,
             head(no('Wishes'), 'Your Requests', 'ご要望との照合'),
             h('p', null, 'お聞きしたご要望が、この間取りにどう入っているかをまとめました。△・－ の項目は次回の打合せでご相談します。'),
-            h('table', { class: 'wish-table' }, h('tbody', null, ...shown.map((r) => h('tr', { class: r.status }, h('td', { class: 'm' }, mark(r.status)), h('td', null, h('b', null, r.wish.label), h('span', { class: 'ev' }, r.evidence)))))),
+            h('table', { class: 'wish-table' }, h('tbody', null, ...shown.map((r) => h('tr', { class: `w-${r.status}` }, h('td', { class: 'm' }, mark(r.status)), h('td', null, h('b', null, r.wish.label), h('span', { class: 'ev' }, r.evidence)))))),
             rest > 0 || notes.length ? h('p', { class: 'wish-notes' }, [rest > 0 ? `ほか ${rest} 件` : '', notes.length ? `打合せで確認: ${notes.map((r) => r.wish.label).join('／')}` : ''].filter(Boolean).join('　')) : null,
           ),
           h('div', { class: 'ph' }, photo(ints[0] ?? exts[0] ?? hero)),

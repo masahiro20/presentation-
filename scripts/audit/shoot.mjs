@@ -19,7 +19,10 @@ const VIEWS = [
   { name: 'aerial', az: 30, el: 58 },
 ];
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+import { globSync } from 'node:fs';
+// 入っている Chromium を探す（環境ごとに版が違う）
+const chromePath = globSync('/opt/pw-browsers/chromium-*/chrome-linux*/chrome').sort().pop() ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const browser = await chromium.launch({ executablePath: chromePath, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const summary = [];
 for (const f of files) {
   const id = idOf(f);

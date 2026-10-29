@@ -249,7 +249,7 @@ function wallBBox(w: WWall): BBox {
 }
 
 /** 接続関係から壁群をクラスタリングし、図面（階）ごとに分ける */
-function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500, windowSegs?: Seg[]): WWall[][] {
+function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500, windowSegs?: Seg[], nearTol = 40): WWall[][] {
   const parent = walls.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const unite = (a: number, b: number) => {
@@ -259,12 +259,12 @@ function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500
     for (let j = i + 1; j < walls.length; j++) {
       const A = walls[i];
       const B = walls[j];
-      if (bboxGap(wallBBox(A), wallBBox(B)) > 40) continue;
+      if (bboxGap(wallBBox(A), wallBBox(B)) > nearTol) continue;
       const near =
-        distPointSegment(A.a, B.a, B.b) <= B.d / 2 + 40 ||
-        distPointSegment(A.b, B.a, B.b) <= B.d / 2 + 40 ||
-        distPointSegment(B.a, A.a, A.b) <= A.d / 2 + 40 ||
-        distPointSegment(B.b, A.a, A.b) <= A.d / 2 + 40;
+        distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol ||
+        distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol;
       if (near) unite(i, j);
     }
   }
@@ -2199,6 +2199,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     }
     if ((globalThis as any).__DBG_PLANS) {
       ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
+      ((globalThis as any).__DBG_WALLS ??= []).push({ page: page.pageIndex, walls: ww.map((w) => ({ a: w.a, b: w.b, d: w.d })), ext: pageExt, texts: page.texts.filter((t) => /階|平面|プラン|提案/.test(t.str)).map((t) => ({ x: Math.round(t.x), y: Math.round(t.y), s: t.str })) });
       const lens = ww.map((w) => w.t1 - w.t0);
       console.log('walls', ww.length, 'len<300', lens.filter((l) => l < 300).length, '<1000', lens.filter((l) => l >= 300 && l < 1000).length, '>=1000', lens.filter((l) => l >= 1000).length, 'd', ww.slice(0, 12).map((w) => Math.round(w.d)).join('/'));
     }
@@ -2295,6 +2296,17 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       .sort((a, b) => a.gap - b.gap)[0];
     if (!near) continue;
     const q = near.q;
+    // 室名が 2 つ以上重なる離れた図は、同じ階の一部ではなく別案・部分図（池本様の 2 階の脇に描かれた変更案が 2 階に合体し、漫画部屋・吹抜が 2 つずつになっていた）
+    const namesOf = (pl: PlanData) => new Set(pl.texts.map((t) => cleanRoomName(t.str)).filter((n): n is string => !!n && classifyRoomName(n) != null));
+    const np = namesOf(p);
+    const nq = namesOf(q);
+    let dup = 0;
+    for (const n of np) if (nq.has(n)) dup++;
+    if (dup >= 2 && near.gap > 300) {
+      plans.splice(plans.indexOf(p), 1);
+      warnings.push(`${p.pageIndex + 1}ページ目: ${near.q.floorHint}階の脇の小さな図（変更案・部分図）は読み飛ばしました`);
+      continue;
+    }
     q.walls.push(...p.walls);
     const seen = new Set(q.texts);
     q.texts.push(...p.texts.filter((t) => !seen.has(t)));
@@ -2340,6 +2352,8 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
       const s0 = normalizeText(t.str);
       if (/[,、，]/.test(s0) && /平面/.test(s0)) continue;
       if (followingOnLine(t, page.texts, 3).some((q) => parseFloorTitle(q.str) != null && parseFloorTitle(q.str) !== f)) continue;
+      const lenOf = (pl: PlanData) => pl.walls.reduce((s0, w) => s0 + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
+      const maxLen = Math.max(...onPage.map(lenOf));
       for (const p of onPage) {
         const b = p.bbox;
         const dx = Math.max(0, b.minX - t.x, t.x - b.maxX);
@@ -2347,7 +2361,9 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
         const h = b.maxY - b.minY;
         const w = b.maxX - b.minX;
         if (onPage.length > 1 && (dy > h * 0.9 || dx > w * 0.6)) continue;
-        cands.push({ plan: p, title: t, floor: f, score: dx * 3 + dy });
+        // 図と見出しの間に描かれた小さな図（変更案・部分図）が見出しを取らないように、小さな図は最後の候補にする
+        const small = lenOf(p) < maxLen * 0.4;
+        cands.push({ plan: p, title: t, floor: f, score: dx * 3 + dy + (small ? 100000 : 0) });
       }
     }
   }
@@ -2666,13 +2682,18 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   }
   // 階の決定
   const hinted = plans.filter((p) => p.floorHint != null);
+  const wallLen = (p: PlanData) => p.walls.reduce((s0, w) => s0 + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
   const ordered = plans.slice().sort((a, b) => {
     const fa = a.floorHint ?? 99;
     const fb = b.floorHint ?? 99;
     if (fa !== fb) return fa - fb;
     if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
+    // 見出しの無いスキャン図面（色付きの配置図兼平面図など）は、いちばん大きい区画を 1 階にする（左端の区画が車庫だった）
+    if (fa === 99 && a.scan && b.scan) return wallLen(b) - wallLen(a);
     return a.bbox.minX - b.bbox.minX;
   });
+  // 見出しが 1 つも無い 1 ページの図面（配置図兼平面図）: 区画は同じ敷地の上に描かれているので、位置合わせはしない
+  const samePageUnhinted = plans.length > 1 && plans.every((p) => p.floorHint == null && p.pageIndex === plans[0].pageIndex);
   const used = new Set<number>();
   const levelOf = new Map<PlanData, number>();
   let nextLevel = 1;
@@ -2695,7 +2716,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   // 位置合わせ
   const base = sorted[0];
   if (base) {
-    for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
+    if (!samePageUnhinted) for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
     // 原点を1階の左上へ
     const o = { x: -base.bbox.minX, y: -base.bbox.minY };
     for (const p of sorted) translatePlan(p, o);
@@ -2727,6 +2748,29 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     elev += f.height;
     f.walls.forEach((w) => thicknesses.add(w.thickness));
     floors.push(f);
+  }
+  if (samePageUnhinted && floors.length > 1) {
+    // 同じ敷地の上の離れた区画（車庫・離れ・物置）: 階段が無く、母屋より小さいものは「上の階」ではなく 1 階の一部
+    const areaOf = (f: Floor) => f.rooms.reduce((s0, r) => s0 + r.area, 0);
+    const base = floors[0];
+    for (const f of floors.slice(1)) {
+      if (f.stairs.length || areaOf(f) >= areaOf(base) * 0.6) continue;
+      base.walls.push(...f.walls);
+      base.openings.push(...f.openings);
+      base.rooms.push(...f.rooms);
+      base.outline.push(...f.outline);
+      if (f.planItems?.length) (base.planItems ??= []).push(...f.planItems);
+      floors.splice(floors.indexOf(f), 1);
+      warnings.push('離れた区画（車庫・離れなど）を上の階ではなく 1 階の一部として読みました（修正画面で確認してください）');
+    }
+    // 落ちた区画（敷地の枠など）の分だけ階番号が飛んでいたら詰める
+    let lv = 1;
+    let e = 500;
+    for (const f of floors) {
+      f.level = lv++;
+      f.elevation = e;
+      e += f.height;
+    }
   }
   // 1階の室名の無い区画で、上階に床が無く（2階図で空白）、周囲の大半がガラス戸・窓なら中庭（コの字プランの光庭）。
   // 面積表の無い図面（CAD 書き出し等）では面積の照合で見つけられないため、上下階の比較で判定する

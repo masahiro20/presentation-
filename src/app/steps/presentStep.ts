@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 import { h, clear, toast, progressModal, section, download, setPrintPage } from '../dom';
+import { woodCheck } from '../../parser/woodCheck';
+import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { state, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { excludedFromFloorArea } from '../../core/types';
@@ -230,6 +232,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   if (exts.length || aerial) chapters.push({ en: 'Exterior', ja: '外観' });
   if (ints.length) chapters.push({ en: 'Interior', ja: '内観' });
   if (state.plans.length) chapters.push({ en: 'Floor Plan', ja: '間取り' });
+  if (state.wishes?.trim()) chapters.push({ en: 'Wishes', ja: 'ご要望との照合' });
   if (state.elevations.length) chapters.push({ en: 'Drawings', ja: '図面' });
   if (state.deckFunding) chapters.push({ en: 'Budget', ja: '資金計画' });
   if (state.sun.seasons.length || state.sun.images.length) chapters.push({ en: 'Sunlight', ja: '光と日当たり' });
@@ -334,6 +337,33 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
         ),
       );
     });
+  }
+  // ご要望との照合: 言ったことが図面に入っているかを一目で（叶っている → 要確認 → 打合せ の順）
+  if (state.wishes?.trim()) {
+    const ws = parseWishes(state.wishes);
+    const narrow = woodCheck(model).filter((i) => i.id.startsWith('narrow-')).map((i) => i.title);
+    const rs = checkWishes(model, ws, { narrowIssues: narrow });
+    const order: Record<WishResult['status'], number> = { ok: 0, check: 1, ng: 2, na: 3 };
+    rs.sort((a, b) => order[a.status] - order[b.status]);
+    const shown = rs.filter((r) => r.status !== 'na').slice(0, 12);
+    const notes = rs.filter((r) => r.status === 'na').slice(0, 6);
+    if (shown.length || notes.length) {
+      const mark = (st: WishResult['status']) => (st === 'ok' ? '✓' : st === 'check' ? '△' : st === 'ng' ? '－' : '…');
+      slides.push(
+        slide(
+          'hl hl-overview hl-wishes',
+          h(
+            'div',
+            null,
+            head(no('Wishes'), 'Your Requests', 'ご要望との照合'),
+            h('p', null, 'お聞きしたご要望が、この間取りにどう入っているかをまとめました。△・－ の項目は次回の打合せでご相談します。'),
+            h('table', { class: 'wish-table' }, h('tbody', null, ...shown.map((r) => h('tr', { class: r.status }, h('td', { class: 'm' }, mark(r.status)), h('td', null, h('b', null, r.wish.label), h('span', { class: 'ev' }, r.evidence)))))),
+            notes.length ? h('p', { class: 'wish-notes' }, `打合せで確認: ${notes.map((r) => r.wish.label).join('／')}`) : null,
+          ),
+          h('div', { class: 'ph' }, photo(ints[0] ?? exts[0] ?? hero)),
+        ),
+      );
+    }
   }
   // 立面図: 間取りのページと同じく、図面枠・表題欄の付いたシートではなく 4 面の絵だけを抜き出して大きく
   if (state.elevations.length) {

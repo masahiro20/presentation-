@@ -10,6 +10,7 @@ import { openPlanEditor } from '../planEditor';
 import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../core/types';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
+import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
 import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
@@ -355,6 +356,57 @@ export const importStep: Step = {
     ctx.side.append(dictCard(), mcpCard());
   },
 };
+
+/** ご要望との照合: 要望の文章を貼ると、部屋・広さ・引き戸・近さ・向きなどを間取りと突き合わせる（結果は資料の「ご要望との照合」のページにも載る） */
+function wishesFold(model: BuildingModel): HTMLElement {
+  const list = h('div', { class: 'check-rows wishes' });
+  const run = () => {
+    clear(list);
+    const text = state.wishes ?? '';
+    if (!text.trim()) {
+      list.appendChild(h('p', { class: 'hint', style: 'margin:6px 12px' }, 'ヒアリングシート・要望書の文章をそのまま貼ってください（1 行 1 要望でなくても構いません）。'));
+      return;
+    }
+    const wishes = parseWishes(text);
+    const narrow = woodCheck(model).filter((i) => i.id.startsWith('narrow-')).map((i) => i.title);
+    const rs = checkWishes(model, wishes, { narrowIssues: narrow });
+    const order: Record<WishResult['status'], number> = { ng: 0, check: 1, ok: 2, na: 3 };
+    rs.sort((a, b) => order[a.status] - order[b.status]);
+    for (const r of rs) {
+      const cls = r.status === 'ng' ? 'ng' : r.status === 'check' ? 'info' : r.status === 'ok' ? 'ok' : 'na';
+      list.appendChild(
+        h(
+          'div',
+          { class: `check-row long ${cls}` },
+          h('span', { class: 'ic' }, r.status === 'ng' ? '✖' : r.status === 'check' ? '⚠' : r.status === 'ok' ? '✓' : '…'),
+          h('span', { class: 'lb' }, WISH_STATUS_LABEL[r.status]),
+          h('span', { class: 'dt' }, h('b', null, r.wish.label), h('br'), r.evidence),
+        ),
+      );
+    }
+    const n = rs.filter((r) => r.status !== 'na').length;
+    meta.textContent = n ? `${rs.filter((r) => r.status === 'ok').length}/${n} 叶っています` : '';
+  };
+  const meta = h('span');
+  let timer = 0;
+  const ta = h('textarea', {
+    class: 'wishes-text',
+    rows: 6,
+    placeholder: '例）部屋数は、居間、食堂、和室、寝室、個人部屋 2 つ\n居間 6〜8 畳\n寝室とトイレは近くに／ドアは引き戸／台所は東側で朝日が入るように',
+    oninput: (e: Event) => {
+      state.wishes = (e.target as HTMLTextAreaElement).value;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(run, 400);
+    },
+  }) as HTMLTextAreaElement;
+  ta.value = state.wishes ?? '';
+  const box = h('div', null, h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'お客様の要望の文章を貼ると、部屋の有無・広さ・引き戸・部屋どうしの近さ・向き・階数・駐車台数を間取りと突き合わせます。結果は資料の「ご要望との照合」のページに入ります。'), ta, list);
+  const el = fold('ご要望との照合', { open: !!state.wishes, meta: '' }, box);
+  const metaSlot = el.querySelector('summary .meta, summary span:last-child');
+  if (metaSlot) metaSlot.appendChild(meta);
+  run();
+  return el;
+}
 
 /**
  * 読み取りの辞書（御社の図面の家具・設備の記号）: 修正画面で直した答えを覚え、過去の図面からまとめて学習し、
@@ -873,6 +925,7 @@ function renderResult(ctx: StepCtx) {
 
   // 接道・敷地
   side.append(roadSection(model, redrawPlans));
+  side.append(wishesFold(model));
 
   // 再読み込み
   const scaleSel = h(

@@ -7508,7 +7508,7 @@ function wallBBox(w) {
 	};
 }
 /** 接続関係から壁群をクラスタリングし、図面（階）ごとに分ける */
-function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs) {
+function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs, nearTol = 40) {
 	const parent = walls.map((_, i) => i);
 	const find = (i) => parent[i] === i ? i : parent[i] = find(parent[i]);
 	const unite = (a, b) => {
@@ -7517,8 +7517,8 @@ function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs) {
 	for (let i = 0; i < walls.length; i++) for (let j = i + 1; j < walls.length; j++) {
 		const A = walls[i];
 		const B = walls[j];
-		if (bboxGap(wallBBox(A), wallBBox(B)) > 40) continue;
-		if (distPointSegment(A.a, B.a, B.b) <= B.d / 2 + 40 || distPointSegment(A.b, B.a, B.b) <= B.d / 2 + 40 || distPointSegment(B.a, A.a, A.b) <= A.d / 2 + 40 || distPointSegment(B.b, A.a, A.b) <= A.d / 2 + 40) unite(i, j);
+		if (bboxGap(wallBBox(A), wallBBox(B)) > nearTol) continue;
+		if (distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol || distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol) unite(i, j);
 	}
 	if (windowSegs) for (let i = 0; i < walls.length; i++) for (let j = 0; j < walls.length; j++) {
 		const A = walls[i];
@@ -9565,6 +9565,20 @@ function detectPlans(pages, warnings) {
 				page: page.pageIndex,
 				walls: g
 			})));
+			(globalThis.__DBG_WALLS ??= []).push({
+				page: page.pageIndex,
+				walls: ww.map((w) => ({
+					a: w.a,
+					b: w.b,
+					d: w.d
+				})),
+				ext: pageExt,
+				texts: page.texts.filter((t) => /階|平面|プラン|提案/.test(t.str)).map((t) => ({
+					x: Math.round(t.x),
+					y: Math.round(t.y),
+					s: t.str
+				}))
+			});
 			const lens = ww.map((w) => w.t1 - w.t0);
 			console.log("walls", ww.length, "len<300", lens.filter((l) => l < 300).length, "<1000", lens.filter((l) => l >= 300 && l < 1e3).length, ">=1000", lens.filter((l) => l >= 1e3).length, "d", ww.slice(0, 12).map((w) => Math.round(w.d)).join("/"));
 		}
@@ -9663,6 +9677,16 @@ function detectPlans(pages, warnings) {
 		})).filter((o) => o.gap < 3e3).sort((a, b) => a.gap - b.gap)[0];
 		if (!near) continue;
 		const q = near.q;
+		const namesOf = (pl) => new Set(pl.texts.map((t) => cleanRoomName(t.str)).filter((n) => !!n && classifyRoomName(n) != null));
+		const np = namesOf(p);
+		const nq = namesOf(q);
+		let dup = 0;
+		for (const n of np) if (nq.has(n)) dup++;
+		if (dup >= 2 && near.gap > 300) {
+			plans.splice(plans.indexOf(p), 1);
+			warnings.push(`${p.pageIndex + 1}ページ目: ${near.q.floorHint}階の脇の小さな図（変更案・部分図）は読み飛ばしました`);
+			continue;
+		}
 		q.walls.push(...p.walls);
 		const seen = new Set(q.texts);
 		q.texts.push(...p.texts.filter((t) => !seen.has(t)));
@@ -9709,6 +9733,8 @@ function assignFloorTitles(plans, pages) {
 			const s0 = normalizeText(t.str);
 			if (/[,、，]/.test(s0) && /平面/.test(s0)) continue;
 			if (followingOnLine(t, page.texts, 3).some((q) => parseFloorTitle(q.str) != null && parseFloorTitle(q.str) !== f)) continue;
+			const lenOf = (pl) => pl.walls.reduce((s0, w) => s0 + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
+			const maxLen = Math.max(...onPage.map(lenOf));
 			for (const p of onPage) {
 				const b = p.bbox;
 				const dx = Math.max(0, b.minX - t.x, t.x - b.maxX);
@@ -9716,11 +9742,12 @@ function assignFloorTitles(plans, pages) {
 				const h = b.maxY - b.minY;
 				const w = b.maxX - b.minX;
 				if (onPage.length > 1 && (dy > h * .9 || dx > w * .6)) continue;
+				const small = lenOf(p) < maxLen * .4;
 				cands.push({
 					plan: p,
 					title: t,
 					floor: f,
-					score: dx * 3 + dy
+					score: dx * 3 + dy + (small ? 1e5 : 0)
 				});
 			}
 		}
@@ -10101,13 +10128,16 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		}
 	}
 	const hinted = plans.filter((p) => p.floorHint != null);
+	const wallLen = (p) => p.walls.reduce((s0, w) => s0 + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
 	const ordered = plans.slice().sort((a, b) => {
 		const fa = a.floorHint ?? 99;
 		const fb = b.floorHint ?? 99;
 		if (fa !== fb) return fa - fb;
 		if (a.pageIndex !== b.pageIndex) return a.pageIndex - b.pageIndex;
+		if (fa === 99 && a.scan && b.scan) return wallLen(b) - wallLen(a);
 		return a.bbox.minX - b.bbox.minX;
 	});
+	const samePageUnhinted = plans.length > 1 && plans.every((p) => p.floorHint == null && p.pageIndex === plans[0].pageIndex);
 	const used = /* @__PURE__ */ new Set();
 	const levelOf = /* @__PURE__ */ new Map();
 	let nextLevel = 1;
@@ -10127,7 +10157,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 	const sorted = ordered.slice().sort((a, b) => levelOf.get(a) - levelOf.get(b));
 	const base = sorted[0];
 	if (base) {
-		for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
+		if (!samePageUnhinted) for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
 		const o = {
 			x: -base.bbox.minX,
 			y: -base.bbox.minY
@@ -10159,6 +10189,27 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		elev += f.height;
 		f.walls.forEach((w) => thicknesses.add(w.thickness));
 		floors.push(f);
+	}
+	if (samePageUnhinted && floors.length > 1) {
+		const areaOf = (f) => f.rooms.reduce((s0, r) => s0 + r.area, 0);
+		const base = floors[0];
+		for (const f of floors.slice(1)) {
+			if (f.stairs.length || areaOf(f) >= areaOf(base) * .6) continue;
+			base.walls.push(...f.walls);
+			base.openings.push(...f.openings);
+			base.rooms.push(...f.rooms);
+			base.outline.push(...f.outline);
+			if (f.planItems?.length) (base.planItems ??= []).push(...f.planItems);
+			floors.splice(floors.indexOf(f), 1);
+			warnings.push("離れた区画（車庫・離れなど）を上の階ではなく 1 階の一部として読みました（修正画面で確認してください）");
+		}
+		let lv = 1;
+		let e = 500;
+		for (const f of floors) {
+			f.level = lv++;
+			f.elevation = e;
+			e += f.height;
+		}
 	}
 	if (floors.length >= 2) {
 		const f1 = floors[0];

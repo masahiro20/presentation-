@@ -39,6 +39,8 @@ export interface ProjectState {
   /** 事務所ロゴ（dataURL。図面の表題欄・ヘッダー・シネマに使う） */
   logo?: string;
   pdfName?: string;
+  /** お客様のご要望（ヒアリングシート・要望書の文章。間取りと照合して資料に「ご要望との照合」として載せる） */
+  wishes?: string;
   model: BuildingModel | null;
   design: DesignOptions;
   site: SiteLocation;

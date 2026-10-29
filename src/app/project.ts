@@ -37,6 +37,7 @@ export interface ProjectFile {
   sun: { seasons: ProjectState['sun']['seasons']; highlights: ProjectState['sun']['highlights']; diagramSvg?: string; images: { label: string; url: string }[] };
   estimate?: ProjectState['estimate'];
   coord?: ProjectState['coord'];
+  wishes?: string;
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -94,6 +95,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     sun: { seasons: state.sun.seasons, highlights: state.sun.highlights, diagramSvg: state.sun.diagramSvg, images },
     estimate: state.estimate,
     coord: state.coord,
+    wishes: state.wishes,
   };
 }
 
@@ -123,6 +125,7 @@ export function applyProject(p: ProjectFile) {
   state.videos = [];
   state.estimate = p.estimate ?? null;
   state.coord = p.coord ?? { items: {} };
+  state.wishes = p.wishes;
   emit('model');
   emit('project');
   emit('project-loaded');

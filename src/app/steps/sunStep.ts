@@ -713,7 +713,10 @@ export const sunStep: Step = {
       const wasMode = v.viewMode;
       v.setViewMode('finish');
       try {
-        const program = sunTimelapseProgram(v.state.meta, from, to, 12, view);
+        const base = sunTimelapseProgram(v.state.meta, from, to, 12, view);
+        // 画角は今の画面と同じに（動画と画面で見え方が変わらないように）
+        const fov = v.camera.fov;
+        const program = { ...base, sample: (t: number) => ({ ...base.sample(t), fov }) };
         const title = `${state.customer ? `${state.customer} ` : ''}${ui.month}月${ui.day}日の日影`;
         const r = await recordProgram(v, program, {
           width: 1280,

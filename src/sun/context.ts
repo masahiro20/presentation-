@@ -918,6 +918,41 @@ export class SunContext {
     this.applyGhosts();
   }
 
+  /**
+   * 周辺建物の外壁: 単色の箱ではなく、階ごとの窓の帯をシェーダーで描く（テクスチャ不要・UV 不要。ワールド座標から模様を決める）。
+   * 色は建物ごとに少し変える（街並みの見え方）。影・解析には関係しない見た目だけの処理
+   */
+  private facadeMaterial(color: string): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.88 });
+    m.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFacadeWp;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvFacadeWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vFacadeWp;')
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.35, facadeWin);')
+        .replace(
+          '#include <color_fragment>',
+          `float facadeWin = 0.0;
+          #include <color_fragment>
+          {
+            vec3 fn = normalize(cross(dFdx(vFacadeWp), dFdy(vFacadeWp)));
+            // 側面だけ（上向き・下向きの面には描かない）
+            if (abs(fn.y) < 0.5) {
+              float along = abs(fn.x) > abs(fn.z) ? vFacadeWp.z : vFacadeWp.x;
+              float fy = fract((vFacadeWp.y - 0.9) / 3.0);
+              float fx = fract(along / 2.1);
+              float win = step(0.42, fy) * step(fy, 0.82) * step(0.2, fx) * step(fx, 0.72);
+              // 1 階の足元（y < 0.6）は窓なし
+              win *= step(0.6, vFacadeWp.y);
+              diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.26, 0.31), win * 0.75);
+              facadeWin = win;
+            }
+          }`,
+        );
+    };
+    m.customProgramCacheKey = () => 'facade';
+    return m;
+  }
+
   private materials() {
     if (!this.mats) {
       const ghost = new THREE.MeshStandardMaterial({ color: '#b9c0c8', roughness: 0.9, transparent: true, opacity: GHOST_OPACITY, depthWrite: false });
@@ -1250,7 +1285,9 @@ export class SunContext {
     });
     clearGroup(this.ghostsG);
     const mats = this.materials();
-    const wallMat = new THREE.MeshStandardMaterial({ color: '#e8e6e1', roughness: 0.9 });
+    // 外壁は建物ごとに少し色を変え、階ごとの窓の帯を描く（街並みらしさ。影・解析には影響しない）
+    const wallMats = ['#e8e6e1', '#ddd8cf', '#e4e0da', '#d6d3cc', '#e9e4d6'].map((c) => this.facadeMaterial(c));
+    let wallSeq = 0;
     // 航空写真があれば屋上に貼る（Google Earth のような見え方）
     const ai = this.aerialInfo;
     const roofMat = ai ? new THREE.MeshStandardMaterial({ map: ai.tex, roughness: 0.85 }) : new THREE.MeshStandardMaterial({ color: '#8d8f93', roughness: 0.8 });
@@ -1362,7 +1399,7 @@ export class SunContext {
         uv.needsUpdate = true;
       }
       // グループ: 0 = 屋根（ExtrudeGeometry は上下面、PLATEAU の実形状は上向きの面）, 1 = 壁（側面）
-      const base = [roofMat, b.source === 'manual' ? manualMat : wallMat];
+      const base = [roofMat, b.source === 'manual' ? manualMat : wallMats[wallSeq++ % wallMats.length]];
       const mesh = new THREE.Mesh(geo, base);
       mesh.castShadow = true;
       mesh.receiveShadow = true;

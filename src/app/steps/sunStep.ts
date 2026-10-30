@@ -23,6 +23,8 @@ import { GoogleEarthLayer, type EarthFrame, type EarthStatus } from '../../sun/g
 import { loadPlateauIndex, muniCodesAround } from '../../sun/plateau';
 import { createPointCloudBlock } from './sunPointCloud';
 import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
+import { recordProgram } from '../../video/recorder';
+import { sunTimelapseProgram } from '../../video/paths';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -689,6 +691,65 @@ export const sunStep: Step = {
       if (ui.playing) raf = requestAnimationFrame(tick);
       else apply(true);
     });
+    // ---- 日影のタイムラプス動画（日の出〜日の入を 1 本に。今の視点のまま、時計を焼き込む） ----
+    // 見る人（お客様）: 「冬至の 1 日、影がどう動くか」が 12 秒で分かる。体験リンクの「動画」と資料に入る
+    const recordTimelapse = async () => {
+      if (!v.state) return;
+      const d = sunDay();
+      const rs = sunriseSunset(ui.year, ui.month, ui.day, d.lat, d.lon);
+      const from = Math.max(4, rs.sunrise + 0.25);
+      const to = Math.min(20, rs.sunset - 0.25);
+      const wasPlaying = ui.playing;
+      ui.playing = false;
+      playBtn.textContent = '▶';
+      const hour0 = ui.hour;
+      const pm = progressModal(`${ui.month}月${ui.day}日の日影の動画を書き出しています`, true);
+      const wasPath = sc.state.showSunPath;
+      // 太陽の軌道と時刻の札は動画では消す（影だけを見せる）
+      sc.state.showSunPath = false;
+      sc.buildSunPath();
+      sc.updateSunMarker(new THREE.Vector3(0, 1, 0));
+      const view = { pos: v.camera.position.clone(), target: v.controls.target.clone() };
+      const wasMode = v.viewMode;
+      v.setViewMode('finish');
+      try {
+        const program = sunTimelapseProgram(v.state.meta, from, to, 12, view);
+        const title = `${state.customer ? `${state.customer} ` : ''}${ui.month}月${ui.day}日の日影`;
+        const r = await recordProgram(v, program, {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          title,
+          captions: true,
+          signal: pm.signal,
+          beforeFrame: (_t, s) => {
+            if (s.hour != null) {
+              ui.hour = s.hour;
+              apply(true);
+            }
+          },
+          onProgress: (ratio, prev) => pm.set(ratio, `${Math.round(ratio * 100)}%（${formatHM(from + (to - from) * ratio)}）`, prev),
+        });
+        const url = URL.createObjectURL(r.blob);
+        state.videos.push({ title, url, ext: r.ext });
+        download(url, `${title}.${r.ext}`);
+        toast('日影の動画を書き出しました。体験リンクの「動画」と資料に入ります', 'ok', 6000);
+      } catch (e) {
+        if (!isAbortError(e)) toast(`動画を書き出せませんでした: ${(e as Error).message}`, 'error', 7000);
+      } finally {
+        pm.close();
+        sc.state.showSunPath = wasPath;
+        sc.buildSunPath();
+        v.setViewMode(wasMode);
+        v.camera.position.copy(view.pos);
+        v.controls.target.copy(view.target);
+        v.resize();
+        ui.hour = hour0;
+        apply(true);
+        if (wasPlaying) playBtn.click();
+      }
+    };
+    const movieBtn = h('button', { class: 'chip', title: '日の出から日の入までの影の動きを 12 秒の動画に（今の視点のまま）', onclick: () => void recordTimelapse() }, '🎬 日影の動画');
     const bar = h(
       'div',
       { class: 'overlay-bar', style: 'pointer-events:auto' },
@@ -696,6 +757,7 @@ export const sunStep: Step = {
       h('div', null, timeEl, subEl),
       slider,
       speedSel,
+      movieBtn,
       h('div', { style: 'flex-basis:100%;height:0' }),
       chips,
     );

@@ -17,10 +17,11 @@ import { sunPosition, localDate, sunDirectionWorld } from './sun/solar';
 import { h, clear } from './app/dom';
 import { upload } from '@vercel/blob/client';
 import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
-import { ROUNDS, shotFor, deltaText, type CustomerPicks } from './coordinate/decisions';
+import { ROUNDS, shotFor, deltaText, type CustomerPicks, type CustomerInbox } from './coordinate/decisions';
+import { yenMan } from './core/planDiff';
 import { lookOf } from './coordinate/samples';
 
-type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; designer?: string; tel?: string; email?: string; url?: string } };
+type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; grand?: number; designer?: string; tel?: string; email?: string; url?: string } };
 
 const root = document.getElementById('view')!;
 const head = h('div', { class: 'vw-head' });
@@ -74,7 +75,50 @@ async function main() {
     viewer.applyShot(shot, true);
     // お客様向けの言葉に（「道路側」→「正面」など、社内の呼び方を出さない）
     tag.textContent = s.title.replace(/パース/g, '').replace(/[（）()]/g, ' ').replace(/道路側/g, '正面').replace(/^(外観|内観)\s+\1/, '$1').trim();
+    curShot = s;
+    paintLike();
   };
+  // ---- お客様からのもの（customer.json）: いいねした構図・ご要望の文章。担当者が受け取る ----
+  const canSend = !!proj.share?.id;
+  const inboxUrl = p.replace(/project\.json(\?.*)?$/, 'customer.json');
+  let inbox: CustomerInbox = { at: '' };
+  if (canSend)
+    try {
+      const r = await fetch(`${inboxUrl}?t=${Date.now()}`, { cache: 'no-store' });
+      if (r.ok) inbox = (await r.json()) as CustomerInbox;
+    } catch {
+      /* まだ無い */
+    }
+  const likes = new Map<string, string>((inbox.likes ?? []).map((l) => [l.id, l.title]));
+  const saveInbox = async () => {
+    inbox = { ...inbox, at: new Date().toISOString(), likes: [...likes].map(([id, title]) => ({ id, title })) };
+    await upload(`share/${proj.share!.id}/customer.json`, new Blob([JSON.stringify(inbox)], { type: 'application/json' }), { access: 'public', handleUploadUrl: '/api/share', contentType: 'application/json' });
+  };
+  // いいね: 今見ている構図に ♡（タップで保存。担当者は「お客様の選択を受け取る」で見られる）
+  let curShot: Shot | null = null;
+  const likeBtn = h('button', { class: 'vw-like', hidden: true }, '♡ いいね') as HTMLButtonElement;
+  const likeMsg = h('span', { class: 'vw-like-msg' });
+  let likeTimer = 0;
+  const paintLike = () => {
+    if (!canSend || !curShot) {
+      likeBtn.hidden = true;
+      return;
+    }
+    likeBtn.hidden = false;
+    const on = likes.has(curShot.id);
+    likeBtn.classList.toggle('on', on);
+    likeBtn.textContent = on ? '♥ いいね' : '♡ いいね';
+  };
+  likeBtn.onclick = () => {
+    if (!curShot) return;
+    if (likes.has(curShot.id)) likes.delete(curShot.id);
+    else likes.set(curShot.id, tag.textContent || curShot.title);
+    paintLike();
+    likeMsg.textContent = '';
+    window.clearTimeout(likeTimer);
+    likeTimer = window.setTimeout(() => void saveInbox().then(() => (likeMsg.textContent = '担当者に伝わります')).catch(() => (likeMsg.textContent = '保存できませんでした')), 800);
+  };
+  stage.append(likeBtn, likeMsg);
   const first = shots().find((s) => s.kind === 'exterior') ?? shots()[0];
   if (first) goto(first);
   loading.remove();
@@ -124,6 +168,8 @@ async function main() {
     if (ent) viewer.applyShot(ent, false);
     viewer.setNavMode('walk');
     tag.textContent = '';
+    curShot = null;
+    paintLike();
     pad = h('div', { class: 'vw-pad' });
     const key = (k: 'w' | 'a' | 's' | 'd', cls: string, label: string) => {
       const b = h('button', { class: cls }, label);
@@ -197,6 +243,20 @@ async function main() {
       const picks: CustomerPicks['picks'] = {};
       const deltas = proj.share?.deltas ?? {};
       pane.appendChild(h('div', { class: 'vw-hint' }, `担当者がお選びした候補です（${proposed.length} か所）。押すと、この家の 3D がその仕上げに変わります。気に入ったものを選んで、最後に「担当者に送る」を押してください。`));
+      // 選ぶたびに総額が動く（担当者が体験リンクを作った時点の概算 ＋ 候補の差額）
+      const grand = proj.share?.grand;
+      const total = h('div', { class: 'vw-total' });
+      const paintTotal = () => {
+        if (grand == null) return;
+        let d = 0;
+        for (const { cat } of proposed) {
+          const pid = picks[cat.id]?.id;
+          if (pid) d += deltas[cat.id]?.[pid] ?? 0;
+        }
+        total.replaceChildren(h('span', { class: 'k' }, '今の選択での概算（税込）'), h('b', null, yenMan(grand + d)), h('span', { class: `d ${d > 0 ? 'up' : ''}` }, Math.abs(d) < 1000 ? 'ご提案のとおり' : `ご提案から ${d > 0 ? '＋' : '−'}${yenMan(Math.abs(d))}`));
+      };
+      paintTotal();
+      if (grand != null) pane.appendChild(total);
       for (const { cat, it } of proposed) {
         const box = h('div', { class: 'vw-pick' }, h('div', { class: 'k' }, cat.label));
         const chips = h('div', { class: 'chips' });
@@ -221,6 +281,7 @@ async function main() {
                     const s = shotFor(cat.id, shots());
                     if (s) goto(s);
                     render();
+                    paintTotal();
                   },
                 },
                 (() => {
@@ -259,7 +320,29 @@ async function main() {
       };
       pane.append(note, send, status);
     });
-  // AR
+  // ご要望: 思いついたときにスマホで書いて送る（担当者の読込画面の「ご要望との照合」に入る）
+  if (canSend)
+    addTab('wish', 'ご要望', (pane) => {
+      pane.appendChild(h('div', { class: 'vw-hint' }, 'この家に「こうしたい」「ここが気になる」を、思いついたときに書いてください。担当者が次の打ち合わせまでに間取りと照らし合わせます。'));
+      const ta = h('textarea', { rows: 5, placeholder: '例）玄関に土間収納がほしい\n寝室とトイレは近くに\n今の家は洗濯物を干す場所が遠くて困っている\n家族: 夫婦＋子ども 2 人（小学生）' }) as HTMLTextAreaElement;
+      ta.value = inbox.wishes ?? '';
+      const status = h('div', { class: 'vw-hint' }, inbox.wishes ? `${inbox.at ? new Date(inbox.at).toLocaleDateString('ja-JP') + ' に' : '前に'}送った内容です。書き足して、もう一度送れます。` : '');
+      const send = h('button', { class: 'vw-chip primary' }, '担当者に送る') as HTMLButtonElement;
+      send.onclick = async () => {
+        inbox.wishes = ta.value.trim();
+        send.disabled = true;
+        status.textContent = '送っています…';
+        try {
+          await saveInbox();
+          status.textContent = '送りました。ありがとうございます（何度でも書き足せます）。';
+        } catch (e) {
+          status.textContent = `送れませんでした（${(e as Error).message}）。お手数ですが担当者にご連絡ください。`;
+        } finally {
+          send.disabled = false;
+        }
+      };
+      pane.append(ta, send, status);
+    });
   // 設計士のメモ（図面の吹き出し）: タップでその場所へ
   const notes = proj.model.floors.flatMap((f) => (f.notes ?? []).map((n) => ({ ...n, level: f.level })));
   if (notes.length)

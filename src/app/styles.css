@@ -1111,3 +1111,6 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .slide.sight-slide .sight-list b { font-weight: 600; display: block; }
 .slide.sight-slide .sight-list .dist { color: #333; font-variant-numeric: tabular-nums; margin-right: 6px; }
 .slide.sight-slide .sight-list .adv { color: #666; font-size: 10.5px; }
+
+/* パースの一覧: お客様が体験リンクで「いいね」した構図 */
+.shot-card .t .like { color: #c0392b; margin-left: 4px; font-size: 12px; }

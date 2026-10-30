@@ -43,6 +43,12 @@ export interface CoordState {
   customerNote?: string;
   /** 商品の実物写真（商品 id → data URL）。事務所の写真庫から、このプロジェクトで使う分だけ写す */
   samples?: Record<string, string>;
+  /** お客様が体験リンクで「いいね」した構図（構図 id と、お客様に見えていた名前） */
+  likes?: { id: string; title: string }[];
+  likesAt?: string;
+  /** 体験リンクから最後に取り込んだご要望の文章（書き足して送り直されたら置き換えるための控え） */
+  customerWishes?: string;
+  customerWishesAt?: string;
 }
 
 export interface DecisionRound {
@@ -190,19 +196,36 @@ export function applyCustomerPicks(c: CoordState, d: DesignOptions, p: CustomerP
   return { coord: { ...c, items, customerNote: p.note ?? c.customerNote }, finishes, changed, conflicts };
 }
 
-/** 共有リンク（view.html?p=<project.json の URL>）から、お客様の選択の置き場所（同じフォルダの picks.json） */
-export function picksUrlFor(shareOrProjectUrl: string): string | null {
+/** お客様が体験リンクで書いたご要望と「いいね」（customer.json） */
+export interface CustomerInbox {
+  at: string;
+  wishes?: string;
+  likes?: { id: string; title: string }[];
+}
+
+/** 共有リンク（view.html?p=<project.json の URL>）から、同じフォルダの別のファイルの URL */
+export function siblingUrlFor(shareOrProjectUrl: string, name: string): string | null {
   try {
     const u = new URL(shareOrProjectUrl);
     const p = u.searchParams.get('p');
     const proj = p ? new URL(p) : u;
     if (!/project\.json$/.test(proj.pathname)) return null;
-    proj.pathname = proj.pathname.replace(/project\.json$/, 'picks.json');
+    proj.pathname = proj.pathname.replace(/project\.json$/, name);
     proj.search = '';
     return proj.toString();
   } catch {
     return null;
   }
+}
+
+/** お客様の仕様の選択の置き場所（picks.json） */
+export function picksUrlFor(shareOrProjectUrl: string): string | null {
+  return siblingUrlFor(shareOrProjectUrl, 'picks.json');
+}
+
+/** お客様のご要望・いいねの置き場所（customer.json） */
+export function inboxUrlFor(shareOrProjectUrl: string): string | null {
+  return siblingUrlFor(shareOrProjectUrl, 'customer.json');
 }
 
 /** 3D で見比べられない部位（設備・3D に出ない細部は色見本と写真で比べる） */

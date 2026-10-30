@@ -13,6 +13,7 @@ import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
 import { estimateSummary } from './estimateStep';
+import { receiveCustomerInbox, inboxSummary } from '../customerInbox';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
 import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
@@ -441,7 +442,27 @@ function wishesFold(model: BuildingModel): HTMLElement {
     },
   }) as HTMLTextAreaElement;
   ta.value = state.wishes ?? '';
-  const box = h('div', null, h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'お客様の要望の文章を貼ると、部屋の有無・広さ・引き戸・部屋どうしの近さ・向き・階数・駐車台数を間取りと突き合わせます。結果は資料の「ご要望との照合」のページに入ります。'), ta, list);
+  // 体験リンクでお客様が書いたご要望を受け取る（体験リンクを作ってあるときだけ出す）
+  const recv = state.coord.shareUrl
+    ? h(
+        'button',
+        {
+          class: 'btn sm',
+          style: 'margin:0 0 6px',
+          onclick: async (e: Event) => {
+            const b = e.currentTarget as HTMLButtonElement;
+            b.disabled = true;
+            const r = await receiveCustomerInbox();
+            b.disabled = false;
+            ta.value = state.wishes ?? '';
+            run();
+            toast(inboxSummary(r), r ? 'ok' : 'info', 6000);
+          },
+        },
+        '体験リンクからお客様のご要望を受け取る',
+      )
+    : null;
+  const box = h('div', null, h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'お客様の要望の文章を貼ると、部屋の有無・広さ・引き戸・部屋どうしの近さ・向き・階数・駐車台数を間取りと突き合わせます。結果は資料の「ご要望との照合」のページに入ります。'), recv, ta, list);
   const el = fold('ご要望との照合', { open: !!state.wishes, meta: '' }, box);
   const metaSlot = el.querySelector('summary .meta, summary span:last-child');
   if (metaSlot) metaSlot.appendChild(meta);

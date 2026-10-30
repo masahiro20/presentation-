@@ -142,7 +142,7 @@ export const designStep: Step = {
             },
           },
           th,
-          h('div', { class: 't' }, h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, kindLabel(s)), (s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC')),
+          h('div', { class: 't' }, h('span', { class: `k ${s.kind === 'interior' ? 'int' : s.kind === 'cutaway' || s.kind === 'section' ? 'cut' : ''}` }, kindLabel(s)), (s.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || s.title).normalize('NFKC'), state.coord.likes?.some((l) => l.id === s.id) ? h('span', { class: 'like', title: 'お客様が体験リンクで「いいね」した構図' }, '♥') : null),
         );
         strip.appendChild(card);
       }

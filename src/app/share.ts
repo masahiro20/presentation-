@@ -7,7 +7,7 @@ import { upload } from '@vercel/blob/client';
 import { state } from './state';
 import { serializeProject } from './project';
 import { h, modal, toast } from './dom';
-import { finishDeltas } from './steps/estimateStep';
+import { finishDeltas, estimateSummary } from './steps/estimateStep';
 import { exportAr, type ArFiles } from '../scene/exportAr';
 import type { Viewer } from '../scene/viewer';
 
@@ -76,7 +76,9 @@ export async function shareProject(onProgress?: (msg: string) => void, app?: Sha
   // コーディネートの候補の差額（お客様の「仕様を選ぶ」に出す。見積の計算はこちらで済ませて渡す）
   const deltas: Record<string, Record<string, number | null>> = {};
   for (const [catId, it] of Object.entries(state.coord.items)) if ((it.candidates?.length ?? 0) >= 2 && it.status !== 'decided') deltas[catId] = finishDeltas(catId);
-  const data = { ...project, share: { id, videos, ar, deltas, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
+  // 概算の総額: お客様の「仕様を選ぶ」で、選ぶたびに総額が動いて見えるように
+  const grand = estimateSummary()?.grand;
+  const data = { ...project, share: { id, videos, ar, deltas, grand, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
   const r = await upload(`share/${id}/project.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }), { access: 'public', handleUploadUrl: '/api/share', contentType: 'application/json' });
   const link = `${location.origin}/view.html?p=${encodeURIComponent(r.url)}`;
   // コーディネートの「お客様の選択を受け取る」の受け取り先
@@ -92,7 +94,7 @@ export async function shareDialog(app?: ShareApp) {
   try {
     const url = await shareProject((t) => (msg.textContent = t), app);
     box.replaceChildren(
-      h('p', null, 'スマホで開くと、歩く・光を動かす・テイストを変える・AR で敷地に置く・動画を見る、ができます。LINE やメールでこのリンクを送ってください。'),
+      h('p', null, 'スマホで開くと、歩く・光を動かす・テイストを変える・AR で敷地に置く・動画を見る、ができます。気に入った構図に「いいね」、思いついたご要望を書いて送れます（読込画面の「ご要望との照合」とコーディネートで受け取れます）。LINE やメールでこのリンクを送ってください。'),
       h('input', { type: 'text', readonly: true, value: url, style: 'width:100%;font-size:13px', onclick: (e: Event) => (e.target as HTMLInputElement).select() }),
       h(
         'div',

@@ -20,6 +20,7 @@ import { ROUNDS, EQUIPMENT_CATS, STATUS_LABEL, DEPENDS, itemOf, setCandidates, d
 import { syncEstimateWithFinishes, finishDeltas } from './estimateStep';
 import { currentShots } from './designStep';
 import { shareDialog } from '../share';
+import { receiveCustomerInbox, inboxSummary } from '../customerInbox';
 import { lookOf, hasLook, shrinkPhoto, saveLibrarySample, deleteLibrarySample, librarySample } from '../../coordinate/samples';
 import { renderStudio } from '../../scene/studio';
 import { exposureFor } from '../draftCapture';
@@ -248,13 +249,16 @@ export const coordStep: Step = {
         toast('体験リンクの形が違います（view.html?p=… のリンクを使ってください）', 'error');
         return;
       }
+      // ご要望の文章・いいね（customer.json）も一緒に受け取る
+      const inb = await receiveCustomerInbox(link);
       let picks: CustomerPicks;
       try {
         const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!r.ok) throw new Error(String(r.status));
         picks = (await r.json()) as CustomerPicks;
       } catch {
-        toast('お客様の選択がまだ届いていません（お客様が体験リンクの「仕様を選ぶ」→「担当者に送る」を押すと届きます）', 'info', 7000);
+        renderAll();
+        toast(`${inboxSummary(inb)}。仕様の選択はまだ届いていません（お客様が「仕様を選ぶ」→「担当者に送る」を押すと届きます）`, 'info', 8000);
         return;
       }
       const res = applyCustomerPicks(coord(), state.design, picks);
@@ -265,7 +269,7 @@ export const coordStep: Step = {
       emit('coord');
       renderAll();
       const n = Object.keys(picks.picks).length;
-      toast(`お客様の選択を取り込みました（${n} 部位・変更 ${res.changed.length}）`, 'ok', 6000);
+      toast(`お客様の選択を取り込みました（${n} 部位・変更 ${res.changed.length}）${inb ? `。${inboxSummary(inb)}` : ''}`, 'ok', 7000);
       if (res.conflicts.length)
         modal(
           '決定済みの部位にお客様の別の選択があります',
@@ -356,7 +360,9 @@ export const coordStep: Step = {
             h('button', { class: 'btn primary block', onclick: () => void shareDialog(ctx.app) }, '候補を体験リンクで送る'),
             h('button', { class: 'btn dark block', style: 'margin-top:8px', onclick: () => void receivePicks() }, 'お客様の選択を受け取る'),
             c.customerNote ? h('div', { class: 'coord-cust' }, h('b', null, 'お客様から: '), c.customerNote) : null,
-            c.shareUrl ? h('p', { class: 'hint' }, `受け取り先: 最後に作った体験リンク`) : null,
+            c.likes?.length ? h('div', { class: 'coord-cust' }, h('b', null, '♥ お客様のいいね: '), c.likes.map((l) => l.title).join('・'), h('span', { class: 'hint' }, '　パースの一覧に ♥ が付きます')) : null,
+            c.customerWishes ? h('div', { class: 'coord-cust' }, h('b', null, 'ご要望: '), '読込画面の「ご要望との照合」に入っています') : null,
+            c.shareUrl ? h('p', { class: 'hint' }, `受け取り先: 最後に作った体験リンク（仕様の選択・ご要望・いいね）`) : null,
           ),
         );
       }

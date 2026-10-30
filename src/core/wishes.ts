@@ -103,7 +103,7 @@ export function parseWishes(text: string): Wish[] {
   const lines = toHalf(text)
     .split(/\r?\n|。/)
     .map((l) => l.replace(/^[\s・●○■□◆◇\-－*＊①-⑩]+/, '').trim())
-    .filter((l) => l.length >= 2);
+    .filter((l) => l.length >= 2 && !/^【.*】$/.test(l)); // 【…】は取り込み元の見出し（要望ではない）
   // 「居間 6〜8 畳」のような見出し行（部屋名だけ、または部屋名＋帖数）
   let section: RoomType | null = null;
   for (const line of lines) {

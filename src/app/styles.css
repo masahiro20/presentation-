@@ -1081,3 +1081,14 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .slide.hl-wishes .wish-table tr.w-ng td.m { color: #b4473d; }
 .slide.hl-wishes .wish-table .ev { display: inline; color: #666; font-size: 10.5px; margin-left: 8px; }
 .slide.hl-wishes .wish-notes { font-size: 11.5px; color: #666; margin-top: 8px; }
+
+.slide .storage-line { font-size: 11.5px; color: #666; margin: 6px 0 0; }
+.check-rows.diff .check-row { grid-template-columns: 18px 44px 1fr; }
+
+/* ヘッダーの概算 */
+.cost-pill { display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid #e3ded5; background: #fff; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; color: #222; cursor: pointer; margin-right: 8px; white-space: nowrap; }
+.cost-pill:hover { border-color: #bbb; }
+.cost-pill .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cost-pill .d { font-size: 10.5px; color: #8a8f98; }
+.cost-pill .d.up { color: #b4473d; } .cost-pill .d.down { color: #2f7d4a; }
+@media (max-width: 1100px) { .cost-pill .d { display: none; } }

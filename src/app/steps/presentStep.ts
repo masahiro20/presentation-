@@ -3,9 +3,11 @@ import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/
 import { h, clear, toast, progressModal, section, download, setPrintPage } from '../dom';
 import { woodCheck } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
+import { planSummary, diffPlans } from '../../core/planDiff';
 import { state, type GalleryItem } from '../state';
+import { openMeetingMemo } from '../docs';
 import type { Step, StepCtx } from '../app';
-import { excludedFromFloorArea } from '../../core/types';
+import { excludedFromFloorArea, type Floor } from '../../core/types';
 import { exteriorById, interiorById } from '../../styles/presets';
 import { currentShots } from './designStep';
 import { captureDraft, hasFinished } from '../draftCapture';
@@ -156,6 +158,15 @@ export async function autoGenerate(ctx: StepCtx) {
     v.applyView(prevView);
     pm.close();
   }
+}
+
+/** 収納の量: 収納・WIC・パントリー・土間収納の合計帖数と、衣装ケース（74×40×23cm・3 段積み）に換算した目安 */
+function storageLine(f: Floor): HTMLElement | null {
+  const st = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage' || /収納|WIC|ＷＩＣ|クローク|パントリー|物入/i.test(r.name));
+  if (!st.length) return null;
+  const area = st.reduce((s0, r) => s0 + r.area, 0);
+  const cases = Math.max(1, Math.floor((area / (0.74 * 0.4)) * 0.6)) * 3;
+  return h('p', { class: 'storage-line' }, `収納 ${st.length} か所・合計 ${(area / 1.62).toFixed(1)} 帖（衣装ケース 約 ${cases} 個分）`);
 }
 
 function slide(cls: string, ...children: (Node | null | false | undefined)[]) {
@@ -331,12 +342,35 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
             fi === 0 ? h('p', null, `家族の動線と、光の入り方を丁寧に読み解いた ${model.floors.length > 1 ? `${model.floors.length}層` : 'ワンフロア'}の構成です。`) : null,
             h('div', { class: 'floor-area serif' }, `${f.level}F　約 ${area.toFixed(1)}㎡`),
             h('table', { class: 'schedule' }, h('tbody', null, ...list.slice(0, 12).map((r) => h('tr', null, h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))))),
+            storageLine(f),
             f.notes?.length ? h('div', { class: 'plan-notes' }, h('div', { class: 'label' }, '設計士のメモ'), ...f.notes.slice(0, 6).map((n) => h('p', null, n.text))) : null,
           ),
           h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) })),
         ),
       );
     });
+  }
+  // 前回からの変更: 図面を読み直したときだけ（部屋・帖数・窓・延床・概算）
+  const prev = state.revisions?.[state.revisions.length - 1];
+  if (prev) {
+    const changes = diffPlans(prev, planSummary(model, state.pdfName ?? '今回', estimateSummary()?.grand));
+    if (changes.length) {
+      chapters.push({ en: 'Changes', ja: '前回からの変更' });
+      slides.push(
+        slide(
+          'hl hl-overview hl-wishes',
+          h(
+            'div',
+            null,
+            head(no('Changes'), 'What Changed', '前回からの変更'),
+            h('p', null, `前回（${prev.name.replace(/\.pdf$/i, '')}）からの変更点です。`),
+            h('table', { class: 'wish-table' }, h('tbody', null, ...changes.slice(0, 10).map((c) => h('tr', { class: c.delta != null && c.delta < 0 ? 'w-check' : 'w-ok' }, h('td', { class: 'm' }, c.kind === 'cost' ? '￥' : c.delta == null ? '・' : c.delta > 0 ? '＋' : '－'), h('td', null, c.text))))),
+            changes.length > 10 ? h('p', { class: 'wish-notes' }, `ほか ${changes.length - 10} 件`) : null,
+          ),
+          h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
+        ),
+      );
+    }
   }
   // ご要望との照合: 言ったことが図面に入っているかを一目で（叶っている → 要確認 → 打合せ の順）
   if (state.wishes?.trim()) {
@@ -638,6 +672,11 @@ export const presentStep: Step = {
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
       ),
       contentsBox,
+      section(
+        '打合せの書類',
+        h('p', { class: 'hint', style: 'margin-top:0' }, '前回からの変更・ご要望との照合の △✖・決まった仕上げ・概算を並べた議事録の下書きです。打合せ中に書き足して印刷できます（新しいタブに開きます）。'),
+        h('button', { class: 'btn block', onclick: () => openMeetingMemo() }, '打合せメモ（議事録の下書き）を開く'),
+      ),
     );
   },
 };

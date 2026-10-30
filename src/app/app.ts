@@ -1,6 +1,8 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
 import { h, clear, toast } from './dom';
 import { state, on, emit } from './state';
+import { estimateSummary } from './steps/estimateStep';
+import { yenMan } from '../core/planDiff';
 import { shareDialog } from './share';
 import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project';
 import { Viewer } from '../scene/viewer';
@@ -72,6 +74,40 @@ export class App {
     paintOffice();
     on('project', paintOffice);
     on('project-loaded', paintOffice);
+    // 概算の総額と、プロジェクトを開いてからの増減（コーデ・間取りを触るたびに静かに更新。押すと見積へ）
+    const costPill = h('button', { class: 'cost-pill', title: '概算（税込の総合計）とプロジェクトを開いてからの増減。押すと見積へ', onclick: () => void this.go('estimate') });
+    let costBase: number | null = null;
+    let costTimer = 0;
+    const paintCost = () => {
+      window.clearTimeout(costTimer);
+      costTimer = window.setTimeout(() => {
+        if (!state.model) {
+          costPill.hidden = true;
+          return;
+        }
+        let grand: number | undefined;
+        try {
+          grand = estimateSummary()?.grand;
+        } catch {
+          grand = undefined;
+        }
+        if (grand == null) {
+          costPill.hidden = true;
+          return;
+        }
+        costBase ??= grand;
+        const d = grand - costBase;
+        clear(costPill);
+        costPill.hidden = false;
+        costPill.append(h('span', { class: 'v' }, yenMan(grand)), Math.abs(d) >= 10000 ? h('span', { class: `d ${d > 0 ? 'up' : 'down'}` }, `${d > 0 ? '＋' : '－'}${yenMan(Math.abs(d))}`) : h('span', { class: 'd' }, '概算'));
+      }, 500);
+    };
+    for (const ev of ['model', 'estimate', 'design', 'coord', 'project-loaded']) on(ev, paintCost);
+    on('project-loaded', () => {
+      costBase = null;
+      paintCost();
+    });
+    paintCost();
     const top = h(
       'header',
       { class: 'topbar' },
@@ -81,6 +117,7 @@ export class App {
       h('div', { class: 'spacer' }),
       this.stepBar,
       h('div', { class: 'spacer' }),
+      costPill,
       this.buildProjectButtons(),
       sideBtn,
     );

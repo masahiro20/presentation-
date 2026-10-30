@@ -1,4 +1,5 @@
 /** プロジェクトの状態 */
+import type { PlanSummary } from '../core/planDiff';
 import type { BuildingModel } from '../core/types';
 import { DEFAULT_DESIGN, type DesignOptions } from '../styles/presets';
 import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
@@ -41,6 +42,8 @@ export interface ProjectState {
   pdfName?: string;
   /** お客様のご要望（ヒアリングシート・要望書の文章。間取りと照合して資料に「ご要望との照合」として載せる） */
   wishes?: string;
+  /** 前回までのプランの要約（図面を読み直したときに差分を出す。新しいものが後ろ） */
+  revisions?: PlanSummary[];
   model: BuildingModel | null;
   design: DesignOptions;
   site: SiteLocation;

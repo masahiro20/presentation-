@@ -1,5 +1,6 @@
 import { h, clear, section, segmented, download, svgToDataUrl, svgToPng, toast } from '../dom';
 import { state } from '../state';
+import { openDesignReview } from '../docs';
 import type { Step, StepCtx } from '../app';
 import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg } from '../../drawings/plan';
@@ -100,6 +101,11 @@ export const elevationStep: Step = {
           h('div', { class: 'btn-row', style: 'align-items:center' }, h('span', { style: 'flex:1;font-size:13px' }, sh.title), h('button', { class: 'btn sm', onclick: () => dl(sh.title, sh.svg, 'svg') }, 'SVG'), h('button', { class: 'btn sm', onclick: () => dl(sh.title, sh.svg, 'png') }, 'PNG')),
         ),
         h('p', { class: 'hint' }, 'PNG は A3 横（幅 4,200px）で保存します。SVG はベクターなので CAD・Illustrator で開いて編集できます。'),
+      ),
+      section(
+        '社内確認',
+        h('p', { class: 'hint', style: 'margin-top:0' }, '面積・木造チェックの全件・読み取りの注意・ご要望との照合を 1 枚にした、上司・社内承認者向けのレビュー用紙です（新しいタブに開きます）。'),
+        h('button', { class: 'btn block', onclick: () => openDesignReview() }, '設計レビュー（社内確認用）を開く'),
       ),
       section(
         'CAD へ戻す（DXF）',

@@ -179,6 +179,7 @@ export const designStep: Step = {
     const update = (patch: Partial<DesignOptions>) => {
       const before = state.design;
       state.design = { ...state.design, ...patch };
+      emit('design');
       // テイストの切り替えで、コーディネートで決定済みの部位の中身が変わったら決定を外す
       const rec = reconcileDecided(state.coord, before, state.design);
       if (rec.undone.length) {

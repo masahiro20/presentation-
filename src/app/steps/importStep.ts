@@ -11,6 +11,8 @@ import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
+import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
+import { estimateSummary } from './estimateStep';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
 import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
@@ -36,6 +38,14 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
       toast('平面図を認識できませんでした。CAD から出力したベクター形式の PDF をお試しください', 'error', 6000);
       return;
     }
+    // 別の図面を読むとき（「別の PDF を読み込む」のあと、または開いているプロジェクトに違う名前の PDF）: 前のプランの要約を残して「前回からの変更」を出す。
+    // 同じ図面の再解析（縮尺・モジュールの指定）は差分を作らない
+    const prevSummary = pendingRevision ?? (state.model && state.pdfName && state.pdfName !== name ? summarizeCurrent() : null);
+    pendingRevision = null;
+    if (prevSummary) {
+      (state.revisions ??= []).push(prevSummary);
+      if (state.revisions.length > 10) state.revisions.splice(0, state.revisions.length - 10);
+    }
     state.model = model;
     // 立面図の屋根勾配が読めたら、外観の屋根に使う（形は外観テイストのまま）
     if (model.heights?.roofPitch != null) state.design = { ...state.design, roofPitch: model.heights.roofPitch };
@@ -53,6 +63,19 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
 }
 
 let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf'; moduleMode?: ModuleMode } | null = null;
+
+/** 「別の PDF を読み込む」で消す前のプランの要約（次に読んだ図面との差分に使う） */
+let pendingRevision: PlanSummary | null = null;
+function summarizeCurrent(): PlanSummary | null {
+  if (!state.model) return null;
+  let grand: number | undefined;
+  try {
+    grand = estimateSummary()?.grand;
+  } catch {
+    grand = undefined;
+  }
+  return planSummary(state.model, state.pdfName ?? '前回', grand);
+}
 
 /** 設計の 3D データ（ARCHITREND の 3DS など） */
 const is3dFile = (f: File) => ACCEPT_EXT.includes((f.name.split('.').pop() ?? '').toLowerCase());
@@ -356,6 +379,24 @@ export const importStep: Step = {
     ctx.side.append(dictCard(), mcpCard());
   },
 };
+
+/** 前回からの変更: 図面を読み直したとき、前のプランとの差分を 1 枚に（資料・議事録にも同じものが入る） */
+function revisionFold(model: BuildingModel): HTMLElement | null {
+  const prev = state.revisions?.[state.revisions.length - 1];
+  if (!prev) return null;
+  let grand: number | undefined;
+  try {
+    grand = estimateSummary()?.grand;
+  } catch {
+    grand = undefined;
+  }
+  const changes = diffPlans(prev, planSummary(model, state.pdfName ?? '今回', grand));
+  const body = h('div', { class: 'check-rows diff' });
+  if (!changes.length) body.appendChild(h('p', { class: 'hint', style: 'margin:6px 12px' }, '部屋・帖数・窓・階段・延床に変わりはありません。'));
+  for (const c of changes) body.appendChild(h('div', { class: `check-row long ${c.delta != null && c.delta < 0 ? 'info' : 'ok'}` }, h('span', { class: 'ic' }, c.kind === 'cost' ? '￥' : c.delta == null ? '・' : c.delta > 0 ? '＋' : '－'), h('span', { class: 'lb' }, c.kind === 'cost' ? '概算' : c.kind === 'area' ? '延床' : `${c.level ?? ''}階`), h('span', { class: 'dt' }, c.text.replace(/^\d階\s?/, ''))));
+  const el = fold(`前回からの変更（${prev.name.replace(/\.pdf$/i, '')} → 今回）`, { open: changes.length > 0, meta: changes.length ? `${changes.length} 件` : '変更なし' }, h('p', { class: 'hint', style: 'margin:0 0 4px' }, '読み直す前のプランと比べた変更です。資料の「前回からの変更」のページと議事録に同じ内容が入ります。'), body, h('div', { class: 'btn-row' }, h('button', { class: 'btn xs ghost', onclick: () => { state.revisions = []; el.remove(); } }, '比較をやめる')));
+  return el;
+}
 
 /** ご要望との照合: 要望の文章を貼ると、部屋・広さ・引き戸・近さ・向きなどを間取りと突き合わせる（結果は資料の「ご要望との照合」のページにも載る） */
 function wishesFold(model: BuildingModel): HTMLElement {
@@ -925,6 +966,8 @@ function renderResult(ctx: StepCtx) {
 
   // 接道・敷地
   side.append(roadSection(model, redrawPlans));
+  const diffBox = revisionFold(model);
+  if (diffBox) side.append(diffBox);
   side.append(wishesFold(model));
 
   // 再読み込み
@@ -976,7 +1019,7 @@ function renderResult(ctx: StepCtx) {
         { class: 'btn-row', style: 'margin-top:0' },
         h('button', { class: 'btn sm', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
         ext3dIn,
-        h('button', { class: 'btn sm ghost', onclick: () => { state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
+        h('button', { class: 'btn sm ghost', title: '次に読む図面との「前回からの変更」が出ます', onclick: () => { pendingRevision = summarizeCurrent(); state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),
   );

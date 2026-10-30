@@ -38,6 +38,7 @@ export interface ProjectFile {
   estimate?: ProjectState['estimate'];
   coord?: ProjectState['coord'];
   wishes?: string;
+  revisions?: ProjectState['revisions'];
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -96,6 +97,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     estimate: state.estimate,
     coord: state.coord,
     wishes: state.wishes,
+    revisions: state.revisions,
   };
 }
 
@@ -126,6 +128,7 @@ export function applyProject(p: ProjectFile) {
   state.estimate = p.estimate ?? null;
   state.coord = p.coord ?? { items: {} };
   state.wishes = p.wishes;
+  state.revisions = p.revisions;
   emit('model');
   emit('project');
   emit('project-loaded');

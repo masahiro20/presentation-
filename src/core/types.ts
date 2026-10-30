@@ -42,7 +42,8 @@ export type RoomType =
 /** ガレージの建て方: ビルトイン（家の中）／後付け（家に接して別に建てる。GAW など）／離れ（家から離れて建つ） */
 export type GarageKind = 'builtin' | 'attached' | 'detached';
 
-export type OpeningKind = 'window' | 'door' | 'sliding' | 'entrance' | 'open';
+/** shutter = ガレージのシャッター（壁いっぱいの開口。閉じたスラット付きのパネルで描く） */
+export type OpeningKind = 'window' | 'door' | 'sliding' | 'entrance' | 'open' | 'shutter';
 
 /** 窓の種類（高さ・腰高の決定に使う） */
 export type WindowStyle = 'hakidashi' | 'koshi' | 'small' | 'high' | 'slit' | 'none';
@@ -97,6 +98,8 @@ export interface Room {
   inferred?: boolean;
   /** ガレージの建て方（type が garage のとき。省略時は外形との位置から判定: 家の中ならビルトイン） */
   garageKind?: GarageKind;
+  /** この部屋だけの天井高 (mm)。無ければ階の天井高（LDK と水まわりだけ 3,500 などの部分的な高天井） */
+  ceilingHeight?: number;
 }
 
 export interface Stair {

@@ -23,7 +23,7 @@ interface Add {
   kitchenType?: FurnitureItem['kitchenType'];
 }
 
-export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited: () => void) {
+export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool', hidden: true });
   host.appendChild(panel);
   let active = false;
@@ -217,6 +217,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
 
   function setActive(on: boolean) {
     active = on;
+    if (on) onActivate?.();
     v.onPick = on ? onPick : null;
     if (!on) {
       sel = null;

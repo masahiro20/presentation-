@@ -661,6 +661,16 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         } else {
           s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ')}" fill="#fff" stroke="#222" stroke-width="9"/>`;
         }
+      } else if (o.kind === 'shutter') {
+        // シャッター: 両端の枠と、壁芯に沿う太い破線（巻き上げ式。図面の約束に合わせて「S」は書かない）
+        for (const t of [0, len]) {
+          const e0 = P(t, -h);
+          const e1 = P(t, h);
+          s += `<line x1="${e0.x.toFixed(0)}" y1="${e0.y.toFixed(0)}" x2="${e1.x.toFixed(0)}" y2="${e1.y.toFixed(0)}" stroke="#333" stroke-width="9"/>`;
+        }
+        const p0 = P(0, 0);
+        const p1 = P(len, 0);
+        s += `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="${hl ? 14 : 12}" stroke-dasharray="90 50"/>`;
       } else if (o.kind === 'sliding') {
         // 開口の両端の枠（壁の厚みを横切る細線）
         for (const t of [0, len]) {

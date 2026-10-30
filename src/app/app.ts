@@ -8,6 +8,7 @@ import { saveProjectFile, openProjectFile, purgeLegacyAutosave } from './project
 import { Viewer } from '../scene/viewer';
 import { auditEnvelope } from '../scene/selfCheck';
 import { createFurnitureTool } from './furnitureTool';
+import { createEditTool3d } from './editTool3d';
 
 export interface StepCtx {
   app: App;
@@ -39,6 +40,7 @@ export class App {
   private _viewer: Viewer | null = null;
   modelVersion = 0;
   private furnTool: ReturnType<typeof createFurnitureTool> | null = null;
+  private editTool: ReturnType<typeof createEditTool3d> | null = null;
   builtVersion = -1;
 
   constructor(
@@ -225,15 +227,31 @@ export class App {
     };
     setMode('orbit');
     // 家具・造作の置き直し（3D 画面のまま）。家具だけ作り直すので、建物の作り直しは起こさない
-    this.furnTool = createFurnitureTool(v, this.viewerHost, () => {
-      emit('model');
-      this.builtVersion = this.modelVersion;
-    });
+    this.furnTool = createFurnitureTool(
+      v,
+      this.viewerHost,
+      () => {
+        emit('model');
+        this.builtVersion = this.modelVersion;
+      },
+      () => this.editTool?.setActive(false),
+    );
+    // 天井高・シャッター（3D を見ながら部屋・壁をクリック）。建物が変わるので作り直す
+    this.editTool = createEditTool3d(
+      v,
+      this.viewerHost,
+      () => {
+        emit('model');
+        this.ensureScene();
+      },
+      () => this.furnTool?.setActive(false),
+    );
     bar.append(
       orbit,
       pan,
       walk,
       this.furnTool.button,
+      this.editTool.button,
       h('div', { class: 'nav-sep' }),
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
       h('button', { class: 'nav-btn', title: 'ズームアウト', onclick: () => v.zoomBy(1.33) }, h('span', { class: 'ic' }, '－')),

@@ -1,6 +1,7 @@
 /**
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
+import { ensureGarageShutters } from './garageShutter';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
@@ -2069,6 +2070,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     for (const l of outline) for (const q of r.polygon) for (let i = 0; i < l.length; i++) d = Math.min(d, distPointSegment(q, l[i], l[(i + 1) % l.length]));
     r.garageKind = d <= 600 ? 'attached' : 'detached';
   }
+  // ビルトインガレージの壁の無い辺（シャッター）に、外壁＋シャッターの開口を足す（壁だけから描き直しても消えないように）
+  if (ensureGarageShutters(outWalls, openings, rooms, level)) warnings.push(`${level}階: ガレージの壁の無い辺にシャッターを置きました（違えば方眼の「シャッター」で直せます）`);
   return {
     level,
     elevation: 0,
@@ -2910,6 +2913,8 @@ export interface RoomLabel {
   name: string;
   x: number;
   y: number;
+  /** この部屋だけの天井高 (mm)（修正画面で範囲指定したもの） */
+  ceilingHeight?: number;
   /** 用途を手で指定した場合（同じ名前の部屋に引き継ぐ） */
   type?: RoomType;
   /** ガレージの建て方を手で指定した場合 */
@@ -2921,6 +2926,8 @@ export interface RoomLabel {
  * 図面の読み取りと同じ処理（壁で囲まれた範囲を部屋にする）を、修正後の壁で実行する。
  */
 export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: number, warnings: string[] = [], keep?: { rooms: Room[]; removed: { a: Vec2; b: Vec2 }[] }): Floor {
+  // 以前の読み取り（シャッターの壁を足す前）のガレージ: 壁の無い辺に外壁＋シャッターを足してから作り直す
+  if (keep?.rooms.length) ensureGarageShutters(f.walls, f.openings, keep.rooms, f.level);
   const groups: { u: Vec2 }[] = [];
   const groupOf = (u: Vec2) => {
     let gi = groups.findIndex((g) => Math.abs(g.u.x * u.y - g.u.y * u.x) < 0.02 && g.u.x * u.x + g.u.y * u.y > 0);
@@ -2930,7 +2937,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     }
     return gi;
   };
-  const kindOf = (k: Opening['kind']): DetectedOpening['kind'] => (k === 'entrance' ? 'door' : k === 'open' ? 'open' : k);
+  const kindOf = (k: Opening['kind']): DetectedOpening['kind'] => (k === 'entrance' || k === 'shutter' ? 'door' : k === 'open' ? 'open' : k);
   const walls: WWall[] = [];
   for (const w of f.walls) {
     let a = w.a;
@@ -3026,7 +3033,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
       op.windowStyle = src.windowStyle;
     } else if (src.kind !== 'window') {
       op.sill = 0;
-      op.height = src.kind === 'entrance' ? Math.max(2200, src.height) : src.height || 2000;
+      op.height = src.kind === 'entrance' ? Math.max(2200, src.height) : src.kind === 'shutter' ? src.height || 2300 : src.height || 2000;
       op.windowStyle = undefined;
     }
     if (src.hingeAtStart != null) op.hingeAtStart = reversed ? !src.hingeAtStart : src.hingeAtStart;
@@ -3059,6 +3066,8 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     }
     if (l.type) r.type = l.type;
     if (r.type === 'garage' && l.garageKind) r.garageKind = l.garageKind;
+    if (l.ceilingHeight) r.ceilingHeight = l.ceilingHeight;
+    else delete r.ceilingHeight;
     r.labelPos = { x: l.x, y: l.y };
   }
   // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す

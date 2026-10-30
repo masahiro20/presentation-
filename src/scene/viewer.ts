@@ -241,7 +241,7 @@ export class Viewer {
       if (this.onPick) {
         const p = this.pickPoint(ndc);
         if (p) {
-          this.onPick(p);
+          this.onPick(p, ndc);
           return;
         }
       }
@@ -420,7 +420,25 @@ export class Viewer {
   }
 
   /** クリックした点を受け取る（家具を置く・選ぶモード）。null で通常（扉の開閉） */
-  onPick: ((p: THREE.Vector3) => void) | null = null;
+  onPick: ((p: THREE.Vector3, ndc?: THREE.Vector2) => void) | null = null;
+
+  /** 画面上の点（NDC）の下にある「床」の点（屋根・壁・天井は透かす。家具の天板はその下の床の高さに落とす）。床が無ければ null */
+  pickFloorPoint(ndc: THREE.Vector2): THREE.Vector3 | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const shown = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+      return (o as THREE.Mesh).isMesh === true;
+    };
+    const hits = rc.intersectObjects([this.groups.building, this.groups.furniture, this.groups.cut], true).filter((x) => shown(x.object) && x.distance > 0.05);
+    const floorLike = /^int\.(floor|wetFloor|entranceFloor|tatami|slab)|^ext\.(balcony|terrace|concrete)|^l\.(deck|paving)/;
+    const h = hits.find((x) => floorLike.test(String(x.object.userData.matKey ?? '')));
+    if (h) return h.point.clone();
+    // 家具の上: その真下の床（同じ x/z）
+    const fh = hits.find((x) => String(x.object.userData.matKey ?? '').startsWith('f.'));
+    if (fh) return fh.point.clone();
+    return null;
+  }
 
   /** 画面上の点（NDC）の下にある床・家具の点（ワールド座標）。屋根・天井は透かして、その下の床を探す */
   pickPoint(ndc: THREE.Vector2): THREE.Vector3 | null {

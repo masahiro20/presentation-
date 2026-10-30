@@ -309,6 +309,24 @@ export function alignUpperWalls(model: BuildingModel): BuildingModel {
   return { ...model, floors };
 }
 
+/** 部屋ごとの天井高 (mm)。無ければ階の天井高 */
+export const roomCeilingMm = (f: Floor, r: Room): number => r.ceilingHeight ?? f.ceilingHeight;
+/** 内壁の高さ (mm): 壁の両側の部屋の天井高の高い方（部屋が無ければ階の天井高） */
+function wallCeilingMm(f: Floor, w: Wall): number {
+  const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+  const nx = -(w.b.y - w.a.y) / L;
+  const ny = (w.b.x - w.a.x) / L;
+  const mx = (w.a.x + w.b.x) / 2;
+  const my = (w.a.y + w.b.y) / 2;
+  let best = 0;
+  for (const sg of [1, -1]) {
+    const p = { x: mx + nx * sg * (w.thickness / 2 + 100), y: my + ny * sg * (w.thickness / 2 + 100) };
+    const r = f.rooms.find((q) => pointInPolygon(p, q.polygon));
+    if (r?.ceilingHeight) best = Math.max(best, r.ceilingHeight);
+  }
+  return best || f.ceilingHeight;
+}
+
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
   model = trimInteriorEnds(alignUpperWalls(model));
   const mb = new MeshBuilder();
@@ -447,7 +465,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
         emitFlat(mb, 'ext.soffit', r.polygon, [], top - (upper ? 0.25 : 0.02), false);
         continue;
       }
-      emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+      emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
     }
     // ---- 天井の設備（ダウンライト・間接照明） ----
     buildCeilingDetails(mb, f, fl, spec);
@@ -1044,7 +1062,7 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   // 敷地の塀（家から離れて立つ両側とも屋外の壁）は目隠し塀の高さ 1.8m（建物の高さまで立ち上げると敷地が箱で囲まれて見える）。
   // 家に取り付く・家のすぐそばの囲い（中庭の袖壁・ポーチの壁）は建物と同じ高さのまま
   const fence = f.elevation < 1500 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
-  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+  const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
   const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
   if (guard === 'halfGlass') voidGlassOnTop(mb, A, B, fl + 0.9);
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
@@ -1229,6 +1247,17 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       const extR = fitsAt(width / 2 + 0.26) ? 0.25 : 0;
       mb.box('f.metal', inner.clone().addScaledVector(dir, (extR - extL) / 2).setY(cy), dir, width + extL + extR, 0.025, 0.025);
     }
+    return;
+  }
+
+  if (o.kind === 'shutter') {
+    // ガレージのシャッター（閉）: 開口いっぱいのスラット付きパネル、両脇のガイドレール、上のシャッターボックス
+    const plane = mid.clone().addScaledVector(outN, t / 2 - 0.06);
+    mb.box('ext.shutter', plane.clone().setY(sill + 0.02), dir, width - 0.1, H - 0.08, 0.05);
+    for (let y = sill + 0.25; y < head - 0.12; y += 0.25) mb.box('ext.frame', plane.clone().setY(y), dir, width - 0.14, 0.008, 0.056);
+    mb.box('ext.frame', plane.clone().addScaledVector(dir, -width / 2 + 0.025).setY(sill), dir, 0.05, H, 0.1);
+    mb.box('ext.frame', plane.clone().addScaledVector(dir, width / 2 - 0.025).setY(sill), dir, 0.05, H, 0.1);
+    mb.box('ext.frame', plane.clone().addScaledVector(outN, -0.05).setY(head - 0.3), dir, width, 0.3, 0.2);
     return;
   }
 
@@ -1456,8 +1485,8 @@ function curtainWave(mb: MeshBuilder, start: THREE.Vector3, dir: THREE.Vector3, 
 
 /** 天井のダウンライト・間接照明 */
 function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
-  const ceil = fl + f.ceilingHeight * MM;
   for (const r of f.rooms) {
+    const ceil = fl + roomCeilingMm(f, r) * MM;
     if (['closet', 'storage', 'void', 'balcony', 'porch', 'stairs', 'garage'].includes(r.type) || outdoorRoom(r)) continue;
     const xs = r.polygon.map((p) => p.x * MM);
     const zs = r.polygon.map((p) => p.y * MM);

@@ -29,6 +29,11 @@ export interface RecordOptions {
   title?: string;
   /** 字幕を焼き込む */
   captions?: boolean;
+  /**
+   * 1 コマを自分で描く（4 季節を並べるなど）。渡すと program のカメラは使わず、この関数が合成キャンバスに描く。
+   * draw(t) は「今のカメラで 1 回描いて、その画像を返す」
+   */
+  renderFrame?: (t: number, ctx: CanvasRenderingContext2D, draw: () => HTMLCanvasElement) => void;
 }
 
 export interface RecordResult {
@@ -120,6 +125,13 @@ export async function recordProgram(viewer: RecordTarget, program: CameraProgram
 
   const renderAt = (i: number) => {
     const t = i / fps;
+    if (opts.renderFrame) {
+      opts.renderFrame(t, comp.ctx, () => {
+        viewer.renderFrame(true);
+        return renderer.domElement;
+      });
+      return;
+    }
     const s = program.sample(t);
     opts.beforeFrame?.(t, s);
     viewer.setDoors?.(s.doors ?? null);

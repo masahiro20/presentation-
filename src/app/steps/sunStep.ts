@@ -693,17 +693,20 @@ export const sunStep: Step = {
     });
     // ---- 日影のタイムラプス動画（日の出〜日の入を 1 本に。今の視点のまま、時計を焼き込む） ----
     // 見る人（お客様）: 「冬至の 1 日、影がどう動くか」が 12 秒で分かる。体験リンクの「動画」と資料に入る
-    const recordTimelapse = async () => {
+    const recordTimelapse = async (seasons = false) => {
       if (!v.state) return;
       const d = sunDay();
       const rs = sunriseSunset(ui.year, ui.month, ui.day, d.lat, d.lon);
-      const from = Math.max(4, rs.sunrise + 0.25);
-      const to = Math.min(20, rs.sunset - 0.25);
+      // 4 季節並べは同じ時計で比べる（6:00〜18:00）。単日は日の出〜日の入
+      const from = seasons ? 6 : Math.max(4, rs.sunrise + 0.25);
+      const to = seasons ? 18 : Math.min(20, rs.sunset - 0.25);
+      const month0 = ui.month;
+      const day0 = ui.day;
       const wasPlaying = ui.playing;
       ui.playing = false;
       playBtn.textContent = '▶';
       const hour0 = ui.hour;
-      const pm = progressModal(`${ui.month}月${ui.day}日の日影の動画を書き出しています`, true);
+      const pm = progressModal(seasons ? '4 季節の日影の動画を書き出しています' : `${ui.month}月${ui.day}日の日影の動画を書き出しています`, true);
       const wasPath = sc.state.showSunPath;
       // 太陽の軌道と時刻の札は動画では消す（影だけを見せる）
       sc.state.showSunPath = false;
@@ -713,18 +716,83 @@ export const sunStep: Step = {
       const wasMode = v.viewMode;
       v.setViewMode('finish');
       try {
-        const base = sunTimelapseProgram(v.state.meta, from, to, 12, view);
+        // 検証用（E2E）: __timelapseFast を立てると短く・粗く書き出す
+        const fast = !!(globalThis as { __timelapseFast?: boolean }).__timelapseFast;
+        const duration = fast ? 2 : seasons ? 16 : 12;
+        const base = sunTimelapseProgram(v.state.meta, from, to, duration, view);
         // 画角は今の画面と同じに（動画と画面で見え方が変わらないように）
         const fov = v.camera.fov;
         const program = { ...base, sample: (t: number) => ({ ...base.sample(t), fov }) };
-        const title = `${state.customer ? `${state.customer} ` : ''}${ui.month}月${ui.day}日の日影`;
+        const title = seasons ? `${state.customer ? `${state.customer} ` : ''}4 季節の日影（冬至・春分・夏至・秋分）` : `${state.customer ? `${state.customer} ` : ''}${ui.month}月${ui.day}日の日影`;
+        // 4 季節: 1 コマごとに 4 回描いて 2×2 に並べる（左上 冬至・右上 春分・左下 夏至・右下 秋分）
+        const tiles = keyDates(ui.year).filter((k) => /冬至|春分|夏至|秋分/.test(k.label));
+        const order = ['冬至', '春分', '夏至', '秋分'];
+        tiles.sort((a, b) => order.findIndex((o) => a.label.includes(o)) - order.findIndex((o) => b.label.includes(o)));
+        const W = seasons ? 1920 : 1280;
+        const H = seasons ? 1080 : 720;
+        let tileSized = false;
+        const renderSeasons = (t: number, ctx: CanvasRenderingContext2D, draw: () => HTMLCanvasElement) => {
+          const s = program.sample(t);
+          if (!tileSized) {
+            // 各コマは 4 分の 1 の大きさで描く（1 コマに 4 回描くので、全体の大きさで描くと 4 倍重い）
+            v.renderer.setSize(W / 2, H / 2, false);
+            v.composer.setSize(W / 2, H / 2);
+            v.camera.aspect = W / H;
+            tileSized = true;
+          }
+          v.camera.fov = fov;
+          v.camera.position.copy(s.pos);
+          v.camera.lookAt(s.target);
+          v.camera.updateProjectionMatrix();
+          const tw = W / 2;
+          const th = H / 2;
+          const clock = s.caption ?? '';
+          tiles.slice(0, 4).forEach((k, i) => {
+            ui.month = k.month;
+            ui.day = k.day;
+            ui.hour = s.hour ?? from;
+            apply(true);
+            const img = draw();
+            const x = (i % 2) * tw;
+            const y = Math.floor(i / 2) * th;
+            ctx.drawImage(img, x, y, tw, th);
+            // 季節の札
+            const fs = Math.round(th * 0.06);
+            ctx.font = `600 ${fs}px 'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif`;
+            const label = `${k.label}（${k.month}/${k.day}）`;
+            const lw = ctx.measureText(label).width;
+            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            ctx.beginPath();
+            ctx.roundRect(x + fs * 0.6, y + fs * 0.6, lw + fs, fs * 1.6, fs * 0.3);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x + fs * 1.1, y + fs * 0.6 + fs * 0.8);
+          });
+          // 仕切り線と時計（中央）
+          ctx.fillStyle = 'rgba(255,255,255,0.9)';
+          ctx.fillRect(tw - 1, 0, 2, H);
+          ctx.fillRect(0, th - 1, W, 2);
+          const cs = Math.round(H * 0.05);
+          ctx.font = `600 ${cs}px 'Noto Sans JP','Hiragino Sans','Yu Gothic',sans-serif`;
+          const cw = ctx.measureText(clock).width;
+          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.beginPath();
+          // 時計は上端の中央（各コマの札にかぶらない位置）
+          ctx.roundRect(W / 2 - cw / 2 - cs * 0.6, cs * 0.4, cw + cs * 1.2, cs * 1.8, cs * 0.4);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(clock, W / 2 - cw / 2, cs * 1.3);
+        };
         const r = await recordProgram(v, program, {
-          width: 1280,
-          height: 720,
-          fps: 30,
+          width: W,
+          height: H,
+          fps: fast ? 5 : 30,
           title,
           captions: true,
           signal: pm.signal,
+          renderFrame: seasons ? renderSeasons : undefined,
           beforeFrame: (_t, s) => {
             if (s.hour != null) {
               ui.hour = s.hour;
@@ -747,12 +815,31 @@ export const sunStep: Step = {
         v.camera.position.copy(view.pos);
         v.controls.target.copy(view.target);
         v.resize();
+        ui.month = month0;
+        ui.day = day0;
         ui.hour = hour0;
+        renderChips();
         apply(true);
         if (wasPlaying) playBtn.click();
       }
     };
-    const movieBtn = h('button', { class: 'chip', title: '日の出から日の入までの影の動きを 12 秒の動画に（今の視点のまま）', onclick: () => void recordTimelapse() }, '🎬 日影の動画');
+    const movieMenu = () =>
+      modal(
+        '日影の動画を書き出す',
+        h(
+          'div',
+          null,
+          h('p', { class: 'hint', style: 'margin-top:0' }, '今の視点のまま、影の動きを動画にします。体験リンクの「動画」と資料に入り、ファイルにも保存します。'),
+          h('p', null, h('b', null, 'この日だけ'), `（${ui.month}月${ui.day}日の日の出〜日の入、12 秒・1280×720）`),
+          h('p', null, h('b', null, '4 季節を並べる'), '（冬至・春分・夏至・秋分を 2×2 に、同じ時計 6:00〜18:00 で 16 秒・1920×1080。書き出しに 4 倍の時間がかかります）'),
+        ),
+        [
+          { label: 'この日だけ', primary: true, onClick: () => void recordTimelapse(false) },
+          { label: '4 季節を並べる', onClick: () => void recordTimelapse(true) },
+          { label: 'やめる' },
+        ],
+      );
+    const movieBtn = h('button', { class: 'chip', title: '影の動きを動画に（この日だけ／4 季節を並べて）', onclick: movieMenu }, '🎬 日影の動画');
     const bar = h(
       'div',
       { class: 'overlay-bar', style: 'pointer-events:auto' },

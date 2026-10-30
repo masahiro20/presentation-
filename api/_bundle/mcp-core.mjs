@@ -1346,6 +1346,105 @@ function detectScale(pages) {
 	};
 }
 //#endregion
+//#region src/parser/garageShutter.ts
+var MIN_EDGE = 1500;
+/** 辺の中点の近く（150mm）に、その辺とほぼ平行な壁があるか */
+function hasWallAlong(a, b, walls) {
+	const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+	const ux = (b.x - a.x) / L;
+	const uy = (b.y - a.y) / L;
+	const m = {
+		x: (a.x + b.x) / 2,
+		y: (a.y + b.y) / 2
+	};
+	const q1 = {
+		x: a.x + ux * L * .25,
+		y: a.y + uy * L * .25
+	};
+	const q2 = {
+		x: a.x + ux * L * .75,
+		y: a.y + uy * L * .75
+	};
+	for (const w of walls) {
+		const wl = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		const wx = (w.b.x - w.a.x) / wl;
+		const wy = (w.b.y - w.a.y) / wl;
+		if (Math.abs(wx * uy - wy * ux) > .1) continue;
+		const near = (p) => distPointSegment(p, w.a, w.b) < 150;
+		if (near(m) || near(q1) && near(q2)) return true;
+	}
+	return false;
+}
+/**
+* ビルトインガレージの壁の無い辺に、外壁とシャッターの開口を足す（walls・openings を書き換える）。
+* 戻り値は足した数。離れ・後付けのガレージは 3D 側（buildAnnexRoof）が壁の無い辺にシャッターを描くので対象外
+*/
+function ensureGarageShutters(walls, openings, rooms, level) {
+	let added = 0;
+	const thick = walls.length ? [...walls].sort((p, q) => p.thickness - q.thickness)[Math.floor(walls.length / 2)].thickness : 120;
+	for (const r of rooms) {
+		if (r.type !== "garage" || r.garageKind && r.garageKind !== "builtin") continue;
+		const poly = r.polygon;
+		for (let i = 0; i < poly.length; i++) {
+			const a = poly[i];
+			const b = poly[(i + 1) % poly.length];
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			if (L < MIN_EDGE || hasWallAlong(a, b, walls)) continue;
+			const ux = (b.x - a.x) / L;
+			const leftN = {
+				x: -((b.y - a.y) / L),
+				y: ux
+			};
+			const mid = {
+				x: (a.x + b.x) / 2,
+				y: (a.y + b.y) / 2
+			};
+			const outSide = pointInPolygon({
+				x: mid.x + leftN.x * 300,
+				y: mid.y + leftN.y * 300
+			}, poly) ? -1 : 1;
+			const outPt = {
+				x: mid.x + leftN.x * outSide * 400,
+				y: mid.y + leftN.y * outSide * 400
+			};
+			if (rooms.some((q) => q !== r && pointInPolygon(outPt, q.polygon))) continue;
+			let k = 1;
+			while (walls.some((w) => w.id === `F${level}-GS${k}`)) k++;
+			const id = `F${level}-GS${k}`;
+			walls.push({
+				id,
+				a: {
+					x: a.x,
+					y: a.y
+				},
+				b: {
+					x: b.x,
+					y: b.y
+				},
+				thickness: thick,
+				exterior: true,
+				outsideSign: outSide,
+				joinedA: true,
+				joinedB: true
+			});
+			openings.push({
+				id: `${id}-SH`,
+				wallId: id,
+				kind: "shutter",
+				t0: 80,
+				t1: L - 80,
+				sill: 0,
+				height: 2300,
+				hingeAtStart: true,
+				swingSide: 1,
+				confidence: .8
+			});
+			added++;
+		}
+	}
+	return added;
+}
+//#endregion
 //#region src/parser/walls.ts
 var DEFAULTS$1 = {
 	minThickness: 45,
@@ -9442,6 +9541,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		for (const l of outline) for (const q of r.polygon) for (let i = 0; i < l.length; i++) d = Math.min(d, distPointSegment(q, l[i], l[(i + 1) % l.length]));
 		r.garageKind = d <= 600 ? "attached" : "detached";
 	}
+	if (ensureGarageShutters(outWalls, openings, rooms, level)) warnings.push(`${level}階: ガレージの壁の無い辺にシャッターを置きました（違えば方眼の「シャッター」で直せます）`);
 	return {
 		level,
 		elevation: 0,
@@ -13882,6 +13982,26 @@ function alignUpperWalls(model) {
 		floors
 	};
 }
+/** 部屋ごとの天井高 (mm)。無ければ階の天井高 */
+var roomCeilingMm = (f, r) => r.ceilingHeight ?? f.ceilingHeight;
+/** 内壁の高さ (mm): 壁の両側の部屋の天井高の高い方（部屋が無ければ階の天井高） */
+function wallCeilingMm(f, w) {
+	const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+	const nx = -(w.b.y - w.a.y) / L;
+	const ny = (w.b.x - w.a.x) / L;
+	const mx = (w.a.x + w.b.x) / 2;
+	const my = (w.a.y + w.b.y) / 2;
+	let best = 0;
+	for (const sg of [1, -1]) {
+		const p = {
+			x: mx + nx * sg * (w.thickness / 2 + 100),
+			y: my + ny * sg * (w.thickness / 2 + 100)
+		};
+		const r = f.rooms.find((q) => pointInPolygon(p, q.polygon));
+		if (r?.ceilingHeight) best = Math.max(best, r.ceilingHeight);
+	}
+	return best || f.ceilingHeight;
+}
 function buildBuilding(model, opts) {
 	model = trimInteriorEnds(alignUpperWalls(model));
 	const mb = new MeshBuilder();
@@ -14020,7 +14140,7 @@ function buildBuilding(model, opts) {
 				emitFlat(mb, "ext.soffit", r.polygon, [], top - (upper ? .25 : .02), false);
 				continue;
 			}
-			emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+			emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
 		}
 		buildCeilingDetails(mb, f, fl, spec);
 		for (const s of f.stairs) {
@@ -14701,7 +14821,7 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : fl;
 	const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
 	const fence = f.elevation < 1500 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
-	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + f.ceilingHeight * MM;
+	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
 	const topKey = w.exterior || facesOutdoor ? "ext.wallTop" : "int.wallTop";
 	if (guard === "halfGlass") voidGlassOnTop(mb, A, B, fl + .9);
 	const jambKey = w.exterior ? spec.windows.interiorReveal === "plaster" ? "int.wall" : "int.trim" : spec.doors.frame === "casing" ? "int.trim" : "int.wall";
@@ -14903,6 +15023,15 @@ function buildOpening(mb, f, w, o, fl, meta, spec) {
 			const extR = fitsAt(width / 2 + .26) ? .25 : 0;
 			mb.box("f.metal", inner.clone().addScaledVector(dir, (extR - extL) / 2).setY(cy), dir, width + extL + extR, .025, .025);
 		}
+		return;
+	}
+	if (o.kind === "shutter") {
+		const plane = mid.clone().addScaledVector(outN, t / 2 - .06);
+		mb.box("ext.shutter", plane.clone().setY(sill + .02), dir, width - .1, H - .08, .05);
+		for (let y = sill + .25; y < head - .12; y += .25) mb.box("ext.frame", plane.clone().setY(y), dir, width - .14, .008, .056);
+		mb.box("ext.frame", plane.clone().addScaledVector(dir, -width / 2 + .025).setY(sill), dir, .05, H, .1);
+		mb.box("ext.frame", plane.clone().addScaledVector(dir, width / 2 - .025).setY(sill), dir, .05, H, .1);
+		mb.box("ext.frame", plane.clone().addScaledVector(outN, -.05).setY(head - .3), dir, width, .3, .2);
 		return;
 	}
 	if (o.kind === "entrance") {
@@ -15130,8 +15259,8 @@ function curtainWave(mb, start, dir, outN, len, y0, y1) {
 }
 /** 天井のダウンライト・間接照明 */
 function buildCeilingDetails(mb, f, fl, spec) {
-	const ceil = fl + f.ceilingHeight * MM;
 	for (const r of f.rooms) {
+		const ceil = fl + roomCeilingMm(f, r) * MM;
 		if ([
 			"closet",
 			"storage",
@@ -19999,6 +20128,15 @@ function floorPlanParts(model, f, opts = {}) {
 					s += `<line x1="${hb.x.toFixed(0)}" y1="${hb.y.toFixed(0)}" x2="${tip.x.toFixed(0)}" y2="${tip.y.toFixed(0)}" stroke="#111" stroke-width="10"/>`;
 					for (const t of [0, len]) s += `<line x1="${P(t, -h).x.toFixed(0)}" y1="${P(t, -h).y.toFixed(0)}" x2="${P(t, h).x.toFixed(0)}" y2="${P(t, h).y.toFixed(0)}" stroke="#111" stroke-width="6"/>`;
 				} else s += `<polygon points="${lp.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ")}" fill="#fff" stroke="#222" stroke-width="9"/>`;
+			} else if (o.kind === "shutter") {
+				for (const t of [0, len]) {
+					const e0 = P(t, -h);
+					const e1 = P(t, h);
+					s += `<line x1="${e0.x.toFixed(0)}" y1="${e0.y.toFixed(0)}" x2="${e1.x.toFixed(0)}" y2="${e1.y.toFixed(0)}" stroke="#333" stroke-width="9"/>`;
+				}
+				const p0 = P(0, 0);
+				const p1 = P(len, 0);
+				s += `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="#111" stroke-width="${hl ? 14 : 12}" stroke-dasharray="90 50"/>`;
 			} else if (o.kind === "sliding") {
 				for (const t of [0, len]) {
 					const e0 = P(t, -h);

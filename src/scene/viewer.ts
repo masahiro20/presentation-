@@ -154,6 +154,8 @@ export class Viewer {
   }
   private raf = 0;
   private skyTex: THREE.DataTexture | null = null;
+  /** 空を背景（scene.background）ではなく大きな球で描く（縦画面・広い画角で背景の立方体が崩れる環境向け。体験リンクで使う） */
+  private skyDome: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null;
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
@@ -906,7 +908,32 @@ export class Viewer {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  /** 空を球で描く（on）／背景に戻す（off）。球はカメラに追従する */
+  useSkyDome(on: boolean) {
+    if (on && !this.skyDome) {
+      const mat = new THREE.MeshBasicMaterial({ map: this.skyTex ?? undefined, side: THREE.BackSide, fog: false });
+      const m = new THREE.Mesh(new THREE.SphereGeometry(900, 48, 24), mat);
+      m.name = 'skydome';
+      m.frustumCulled = false;
+      m.castShadow = false;
+      m.receiveShadow = false;
+      m.userData.noShadow = true;
+      m.renderOrder = -1000;
+      this.skyDome = m;
+      this.scene.add(m);
+      this.scene.background = null;
+    } else if (!on && this.skyDome) {
+      this.scene.remove(this.skyDome);
+      this.skyDome.geometry.dispose();
+      this.skyDome.material.dispose();
+      this.skyDome = null;
+      this.scene.background = this.skyTex;
+    }
+    this.dirty = true;
+  }
+
   renderFrame(force = false) {
+    if (this.skyDome) this.skyDome.position.copy(this.camera.position);
     if (this.quality === 'high' && (force || this.viewMode === 'finish')) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.onAfterRender?.();
@@ -1205,7 +1232,11 @@ export class Viewer {
     this.envRT?.dispose();
     this.envRT = this.pmrem.fromEquirectangular(this.skyTex);
     this.scene.environment = this.envRT.texture;
-    this.scene.background = this.skyTex;
+    if (this.skyDome) {
+      this.skyDome.material.map = this.skyTex;
+      this.skyDome.material.needsUpdate = true;
+      this.scene.background = null;
+    } else this.scene.background = this.skyTex;
     this.scene.environmentIntensity = mode === 'night' ? 0.28 : mode === 'morning' ? 0.6 : 0.66;
     this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
     // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）。朝は靄が濃い

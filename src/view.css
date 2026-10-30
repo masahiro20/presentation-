@@ -69,3 +69,4 @@ model-viewer { width: 1px; height: 1px; position: absolute; left: -10px; top: -1
 .vw-total b { font-family: 'Shippori Mincho', serif; font-weight: 500; font-size: 18px; font-variant-numeric: tabular-nums; }
 .vw-total .d { font-size: 11.5px; color: var(--ink2); }
 .vw-total .d.up { color: #a0522d; }
+.vw-attr { position: absolute; right: 8px; bottom: 6px; font-size: 9px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 4px rgba(0,0,0,0.6); pointer-events: none; }

@@ -1088,6 +1088,7 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 /* ヘッダーの概算 */
 .cost-pill { display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid #e3ded5; background: #fff; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; color: #222; cursor: pointer; margin-right: 8px; white-space: nowrap; }
 .cost-pill:hover { border-color: #bbb; }
+.cost-pill[hidden] { display: none; }
 .cost-pill .v { font-weight: 600; font-variant-numeric: tabular-nums; }
 .cost-pill .d { font-size: 10.5px; color: #8a8f98; }
 .cost-pill .d.up { color: #b4473d; } .cost-pill .d.down { color: #2f7d4a; }

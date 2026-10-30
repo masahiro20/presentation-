@@ -10,6 +10,7 @@ import { h, modal, toast } from './dom';
 import { finishDeltas, estimateSummary } from './steps/estimateStep';
 import { exportAr, type ArFiles } from '../scene/exportAr';
 import type { Viewer } from '../scene/viewer';
+import type { SunContext } from '../sun/context';
 
 export interface ShareVideo {
   title: string;
@@ -78,7 +79,11 @@ export async function shareProject(onProgress?: (msg: string) => void, app?: Sha
   for (const [catId, it] of Object.entries(state.coord.items)) if ((it.candidates?.length ?? 0) >= 2 && it.status !== 'decided') deltas[catId] = finishDeltas(catId);
   // 概算の総額: お客様の「仕様を選ぶ」で、選ぶたびに総額が動いて見えるように
   const grand = estimateSummary()?.grand;
-  const data = { ...project, share: { id, videos, ar, deltas, grand, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
+  // 周辺環境（日照で取得した周辺建物・航空写真）: お客様の画面にも同じ周りを出す
+  const sc = app?.viewer.userData.sunCtx as SunContext | undefined;
+  const context = sc?.exportShareContext() ?? undefined;
+  if (context) onProgress?.('周辺環境を入れています');
+  const data = { ...project, share: { id, videos, ar, deltas, grand, context, designer: state.designer, tel: state.tel, email: state.email, url: state.url } };
   const r = await upload(`share/${id}/project.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }), { access: 'public', handleUploadUrl: '/api/share', contentType: 'application/json' });
   const link = `${location.origin}/view.html?p=${encodeURIComponent(r.url)}`;
   // コーディネートの「お客様の選択を受け取る」の受け取り先
@@ -103,7 +108,7 @@ export async function shareDialog(app?: ShareApp) {
         h('a', { class: 'btn', href: url, target: '_blank', rel: 'noopener' }, '自分のパソコンで開く'),
         typeof navigator.share === 'function' ? h('button', { class: 'btn', onclick: () => navigator.share({ title: state.name, url }).catch(() => {}) }, '送る…') : null,
       ),
-      h('p', { class: 'hint' }, `収録: パース ${state.gallery.length} 枚・動画 ${state.videos.length} 本。動画は外部で仕上げたルームツアーを、パース →「仕上げ（外部）」で取り込むと入ります。`),
+      h('p', { class: 'hint' }, `収録: パース ${state.gallery.length} 枚・動画 ${state.videos.length} 本${(app?.viewer.userData.sunCtx as SunContext | undefined)?.exportShareContext() ? '・周辺建物と航空写真' : '（周辺環境は、日照の画面で「周辺建物を取得」「航空写真」をしてから作ると入ります）'}。動画は外部で仕上げたルームツアーを、パース →「仕上げ（外部）」で取り込むと入ります。`),
     );
   } catch (e) {
     const err = e as Error & { status?: number };

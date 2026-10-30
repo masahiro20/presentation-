@@ -20,8 +20,9 @@ import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
 import { ROUNDS, shotFor, deltaText, type CustomerPicks, type CustomerInbox } from './coordinate/decisions';
 import { yenMan } from './core/planDiff';
 import { lookOf } from './coordinate/samples';
+import { buildShareContextGroup, type ShareContext } from './sun/shareContext';
 
-type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; grand?: number; designer?: string; tel?: string; email?: string; url?: string } };
+type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; grand?: number; context?: ShareContext; designer?: string; tel?: string; email?: string; url?: string } };
 
 const root = document.getElementById('view')!;
 const head = h('div', { class: 'vw-head' });
@@ -56,9 +57,44 @@ async function main() {
 
   const design: DesignOptions = { ...proj.design };
   const viewer = new Viewer(stage, design);
+  // 検証用（E2E）
+  (window as unknown as { __view?: unknown }).__view = { viewer, proj, THREE };
   viewer.setModel(proj.model);
   viewer.setDesign(design);
   viewer.setTownVisible(false);
+  // スマホの縦画面では背景の空が崩れるので、空は球で描く
+  viewer.useSkyDome(true);
+  // 周辺環境（担当者が日照の画面で取得した周辺建物・航空写真）: 同じ周りの中に家を置いて見せる
+  if (proj.share?.context) {
+    viewer.groups.context.add(buildShareContextGroup(proj.share.context));
+    viewer.groups.context.visible = true;
+    // 航空写真があるときは、生成した遠景の地面・道路を隠す（日照の画面と同じ見え方）
+    if (proj.share.context.aerial)
+      viewer.groups.landscape.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && (m.userData.matKey === 'l.far' || m.userData.matKey === 'l.road' || m.userData.matKey === 'l.curb')) m.visible = false;
+      });
+    viewer.invalidate();
+    if (proj.share.context.aerial?.attribution) stage.appendChild(h('div', { class: 'vw-attr' }, proj.share.context.aerial.attribution));
+  }
+  // 構図のカメラが周辺建物の中・すぐそばにあるとき（道路の向かいの家など）は、その建物だけ隠す（視界を塞がない）
+  const ctxBoxes: { mesh: THREE.Object3D; box: THREE.Box3 }[] = [];
+  viewer.groups.context.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh && m.name !== 'aerial') ctxBoxes.push({ mesh: m, box: new THREE.Box3().setFromObject(m) });
+  });
+  const cullContext = (pos: THREE.Vector3, target: THREE.Vector3) => {
+    if (!ctxBoxes.length) return;
+    const ray = new THREE.Ray(pos.clone(), target.clone().sub(pos).normalize());
+    const dist = pos.distanceTo(target);
+    const hit = new THREE.Vector3();
+    for (const { mesh, box } of ctxBoxes) {
+      const near = box.distanceToPoint(pos) < 2.0;
+      const between = !!ray.intersectBox(box, hit) && hit.distanceTo(pos) < dist * 0.6;
+      mesh.visible = !(near || between);
+    }
+    viewer.invalidate();
+  };
   const shots = () => viewer.shots(stage.clientWidth / Math.max(1, stage.clientHeight));
   const tag = h('div', { class: 'vw-tag' });
   stage.appendChild(tag);
@@ -70,9 +106,11 @@ async function main() {
     if (aspect < 1.2) {
       const hfov = 2 * Math.atan(Math.tan((s.view.fov * Math.PI) / 360) * (16 / 9));
       const vfov = (2 * Math.atan(Math.tan(hfov / 2) / aspect) * 180) / Math.PI;
-      shot = { ...s, view: { ...s.view, fov: Math.min(100, vfov) } };
+      // 縦の画角は 78° まで（それ以上は空の描画が崩れ、家も小さくなりすぎる）
+      shot = { ...s, view: { ...s.view, fov: Math.min(78, vfov) } };
     }
     viewer.applyShot(shot, true);
+    cullContext(shot.view.pos, shot.view.target);
     // お客様向けの言葉に（「道路側」→「正面」など、社内の呼び方を出さない）
     tag.textContent = s.title.replace(/パース/g, '').replace(/[（）()]/g, ' ').replace(/道路側/g, '正面').replace(/^(外観|内観)\s+\1/, '$1').trim();
     curShot = s;

@@ -2,6 +2,7 @@
  * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
  * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
+import { facadeMaterial, WALL_COLORS, type ShareContext, type ShareNeighbor } from './shareContext';
 import * as THREE from 'three';
 import type { Viewer } from '../scene/viewer';
 import { clearGroup } from '../scene/viewer';
@@ -918,39 +919,52 @@ export class SunContext {
     this.applyGhosts();
   }
 
+  /** 航空写真の出典（loadAerial で入る。体験リンクに添える） */
+  private aerialAttribution = '';
+
   /**
-   * 周辺建物の外壁: 単色の箱ではなく、階ごとの窓の帯をシェーダーで描く（テクスチャ不要・UV 不要。ワールド座標から模様を決める）。
-   * 色は建物ごとに少し変える（街並みの見え方）。影・解析には関係しない見た目だけの処理
+   * 体験リンクに持っていく周辺環境: 今見えている周辺建物（隠した建物は除く。想定の家は含む）の三角形と、航空写真。
+   * 周辺建物も航空写真も無ければ null
    */
-  private facadeMaterial(color: string): THREE.MeshStandardMaterial {
-    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.88 });
-    m.onBeforeCompile = (sh) => {
-      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFacadeWp;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvFacadeWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vFacadeWp;')
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.35, facadeWin);')
-        .replace(
-          '#include <color_fragment>',
-          `float facadeWin = 0.0;
-          #include <color_fragment>
-          {
-            vec3 fn = normalize(cross(dFdx(vFacadeWp), dFdy(vFacadeWp)));
-            // 側面だけ（上向き・下向きの面には描かない）
-            if (abs(fn.y) < 0.5) {
-              float along = abs(fn.x) > abs(fn.z) ? vFacadeWp.z : vFacadeWp.x;
-              float fy = fract((vFacadeWp.y - 0.9) / 3.0);
-              float fx = fract(along / 2.1);
-              float win = step(0.42, fy) * step(fy, 0.82) * step(0.2, fx) * step(fx, 0.72);
-              // 1 階の足元（y < 0.6）は窓なし
-              win *= step(0.6, vFacadeWp.y);
-              diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.26, 0.31), win * 0.75);
-              facadeWin = win;
-            }
-          }`,
-        );
-    };
-    m.customProgramCacheKey = () => 'facade';
-    return m;
+  exportShareContext(): ShareContext | null {
+    const neighbors: ShareNeighbor[] = [];
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    for (const o of this.neighborsG.children) {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.userData.shadowOnly || mesh.userData.ghost || !mesh.visible) continue;
+      const geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
+      const pos = geo.getAttribute('position');
+      if (!pos || pos.count > 6000) continue; // 極端に細かい形は省く（データ量）
+      const arr: number[] = new Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        arr[i * 3] = r2(pos.getX(i));
+        arr[i * 3 + 1] = r2(pos.getY(i));
+        arr[i * 3 + 2] = r2(pos.getZ(i));
+      }
+      neighbors.push({ pos: arr, groups: geo.groups.map((g) => ({ start: g.start, count: g.count === Infinity ? pos.count - g.start : g.count, materialIndex: g.materialIndex ?? 1 })), planned: !!mesh.userData.planned || undefined, manual: this.findByKey(mesh.userData.neighborKey as string)?.source === 'manual' || undefined, label: mesh.name || undefined });
+    }
+    let aerial: ShareContext['aerial'];
+    const am = this.aerial.children[0] as THREE.Mesh | undefined;
+    const ai = this.aerialInfo;
+    if (am && ai && this.state.showAerial) {
+      const img = ai.tex.image as HTMLCanvasElement | HTMLImageElement | undefined;
+      let dataUrl = '';
+      try {
+        if (img) {
+          const c = document.createElement('canvas');
+          const w = Math.min(1024, (img as HTMLCanvasElement).width || 1024);
+          c.width = w;
+          c.height = Math.round((w * ((img as HTMLCanvasElement).height || w)) / ((img as HTMLCanvasElement).width || w));
+          c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+          dataUrl = c.toDataURL('image/jpeg', 0.82);
+        }
+      } catch {
+        dataUrl = '';
+      }
+      if (dataUrl) aerial = { pos: [...(am.geometry.getAttribute('position').array as Float32Array)].map(r2), uv: [...(am.geometry.getAttribute('uv').array as Float32Array)], image: dataUrl, attribution: this.aerialAttribution || undefined };
+    }
+    if (!neighbors.length && !aerial) return null;
+    return { neighbors, aerial };
   }
 
   private materials() {
@@ -1091,6 +1105,7 @@ export class SunContext {
     this.aerial.add(mesh);
     this.state.aerialLoaded = true;
     this.aerialInfo = { west: img.west, east: img.east, south: img.south, north: img.north, tex };
+    this.aerialAttribution = img.attribution ?? '';
     this.buildNeighbors();
     this.applyVisibility();
     return img.attribution;
@@ -1286,7 +1301,7 @@ export class SunContext {
     clearGroup(this.ghostsG);
     const mats = this.materials();
     // 外壁は建物ごとに少し色を変え、階ごとの窓の帯を描く（街並みらしさ。影・解析には影響しない）
-    const wallMats = ['#e8e6e1', '#ddd8cf', '#e4e0da', '#d6d3cc', '#e9e4d6'].map((c) => this.facadeMaterial(c));
+    const wallMats = WALL_COLORS.map((c) => facadeMaterial(c));
     let wallSeq = 0;
     // 航空写真があれば屋上に貼る（Google Earth のような見え方）
     const ai = this.aerialInfo;

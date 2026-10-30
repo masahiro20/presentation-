@@ -9,7 +9,7 @@
  */
 import { ROOM_TYPE_LABEL, type BuildingModel, type Floor, type Room, type RoomType, type Vec2 } from './types';
 
-export type WishKind = 'room' | 'size' | 'adjacent' | 'sliding' | 'corridor' | 'orientation' | 'storeys' | 'parking' | 'feature' | 'note';
+export type WishKind = 'room' | 'size' | 'adjacent' | 'sliding' | 'corridor' | 'orientation' | 'storeys' | 'parking' | 'feature' | 'furniture' | 'note';
 
 export interface Wish {
   id: string;
@@ -34,6 +34,11 @@ export interface Wish {
   fallbackOk?: boolean;
   /** parking: 台数 */
   cars?: number;
+  /** furniture: 持ち込む家具の名前と大きさ（mm）。分解できないもの（ソファ・ピアノ・冷蔵庫）は玄関を通るかも見る */
+  furniture?: string;
+  fw?: number;
+  fd?: number;
+  rigid?: boolean;
 }
 
 export type WishStatus = 'ok' | 'ng' | 'check' | 'na';
@@ -96,6 +101,26 @@ let seq = 0;
 const mk = (raw: string, kind: WishKind, label: string, extra: Partial<Wish> = {}): Wish => ({ id: `w${++seq}`, raw, kind, label, ...extra });
 
 /** 要望の文章 → 照合できる要望の一覧。1 行から複数の要望が取れることもある */
+/** 持ち込み家具: 名前 → 置く部屋の候補・標準の大きさ（mm）・分解できないか */
+const FURNITURE_WORDS: [RegExp, string, RoomType[], number, number, boolean][] = [
+  [/グランドピアノ/, 'グランドピアノ', ['ldk', 'living', 'japanese'], 1500, 1800, true],
+  [/(アップライト)?ピアノ|電子ピアノ/, 'アップライトピアノ', ['ldk', 'living', 'japanese', 'bedroom', 'kids'], 1500, 650, true],
+  [/ソファー?/, 'ソファ', ['ldk', 'living'], 1800, 900, true],
+  [/ダイニングテーブル|食卓/, 'ダイニングテーブル', ['ldk', 'dining'], 1600, 850, false],
+  [/クイーン(ベッド)?/, 'クイーンベッド', ['bedroom'], 1600, 1950, false],
+  [/ダブル(ベッド)?/, 'ダブルベッド', ['bedroom'], 1400, 1950, false],
+  [/セミダブル/, 'セミダブルベッド', ['bedroom', 'kids'], 1200, 1950, false],
+  [/シングル(ベッド)?|ベッド/, 'シングルベッド', ['bedroom', 'kids'], 970, 1950, false],
+  [/冷蔵庫/, '冷蔵庫', ['kitchen', 'ldk'], 700, 700, true],
+  [/食器棚|カップボード/, '食器棚', ['kitchen', 'ldk'], 1200, 450, false],
+  [/本棚|書棚/, '本棚', ['study', 'bedroom', 'kids', 'ldk', 'living'], 900, 300, false],
+  [/学習机|机|デスク/, '机', ['study', 'bedroom', 'kids'], 1200, 600, false],
+  [/タンス|箪笥|ドレッサー|チェスト/, 'タンス', ['bedroom', 'japanese', 'closet'], 1000, 450, true],
+  [/テレビ(ボード)?|TV/i, 'テレビボード', ['ldk', 'living'], 1800, 450, false],
+  [/仏壇/, '仏壇', ['japanese', 'ldk', 'living'], 600, 500, true],
+];
+const FURNITURE_ROOMS: Record<string, RoomType[]> = Object.fromEntries(FURNITURE_WORDS.map(([, name, rooms]) => [name, rooms]));
+
 export function parseWishes(text: string): Wish[] {
   seq = 0;
   const out: Wish[] = [];
@@ -170,6 +195,28 @@ export function parseWishes(text: string): Wish[] {
       out.push(mk(line, 'orientation', `${ROOM_TYPE_LABEL[t]}は${DIR_LABEL[dirHit[1]!]}側に`, { type: t, dir: dirHit[1] }));
       matched = true;
     }
+    // 持ち込む家具（「今のソファ 220×95 を持ち込む」「ダブルベッド」）: 寸法は cm（400 以下）か mm。
+    // 1 行に複数あれば、寸法はその直前の家具のもの。重なる語（ダブルベッドの「ベッド」）は先に見つかった長い語を優先
+    if (!/置き場|買い替え|買い換え|処分|新しく/.test(line)) {
+      const hits: { start: number; end: number; entry: (typeof FURNITURE_WORDS)[number] }[] = [];
+      for (const entry of FURNITURE_WORDS) {
+        const m = new RegExp(entry[0].source, entry[0].flags).exec(line);
+        if (m) hits.push({ start: m.index, end: m.index + m[0].length, entry });
+      }
+      hits.sort((a, b) => a.start - b.start || b.end - a.end);
+      const taken: typeof hits = [];
+      for (const h of hits) if (!taken.some((t) => h.start < t.end && t.start < h.end)) taken.push(h);
+      const dim = /(\d{2,4}(?:\.\d)?)\s*[×xXｘ*]\s*(\d{2,4}(?:\.\d)?)/.exec(line);
+      const toMm = (v: number) => (v <= 400 ? Math.round(v * 10) : Math.round(v));
+      const owner = dim ? [...taken].reverse().find((t) => t.start < dim.index) ?? taken[0] : null;
+      for (const t of taken) {
+        const [, name, , sw, sd, rigid] = t.entry;
+        const fw = dim && t === owner ? toMm(parseFloat(dim[1])) : sw;
+        const fd = dim && t === owner ? toMm(parseFloat(dim[2])) : sd;
+        out.push(mk(line, 'furniture', `${name}（${Math.round(fw / 10)}×${Math.round(fd / 10)} cm）を持ち込む`, { furniture: name, fw, fd, rigid }));
+      }
+      if (taken.length) matched = true;
+    }
     // 設備・空間の要望（土間・パントリー・WIC・吹抜・ランドリー）
     const feats = FEATURE_WORDS.filter(([re]) => re.test(line));
     for (const [, type, label] of feats) out.push(mk(line, 'feature', `${label}がほしい`, { type }));
@@ -194,7 +241,7 @@ export function parseWishes(text: string): Wish[] {
   // 同じ要望（同じ種類・同じ部屋）は 1 つに
   const seen = new Set<string>();
   return out.filter((w) => {
-    const key = w.kind === 'note' ? `note:${w.raw}` : `${w.kind}:${w.type ?? ''}:${w.pair?.join('-') ?? ''}:${w.dir ?? ''}:${w.minTatami ?? ''}`;
+    const key = w.kind === 'note' ? `note:${w.raw}` : `${w.kind}:${w.type ?? ''}:${w.furniture ?? ''}:${w.fw ?? ''}:${w.pair?.join('-') ?? ''}:${w.dir ?? ''}:${w.minTatami ?? ''}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -370,6 +417,58 @@ export function checkWishes(model: BuildingModel, wishes: Wish[], aids: WishChec
           }
         }
         results.push({ wish: w, status: cars >= (w.cars ?? 1) ? 'ok' : cars ? 'check' : 'ng', evidence: cars ? `${cars} 台分: ${parts.join('、') || '図面の車の記号'}` : '駐車スペース・車庫が図面に見当たりません' });
+        break;
+      }
+      case 'furniture': {
+        // 置ける部屋: 外接する長方形に、家具＋通路（長い側に 60cm・短い側に 90cm）が入るか
+        const fw = w.fw ?? 0;
+        const fd = w.fd ?? 0;
+        const lo = Math.min(fw, fd);
+        const hi = Math.max(fw, fd);
+        const cands = (FURNITURE_ROOMS[w.furniture ?? ''] ?? ['ldk']).flatMap((t) => roomsOfType(model, t));
+        const uniq = cands.filter((x, i) => cands.findIndex((y) => y.room.id === x.room.id) === i);
+        const fits = uniq
+          .map(({ room, floor }) => {
+            const xs = room.polygon.map((p) => p.x);
+            const ys = room.polygon.map((p) => p.y);
+            const bw = Math.max(...xs) - Math.min(...xs);
+            const bd = Math.max(...ys) - Math.min(...ys);
+            const a = Math.min(bw, bd);
+            const b = Math.max(bw, bd);
+            return { room, floor, ok: a >= lo + 900 && b >= hi + 600 };
+          })
+          .filter((x) => x.ok);
+        if (!fits.length) {
+          results.push({ wish: w, status: uniq.length ? 'ng' : 'check', evidence: uniq.length ? `${uniq.slice(0, 2).map((x) => nameOf(x.room, x.floor)).join('、')} には通路を残して置けません（${Math.round(lo / 10)} cm の側に 90 cm の通路が要ります）` : '置く部屋が図面に見当たりません' });
+          break;
+        }
+        // 分解できない家具は玄関の戸を通るか（戸の幅 ≥ 短い側＋ 5cm）
+        let doorNote = '';
+        let status: WishStatus = 'ok';
+        if (w.rigid) {
+          const f1 = floors.find((f) => f.level === 1) ?? floors[0];
+          const ent = f1?.rooms.find((r) => r.type === 'entrance');
+          if (f1 && ent) {
+            const c = centroid(ent.polygon);
+            let best: { d: number; w: number } | null = null;
+            for (const o of f1.openings) {
+              if (o.kind !== 'door' && o.kind !== 'sliding') continue;
+              const wall = f1.walls.find((q) => q.id === o.wallId);
+              if (!wall || !wall.exterior) continue;
+              const L = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) || 1;
+              const t = (o.t0 + o.t1) / 2 / L;
+              const p = { x: wall.a.x + (wall.b.x - wall.a.x) * t, y: wall.a.y + (wall.b.y - wall.a.y) * t };
+              const d = Math.hypot(p.x - c.x, p.y - c.y);
+              if (!best || d < best.d) best = { d, w: o.t1 - o.t0 };
+            }
+            if (best) {
+              const pass = best.w >= lo + 50;
+              doorNote = `。玄関の戸 幅 ${Math.round(best.w / 10)} cm${pass ? 'を通ります' : 'は短い側より狭く、斜めに入れるか窓からの搬入を確認'}`;
+              if (!pass) status = 'check';
+            }
+          }
+        }
+        results.push({ wish: w, status, evidence: `${fits.slice(0, 2).map((x) => nameOf(x.room, x.floor)).join('、')} に置けます${doorNote}`, level: fits[0].floor.level, roomIds: fits.map((x) => x.room.id) });
         break;
       }
       case 'feature': {

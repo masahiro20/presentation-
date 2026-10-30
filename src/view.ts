@@ -324,7 +324,7 @@ async function main() {
   if (canSend)
     addTab('wish', 'ご要望', (pane) => {
       pane.appendChild(h('div', { class: 'vw-hint' }, 'この家に「こうしたい」「ここが気になる」を、思いついたときに書いてください。担当者が次の打ち合わせまでに間取りと照らし合わせます。'));
-      const ta = h('textarea', { rows: 5, placeholder: '例）玄関に土間収納がほしい\n寝室とトイレは近くに\n今の家は洗濯物を干す場所が遠くて困っている\n家族: 夫婦＋子ども 2 人（小学生）' }) as HTMLTextAreaElement;
+      const ta = h('textarea', { rows: 5, placeholder: '例）玄関に土間収納がほしい\n寝室とトイレは近くに\n今のソファ 220×95 を持ち込みたい\n今の家は洗濯物を干す場所が遠くて困っている\n家族: 夫婦＋子ども 2 人（小学生）' }) as HTMLTextAreaElement;
       ta.value = inbox.wishes ?? '';
       const status = h('div', { class: 'vw-hint' }, inbox.wishes ? `${inbox.at ? new Date(inbox.at).toLocaleDateString('ja-JP') + ' に' : '前に'}送った内容です。書き足して、もう一度送れます。` : '');
       const send = h('button', { class: 'vw-chip primary' }, '担当者に送る') as HTMLButtonElement;

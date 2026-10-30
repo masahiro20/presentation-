@@ -464,7 +464,7 @@ function wishesFold(model: BuildingModel): HTMLElement {
   const ta = h('textarea', {
     class: 'wishes-text',
     rows: 6,
-    placeholder: '例）部屋数は、居間、食堂、和室、寝室、個人部屋 2 つ\n居間 6〜8 畳\n寝室とトイレは近くに／ドアは引き戸／台所は東側で朝日が入るように',
+    placeholder: '例）部屋数は、居間、食堂、和室、寝室、個人部屋 2 つ\n居間 6〜8 畳\n寝室とトイレは近くに／ドアは引き戸／台所は東側で朝日が入るように\n今のソファ 220×95 とダブルベッドを持ち込む',
     oninput: (e: Event) => {
       state.wishes = (e.target as HTMLTextAreaElement).value;
       window.clearTimeout(timer);

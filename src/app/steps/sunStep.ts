@@ -778,12 +778,12 @@ export const sunStep: Step = {
           const cw = ctx.measureText(clock).width;
           ctx.fillStyle = 'rgba(0,0,0,0.55)';
           ctx.beginPath();
-          // 時計は上端の中央（各コマの札にかぶらない位置）
-          ctx.roundRect(W / 2 - cw / 2 - cs * 0.6, cs * 0.4, cw + cs * 1.2, cs * 1.8, cs * 0.4);
+          // 時計は下端の中央（各コマの札は左上にあるので、かぶらない）
+          ctx.roundRect(W / 2 - cw / 2 - cs * 0.6, H - cs * 2.3, cw + cs * 1.2, cs * 1.8, cs * 0.4);
           ctx.fill();
           ctx.fillStyle = '#fff';
           ctx.textBaseline = 'middle';
-          ctx.fillText(clock, W / 2 - cw / 2, cs * 1.3);
+          ctx.fillText(clock, W / 2 - cw / 2, H - cs * 1.4);
         };
         const r = await recordProgram(v, program, {
           width: W,

@@ -1092,3 +1092,12 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .cost-pill .d { font-size: 10.5px; color: #8a8f98; }
 .cost-pill .d.up { color: #b4473d; } .cost-pill .d.down { color: #2f7d4a; }
 @media (max-width: 1100px) { .cost-pill .d { display: none; } }
+
+/* 暮らしの動線 */
+.slide.routes-slide .route-list { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.slide.routes-slide .route-list li { display: grid; grid-template-columns: 14px 1fr; gap: 8px; align-items: start; font-size: 12px; line-height: 1.35; }
+.slide.routes-slide .route-list .dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 3px; }
+.slide.routes-slide .route-list b { font-weight: 600; margin-right: 8px; }
+.slide.routes-slide .route-list .num { color: #333; font-variant-numeric: tabular-nums; }
+.slide.routes-slide .route-list .via { display: block; color: #777; font-size: 10.5px; }
+.slide.routes-slide .route-wish { font-size: 11px; color: #444; margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }

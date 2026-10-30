@@ -4,6 +4,7 @@ import { h, clear, toast, progressModal, section, download, setPrintPage } from 
 import { woodCheck } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans } from '../../core/planDiff';
+import { dailyRoutes, overlayRoutes, routeColor } from '../../core/circulation';
 import { state, type GalleryItem } from '../state';
 import { openMeetingMemo } from '../docs';
 import type { Step, StepCtx } from '../app';
@@ -349,6 +350,45 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
         ),
       );
     });
+  }
+  // 暮らしの動線: 朝・帰宅・洗濯・買い物の経路を平面図の矢印と歩数で（要望の「近さ」と結び付ける）
+  {
+    const routes = dailyRoutes(model);
+    if (routes.length) {
+      chapters.push({ en: 'Daily Flow', ja: '暮らしの動線' });
+      // 矢印がいちばん多く乗る階の図を使う（たいてい 1 階）
+      const counts = new Map<number, number>();
+      for (const r of routes) for (const l of r.legs) counts.set(l.level, (counts.get(l.level) ?? 0) + l.points.length);
+      const level = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const f = model.floors.find((x) => x.level === level) ?? model.floors[0];
+      const svg = overlayRoutes(floorPlanSvg(model, f, { showLandscape: false, showRoad: false, showFurniture: true }), f.level, routes);
+      const adj = state.wishes?.trim() ? checkWishes(model, parseWishes(state.wishes).filter((w) => w.kind === 'adjacent' || w.kind === 'corridor'), {}) : [];
+      slides.push(
+        slide(
+          'drawing plan-one routes-slide',
+          h(
+            'div',
+            { style: 'min-height:0;overflow:hidden' },
+            head(no('Daily Flow'), 'Daily Flow', '暮らしの動線'),
+            h('p', null, `毎日の動きを${f.level}階の図面の上に描きました。歩数は 1 歩 65cm で数えています。`),
+            h(
+              'ul',
+              { class: 'route-list' },
+              ...routes.map((r) =>
+                h(
+                  'li',
+                  null,
+                  h('span', { class: 'dot', style: `background:${routeColor(r.id)}` }),
+                  h('div', null, h('b', null, r.title), h('span', { class: 'num' }, `約 ${r.meters} m・${r.steps} 歩${r.legs.some((l) => l.level !== f.level) ? `（${[...new Set(r.legs.filter((l) => l.level !== f.level).map((l) => l.level))].join('・')}階の分は図に入っていません）` : ''}`), h('span', { class: 'via' }, r.via.join(' → '))),
+                ),
+              ),
+            ),
+            adj.length ? h('p', { class: 'route-wish' }, ...adj.slice(0, 2).map((a) => h('span', null, `${a.status === 'ok' ? '✓' : a.status === 'check' ? '△' : '－'} ご要望「${a.wish.label}」: ${a.evidence}`))) : null,
+          ),
+          h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: svg })),
+        ),
+      );
+    }
   }
   // 前回からの変更: 図面を読み直したときだけ（部屋・帖数・窓・延床・概算）
   const prev = state.revisions?.[state.revisions.length - 1];

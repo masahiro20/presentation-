@@ -45,4 +45,35 @@ export async function parsePdfInBrowser(data: Uint8Array, opts: Omit<ParseOption
   });
 }
 
+/**
+ * PDF の文字をそのまま取り出す（ヒアリングシート・要望書のメモ用）。
+ * 行は y 座標でまとめ、同じ行の文字は x 順に並べる。文字の無いスキャン PDF は空文字になる
+ */
+export async function extractPdfText(data: Uint8Array): Promise<string> {
+  const base = assetBase();
+  const doc = await pdfjs.getDocument({ data, cMapUrl: `${base}pdfjs/cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}pdfjs/standard_fonts/`, useSystemFonts: false } as Parameters<typeof pdfjs.getDocument>[0]).promise;
+  const pages: string[] = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    const items = (tc.items as { str?: string; transform?: number[] }[]).filter((it) => it.str && it.transform).map((it) => ({ s: it.str!, x: it.transform![4], y: it.transform![5] }));
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
+    const lines: string[] = [];
+    let cur: typeof items = [];
+    let y: number | null = null;
+    for (const it of items) {
+      if (y != null && Math.abs(it.y - y) > 3) {
+        lines.push(cur.sort((a, b) => a.x - b.x).map((c) => c.s).join(''));
+        cur = [];
+      }
+      cur.push(it);
+      y = it.y;
+    }
+    if (cur.length) lines.push(cur.sort((a, b) => a.x - b.x).map((c) => c.s).join(''));
+    pages.push(lines.map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n'));
+  }
+  await doc.destroy();
+  return pages.filter(Boolean).join('\n\n');
+}
+
 export { pdfjs };

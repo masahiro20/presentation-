@@ -2,7 +2,7 @@ import { h, clear, toast, progressModal, section, field, segmented, fold, downlo
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
-import { parsePdfInBrowser } from '../../parser/browser';
+import { parsePdfInBrowser, extractPdfText } from '../../parser/browser';
 import { parseDxf, type ModuleMode } from '../../parser';
 import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
@@ -21,7 +21,17 @@ import { ACCEPT_EXT } from '../../sunstudy/importModel';
 import { createExternal, installExternal, loadExternal, setExternalMounted } from '../externalBuilding';
 import { applyHeightsFromExternal } from '../externalHeights';
 
-async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto') {
+/** 図面の種類（読み取りのパターン）: 迷ったら「自動」。種類を選ぶと縮尺・モジュール・画像解析・傾き補正の初期値が決まる */
+export type DrawingKind = 'auto' | 'scan' | 'detail' | 'architrend' | 'meter';
+export const DRAWING_KINDS: { id: DrawingKind; label: string; hint: string; preset: { scale?: number; module?: ModuleMode; rasterImages?: boolean; straighten?: boolean } }[] = [
+  { id: 'auto', label: '自動（CAD の PDF）', hint: '縮尺・モジュールを図面から判定します', preset: {} },
+  { id: 'scan', label: '色付き・手描き・スキャンの図面', hint: '画像として壁・部屋を読み、傾きを水平に戻します。精度は下がるので修正画面で直してください', preset: { rasterImages: true, straighten: true } },
+  { id: 'detail', label: '1/50〜1/60 の詳細図', hint: '縮尺 1/50 で読みます（違えば縮尺の欄で直す）。寸法線・設備の記号が多い図面', preset: { scale: 50, module: 'shaku' } },
+  { id: 'architrend', label: 'ARCHITREND ZERO の図面', hint: '尺モジュール（910）の格子にそろえます。3DS を一緒に置くと高さも合います', preset: { module: 'shaku' } },
+  { id: 'meter', label: '他社・メーターモジュールの図面', hint: 'メーターモジュール（1000）の格子にそろえます', preset: { module: 'meter' } },
+];
+
+async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenominator?: number, kind: 'pdf' | 'dxf' = 'pdf', moduleMode: ModuleMode = 'auto', drawing: DrawingKind = 'auto') {
   const pm = progressModal('平面図を解析しています', false);
   try {
     // 修正画面で教えた家具記号（部屋種別×大きさ→種類）を読み取りに使う
@@ -33,6 +43,8 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
             name,
             scaleDenominator,
             module: moduleMode,
+            rasterImages: DRAWING_KINDS.find((k) => k.id === drawing)?.preset.rasterImages,
+            straighten: DRAWING_KINDS.find((k) => k.id === drawing)?.preset.straighten,
             onProgress: (msg, r) => pm.set(r, msg),
           });
     const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
@@ -52,7 +64,7 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
     // 立面図の屋根勾配が読めたら、外観の屋根に使う（形は外観テイストのまま）
     if (model.heights?.roofPitch != null) state.design = { ...state.design, roofPitch: model.heights.roofPitch };
     state.pdfName = name;
-    lastPdf = { data, name, kind, moduleMode };
+    lastPdf = { data, name, kind, moduleMode, drawing };
     emit('model');
     toast(`${model.floors.length}階分・${rooms}室を認識しました`, 'ok');
     ctx.app.go('import');
@@ -64,7 +76,7 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
   }
 }
 
-let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf'; moduleMode?: ModuleMode } | null = null;
+let lastPdf: { data: Uint8Array; name: string; kind: 'pdf' | 'dxf'; moduleMode?: ModuleMode; drawing?: DrawingKind } | null = null;
 
 /** 「別の PDF を読み込む」で消す前のプランの要約（次に読んだ図面との差分に使う） */
 let pendingRevision: PlanSummary | null = null;
@@ -480,7 +492,37 @@ function wishesFold(model: BuildingModel): HTMLElement {
         '体験リンクからお客様のご要望を受け取る',
       )
     : null;
-  const box = h('div', null, h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'お客様の要望の文章を貼ると、部屋の有無・広さ・引き戸・部屋どうしの近さ・向き・階数・駐車台数を間取りと突き合わせます。結果は資料の「ご要望との照合」のページに入ります。'), recv, ta, list);
+  // メモ・PDF のファイルから読み込む（文字の入った PDF・テキスト。スキャン・手書きの画像は文字を取り出せない）
+  const fileIn = h('input', { type: 'file', accept: '.txt,.md,.csv,.pdf,text/plain,application/pdf', multiple: true, style: 'display:none' }) as HTMLInputElement;
+  fileIn.addEventListener('change', async () => {
+    const files = [...(fileIn.files ?? [])];
+    fileIn.value = '';
+    let added = 0;
+    const empty: string[] = [];
+    for (const f of files) {
+      let text = '';
+      try {
+        text = /\.pdf$/i.test(f.name) ? await extractPdfText(new Uint8Array(await f.arrayBuffer())) : await f.text();
+      } catch (e) {
+        toast(`${f.name}: 読めませんでした（${(e as Error).message}）`, 'error', 6000);
+        continue;
+      }
+      if (text.replace(/\s/g, '').length < 4) {
+        empty.push(f.name);
+        continue;
+      }
+      const block = `【${f.name}】\n${text.trim()}`;
+      if ((state.wishes ?? '').includes(block)) continue;
+      state.wishes = `${(state.wishes ?? '').trim()}${state.wishes?.trim() ? '\n\n' : ''}${block}`;
+      added++;
+    }
+    ta.value = state.wishes ?? '';
+    run();
+    if (added) toast(`${added} 件のファイルの文章を入れました`, 'ok');
+    if (empty.length) toast(`${empty.join('・')}: 文字が入っていない PDF（スキャン・手書き）のようです。文章を手で貼ってください`, 'info', 8000);
+  });
+  const fromFile = h('button', { class: 'btn sm', style: 'margin:0 6px 6px 0', onclick: () => fileIn.click() }, 'メモ・PDF から読み込む');
+  const box = h('div', null, h('p', { class: 'hint', style: 'margin:0 0 6px' }, 'お客様の要望の文章を貼ると、部屋の有無・広さ・引き戸・部屋どうしの近さ・向き・階数・駐車台数を間取りと突き合わせます。結果は資料の「ご要望との照合」のページに入ります。'), h('div', null, fromFile, recv, fileIn), ta, list);
   const el = fold('ご要望との照合', { open: !!state.wishes, meta: '' }, box);
   const metaSlot = el.querySelector('summary .meta, summary span:last-child');
   if (metaSlot) metaSlot.appendChild(meta);
@@ -1041,16 +1083,31 @@ function renderResult(ctx: StepCtx) {
     await heightsFrom3dFile(ctx, f);
     void ctx.app.go('import');
   });
+  const kindHint = h('span', { class: 'hint' }, DRAWING_KINDS.find((k) => k.id === (lastPdf?.drawing ?? 'auto'))?.hint ?? '');
+  const kindSel = h(
+    'select',
+    {
+      onchange: (e: Event) => {
+        const k = DRAWING_KINDS.find((x) => x.id === (e.target as HTMLSelectElement).value);
+        if (!k) return;
+        kindHint.textContent = k.hint;
+        if (k.preset.scale) scaleSel.value = String(k.preset.scale);
+        if (k.preset.module) moduleSel.value = k.preset.module;
+      },
+    },
+    ...DRAWING_KINDS.map((k) => h('option', { value: k.id, selected: k.id === (lastPdf?.drawing ?? 'auto') }, k.label)),
+  ) as HTMLSelectElement;
   side.append(
     fold(
       '読み込みのやり直し・保存',
       {},
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, '図面の種類（読み取りのパターン）'), kindSel, kindHint),
       field('縮尺を指定して再解析', scaleSel, '縮尺がずれている場合に指定してください'),
       field('木造モジュール', moduleSel, '壁芯を 455（尺）／500（メーター）の格子にそろえます。自動で判定できない図面は指定してください'),
       h(
         'div',
         { class: 'btn-row' },
-        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind, moduleSel.value as ModuleMode) }, '再解析'),
+        h('button', { class: 'btn sm', disabled: !lastPdf, onclick: () => lastPdf && loadPdf(ctx, lastPdf.data, lastPdf.name, scaleSel.value ? +scaleSel.value : undefined, lastPdf.kind, moduleSel.value as ModuleMode, kindSel.value as DrawingKind) }, '再解析'),
         h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, 'プロジェクトを保存'),
         h('button', { class: 'btn sm ghost', title: '読み取り精度の評価用に、自動の読み取り結果と、直した正解の間取りを1つのファイルに保存します', onclick: () => editor.saveTruth() }, '評価用に保存'),
       ),

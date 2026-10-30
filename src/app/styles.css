@@ -1101,3 +1101,13 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .slide.routes-slide .route-list .num { color: #333; font-variant-numeric: tabular-nums; }
 .slide.routes-slide .route-list .via { display: block; color: #777; font-size: 10.5px; }
 .slide.routes-slide .route-wish { font-size: 11px; color: #444; margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+
+/* 窓と隣家の視線（資料）: 図面の番号と同じ色の丸、距離、対策 */
+.slide.drawing.plan-one.sight-slide { grid-template-columns: 26cqw 1fr; }
+.slide.sight-slide .sight-list { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 5px; counter-reset: sight; }
+.slide.sight-slide .sight-list li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start; font-size: 11px; line-height: 1.28; counter-increment: sight; }
+.slide.sight-slide .sight-list .num { width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 9.5px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
+.slide.sight-slide .sight-list .num::before { content: counter(sight); }
+.slide.sight-slide .sight-list b { font-weight: 600; display: block; }
+.slide.sight-slide .sight-list .dist { color: #333; font-variant-numeric: tabular-nums; margin-right: 6px; }
+.slide.sight-slide .sight-list .adv { color: #666; font-size: 10.5px; }

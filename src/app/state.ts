@@ -1,5 +1,6 @@
 /** プロジェクトの状態 */
 import type { PlanSummary } from '../core/planDiff';
+import type { SightlineIssue } from '../core/sightlines';
 import type { BuildingModel } from '../core/types';
 import { DEFAULT_DESIGN, type DesignOptions } from '../styles/presets';
 import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
@@ -57,6 +58,8 @@ export interface ProjectState {
     highlights: SunHighlight[];
     diagramSvg?: string;
     images: { label: string; url: string }[];
+    /** 隣家からの視線（周辺建物を取得したときに計算。資料の「窓と隣家の視線」のページ） */
+    sightlines?: SightlineIssue[];
     /**
      * 結果を作った時点の周辺建物の扱い（計算から除外・表示だけ隠した建物）。部屋の日当たり・資料の日照のページの注記に使う。
      * 結果と一緒に捨てる（clearedSunResults）。無ければ資料を作る時点の扱いで書く

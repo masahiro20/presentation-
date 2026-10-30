@@ -5,6 +5,7 @@ import { woodCheck } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans } from '../../core/planDiff';
 import { dailyRoutes, overlayRoutes, routeColor } from '../../core/circulation';
+import { overlaySightlines, sightColor } from '../../core/sightlines';
 import { state, type GalleryItem } from '../state';
 import { openMeetingMemo } from '../docs';
 import type { Step, StepCtx } from '../app';
@@ -389,6 +390,41 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
         ),
       );
     }
+  }
+  // 窓と隣家の視線: 周辺建物を取得してあるときだけ（覗かれやすい窓を図面の上に番号で示し、対策を添える）
+  const sight = (state.sun.sightlines ?? []).filter((i) => i.risk !== 'low').slice(0, 6);
+  if (sight.length) {
+    chapters.push({ en: 'Privacy', ja: '窓と隣家の視線' });
+    const counts = new Map<number, number>();
+    for (const i of sight) counts.set(i.level, (counts.get(i.level) ?? 0) + 1);
+    const level = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+    const f = model.floors.find((x) => x.level === level) ?? model.floors[0];
+    const svg = overlaySightlines(floorPlanSvg(model, f, { showLandscape: false, showRoad: false, showFurniture: true }), f.level, sight);
+    const others = [...new Set(sight.filter((i) => i.level !== f.level).map((i) => i.level))];
+    slides.push(
+      slide(
+        'drawing plan-one sight-slide',
+        h(
+          'div',
+          { style: 'min-height:0;overflow:hidden' },
+          head(no('Privacy'), 'Privacy', '窓と隣家の視線'),
+          h('p', null, `周りの建物の形と高さから、隣の家の壁が正面に近い窓を${f.level}階の図面に番号で示しました。カーテンを開けて過ごせるよう、窓の種類や目隠しをご相談します。${others.length ? `（${others.join('・')}階の窓は図に入っていません）` : ''}`),
+          h(
+            'ol',
+            { class: 'sight-list' },
+            ...sight.map((i) =>
+              h(
+                'li',
+                null,
+                h('span', { class: 'num', style: `background:${sightColor(i.risk)}` }, ''),
+                h('div', null, h('b', null, `${i.level}階 ${i.roomName}の${i.kind === 'sliding' ? '掃き出し窓' : '窓'}（${i.facing}）`), h('span', { class: 'dist' }, `隣の家まで ${i.dist} m${i.fromAbove ? '・上の階から見える' : ''}`), h('span', { class: 'adv' }, i.advice)),
+              ),
+            ),
+          ),
+        ),
+        h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: svg })),
+      ),
+    );
   }
   // 前回からの変更: 図面を読み直したときだけ（部屋・帖数・窓・延床・概算）
   const prev = state.revisions?.[state.revisions.length - 1];

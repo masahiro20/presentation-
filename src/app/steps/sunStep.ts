@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, fold, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
 import { state, emit, type ProjectState } from '../state';
+import { sightlineCheck, type NeighborWorld } from '../../core/sightlines';
 import type { Step, StepCtx } from '../app';
 import { SunContext, isAbortError, keysInRect, ringArea, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
@@ -552,6 +553,36 @@ export const sunStep: Step = {
     v.setTownVisible(false);
     v.groups.context.visible = true;
     const sc = getCtx(ctx);
+    // 隣家からの視線（周辺建物を取得したときに計算し、資料のページにも載せる）
+    const sightBox = h('div', { class: 'check-rows sight' });
+    const sightMeta = h('span');
+    function refreshSightlines() {
+      const model = state.model;
+      if (!model) return;
+      // 日影の計算に入る建物と同じ扱い（表示だけ隠した建物は入れる・想定の家は有効なときだけ）
+      const nbs: NeighborWorld[] = sc.state.neighbors
+        .filter((n) => sc.isActive(n) && (!n.hidden || sc.hideModeOf(n) === 'view'))
+        .map((n) => ({ ring: n.ring.map((q) => { const w = sc.toWorld(q.e, q.n); return { x: w.x, z: w.z }; }), height: sc.heightOf(n), label: n.planned ? '想定の家' : n.label }));
+      const issues = nbs.length ? sightlineCheck(model, nbs) : [];
+      state.sun.sightlines = issues;
+      clear(sightBox);
+      sightMeta.textContent = nbs.length ? (issues.length ? `${issues.filter((i) => i.risk !== 'low').length} 窓` : '気になる窓なし') : '';
+      if (!nbs.length) {
+        sightBox.appendChild(h('p', { class: 'hint', style: 'margin:6px 12px' }, '「周辺建物を取得」すると、窓ごとに隣家の壁までの距離と高さを見て、覗かれやすい窓を挙げます。'));
+        return;
+      }
+      if (!issues.length) sightBox.appendChild(h('p', { class: 'hint', style: 'margin:6px 12px' }, '10m 以内に正面から向き合う隣家の壁がある窓はありません。'));
+      for (const i of issues.slice(0, 12))
+        sightBox.appendChild(
+          h(
+            'div',
+            { class: `check-row long ${i.risk === 'high' ? 'ng' : i.risk === 'mid' ? 'info' : 'ok'}` },
+            h('span', { class: 'ic' }, i.risk === 'high' ? '●' : i.risk === 'mid' ? '◐' : '○'),
+            h('span', { class: 'lb' }, `${i.level}階 ${i.facing}`),
+            h('span', { class: 'dt' }, h('b', null, `${i.roomName}の${i.kind === 'sliding' ? '掃き出し窓' : '窓'}`), ` 隣家の壁まで ${i.dist} m（高さ ${i.neighborHeight} m${i.fromAbove ? '・上から見下ろされる' : ''}）`, h('br'), h('span', { style: 'color:#666' }, i.advice)),
+          ),
+        );
+    }
     sc.year = ui.year;
     sc.buildSunPath();
     sc.buildNeighbors();
@@ -1010,6 +1041,7 @@ export const sunStep: Step = {
         const fell = !!r.plateau && r.plateau.status !== 'covered';
         toast(neighborsLoadedToast(r, kept), fell ? 'info' : 'ok', fell ? 8000 : undefined);
         renderKeyList();
+        refreshSightlines();
         // 一部タイルの失敗・データ量の上限・補完などの注記（落ちた理由はトーストで案内済み）
         const extra = r.notes.filter((t) => !/^この地域は PLATEAU|^PLATEAU のデータを取得できなかった/.test(t));
         if (extra.length) toast(extra.join(' '), 'info', 8000);
@@ -1246,6 +1278,7 @@ export const sunStep: Step = {
       invalidateResults();
       apply(true);
       renderKeyList();
+      refreshSightlines();
     };
     const hideKeys = (keys: string[]) => {
       const rec = hideChoiceRecord();
@@ -2339,6 +2372,8 @@ export const sunStep: Step = {
           return out;
         },
         load: (src: NeighborSourceChoice) => loadNeighbors(src),
+        addManual: (dirDeg: number, dist: number, height: number) => { sc.addManualNeighbor(dirDeg, dist, 8, 8, height); invalidateResults(); apply(true); refreshSightlines(); },
+        sightlines: () => state.sun.sightlines ?? [],
       };
     if (dbg)
       dbg.neighborHide = {
@@ -2427,7 +2462,7 @@ export const sunStep: Step = {
         h(
           'div',
           { class: 'btn-row' },
-          h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); } }, '＋ 隣家を追加'),
+          h('button', { class: 'btn sm', onclick: () => { sc.addManualNeighbor(+dirSel.value, +distIn.value, 8, 8, +hIn.value); invalidateResults(); apply(true); refreshSightlines(); } }, '＋ 隣家を追加'),
           h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
       ),
@@ -2610,6 +2645,11 @@ export const sunStep: Step = {
         pm.close();
       }
     };
+    refreshSightlines();
+    const sightFold = fold('隣家からの視線', { open: false, cls: 'sun-main' }, h('p', { class: 'hint', style: 'margin:0 0 4px' }, '窓ごとに、正面にある隣家の壁までの距離と高さから「覗かれやすい窓」を挙げます（隣家の窓の位置までは分かりません）。資料の「窓と隣家の視線」のページに入ります。'), sightBox);
+    const sightSum = sightFold.querySelector('summary');
+    if (sightSum) sightSum.appendChild(sightMeta);
+    side.append(sightFold);
     side.append(
       fold(
         '日当たりの解析',

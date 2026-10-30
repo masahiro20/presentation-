@@ -1114,3 +1114,20 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 
 /* パースの一覧: お客様が体験リンクで「いいね」した構図 */
 .shot-card .t .like { color: #c0392b; margin-left: 4px; font-size: 12px; }
+
+/* 敷地から先に検討（ダイアログ） */
+.study-dialog { display: grid; grid-template-columns: 1fr 1.05fr; gap: 22px; min-width: 0; }
+.study-dialog .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.study-dialog .row-inline { display: flex; gap: 6px; align-items: center; }
+.study-dialog .row-inline input { flex: 1; min-width: 0; }
+.study-form .field { margin: 6px 0; }
+.study-out { min-width: 0; }
+.study-verdict { font-size: 13.5px; font-weight: 600; padding: 10px 12px; border-radius: var(--radius); background: #f1efe9; color: #444; margin-bottom: 10px; line-height: 1.45; }
+.study-verdict.ok { background: #e6f2e9; color: #2f6b43; }
+.study-verdict.check { background: #fbf1d9; color: #8a6210; }
+.study-verdict.ng { background: #f8e3df; color: #9b3a30; }
+.study-svg { display: grid; place-items: center; margin: 0 0 10px; }
+.study-svg svg { width: 300px; max-width: 100%; height: auto; }
+.check-rows.study .check-row.na .ic { color: #888; }
+.lp-samples .sep { color: #bbb; }
+@media (max-width: 900px) { .study-dialog { grid-template-columns: 1fr; } }

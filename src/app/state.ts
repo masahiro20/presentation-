@@ -1,6 +1,7 @@
 /** プロジェクトの状態 */
 import type { PlanSummary } from '../core/planDiff';
 import type { SightlineIssue } from '../core/sightlines';
+import type { SiteStudyInput } from '../core/siteStudy';
 import type { BuildingModel } from '../core/types';
 import { DEFAULT_DESIGN, type DesignOptions } from '../styles/presets';
 import { DEFAULT_SITE, type SiteLocation } from '../sun/geo';
@@ -45,6 +46,8 @@ export interface ProjectState {
   wishes?: string;
   /** 前回までのプランの要約（図面を読み直したときに差分を出す。新しいものが後ろ） */
   revisions?: PlanSummary[];
+  /** 敷地から先に検討（プランが無い段階の条件）。図面を読んだら照合に使う */
+  siteStudy?: SiteStudyInput;
   model: BuildingModel | null;
   design: DesignOptions;
   site: SiteLocation;

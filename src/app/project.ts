@@ -39,6 +39,7 @@ export interface ProjectFile {
   coord?: ProjectState['coord'];
   wishes?: string;
   revisions?: ProjectState['revisions'];
+  siteStudy?: ProjectState['siteStudy'];
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -98,6 +99,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     coord: state.coord,
     wishes: state.wishes,
     revisions: state.revisions,
+    siteStudy: state.siteStudy,
   };
 }
 
@@ -129,6 +131,7 @@ export function applyProject(p: ProjectFile) {
   state.coord = p.coord ?? { items: {} };
   state.wishes = p.wishes;
   state.revisions = p.revisions;
+  state.siteStudy = p.siteStudy;
   emit('model');
   emit('project');
   emit('project-loaded');

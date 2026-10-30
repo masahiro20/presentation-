@@ -13,7 +13,7 @@ import { FINISH_CATEGORIES, selectedProduct } from '../coordinate/catalog';
 import { itemOf, STATUS_LABEL, isFixed } from '../coordinate/decisions';
 import { estimateSummary } from './steps/estimateStep';
 
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
@@ -37,7 +37,7 @@ const CSS = `
   @media print { .tools { display: none; } body { padding: 12mm 14mm; } }
 `;
 
-function openPrintable(title: string, body: string) {
+export function openPrintable(title: string, body: string) {
   const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CSS}</style></head><body><div class="tools"><button onclick="window.print()">印刷 / PDF に保存</button></div>${body}</body></html>`;
   const w = window.open('', '_blank');
   if (!w) return;

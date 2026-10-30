@@ -14,6 +14,7 @@ import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '..
 import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
 import { estimateSummary } from './estimateStep';
 import { receiveCustomerInbox, inboxSummary } from '../customerInbox';
+import { openSiteStudy, siteStudyCheck, rowsEl } from '../siteStudyDialog';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
 import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
@@ -266,6 +267,8 @@ function dropScreen(ctx: StepCtx) {
         h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'A3・1 階 2 階'),
         h('button', { class: 'lnk', onclick: () => sample('sample_house_pages.pdf') }, '階ごと・方位回転'),
         h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
+        h('span', { class: 'sep' }, '｜'),
+        h('button', { class: 'lnk', onclick: () => openSiteStudy() }, state.siteStudy ? '敷地から先に検討（控えあり）' : '図面がまだ無い: 敷地から先に検討'),
       ),
     ),
     h(
@@ -380,6 +383,21 @@ export const importStep: Step = {
     ctx.side.append(dictCard(), mcpCard());
   },
 };
+
+/** 敷地の検討との照合: 図面を描く前に控えた条件（敷地・建蔽率・容積率・希望の坪数）と、読み取った間取りを比べる */
+function siteStudyFold(model: BuildingModel): HTMLElement | null {
+  const c = siteStudyCheck(model);
+  if (!c) return null;
+  const s = state.siteStudy!;
+  const el = fold(
+    '敷地の検討との照合',
+    { open: c.verdict !== 'ok', meta: c.verdict === 'ok' ? '入っています' : c.verdict === 'check' ? '要確認' : '超えています' },
+    h('p', { class: 'hint', style: 'margin:0 0 4px' }, `図面を描く前に控えた条件（間口 ${s.frontage} × 奥行 ${s.depth} m・${s.bcr}／${s.far}%・ご希望 ${s.floors === 1 ? '平屋' : `${s.floors} 階建て`} ${s.wantTsubo} 坪）と比べました。`),
+    rowsEl(c.rows),
+    h('div', { class: 'btn-row' }, h('button', { class: 'btn xs ghost', onclick: () => openSiteStudy(() => { const nx = siteStudyFold(model); if (nx) el.replaceWith(nx); }) }, '条件を見直す'), h('button', { class: 'btn xs ghost', onclick: () => { state.siteStudy = undefined; el.remove(); } }, '照合をやめる')),
+  );
+  return el;
+}
 
 /** 前回からの変更: 図面を読み直したとき、前のプランとの差分を 1 枚に（資料・議事録にも同じものが入る） */
 function revisionFold(model: BuildingModel): HTMLElement | null {
@@ -989,6 +1007,8 @@ function renderResult(ctx: StepCtx) {
   side.append(roadSection(model, redrawPlans));
   const diffBox = revisionFold(model);
   if (diffBox) side.append(diffBox);
+  const studyBox = siteStudyFold(model);
+  if (studyBox) side.append(studyBox);
   side.append(wishesFold(model));
 
   // 再読み込み

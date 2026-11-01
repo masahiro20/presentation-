@@ -1346,6 +1346,40 @@ function detectScale(pages) {
 	};
 }
 //#endregion
+//#region src/core/shutter.ts
+var EDGE = 80;
+var PILLAR = 400;
+function autoShutterLayout(wallLenMm) {
+	return wallLenMm < 4200 ? "single" : wallLenMm <= 6400 ? "wide" : "double";
+}
+/** 壁の長さ L（mm）に、この形のシャッター開口（t0/t1）を作る */
+function shutterSpans(L, layout) {
+	const full = L - 160;
+	if (full < 1500) return [];
+	if (layout === "double" && full >= 4800) {
+		const each = (full - PILLAR) / 2;
+		return [{
+			t0: EDGE,
+			t1: EDGE + each
+		}, {
+			t0: EDGE + each + PILLAR,
+			t1: L - EDGE
+		}];
+	}
+	if (layout === "single") {
+		const w = Math.min(full, 3400);
+		const t0 = EDGE + (full - w) / 2;
+		return [{
+			t0,
+			t1: t0 + w
+		}];
+	}
+	return [{
+		t0: EDGE,
+		t1: Math.min(L - EDGE, 6480)
+	}];
+}
+//#endregion
 //#region src/parser/garageShutter.ts
 var MIN_EDGE = 1500;
 /** 辺の中点の近く（150mm）に、その辺とほぼ平行な壁があるか */
@@ -1427,18 +1461,18 @@ function ensureGarageShutters(walls, openings, rooms, level) {
 				joinedA: true,
 				joinedB: true
 			});
-			openings.push({
-				id: `${id}-SH`,
+			shutterSpans(L, autoShutterLayout(L)).forEach((sp, j) => openings.push({
+				id: `${id}-SH${j + 1}`,
 				wallId: id,
 				kind: "shutter",
-				t0: 80,
-				t1: L - 80,
+				t0: sp.t0,
+				t1: sp.t1,
 				sill: 0,
 				height: 2300,
 				hingeAtStart: true,
 				swingSide: 1,
 				confidence: .8
-			});
+			}));
 			added++;
 		}
 	}
@@ -14845,8 +14879,9 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		const s0 = Math.max(0, o.t0 * MM);
 		const s1 = Math.min(L, o.t1 * MM);
 		seg(cursor, s0, bottom, wallTop, cursor === 0 ? firstCap : jambKey, jambKey);
-		const sill = fl + o.sill * MM;
-		const head = Math.min(wallTop, fl + (o.sill + o.height) * MM);
+		const base = o.kind === "shutter" && f.level === 1 ? .03 : fl;
+		const sill = base + o.sill * MM;
+		const head = Math.min(wallTop, base + (o.sill + o.height) * MM);
 		if (o.sill > 0) seg(s0, s1, bottom, sill, null, null);
 		if (head < wallTop - .005) seg(s0, s1, head, wallTop, null, null);
 		cursor = s1;
@@ -14863,8 +14898,9 @@ function buildOpening(mb, f, w, o, fl, meta, spec) {
 	const s1 = o.t1 * MM;
 	const width = s1 - s0;
 	const mid = A.clone().addScaledVector(dir, (s0 + s1) / 2);
-	const sill = fl + o.sill * MM;
-	const head = fl + (o.sill + o.height) * MM;
+	const base = o.kind === "shutter" && f.level === 1 ? .03 : fl;
+	const sill = base + o.sill * MM;
+	const head = base + (o.sill + o.height) * MM;
 	const H = head - sill;
 	let outSign = w.exterior ? w.outsideSign ?? 1 : 1;
 	if (w.exterior && f.outline.length) {

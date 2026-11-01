@@ -1090,8 +1090,10 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     const s0 = Math.max(0, o.t0 * MM);
     const s1 = Math.min(L, o.t1 * MM);
     seg(cursor, s0, bottom, wallTop, cursor === 0 ? firstCap : jambKey, jambKey);
-    const sill = fl + o.sill * MM;
-    const head = Math.min(wallTop, fl + (o.sill + o.height) * MM);
+    // シャッターは土間（GL+30）から立ち上がる（家の床の高さに合わせると、車の乗り入れ口に段差ができる）
+    const base = o.kind === 'shutter' && f.level === 1 ? 0.03 : fl;
+    const sill = base + o.sill * MM;
+    const head = Math.min(wallTop, base + (o.sill + o.height) * MM);
     if (o.sill > 0) seg(s0, s1, bottom, sill, null, null);
     if (head < wallTop - 0.005) seg(s0, s1, head, wallTop, null, null);
     cursor = s1;
@@ -1109,8 +1111,9 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   const s1 = o.t1 * MM;
   const width = s1 - s0;
   const mid = A.clone().addScaledVector(dir, (s0 + s1) / 2);
-  const sill = fl + o.sill * MM;
-  const head = fl + (o.sill + o.height) * MM;
+  const base = o.kind === 'shutter' && f.level === 1 ? 0.03 : fl;
+  const sill = base + o.sill * MM;
+  const head = base + (o.sill + o.height) * MM;
   const H = head - sill;
   let outSign = w.exterior ? (w.outsideSign ?? 1) : 1;
   // 外壁の外向きは、外形の内外で確かめる（向きを取り違えるとサッシ・カーテンが外に出る）

@@ -759,8 +759,25 @@ export class Viewer {
     this.renderFrame();
   };
 
+  /** 重い環境（操作中に 1 コマ 45ms 超が続く）と分かったら、影の地図を 1024 に落とす（戻さない。次に開き直せば元どおり） */
+  private lite = false;
+  private liteSlowFrames = 0;
+  private considerLite() {
+    if (this.lite) return;
+    if (this.motionFrameMs > 45) this.liteSlowFrames++;
+    else this.liteSlowFrames = Math.max(0, this.liteSlowFrames - 1);
+    if (this.liteSlowFrames < 20) return;
+    this.lite = true;
+    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.map?.dispose();
+    (this.sun.shadow as unknown as { map: unknown }).map = null;
+    this.renderer.shadowMap.needsUpdate = true;
+    console.info('[viewer] 重い環境なので影の解像度を 1024 に下げました');
+  }
+
   /** 操作中だけ描画の解像度を落とす（高精細ディスプレイで 1.5 倍 → 1 倍。画素数が半分以下になる） */
   private setMotionPR(on: boolean) {
+    if (on) this.considerLite();
     // 操作中は等倍。それでも 1 コマ 30ms を超える重い環境では 0.7 倍まで下げる（止まれば元の精細さで描き直す）
     const want = on ? Math.min(1, this.fullPR()) * (this.motionFrameMs > 30 ? 0.7 : 1) : this.fullPR();
     if (on === this.motionPR && Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;
@@ -788,7 +805,7 @@ export class Viewer {
    */
   private applyViewMode() {
     const browse = this.viewMode === 'browse';
-    const size = browse ? 2048 : 4096;
+    const size = this.lite ? 1024 : browse ? 2048 : 4096;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       this.sun.shadow.map?.dispose();

@@ -150,6 +150,38 @@ export class App {
 
   /** 保存／開く（ヘッダー） */
   private buildProjectButtons() {
+    // 側パネルの説明文（.hint）を出すか。慣れたら消して、ボタンと値だけの画面にする（既定: 消す。ブラウザに覚える）
+    const hintsToggle = () => {
+      let on = false;
+      try {
+        on = localStorage.getItem('madori.hints') === 'on';
+      } catch {
+        on = false;
+      }
+      const apply = () => {
+        document.body.classList.toggle('hints-off', !on);
+        b.classList.toggle('on', on);
+        b.title = on ? '説明文を隠す（ボタンと値だけの画面に）' : '各パネルの説明文を表示する';
+      };
+      const b = h(
+        'button',
+        {
+          class: 'btn sm ghost hints-btn',
+          onclick: () => {
+            on = !on;
+            try {
+              localStorage.setItem('madori.hints', on ? 'on' : 'off');
+            } catch {
+              /* 使えない環境 */
+            }
+            apply();
+          },
+        },
+        '説明',
+      );
+      apply();
+      return b;
+    };
     const input = h('input', { type: 'file', accept: '.json,application/json', style: 'display:none' }) as HTMLInputElement;
     input.addEventListener('change', async () => {
       const f = input.files?.[0];
@@ -172,6 +204,7 @@ export class App {
       { class: 'proj-btns' },
       h('button', { class: 'btn sm ghost', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '保存'),
       h('button', { class: 'btn sm ghost', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '開く'),
+      hintsToggle(),
       h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog(this) }, 'お客様に渡す'),
       input,
     );

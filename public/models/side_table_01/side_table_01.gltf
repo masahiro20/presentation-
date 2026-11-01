@@ -1,37 +1,122 @@
 {
   "asset": {
-    "generator": "Khronos glTF Blender I/O v1.6.8",
+    "generator": "glTF-Transform v4.5.1",
     "version": "2.0"
   },
-  "scene": 0,
-  "scenes": [
+  "accessors": [
     {
-      "name": "Scene",
-      "nodes": [
-        0
-      ]
+      "type": "SCALAR",
+      "componentType": 5123,
+      "count": 2145,
+      "bufferView": 0,
+      "byteOffset": 0
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5126,
+      "count": 1285,
+      "max": [
+        0.2742398977279663,
+        0.5483058094978333,
+        0.22429904341697693
+      ],
+      "min": [
+        -0.2742398977279663,
+        -0.0023564721923321486,
+        -0.22429904341697693
+      ],
+      "bufferView": 1,
+      "byteOffset": 0
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5126,
+      "count": 1285,
+      "bufferView": 1,
+      "byteOffset": 12
+    },
+    {
+      "type": "VEC2",
+      "componentType": 5126,
+      "count": 1285,
+      "bufferView": 1,
+      "byteOffset": 24
     }
   ],
-  "nodes": [
+  "bufferViews": [
     {
-      "mesh": 0,
-      "name": "side_table_01"
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 4292,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 4292,
+      "byteLength": 41120,
+      "byteStride": 32,
+      "target": 34962
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "textures": [
+    {
+      "source": 1,
+      "sampler": 0
+    },
+    {
+      "source": 0,
+      "sampler": 0
+    },
+    {
+      "source": 2,
+      "sampler": 0
+    }
+  ],
+  "images": [
+    {
+      "name": "side_table_01_gl_normal",
+      "mimeType": "image/jpeg",
+      "uri": "textures/side_table_01_nor_gl_1k.jpg"
+    },
+    {
+      "name": "side_table_01_BaseColor.png",
+      "mimeType": "image/jpeg",
+      "uri": "textures/side_table_01_diff_1k.jpg"
+    },
+    {
+      "name": "side_table_01_metallic-side_table_01_roughness",
+      "mimeType": "image/jpeg",
+      "uri": "textures/side_table_01_arm_1k.jpg"
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "side_table_01.bin",
+      "byteLength": 45412
     }
   ],
   "materials": [
     {
-      "doubleSided": true,
       "name": "side_table_01",
-      "normalTexture": {
-        "index": 0
-      },
+      "doubleSided": true,
       "pbrMetallicRoughness": {
         "baseColorTexture": {
-          "index": 1
+          "index": 0
         },
         "metallicRoughnessTexture": {
           "index": 2
         }
+      },
+      "normalTexture": {
+        "index": 1
       }
     }
   ],
@@ -41,115 +126,30 @@
       "primitives": [
         {
           "attributes": {
-            "POSITION": 0,
-            "NORMAL": 1,
-            "TEXCOORD_0": 2
+            "POSITION": 1,
+            "NORMAL": 2,
+            "TEXCOORD_0": 3
           },
-          "indices": 3,
-          "material": 0
+          "mode": 4,
+          "material": 0,
+          "indices": 0
         }
       ]
     }
   ],
-  "textures": [
+  "nodes": [
     {
-      "sampler": 0,
-      "source": 0
-    },
-    {
-      "sampler": 0,
-      "source": 1
-    },
-    {
-      "sampler": 0,
-      "source": 2
+      "name": "side_table_01",
+      "mesh": 0
     }
   ],
-  "images": [
+  "scenes": [
     {
-      "mimeType": "image/jpeg",
-      "name": "side_table_01_gl_normal",
-      "uri": "textures/side_table_01_nor_gl_1k.jpg"
-    },
-    {
-      "mimeType": "image/jpeg",
-      "name": "side_table_01_BaseColor.png",
-      "uri": "textures/side_table_01_diff_1k.jpg"
-    },
-    {
-      "mimeType": "image/jpeg",
-      "name": "side_table_01_metallic-side_table_01_roughness",
-      "uri": "textures/side_table_01_arm_1k.jpg"
+      "name": "Scene",
+      "nodes": [
+        0
+      ]
     }
   ],
-  "accessors": [
-    {
-      "bufferView": 0,
-      "componentType": 5126,
-      "count": 3164,
-      "max": [
-        0.27500003576278687,
-        0.5483058094978333,
-        0.22500000894069672
-      ],
-      "min": [
-        -0.27500003576278687,
-        -0.0023564721923321486,
-        -0.22500000894069672
-      ],
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 1,
-      "componentType": 5126,
-      "count": 3164,
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 2,
-      "componentType": 5126,
-      "count": 3164,
-      "type": "VEC2"
-    },
-    {
-      "bufferView": 3,
-      "componentType": 5123,
-      "count": 8268,
-      "type": "SCALAR"
-    }
-  ],
-  "bufferViews": [
-    {
-      "buffer": 0,
-      "byteLength": 37968,
-      "byteOffset": 0
-    },
-    {
-      "buffer": 0,
-      "byteLength": 37968,
-      "byteOffset": 37968
-    },
-    {
-      "buffer": 0,
-      "byteLength": 25312,
-      "byteOffset": 75936
-    },
-    {
-      "buffer": 0,
-      "byteLength": 16536,
-      "byteOffset": 101248
-    }
-  ],
-  "samplers": [
-    {
-      "magFilter": 9729,
-      "minFilter": 9987
-    }
-  ],
-  "buffers": [
-    {
-      "byteLength": 117784,
-      "uri": "side_table_01.bin"
-    }
-  ]
+  "scene": 0
 }

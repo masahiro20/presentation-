@@ -10,6 +10,7 @@ import { state } from './state';
 import type { Viewer } from '../scene/viewer';
 import { pointInPolygon } from '../core/geometry';
 import { OUTDOOR_TYPES, type BuildingModel, type Floor, type Wall } from '../core/types';
+import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 
 export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool edit3d', hidden: true });
@@ -18,6 +19,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   let mode: 'ceiling' | 'shutter' = 'ceiling';
   let ceilH = 3500;
   const selected = new Set<string>();
+  /** シャッター: 最後に触った壁（形を選び直す対象） */
+  let lastShutter: { level: number; wallId: string } | null = null;
   const overlay = new THREE.Group();
   overlay.name = 'edit3d-overlay';
   v.scene.add(overlay);
@@ -102,24 +105,20 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     }
     const { w, t, L } = best;
     const ex = f.openings.find((o) => o.wallId === w.id && t >= o.t0 - 30 && t <= o.t1 + 30);
-    if (ex) {
-      if (ex.kind === 'shutter') {
-        f.openings = f.openings.filter((o) => o !== ex);
-        toast('シャッターを外しました', 'ok');
-      } else {
-        ex.kind = 'shutter';
-        ex.sill = 0;
-        ex.height = Math.min(2300, f.ceilingHeight - 100);
-        ex.windowStyle = undefined;
-        toast(`この${ex.kind === 'shutter' ? '開口' : '窓'}をシャッターにしました`, 'ok');
-      }
+    if (ex?.kind === 'shutter') {
+      f.openings = f.openings.filter((o) => !(o.wallId === w.id && o.kind === 'shutter'));
+      lastShutter = null;
+      toast('シャッターを外しました', 'ok');
     } else {
-      if (L < 1800) {
-        toast('壁が短すぎます（シャッターは 1.8m 以上の壁に）');
+      if (L - 160 < 1500) {
+        toast('壁が短すぎます（シャッターは 1.6m 以上の壁に）');
         return;
       }
-      f.openings.push({ id: `${w.id}-S${Date.now().toString(36)}`, wallId: w.id, kind: 'shutter', t0: 80, t1: L - 80, sill: 0, height: Math.min(2300, f.ceilingHeight - 100), hingeAtStart: true, swingSide: 1, confidence: 1 });
-      toast('シャッターを置きました（もう一度クリックで外す）', 'ok');
+      // 窓・戸の上なら、それを外してシャッターに
+      if (ex) f.openings = f.openings.filter((o) => o !== ex);
+      applyShutterLayout(f, w, autoShutterLayout(L));
+      lastShutter = { level: f.level, wallId: w.id };
+      toast('シャッターを置きました（形は左のパネルで 1 台／2 台を選べます）', 'ok');
     }
     commit();
   };
@@ -176,7 +175,33 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       );
     } else {
       const n = m ? m.floors.reduce((s, f) => s + f.openings.filter((o) => o.kind === 'shutter').length, 0) : 0;
-      panel.append(h('p', { class: 'hint', style: 'margin:0' }, 'ガレージの外壁（道路側）をクリックすると、その壁いっぱいのシャッターを置きます。窓や戸の上をクリックすると、それをシャッターに替えます。シャッターをもう一度クリックすると外します。'), h('p', { class: 'hint' }, n ? `シャッター ${n} か所` : 'シャッターはまだありません'));
+      panel.append(h('p', { class: 'hint', style: 'margin:0' }, 'ガレージの外壁をクリック → シャッター。もう一度で外す。'), h('p', { class: 'hint' }, n ? `シャッター ${n} か所` : 'シャッターはまだありません'));
+      const lf = lastShutter && m ? m.floors.find((f) => f.level === lastShutter!.level) : null;
+      const lw = lf?.walls.find((x) => x.id === lastShutter!.wallId);
+      if (lf && lw) {
+        const cur = shutterLayoutOf(lf, lw.id);
+        panel.append(
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, '形'),
+          h(
+            'div',
+            { class: 'segmented' },
+            ...SHUTTER_LAYOUTS.map((l) =>
+              h(
+                'button',
+                {
+                  class: cur === l.id ? 'on' : '',
+                  title: l.hint,
+                  onclick: () => {
+                    applyShutterLayout(lf, lw, l.id);
+                    commit();
+                  },
+                },
+                l.label,
+              ),
+            ),
+          ),
+        );
+      }
     }
   };
 

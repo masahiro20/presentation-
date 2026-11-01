@@ -19,6 +19,7 @@ import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../par
 import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
+import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
 
 type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
@@ -926,6 +927,35 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
               (['window', 'door', 'sliding', 'entrance', 'open', 'shutter'] as const).map((k) => h('option', { value: k, selected: k === op.kind }, OPENING_LABEL[k])),
             ),
           ),
+          ...(op.kind === 'shutter'
+            ? [
+                h('div', { class: 'field-label' }, 'シャッターの形'),
+                h(
+                  'div',
+                  { class: 'segmented' },
+                  ...SHUTTER_LAYOUTS.map((l) =>
+                    h(
+                      'button',
+                      {
+                        class: shutterLayoutOf(f, op.wallId) === l.id ? 'on' : '',
+                        title: l.hint,
+                        onclick: () => {
+                          const w = f.walls.find((x) => x.id === op.wallId);
+                          if (!w) return;
+                          pushUndo();
+                          applyShutterLayout(f, w, l.id);
+                          sel = null;
+                          markChanged();
+                          rebuild();
+                          draw();
+                        },
+                      },
+                      l.label,
+                    ),
+                  ),
+                ),
+              ]
+            : []),
           ...(op.kind === 'window'
             ? [h(
                 'label',
@@ -1182,8 +1212,20 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-    const width = kind === 'shutter' ? L - 160 : Math.min(OPENING_DEFAULT[kind], L - 80);
-    if (width < 300 || (kind === 'shutter' && width < 1600)) {
+    if (kind === 'shutter') {
+      if (L - 160 < 1500) {
+        toast('壁が短すぎます（シャッターは 1.6m 以上の壁に）');
+        return;
+      }
+      pushUndo();
+      applyShutterLayout(W().floor, w, autoShutterLayout(L));
+      rebuild();
+      draw();
+      toast('シャッターを置きました（形はクリックして選べます: 1 台／2 台）', 'ok');
+      return;
+    }
+    const width = Math.min(OPENING_DEFAULT[kind], L - 80);
+    if (width < 300) {
       toast('壁が短すぎて置けません');
       return;
     }
@@ -1197,7 +1239,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       if (Math.abs(uy) < 0.01) tc = (onGrid(w.a.x + ux * t, gridBase.phaseX, half) - w.a.x) * ux;
       else if (Math.abs(ux) < 0.01) tc = (onGrid(w.a.y + uy * t, gridBase.phaseY, half) - w.a.y) * uy;
     }
-    const t0 = kind === 'shutter' ? 80 : Math.max(40, Math.min(L - 40 - width, tc - width / 2));
+    const t0 = Math.max(40, Math.min(L - 40 - width, tc - width / 2));
     const t1 = t0 + width;
     const f = W().floor;
     if (f.openings.some((o) => o.wallId === w.id && o.t1 > t0 + 10 && o.t0 < t1 - 10)) {
@@ -1205,7 +1247,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     pushUndo();
-    f.openings.push({ id: `${w.id}-U${++seq}`, wallId: w.id, kind, t0, t1, sill: kind === 'window' ? 900 : 0, height: kind === 'window' ? 1100 : kind === 'shutter' ? Math.min(2300, f.ceilingHeight - 100) : 2000, hingeAtStart: true, swingSide: 1, confidence: 1 });
+    f.openings.push({ id: `${w.id}-U${++seq}`, wallId: w.id, kind, t0, t1, sill: kind === 'window' ? 900 : 0, height: kind === 'window' ? 1100 : 2000, hingeAtStart: true, swingSide: 1, confidence: 1 });
     rebuild();
     draw();
   };

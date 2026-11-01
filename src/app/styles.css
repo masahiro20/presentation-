@@ -1132,3 +1132,8 @@ details.check-card:not([open]) > summary { border-bottom: 0; }
 .check-rows.study .check-row.na .ic { color: #888; }
 .lp-samples .sep { color: #bbb; }
 @media (max-width: 900px) { .study-dialog { grid-template-columns: 1fr; } }
+
+/* 説明文の表示切り替え（ヘッダーの「説明」）: 消すとパネルがボタンと値だけになる。対話の中・重要な注意（.hint.keep）は残す */
+body.hints-off aside .hint:not(.keep), body.hints-off .pe-panel .hint:not(.keep), body.hints-off .furn-tool .hint:not(.keep) { display: none; }
+body.hints-off aside p.lead { display: none; }
+.hints-btn.on { background: var(--accent-soft, #efe9dd); }

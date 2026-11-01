@@ -6,6 +6,7 @@
  */
 import type { Opening, Room, Vec2, Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
+import { autoShutterLayout, shutterSpans } from '../core/shutter';
 
 const MIN_EDGE = 1500;
 
@@ -56,7 +57,7 @@ export function ensureGarageShutters(walls: Wall[], openings: Opening[], rooms: 
       while (walls.some((w) => w.id === `F${level}-GS${k}`)) k++;
       const id = `F${level}-GS${k}`;
       walls.push({ id, a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, thickness: thick, exterior: true, outsideSign: outSide as 1 | -1, joinedA: true, joinedB: true });
-      openings.push({ id: `${id}-SH`, wallId: id, kind: 'shutter', t0: 80, t1: L - 80, sill: 0, height: 2300, hingeAtStart: true, swingSide: 1, confidence: 0.8 });
+      shutterSpans(L, autoShutterLayout(L)).forEach((sp, j) => openings.push({ id: `${id}-SH${j + 1}`, wallId: id, kind: 'shutter', t0: sp.t0, t1: sp.t1, sill: 0, height: 2300, hingeAtStart: true, swingSide: 1, confidence: 0.8 }));
       added++;
     }
   }

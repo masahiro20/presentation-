@@ -11,7 +11,9 @@
 import * as THREE from 'three';
 import type { StepCtx } from './app';
 import { state } from './state';
-import { progressModal, toast, download } from './dom';
+import { progressModal, toast, download, h, modal } from './dom';
+import { recordProgram } from '../video/recorder';
+import { exteriorById, interiorById } from '../styles/presets';
 import { walkthroughProgram, type CameraProgram } from '../video/paths';
 import { renderStudio } from '../scene/studio';
 import { exposureFor } from './draftCapture';
@@ -35,6 +37,82 @@ export interface TourKey {
 }
 
 const MM = 0.001;
+
+/**
+ * 動画 AI（video-to-video）向けの指示文。
+ * リール（図面 → 3D を歩いた動画 → Seedance などで実写風に）と同じ作り方: 間取りとカメラの動きは下絵の動画が決め、AI は見た目だけを乗せる
+ */
+export function tourVideoPrompt(): { ja: string; en: string } {
+  const ext = exteriorById(state.design.exteriorId);
+  const int = interiorById(state.design.interiorId);
+  const clay = state.design.clay ? '下絵は白い模型（クレイ）です。' : '';
+  return {
+    ja:
+      `住宅の 3D モデルを目線の高さで歩いた下絵の動画です。${clay}間取り・壁・窓・ドアの位置と数・家具の配置・天井の高さ・カメラの動きと速さは、この動画のとおりに一切変えず、質感と光だけを実写のように仕上げてください（video-to-video、構図固定）。` +
+      `外観の雰囲気は「${ext.name}」、内観は「${int.name}」。窓やドアを増やさない・減らさない、廊下や部屋を足さない。人物・文字・看板は入れない。自然光は窓から、室内は柔らかい間接光。`,
+    en:
+      `Eye-level walkthrough of a 3D model of a Japanese detached house (base video).${state.design.clay ? ' The base is a white clay model.' : ''} Keep the floor plan, the position and number of walls, windows and doors, the furniture layout, ceiling heights, and the camera path and speed exactly as in this video (video-to-video, locked composition); only upgrade materials and lighting to photorealistic quality. ` +
+      `Exterior mood: ${ext.name}. Interior mood: ${int.name}. Do not add or remove windows, doors, corridors or rooms. No people, no text, no signage. Natural daylight from the windows, soft indirect light inside.`,
+  };
+}
+
+/**
+ * 歩く下絵の動画（MP4）: 図面から作った経路を、扉を開けながら目線の高さで歩く。
+ * 外部の動画 AI（Seedance・Kling・Runway などの video-to-video）に渡す素材。ツールでは実写風には仕上げない。
+ */
+export async function exportTourVideo(ctx: StepCtx, shots: Shot[], size = { width: 1920, height: 1080 }) {
+  const v = ctx.app.viewer;
+  const program = tourProgram(ctx, shots);
+  if (!program) return;
+  // 検証用（E2E）: __tourFast で短く粗く
+  const fast = !!(globalThis as { __tourFast?: boolean }).__tourFast;
+  const prog: CameraProgram = fast ? { ...program, duration: Math.min(2, program.duration) } : program;
+  const fps = fast ? 5 : 24;
+  const pm = progressModal(`歩く下絵の動画を書き出しています（${Math.round(prog.duration)} 秒・${size.width}×${size.height}・${fps}fps）`, true);
+  const prevLabels = v.roomLabelsShown();
+  const prevMode = v.viewMode;
+  const prevView = v.currentView();
+  v.setRoomLabels(false);
+  v.setViewMode('finish');
+  try {
+    const r = await recordProgram(v, prog, {
+      width: size.width,
+      height: size.height,
+      fps,
+      captions: false,
+      signal: pm.signal,
+      onProgress: (ratio, prev) => pm.set(ratio, `${Math.round(ratio * 100)}%`, prev),
+    });
+    const name = `${state.customer ? `${state.customer}_` : ''}ルームツアー下絵.${r.ext}`;
+    download(URL.createObjectURL(r.blob), name);
+    const p = tourVideoPrompt();
+    const copyBtn = (label: string, text: string) => h('button', { class: 'btn sm', onclick: () => navigator.clipboard.writeText(text).then(() => toast('コピーしました', 'ok')) }, label);
+    modal(
+      '歩く下絵の動画を保存しました',
+      h(
+        'div',
+        null,
+        h('p', null, `${name} を保存しました。動画 AI の video-to-video（Seedance・Kling・Runway など。外部の有料サービス）に、この動画と下の説明文を渡すと、間取りとカメラの動きはそのままに実写風のルームツアーになります。仕上がった動画は「③ 仕上がりを取り込む」で資料と体験リンクに入ります。`),
+        h('div', { class: 'field-label' }, '説明文（日本語）'),
+        h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.ja),
+        h('div', { class: 'field-label', style: 'margin-top:8px' }, 'Prompt (English)'),
+        h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.en),
+        h('div', { class: 'btn-row', style: 'margin-top:8px' }, copyBtn('日本語をコピー', p.ja), copyBtn('英語をコピー', p.en)),
+      ),
+      [{ label: '閉じる' }],
+      true,
+    );
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') toast(`動画を書き出せませんでした: ${(e as Error).message}`, 'error', 7000);
+  } finally {
+    pm.close();
+    v.setDoors(null);
+    v.setRoomLabels(prevLabels);
+    v.setViewMode(prevMode);
+    v.applyView(prevView);
+    v.resize();
+  }
+}
 
 /** 図面からルームツアーの経路を作る */
 export function tourProgram(ctx: StepCtx, shots: Shot[]): CameraProgram | null {

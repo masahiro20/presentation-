@@ -16,7 +16,7 @@ import type { Shot } from '../../scene/shots';
 import { exportCuts } from '../cuts';
 import { listRefs, addRef, deleteRef, REF_KIND_LABEL, type RefKind } from '../styleRefs';
 import { importFinishedImages, importFinishedVideos } from '../finishImport';
-import { exportRoomTour, previewRoomTour } from '../roomTour';
+import { exportRoomTour, exportTourVideo, previewRoomTour } from '../roomTour';
 import { startCinema } from '../cinema';
 import { progress, reconcileDecided } from '../../coordinate/decisions';
 import { harmonyCheck } from '../../coordinate/harmony';
@@ -494,7 +494,9 @@ export const designStep: Step = {
         section(
           '仕上げ（外部）② ルームツアー動画の素材',
           h('p', { class: 'hint', style: 'margin-top:0' }, 'YouTube のルームツアーのように、玄関から入って目線の高さ・超広角（16mm 相当）で各部屋を見せる経路を図面から作り、部屋ごとの見せ場で見回す始めと終わりのキーフレーム（下絵。壁しか写らない構図は除く）と、2 枚ずつをつなぐ動画 AI 向けの指示文を ZIP にします。キーフレームを Nano Banana Pro で仕上げ → 動画 AI（Veo など、最初と最後のフレーム指定）でクリップに → つないで ③ で取り込みます。'),
-          h('button', { class: 'btn primary block', onclick: () => void exportRoomTour(ctx, shots, size()) }, 'ルームツアーの素材を保存（ZIP）'),
+          h('button', { class: 'btn primary block', onclick: () => void exportTourVideo(ctx, shots, size()) }, '🎬 歩く下絵の動画を書き出す（video-to-video 用）'),
+          h('p', { class: 'hint' }, '3D を目線の高さで歩いた MP4 と、動画 AI（Seedance・Kling・Runway など）向けの説明文。間取りとカメラの動きは下絵が決め、AI は見た目だけを乗せるので、廊下や部屋が増えません。'),
+          h('button', { class: 'btn block', style: 'margin-top:8px', onclick: () => void exportRoomTour(ctx, shots, size()) }, 'キーフレームの素材を保存（ZIP・静止画の AI 向け）'),
           h('div', { class: 'btn-row' }, tourBtn),
         ),
         section(

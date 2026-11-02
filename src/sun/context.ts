@@ -689,6 +689,12 @@ export class SunContext {
   }
 
   /** 要確認の建物: 冬至の 8〜16 時に敷地へ影を落とす建物（影の長い順）。確定済みは後ろ */
+  /** 下絵の動画の説明文用: 画面に出ている隣の建物の数と、航空写真が地面にあるか */
+  baseVideoInfo(): { neighbors: number; aerial: boolean } {
+    const neighbors = this.state.neighbors.filter((b) => this.isActive(b) && !b.planned && !b.hidden).length;
+    return { neighbors, aerial: this.aerial.visible && this.aerial.children.length > 0 };
+  }
+
   keyNeighbors(): { b: NeighborBuilding; hours: number }[] {
     const target = this.targetRing();
     const { lat, lon } = siteLatLon(this.state.site);

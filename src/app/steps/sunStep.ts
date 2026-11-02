@@ -24,7 +24,8 @@ import { loadPlateauIndex, muniCodesAround } from '../../sun/plateau';
 import { createPointCloudBlock } from './sunPointCloud';
 import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
 import { recordProgram } from '../../video/recorder';
-import { sunTimelapseProgram } from '../../video/paths';
+import { sunTimelapseProgram, streetProgram, type CameraProgram } from '../../video/paths';
+import { showBaseVideoDone, streetVideoPrompt } from '../roomTour';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -823,23 +824,81 @@ export const sunStep: Step = {
         if (wasPlaying) playBtn.click();
       }
     };
+    // ---- 街並みの下絵の動画（周辺建物・航空写真ごと、道路を歩いて → ドローンで街を見下ろす） ----
+    // 外部の動画 AI（Kling・Seedance などの video-to-video）に渡す素材。灰色の隣家はそのまま「実在する建物」として実写化される
+    const recordStreet = async () => {
+      if (!v.state) return;
+      const wasPlaying = ui.playing;
+      ui.playing = false;
+      playBtn.textContent = '▶';
+      const fast = !!(globalThis as { __streetFast?: boolean }).__streetFast;
+      const W = 1920;
+      const H = 1080;
+      const fps = fast ? 5 : 24;
+      const base = streetProgram(v.state.meta, v.state.site, fast ? 2 : 16);
+      const program: CameraProgram = base;
+      const pm = progressModal(`街並みの下絵の動画を書き出しています（${Math.round(program.duration)} 秒・${W}×${H}・${fps}fps）`, true);
+      const wasPath = sc.state.showSunPath;
+      sc.state.showSunPath = false;
+      sc.buildSunPath();
+      sc.updateSunMarker(new THREE.Vector3(0, 1, 0));
+      const view = { pos: v.camera.position.clone(), target: v.controls.target.clone() };
+      const wasMode = v.viewMode;
+      const wasLabels = v.roomLabelsShown();
+      v.setRoomLabels(false);
+      v.setViewMode('finish');
+      try {
+        const r = await recordProgram(v, program, {
+          width: W,
+          height: H,
+          fps,
+          captions: false,
+          signal: pm.signal,
+          onProgress: (ratio, prev) => pm.set(ratio, `${Math.round(ratio * 100)}%`, prev),
+        });
+        const name = `${state.customer ? `${state.customer}_` : ''}街並み下絵.${r.ext}`;
+        download(URL.createObjectURL(r.blob), name);
+        const info = sc.baseVideoInfo();
+        showBaseVideoDone(
+          '街並みの下絵の動画を保存しました',
+          name,
+          `動画 AI の video-to-video（Kling・Seedance・Runway など。外部の有料サービス）に、この動画と下の説明文を渡すと、周りの建物${info.neighbors ? `（${info.neighbors} 棟）` : ''}と家の位置関係はそのままに、実写風の街並みの映像になります。仕上がった動画は 3D パースの「仕上げ（外部）③」で資料と体験リンクに入ります。`,
+          streetVideoPrompt(info),
+        );
+      } catch (e) {
+        if (!isAbortError(e)) toast(`動画を書き出せませんでした: ${(e as Error).message}`, 'error', 7000);
+      } finally {
+        pm.close();
+        sc.state.showSunPath = wasPath;
+        sc.buildSunPath();
+        v.setRoomLabels(wasLabels);
+        v.setViewMode(wasMode);
+        v.camera.position.copy(view.pos);
+        v.controls.target.copy(view.target);
+        v.resize();
+        apply(true);
+        if (wasPlaying) playBtn.click();
+      }
+    };
     const movieMenu = () =>
       modal(
-        '日影の動画を書き出す',
+        '動画を書き出す',
         h(
           'div',
           null,
-          h('p', { class: 'hint', style: 'margin-top:0' }, '今の視点のまま、影の動きを動画にします。体験リンクの「動画」と資料に入り、ファイルにも保存します。'),
+          h('p', { class: 'hint', style: 'margin-top:0' }, '日影の動画は今の視点のまま影の動きを動画にします。体験リンクの「動画」と資料に入り、ファイルにも保存します。'),
           h('p', null, h('b', null, 'この日だけ'), `（${ui.month}月${ui.day}日の日の出〜日の入、12 秒・1280×720）`),
           h('p', null, h('b', null, '4 季節を並べる'), '（冬至・春分・夏至・秋分を 2×2 に、同じ時計 6:00〜18:00 で 16 秒・1920×1080。書き出しに 4 倍の時間がかかります）'),
+          h('p', null, h('b', null, '街並みの下絵'), '（道路を歩いて家に近づき、ドローンで街ごと見下ろす 16 秒・1920×1080。周辺の建物と航空写真ごと書き出し、動画 AI の video-to-video で実写風にする素材。説明文も出ます）'),
         ),
         [
           { label: 'この日だけ', primary: true, onClick: () => void recordTimelapse(false) },
           { label: '4 季節を並べる', onClick: () => void recordTimelapse(true) },
+          { label: '街並みの下絵', onClick: () => void recordStreet() },
           { label: 'やめる' },
         ],
       );
-    const movieBtn = h('button', { class: 'chip', title: '影の動きを動画に（この日だけ／4 季節を並べて）', onclick: movieMenu }, '🎬 日影の動画');
+    const movieBtn = h('button', { class: 'chip', title: '動画を書き出す（日影: この日だけ／4 季節、街並みの下絵: 動画 AI 用）', onclick: movieMenu }, '🎬 動画');
     const bar = h(
       'div',
       { class: 'overlay-bar', style: 'pointer-events:auto' },

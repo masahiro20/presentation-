@@ -586,6 +586,66 @@ export function cinematicProgram(shots: Shot[], cutSec = 5): CameraProgram {
   };
 }
 
+/**
+ * 街並み（下絵の動画用）: 道路を歩いて計画中の家に近づき、そのままドローンで上がって街ごと見下ろす。
+ * 1 本つながりのカメラ（カット無し・黒を挟まない）。video-to-video の AI は構図を守るので、
+ * 周辺建物（PLATEAU の灰色の箱）と家の位置関係がそのまま実写風の映像になる。
+ *  - 前半（約 45%）: 目線の高さ（1.55m）で道路の家側を歩き、はじめは道の先を見ていて、だんだん家の方を向く
+ *  - 後半: 家の前から上がりながら引いて、家を中心に 70° 回り込み、街ごと見下ろす
+ */
+export function streetProgram(meta: BuildingMeta, site: SiteInfo, duration = 16): CameraProgram {
+  const c = meta.bbox.getCenter(new THREE.Vector3());
+  const size = meta.bbox.getSize(new THREE.Vector3());
+  const road = new THREE.Vector3(site.roadDir.x, 0, site.roadDir.z).normalize();
+  const along = new THREE.Vector3(-road.z, 0, road.x);
+  // 歩く位置は道路の向こう側の車線（中心線より 0.8m 先。幅 4m 以上の道路なら路面の上）: 家に近すぎると壁しか映らないので、道路越しに家を見る（参考の投稿も向かいの歩道から）
+  const lane = site.roadCenter.clone().setY(0).addScaledVector(road, 0.8);
+  // 家の道路側の面の中央
+  const half = Math.abs(road.x) * size.x * 0.5 + Math.abs(road.z) * size.z * 0.5;
+  const front = c.clone().setY(0).addScaledVector(road, half);
+  const EYE = 1.55;
+  const walkFrom = lane.clone().addScaledVector(along, -22);
+  // 家の正面より少し手前で止まる（斜めから見る方が家の形が分かる）
+  const walkTo = lane.clone().addScaledVector(along, -3);
+  const lookHouse = c.clone().setY(Math.max(2, meta.topY * 0.4));
+  const split = 0.45;
+  const smooth = (x: number) => x * x * (3 - 2 * x);
+  const R = Math.max(size.x, size.z) * 1.6 + 14;
+  const TOP = Math.max(22, meta.topY * 3 + 10);
+  // ドローンの出発点（歩きの終点）を家の中心からの角度・距離で表す
+  const d0 = walkTo.clone().sub(c.clone().setY(0));
+  const a0 = Math.atan2(d0.z, d0.x);
+  const r0 = d0.length();
+  // 回り込む向き: 道の先（歩いてきた向きの先）側へ
+  const turn = Math.sign(-Math.sin(a0) * along.x + Math.cos(a0) * along.z) || 1;
+  return {
+    duration,
+    captions: [],
+    sample(t: number): CamSample {
+      const u = Math.max(0, Math.min(1, t / duration));
+      if (u < split) {
+        const w = u / split;
+        const e = w < 0.15 ? smooth(w / 0.15) * 0.15 : w;
+        const pos = walkFrom.clone().lerp(walkTo, e).setY(EYE);
+        // 視線: 道の先 → 家（後半でゆっくり向く）
+        const ahead = pos.clone().addScaledVector(along, 14).setY(EYE - 0.2);
+        const k = smooth(Math.max(0, Math.min(1, (w - 0.3) / 0.6)));
+        const target = ahead.lerp(lookHouse, k);
+        return { pos, target, fov: 58, fade: 0 };
+      }
+      const wr = (u - split) / (1 - split);
+      const w = smooth(wr);
+      const a = a0 + turn * w * (70 * Math.PI) / 180;
+      const r = r0 + (R - r0) * w;
+      // 高さは先に上がる（道路の上で 2 階建ての屋根より高くなってから回り込む。向かいの家に突っ込まない）
+      const y = EYE + (TOP - EYE) * (1 - Math.pow(1 - wr, 2.5));
+      const pos = new THREE.Vector3(c.x + Math.cos(a) * r, y, c.z + Math.sin(a) * r);
+      const target = lookHouse.clone().lerp(front.clone().setY(0), w * 0.6);
+      return { pos, target, fov: 58 - 8 * w, fade: 0 };
+    },
+  };
+}
+
 export function droneProgram(meta: BuildingMeta, duration = 14): CameraProgram {
   const c = meta.bbox.getCenter(new THREE.Vector3());
   const size = meta.bbox.getSize(new THREE.Vector3());

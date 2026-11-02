@@ -57,6 +57,48 @@ export function tourVideoPrompt(): { ja: string; en: string } {
 }
 
 /**
+ * 街並みの下絵（日照画面の周辺建物・航空写真ごと）向けの指示文。
+ * X の投稿（地図データ → Blender の灰色の街 → Kling で実写化）と同じ流れ: 灰色の箱は「実在する隣の建物」として位置・高さを守らせる
+ */
+export function streetVideoPrompt(opts: { neighbors: number; aerial: boolean }): { ja: string; en: string } {
+  const ext = exteriorById(state.design.exteriorId);
+  const nb = opts.neighbors > 0 ? `周りの灰色の箱は実在する隣の建物（3D 都市モデル）です。位置・大きさ・高さ・屋根の形はそのままに、日本の住宅街にある普通の家（外壁・屋根・窓・塀・カーポート）として仕上げてください。` : `周りは日本の住宅街として自然に補ってください。`;
+  const nbEn = opts.neighbors > 0 ? ` The grey boxes around it are real neighbouring buildings (from a 3D city model): keep their position, size, height and roof shape, and finish them as ordinary houses of a Japanese residential street (walls, roofs, windows, fences, carports).` : ' Fill in the surroundings as an ordinary Japanese residential street.';
+  const ground = opts.aerial ? '地面の航空写真は道路・敷地の形の手がかりです。' : '';
+  const groundEn = opts.aerial ? ' The aerial photo on the ground shows where the roads and plots are.' : '';
+  return {
+    ja:
+      `住宅地の 3D モデルの下絵の動画です。道路を歩いて計画中の家に近づき、そのままドローンで上がって街ごと見下ろします。${nb}${ground}` +
+      `中央の色の付いた家は計画中の家で、形・窓の位置と数・外壁の色（${ext.name}）はこの動画のとおりに変えないでください。道路はアスファルトに白線、電柱と電線、側溝、植栽を自然に足してよい。` +
+      `カメラの動きと速さは変えない（video-to-video、構図固定）。人物・文字・看板は入れない。晴れた日の昼、自然光。`,
+    en:
+      `Base video of a 3D model of a Japanese residential neighbourhood: the camera walks along the street towards the planned house, then lifts off like a drone and looks down over the whole street.${nbEn}${groundEn}` +
+      ` The coloured house in the centre is the planned house: keep its shape, the position and number of its windows, and its exterior colours (${ext.name}) exactly as in this video. You may add asphalt with white road markings, utility poles and wires, gutters and planting.` +
+      ` Keep the camera path and speed exactly as in this video (video-to-video, locked composition). No people, no text, no signage. Clear daytime, natural light.`,
+  };
+}
+
+/** 下絵の動画を保存した後の案内（説明文のコピー付き）。ルームツアーと街並みで共通 */
+export function showBaseVideoDone(title: string, name: string, lead: string, p: { ja: string; en: string }) {
+  const copyBtn = (label: string, text: string) => h('button', { class: 'btn sm', onclick: () => navigator.clipboard.writeText(text).then(() => toast('コピーしました', 'ok')) }, label);
+  modal(
+    title,
+    h(
+      'div',
+      null,
+      h('p', null, `${name} を保存しました。${lead}`),
+      h('div', { class: 'field-label' }, '説明文（日本語）'),
+      h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.ja),
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, 'Prompt (English)'),
+      h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.en),
+      h('div', { class: 'btn-row', style: 'margin-top:8px' }, copyBtn('日本語をコピー', p.ja), copyBtn('英語をコピー', p.en)),
+    ),
+    [{ label: '閉じる' }],
+    true,
+  );
+}
+
+/**
  * 歩く下絵の動画（MP4）: 図面から作った経路を、扉を開けながら目線の高さで歩く。
  * 外部の動画 AI（Seedance・Kling・Runway などの video-to-video）に渡す素材。ツールでは実写風には仕上げない。
  */
@@ -85,23 +127,7 @@ export async function exportTourVideo(ctx: StepCtx, shots: Shot[], size = { widt
     });
     const name = `${state.customer ? `${state.customer}_` : ''}ルームツアー下絵.${r.ext}`;
     download(URL.createObjectURL(r.blob), name);
-    const p = tourVideoPrompt();
-    const copyBtn = (label: string, text: string) => h('button', { class: 'btn sm', onclick: () => navigator.clipboard.writeText(text).then(() => toast('コピーしました', 'ok')) }, label);
-    modal(
-      '歩く下絵の動画を保存しました',
-      h(
-        'div',
-        null,
-        h('p', null, `${name} を保存しました。動画 AI の video-to-video（Seedance・Kling・Runway など。外部の有料サービス）に、この動画と下の説明文を渡すと、間取りとカメラの動きはそのままに実写風のルームツアーになります。仕上がった動画は「③ 仕上がりを取り込む」で資料と体験リンクに入ります。`),
-        h('div', { class: 'field-label' }, '説明文（日本語）'),
-        h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.ja),
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, 'Prompt (English)'),
-        h('textarea', { rows: 5, readonly: true, style: 'width:100%;font-size:12px' }, p.en),
-        h('div', { class: 'btn-row', style: 'margin-top:8px' }, copyBtn('日本語をコピー', p.ja), copyBtn('英語をコピー', p.en)),
-      ),
-      [{ label: '閉じる' }],
-      true,
-    );
+    showBaseVideoDone('歩く下絵の動画を保存しました', name, '動画 AI の video-to-video（Seedance・Kling・Runway など。外部の有料サービス）に、この動画と下の説明文を渡すと、間取りとカメラの動きはそのままに実写風のルームツアーになります。仕上がった動画は「③ 仕上がりを取り込む」で資料と体験リンクに入ります。', tourVideoPrompt());
   } catch (e) {
     if ((e as Error).name !== 'AbortError') toast(`動画を書き出せませんでした: ${(e as Error).message}`, 'error', 7000);
   } finally {

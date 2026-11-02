@@ -89,6 +89,15 @@
 - 服部様邸で道路側・ＬＤＫ・庭側・鳥瞰・夕景・朝を前後比較（`scratchpad/report/26`）。1 コマの時間は変わらず（素の描画 1ms・仕上げ 3ms、検証環境）。
 - 10 件の自己点検（audit_r10）、tsc・vitest 1090 件・build。
 
+### 日照の周辺環境を「街」として立ち上げる（道路・緑地・街路樹）
+- 参考: Instagram リール（cad2grow、D5 Render の「Import any city」＝ OSM の道路・建物・緑を 4km 四方まで取り込む機能）。D5 は Windows の別アプリ（NVIDIA GPU 要）でツールには組み込めないが、データは同じ公開データなので、同じ要素をこのツールの日照画面に足した。
+- `src/sun/streets.ts`: **道路**は国土地理院の最適化ベクトルタイル（RdCL。幅員 vt_width cm／幅員区分）から、種類別の路面（5m 以上は両端に白線、9m 以上は縁石と歩道）。**緑地**（公園・芝・農地・林）と**樹木**（natural=tree・並木）は OpenStreetMap（Overpass）から。林には木を散らす。街路樹は幹＋葉のカード（影を落とす）。
+  敷地・建物・隣家の中には植えない。航空写真の上に少し浮かせて描く。SunContext `loadStreets`（周辺建物の取得の後に裏で取る。失敗しても建物と航空写真はそのまま）、トグル「道路・緑地・街路樹（OpenStreetMap）」。
+- 体験リンク（`ShareContext.streets`）と街並みの下絵の動画・説明文にも入る。
+- この検証環境からは Overpass（overpass-api.de ほか）に届かず、OSM 側は合成データ（`__sunDebug.neighbors.streetsFromOsm`）で描画を確認。お手元の PC では届くはず（届かなければ国土地理院の道路だけ）。
+- 航空写真は撮影時の光を含むので、太陽で照らすと白く飛んでいた → 0.74 倍で受ける。
+- 検証: 小牧市の住宅地の座標で道路 53 本（国土地理院）、合成の緑地 2・樹木 44。`scripts/tmp/streets-probe.mjs`、`tests/streets.test.ts`（5 件）。
+
 ## 2026-11-01（第 18 巡）ガレージの構造・情報量・パースの重さ
 
 ### 歩く下絵の動画（リールの作り方に合わせる: 3D の歩き動画 → 動画 AI の video-to-video）

@@ -164,6 +164,8 @@ export class MaterialRegistry {
     set('l.nbRoof', color('#45474a', 0.75));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
+    // 道路の白線（OpenStreetMap の街路用）
+    set('l.roadLine', color('#e8e6e0', 0.8));
     set('l.driveway', M(L.driveway));
     set('l.approach', M(L.approach));
     set('l.porch', M(L.approach));

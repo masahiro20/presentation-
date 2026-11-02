@@ -589,6 +589,8 @@ export const sunStep: Step = {
     sc.year = ui.year;
     sc.buildSunPath();
     sc.buildNeighbors();
+    // 保存した案件を開いたとき（周辺建物はある・街路はまだ）は裏で街路を取る（loadStreets は下で定義。開いた次のコマで）
+    const streetsOnOpen = sc.state.neighbors.some((b) => !b.planned) && !sc.hasStreets();
 
     // ---- 表示の更新 ----
     const badge = h('div', { class: 'sun-badge', style: 'pointer-events:auto' });
@@ -1079,6 +1081,7 @@ export const sunStep: Step = {
       extPanel?.afterModelRebuilt();
       sc.buildSunPath();
       sc.buildNeighbors();
+      sc.rebuildStreets();
       if (sc.state.aerialLoaded) loadAerial();
       invalidateResults();
       apply(true);
@@ -1229,6 +1232,24 @@ export const sunStep: Step = {
     /** 進行中の周辺建物の取得（微調整の連打・建設地の変更で次が始まったら中止して置き換える。同時に 2 本走らせない） */
     let nbCurrent: { ac: AbortController; pm: ProgressHandle } | null = null;
     /**
+     * 道路・緑地・街路樹（OpenStreetMap）。周辺建物を取った後に裏で取る（待たせない・失敗しても建物と航空写真はそのまま）。
+     * 参考: D5 Render の「街の取り込み」も同じ OSM の道路・緑を使って街を作る
+     */
+    let streetsFailedOnce = false;
+    const loadStreets = async () => {
+      try {
+        const c = await sc.loadStreets();
+        apply(true);
+        if (c.roads + c.greens + c.trees > 0) toast(`道路 ${c.roads}${c.greens || c.trees ? `・緑地 ${c.greens}・樹木 ${c.trees}` : ''} を読み込みました（${c.sources.join('・')}）`, 'info', 5000);
+      } catch (e) {
+        if (isAbortError(e)) return;
+        console.warn('街路の取得に失敗', e);
+        if (!streetsFailedOnce) toast('道路・緑地・街路樹は取得できませんでした。建物と航空写真だけで続けます', 'info', 6000);
+        streetsFailedOnce = true;
+      }
+    };
+    if (streetsOnOpen) setTimeout(() => void loadStreets(), 0);
+    /**
      * 周辺建物を取り直す。PLATEAU（既定）は数 MB の建物タイルを読むので、進捗（枚数・MB）と中止を出す。
      * 未整備・通信エラーで国土地理院に落ちたときは、その旨を案内する。
      * 前の取得が進行中なら中止して置き換える（古いピンで始めた取得が後から終わって一覧を上書きしないように。置き換えの中止は案内を出さない）
@@ -1253,6 +1274,7 @@ export const sunStep: Step = {
         toast(neighborsLoadedToast(r, kept), fell ? 'info' : 'ok', fell ? 8000 : undefined);
         renderKeyList();
         refreshSightlines();
+        void loadStreets();
         // 一部タイルの失敗・データ量の上限・補完などの注記（落ちた理由はトーストで案内済み）
         const extra = r.notes.filter((t) => !/^この地域は PLATEAU|^PLATEAU のデータを取得できなかった/.test(t));
         if (extra.length) toast(extra.join(' '), 'info', 8000);
@@ -1269,13 +1291,13 @@ export const sunStep: Step = {
     const dirSel = h('select', null, ['北', '北東', '東', '南東', '南', '南西', '西', '北西'].map((d, i) => h('option', { value: i * 45, selected: d === '南' }, d))) as HTMLSelectElement;
     const distIn = h('input', { type: 'number', value: 9, min: 2, max: 60 }) as HTMLInputElement;
     const hIn = h('input', { type: 'number', value: 7, min: 2, max: 60 }) as HTMLInputElement;
-    const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showSunPath', HTMLInputElement>> = {};
+    const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showStreets' | 'showSunPath', HTMLInputElement>> = {};
     // 想定の家の区画の破線の表示を合わせる（実体は想定の家のブロックで入れる）
     let syncPlannedVisual: () => void = () => {};
     const toggles = h(
       'div',
       null,
-      ...(['showAerial', 'showNeighbors', 'showSunPath'] as const).map((k) =>
+      ...(['showAerial', 'showNeighbors', 'showStreets', 'showSunPath'] as const).map((k) =>
         h(
           'label',
           { class: 'check' },
@@ -1290,7 +1312,7 @@ export const sunStep: Step = {
               apply(true);
             },
           }) as HTMLInputElement),
-          { showAerial: '航空写真', showNeighbors: '周辺の建物', showSunPath: '太陽の通り道（冬至・春秋分・夏至）' }[k],
+          { showAerial: '航空写真', showNeighbors: '周辺の建物', showStreets: '道路・緑地・街路樹（OpenStreetMap）', showSunPath: '太陽の通り道（冬至・春秋分・夏至）' }[k],
         ),
       ),
     );
@@ -2583,6 +2605,9 @@ export const sunStep: Step = {
           return out;
         },
         load: (src: NeighborSourceChoice) => loadNeighbors(src),
+        /** 点検用: Overpass の要素から街路（緑地・樹木）を作る */
+        streetsFromOsm: (elements: unknown[]) => { sc.setStreetsFromOsm(elements); apply(true); },
+        streetCounts: () => sc.streetCounts,
         addManual: (dirDeg: number, dist: number, height: number) => { sc.addManualNeighbor(dirDeg, dist, 8, 8, height); invalidateResults(); apply(true); refreshSightlines(); },
         sightlines: () => state.sun.sightlines ?? [],
       };

@@ -60,12 +60,12 @@ export function tourVideoPrompt(): { ja: string; en: string } {
  * 街並みの下絵（日照画面の周辺建物・航空写真ごと）向けの指示文。
  * X の投稿（地図データ → Blender の灰色の街 → Kling で実写化）と同じ流れ: 灰色の箱は「実在する隣の建物」として位置・高さを守らせる
  */
-export function streetVideoPrompt(opts: { neighbors: number; aerial: boolean }): { ja: string; en: string } {
+export function streetVideoPrompt(opts: { neighbors: number; aerial: boolean; streets?: boolean }): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);
   const nb = opts.neighbors > 0 ? `周りの灰色の箱は実在する隣の建物（3D 都市モデル）です。位置・大きさ・高さ・屋根の形はそのままに、日本の住宅街にある普通の家（外壁・屋根・窓・塀・カーポート）として仕上げてください。` : `周りは日本の住宅街として自然に補ってください。`;
   const nbEn = opts.neighbors > 0 ? ` The grey boxes around it are real neighbouring buildings (from a 3D city model): keep their position, size, height and roof shape, and finish them as ordinary houses of a Japanese residential street (walls, roofs, windows, fences, carports).` : ' Fill in the surroundings as an ordinary Japanese residential street.';
-  const ground = opts.aerial ? '地面の航空写真は道路・敷地の形の手がかりです。' : '';
-  const groundEn = opts.aerial ? ' The aerial photo on the ground shows where the roads and plots are.' : '';
+  const ground = (opts.aerial ? '地面の航空写真は道路・敷地の形の手がかりです。' : '') + (opts.streets ? '道路・緑地・街路樹は実際の地図（OpenStreetMap）の位置にあるので、位置と幅はそのままに、アスファルト・芝・本物の木として仕上げてください。' : '');
+  const groundEn = (opts.aerial ? ' The aerial photo on the ground shows where the roads and plots are.' : '') + (opts.streets ? ' Roads, green areas and street trees are placed from the real map (OpenStreetMap): keep their position and width, and finish them as asphalt, lawn and real trees.' : '');
   return {
     ja:
       `住宅地の 3D モデルの下絵の動画です。道路を歩いて計画中の家に近づき、そのままドローンで上がって街ごと見下ろします。${nb}${ground}` +

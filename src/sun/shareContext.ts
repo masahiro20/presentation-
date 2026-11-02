@@ -18,8 +18,18 @@ export interface ShareNeighbor {
   label?: string;
 }
 
+/** 街路・緑地・樹木（OpenStreetMap）の 1 かたまり: 三角形の頂点（ワールド）と色。leaf は葉のカード（表裏を描く・影を落とす） */
+export interface ShareStreet {
+  key: string;
+  color: string;
+  pos: number[];
+  leaf?: true;
+}
+
 export interface ShareContext {
   neighbors: ShareNeighbor[];
+  /** 道路・緑地・街路樹 */
+  streets?: ShareStreet[];
   /** 航空写真: 2 枚の三角形（ワールド座標）と画像（JPEG の data URL）、出典 */
   aerial?: { pos: number[]; uv: number[]; image: string; attribution?: string };
 }
@@ -88,6 +98,17 @@ export function buildShareContextGroup(c: ShareContext): THREE.Group {
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, side: THREE.DoubleSide }));
     mesh.receiveShadow = true;
     mesh.name = 'aerial';
+    g.add(mesh);
+  }
+  for (const s of c.streets ?? []) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(s.pos, 3));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({ color: s.color, roughness: 0.9, side: s.leaf ? THREE.DoubleSide : THREE.FrontSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = s.leaf || s.key === 'l.trunk' || s.key === 'l.curb';
+    mesh.receiveShadow = !s.leaf;
+    mesh.name = s.key;
     g.add(mesh);
   }
   return g;

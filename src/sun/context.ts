@@ -2,7 +2,8 @@
  * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
  * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
-import { facadeMaterial, WALL_COLORS, type ShareContext, type ShareNeighbor } from './shareContext';
+import { facadeMaterial, WALL_COLORS, type ShareContext, type ShareNeighbor, type ShareStreet } from './shareContext';
+import { buildStreets, fetchGsiRoads, fetchOsmStreets, parseOsmStreets, type StreetData } from './streets';
 import * as THREE from 'three';
 import type { Viewer } from '../scene/viewer';
 import { clearGroup } from '../scene/viewer';
@@ -504,6 +505,8 @@ export interface ContextState {
   showAerial: boolean;
   showNeighbors: boolean;
   showSunPath: boolean;
+  /** 道路・緑地・街路樹（OpenStreetMap） */
+  showStreets: boolean;
   aerialLoaded: boolean;
 }
 
@@ -564,10 +567,113 @@ export class SunContext {
     readonly viewer: Viewer,
     site: SiteLocation,
   ) {
-    this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, aerialLoaded: false };
+    this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, showStreets: true, aerialLoaded: false };
     this.ghostsG.name = 'neighbor-ghosts';
-    this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.pathG, this.sunMarker, this.cloudLayer.group);
+    this.streetsG.name = 'streets';
+    this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.streetsG, this.pathG, this.sunMarker, this.cloudLayer.group);
     viewer.groups.context.add(this.group);
+  }
+
+  // ---------------------------------------------------------------- 街路・緑地・樹木（OpenStreetMap）
+  private streetsG = new THREE.Group();
+  private streetsData: StreetData | null = null;
+  private streetsSeq = 0;
+  /** 街路の読み込み済みの内訳（説明文・案内用） */
+  streetCounts: { roads: number; greens: number; trees: number } | null = null;
+
+  hasStreets(): boolean {
+    return !!this.streetsData;
+  }
+
+  /**
+   * OpenStreetMap から道路・緑地・樹木を取って描く（建物は別）。周辺建物を取った後に呼ぶ。
+   * 敷地の中（自分の外構がある）と建物の中には木を植えない。航空写真の上に少し浮かせて描く
+   */
+  async loadStreets(opts: { signal?: AbortSignal } = {}): Promise<{ roads: number; greens: number; trees: number; sources: string[] }> {
+    const seq = ++this.streetsSeq;
+    const { lat, lon } = siteLatLon(this.state.site);
+    const R = NEIGHBOR_RADIUS_M + 30;
+    // 道路は国土地理院（実測の幅員。全国）を主に、緑地・樹木は OpenStreetMap（届く環境なら）。両方同時に取る
+    const [gsi, osm] = await Promise.allSettled([fetchGsiRoads(lat, lon, R, opts), fetchOsmStreets(lat, lon, R, opts)]);
+    if (seq !== this.streetsSeq) throw supersededError();
+    if (opts.signal?.aborted) throw (opts.signal.reason as Error | undefined) ?? new Error('中止しました');
+    const sources: string[] = [];
+    const data: StreetData = { roads: [], greens: [], trees: [] };
+    if (gsi.status === 'fulfilled' && gsi.value.length) {
+      data.roads = gsi.value;
+      sources.push('国土地理院');
+    }
+    if (osm.status === 'fulfilled') {
+      if (!data.roads.length) data.roads = osm.value.roads;
+      data.greens = osm.value.greens;
+      data.trees = osm.value.trees;
+      sources.push('OpenStreetMap');
+    }
+    if (!sources.length) throw (gsi.status === 'rejected' ? gsi.reason : (osm as PromiseRejectedResult).reason) as Error;
+    this.streetsData = data;
+    this.rebuildStreets();
+    return { ...this.streetCounts!, sources };
+  }
+
+  /** 点検・テスト用: Overpass の要素（JSON）から街路を作る */
+  setStreetsFromOsm(elements: unknown[]) {
+    const { lat, lon } = siteLatLon(this.state.site);
+    const R = NEIGHBOR_RADIUS_M + 30;
+    const parsed = parseOsmStreets(elements as Parameters<typeof parseOsmStreets>[0], lat, lon, R);
+    const cur = this.streetsData;
+    this.streetsData = { roads: parsed.roads.length ? parsed.roads : (cur?.roads ?? []), greens: parsed.greens, trees: parsed.trees };
+    this.rebuildStreets();
+  }
+
+  rebuildStreets() {
+    clearGroup(this.streetsG);
+    const data = this.streetsData;
+    if (!data) {
+      this.streetCounts = null;
+      return;
+    }
+    const st = this.viewer.state!;
+    const site = st.site;
+    const bb = st.meta.bbox;
+    const rings = this.state.neighbors.filter((b) => this.isActive(b) && !b.hidden).map((b) => b.ring);
+    const exclude = (p: THREE.Vector3) => {
+      if (p.x > site.min.x - 1 && p.x < site.max.x + 1 && p.z > site.min.y - 1 && p.z < site.max.y + 1) return true;
+      if (p.x > bb.min.x - 1 && p.x < bb.max.x + 1 && p.z > bb.min.z - 1 && p.z < bb.max.z + 1) return true;
+      const en = this.fromWorld(p);
+      return rings.some((r) => pointInRing(en, r));
+    };
+    const built = buildStreets(data, { toWorld: (e, n, y) => this.toWorld(e, n, y), exclude, radius: NEIGHBOR_RADIUS_M + 30 });
+    const resolve = (k: string) => this.viewer.registry.get(k);
+    const ground = built.mb.build(resolve, { name: 'streets-ground', castShadow: true, receiveShadow: true });
+    // 路面・緑地は影を落とさない（木の幹・縁石だけ）
+    for (const m of ground.children) if (/^l\.(road|roadLine|far|block)$/.test((m as THREE.Mesh).userData.matKey as string)) (m as THREE.Mesh).castShadow = false;
+    const leaves = built.leaves.build(resolve, { name: 'streets-leaves', castShadow: true, receiveShadow: false });
+    for (const g of [ground, leaves]) g.traverse((o) => { o.userData.street = true; });
+    this.streetsG.add(ground, leaves);
+    this.streetCounts = built.counts;
+    this.applyVisibility();
+  }
+
+  /** 体験リンク用: 街路のメッシュを色付きの三角形の集まりとして書き出す（葉は低い球に置き換え） */
+  exportStreets(): ShareStreet[] {
+    const out: ShareStreet[] = [];
+    const r2 = (x: number) => Math.round(x * 100) / 100;
+    const colorOf: Record<string, string> = { 'l.road': '#4a4b4d', 'l.roadLine': '#e8e6e0', 'l.curb': '#b8b6b0', 'l.block': '#bdbab3', 'l.far': '#6f7d55', 'l.trunk': '#5a4636', 'l.leafSpray': '#5f8a3c' };
+    this.streetsG.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const key = m.userData.matKey as string;
+      const pos = m.geometry.getAttribute('position');
+      if (!pos) return;
+      const arr: number[] = new Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        arr[i * 3] = r2(pos.getX(i));
+        arr[i * 3 + 1] = r2(pos.getY(i));
+        arr[i * 3 + 2] = r2(pos.getZ(i));
+      }
+      out.push({ key, color: colorOf[key] ?? '#999999', pos: arr, leaf: key === 'l.leafSpray' || undefined });
+    });
+    return out;
   }
 
   /**
@@ -690,9 +796,9 @@ export class SunContext {
 
   /** 要確認の建物: 冬至の 8〜16 時に敷地へ影を落とす建物（影の長い順）。確定済みは後ろ */
   /** 下絵の動画の説明文用: 画面に出ている隣の建物の数と、航空写真が地面にあるか */
-  baseVideoInfo(): { neighbors: number; aerial: boolean } {
+  baseVideoInfo(): { neighbors: number; aerial: boolean; streets: boolean } {
     const neighbors = this.state.neighbors.filter((b) => this.isActive(b) && !b.planned && !b.hidden).length;
-    return { neighbors, aerial: this.aerial.visible && this.aerial.children.length > 0 };
+    return { neighbors, aerial: this.aerial.visible && this.aerial.children.length > 0, streets: this.state.showStreets && !!this.streetCounts && this.streetCounts.roads + this.streetCounts.trees > 0 };
   }
 
   keyNeighbors(): { b: NeighborBuilding; hours: number }[] {
@@ -970,7 +1076,8 @@ export class SunContext {
       if (dataUrl) aerial = { pos: [...(am.geometry.getAttribute('position').array as Float32Array)].map(r2), uv: [...(am.geometry.getAttribute('uv').array as Float32Array)], image: dataUrl, attribution: this.aerialAttribution || undefined };
     }
     if (!neighbors.length && !aerial) return null;
-    return { neighbors, aerial };
+    const streets = this.state.showStreets && this.streetsData ? this.exportStreets() : undefined;
+    return { neighbors, aerial, ...(streets?.length ? { streets } : {}) };
   }
 
   private materials() {
@@ -1105,7 +1212,8 @@ export class SunContext {
     // 法線を上向きに
     const n = geo.getAttribute('normal');
     for (let i = 0; i < n.count; i++) n.setXYZ(i, 0, 1, 0);
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, side: THREE.DoubleSide }));
+    // 写真は撮影時の光を含むので、こちらの太陽で照らすと白く飛ぶ。少し暗い倍率で受ける（外観の光の配分に合わせた値）
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, color: new THREE.Color().setScalar(0.74), roughness: 0.95, side: THREE.DoubleSide }));
     mesh.receiveShadow = true;
     mesh.name = 'aerial';
     this.aerial.add(mesh);
@@ -1535,6 +1643,7 @@ export class SunContext {
     this.aerial.visible = this.state.showAerial && this.state.aerialLoaded;
     this.neighborsG.visible = this.state.showNeighbors;
     this.ghostsG.visible = this.state.showNeighbors;
+    this.streetsG.visible = this.state.showStreets;
     this.pathG.visible = this.state.showSunPath;
     // 航空写真表示中は生成した道路・遠景の地面を隠す
     this.viewer.groups.landscape.traverse((o) => {

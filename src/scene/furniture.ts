@@ -1311,8 +1311,9 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   // 居間・食堂だけの部屋（プレイルーム・セカンドリビングなど）は、家にキッチン・LDK が別にあればキッチンを置かない
   const kitchenElsewhere = ctx.room.type !== 'ldk' && ctx.room.type !== 'kitchen' && model.floors.some((fl) => fl.rooms.some((r) => r !== ctx.room && (r.type === 'ldk' || r.type === 'kitchen')));
   if (!ctx.has.has('kitchen') && !kitchenElsewhere) place('kitchen', kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
-  // ダイニング
-  if (!ctx.has.has('dining')) place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
+  // ダイニング（LDK のリビング側の区画には、キッチン側に食卓があるので置かない）
+  const diningElsewhere = ctx.room.type === 'living' && /リビング側/.test(ctx.room.name) && f.rooms.some((r) => r !== ctx.room && r.type === 'ldk');
+  if (!ctx.has.has('dining') && !diningElsewhere) place('dining', kf, 0, kDepth + dDepth / 2, ctx.env);
   if (!hasLiving) return;
   // 図面にソファがあればリビングの配置はそのまま。周りにラグ・ローテーブル・観葉植物・テレビ台を補って生活感を出す
   if (ctx.has.has('sofa')) {

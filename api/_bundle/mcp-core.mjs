@@ -1479,6 +1479,244 @@ function ensureGarageShutters(walls, openings, rooms, level) {
 	return added;
 }
 //#endregion
+//#region src/parser/tatamiCheck.ts
+var TATAMI_M2 = 1.62;
+/** 部屋として一続きになり得ない種類 */
+var NEVER_JOIN = [
+	"toilet",
+	"bath",
+	"washroom",
+	"stairs",
+	"void",
+	"garage",
+	"entrance",
+	...OUTDOOR_TYPES
+];
+/** 軸平行の 2 多角形が共有する辺（重なりの長さ mm）。壁芯の多角形なので、同じ線上（60mm 以内）で重なる部分 */
+function sharedEdges(a, b, tol = 60) {
+	const out = [];
+	for (let i = 0; i < a.length; i++) {
+		const a0 = a[i];
+		const a1 = a[(i + 1) % a.length];
+		const vertA = Math.abs(a0.x - a1.x) < tol;
+		const horzA = Math.abs(a0.y - a1.y) < tol;
+		if (!vertA && !horzA) continue;
+		for (let j = 0; j < b.length; j++) {
+			const b0 = b[j];
+			const b1 = b[(j + 1) % b.length];
+			if (vertA && Math.abs(b0.x - b1.x) < tol && Math.abs(a0.x - b0.x) < tol) {
+				const lo = Math.max(Math.min(a0.y, a1.y), Math.min(b0.y, b1.y));
+				const hi = Math.min(Math.max(a0.y, a1.y), Math.max(b0.y, b1.y));
+				if (hi - lo > 300) out.push({
+					p: {
+						x: a0.x,
+						y: lo
+					},
+					q: {
+						x: a0.x,
+						y: hi
+					},
+					len: hi - lo
+				});
+			} else if (horzA && Math.abs(b0.y - b1.y) < tol && Math.abs(a0.y - b0.y) < tol) {
+				const lo = Math.max(Math.min(a0.x, a1.x), Math.min(b0.x, b1.x));
+				const hi = Math.min(Math.max(a0.x, a1.x), Math.max(b0.x, b1.x));
+				if (hi - lo > 300) out.push({
+					p: {
+						x: lo,
+						y: a0.y
+					},
+					q: {
+						x: hi,
+						y: a0.y
+					},
+					len: hi - lo
+				});
+			}
+		}
+	}
+	return out;
+}
+/** 共有する辺の上にある壁と、その壁の開口（戸・引戸・開口）。壁が無ければ「壁なしでつながる」 */
+function connectionAcross(edge, walls, openings) {
+	const vert = Math.abs(edge.p.x - edge.q.x) < 60;
+	const lo = vert ? Math.min(edge.p.y, edge.q.y) : Math.min(edge.p.x, edge.q.x);
+	const hi = vert ? Math.max(edge.p.y, edge.q.y) : Math.max(edge.p.x, edge.q.x);
+	let wallLen = 0;
+	let openingLen = 0;
+	for (const w of walls) {
+		if (Math.abs(w.a.x - w.b.x) < 60 !== vert) continue;
+		if ((vert ? Math.abs(w.a.x - edge.p.x) : Math.abs(w.a.y - edge.p.y)) > 150) continue;
+		const w0 = vert ? Math.min(w.a.y, w.b.y) : Math.min(w.a.x, w.b.x);
+		const w1 = vert ? Math.max(w.a.y, w.b.y) : Math.max(w.a.x, w.b.x);
+		const ov = Math.min(hi, w1) - Math.max(lo, w0);
+		if (ov <= 0) continue;
+		wallLen += ov;
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		for (const o of openings) {
+			if (o.wallId !== w.id || o.kind === "window" || o.kind === "shutter") continue;
+			const s0 = (vert ? w.a.y : w.a.x) + (vert ? w.b.y - w.a.y : w.b.x - w.a.x) * o.t0 / L;
+			const s1 = (vert ? w.a.y : w.a.x) + (vert ? w.b.y - w.a.y : w.b.x - w.a.x) * o.t1 / L;
+			const oo = Math.min(hi, Math.max(s0, s1)) - Math.max(lo, Math.min(s0, s1));
+			if (oo > 0) openingLen += oo;
+		}
+	}
+	return {
+		wall: wallLen > (hi - lo) * .5,
+		openingLen
+	};
+}
+/**
+* 帖数と読み取り面積を照合して、分かれてしまった部屋の名前を付け直す。
+* rooms を書き換える（name・type・labeledTatami）。壁・区画は変えない
+*/
+function reconcileTatami(rooms, walls, openings, level) {
+	const out = {
+		renamed: [],
+		warnings: []
+	};
+	const tatamiOf = (r) => r.area / TATAMI_M2;
+	for (const r of rooms) {
+		const labeled = r.labeledTatami;
+		if (!labeled || labeled < 3 || NEVER_JOIN.includes(r.type)) continue;
+		const parsed = tatamiOf(r);
+		if (labeled - parsed < Math.max(2, labeled * .28)) continue;
+		const cands = [];
+		for (const o of rooms) {
+			if (o === r || NEVER_JOIN.includes(o.type)) continue;
+			const edges = sharedEdges(r.polygon, o.polygon);
+			if (!edges.length) continue;
+			const conn = edges.map((e) => connectionAcross(e, walls, openings)).reduce((s, c) => ({
+				wall: s.wall || c.wall,
+				openingLen: s.openingLen + c.openingLen
+			}), {
+				wall: false,
+				openingLen: 0
+			});
+			if (conn.wall && conn.openingLen < 700) continue;
+			const oParsed = tatamiOf(o);
+			const own = o.labeledTatami;
+			const unlabeled = !own || o.inferred || o.name === "室";
+			const overread = !!own && oParsed > own * 2 + 1.5;
+			if (!unlabeled && !overread) continue;
+			const add = oParsed - (overread && own ? own : 0);
+			cands.push({
+				room: o,
+				add,
+				conn
+			});
+		}
+		if (!cands.length) {
+			out.warnings.push(`${level}階 ${r.name}: 図面は ${labeled} 帖ですが、読み取った区画は ${parsed.toFixed(1)} 帖です。壁として読んだ線が多いか、区画の分かれ方を方眼で確認してください`);
+			continue;
+		}
+		const tol = Math.max(1.5, labeled * .15);
+		let best = null;
+		const consider = (set) => {
+			const sum = parsed + set.reduce((s, c) => s + c.add, 0);
+			const err = Math.abs(sum - labeled);
+			if (err <= tol && (!best || err < best.err)) best = {
+				set,
+				err
+			};
+		};
+		for (const c of cands) consider([c]);
+		for (let i = 0; i < cands.length; i++) for (let j = i + 1; j < cands.length; j++) consider([cands[i], cands[j]]);
+		if (!best) {
+			out.warnings.push(`${level}階 ${r.name}: 図面は ${labeled} 帖ですが、読み取った区画は ${parsed.toFixed(1)} 帖です。隣の区画（${cands.map((c) => c.room.name).join("・")}）と一続きかもしれません。方眼で確認してください`);
+			continue;
+		}
+		for (const c of best.set) {
+			const o = c.room;
+			const from = o.name;
+			const suffix = o.labeledTatami && !o.inferred && o.name !== "室" ? `（${o.name}側）` : "";
+			o.name = `${r.name}${suffix}`;
+			o.type = r.type;
+			o.inferred = false;
+			delete o.labeledTatami;
+			out.renamed.push({
+				roomId: o.id,
+				from,
+				to: o.name
+			});
+			out.warnings.push(`${level}階: ${from} と読んだ区画（${c.add.toFixed(1)} 帖）は ${r.name}（図面 ${labeled} 帖）の一部として扱いました${suffix ? `。${from} の小さな区画は読み取れていません` : ""}`);
+		}
+	}
+	return out;
+}
+/**
+* 天井高の注記（「天井高2.6m」「CH=2400」「天井高 3,500」）: その文字が入っている部屋だけの天井高にする。
+* 「天井高低い」「天井低い」（数値なし）は低い物入（1,400）。階の既定（2,400）と同じ値は書かない
+*/
+function applyCeilingNotes(rooms, texts, defaultCh = 2400) {
+	const out = [];
+	const inRoom = (p) => rooms.find((r) => r.polygon.length >= 3 && pointInPoly(p, r.polygon));
+	for (const t of texts) {
+		const s = t.str.replace(/[，,]/g, "").replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248));
+		let ch = null;
+		let m = /(?:天井高|天井|CH)\s*[=＝:：]?\s*(\d(?:\.\d+)?)\s*m\b/i.exec(s);
+		if (m) ch = Math.round(parseFloat(m[1]) * 1e3);
+		else if (m = /(?:天井高|CH)\s*[=＝:：]?\s*(\d{4})\b/i.exec(s)) ch = parseInt(m[1], 10);
+		else if (/天井(?:高)?\s*(?:が)?低い/.test(s) && !/物入|収納/.test(s)) ch = null;
+		if (ch == null || ch < 1200 || ch > 6e3 || ch === defaultCh) continue;
+		const r = inRoom({
+			x: t.x,
+			y: t.y
+		});
+		if (!r || r.type === "void" || OUTDOOR_TYPES.includes(r.type)) continue;
+		r.ceilingHeight = ch;
+		out.push({
+			roomId: r.id,
+			ch
+		});
+	}
+	return out;
+}
+function pointInPoly(p, poly) {
+	let inside = false;
+	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+		const a = poly[i];
+		const b = poly[j];
+		if (a.y > p.y !== b.y > p.y && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+	}
+	return inside;
+}
+/**
+* 帖数の照合で 1 つの部屋になった LDK の区画に役割を付ける:
+* 図面にキッチンの記号がある区画が「キッチン側」（type ldk。キッチン・食卓を置く）、無い区画が「リビング側」（type living。ソファ・テレビ）。
+* これが無いと、両方が ldk として読まれ、リビング側にもキッチンが置かれていた
+*/
+function assignLdkRoles(rooms, renamed, items, texts = []) {
+	const out = [];
+	const kitchenIn = new Set(items.filter((it) => it.kind === "kitchen" && it.roomId).map((it) => it.roomId));
+	for (const t of texts) {
+		const s = t.str.replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248));
+		if (!/^W\s?\d{3,4}\b|キッチン|ｷｯﾁﾝ|\bIH\b|シンク|冷蔵庫|食洗/i.test(s)) continue;
+		const r = rooms.find((x) => x.type === "ldk" && pointInPoly({
+			x: t.x,
+			y: t.y
+		}, x.polygon));
+		if (r) kitchenIn.add(r.id);
+	}
+	for (const rn of renamed) {
+		const part = rooms.find((r) => r.id === rn.roomId);
+		if (!part || part.type !== "ldk") continue;
+		const base = rn.to.replace(/（.*$/, "");
+		const main = rooms.find((r) => r !== part && r.type === "ldk" && r.name === base);
+		if (!main) continue;
+		const kp = kitchenIn.has(part.id);
+		if (kp === kitchenIn.has(main.id)) continue;
+		const kitchen = kp ? part : main;
+		const living = kp ? main : part;
+		kitchen.name = `${base}（キッチン側）`;
+		kitchen.type = "ldk";
+		living.name = `${base}（リビング側）`;
+		living.type = "living";
+		out.push(`${base}: キッチン側（${(kitchen.area / TATAMI_M2).toFixed(1)} 帖）とリビング側（${(living.area / TATAMI_M2).toFixed(1)} 帖）に分けました`);
+	}
+	return out;
+}
+//#endregion
 //#region src/parser/walls.ts
 var DEFAULTS$1 = {
 	minThickness: 45,
@@ -9576,6 +9814,20 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		r.garageKind = d <= 600 ? "attached" : "detached";
 	}
 	if (ensureGarageShutters(outWalls, openings, rooms, level)) warnings.push(`${level}階: ガレージの壁の無い辺にシャッターを置きました（違えば方眼の「シャッター」で直せます）`);
+	{
+		const rec = reconcileTatami(rooms, outWalls, openings, level);
+		warnings.push(...rec.warnings);
+		for (const t of assignLdkRoles(rooms, rec.renamed, mergedItems, plan.texts)) warnings.push(`${level}階 ${t}`);
+	}
+	for (const c of applyCeilingNotes(rooms, plan.texts)) {
+		const r = rooms.find((x) => x.id === c.roomId);
+		notes.push({
+			text: `${r.name}: 天井高 ${c.ch} mm（図面の注記）`,
+			x: r.labelPos.x,
+			y: r.labelPos.y,
+			roomId: r.id
+		});
+	}
 	return {
 		level,
 		elevation: 0,
@@ -16933,7 +17185,8 @@ function layoutLDK(ctx, model, f) {
 	if (!ctx.planKitchen && (klen < 1.8 || total < 2)) return;
 	const kitchenElsewhere = ctx.room.type !== "ldk" && ctx.room.type !== "kitchen" && model.floors.some((fl) => fl.rooms.some((r) => r !== ctx.room && (r.type === "ldk" || r.type === "kitchen")));
 	if (!ctx.has.has("kitchen") && !kitchenElsewhere) place("kitchen", kf, 0, 0, ctx.env, { len: +klen.toFixed(2) });
-	if (!ctx.has.has("dining")) place("dining", kf, 0, kDepth + dDepth / 2, ctx.env);
+	const diningElsewhere = ctx.room.type === "living" && /リビング側/.test(ctx.room.name) && f.rooms.some((r) => r !== ctx.room && r.type === "ldk");
+	if (!ctx.has.has("dining") && !diningElsewhere) place("dining", kf, 0, kDepth + dDepth / 2, ctx.env);
 	if (!hasLiving) return;
 	if (ctx.has.has("sofa")) {
 		dressLiving(ctx);

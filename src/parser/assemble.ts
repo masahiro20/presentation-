@@ -2,6 +2,7 @@
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
 import { ensureGarageShutters } from './garageShutter';
+import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
@@ -2072,6 +2073,18 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   }
   // ビルトインガレージの壁の無い辺（シャッター）に、外壁＋シャッターの開口を足す（壁だけから描き直しても消えないように）
   if (ensureGarageShutters(outWalls, openings, rooms, level)) warnings.push(`${level}階: ガレージの壁の無い辺にシャッターを置きました（違えば方眼の「シャッター」で直せます）`);
+  // 帖数との照合: 開口付きの壁で分かれた LDK などを同じ部屋に（池本様邸の ＬＤＫ 24.7 帖 → 15.3 帖 ＋ pantry① 11.8 帖）
+  {
+    const rec = reconcileTatami(rooms, outWalls, openings, level);
+    warnings.push(...rec.warnings);
+    // 分かれた LDK の区画に役割（キッチン側／リビング側）。図面のキッチンの記号がある方がキッチン側
+    for (const t of assignLdkRoles(rooms, rec.renamed, mergedItems, plan.texts)) warnings.push(`${level}階 ${t}`);
+  }
+  // 天井高の注記（「天井高2.6m」「CH=2400」）はその部屋だけの天井高
+  for (const c of applyCeilingNotes(rooms, plan.texts)) {
+    const r = rooms.find((x) => x.id === c.roomId)!;
+    notes.push({ text: `${r.name}: 天井高 ${c.ch} mm（図面の注記）`, x: r.labelPos.x, y: r.labelPos.y, roomId: r.id });
+  }
   return {
     level,
     elevation: 0,

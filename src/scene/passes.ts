@@ -108,7 +108,8 @@ function drawPass<T>(viewer: Viewer, kind: PassKind, width: number, height: numb
         }
       }
       const m = o as THREE.Mesh;
-      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel) {
+      // 空の球・札は形ではないので描かない
+      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel || o.name === 'skydome' || o.name === 'studioSky') {
         hidden.push(o);
         o.visible = false;
         return;

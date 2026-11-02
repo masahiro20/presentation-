@@ -19,14 +19,17 @@ interface PhotoDef {
 /** パターン → 実写素材 */
 const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   // 塗り壁の粒子感・左官のムラは写真らしさの要（弱すぎると均一な CG に見える）
-  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.34 },
-  plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.48 },
-  concrete: { id: 'concrete_floor_02', tile: 4, detail: 0.6 },
+  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.5 },
+  plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.6 },
+  concrete: { id: 'concrete_floor_02', tile: 4, detail: 0.7 },
   woodFloor: { id: 'wood_floor', tile: 2.0 },
   woodSiding: { id: 'wood_planks', tile: 2.0 },
   tileFloor: { id: 'large_floor_tiles_02', tile: 2.4 },
   marble: { id: 'marble_01', tile: 2.4 },
-  asphalt: { id: 'asphalt_02', tile: 5, detail: 0.55 },
+  asphalt: { id: 'asphalt_02', tile: 5, detail: 0.65 },
+  // 外構の地面: 芝と砂利は手続き的だと一様な模様で CG らしかった。実写（葉のある芝・砂利）に
+  grass: { id: 'leafy_grass', tile: 2.0, detail: 0.85 },
+  gravel: { id: 'gravel_concrete_03', tile: 2.0, detail: 0.8 },
   // 布もの（ソファ・クッション・ラグ・寝具）: ヘリンボーンのウール。平均色はテイストの色に合わせる
   fabric: { id: 'poly_wool_herringbone', tile: 0.5, detail: 0.9 },
 };
@@ -151,7 +154,7 @@ export function photoSet(spec: MatSpec): PhotoSet | null {
   const wrap = (t: THREE.Texture, srgb: boolean) => {
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    t.anisotropy = 8;
+    t.anisotropy = 16;
     t.needsUpdate = true;
     return t;
   };

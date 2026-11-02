@@ -64,8 +64,11 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     env: scene.environmentIntensity,
   };
   let skyMesh: THREE.Mesh | null = null;
+  // 画面用の空の球があると実写の空（こちらの球）を隠すので、描く間だけ外す
+  const hadDome = viewer.hasSkyDome();
   try {
     const hdri = await loadHdri(viewer.design.timeOfDay);
+    if (hdri && hadDome) viewer.useSkyDome(false);
     if (hdri) {
       // 背景だけを実写の空に（環境光はリアルタイム描画で確実に動く手続き的な空のまま。浮動小数のテクスチャを
       // 環境光に変換できない GPU があるため）。
@@ -81,7 +84,7 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     }
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     viewer.sun.shadow.radius = 5;
-    renderer.shadowMap.needsUpdate = true;
+    viewer.invalidate(); // 影の描き直し（描く直前に needsUpdate が立つ）
     // 室内の照明: 内観はもちろん、夜景の外観も点ける（窓の明かりが夜景の主役）
     if (opts.interior || night) viewer.groups.lights.visible = true;
     if (night && !opts.interior) {
@@ -105,13 +108,13 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     return finishPhoto(c, { interior: !!opts.interior, tod: viewer.design.timeOfDay });
   } finally {
     if (skyMesh) scene.remove(skyMesh);
+    if (hadDome && !viewer.hasSkyDome()) viewer.useSkyDome(true);
     scene.background = prev.bg;
     scene.backgroundIntensity = prev.bgI;
     scene.backgroundRotation.copy(prev.bgRot);
     renderer.toneMappingExposure = prev.exp;
     renderer.shadowMap.type = prev.shadowType;
     viewer.sun.shadow.radius = prev.radius;
-    renderer.shadowMap.needsUpdate = true;
     viewer.groups.lights.visible = prev.lights;
     viewer.hemi.intensity = prev.hemi;
     scene.environmentIntensity = prev.env;

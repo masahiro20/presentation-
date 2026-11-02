@@ -183,7 +183,7 @@ export class MaterialRegistry {
       m.name = k;
       // 室内は空からの環境光が壁で遮られるため弱める（窓からの日射と室内照明で照らす）
       if ((k.startsWith('int.') || k.startsWith('f.')) && 'envMapIntensity' in m && !m.userData.isGlass) {
-        (m as THREE.MeshStandardMaterial).envMapIntensity = k === 'f.chrome' || k === 'f.mirror' ? 0.8 : 0.35;
+        (m as THREE.MeshStandardMaterial).envMapIntensity = k === 'f.chrome' || k === 'f.mirror' ? 0.8 : k.startsWith('int.') && /floor|Floor|tatami/.test(k) ? 0.55 : 0.4;
       }
     }
     // 白模型（スタディ模型）: ガラス以外を白いクレイに。外構は淡いグレー、植栽の葉はそのまま

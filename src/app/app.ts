@@ -213,6 +213,8 @@ export class App {
   get viewer(): Viewer {
     if (!this._viewer) {
       this._viewer = new Viewer(this.viewerHost, state.design);
+      // 空は背景（箱型）ではなく、カメラを包む球に貼る。背景だと広角・縦長・遠くからの構図で空に茶色（空の画像の地面側）の塊が出る
+      this._viewer.useSkyDome(true);
       // 点検用（裏の Chrome から構図を確かめる）
       (globalThis as unknown as { __viewer: Viewer }).__viewer = this._viewer;
       this.buildNavBar(this._viewer);
@@ -232,7 +234,7 @@ export class App {
       'button',
       {
         class: 'nav-btn',
-        title: '仕上げ表示（止まったときに陰影・輪郭を仕上げて描く。見て回るときは切って軽快に）\n保存するパース・動画は表示に関係なく常に高品質です',
+        title: '高精細表示（止まったときの絵を 1.5 倍の解像度・細かい影で描く。切ると等倍で軽快）\n止まったときの陰影・輪郭の仕上げはどちらでも入り、保存するパース・動画は常に高品質です',
         onclick: () => {
           v.setViewMode(v.viewMode === 'finish' ? 'browse' : 'finish');
           finish.classList.toggle('on', v.viewMode === 'finish');

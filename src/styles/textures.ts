@@ -474,7 +474,7 @@ function toTexture(n: number, fill: (d: Uint8ClampedArray) => void, srgb: boolea
   ctx.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(c as HTMLCanvasElement);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.anisotropy = 8;
+  t.anisotropy = 16;
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   t.needsUpdate = true;
   return t;
@@ -556,6 +556,26 @@ export function makeMaterial(spec: MatSpec, opts: { side?: THREE.Side; size?: nu
   const flat = spec.pattern === 'paint' && !spec.normalStrength;
   let mat: THREE.MeshStandardMaterial;
   const photo = flat ? null : photoSet(spec);
+  // 素材感（物理マテリアル）: 布は起毛の光り（sheen）、床・革・石は薄い艶の層（clearcoat）で、窓の光が床に映り込む
+  const physical = (p: THREE.MeshStandardMaterialParameters): THREE.MeshStandardMaterial => {
+    const m = new THREE.MeshPhysicalMaterial(p);
+    if (spec.pattern === 'fabric') {
+      m.sheen = 0.55;
+      m.sheenRoughness = 0.8;
+      m.sheenColor = new THREE.Color(spec.color).lerp(new THREE.Color('#ffffff'), 0.35);
+    } else if (spec.pattern === 'leather') {
+      m.clearcoat = 0.25;
+      m.clearcoatRoughness = 0.45;
+    } else if (spec.pattern === 'woodFloor' || spec.pattern === 'herringbone') {
+      // 塗装の床: うっすら映り込む程度（ピカピカにしない）
+      m.clearcoat = 0.3;
+      m.clearcoatRoughness = 0.35;
+    } else if (spec.pattern === 'tileFloor' || spec.pattern === 'marble') {
+      m.clearcoat = 0.45;
+      m.clearcoatRoughness = 0.2;
+    }
+    return m;
+  };
   if (photo) {
     // 実写の素材（テイストの色・粗さに合わせたもの）
     const tile = photo.tile * (spec.tile ? spec.tile / DEFAULT_TILE[spec.pattern] : 1);
@@ -566,14 +586,16 @@ export function makeMaterial(spec: MatSpec, opts: { side?: THREE.Side; size?: nu
       c.needsUpdate = true;
       return c;
     };
-    mat = new THREE.MeshStandardMaterial({
+    mat = physical({
       map: cl(photo.map),
       normalMap: cl(photo.normalMap),
       roughnessMap: cl(photo.roughnessMap),
       roughness: photo.roughnessScale,
       metalness: spec.metalness ?? 0,
     });
-    mat.normalScale.set(spec.normalStrength != null ? Math.max(0.3, spec.normalStrength * 2) : 1, spec.normalStrength != null ? Math.max(0.3, spec.normalStrength * 2) : 1);
+    // 凹凸は少し強めに（1.3）: 塗り壁の粒子・床の木目の陰影が斜めの光で立つ
+    const ns = spec.normalStrength != null ? Math.max(0.3, spec.normalStrength * 2) : 1.3;
+    mat.normalScale.set(ns, ns);
   } else if (flat) {
     mat = new THREE.MeshStandardMaterial({ color: spec.color, roughness: spec.roughness ?? 0.85, metalness: spec.metalness ?? 0 });
   } else {
@@ -585,7 +607,7 @@ export function makeMaterial(spec: MatSpec, opts: { side?: THREE.Side; size?: nu
       c.needsUpdate = true;
       return c;
     };
-    mat = new THREE.MeshStandardMaterial({
+    mat = physical({
       map: cl(t.map),
       normalMap: cl(t.normalMap),
       roughnessMap: cl(t.roughnessMap),

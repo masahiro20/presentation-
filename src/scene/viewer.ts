@@ -107,7 +107,18 @@ export class Viewer {
   }
   private set dirty(v: boolean) {
     this._dirty = v;
-    if (v && this.renderer) this.renderer.shadowMap.needsUpdate = true;
+    if (v) this.shadowDirty = true;
+  }
+  /**
+   * 影の描き直しが要る。three.js の needsUpdate は「次の render() で 1 回」なので、ここで直接立てると
+   * 環境マップ（PMREM）やサムネイルなど別の描画に食われて、画面の影が古いまま（全部影の中）になる。
+   * 自分の描画の直前（flushShadow）で立てる
+   */
+  private shadowDirty = true;
+  private flushShadow() {
+    if (!this.shadowDirty) return;
+    this.shadowDirty = false;
+    this.renderer.shadowMap.needsUpdate = true;
   }
   /** 最後にカメラが動いた時刻（操作中は軽い描画にする） */
   private lastMove = 0;
@@ -145,6 +156,33 @@ export class Viewer {
    */
   private syncDayLights() {
     this.applyLightsVisibility();
+    this.applyLightBalance();
+  }
+  /**
+   * 光の配分（外観／内観）。室内は床の照り返し・空の拡散光を強めにして天井まで明るく（これまでの値）。
+   * 外から見るときは、その拡散光が外壁を一様に照らして「日なたも日陰も同じ灰色」の平板な絵になっていたので、
+   * 拡散光を抑えて太陽の明暗（日なた・日陰・影）を立てる。写真の外観はこの明暗差で立体に見える
+   */
+  private lightBase = { sun: 0, hemi: 0, bounce: 0, env: 0.66 };
+  private balanceOutside: boolean | null = null;
+  private applyLightBalance(force = false) {
+    const outside = !this.cameraInside();
+    if (!force && outside === this.balanceOutside) return;
+    this.balanceOutside = outside;
+    const night = this.design.timeOfDay === 'night';
+    const b = this.lightBase;
+    if (outside && !night) {
+      this.sun.intensity = b.sun * 1.25;
+      this.hemi.intensity = b.hemi * 0.5;
+      this.bounce.intensity = b.bounce * 0.3;
+      this.scene.environmentIntensity = b.env * 0.7;
+    } else {
+      this.sun.intensity = b.sun;
+      this.hemi.intensity = b.hemi;
+      this.bounce.intensity = b.bounce;
+      this.scene.environmentIntensity = b.env;
+    }
+    this._dirty = true;
   }
   /** カメラが建物の箱の中（室内の視点）か */
   private cameraInside(): boolean {
@@ -189,7 +227,8 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // 影の縁をやわらかく（PCFSoft）。写真仕上げ（studio）と同じ
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // 影はカメラを動かしただけでは変わらないので、場面が変わったときだけ描き直す
     this.renderer.shadowMap.autoUpdate = false;
     // 写真的なトーン（ハイライトの転び方が自然で、白い壁が飛ばない）
@@ -747,6 +786,7 @@ export class Viewer {
       // 操作中は描く画素を減らす（後処理のバッファには触らないので切り替えは軽い）
       this.motionFrameMs = this.motionFrameMs * 0.8 + dt * 1000 * 0.2;
       this.setMotionPR(true);
+      this.flushShadow();
       this.renderer.render(this.scene, this.camera);
       this.onAfterRender?.();
       this.hqPending = true;
@@ -759,25 +799,12 @@ export class Viewer {
     this.renderFrame();
   };
 
-  /** 重い環境（操作中に 1 コマ 45ms 超が続く）と分かったら、影の地図を 1024 に落とす（戻さない。次に開き直せば元どおり） */
-  private lite = false;
-  private liteSlowFrames = 0;
-  private considerLite() {
-    if (this.lite) return;
-    if (this.motionFrameMs > 45) this.liteSlowFrames++;
-    else this.liteSlowFrames = Math.max(0, this.liteSlowFrames - 1);
-    if (this.liteSlowFrames < 20) return;
-    this.lite = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
-    this.sun.shadow.map?.dispose();
-    (this.sun.shadow as unknown as { map: unknown }).map = null;
-    this.renderer.shadowMap.needsUpdate = true;
-    console.info('[viewer] 重い環境なので影の解像度を 1024 に下げました');
-  }
-
-  /** 操作中だけ描画の解像度を落とす（高精細ディスプレイで 1.5 倍 → 1 倍。画素数が半分以下になる） */
+  /**
+   * 操作中だけ描画の解像度を落とす（高精細ディスプレイで 1.5 倍 → 1 倍。画素数が半分以下になる）。
+   * 影の地図は場面が変わったときにしか描き直さない（autoUpdate = false）ので、重い環境でも解像度は落とさない
+   * （以前の 1024 への切り替えは、操作の軽さにはほぼ効かず、影がぼやけて質感だけ落ちていた）
+   */
   private setMotionPR(on: boolean) {
-    if (on) this.considerLite();
     // 操作中は等倍。それでも 1 コマ 30ms を超える重い環境では 0.7 倍まで下げる（止まれば元の精細さで描き直す）
     const want = on ? Math.min(1, this.fullPR()) * (this.motionFrameMs > 30 ? 0.7 : 1) : this.fullPR();
     if (on === this.motionPR && Math.abs(this.renderer.getPixelRatio() - want) < 0.01) return;
@@ -805,11 +832,13 @@ export class Viewer {
    */
   private applyViewMode() {
     const browse = this.viewMode === 'browse';
-    const size = this.lite ? 1024 : browse ? 2048 : 4096;
+    const size = browse ? 2048 : 4096;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       this.sun.shadow.map?.dispose();
       (this.sun.shadow as unknown as { map: unknown }).map = null;
+      // 影の地図は場面が変わるまで描き直さない設定なので、描き直しを予約する（でないと切り替え直後は影が消える）
+      this.shadowDirty = true;
     }
     this.applyLightsVisibility();
     this.applyPixelRatio(this.fullPR());
@@ -943,6 +972,10 @@ export class Viewer {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  hasSkyDome(): boolean {
+    return !!this.skyDome;
+  }
+
   /** 空を球で描く（on）／背景に戻す（off）。球はカメラに追従する */
   useSkyDome(on: boolean) {
     if (on && !this.skyDome) {
@@ -967,9 +1000,15 @@ export class Viewer {
     this.dirty = true;
   }
 
+  /**
+   * 止まったときの 1 コマ。閲覧モードでも後処理（GTAO の陰影・SMAA の輪郭）込みで描く:
+   * 軽さは操作中のコマ（loop 内の素の描画・低い画素比）で稼ぎ、止まった絵は常に質感を残す。
+   * 閲覧と仕上げの違いは画素比（1 / 1.5）と影の解像度（2048 / 4096）だけ
+   */
   renderFrame(force = false) {
     if (this.skyDome) this.skyDome.position.copy(this.camera.position);
-    if (this.quality === 'high' && (force || this.viewMode === 'finish')) this.composer.render();
+    this.flushShadow();
+    if (this.quality === 'high' || force) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.onAfterRender?.();
   }
@@ -1248,15 +1287,16 @@ export class Viewer {
     const k = night ? 0 : Math.max(0, Math.min(1, elev / 0.12));
     const warm = 1 - Math.min(1, Math.max(0, elev / 0.6));
     this.sun.color.setRGB(1, 0.93 - 0.25 * warm, 0.84 - 0.45 * warm);
-    this.sun.intensity = 5.5 * k;
+    this.lightBase.sun = 5.5 * k;
     this.sun.visible = k > 0.001;
-    this.hemi.intensity = night ? 0.03 : 0.08 + 0.12 * Math.min(1, Math.max(0, elev * 3));
+    this.lightBase.hemi = night ? 0.03 : 0.08 + 0.12 * Math.min(1, Math.max(0, elev * 3));
     // 照り返し: 日中は床（明るいオーク・タイル）が太陽と空に照らされて天井を照らす。夕景は暖かく弱く、夜は室内灯だけ
     const evening = this.design.timeOfDay === 'evening';
     // 物理的な光の単位（拡散反射で 1/π になる）なので、天井を壁と同じ明るさにするには 2 前後が要る
-    this.bounce.intensity = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
+    this.lightBase.bounce = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
     this.bounce.color.set(evening ? '#f3d9bd' : '#f4efe8');
     if (envUpdate) this.updateEnvironment();
+    this.applyLightBalance(true);
     this.dirty = true;
   }
 
@@ -1272,7 +1312,8 @@ export class Viewer {
       this.skyDome.material.needsUpdate = true;
       this.scene.background = null;
     } else this.scene.background = this.skyTex;
-    this.scene.environmentIntensity = mode === 'night' ? 0.28 : mode === 'morning' ? 0.6 : 0.66;
+    this.lightBase.env = mode === 'night' ? 0.28 : mode === 'morning' ? 0.6 : 0.66;
+    this.applyLightBalance(true);
     this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
     // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）。朝は靄が濃い
     const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : mode === 'morning' ? '#e3e2e6' : '#cfd6dc';
@@ -1721,6 +1762,7 @@ export class Viewer {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.applyView(view);
+    this.flushShadow();
     this.renderer.render(this.scene, this.camera);
     const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
     // 後処理のバッファ（composer）は触らない: 作り直すたびに GPU メモリを確保し直してカクつく

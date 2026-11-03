@@ -109,8 +109,8 @@ export interface Stair {
   minY: number;
   maxX: number;
   maxY: number;
-  /** 'straight' = 直階段, 'u' = 折り返し階段, 'l' = かね折れ階段 */
-  kind: 'straight' | 'u' | 'l';
+  /** 'straight' = 直階段, 'u' = 折り返し階段（中央は腰壁）, 'uOpen' = コの字階段（中央が吹抜で、奥の踊り場で回る）, 'l' = かね折れ階段 */
+  kind: 'straight' | 'u' | 'uOpen' | 'l';
   /** 折り返し・かね折れで曲がる向き（昇る人から見て）。省略時: 折り返しは左、かね折れは右 */
   turn?: 'left' | 'right';
   /** 昇り口のある辺（n = 図面の上側 = minY） */
@@ -236,6 +236,8 @@ export type FurnitureKind =
   | 'shoeCabinet'
   | 'fridge'
   | 'cupboard'
+  /** ハンガーパイプ（WIC・ファミリークローゼットの壁沿い） */
+  | 'hanger'
   /** 造作家具（本棚・カウンター・テレビボードなど。形は variant） */
   | 'builtin';
 
@@ -268,6 +270,14 @@ export interface FurnitureItem {
   fridge?: 'left' | 'right' | 'none';
   /** レンジフード（既定: あり） */
   hood?: boolean;
+  /** 形: I 型（既定）か L 型（ソファのカウチ、カップボードの袖） */
+  shape?: 'i' | 'l';
+  /** L 型の袖が付く側（部屋側から見て。既定: 右） */
+  legSide?: 'left' | 'right';
+  /** L 型の袖の長さ (m)（ソファ: カウチの奥行 1.6、カップボード: 袖の長さ 1.8） */
+  leg?: number;
+  /** 洗面台の作り: ユニット（既定）か造作（カウンター＋ボウル＋オープン棚＋大きな鏡） */
+  washStyle?: 'unit' | 'custom';
 }
 
 /** 木造のモジュール（壁芯を合わせる基準の格子） */
@@ -286,6 +296,22 @@ export interface ModuleInfo {
   source: 'auto' | 'manual';
 }
 
+/** 外構に置く物の種類 */
+export type ExteriorKind = 'tree' | 'shrub' | 'car' | 'fence' | 'bbq' | 'bench' | 'bicycle' | 'shed' | 'post' | 'planter' | 'light';
+
+/** 外構に手で置いた物 1 つ（平面座標 mm。rot は向き（度）: 0 = 東向き。フェンスは (x, y) から rot の向きへ len m） */
+export interface ExteriorItem {
+  id: string;
+  kind: ExteriorKind;
+  x: number;
+  y: number;
+  rot: number;
+  /** 高さ (m)（木・フェンス・物置） */
+  h?: number;
+  /** 長さ (m)（フェンス）／幅 (m)（物置・ベンチ） */
+  len?: number;
+}
+
 export interface BuildingModel {
   name: string;
   floors: Floor[];
@@ -293,6 +319,8 @@ export interface BuildingModel {
   module?: ModuleInfo;
   /** 手で置き直した家具（階ごと）。無い階は自動配置 */
   furniture?: { level: number; items: FurnitureItem[] }[];
+  /** 外構に手で置いた物（植栽・フェンス・車・BBQ など）。自動の外構に足して描く */
+  exteriorItems?: ExteriorItem[];
   /** 真北の方向: 図面の上方向から時計回りの角度 (度) */
   northAngleDeg: number;
   /** 接道・敷地（読み取れた場合） */

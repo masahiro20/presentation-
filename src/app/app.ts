@@ -9,6 +9,8 @@ import { Viewer } from '../scene/viewer';
 import { auditEnvelope } from '../scene/selfCheck';
 import { createFurnitureTool } from './furnitureTool';
 import { createEditTool3d } from './editTool3d';
+import { createExteriorTool } from './exteriorTool';
+import { furnitureItems } from '../scene/furniture';
 
 export interface StepCtx {
   app: App;
@@ -41,6 +43,7 @@ export class App {
   modelVersion = 0;
   private furnTool: ReturnType<typeof createFurnitureTool> | null = null;
   private editTool: ReturnType<typeof createEditTool3d> | null = null;
+  private extTool: ReturnType<typeof createExteriorTool> | null = null;
   builtVersion = -1;
 
   constructor(
@@ -250,6 +253,7 @@ export class App {
       this._viewer.useSkyDome(true);
       // 点検用（裏の Chrome から構図を確かめる）
       (globalThis as unknown as { __viewer: Viewer }).__viewer = this._viewer;
+      (globalThis as unknown as { __furnitureItems: typeof furnitureItems }).__furnitureItems = furnitureItems;
       this.buildNavBar(this._viewer);
     }
     return this._viewer;
@@ -302,9 +306,12 @@ export class App {
         emit('model');
         this.builtVersion = this.modelVersion;
       },
-      () => this.editTool?.setActive(false),
+      () => {
+        this.editTool?.setActive(false);
+        this.extTool?.setActive(false);
+      },
     );
-    // 天井高・シャッター（3D を見ながら部屋・壁をクリック）。建物が変わるので作り直す
+    // 天井高・シャッター・窓・戸（3D を見ながら部屋・壁をクリック）。建物が変わるので作り直す
     this.editTool = createEditTool3d(
       v,
       this.viewerHost,
@@ -312,13 +319,30 @@ export class App {
         emit('model');
         this.ensureScene();
       },
-      () => this.furnTool?.setActive(false),
+      () => {
+        this.furnTool?.setActive(false);
+        this.extTool?.setActive(false);
+      },
+    );
+    // 外構の物（植栽・フェンス・車・BBQ…）。外構だけ作り直す
+    this.extTool = createExteriorTool(
+      v,
+      this.viewerHost,
+      () => {
+        emit('model');
+        this.builtVersion = this.modelVersion;
+      },
+      () => {
+        this.furnTool?.setActive(false);
+        this.editTool?.setActive(false);
+      },
     );
     bar.append(
       orbit,
       pan,
       walk,
       this.furnTool.button,
+      this.extTool.button,
       this.editTool.button,
       h('div', { class: 'nav-sep' }),
       h('button', { class: 'nav-btn', title: 'ズームイン', onclick: () => v.zoomBy(0.75) }, h('span', { class: 'ic' }, '＋')),
@@ -397,7 +421,10 @@ export class App {
     const s = this.steps.find((x) => x.id === id);
     if (!s || (s.needsModel && !state.model)) return;
     this.current?.unmount?.();
-    if (!s.uses3d) this.furnTool?.setActive(false);
+    if (!s.uses3d) {
+      this.furnTool?.setActive(false);
+      this.extTool?.setActive(false);
+    }
     this.current = s;
     this.renderSteps();
     clear(this.side);

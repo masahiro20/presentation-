@@ -524,7 +524,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const F = stairFrame(st);
       let tread: number;
       if (st.kind === 'straight') tread = F.Ls / Math.max(1, n - 1);
-      else if (st.kind === 'u') {
+      else if (st.kind === 'u' || st.kind === 'uOpen') {
         const land = Math.min(F.Ls * 0.4, F.Lt / 2);
         tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));
       } else {

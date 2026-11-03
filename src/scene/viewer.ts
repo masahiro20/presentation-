@@ -18,11 +18,11 @@ import { placeModels } from './models';
 import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
-import { buildLandscape, type SiteInfo, type LandscapePlan } from './landscape';
+import { buildLandscape, planExteriorOf, type SiteInfo, type LandscapePlan } from './landscape';
 import { buildExteriorLights } from './interiorLights';
 import { MaterialRegistry } from './materials';
 import { makeSkyTexture } from './sky';
-import { exteriorById, interiorById, type DesignOptions } from '../styles/presets';
+import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle } from '../styles/presets';
 import { exteriorFor, interiorFor } from '../coordinate/catalog';
 import { preloadPhotoTextures } from '../styles/photoTextures';
 import { clearMaterialCache } from '../styles/textures';
@@ -498,6 +498,35 @@ export class Viewer {
     const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const p = new THREE.Vector3();
     return rc.ray.intersectPlane(ground, p) ? p : null;
+  }
+
+  /** 外構（敷地・道路・植栽・隣家・手で置いた物）を作って landscape のグループに入れる */
+  private addLandscape(model: BuildingModel, meta: BuildingMeta, ext: ExteriorStyle, resolve: (k: string) => THREE.Material) {
+    const land = buildLandscape(meta, ext, model.site, planExteriorOf(model));
+    const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
+    this.groups.landscape.add(landG);
+    this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
+    this.town = [];
+    for (const t of land.town) {
+      const g = t.mb.build(resolve, { name: 'town', castShadow: true });
+      this.groups.landscape.add(g);
+      this.town.push({ g, box: t.box });
+    }
+    this.cullTown();
+    // 遠景の木立（地平線まで何もない地面にしない）
+    this.groups.landscape.add(distantTreeBand((land.site.min.x + land.site.max.x) / 2, (land.site.min.y + land.site.max.y) / 2));
+    return land;
+  }
+
+  /** 外構だけを作り直す（3D 画面で植栽・フェンス・車などを置いたとき。建物・屋根・家具はそのまま） */
+  rebuildLandscape(model: BuildingModel) {
+    if (!this.state) return;
+    clearGroup(this.groups.landscape);
+    const resolve = (k: string) => this.registry.get(k);
+    const land = this.addLandscape(model, this.state.meta, exteriorFor(this.design), resolve);
+    this.state = { ...this.state, model, site: land.site, plan: land.plan };
+    this.walkOcc = null;
+    this.dirty = true;
   }
 
   /** 家具だけを作り直す（3D 画面で家具を置き直したとき。建物・屋根・外構はそのまま） */
@@ -1056,26 +1085,7 @@ export class Viewer {
     void placeModels(fur.models, this.groups.furniture, () => gen === this.modelGen).then((n) => {
       if (n) this.dirty = true;
     });
-    const ex0 = model.floors.find((f) => f.exterior)?.exterior;
-    const planExt = ex0
-      ? {
-          cars: ex0.cars.map((c) => ({ x: c.x * MM, z: c.y * MM, dirX: Math.cos((c.rot * Math.PI) / 180), dirZ: Math.sin((c.rot * Math.PI) / 180) })),
-          trees: ex0.trees.map((t) => ({ x: t.x * MM, z: t.y * MM, r: t.r * MM })),
-        }
-      : undefined;
-    const land = buildLandscape(meta, ext, model.site, planExt);
-    const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
-    this.groups.landscape.add(landG);
-    this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
-    this.town = [];
-    for (const t of land.town) {
-      const g = t.mb.build(resolve, { name: 'town', castShadow: true });
-      this.groups.landscape.add(g);
-      this.town.push({ g, box: t.box });
-    }
-    this.cullTown();
-    // 遠景の木立（地平線まで何もない地面にしない）
-    this.groups.landscape.add(distantTreeBand((land.site.min.x + land.site.max.x) / 2, (land.site.min.y + land.site.max.y) / 2));
+    const land = this.addLandscape(model, meta, ext, resolve);
     // ガラスは影を落とさない
     this.root.traverse((o) => {
       const m = o as THREE.Mesh;

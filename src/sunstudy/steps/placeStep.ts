@@ -667,7 +667,7 @@ export const placeStep: StudyStep = {
     const siteFold = fold(
         '敷地の輪郭（任意）',
         { meta: '日影図・既存建物の除外に使う', cls: 'site-fold' },
-        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '日影図の 5m／10m ラインの基準になり、敷地内の既存の建物（取り壊す家など）を周辺から自動で除外します。地図は 22 まで拡大でき、Shift で直角・平行にそろえられます。'),
+        h('p', { class: 'hint', style: 'margin:0 0 8px' }, '日影図の 5m／10m ラインの基準になり、敷地内の既存の建物（取り壊す家など。輪郭に半分以上入る建物）を周辺から自動で除外します。辺や角が掛かるだけの隣家は残ります。地図は 22 まで拡大でき、Shift で直角・平行にそろえられます。'),
         areaOut,
         polyInfo,
         h('div', { class: 'btn-row' }, ...makePolyButtons()),

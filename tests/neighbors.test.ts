@@ -522,3 +522,17 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     }
   });
 });
+
+describe('敷地の輪郭に半分以上入る建物だけを外す（辺や角が掛かる隣家は残す）', () => {
+  it('敷地の中の建物は外れ、角だけ重なる建物・半分未満しか入らない建物は残る', async () => {
+    const { excludeMostlyInside } = await import('../src/sunstudy/neighbors');
+    const site = square(0, 0, 10);
+    const inside = nb(square(2, 2, 4));
+    const corner = nb(square(8, 8, 6)); // 角だけ重なる
+    const half = nb(square(6, 0, 8)); // 2..10 × -4..4 → 敷地に入るのは 2..5 の 3/8
+    const mostly = nb(square(3, 0, 6)); // 0..6 → 0..5 の 5/6
+    const out = excludeMostlyInside([inside, corner, half, mostly], site);
+    expect(out.map((b) => b.id)).toEqual([corner.id, half.id]);
+    expect(excludeMostlyInside([inside], null)).toEqual([inside]);
+  });
+});

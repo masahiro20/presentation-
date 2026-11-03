@@ -5,11 +5,12 @@
 import { postInWall } from '../core/posts';
 import { takeoff } from '../estimate/areas';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2 } from '../core/types';
-import { stairLayout, stairStepCount } from '../core/stairs';
+import { stairDrawing } from '../core/stairs';
 import { polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
-import { buildLandscape, type LandscapePlan } from '../scene/landscape';
+import { buildLandscape, planExteriorOf, type LandscapePlan } from '../scene/landscape';
+import { EXTERIOR_LABEL } from '../scene/exteriorItems';
 import { EXTERIOR_STYLES } from '../styles/presets';
 import { wrapSheet, svgTable, boxedTitle, type SheetInfo } from './sheet';
 
@@ -21,7 +22,7 @@ function landscapeOf(model: BuildingModel): LandscapePlan | null {
   try {
     const ext = EXTERIOR_STYLES[0];
     const { meta } = buildBuilding(model, { exterior: ext });
-    lp = buildLandscape(meta, ext, model.site).plan;
+    lp = buildLandscape(meta, ext, model.site, planExteriorOf(model)).plan;
   } catch {
     lp = null;
   }
@@ -390,6 +391,16 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         s += pv.key === 'l.approach' ? `<polygon points="${pts}" fill="url(#mp-stone)" stroke="#c9c4bc" stroke-width="10"/>` : `<polygon points="${pts}" fill="#ebe9e5" stroke="#cfcbc4" stroke-width="10"/>`;
       }
     for (const c of land.cars) s += carSvg(c.x * 1000, c.z * 1000, c.dirX, c.dirZ, hl);
+    // 手で置いた外構の物（フェンス・BBQ・ベンチ・物置など）: 向きに沿った長方形と名前
+    for (const it of land.items) {
+      const cx = it.x * 1000;
+      const cy = it.z * 1000;
+      const w = it.w * 1000;
+      const d = Math.max(it.d, 0.12) * 1000;
+      const fill = it.kind === 'fence' ? '#8a6a4a' : it.kind === 'planter' ? '#c9d8b8' : '#fff';
+      s += `<g transform="translate(${cx.toFixed(0)} ${cy.toFixed(0)}) rotate(${it.rot.toFixed(0)})"><rect x="${(it.kind === 'fence' ? 0 : -w / 2).toFixed(0)}" y="${(-d / 2).toFixed(0)}" width="${w.toFixed(0)}" height="${d.toFixed(0)}" fill="${fill}" stroke="#333" stroke-width="8"/></g>`;
+      if (it.kind !== 'fence' && it.kind !== 'light') s += `<text x="${cx.toFixed(0)}" y="${(cy + d / 2 + 180).toFixed(0)}" font-size="130" text-anchor="middle" fill="#555">${EXTERIOR_LABEL[it.kind].replace(/（.*$/, '')}</text>`;
+    }
   }
   // 部屋
   for (const r of f.rooms) {
@@ -424,108 +435,24 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   }
   // 家具
   if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level), hl);
-  // 階段
+  // 階段（CAD の表記: 段鼻の線・側桁・歩行線（○→矢じり）・UP/DN と段数・切断線。切断線より上は破線）
   for (const st of f.stairs) {
-    const n = stairStepCount(f.height || 2900, st);
-    const lay = stairLayout(st, n);
-    const pieces = lay.pieces;
-    const ctr = (p: { minX: number; minY: number; maxX: number; maxY: number }) => ({ x: (p.minX + p.maxX) / 2, y: (p.minY + p.maxY) / 2 });
-    // 切断線（床から約 1,400mm の高さで切る）より上の段は破線で
-    const riser = (f.height || 2900) / Math.max(1, n);
-    const cutAt = st.goesUp && hl ? Math.min(pieces.length - 1, Math.max(2, Math.ceil(1400 / riser))) : -1;
-    if (hl) {
-      // 御社の図面: 塗りなし。踏面は細線、歩行線は昇り口の○から矢印へ、途中の踊り場は丸く回る
-      s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#fff" stroke="#333" stroke-width="8"/>`;
-      pieces.forEach((p, k) => {
-        const above = cutAt >= 0 && k > cutAt;
-        s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="${above ? '#999' : '#333'}" stroke-width="6"${above ? ' stroke-dasharray="70 50"' : ''}/>`;
-      });
-    } else {
-      s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="#999" stroke-width="10"/>`;
-      for (const p of pieces) s += `<rect x="${p.minX.toFixed(0)}" y="${p.minY.toFixed(0)}" width="${(p.maxX - p.minX).toFixed(0)}" height="${(p.maxY - p.minY).toFixed(0)}" fill="none" stroke="#aaa" stroke-width="8"/>`;
-    }
-    // 歩行線: 段の中心をつなぐ。向きが変わる所（踊り場）は角を丸く
-    if (pieces.length > 1) {
-      let dpath = '';
-      const treads = pieces.map((p, k) => ({ p, k, c: ctr(p) }));
-      const sameDir = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
-      let prev: { x: number; y: number } | null = null;
-      for (let k = 0; k < treads.length; k++) {
-        const t = treads[k];
-        if (t.p.kind === 'landing') {
-          // 踊り場: 前の段 → 次の段へ曲線で（制御点は踊り場の中心を進行方向へ寄せた点）
-          const nxt = treads[k + 1];
-          if (!nxt || !prev) continue;
-          const lc = t.c;
-          const d1 = t.p.dir;
-          const ext = Math.abs(d1.x) > 0.5 ? t.p.maxX - t.p.minX : t.p.maxY - t.p.minY;
-          const turnBack = sameDir({ x: -d1.x, y: -d1.y }, nxt.p.dir);
-          if (turnBack) {
-            // 折り返し: 半円で回る（踊り場の奥へ少し進んでから）
-            const adv = Math.max(0, ext * 0.5 - Math.hypot(nxt.c.x - prev.x, nxt.c.y - prev.y) / 2);
-            const p1 = { x: prev.x + d1.x * adv, y: prev.y + d1.y * adv };
-            const p2 = { x: nxt.c.x + d1.x * adv, y: nxt.c.y + d1.y * adv };
-            const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
-            const sweep = d1.x * (p2.y - p1.y) - d1.y * (p2.x - p1.x) > 0 ? 1 : 0;
-            dpath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${sweep} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)} L${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
-          } else {
-            dpath += ` Q${lc.x.toFixed(0)} ${lc.y.toFixed(0)} ${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
-          }
-          void ext;
-          prev = nxt.c;
-          k++;
-          continue;
-        }
-        dpath += prev ? ` L${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}` : `M${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}`;
-        prev = t.c;
-      }
-      s += `<path d="${dpath}" fill="none" stroke="${hl ? '#111' : '#888'}" stroke-width="${hl ? 8 : 12}" stroke-linejoin="round"/>`;
-    }
-    const first = pieces[0];
-    const last = pieces[pieces.length - 1];
-    if (first) {
-      const c0 = ctr(first);
-      // 昇り口の○
-      s += `<circle cx="${c0.x.toFixed(0)}" cy="${c0.y.toFixed(0)}" r="${hl ? 45 : 50}" fill="#fff" stroke="${hl ? '#111' : '#888'}" stroke-width="${hl ? 8 : 10}"/>`;
-    }
-    if (last) {
-      const c1 = ctr(last);
-      const d = last.dir;
-      const tip = { x: c1.x + d.x * 170, y: c1.y + d.y * 170 };
-      s += `<polygon points="${tip.x.toFixed(0)},${tip.y.toFixed(0)} ${(c1.x - d.y * 80).toFixed(0)},${(c1.y + d.x * 80).toFixed(0)} ${(c1.x + d.y * 80).toFixed(0)},${(c1.y - d.x * 80).toFixed(0)}" fill="${hl ? '#111' : '#888'}"/>`;
-    }
-    // 切断線: 切る段の位置に斜めの線＋途中にジグザグ
-    if (cutAt >= 0 && pieces[cutAt]) {
-      const p = pieces[cutAt];
-      const d = p.dir;
-      const px = { x: -d.y, y: d.x }; // 段の幅方向
-      const c = ctr(p);
-      const halfW = Math.abs(px.x) > 0.5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
-      const halfD = Math.abs(d.x) > 0.5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
-      // 切る段の中で斜めに（段の幅の内側だけ）
-      const A = { x: c.x - px.x * halfW * 0.95 - d.x * halfD * 0.8, y: c.y - px.y * halfW * 0.95 - d.y * halfD * 0.8 };
-      const B = { x: c.x + px.x * halfW * 0.95 + d.x * halfD * 0.8, y: c.y + px.y * halfW * 0.95 + d.y * halfD * 0.8 };
-      const m = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
-      const v = { x: B.x - A.x, y: B.y - A.y };
-      const L = Math.hypot(v.x, v.y) || 1;
-      const u = { x: v.x / L, y: v.y / L };
-      const nn = { x: -u.y, y: u.x };
-      const z = Math.min(90, halfW * 0.25);
-      const pts = [A, { x: m.x - u.x * z, y: m.y - u.y * z }, { x: m.x - u.x * z * 0.4 + nn.x * z, y: m.y - u.y * z * 0.4 + nn.y * z }, { x: m.x + u.x * z * 0.4 - nn.x * z, y: m.y + u.y * z * 0.4 - nn.y * z }, { x: m.x + u.x * z, y: m.y + u.y * z }, B];
-      s += `<polyline points="${pts.map((q) => `${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(' ')}" fill="none" stroke="#111" stroke-width="7"/>`;
-    }
-    // UP / DN は昇り口の○の脇に、段の向きに沿って
-    if (first) {
-      const c0 = ctr(first);
-      const d = first.dir;
-      let ang = (Math.atan2(d.y, d.x) * 180) / Math.PI;
-      if (ang > 90 || ang <= -90) ang += 180;
-      const off = { x: -d.y, y: d.x };
-      const tx = c0.x + off.x * (hl ? 0 : 0) + d.x * 0;
-      const ty = c0.y + off.y * (hl ? 0 : 0) + d.y * 0;
-      if (hl) s += `<text transform="translate(${(c0.x - d.x * 230).toFixed(0)} ${(c0.y - d.y * 230).toFixed(0)}) rotate(${ang.toFixed(0)})" font-size="150" text-anchor="middle" dominant-baseline="middle" fill="#111">${st.goesUp ? 'UP' : 'DN'}</text>`;
-      else s += `<text x="${tx.toFixed(0)}" y="${(ty + 60).toFixed(0)}" font-size="160" text-anchor="middle" fill="#777" stroke="#fff" stroke-width="40" paint-order="stroke">${st.goesUp ? 'UP' : 'DN'}</text>`;
-    }
+    const dr = stairDrawing(st, f.height || 2900, { cut: hl });
+    const ink = hl ? "#111" : "#777";
+    const thin = hl ? 6 : 8;
+    const seg = (q: { a: { x: number; y: number }; b: { x: number; y: number }; above: boolean }, wd: number) =>
+      `<line x1="${q.a.x.toFixed(0)}" y1="${q.a.y.toFixed(0)}" x2="${q.b.x.toFixed(0)}" y2="${q.b.y.toFixed(0)}" stroke="${q.above ? "#999" : ink}" stroke-width="${wd}"${q.above ? " stroke-dasharray=\"70 50\"" : ""}/>`;
+    // 下地（塗り）: 御社の図面は塗りなし。提案図面では薄く
+    if (!hl) s += `<rect x="${st.minX}" y="${st.minY}" width="${st.maxX - st.minX}" height="${st.maxY - st.minY}" fill="#f7f5f0" stroke="none"/>`;
+    if (dr.well) s += `<rect x="${dr.well.minX.toFixed(0)}" y="${dr.well.minY.toFixed(0)}" width="${(dr.well.maxX - dr.well.minX).toFixed(0)}" height="${(dr.well.maxY - dr.well.minY).toFixed(0)}" fill="${hl ? "#fff" : "#ece9e2"}" stroke="${ink}" stroke-width="${thin}"/>`;
+    if (dr.wall) s += `<rect x="${dr.wall.minX.toFixed(0)}" y="${dr.wall.minY.toFixed(0)}" width="${(dr.wall.maxX - dr.wall.minX).toFixed(0)}" height="${(dr.wall.maxY - dr.wall.minY).toFixed(0)}" fill="${hl ? "#151515" : "#2b2b2b"}" stroke="none"/>`;
+    for (const e of dr.edges) s += seg(e, hl ? 8 : 10);
+    for (const r of dr.risers) s += seg(r, thin);
+    s += `<path d="${dr.walkPath}" fill="none" stroke="${ink}" stroke-width="${hl ? 8 : 10}" stroke-linejoin="round"/>`;
+    s += `<circle cx="${dr.start.x.toFixed(0)}" cy="${dr.start.y.toFixed(0)}" r="${hl ? 45 : 50}" fill="#fff" stroke="${ink}" stroke-width="${hl ? 8 : 10}"/>`;
+    s += `<polygon points="${dr.arrow.map((q) => `${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(" ")}" fill="${ink}"/>`;
+    if (dr.cut) s += `<polyline points="${dr.cut.map((q) => `${q.x.toFixed(0)},${q.y.toFixed(0)}`).join(" ")}" fill="none" stroke="${ink}" stroke-width="7"/>`;
+    s += `<text transform="translate(${dr.label.x.toFixed(0)} ${dr.label.y.toFixed(0)}) rotate(${dr.label.angle.toFixed(0)})" font-size="${hl ? 150 : 160}" text-anchor="middle" dominant-baseline="middle" fill="${ink}"${hl ? "" : ` stroke="#fff" stroke-width="40" paint-order="stroke"`}>${dr.label.text}</text>`;
   }
   // 木造モジュールの格子（1 間ごと。部屋の上・壁の下に薄く）
   const mod = model.module;

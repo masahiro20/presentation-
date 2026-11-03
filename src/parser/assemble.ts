@@ -2,6 +2,7 @@
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
 import { ensureGarageShutters } from './garageShutter';
+import { ensureOpenings, relocateAutoShutters } from './ensureOpenings';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
@@ -2085,6 +2086,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const r = rooms.find((x) => x.id === c.roomId)!;
     notes.push({ text: `${r.name}: 天井高 ${c.ch} mm（図面の注記）`, x: r.labelPos.x, y: r.labelPos.y, roomId: r.id });
   }
+  // 戸・シャッター・玄関ドアが読めなかった部屋を常識で補う（吉田様邸: 2 階の洋室・トイレに戸が無い、玄関ドア・シャッターが無い）
+  for (const t of ensureOpenings(outWalls, openings, rooms, level)) {
+    warnings.push(t);
+    const rm = rooms.find((r) => t.startsWith(`${level}階 ${r.name}:`));
+    if (rm) notes.push({ text: t.replace(/^\d+階 /, ''), x: rm.labelPos.x, y: rm.labelPos.y, roomId: rm.id });
+  }
   return {
     level,
     elevation: 0,
@@ -2882,6 +2889,10 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     if (!pick && open.length === 1 && neighborSides.size >= 2) pick = open[0];
     if (pick) site.roads.push({ side: pick, label: cars.length ? '隣地境界線の無い側（駐車場あり）' : '隣地境界線の無い側', source: 'inferred' });
   }
+  // 常識で補ったガレージのシャッターは、接道が分かれば道路側の辺へ置き直す
+  const roadSide = site?.roads[0]?.side;
+  const f1 = floors[0];
+  if (roadSide && f1 && relocateAutoShutters(f1.walls, f1.openings, f1.rooms, roadSide, f1.level)) warnings.push(`1階 車庫: シャッターを道路側（${{ top: '上', bottom: '下', left: '左', right: '右' }[roadSide]}）の辺に置き直しました`);
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];
   if (o1.length) {
@@ -3038,13 +3049,14 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     if (!best) continue;
     const src = best.src;
     const reversed = best.u.x * c.u.x + best.u.y * c.u.y < 0;
-    const derivedWindow = op.kind === 'window';
     op.kind = src.kind;
-    if (src.kind === 'window' && !derivedWindow) {
-      op.sill = src.sill || 900;
-      op.height = src.height || 1100;
-      op.windowStyle = src.windowStyle;
-    } else if (src.kind !== 'window') {
+    if (src.kind === 'window') {
+      // 修正前の腰高・高さ・形（掃き出し／腰窓／小窓…）をそのまま引き継ぐ。
+      // 以前は作り直しで窓と判定された開口には引き継いでおらず、方眼で「掃き出し」に変えても作り直しで腰窓に戻っていた
+      op.sill = src.sill ?? op.sill ?? 900;
+      op.height = src.height || op.height || 1100;
+      op.windowStyle = src.windowStyle ?? op.windowStyle;
+    } else {
       op.sill = 0;
       op.height = src.kind === 'entrance' ? Math.max(2200, src.height) : src.kind === 'shutter' ? src.height || 2300 : src.height || 2000;
       op.windowStyle = undefined;

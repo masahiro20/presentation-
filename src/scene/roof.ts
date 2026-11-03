@@ -28,6 +28,11 @@ interface RoofCtx {
   /** 外周上の辺か判定（mm 座標系の外形） */
   onBoundary: (x0: number, z0: number, x1: number, z1: number) => boolean;
   /**
+   * 辺（m）のうち外周に乗っている区間（辺の始点からの割合 0..1）。
+   * 極大矩形の辺は一部だけ外周に乗ることがあり、辺の全長に妻壁・パラペットを立てると屋根の上に壁が出ていた
+   */
+  boundaryParts: (x0: number, z0: number, x1: number, z1: number) => [number, number][];
+  /**
    * 斜めの外壁（隅切り・振れた壁）で屋根面を切り落とす半平面（m）。nx·x + nz·z >= d の側を残す。
    * 屋根は外形を四角形で覆って架けるので、斜めの壁の外に屋根の角がはみ出す（その下に壁が無く、外から屋根裏が見える）
    */
@@ -142,6 +147,43 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
         }
         return false;
       },
+      boundaryParts: (x0, z0, x1, z1) => {
+        const dx = x1 - x0;
+        const dz = z1 - z0;
+        const L = Math.hypot(dx, dz) || 1;
+        const nxp = -dz / L;
+        const nzp = dx / L;
+        // 外形の頂点の座標（圧縮格子）で辺を分け、区間ごとに外周か調べる
+        const alongX = Math.abs(dx) >= Math.abs(dz);
+        const lines = (alongX ? xs : zs).map((v) => v * MM);
+        const a0 = alongX ? x0 : z0;
+        const a1 = alongX ? x1 : z1;
+        const lo = Math.min(a0, a1);
+        const hi = Math.max(a0, a1);
+        const cuts = [0, ...lines.filter((v) => v > lo + 0.01 && v < hi - 0.01).map((v) => Math.abs(v - a0) / L), 1].sort((p, q) => p - q);
+        const flags: boolean[] = [];
+        for (let i = 0; i + 1 < cuts.length; i++) {
+          const f = (cuts[i] + cuts[i + 1]) / 2;
+          const mx = x0 + dx * f;
+          const mz = z0 + dz * f;
+          const inA = insideLoops({ x: mx / MM + nxp * 60, y: mz / MM + nzp * 60 }, polys);
+          const inB = insideLoops({ x: mx / MM - nxp * 60, y: mz / MM - nzp * 60 }, polys);
+          flags.push(inA !== inB);
+        }
+        // 壁厚ほどの短い端の区間（角の延長）は、隣が外周ならつなげる
+        for (let i = 0; i < flags.length; i++) {
+          const len = (cuts[i + 1] - cuts[i]) * L;
+          if (!flags[i] && len <= extT * 1.1 && ((i > 0 && flags[i - 1]) || (i + 1 < flags.length && flags[i + 1]))) flags[i] = true;
+        }
+        const parts: [number, number][] = [];
+        for (let i = 0; i < flags.length; i++) {
+          if (!flags[i]) continue;
+          const last = parts[parts.length - 1];
+          if (last && Math.abs(last[1] - cuts[i]) < 1e-9) last[1] = cuts[i + 1];
+          else parts.push([cuts[i], cuts[i + 1]]);
+        }
+        return parts;
+      },
     };
     const cellIn = (m: Uint8Array, x: number, z: number) => {
       let i = xs.findIndex((v, idx) => idx < nx && x >= v && x < xs[idx + 1]);
@@ -246,16 +288,20 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       }
       return out;
     };
+    if (type === 'flat') {
+      // 陸屋根は四角形ごとではなく、この階の範囲（上階の載らない所）全体に 1 枚。
+      // 四角形ごとに架けると、重なった所で屋上が二重になり、一部だけ外周の辺にパラペットが全長で立って屋根の上に壁が出ていた
+      ctx.clips = [];
+      ctx.wallTopY = H;
+      flatRoofMask(ctx, xs, zs, mask, maskUpper, H);
+      info.maxY = Math.max(info.maxY, H + 0.5);
+      info.eaveY = Math.max(info.eaveY, H + 0.5);
+      continue;
+    }
     for (const r of rects) {
       const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
       ctx.clips = clipsFor(r);
       ctx.wallTopY = H;
-      if (type === 'flat') {
-        flatRoof(ctx, R, H);
-        info.maxY = Math.max(info.maxY, H + 0.5);
-        info.eaveY = Math.max(info.eaveY, H + 0.5);
-        continue;
-      }
       if (!isTop) {
         // 上階に接する辺がある四角形は下屋
         const side = lowerSide.get(r);
@@ -428,13 +474,71 @@ function gablePrism(ctx: RoofCtx, R: Region, pts: V3[], normal: V3) {
   const out = Math.sign(cen.x * normal.x + cen.z * normal.z - (((R.minX + R.maxX) / 2) * normal.x + ((R.minZ + R.maxZ) / 2) * normal.z)) || 1;
   const sh = normal.clone().multiplyScalar((out * (ctx.wallT - t)) / 2);
   const key = ctx.gableKeyAt ? ctx.gableKeyAt(cen.x, cen.z, normal.x * out, normal.z * out) : ctx.gableKey;
-  prism(ctx.mb, key, pts.map((p) => p.clone().add(sh)), normal, t, true);
+  // 辺の一部だけが外周のときは、その区間だけに壁を立てる（全長に立てると屋根の上に壁が出る）
+  const d = V(-normal.z, 0, normal.x).normalize();
+  const sOf = (p: V3) => p.x * d.x + p.z * d.z;
+  const ss = pts.map(sOf);
+  const sMin = Math.min(...ss);
+  const sMax = Math.max(...ss);
+  const base = pts[0];
+  const A = base.clone().addScaledVector(d, sMin - sOf(base));
+  const B = base.clone().addScaledVector(d, sMax - sOf(base));
+  const parts = ctx.boundaryParts(A.x, A.z, B.x, B.z);
+  const whole = parts.length === 1 && parts[0][0] < 1e-6 && parts[0][1] > 1 - 1e-6;
+  if (whole || !parts.length) {
+    if (whole) prism(ctx.mb, key, pts.map((p) => p.clone().add(sh)), normal, t, true);
+    return;
+  }
+  for (const [f0, f1] of parts) {
+    const sub = clipVertical(pts, d, sMin + (sMax - sMin) * f0, sMin + (sMax - sMin) * f1);
+    if (sub.length >= 3) prism(ctx.mb, key, sub.map((p) => p.clone().add(sh)), normal, t, true);
+  }
+}
+
+/** 鉛直面の多角形を、面内の水平方向 d に沿う区間 [s0, s1] で切る（Sutherland–Hodgman） */
+function clipVertical(pts: V3[], d: V3, s0: number, s1: number): V3[] {
+  const sOf = (p: V3) => p.x * d.x + p.z * d.z;
+  const clip = (input: V3[], keep: (s: number) => boolean, at: number) => {
+    const out: V3[] = [];
+    for (let i = 0; i < input.length; i++) {
+      const a = input[i];
+      const b = input[(i + 1) % input.length];
+      const ka = keep(sOf(a));
+      const kb = keep(sOf(b));
+      if (ka) out.push(a.clone());
+      if (ka !== kb) {
+        const t = (at - sOf(a)) / (sOf(b) - sOf(a) || 1e-9);
+        out.push(a.clone().lerp(b, t));
+      }
+    }
+    return out;
+  };
+  const a = clip(pts, (s) => s >= s0 - 1e-6, s0);
+  return a.length ? clip(a, (s) => s <= s1 + 1e-6, s1) : [];
 }
 /**
  * 壁の立ち上がり（箱）。同じく外側の面を外壁の面にそろえ、外壁と同じ向きのテクスチャ座標で張る。
  * 下の面は作らない（外壁の天端と重なる見えない面が、継ぎ目に点線のように透けて見えるため）
  */
 function gableBox(ctx: RoofCtx, R: Region, c: V3, dir: V3, len: number, h: number) {
+  const u0 = dir.clone().setY(0).normalize();
+  const A0 = c.clone().addScaledVector(u0, -len / 2);
+  const B0 = c.clone().addScaledVector(u0, len / 2);
+  const parts = ctx.boundaryParts(A0.x, A0.z, B0.x, B0.z);
+  if (!parts.length) return;
+  const whole = parts.length === 1 && parts[0][0] < 1e-6 && parts[0][1] > 1 - 1e-6;
+  if (!whole) {
+    // 外周の区間ごとに箱を分ける
+    for (const [f0, f1] of parts) {
+      const cc = A0.clone().lerp(B0, (f0 + f1) / 2);
+      gableBoxWhole(ctx, R, cc, dir, (f1 - f0) * len, h);
+    }
+    return;
+  }
+  gableBoxWhole(ctx, R, c, dir, len, h);
+}
+
+function gableBoxWhole(ctx: RoofCtx, R: Region, c: V3, dir: V3, len: number, h: number) {
   const t = ctx.wallT - boxT();
   const u = dir.clone().setY(0).normalize();
   const up = new THREE.Vector3(0, 1, 0);
@@ -691,28 +795,85 @@ function shedRoofPlane(
   return yTop(s0);
 }
 
-function flatRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number) {
+/**
+ * 陸屋根（パラペット）: この階の範囲（上階の載らない所）に、重ならない四角形で屋上を張り、
+ * 外形の外周に当たる格子の辺だけにパラペットを立てる（四角形ごとに架けていた頃の二重の屋上・屋根の上の壁を無くす）
+ */
+function flatRoofMask(ctx: RoofCtx, xs: number[], zs: number[], mask: Uint8Array, maskUpper: Uint8Array, H: number) {
   const t = ctx.wallT;
   const para = 0.55;
-  // 屋上スラブ
+  const nx = xs.length - 1;
+  const nz = zs.length - 1;
   const y = H + 0.12;
-  ctx.mb.aabb('ext.roof', V(R.minX - t / 2 + 0.001, H - 0.01, R.minZ - t / 2 + 0.001), V(R.maxX + t / 2 - 0.001, y, R.maxZ + t / 2 - 0.001));
-  // パラペット
-  const edges: [number, number, number, number][] = [
-    [R.minX, R.minZ, R.maxX, R.minZ],
-    [R.maxX, R.minZ, R.maxX, R.maxZ],
-    [R.maxX, R.maxZ, R.minX, R.maxZ],
-    [R.minX, R.maxZ, R.minX, R.minZ],
-  ];
-  for (const [x0, z0, x1, z1] of edges) {
-    if (!ctx.onBoundary(x0, z0, x1, z1)) continue;
+  const at = (i: number, j: number) => (i < 0 || j < 0 || i >= nx || j >= nz ? 0 : mask[j * nx + i]);
+  const upperAt = (i: number, j: number) => (i < 0 || j < 0 || i >= nx || j >= nz ? 0 : maskUpper[j * nx + i]);
+  // 屋上スラブ: 行ごとの連続区間を四角形に（重ならない）。外周側だけ壁厚の半分だけ広げる
+  for (let j = 0; j < nz; j++) {
+    let i = 0;
+    while (i < nx) {
+      if (!at(i, j)) {
+        i++;
+        continue;
+      }
+      let k = i;
+      while (k + 1 < nx && at(k + 1, j)) k++;
+      const x0 = xs[i] * MM - (at(i - 1, j) || upperAt(i - 1, j) ? 0 : t / 2 - 0.001);
+      const x1 = xs[k + 1] * MM + (at(k + 1, j) || upperAt(k + 1, j) ? 0 : t / 2 - 0.001);
+      // 上下（z）方向は、この行の全セルで隣が同じでないので、行ごとにセル単位で外周側だけ広げる
+      const z0 = zs[j] * MM;
+      const z1 = zs[j + 1] * MM;
+      ctx.mb.aabb('ext.roof', V(x0, H - 0.01, z0 - (anyOutsideRow(i, k, j - 1) ? t / 2 - 0.001 : 0)), V(x1, y, z1 + (anyOutsideRow(i, k, j + 1) ? t / 2 - 0.001 : 0)));
+      i = k + 1;
+    }
+  }
+  function anyOutsideRow(i0: number, i1: number, j: number) {
+    for (let i = i0; i <= i1; i++) if (!at(i, j) && !upperAt(i, j)) return true;
+    return false;
+  }
+  // パラペット: 外周（外に面する格子の辺）を向きごとにつなげて箱に
+  const edge = (x0: number, z0: number, x1: number, z1: number) => {
     const dir = V(x1 - x0, 0, z1 - z0);
     const L = dir.length();
     dir.normalize();
     const c = V((x0 + x1) / 2, H - 0.01, (z0 + z1) / 2);
-    gableBox(ctx, R, c, dir, L + t - boxLen(), para + 0.01);
+    const R = { minX: Math.min(x0, x1) - 1, maxX: Math.max(x0, x1) + 1, minZ: Math.min(z0, z1) - 1, maxZ: Math.max(z0, z1) + 1 };
+    gableBoxWhole(ctx, R, c, dir, L + t - boxLen(), para + 0.01);
     ctx.mb.box('ext.fascia', c.clone().setY(H + para), dir, L + t + 0.02, 0.04, t + 0.03);
-  }
+  };
+  // 北辺・南辺（行ごとに x 方向へつなげる）
+  for (let j = 0; j < nz; j++)
+    for (const side of [-1, 1]) {
+      let i = 0;
+      while (i < nx) {
+        const open = (ii: number) => at(ii, j) && !at(ii, j + side) && !upperAt(ii, j + side);
+        if (!open(i)) {
+          i++;
+          continue;
+        }
+        let k = i;
+        while (k + 1 < nx && open(k + 1)) k++;
+        const z = (side < 0 ? zs[j] : zs[j + 1]) * MM;
+        edge(xs[i] * MM, z, xs[k + 1] * MM, z);
+        i = k + 1;
+      }
+    }
+  // 東辺・西辺（列ごとに z 方向へつなげる）
+  for (let i = 0; i < nx; i++)
+    for (const side of [-1, 1]) {
+      let j = 0;
+      while (j < nz) {
+        const open = (jj: number) => at(i, jj) && !at(i + side, jj) && !upperAt(i + side, jj);
+        if (!open(j)) {
+          j++;
+          continue;
+        }
+        let k = j;
+        while (k + 1 < nz && open(k + 1)) k++;
+        const x = (side < 0 ? xs[i] : xs[i + 1]) * MM;
+        edge(x, zs[j] * MM, x, zs[k + 1] * MM);
+        j = k + 1;
+      }
+    }
 }
 
 /**

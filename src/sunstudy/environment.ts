@@ -13,7 +13,7 @@
 import * as THREE from 'three';
 import { polygonArea } from '../sun/align';
 import { fetchAerial } from '../sun/geo';
-import { buildNeighborMeshes, excludeOverlapping, fetchNeighbors } from './neighbors';
+import { buildNeighborMeshes, excludeMostlyInside, excludeOverlapping, fetchNeighbors } from './neighbors';
 import { rekeyOverridesByFootprint } from './plateauNeighbors';
 import type { StudyScene } from './scene';
 import { clearGroup } from './scene';
@@ -178,15 +178,13 @@ function sitePolygonLocal(): { e: number; n: number }[] | null {
 
 /** 敷地内（または建物の足跡に重なる）の自動取得建物を list から除く（手動の隣家はそのまま） */
 function excludeOnSite(list: Neighbor[], footprintEN: { e: number; n: number }[] | null): Neighbor[] {
-  const polys: { e: number; n: number }[][] = [];
   const site = sitePolygonEN();
-  if (site) polys.push(site);
-  if (footprintEN && footprintEN.length >= 3) polys.push(footprintEN);
-  if (!polys.length) return list;
-  const auto = excludeOverlapping(
-    list.filter((n) => n.source !== 'manual'),
-    polys,
-  );
+  const footprint = footprintEN && footprintEN.length >= 3 ? [footprintEN] : [];
+  if (!site && !footprint.length) return list;
+  // 敷地の輪郭: 半分以上入る建物だけ外す（辺や角が掛かる隣家は残す）。建物の足跡: 少しでも重なれば外す（建て替え前の既存建物）
+  let auto = list.filter((n) => n.source !== 'manual');
+  auto = excludeMostlyInside(auto, site);
+  if (footprint.length) auto = excludeOverlapping(auto, footprint);
   return [...list.filter((n) => n.source === 'manual'), ...auto];
 }
 

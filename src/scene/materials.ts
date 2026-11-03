@@ -180,6 +180,16 @@ export class MaterialRegistry {
     set('l.leafCard', leafMat('#5f8a3c', '#9dbb5c', 3));
     set('l.leafSpray', new THREE.MeshStandardMaterial({ map: leafSprayTexture('#5e8c3a', '#a9c766', 5), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.65 }));
     set('l.leafCardDark', leafMat('#3f6630', '#6f9448', 7));
+    set('l.soilDark', color('#4a3b2f', 0.95));
+    // 外構に置く物（車・BBQ・物置・ポスト・庭園灯）
+    set('x.carBody', color('#3a3c40', 0.35, 0.6));
+    set('x.carGlass', color('#1d2328', 0.1, 0.4));
+    set('x.tire', color('#141414', 0.9));
+    set('x.steel', color('#9a9c9e', 0.35, 0.8));
+    set('x.steelDark', color('#2b2d30', 0.55, 0.4));
+    set('x.shed', color('#8d9094', 0.6, 0.3));
+    set('x.shedRoof', color('#3f4246', 0.6, 0.3));
+    set('x.lamp', color('#fff2d6', 0.3, 0, { emissive: new THREE.Color('#ffe2b0'), emissiveIntensity: night ? 4 : 0.3 }));
 
     for (const [k, m] of this.map) {
       m.name = k;

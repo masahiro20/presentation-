@@ -446,6 +446,22 @@ export function excludeOverlapping(list: Neighbor[], polygons: EN[][]): Neighbor
   return list.filter((nb) => !polys.some((poly) => ringsOverlap(nb.ring, poly)));
 }
 
+/**
+ * 敷地の輪郭の中に建つ（中心が敷地の中か、半分以上入る）自動取得の建物だけを除く（敷地内の既存建物・取り壊す家）。
+ * 辺や角が掛かるだけの隣家は残す。以前は少しでも重なれば除いていたので、敷地を広めに描くと隣の家まで消え、
+ * 周辺を取り込んでも建物が立たない所ができていた
+ */
+export function excludeMostlyInside(list: Neighbor[], site: EN[] | null, minRatio = 0.5): Neighbor[] {
+  if (!site || site.length < 3) return list;
+  const poly = { ring: site, bbox: bboxOf(site) };
+  return list.filter((nb) => {
+    const c = ringCenter(nb.ring);
+    const centerIn = c.e >= poly.bbox.minE && c.e <= poly.bbox.maxE && c.n >= poly.bbox.minN && c.n <= poly.bbox.maxN && pointInRing(c, site);
+    // 中心が敷地の中（＝敷地の上に建っている既存建物）か、半分以上が敷地に入る建物を外す
+    return !(centerIn || coverageRatio(nb.ring, [poly]) >= minRatio);
+  });
+}
+
 let manualCounter = 0;
 
 /** 手動の隣家（方位 deg・距離 m・幅・奥行・高さ）。方位 dirDeg の方向へ distance 進んだ点を中心にした軸平行の矩形 */

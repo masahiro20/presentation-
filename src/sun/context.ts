@@ -1321,13 +1321,13 @@ export class SunContext {
     // ここから先は待たない。後から始まった取得があれば、その方が今のピンの結果を書くのでこの結果は捨てる
     throwIfSuperseded();
     throwIfAborted();
-    // 自分の敷地・新築の建物に重なる建物（建て替え前の既存建物など）は除外
+    // 新築の建物に重なる建物（建て替え前の既存建物など）は「敷地内の既存建物」として計算から除外して一覧に残す（戻せる）。
+    // 以前は敷地の矩形に少しでも掛かる建物を一覧ごと消していたが、敷地が広め（道路側 6m・不明な辺は 20m まで）に取られると
+    // 隣の家まで消えて、周辺を取り込んでも建物が立たない所ができていた。敷地に掛かるだけの建物は残す
     const st = this.viewer.state!;
-    const site = st.site;
     const bb = st.meta.bbox;
-    const inSite = (b: NeighborBuilding) => {
+    const overlapsHouse = (b: NeighborBuilding) => {
       const ws = b.ring.map((p) => this.toWorld(p.e, p.n));
-      if (ws.some((w) => w.x > site.min.x - 0.5 && w.x < site.max.x + 0.5 && w.z > site.min.y - 0.5 && w.z < site.max.y + 0.5)) return true;
       const x0 = Math.min(...ws.map((w) => w.x));
       const x1 = Math.max(...ws.map((w) => w.x));
       const z0 = Math.min(...ws.map((w) => w.z));
@@ -1335,7 +1335,7 @@ export class SunContext {
       return x1 > bb.min.x - 0.8 && x0 < bb.max.x + 0.8 && z1 > bb.min.z - 0.8 && z0 < bb.max.z + 0.8;
     };
     const manual = this.state.neighbors.filter((b) => b.source === 'manual');
-    const fresh = list.filter((b) => !inSite(b));
+    const fresh = list.filter((b) => !overlapsHouse(b));
     // PLATEAU は gml_id（ピン移動・取り直しで不変）、国土地理院・OSM は連番
     for (const b of fresh) b.id = b.plateau?.gmlId ? `plateau:${b.plateau.gmlId}` : `${b.source}-${++this.seq}`;
     // 外形は取得したときのピンから測っている（キー・照合はここから地点によらない座標に直す）

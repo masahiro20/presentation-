@@ -6,16 +6,16 @@
 import * as THREE from 'three';
 import type { BuildingModel, BuiltinVariant, Floor, FurnitureItem, FurnitureKind, Vec2 } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
-import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, furnitureDims, furnitureItems } from '../scene/furniture';
+import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDES, WASH_STYLES, furnitureDims, furnitureItems } from '../scene/furniture';
 import type { Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
 import { state } from './state';
 
 /** 壁に背を付けて置く家具（それ以外はクリックした点が中心） */
-const WALL_KINDS = new Set<FurnitureKind>(['kitchen', 'cupboard', 'fridge', 'tv', 'bookshelf', 'desk', 'cabinet', 'sofa', 'bed', 'shoeCabinet', 'washstand', 'washer', 'toilet', 'mirror', 'nightstand', 'bath', 'builtin']);
+const WALL_KINDS = new Set<FurnitureKind>(['kitchen', 'cupboard', 'fridge', 'tv', 'bookshelf', 'desk', 'cabinet', 'sofa', 'bed', 'shoeCabinet', 'washstand', 'washer', 'toilet', 'mirror', 'nightstand', 'bath', 'builtin', 'hanger']);
 
 /** 追加できる家具（造作は形ごとに並べる） */
-const ADD_FURNITURE: FurnitureKind[] = ['sofa', 'dining', 'tv', 'rug', 'coffeeTable', 'desk', 'bookshelf', 'cupboard', 'bed', 'plant', 'chair', 'lowTable'];
+const ADD_FURNITURE: FurnitureKind[] = ['sofa', 'dining', 'tv', 'rug', 'coffeeTable', 'desk', 'bookshelf', 'cupboard', 'hanger', 'washstand', 'bed', 'plant', 'chair', 'lowTable'];
 
 interface Add {
   kind: FurnitureKind;
@@ -124,7 +124,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
       if (add) {
         const list = explicit(f.level);
         const id = `u${Date.now().toString(36)}`;
-        const defaults: Partial<FurnitureItem> = kind === 'builtin' ? { variant: add.variant ?? 'wallShelf' } : kind === 'kitchen' ? { len: 2.7, kitchenType: add.kitchenType ?? 'peninsula' } : kind === 'sofa' ? { w: 2.1 } : kind === 'tv' ? { w: 1.8 } : kind === 'rug' ? { w: 2.2, d: 1.6 } : {};
+        const defaults: Partial<FurnitureItem> = kind === 'builtin' ? { variant: add.variant ?? 'wallShelf' } : kind === 'kitchen' ? { len: 2.7, kitchenType: add.kitchenType ?? 'peninsula' } : kind === 'sofa' ? { w: 2.1 } : kind === 'tv' ? { w: 1.8 } : kind === 'rug' ? { w: 2.2, d: 1.6 } : kind === 'hanger' ? { w: 1.8 } : kind === 'washstand' ? { w: 0.9 } : {};
         list.push({ id, kind, ...pos, roomId: room?.id, ...defaults });
         sel = { level: f.level, id };
         add = null;
@@ -188,7 +188,21 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
           h('p', { class: 'hint' }, b.note),
         );
       }
-      if (['sofa', 'bed', 'tv', 'rug', 'cupboard', 'dining'].includes(it.kind)) box.append(num('幅 (m)', furnitureDims(it).w, 0.1, 0.6, 4, (x, val) => (x.w = val)));
+      if (['sofa', 'bed', 'tv', 'rug', 'cupboard', 'dining', 'hanger'].includes(it.kind)) box.append(num(it.kind === 'hanger' ? '長さ (m)' : '幅 (m)', furnitureDims(it).w, 0.1, 0.6, 6, (x, val) => (x.w = val)));
+      if (it.kind === 'sofa' || it.kind === 'cupboard') {
+        box.append(pick('形', SOFA_SHAPES as unknown as ['i' | 'l', string][], it.shape ?? 'i', (x, val) => (x.shape = val)));
+        if (it.shape === 'l')
+          box.append(
+            pick(it.kind === 'sofa' ? 'カウチの側（部屋側から見て）' : '袖の側（部屋側から見て）', LEG_SIDES as unknown as ['left' | 'right', string][], it.legSide ?? 'right', (x, val) => (x.legSide = val)),
+            num(it.kind === 'sofa' ? 'カウチの奥行 (m)' : '袖の長さ (m)', it.leg ?? (it.kind === 'sofa' ? 1.6 : 1.8), 0.1, it.kind === 'sofa' ? 1.2 : 0.9, 3, (x, val) => (x.leg = val)),
+          );
+      }
+      if (it.kind === 'washstand') {
+        box.append(
+          num('幅 (m)', it.w ?? 0.77, 0.05, 0.6, 2.4, (x, val) => (x.w = val)),
+          pick('作り', WASH_STYLES as unknown as ['unit' | 'custom', string][], it.washStyle ?? 'unit', (x, val) => (x.washStyle = val)),
+        );
+      }
       box.append(
         h('div', { class: 'btn-row' },
           h('button', { class: 'btn sm', onclick: () => { const s = sel!; const list = explicit(s.level); const i = list.findIndex((q) => q.id === s.id); if (i >= 0) list.splice(i, 1); sel = null; commit(); } }, '消す'),

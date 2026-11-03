@@ -7,7 +7,8 @@ import { MeshBuilder, V } from './meshBuilder';
 import type { BuildingMeta } from './building';
 import type { ExteriorStyle } from '../styles/presets';
 import { mulberry32 } from '../styles/noise';
-import type { PlanSide, RoadInfo, SiteData } from '../core/types';
+import type { BuildingModel, ExteriorItem, ExteriorKind, PlanSide, RoadInfo, SiteData } from '../core/types';
+import { buildExteriorObject, exteriorFootprint } from './exteriorItems';
 
 export interface SiteInfo {
   /** 敷地の範囲（ワールド） */
@@ -47,18 +48,33 @@ export interface LandscapePlan {
   paving: { key: string; pts: THREE.Vector3[] }[];
   /** 駐車場の車（中心・車の前後方向） */
   cars: { x: number; z: number; dirX: number; dirZ: number }[];
+  /** 手で置いた物（車・木・低木以外）: 中心・向き・外形 */
+  items: { kind: ExteriorKind; x: number; z: number; rot: number; w: number; d: number }[];
 }
 
-/** 図面の記号から読んだ外構（ワールド座標 m） */
+/** 図面の記号から読んだ外構（ワールド座標 m）と、手で置いた物 */
 export interface PlanExterior {
   cars: { x: number; z: number; dirX: number; dirZ: number }[];
   trees: { x: number; z: number; r: number }[];
+  items?: ExteriorItem[];
+}
+
+/** 建物モデルから、外構に渡す「図面の記号の車・植栽」と「手で置いた物」をまとめる（3D と平面図で同じ） */
+export function planExteriorOf(model: BuildingModel): PlanExterior | undefined {
+  const ex0 = model.floors.find((f) => f.exterior)?.exterior;
+  const items = model.exteriorItems ?? [];
+  if (!ex0 && !items.length) return undefined;
+  return {
+    cars: (ex0?.cars ?? []).map((c) => ({ x: c.x / 1000, z: c.y / 1000, dirX: Math.cos((c.rot * Math.PI) / 180), dirZ: Math.sin((c.rot * Math.PI) / 180) })),
+    trees: (ex0?.trees ?? []).map((t) => ({ x: t.x / 1000, z: t.y / 1000, r: t.r / 1000 })),
+    items,
+  };
 }
 
 export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
   const mb = new MeshBuilder();
   const trees = new MeshBuilder();
-  const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [] };
+  const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [], items: [] };
   const b = meta.bbox;
   const ent = meta.entrance;
   // 道路方向: 図面から読み取った接道 → 無ければ玄関の外向き（軸に丸める）
@@ -426,6 +442,27 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     addTree(best.p, 3.4 + rnd() * 0.8, kind);
     if (plan.trees.length === n0) break;
     shrub(best.p.clone().add(V(0.9, 0, 0.5)), 0.35);
+  }
+
+  // 手で置いた外構の物: 木・低木は植栽と同じ作りで（位置はそのまま）、ほかは物の 3D。車は平面図にも
+  for (const it of planExt?.items ?? []) {
+    const p = V(it.x / 1000, 0, it.y / 1000);
+    if (it.kind === 'tree') {
+      addTree(p, Math.min(7, Math.max(1.8, it.h ?? 3.6)), kind, true);
+      continue;
+    }
+    if (it.kind === 'shrub') {
+      plan.shrubs.push({ x: p.x, z: p.z, r: 0.45 });
+      for (let i = 0; i < 7; i++) {
+        const off = V((rnd() - 0.5) * 0.8, 0.6 * (0.35 + rnd() * 0.5), (rnd() - 0.5) * 0.8);
+        trees.card('l.leafCardDark', p.clone().add(off), 0.6 * (1.0 + rnd() * 0.5), new THREE.Euler(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI));
+      }
+      continue;
+    }
+    buildExteriorObject(mb, it);
+    const fp = exteriorFootprint(it);
+    if (it.kind === 'car') plan.cars.push({ x: p.x, z: p.z, dirX: Math.cos((it.rot * Math.PI) / 180), dirZ: Math.sin((it.rot * Math.PI) / 180) });
+    else plan.items.push({ kind: it.kind, x: p.x, z: p.z, rot: it.rot, w: fp.w, d: fp.d });
   }
 
   // 隣家（住宅地の中の敷地に見せる: 道路以外の 3 辺のすぐ外に、淡い色の箱型住宅を並べる）

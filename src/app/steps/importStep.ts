@@ -1,4 +1,5 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
+import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
@@ -430,6 +431,26 @@ function revisionFold(model: BuildingModel): HTMLElement | null {
 }
 
 /** ご要望との照合: 要望の文章を貼ると、部屋・広さ・引き戸・近さ・向きなどを間取りと突き合わせる（結果は資料の「ご要望との照合」のページにも載る） */
+/** 間取りの読み解き（設計意図・動線の意味）。読み取った部屋のつながりから、パントリー・洗濯・水まわり・帰宅・回遊・階段の意味を出す */
+function intentFold(model: BuildingModel): HTMLElement | null {
+  const items = readDesignIntents(model);
+  if (!items.length) return null;
+  const list = h(
+    'div',
+    { class: 'check-rows intents' },
+    ...items.map((i) =>
+      h(
+        'div',
+        { class: `check-row long ${i.kind === 'check' ? 'info' : 'ok'}` },
+        h('span', { class: 'ic' }, i.kind === 'check' ? '⚠' : '✓'),
+        h('span', { class: 'dt' }, h('b', null, i.title), h('br'), h('span', null, i.customer), h('br'), h('span', { style: 'color:#777' }, i.reason)),
+      ),
+    ),
+  );
+  const el = fold('間取りの読み解き（動線・設計の意図）', { meta: `${items.length} 件`, cls: 'intent-fold' }, h('p', { class: 'hint' }, '部屋のつながり（戸・開口・隣接）から読み取った「この間取りの考え方」です。資料の「暮らしの動線」のページにも載ります。違っていれば読み取り（壁・戸）が違っているので、方眼で直してください。'), list);
+  return el;
+}
+
 function wishesFold(model: BuildingModel): HTMLElement {
   const list = h('div', { class: 'check-rows wishes' });
   const run = () => {
@@ -1052,6 +1073,8 @@ function renderResult(ctx: StepCtx) {
   const studyBox = siteStudyFold(model);
   if (studyBox) side.append(studyBox);
   side.append(wishesFold(model));
+  const intentBox = intentFold(model);
+  if (intentBox) side.append(intentBox);
 
   // 再読み込み
   const scaleSel = h(

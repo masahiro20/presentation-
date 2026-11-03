@@ -18039,7 +18039,7 @@ function plasterBox(o) {
 				color: "#aeaba5",
 				roughness: .9
 			},
-			fence: "none",
+			fence: o.fence ?? "none",
 			trees: "modern"
 		}
 	};
@@ -18051,7 +18051,8 @@ var EXTERIOR_STYLES = [
 		catch: "中間グレーの塗り壁の箱",
 		description: "ジョリパットの中間グレーの塗り壁を一色で回したホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。アクセント（SOLIDO・木板）はコーディネートで玄関まわりに足せます。",
 		wall: "#8f8e8a",
-		wall2: "#86857f"
+		wall2: "#86857f",
+		fence: "wood"
 	}),
 	plasterBox({
 		id: "hl-jolypat-greige",
@@ -19448,7 +19449,7 @@ var EXTERIOR_STYLES = [
 var DEFAULT_DESIGN = {
 	specId: "minimal-lines",
 	exteriorId: "hl-jolypat-grey",
-	interiorId: "hl-standard",
+	interiorId: "hl-grey-oak",
 	timeOfDay: "day",
 	furniture: true
 };

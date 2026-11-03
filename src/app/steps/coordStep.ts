@@ -288,7 +288,7 @@ export const coordStep: Step = {
           'div',
           { class: 'coord-progress' },
           h('div', { class: 'bar' }, h('span', { style: `width:${Math.round((pr.decided / pr.total) * 100)}%` })),
-          h('div', { class: 'txt' }, h('b', null, `決定 ${pr.decided} / ${pr.total}`), `　${pr.byRound.map((r) => `${'①②③'[r.no - 1]} ${r.decided}/${r.total}`).join('　')}`),
+          h('div', { class: 'txt' }, h('b', null, `決めた部位 ${pr.decided} / ${pr.total}`), `　${pr.byRound.map((r) => `${'①②③'[r.no - 1]}${r.title ? ` ${r.title}` : ''} ${r.decided}/${r.total}`).join('　')}`),
         ),
         h('p', { class: 'hint', style: 'margin:6px 0 10px' }, '進め方: 決める順番に、候補を 2〜3 案に絞る → 体験リンクでお客様に送る（家で 3D を見て選べます）→ 打ち合わせで「決定」→ 仕様決定書に署名。'),
       );

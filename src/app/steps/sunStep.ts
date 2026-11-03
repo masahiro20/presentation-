@@ -1072,6 +1072,76 @@ export const sunStep: Step = {
       invalidateResults();
       reloadContext();
     };
+    /** 微調整の 1 歩（m）と角度（°）。以前は 2 m・2° 固定で、敷地に合わせ込むには粗すぎた */
+    let nudgeStep = 0.5;
+    let rotStep = 1;
+    // ---- 建物をドラッグで動かす（航空写真の上で、建物をつかんで置き直す） ----
+    // 動かすのは site の offset（＝写真・方位のほう）。ドラッグ中は周辺（写真・隣家・道路）のグループをずらして見せ、離したときに確定して取り直す
+    let dragging = false;
+    let dragStart: { world: THREE.Vector3; en: { e: number; n: number } } | null = null;
+    const groundHit = (e: PointerEvent): THREE.Vector3 | null => {
+      const r = canvasEl.getBoundingClientRect();
+      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      const hit = sc.pickAerial(ndc);
+      if (hit) return hit;
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(ndc, v.camera);
+      const p = new THREE.Vector3();
+      return rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p) ? p : null;
+    };
+    const onDragDown = (e: PointerEvent) => {
+      if (!dragging || e.button !== 0) return;
+      const hit = groundHit(e);
+      if (!hit) return;
+      // 建物の近く（外形から 3 m 以内）をつかんだときだけ
+      const bb = v.state!.meta.bbox;
+      if (hit.x < bb.min.x - 3 || hit.x > bb.max.x + 3 || hit.z < bb.min.z - 3 || hit.z > bb.max.z + 3) return;
+      dragStart = { world: hit.clone(), en: sc.fromWorld(hit) };
+      v.controls.enabled = false;
+      canvasEl.setPointerCapture(e.pointerId);
+      e.stopPropagation();
+    };
+    const onDragMove = (e: PointerEvent) => {
+      if (!dragging || !dragStart) return;
+      const hit = groundHit(e);
+      if (!hit) return;
+      // 建物を hit まで動かす ＝ 周辺のほうを逆に動かして見せる
+      sc.group.position.set(dragStart.world.x - hit.x, 0, dragStart.world.z - hit.z);
+      v.invalidate();
+    };
+    const onDragUp = (e: PointerEvent) => {
+      if (!dragging || !dragStart) return;
+      const hit = groundHit(e) ?? dragStart.world;
+      const en = sc.fromWorld(hit);
+      const d = { e: en.e - dragStart.en.e, n: en.n - dragStart.en.n };
+      dragStart = null;
+      sc.group.position.set(0, 0, 0);
+      v.controls.enabled = true;
+      try {
+        canvasEl.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 取得していなければ無視 */
+      }
+      if (Math.hypot(d.e, d.n) < 0.05) {
+        v.invalidate();
+        return;
+      }
+      nudge(d.e, d.n);
+      toast(`建物を ${Math.abs(d.n).toFixed(1)} m ${d.n >= 0 ? '北' : '南'}・${Math.abs(d.e).toFixed(1)} m ${d.e >= 0 ? '東' : '西'} へ動かしました`, 'ok');
+    };
+    const dragBtn = h('button', { class: 'btn sm block', style: 'margin-top:6px', title: '航空写真の上で建物をつかんでドラッグすると、その場所に置き直します（視点の回転は止まります。もう一度押すと終了）' }, '建物をドラッグで動かす') as HTMLButtonElement;
+    const setDragging = (on: boolean) => {
+      dragging = on;
+      dragBtn.classList.toggle('dark', on);
+      dragBtn.textContent = on ? '建物をつかんでドラッグ（もう一度押すと終了）' : '建物をドラッグで動かす';
+      canvasEl.style.cursor = on ? 'grab' : '';
+      if (!on) {
+        dragStart = null;
+        sc.group.position.set(0, 0, 0);
+        v.controls.enabled = true;
+      }
+    };
+    dragBtn.addEventListener('click', () => setDragging(!dragging));
     const rotate = (d: number) => {
       extPanel?.cancelTwoPoint(TWO_POINT_ABORT_SITE);
       state.model!.northAngleDeg = normDeg180(state.model!.northAngleDeg + d);
@@ -1124,14 +1194,21 @@ export const sunStep: Step = {
       invalidateResults();
       await reloadContext();
       v.flyTo({ pos: c.clone().add(new THREE.Vector3(0.01, R * 4.2, 0.02)), target: c.clone(), fov: 40 });
-      toast('建物の位置を合わせました（細かいずれは下の「北へ2m」などで調整できます）', 'ok');
+      toast('建物の位置を合わせました（細かいずれは「建物をドラッグで動かす」か下の微調整で）', 'ok');
     };
     cleanupPlace?.();
     canvasEl.addEventListener('pointerdown', onPlaceDown, true);
     canvasEl.addEventListener('pointerup', onPlaceUp, true);
+    canvasEl.addEventListener('pointerdown', onDragDown, true);
+    canvasEl.addEventListener('pointermove', onDragMove, true);
+    canvasEl.addEventListener('pointerup', onDragUp, true);
     cleanupPlace = () => {
       canvasEl.removeEventListener('pointerdown', onPlaceDown, true);
       canvasEl.removeEventListener('pointerup', onPlaceUp, true);
+      canvasEl.removeEventListener('pointerdown', onDragDown, true);
+      canvasEl.removeEventListener('pointermove', onDragMove, true);
+      canvasEl.removeEventListener('pointerup', onDragUp, true);
+      setDragging(false);
       canvasEl.style.cursor = '';
     };
     const ensureAerial = async () => {
@@ -1186,18 +1263,34 @@ export const sunStep: Step = {
           { class: 'sub-fold' },
           h('summary', null, '位置・向きを合わせる（航空写真・2 点合わせ・微調整）'),
           placeBtn,
+          dragBtn,
           ...twoPointBlock(extPanel),
           h('div', { class: 'field-label', style: 'margin-top:10px' }, '微調整（航空写真と方位のほうを動かします）'),
           h(
             'div',
+            { class: 'btn-row', style: 'align-items:center' },
+            h('span', { class: 'hint keep', style: 'margin:0' }, '1 歩'),
+            h(
+              'div',
+              { class: 'segmented' },
+              ...[0.1, 0.5, 2].map((st) => h('button', { class: st === nudgeStep ? 'on' : '', onclick: (e: Event) => { nudgeStep = st; for (const b of (e.currentTarget as HTMLElement).parentElement!.children) b.classList.toggle('on', b === e.currentTarget); } }, `${st} m`)),
+            ),
+            h(
+              'div',
+              { class: 'segmented' },
+              ...[0.5, 1, 2].map((st) => h('button', { class: st === rotStep ? 'on' : '', onclick: (e: Event) => { rotStep = st; for (const b of (e.currentTarget as HTMLElement).parentElement!.children) b.classList.toggle('on', b === e.currentTarget); } }, `${st}°`)),
+            ),
+          ),
+          h(
+            'div',
             { class: 'btn-row' },
-            h('button', { class: 'btn sm', title: '建物を実際の敷地で北へ 2 m 動かします（画面では航空写真が南へずれます）', onclick: () => nudge(0, 2) }, '北へ2m'),
-            h('button', { class: 'btn sm', title: '建物を実際の敷地で南へ 2 m 動かします（画面では航空写真が北へずれます）', onclick: () => nudge(0, -2) }, '南へ2m'),
-            h('button', { class: 'btn sm', title: '建物を実際の敷地で東へ 2 m 動かします（画面では航空写真が西へずれます）', onclick: () => nudge(2, 0) }, '東へ2m'),
-            h('button', { class: 'btn sm', title: '建物を実際の敷地で西へ 2 m 動かします（画面では航空写真が東へずれます）', onclick: () => nudge(-2, 0) }, '西へ2m'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で北へ動かします（画面では航空写真が南へずれます）', onclick: () => nudge(0, nudgeStep) }, '北へ'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で南へ動かします（画面では航空写真が北へずれます）', onclick: () => nudge(0, -nudgeStep) }, '南へ'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で東へ動かします（画面では航空写真が西へずれます）', onclick: () => nudge(nudgeStep, 0) }, '東へ'),
+            h('button', { class: 'btn sm', title: '建物を実際の敷地で西へ動かします（画面では航空写真が東へずれます）', onclick: () => nudge(-nudgeStep, 0) }, '西へ'),
             // 向き: 回るのは航空写真・方位（太陽の通り道・周辺建物）。建物は図面のまま動かないので、写真に対しては建物が逆向きに回って見える
-            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て反時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は時計回りに回って見えます', onclick: () => rotate(-2) }, '↺ 2°'),
-            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て時計回りに 2° 回します。建物は図面のまま動かないので、写真に対して建物は反時計回りに回って見えます', onclick: () => rotate(2) }, '↻ 2°'),
+            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て反時計回りに回します。建物は図面のまま動かないので、写真に対して建物は時計回りに回って見えます', onclick: () => rotate(-rotStep) }, '↺'),
+            h('button', { class: 'btn sm', title: '航空写真と方位（太陽の通り道・周辺建物）を上から見て時計回りに回します。建物は図面のまま動かないので、写真に対して建物は反時計回りに回って見えます', onclick: () => rotate(rotStep) }, '↻'),
           ),
         ),
       ),

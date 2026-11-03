@@ -29,6 +29,19 @@ export interface Mood {
 
 export const MOODS: Mood[] = [
   {
+    id: 'grey-wood-ceiling',
+    name: 'グレー壁と木の天井',
+    catch: '中間グレーの塗り壁 × オークの床 × 杉羽目板の天井 × 黒いドーム',
+    why: '壁をグレーにすると白い壁より木が映える。天井に木を張り、照明は黒いトラックスポットと黒いドームのペンダントで「アトリエ」のような LDK に。キッチンはダークグレー扉にステンレス天板で道具らしく。',
+    fits: '料理や音楽など趣味を楽しむ方、天井の高い LDK や勾配天井のプラン。',
+    refs: '御社サイトの事例（木の天井の家）、Instagram「#木天井 #グレーの壁」、Pinterest「wood ceiling grey walls kitchen」',
+    exteriorId: 'hl-jolypat-grey',
+    interiorId: 'hl-grey-oak',
+    finishes: { extWall: 'ext.jp.mid', accent: 'acc.solido.black', roof: 'roof.gl.black', soffit: 'soffit.cedar', sash: 'sash.tw.black', entDoor: 'door.venato.black', entFloor: 'ent.mortar', floor: 'floor.channel.oak', wall: 'wall.cloth.grey', accentWall: 'aw.none', ceiling: 'ceil.sugi', door: 'door.kamiya.cube', baseboard: 'bb.kamiya.grey', stair: 'stair.steel', kitchen: 'kitchen.hl.line.darkgrey', cupboard: 'cup.custom.oak', pendant: 'pend.dome', light: 'light.2700', wetFloor: 'wet.sangetsu.is2071', washWall: 'ww.cloth' },
+    swatch: ['#9a9893', '#c9a272', '#b08a5c', '#242424'],
+    twists: ['軒天も同じ杉板にすると外と中の天井がつながって見える', 'カップボードはオークの造作にして木の量を増やす', 'ダイニングテーブルは一枚板、椅子は Y チェアで木をそろえる'],
+  },
+  {
     id: 'greige-hotel',
     name: 'グレージュのホテルライク',
     catch: '塗り壁の箱 × 黒サッシ × オーク × 大判タイル',
@@ -53,19 +66,6 @@ export const MOODS: Mood[] = [
     finishes: { extWall: 'ext.jp.dark', accent: 'acc.solido.black', roof: 'roof.gl.black', soffit: 'soffit.black', sash: 'sash.tw.black', entDoor: 'door.venato.walnut', entFloor: 'ent.nagoya.9840', floor: 'floor.tile.black', wall: 'wall.cloth.grey', accentWall: 'aw.cloth.charcoal', ceiling: 'ceil.cloth', door: 'door.kamiya.black', baseboard: 'bb.kamiya.black', stair: 'stair.steel', kitchen: 'kitchen.hl.line.mortablack', cupboard: 'cup.line.same', pendant: 'pend.dome', light: 'light.2700', wetFloor: 'wet.sangetsu.is2071', washWall: 'ww.mirror' },
     swatch: ['#5d5c59', '#3f3d3a', '#2a2a2c', '#6a5345'],
     twists: ['寝室だけ床をスモークのオークにして足触りを変える', 'ペンダントは黒いドーム 1 灯、ダウンライトは最小限にして間接照明を主役に', 'サウナ・浴室を黒いタイルでそろえると「ホテルの個室」になる'],
-  },
-  {
-    id: 'grey-wood-ceiling',
-    name: 'グレー壁と木の天井',
-    catch: '中間グレーの塗り壁 × オークの床 × 杉羽目板の天井 × 黒いドーム',
-    why: '壁をグレーにすると白い壁より木が映える。天井に木を張り、照明は黒いトラックスポットと黒いドームのペンダントで「アトリエ」のような LDK に。キッチンはダークグレー扉にステンレス天板で道具らしく。',
-    fits: '料理や音楽など趣味を楽しむ方、天井の高い LDK や勾配天井のプラン。',
-    refs: '御社サイトの事例（木の天井の家）、Instagram「#木天井 #グレーの壁」、Pinterest「wood ceiling grey walls kitchen」',
-    exteriorId: 'hl-jolypat-grey',
-    interiorId: 'hl-grey-oak',
-    finishes: { extWall: 'ext.jp.mid', accent: 'acc.solido.black', roof: 'roof.gl.black', soffit: 'soffit.cedar', sash: 'sash.tw.black', entDoor: 'door.venato.black', entFloor: 'ent.mortar', floor: 'floor.channel.oak', wall: 'wall.cloth.grey', accentWall: 'aw.none', ceiling: 'ceil.sugi', door: 'door.kamiya.cube', baseboard: 'bb.kamiya.grey', stair: 'stair.steel', kitchen: 'kitchen.hl.line.darkgrey', cupboard: 'cup.custom.oak', pendant: 'pend.dome', light: 'light.2700', wetFloor: 'wet.sangetsu.is2071', washWall: 'ww.cloth' },
-    swatch: ['#9a9893', '#c9a272', '#b08a5c', '#242424'],
-    twists: ['軒天も同じ杉板にすると外と中の天井がつながって見える', 'カップボードはオークの造作にして木の量を増やす', 'ダイニングテーブルは一枚板、椅子は Y チェアで木をそろえる'],
   },
   {
     id: 'white-natural',

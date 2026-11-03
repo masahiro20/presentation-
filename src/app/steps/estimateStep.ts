@@ -667,9 +667,13 @@ export const estimateStep: Step = {
           const cur = es.choice.groups[group] ?? defaultGroups(es.choice.grade)[group];
           const driven = finishDrivenGroups().has(group);
           // コーディネートで選んだ商品に連動している項目も、ここで選び直せる（コーディネート側の選択も合わせて変える）
-          const sel = h('select', { onchange: (e: Event) => { setGroup(group, (e.target as HTMLSelectElement).value); render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur }, `${o.custom ? '［追加］' : ''}${o.desc}　¥${yen(o.price)}/${o.unit}`)));
+          // 選択肢は商品名だけ（狭い欄で価格まで入れると名前が切れる）。価格は右の札に
+          const curOpt = options.find((o) => o.id === cur);
+          const price = h('span', { class: 'spec-price' }, curOpt ? `¥${yen(curOpt.price)}/${curOpt.unit}` : '');
+          const sel = h('select', { onchange: (e: Event) => { setGroup(group, (e.target as HTMLSelectElement).value); render(); } }, ...options.map((o) => h('option', { value: o.id, selected: o.id === cur, title: `¥${yen(o.price)}/${o.unit}` }, `${o.custom ? '［追加］' : ''}${o.desc}`)));
+          const selRow = h('div', { class: 'spec-row' }, sel, price);
           const addOpt = h('button', { class: 'linkbtn', title: '新しいメーカー・商品を選択肢に足す（例: サッシに APW 430、エクセルシャノン）。原価を入れると売価は原価 ÷ 係数', onclick: () => { addingGroup = addingGroup === group ? null : group; render(); } }, '＋ 選択肢を追加');
-          groupBody.appendChild(field(GROUP_LABEL[group] ?? group, h('div', null, sel, h('div', { class: 'grp-tools' }, addOpt, driven ? h('span', { class: 'hint' }, 'コーディネートの商品と連動') : null), addingGroup === group ? customOptionForm(group, l.id, cat.id, l.margin ?? 0.7, l.unit) : null)));
+          groupBody.appendChild(field(GROUP_LABEL[group] ?? group, h('div', null, selRow, h('div', { class: 'grp-tools' }, addOpt, driven ? h('span', { class: 'hint' }, 'コーディネートの商品と連動') : null), addingGroup === group ? customOptionForm(group, l.id, cat.id, l.margin ?? 0.7, l.unit) : null)));
         }
       // 資金計画
       const fundBody = h('div', { class: 'fund-form' });

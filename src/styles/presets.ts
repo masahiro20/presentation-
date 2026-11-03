@@ -90,6 +90,8 @@ function plasterBox(o: {
   coarse?: number;
   accent?: string | null;
   frame?: string;
+  /** 塀: 事例写真はブロック＋木の縦ルーバーが多い（既定の外観だけ 'wood'） */
+  fence?: 'wood' | 'block' | 'hedge' | 'none';
 }): ExteriorStyle {
   // 外壁は一色が標準（アクセントはコーディネートで選んだときだけ玄関まわりに）
   const accent = o.accent === undefined ? null : o.accent;
@@ -120,7 +122,7 @@ function plasterBox(o: {
       ground: { pattern: 'gravel', color: '#b0aca3', color2: '#9a968d' },
       approach: { pattern: 'stone', color: '#8f8c86', color2: '#7d7a74', roughness: 0.85, size: 0.8, size2: 0.5 },
       driveway: { pattern: 'concrete', color: '#aeaba5', roughness: 0.9 },
-      fence: 'none',
+      fence: o.fence ?? 'none',
       trees: 'modern',
     },
   };
@@ -140,6 +142,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     description: 'ジョリパットの中間グレーの塗り壁を一色で回したホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。アクセント（SOLIDO・木板）はコーディネートで玄関まわりに足せます。',
     wall: '#8f8e8a',
     wall2: '#86857f',
+    fence: 'wood',
   }),
   plasterBox({
     id: 'hl-jolypat-greige',
@@ -1184,7 +1187,8 @@ export interface DesignOptions {
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
   exteriorId: 'hl-jolypat-grey',
-  interiorId: 'hl-standard',
+  // 事例写真では内装はグレーの塗り壁 × オーク × 木の天井が最多（docs/HOMELANDICK_STYLE.md）
+  interiorId: 'hl-grey-oak',
   timeOfDay: 'day',
   furniture: true,
 };

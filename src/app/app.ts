@@ -182,6 +182,38 @@ export class App {
       apply();
       return b;
     };
+    // 文字を大きく（側パネル・札・操作バーを 1.15 倍。日照の文字が小さい・細いという声に）
+    const textToggle = () => {
+      let on = false;
+      try {
+        on = localStorage.getItem('madori.textLg') === 'on';
+      } catch {
+        on = false;
+      }
+      const apply = () => {
+        document.body.classList.toggle('text-lg', on);
+        b.classList.toggle('on', on);
+        b.title = on ? '文字を標準の大きさに戻す' : '側パネル・札の文字を大きくする';
+      };
+      const b = h(
+        'button',
+        {
+          class: 'btn sm ghost text-btn',
+          onclick: () => {
+            on = !on;
+            try {
+              localStorage.setItem('madori.textLg', on ? 'on' : 'off');
+            } catch {
+              /* 使えない環境 */
+            }
+            apply();
+          },
+        },
+        '文字 大',
+      );
+      apply();
+      return b;
+    };
     const input = h('input', { type: 'file', accept: '.json,application/json', style: 'display:none' }) as HTMLInputElement;
     input.addEventListener('change', async () => {
       const f = input.files?.[0];
@@ -205,6 +237,7 @@ export class App {
       h('button', { class: 'btn sm ghost', title: 'プロジェクトをファイルに保存（Ctrl+S）。図面の読み取り結果・修正・テイスト・建設地・パース画像をまとめて保存します', onclick: () => void saveProjectFile() }, '保存'),
       h('button', { class: 'btn sm ghost', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '開く'),
       hintsToggle(),
+      textToggle(),
       h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => void shareDialog(this) }, 'お客様に渡す'),
       input,
     );

@@ -150,8 +150,8 @@ export function decide(c: CoordState, catId: string, on = true): CoordState {
 }
 
 /** 決まり具合（全体・回ごと） */
-export function progress(c: CoordState): { decided: number; total: number; byRound: { no: number; decided: number; total: number }[] } {
-  const byRound = ROUNDS.map((r) => ({ no: r.no, decided: r.cats.filter((id) => itemOf(c, id).status === 'decided').length, total: r.cats.length }));
+export function progress(c: CoordState): { decided: number; total: number; byRound: { no: number; title: string; decided: number; total: number }[] } {
+  const byRound = ROUNDS.map((r) => ({ no: r.no, title: r.title, decided: r.cats.filter((id) => itemOf(c, id).status === 'decided').length, total: r.cats.length }));
   return { decided: byRound.reduce((s, r) => s + r.decided, 0), total: byRound.reduce((s, r) => s + r.total, 0), byRound };
 }
 

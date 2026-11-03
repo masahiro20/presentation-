@@ -5,6 +5,7 @@ import { woodCheck } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans } from '../../core/planDiff';
 import { dailyRoutes, overlayRoutes, routeColor } from '../../core/circulation';
+import { readDesignIntents } from '../../core/designIntent';
 import { overlaySightlines, sightColor } from '../../core/sightlines';
 import { state, type GalleryItem } from '../state';
 import { openMeetingMemo } from '../docs';
@@ -385,6 +386,11 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
               ),
             ),
             adj.length ? h('p', { class: 'route-wish' }, ...adj.slice(0, 2).map((a) => h('span', null, `${a.status === 'ok' ? '✓' : a.status === 'check' ? '△' : '－'} ご要望「${a.wish.label}」: ${a.evidence}`))) : null,
+            // この間取りの考え方（設計意図）: お客様の言葉で 4 つまで
+            ...(() => {
+              const its = readDesignIntents(model).filter((i) => i.kind === 'plus').slice(0, 4);
+              return its.length ? [h('ul', { class: 'intent-list' }, ...its.map((i) => h('li', null, h('b', null, i.title), h('span', null, i.customer))))] : [];
+            })(),
           ),
           h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: svg })),
         ),

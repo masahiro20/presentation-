@@ -978,6 +978,8 @@ export interface FloorHints {
   singleStorey?: boolean;
   /** この点を含む区画は家の外（手で外構・後付け／離れのガレージにした区画）。外形に入れない */
   outdoorAt?: Vec2[];
+  /** 戸・シャッター・玄関ドアの「常識の補い」をしない（方眼で直したものを作り直すとき。消した戸・シャッターが戻らないように） */
+  noAutoOpenings?: boolean;
 }
 
 /** 2 つの部屋が壁を挟んで隣り合うか（壁芯の外形どうしが 300mm 以上重なる辺を持つ） */
@@ -2087,7 +2089,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     notes.push({ text: `${r.name}: 天井高 ${c.ch} mm（図面の注記）`, x: r.labelPos.x, y: r.labelPos.y, roomId: r.id });
   }
   // 戸・シャッター・玄関ドアが読めなかった部屋を常識で補う（吉田様邸: 2 階の洋室・トイレに戸が無い、玄関ドア・シャッターが無い）
-  for (const t of ensureOpenings(outWalls, openings, rooms, level)) {
+  for (const t of hints?.noAutoOpenings ? [] : ensureOpenings(outWalls, openings, rooms, level)) {
     warnings.push(t);
     const rm = rooms.find((r) => t.startsWith(`${level}階 ${r.name}:`));
     if (rm) notes.push({ text: t.replace(/^\d+階 /, ''), x: rm.labelPos.x, y: rm.labelPos.y, roomId: rm.id });
@@ -3024,7 +3026,7 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
       return !!prev && (isExteriorWorks(prev.type) || (prev.type === 'garage' && (prev.garageKind === 'attached' || prev.garageKind === 'detached')));
     })
     .map((l) => ({ x: l.x, y: l.y }));
-  const nf = buildFloor(plan, f.level, northAngleDeg, warnings, undefined, { outdoorAt });
+  const nf = buildFloor(plan, f.level, northAngleDeg, warnings, undefined, { outdoorAt, noAutoOpenings: true });
   // 窓・ドアの種類は、修正前（読み取り結果や手で選んだもの）をそのまま引き継ぐ。
   // 作り直しの自動判定（外壁の引戸→窓、内壁の窓→引戸 など）で、手で選んだ種類が変わらないように
   const center = (fl: Floor, op: Opening) => {

@@ -669,13 +669,13 @@ export const simStep: StudyStep = {
       const popOpts = hideOptionsControl({ remember: true, compact: true });
       const r = stage.getBoundingClientRect();
       const left = Math.max(8, Math.min(r.width - 300, e.clientX - r.left + 10));
-      const top = Math.max(8, Math.min(r.height - (eff.plateau && eff.mesh ? 620 : 250), e.clientY - r.top + 10));
+      const top = Math.max(8, Math.min(r.height - ((eff.plateau && eff.mesh) || eff.ring.length >= 3 ? 620 : 250), e.clientY - r.top + 10));
       // PLATEAU の建物: 出典（年度・LOD・箱形／屋根形状）、実測の最高高さ／モデルの高さ、所在、PLATEAU 地盤 T.P.／地形 T.P.、建物 ID の行（plateauInfoLines）。
       // 属性の無い PLATEAU の建物（旧形式の保存データ）は従来どおり出典の 1 行
       const info = plateauInfoLines(eff);
       // 実形状（mesh）は高さを変えると足元を固定して縦に伸縮する。「最高高さに合わせる」は実測の最高高さ（bldg:measuredHeight）が 0.5 m 以上違うときだけ
       const stretch = !!eff.mesh && !!eff.plateau;
-      // 屋根・階高の編集欄（PLATEAU の建物のみ。適用で mesh・高さ・属性を入力値で作り直す）
+      // 屋根・階高の編集欄（PLATEAU の建物は mesh・高さ・属性を、箱形の建物は屋根の仕様・高さを入力値で作り直す）
       const roofEd = createRoofEditor(
         eff,
         !!study.neighborOverrides[n.id]?.roof,

@@ -20,6 +20,8 @@ import { PLANNED_COLORS, buildPlannedHouseGeometry, plannedFootprint, syncPlanne
 import { buildPlateauGeometry, fetchPlateauBuildings, loadPlateauIndex } from '../sun/plateau';
 import type { PlateauAttrs, PlateauFetchOptions, PlateauFetchResult } from '../sun/plateau';
 import { plateauNotes, plateauProgressText, plateauToNeighbor, reachHeight } from './plateauNeighbors';
+import { estimateBoxRoof } from './boxRoof';
+import { specMesh, specTop } from '../sun/plateau';
 import { frameToLocal } from './types';
 import type { AerialImage, HeightGrid, LatLon, Neighbor, NeighborSource, PlateauEnvInfo } from './types';
 
@@ -280,6 +282,16 @@ export function fillGapsWithGsi(plateau: Neighbor[], gsi: Neighbor[], maxOverlap
  * opts.plateau は fetchPlateauBuildings に渡す追加の設定（テストの fetchImpl・draco・indexUrl、上限など。signal はこちらのものを使う）。
  * 戻り値の plateau は PLATEAU を使ったときだけ（使ったデータセット・索引の生成日時・LOD 別の棟数。study.env.plateau と開示に使う）
  */
+/** 箱形の建物に推定の屋根（roofSpec）をかぶせ、高さを屋根の最高点にする（付かない建物はそのまま） */
+export function withBoxRoof(nb: Neighbor, hints: Parameters<typeof estimateBoxRoof>[2], enabled = true): Neighbor {
+  if (!enabled || nb.plateau || nb.mesh) return nb;
+  const spec = estimateBoxRoof(nb.ring, nb.height, hints);
+  if (!spec) return nb;
+  nb.roofSpec = spec;
+  nb.height = Math.round(specTop(spec) * 100) / 100;
+  return nb;
+}
+
 export async function fetchNeighbors(
   lat: number,
   lon: number,
@@ -403,6 +415,7 @@ export async function fetchNeighbors(
             if (ring.length < 3) return null;
             const nb: Neighbor = { id: neighborId('osm', ring, lat, lon), ring, height: b.height, source: 'osm', heightKind: b.height === 6.8 ? 'estimated' : 'measured' };
             if (b.label) nb.label = b.label;
+            withBoxRoof(nb, { heightKind: nb.heightKind === 'measured' ? 'measured' : 'estimated', levels: b.levels, roofShape: b.roofShape, buildingType: b.buildingType }, opts.plateau?.roofEstimate !== false);
             return nb;
           })
           .filter((b): b is Neighbor => b !== null),
@@ -417,12 +430,16 @@ export async function fetchNeighbors(
     throw new Error(NETWORK_ERROR);
   }
   // 影の到達判定は PLATEAU の実測の最高高さも見る（LOD1 の形状の高さは点群の中央値で低め）
+  // 国土地理院の箱形の建物にも推定の屋根（住宅らしい足元なら寄棟）。「推定の屋根」を切ると箱のまま
+  for (const nb of list) if (nb.source === 'gsi') withBoxRoof(nb, { heightKind: 'estimated', label: nb.label }, opts.plateau?.roofEstimate !== false);
   const kept = applyDistanceRule(list, NEIGHBOR_NEAR_M, reachHeight);
   if (covered) {
     // 出典の 'gsi' と注記の棟数（PLATEAU の棟数・屋根形状あり／箱形・補った棟数）はどちらも一覧に残った建物で数える（棟数行・脚注・レポートと一致）
     if (kept.some((n) => n.source === 'gsi')) sourcesUsed.push('gsi');
     notes.unshift(...plateauNotes(covered, kept));
   }
+  const boxRoofs = kept.filter((n) => n.roofSpec && !n.plateau).length;
+  if (boxRoofs) notes.push(`推定の屋根: 国土地理院・OpenStreetMap の箱形の建物 ${boxRoofs} 棟に、足元の形と高さから推定した屋根（住宅は寄棟・集合住宅は陸屋根）をかぶせています。実際の屋根の形ではありません。建物クリックで形・高さを直せます。`);
   if (!kept.length && !notes.length) notes.push('周辺に建物データが見つかりませんでした。必要なら「隣家を追加」で手動で置いてください。');
 
   const out: FetchNeighborsResult = { list: kept, sourcesUsed, notes };
@@ -575,6 +592,29 @@ export function buildNeighborMeshes(
     }
     const ring = cleanRing(nb.ring);
     if (ring.length < 3) continue;
+    if (nb.roofSpec) {
+      // 箱形の建物にかぶせた屋根（推定・手入力）: 足元の輪郭から屋根付きの形を作る（ピン基準なので平行移動は無し）
+      const rm = specMesh(ring, nb.roofSpec);
+      if (rm) {
+        let g0 = Infinity;
+        for (const p of ring) {
+          const g = opts.groundY(p.e, p.n);
+          if (Number.isFinite(g) && g < g0) g0 = g;
+        }
+        if (!Number.isFinite(g0)) g0 = 0;
+        const useAerial = !!roofAerial && !!aerial && !nb.far;
+        const roofUV = useAerial && aerial ? { west: aerial.west, east: aerial.east, south: aerial.south, north: aerial.north, toEN: (x: number, zl: number) => ({ e: x, n: -zl }) } : null;
+        const geo = buildPlateauGeometry(rm, { sinkBottom: 0.3, roofUV });
+        geo.translate(0, g0 + 0.3, 0);
+        const mesh = new THREE.Mesh(geo, [useAerial && roofAerial ? roofAerial : roofPlain, wallMat(nb.heightKind)]);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.name = nb.label ?? '周辺建物';
+        mesh.userData = { neighbor: true, neighborId: nb.id, heightKind: nb.heightKind, matKey: 'neighbor' };
+        group.add(mesh);
+        continue;
+      }
+    }
     const shape = new THREE.Shape(ring.map((p) => new THREE.Vector2(p.e, p.n)));
     for (const h of nb.holes ?? []) {
       const hr = cleanRing(h);

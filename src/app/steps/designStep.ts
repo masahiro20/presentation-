@@ -121,8 +121,43 @@ export const designStep: Step = {
     ctx.stage.appendChild(tools);
 
     // ---- 見どころカメラのフィルムストリップ（ステージ下）: 小さな下書き画像つき ----
+    // 既定は畳んでおく（パースの邪魔にならないように）。「構図」を押すと出て、ホイールで横に送れる。‹ › でもページ送り
     const strip = h('div', { class: 'shot-strip' });
-    ctx.stage.appendChild(strip);
+    const dock = h('div', { class: 'shot-dock' });
+    const ud = v.userData as { shotDockOpen?: boolean };
+    const toggle = h('button', { class: 'shot-toggle', title: '構図の一覧を出す／しまう' });
+    const setDock = (open: boolean) => {
+      ud.shotDockOpen = open;
+      dock.classList.toggle('open', open);
+      toggle.classList.toggle('on', open);
+      renderToggle();
+      if (open) window.setTimeout(() => strip.querySelector('.shot-card.on')?.scrollIntoView({ inline: 'center', block: 'nearest' }), 30);
+    };
+    const renderToggle = () => {
+      clear(toggle);
+      const cur = active ? (active.title.replace(/^内観パース|^外観パース/, '').replace(/[（）]/g, '') || active.title).normalize('NFKC') : '';
+      toggle.append(h('span', { class: 'ic' }, ud.shotDockOpen ? '▾' : '▸'), h('span', { class: 'lb' }, '構図'));
+      if (cur) toggle.append(h('span', { class: 'cur' }, cur));
+      toggle.append(h('span', { class: 'n' }, `${shots.length}`));
+    };
+    toggle.onclick = () => setDock(!ud.shotDockOpen);
+    const page = (dir: 1 | -1) => strip.scrollBy({ left: dir * Math.max(240, strip.clientWidth * 0.8), behavior: 'smooth' });
+    const prev = h('button', { class: 'shot-arrow', title: '前の構図へ', onclick: () => page(-1) }, '‹');
+    const next = h('button', { class: 'shot-arrow', title: '次の構図へ', onclick: () => page(1) }, '›');
+    // ホイールの縦回しで横に送る（横スクロールはドラッグしないと動かず使いづらかった）
+    strip.addEventListener(
+      'wheel',
+      (e) => {
+        if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+        e.preventDefault();
+        strip.scrollLeft += e.deltaY;
+      },
+      { passive: false },
+    );
+    dock.append(toggle, h('div', { class: 'shot-row' }, prev, strip, next));
+    ctx.stage.appendChild(dock);
+    dock.classList.toggle('open', !!ud.shotDockOpen);
+    toggle.classList.toggle('on', !!ud.shotDockOpen);
     const thumbs = (v.userData.shotThumbs ??= new Map<string, string>()) as Map<string, string>;
     let thumbGen = 0;
     const kindLabel = (s: Shot) => (s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観');
@@ -139,6 +174,7 @@ export const designStep: Step = {
               v.applyShot(s, true);
               active = s;
               for (const c of strip.children) c.classList.toggle('on', c === card);
+              renderToggle();
             },
           },
           th,
@@ -146,6 +182,7 @@ export const designStep: Step = {
         );
         strip.appendChild(card);
       }
+      renderToggle();
       scheduleThumbs();
     };
     /** 下書きのサムネイルは画面が空いたときに少しずつ（カメラだけ動かして小さく描く。輪切り・断面・時間帯の違う構図は札だけ） */

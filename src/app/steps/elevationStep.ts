@@ -6,6 +6,8 @@ import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg } from '../../drawings/plan';
 import { composeSheet, sheetScale, SHEET_TOP_W } from '../../drawings/sheet';
 import { exteriorFinishTableSvg } from '../../drawings/finishTable';
+import { exteriorQuantityTableSvg } from '../../drawings/quantities';
+import { exteriorById } from '../../styles/presets';
 import { modelToDxf } from '../../drawings/dxf';
 import { sheetInfo } from '../sheetInfo';
 
@@ -36,7 +38,9 @@ export function buildSheets(app: StepCtx['app'], color = false) {
     const parts = model.floors.map((f) => floorPlanParts(model, f, { sheet: sheetInfo('平面図'), sectionLines }));
     const at = areaTableSvg(model, 0, 0);
     const opts = { right: { svg: at.svg, w: at.w, h: at.h }, defs: parts.map((p) => p.defs ?? '').join(''), gap: 2400 };
-    const groups = sheetScale(parts, { ...opts, scales: [100] }) ? [model.floors.map((_, i) => i)] : model.floors.map((_, i) => [i]);
+    // 2 階建てまでは 1 階・2 階を 1 枚に（1/100 で収まらなければ 1/150・1/200 に落として 1 枚にする）。3 階建ては 1/100 で収まるときだけ 1 枚
+    const oneSheet = model.floors.length <= 2 ? [100, 150, 200] : [100];
+    const groups = sheetScale(parts, { ...opts, scales: oneSheet }) ? [model.floors.map((_, i) => i)] : model.floors.map((_, i) => [i]);
     for (const g of groups) {
       const fl = g.map((i) => model.floors[i]);
       const title = fl.length > 1 ? `平面図（${fl.map((f) => `${f.level}階`).join('・')}）` : `${fl[0]?.level ?? 1}階 平面図`;
@@ -45,7 +49,10 @@ export function buildSheets(app: StepCtx['app'], color = false) {
   }
   // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
   const top = exteriorFinishTableSvg(state.design, 0, 0, SHEET_TOP_W);
-  sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200 }) });
+  // 右上に外部数量表（外壁面積・屋根面積など。見積の拾いと同じ計算。テイストの屋根・軒の出に合わせる）
+  const ext = exteriorById(state.design.exteriorId);
+  const qt = exteriorQuantityTableSvg(model, { grade: 'P', eavesMm: state.design.eaves ?? ext.roof.eaves, pitch: state.design.roofPitch ?? ext.roof.pitch, roofType: state.design.roofOverride ?? ext.roof.type, solido: ext.accent ? ext.accentRule : 'none' }, 0, 0);
+  sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${no++}`), { top, gap: 1200, right: { svg: qt.svg, w: qt.w, h: qt.h } }) });
   state.sheets = sheets;
 }
 

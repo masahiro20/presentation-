@@ -1380,9 +1380,11 @@ function shutterSpans(L, layout) {
 			t1: t0 + w
 		}];
 	}
+	const w = Math.min(full, 6400);
+	const t0 = EDGE + (full - w) / 2;
 	return [{
-		t0: EDGE,
-		t1: Math.min(L - EDGE, 6480)
+		t0,
+		t1: t0 + w
 	}];
 }
 //#endregion
@@ -10145,7 +10147,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			roomId: r.id
 		});
 	}
-	for (const t of ensureOpenings(outWalls, openings, rooms, level)) {
+	for (const t of hints?.noAutoOpenings ? [] : ensureOpenings(outWalls, openings, rooms, level)) {
 		warnings.push(t);
 		const rm = rooms.find((r) => t.startsWith(`${level}階 ${r.name}:`));
 		if (rm) notes.push({
@@ -13549,6 +13551,10 @@ function livabilityChecks(model) {
 }
 //#endregion
 //#region src/estimate/areas.ts
+/**
+* 積算の「面」シートにあたる数量: 読み込んだ間取り（部屋・外形・開口）と屋根・軒の設定から自動で拾う。
+* 設計士が直せるように、すべての値は上書きできる（areasOverride）。
+*/
 /** 画面で編集できる項目の説明（順番どおりに並べる） */
 var AREA_FIELDS = [
 	{
@@ -13584,6 +13590,12 @@ var AREA_FIELDS = [
 	{
 		key: "extraArea",
 		label: "施工面積（追加分）",
+		unit: "㎡",
+		group: "面積"
+	},
+	{
+		key: "garageArea",
+		label: "ビルトインガレージ ※施工面積に",
 		unit: "㎡",
 		group: "面積"
 	},
@@ -13656,6 +13668,12 @@ var AREA_FIELDS = [
 	{
 		key: "insulArea",
 		label: "断熱面積 室内天井＆外部床",
+		unit: "㎡",
+		group: "外部"
+	},
+	{
+		key: "insulWall",
+		label: "断熱面積 壁 ※ガレージを除く",
 		unit: "㎡",
 		group: "外部"
 	},
@@ -13918,6 +13936,53 @@ function uncoveredEdge(f, upper, step = 100) {
 	}
 	return len / 1e3;
 }
+/** 家の中に組み込まれたガレージ（床は土間。床面積に入れず施工面積に、断熱は入れない） */
+function isBuiltinGarage$1(r) {
+	return r.type === "garage" && !isSeparateGarage(r) && r.polygon.length >= 3;
+}
+/** 多角形のうち、上の階の外形に覆われていない面積 (㎡)（50mm 格子）: ガレージの上が屋根（天井の断熱の対象外）かどうか */
+function uncoveredArea(poly, uppers, step = 50) {
+	if (poly.length < 3) return 0;
+	const bb = bboxOf(poly);
+	const cell = step * step / 1e6;
+	let area = 0;
+	for (let x = bb.minX + step / 2; x < bb.maxX; x += step) for (let y = bb.minY + step / 2; y < bb.maxY; y += step) {
+		if (!inPoly(poly, x, y)) continue;
+		if (!uppers.some((u) => inFloor(u, x, y))) area += cell;
+	}
+	return area;
+}
+function inPoly(poly, x, y) {
+	let inside = false;
+	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+		const a = poly[i];
+		const b = poly[j];
+		if (a.y > y !== b.y > y && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+	}
+	return inside;
+}
+/** 多角形の辺のうち外壁になっている長さ (m)（辺の中点を外へ 150 ずらした点が階の外形の外） */
+function exteriorEdgeLen(f, poly, step = 100) {
+	let len = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const a = poly[i];
+		const b = poly[(i + 1) % poly.length];
+		const L = Math.hypot(b.x - a.x, b.y - a.y);
+		if (L < 1) continue;
+		const nx = -(b.y - a.y) / L;
+		const ny = (b.x - a.x) / L;
+		const n = Math.max(1, Math.round(L / step));
+		for (let k = 0; k < n; k++) {
+			const t = (k + .5) / n;
+			const p = {
+				x: a.x + (b.x - a.x) * t,
+				y: a.y + (b.y - a.y) * t
+			};
+			if (!inFloor(f, p.x + nx * 150, p.y + ny * 150) !== !inFloor(f, p.x - nx * 150, p.y - ny * 150)) len += L / n;
+		}
+	}
+	return len / 1e3;
+}
 /** 外形の出隅（外側に尖った角）の数 */
 function convexCorners(f) {
 	let n = 0;
@@ -13938,10 +14003,12 @@ function convexCorners(f) {
 function takeoff(model, opts) {
 	const floors = model.floors.slice().sort((a, b) => a.level - b.level);
 	const fl = (lv) => floors.find((f) => f.level === lv);
+	const garageRooms = (f) => f.rooms.filter((r) => isBuiltinGarage$1(r) && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
+	const garageArea = r2$1(floors.reduce((s, f) => s + garageRooms(f).reduce((t, r) => t + r.area, 0), 0));
 	const floorArea = (f) => {
 		if (!f) return 0;
 		const inner = f.rooms.filter((r) => (r.type === "void" || r.type === "balcony") && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
-		return Math.max(0, outlineArea$1(f) - inner.reduce((s, r) => s + r.area, 0));
+		return Math.max(0, outlineArea$1(f) - inner.reduce((s, r) => s + r.area, 0) - garageRooms(f).reduce((s, r) => s + r.area, 0));
 	};
 	const floor1 = r2$1(floorArea(fl(1)));
 	const floor2 = r2$1(floorArea(fl(2)));
@@ -13954,7 +14021,7 @@ function takeoff(model, opts) {
 	const ov = overlay(floors);
 	const pilotis = ov.exposedBelow[1] ?? 0;
 	const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0);
-	const extraArea = r2$1(porchRooms + pilotis);
+	const extraArea = r2$1(porchRooms + pilotis + garageArea);
 	const loftArea = 0;
 	const constArea = r2$1(totalArea + extraArea + balconyArea + loftArea + voidArea);
 	const buildArea = r2$1(Math.max(ov.union, floor1));
@@ -13991,7 +14058,17 @@ function takeoff(model, opts) {
 	const shortSide = bb ? Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1e3 : 0;
 	const eaveLen = r2$1(opts.roofType === "gable" ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === "shed" ? shortSide + 2 * eaveOut : topPerim + 8 * eaveOut);
 	const ridgeLen = r2$1(opts.roofType === "flat" ? 0 : opts.roofType === "shed" ? 10 : longSide);
-	const insulArea = r2$1(roofPlan + overhang);
+	let garageCeil = 0;
+	let garageWall = 0;
+	for (let i = 0; i < floors.length; i++) {
+		const f = floors[i];
+		for (const g of garageRooms(f)) {
+			garageCeil += uncoveredArea(g.polygon, floors.slice(i + 1));
+			garageWall += exteriorEdgeLen(f, g.polygon) * (f.height / 1e3 + (f.level === 1 ? FOUND_H : 0));
+		}
+	}
+	const insulArea = r2$1(Math.max(0, roofPlan - garageCeil + overhang));
+	const insulWall = r2$1(Math.max(0, extWall - garageWall));
 	const siteEdge = r2$1(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1e3 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
 	const doors = floors.reduce((s, f) => s + f.openings.filter((o) => (o.kind === "door" || o.kind === "sliding") && !f.walls.find((w) => w.id === o.wallId)?.exterior).length, 0);
 	const isDoma = (name) => /土間|SIC|シューズ/.test(name);
@@ -14013,7 +14090,7 @@ function takeoff(model, opts) {
 		"storage"
 	].includes(r.type) && !isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
 	const porchIn = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "entrance" || (r.type === "storage" || r.type === "closet") && isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
-	const porchOut = r2$1(porchRooms > 0 ? porchRooms : 2.48);
+	const porchOut = r2$1(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
 	const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "toilet" || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
 	const stairs = Math.max(0, floors.length - 1);
 	const tatami = floors.reduce((s, f) => s + roomsArea(f, ["japanese"]), 0) / 1.62;
@@ -14039,6 +14116,7 @@ function takeoff(model, opts) {
 		porchOut,
 		porchIn,
 		extraArea,
+		garageArea,
 		balconyArea,
 		voidArea,
 		loftArea,
@@ -14053,6 +14131,7 @@ function takeoff(model, opts) {
 		ridgeLen,
 		corners,
 		insulArea,
+		insulWall,
 		highCeil: 0,
 		slopeCeil: 0,
 		siteEdge,
@@ -15068,7 +15147,7 @@ function buildBuilding(model, opts) {
 			pieces.push(...splitAtVoid(f, w0, ops0));
 		}
 		for (const { w, ops } of pieces) {
-			buildWall(mb, f, w, ops, fl, top, !!ext.accent && (ext.accentRule === "upper" && f.level >= 2 || ext.accentRule === "lower" && f.level === 1 || ext.accentRule === "entrance" && w.exterior && isEntranceColumn(w, entranceRanges)) ? "ext.accent" : "ext.wall", isTop, spec);
+			buildWall(mb, f, w, ops, fl, top, w.accent ?? (!!ext.accent && (ext.accentRule === "upper" && f.level >= 2 || ext.accentRule === "lower" && f.level === 1 || ext.accentRule === "entrance" && w.exterior && isEntranceColumn(w, entranceRanges))) ? "ext.accent" : "ext.wall", isTop, spec);
 			for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec, upperOutlinesOf(model, f));
 		}
 		buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
@@ -15414,6 +15493,12 @@ function buildAnnexRoof(mb, f, r) {
 	}
 }
 function floorKeyFor(r) {
+	if (r.floorFinish) return {
+		wood: "int.floor",
+		tile: "int.wetFloor",
+		tatami: "int.tatami",
+		doma: "int.entranceFloor"
+	}[r.floorFinish];
 	switch (r.type) {
 		case "bath":
 		case "washroom":
@@ -15858,6 +15943,7 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		const r = sign === 1 ? rPlus : rMinus;
 		if (isOutdoor(r) || !r) return extKey;
 		if (r?.type === "bath") return "int.bathWall";
+		if (!w.exterior && w.accent !== void 0) return w.accent ? "int.accent" : "int.wall";
 		if (r && (r.type === "ldk" || r.type === "living") && !w.exterior && ops.length === 0 && L > 2.2) return "int.accent";
 		return "int.wall";
 	};
@@ -16090,8 +16176,27 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 	}
 	if (o.kind === "shutter") {
 		const plane = mid.clone().addScaledVector(outN, t / 2 - .06);
-		mb.box("ext.shutter", plane.clone().setY(sill + .02), dir, width - .1, H - .08, .05);
-		for (let y = sill + .25; y < head - .12; y += .25) mb.box("ext.frame", plane.clone().setY(y), dir, width - .14, .008, .056);
+		const panelH = H - .08;
+		const top = plane.clone().setY(sill + .02 + panelH);
+		const yaw = Math.atan2(-dir.z, dir.x);
+		const smb = new MeshBuilder();
+		smb.clip = localClip(top, yaw);
+		smb.box("ext.shutter", V(0, -panelH, 0), V(1, 0, 0), width - .1, panelH, .05);
+		for (let y = -panelH + .23; y < -.1; y += .25) smb.box("ext.frame", V(0, y, 0), V(1, 0, 0), width - .14, .008, .056);
+		smb.box("ext.frame", V(0, -panelH, 0), V(1, 0, 0), width - .1, .06, .06);
+		meta.doors.push({
+			id: o.id,
+			kind: "roll",
+			level: f.level,
+			origin: top,
+			yaw0: yaw,
+			openAngle: 0,
+			slideDir: new THREE.Vector3(),
+			slideDist: 0,
+			staticOpen: 0,
+			mb: smb,
+			width: width - .1
+		});
 		mb.box("ext.frame", plane.clone().addScaledVector(dir, -width / 2 + .025).setY(sill), dir, .05, H, .1);
 		mb.box("ext.frame", plane.clone().addScaledVector(dir, width / 2 - .025).setY(sill), dir, .05, H, .1);
 		mb.box("ext.frame", plane.clone().addScaledVector(outN, -.05).setY(head - .3), dir, width, .3, .2);
@@ -22749,6 +22854,30 @@ var CATEGORIES = [
 				qty: (a) => a.pocketKey ? 1 : 0,
 				optional: true,
 				on: "both"
+			},
+			{
+				id: "sash.shutterElec1",
+				spec: "ガレージシャッター",
+				desc: "電動オーバースライダー 幅 3m 1 台 ※単価は目安（メーカー見積で確定）",
+				unit: "箇所",
+				cost: 32e4,
+				round: -2,
+				qty: () => 0,
+				qtyNote: "提案から入れる",
+				optional: true,
+				on: "both"
+			},
+			{
+				id: "sash.shutterElec2",
+				spec: "ガレージシャッター",
+				desc: "電動オーバースライダー 幅 5.5m 2 台一体 ※単価は目安（メーカー見積で確定）",
+				unit: "箇所",
+				cost: 52e4,
+				round: -2,
+				qty: () => 0,
+				qtyNote: "提案から入れる",
+				optional: true,
+				on: "both"
 			}
 		]
 	},
@@ -22900,7 +23029,8 @@ var CATEGORIES = [
 				unit: "㎡",
 				cost: 4500,
 				round: -2,
-				qty: (a) => a.addInsul ? a.extWall : 0,
+				qty: (a) => a.addInsul ? a.insulWall ?? a.extWall : 0,
+				qtyNote: "外壁面積（ガレージを除く）",
 				optional: true,
 				on: "both"
 			}
@@ -22961,8 +23091,8 @@ var CATEGORIES = [
 				desc: "グラスウール16K t105",
 				unit: "㎡",
 				cost: 1e3,
-				qty: (a) => a.extWall,
-				qtyNote: "外壁面積",
+				qty: (a) => a.insulWall ?? a.extWall,
+				qtyNote: "外壁面積（ガレージを除く）",
 				group: "wallIns",
 				on: ["S"]
 			},
@@ -22972,8 +23102,8 @@ var CATEGORIES = [
 				desc: "グラスウール16K t120",
 				unit: "㎡",
 				cost: 1500,
-				qty: (a) => a.extWall,
-				qtyNote: "外壁面積",
+				qty: (a) => a.insulWall ?? a.extWall,
+				qtyNote: "外壁面積（ガレージを除く）",
 				group: "wallIns",
 				on: "none"
 			},
@@ -22983,8 +23113,8 @@ var CATEGORIES = [
 				desc: "セルロースファイバー t105",
 				unit: "㎡",
 				cost: 2800,
-				qty: (a) => a.extWall,
-				qtyNote: "外壁面積",
+				qty: (a) => a.insulWall ?? a.extWall,
+				qtyNote: "外壁面積（ガレージを除く）",
 				group: "wallIns",
 				on: "none"
 			},
@@ -22994,8 +23124,8 @@ var CATEGORIES = [
 				desc: "セルロースファイバー t120 ※シート施工込",
 				unit: "㎡",
 				cost: 3500,
-				qty: (a) => a.extWall,
-				qtyNote: "外壁面積",
+				qty: (a) => a.insulWall ?? a.extWall,
+				qtyNote: "外壁面積（ガレージを除く）",
 				group: "wallIns",
 				on: ["P"]
 			},

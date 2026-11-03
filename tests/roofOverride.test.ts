@@ -42,9 +42,13 @@ describe('applyUserRoof', () => {
     expect(a.height).toBeCloseTo(9.8, 6);
     expect(a.plateau?.roofEstimate?.parapet).toBeCloseTo(0.8, 6);
   });
-  it('plateau 属性・mesh が無い建物、ピンが無いときは何もしない', () => {
+  it('箱形の建物（plateau 属性・mesh が無い）は roofSpec と高さを入れ替える（形は描くときに足元から作る）。PLATEAU の建物でピンが無いときは何もしない', () => {
     const plain: Neighbor = { id: 'g', ring: rect(0, 0, 5, 5), height: 7, source: 'gsi', heightKind: 'estimated' };
-    expect(applyUserRoof(plain, { kind: 'hip', eave: 5, ridge: 7, boxHeight: 6 }, FRAME)).toBe(plain);
+    const boxed = applyUserRoof(plain, { kind: 'hip', eave: 5, ridge: 7.5, boxHeight: 6 }, FRAME);
+    expect(boxed).not.toBe(plain);
+    expect(boxed.roofSpec).toMatchObject({ kind: 'hip', eave: 5, ridge: 7.5, user: true });
+    expect(boxed.height).toBe(7.5);
+    expect(boxed.heightKind).toBe('manual');
     expect(applyUserRoof(plateauNb(), { kind: 'hip', eave: 5, ridge: 7, boxHeight: 6 }, null).height).toBe(6.8);
   });
 });
@@ -61,9 +65,16 @@ describe('setNeighborRoof / effectiveNeighbors', () => {
     expect(study.neighborOverrides['plateau:b1']).toBeUndefined();
     expect(effectiveNeighbors()[0].height).toBe(6.8);
   });
-  it('PLATEAU でない建物には書けない', () => {
+  it('箱形の建物（国土地理院）にも書ける。足元の無い建物・想定の家には書けない', () => {
     study.neighbors = [{ id: 'g', ring: rect(0, 0, 5, 5), height: 7, source: 'gsi', heightKind: 'estimated' }];
-    expect(setNeighborRoof('g', { kind: 'hip', eave: 5, ridge: 7, boxHeight: 6 })).toBe(false);
+    expect(setNeighborRoof('g', { kind: 'hip', eave: 5, ridge: 7, boxHeight: 6 })).toBe(true);
+    const e = effectiveNeighbors().find((n) => n.id === 'g')!;
+    expect(e.roofSpec?.kind).toBe('hip');
+    expect(e.height).toBe(7);
+    expect(setNeighborRoof('g', null)).toBe(true);
+    expect(effectiveNeighbors().find((n) => n.id === 'g')!.roofSpec).toBeUndefined();
+    study.neighbors = [{ id: 'x', ring: [], height: 7, source: 'manual', heightKind: 'manual' }];
+    expect(setNeighborRoof('x', { kind: 'hip', eave: 5, ridge: 7, boxHeight: 6 })).toBe(false);
   });
 });
 

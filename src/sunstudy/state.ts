@@ -224,10 +224,10 @@ export function analysisNeighbors(): Neighbor[] {
   return effectiveNeighbors().filter((n) => (!n.hidden || n.hideMode === 'view') && plannedActive(n));
 }
 
-/** 屋根を利用者の仕様にする（null で推定に戻す）。PLATEAU の建物（mesh と属性がある）だけ。'neighbors' を 1 回発火して影・解析を作り直す */
+/** 屋根を利用者の仕様にする（null で推定に戻す）。PLATEAU の建物（mesh と属性）と、箱形の建物（足元の輪郭がある）。'neighbors' を 1 回発火して影・解析を作り直す */
 export function setNeighborRoof(id: string, roof: NonNullable<Neighbor['plateau']>['roofEstimate'] | null): boolean {
   const n = study.neighbors.find((x) => x.id === id);
-  if (!n || !n.plateau || !n.mesh) return false;
+  if (!n || n.planned || n.ring.length < 3) return false;
   const cur = { ...(study.neighborOverrides[id] ?? {}) };
   if (roof) {
     cur.roof = { ...normalizeSpec(roof), user: true };

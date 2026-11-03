@@ -149,6 +149,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('表示だけ隠した建物は影だけのメッシュで遮蔽物に残る。計算から除外した建物は残らない。薄い表示はどちらも遮蔽物に入らない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
     const tri0 = buildOccluder(v).triangles;
@@ -195,6 +196,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('南の建物: 表示だけ隠しても計画建物の南面に影を落とし、計算から除外すると落とさない（部屋の日当たりと同じ遮蔽物）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const south = sc.keyOf(sc.state.neighbors[0]);
     // 計画建物の南面の前（ワールド z = +4.5、北は -z）、高さ 1 m
@@ -215,6 +217,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('隠し方の切り替え（理由はそのまま）。同じ隠し方なら変えない。setHidden で隠し方を変えても数える', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const k = sc.keyOf(sc.state.neighbors[2]);
     sc.setHidden([k], true, { mode: 'exclude', reason: 'onSite' });
@@ -234,6 +237,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
     const v = fakeViewer();
     const site = { ...SITE };
     const sc = new SunContext(v, site);
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const [k0, k1] = sc.state.neighbors.map((b) => sc.keyOf(b));
     sc.setHidden([k0], true, { mode: 'view', reason: 'other', note: 'カメラの前' });
@@ -254,6 +258,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('古い記録（隠したキーだけ）を当て直すと 計算から除外（影だけのメッシュを作らない）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const k = sc.keyOf(sc.state.neighbors[3]);
     sc.edits.hidden.add(k);
@@ -267,6 +272,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('pickNeighbor: 表示だけ隠した建物の影だけのメッシュは拾わない（薄い表示の間だけ、隠した建物として拾う）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const b = sc.state.neighbors[2];
     const k = sc.keyOf(b);
@@ -286,6 +292,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('PLATEAU の実形状の建物（mesh）を 1 棟混ぜる: 表示だけ隠すと影だけのメッシュ（同じ三角形数）で遮蔽物に残り、計算から除外で 12 減る。薄い表示は mesh の高さ。表の高さは括弧なし・出典 PLATEAU（用途）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     // 足元の中心がピンから西 30 m・北 20 m の 10×8×7 m の箱（取得したときのピン基準で置く）
     const mb = plateauToNeighborBuilding(plateauBox({ gmlId: 'bldg_mix', anchor: ll(-30, 20), w: 10, d: 8, h: 7, zmin: 40, attrs: { muniCd: '13112', pref: '東京都', city: '世田谷区', ward: null, year: 2025, datasetLod: 2, lod: 1, usage: '共同住宅', measuredHeight: 7.9 } }), PIN);
@@ -338,6 +345,7 @@ describe('SunContext: 表示だけ隠す／計算から除外', () => {
   it('collectDisclosure: 影・解析に入れた数（表示だけ隠した建物を含む）・除外・表示だけ隠した建物（出典・高さ・理由・方向距離）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
     sc.setHeight(keys[1], 9.5);

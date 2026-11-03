@@ -1719,12 +1719,12 @@ export const sunStep: Step = {
       syncHighlight();
       const s = ctx.stage.getBoundingClientRect();
       const left = Math.max(8, Math.min(s.width - 330, cx - s.left + 12));
-      const top = Math.max(8, Math.min(s.height - (b.plateau && b.mesh ? 640 : 340), cy - s.top + 12));
+      const top = Math.max(8, Math.min(s.height - ((b.plateau && b.mesh) || b.ring.length >= 3 ? 640 : 340), cy - s.top + 12));
       const cur = sc.heightOf(b);
       const overridden = sc.edits.heights.has(key);
-      // 屋根・階高の編集欄（PLATEAU の建物のみ。適用で mesh・高さを入力値で作り直す）
+      // 屋根・階高の編集欄（PLATEAU の建物は mesh・高さを、箱形の建物は推定の屋根を入力値で作り直す）
       const roofEd = createRoofEditor(
-        b,
+        { ...b, roofSpec: sc.estimatedRoofOf(b) ?? b.roofSpec, height: sc.heightOf(b) },
         !!sc.roofOf(b),
         (spec) => {
           closePop();

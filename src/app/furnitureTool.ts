@@ -93,8 +93,9 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     return { x: Math.round(best.q.x + best.n.x * off), y: Math.round(best.q.y + best.n.y * off), rot: Math.round((Math.atan2(along.y, along.x) * 180) / Math.PI) };
   };
   /** 点（mm）にある家具（足元の外形の中。小さい物を優先） */
-  const itemAt = (level: number, p: Vec2): FurnitureItem | null => {
+  const itemAt = (level: number, p: Vec2, tol = 0.08, near = 0): FurnitureItem | null => {
     let best: { it: FurnitureItem; a: number } | null = null;
+    let nearest: { it: FurnitureItem; d: number } | null = null;
     for (const it of itemsOf(level)) {
       const { w, d, v0 } = furnitureDims(it);
       const r = (it.rot * Math.PI) / 180;
@@ -102,15 +103,19 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
       const dy = (p.y - it.y) / 1000;
       const u = dx * Math.cos(r) + dy * Math.sin(r);
       const vv = -dx * Math.sin(r) + dy * Math.cos(r);
-      if (Math.abs(u) <= w / 2 + 0.08 && vv >= v0 - 0.08 && vv <= v0 + d + 0.08) {
+      if (Math.abs(u) <= w / 2 + tol && vv >= v0 - tol && vv <= v0 + d + tol) {
         const a = w * d;
         if (!best || a < best.a) best = { it, a };
       }
+      // 足元の外形からの距離（照明・フードなど足元より外に出ている部品をクリックしたときの拾い）
+      const dist = Math.max(Math.abs(u) - w / 2, v0 - vv, vv - (v0 + d), 0);
+      if (!nearest || dist < nearest.d) nearest = { it, d: dist };
     }
-    return best?.it ?? null;
+    if (best) return best.it;
+    return near > 0 && nearest && nearest.d <= near ? nearest.it : null;
   };
 
-  const onPick = (pt: THREE.Vector3) => {
+  const onPick = (pt: THREE.Vector3, ndc?: THREE.Vector2) => {
     const f = floorAt(pt.y);
     if (!f) return;
     const p = { x: pt.x * 1000, y: pt.z * 1000 };
@@ -138,9 +143,28 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
       commit();
       return;
     }
+    // 見ている物を優先: 家具でない物（窓・壁・床・外構の物）をクリックしたら、その物の道具へ
+    if (ndc && v.onPickIdle) {
+      const hit = v.pickHit(ndc);
+      if (hit && hit.group !== 'furniture' && !(hit.group === 'building' && itemAt(f.level, p)) && v.onPickIdle(hit, ndc)) return;
+    }
     const it = itemAt(f.level, p);
     sel = it ? { level: f.level, id: it.id } : null;
     render();
+  };
+  /** 道具を開いていないときのクリック: その点に家具があれば道具を開いて選ぶ */
+  const pickHere = (pt: THREE.Vector3): boolean => {
+    const f = floorAt(pt.y);
+    if (!f) return false;
+    // 家具の面をクリックしたときは、足元の外形から 0.6m まで（照明の笠・フードなど張り出した部品）も同じ家具とみなす
+    const it = itemAt(f.level, { x: pt.x * 1000, y: pt.z * 1000 }, 0.08, 0.6);
+    if (!it) return false;
+    if (!active) setActive(true);
+    sel = { level: f.level, id: it.id };
+    add = null;
+    moving = false;
+    render();
+    return true;
   };
 
   const labelOf = (it: FurnitureItem) => (it.kind === 'builtin' ? BUILTIN_VARIANTS[it.variant ?? 'wallShelf'].label : FURNITURE_LABEL[it.kind]);
@@ -243,5 +267,5 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
   }
 
   const btn = h('button', { class: 'nav-btn', title: '家具・造作（パースを見ながら造作本棚を置く、キッチンの型を変える）\n床をクリックで置く、家具をクリックで選ぶ', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '▦'), '家具');
-  return { button: btn, setActive, isActive: () => active };
+  return { button: btn, setActive, isActive: () => active, pickHere };
 }

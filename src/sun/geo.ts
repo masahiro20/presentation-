@@ -1,6 +1,7 @@
 /**
  * 地理情報: 住所検索（国土地理院）、航空写真タイル、周辺建物（国土地理院ベクトルタイル / OpenStreetMap）
  */
+import type { RoofSpec } from './plateau/roofSpec';
 import { decodeMvt } from './mvt';
 import type { PlannedHouse } from './plannedHouse';
 import type { NeighborMesh, PlateauAttrs } from './plateau/types';
@@ -416,6 +417,12 @@ export interface NeighborBuilding {
   /** 高さの根拠（無ければ source から: plateau = measured, gsi = estimated, osm = height あり measured, manual = manual） */
   heightKind?: 'measured' | 'estimated' | 'manual';
   label?: string;
+  /** OSM のタグ（推定の屋根の手がかり）: building:levels / roof:shape / building=* */
+  levels?: number;
+  roofShape?: string;
+  buildingType?: string;
+  /** 箱形の建物（国土地理院・OSM）にかぶせた推定の屋根（sunstudy/boxRoof.ts）。利用者が直した屋根は SunContext の edits.roofs に持つ */
+  roofSpec?: RoofSpec;
   /** 一覧の中で一意の番号（取得・追加したときに SunContext が付ける。手動の隣家はこれがキーになる） */
   id?: string;
   /** 隠した建物（3D に出さず、影も落とさず、解析にも入れない。SunContext の記録から付け直す） */
@@ -514,7 +521,12 @@ export async function fetchOsmBuildings(lat: number, lon: number, radius = 120, 
       const lv = parseFloat(tags['building:levels'] ?? '');
       h = isFinite(lv) ? lv * 3.1 + 0.6 : 6.8;
     }
-    out.push({ ring: el.geometry.map((g) => toLocal(g.lat, g.lon, lat, lon)), height: h, source: 'osm', label: tags['name'] });
+    const lv = parseFloat(tags['building:levels'] ?? '');
+    const nb: NeighborBuilding = { ring: el.geometry.map((g) => toLocal(g.lat, g.lon, lat, lon)), height: h, source: 'osm', label: tags['name'] };
+    if (isFinite(lv) && lv > 0) nb.levels = lv;
+    if (tags['roof:shape']) nb.roofShape = tags['roof:shape'];
+    if (tags['building'] && tags['building'] !== 'yes') nb.buildingType = tags['building'];
+    out.push(nb);
   }
   return out;
 }

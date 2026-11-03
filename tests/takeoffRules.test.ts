@@ -53,3 +53,36 @@ describe('積算の数量: 御社の「面」シートの拾い方', () => {
     expect(newChoice('P').groups.kitchen).toBe('eq.kitchenHl');
   });
 });
+
+// ガレージの拾い方（御社の見積の約束）: ビルトインガレージは床面積に入れず施工面積に。土間は外部ポーチと同じ扱い。
+// 外壁・屋根は建物と同じに拾う。ガレージには断熱を入れない（上が屋根なら天井の断熱から、外壁の断熱からガレージの壁を引く）
+describe('積算の数量: ビルトインガレージ', () => {
+  // 1 階 10m × 6m: 西の 5m × 6m がガレージ。2 階 5m × 6m は東半分（ガレージの上は屋根）
+  const f1 = floor(1, [rect(0, 0, 10000, 6000)], [room('g', 'ガレージ', 'garage', rect(0, 0, 5000, 6000)), room('l', 'ＬＤＫ', 'ldk', rect(5000, 0, 10000, 6000))]);
+  const f2 = floor(2, [rect(5000, 0, 10000, 6000)], [room('b', '寝室', 'bedroom', rect(5000, 0, 10000, 6000))]);
+  const a = takeoff({ floors: [f1, f2] } as unknown as BuildingModel, { grade: 'P', eavesMm: 0, pitch: 0.5, roofType: 'shed' });
+
+  it('床面積に入れず、施工面積（追加分）と外部ポーチ（土間）に入れる', () => {
+    expect(a.garageArea).toBeCloseTo(30, 1);
+    expect(a.floor1).toBeCloseTo(30, 1);
+    expect(a.extraArea).toBeCloseTo(30, 0);
+    expect(a.constArea).toBeCloseTo(30 + 30 + 30, 0);
+    expect(a.porchOut).toBeCloseTo(30, 1);
+  });
+  it('外壁・屋根・建築面積は建物と同じに拾う（ガレージを外形から外さない）', () => {
+    expect(a.buildArea).toBeCloseTo(60, 0);
+    expect(a.roofArea).toBeCloseTo(60, 0);
+    // 1 階 32m × (2.9 + 0.5) ＋ 2 階 22m × 2.9 ＋ パラペット
+    expect(a.extWall).toBeGreaterThan(32 * 3.4 + 22 * 2.9);
+  });
+  it('断熱: ガレージの上の屋根は天井の断熱に入れず、ガレージの外壁は壁の断熱に入れない', () => {
+    expect(a.insulArea).toBeCloseTo(30, 0); // 屋根の下の天井 60 − ガレージの上 30
+    // ガレージの外壁 (5 + 6 + 5) m × 3.4 = 54.4㎡ を引く
+    expect(a.extWall - a.insulWall).toBeCloseTo(54.4, 0);
+  });
+  it('ガレージの上に 2 階が載るときは、その天井は断熱に入る（外部床ではなく上の階の床）', () => {
+    const f2b = floor(2, [rect(0, 0, 10000, 6000)], [room('b', '寝室', 'bedroom', rect(0, 0, 10000, 6000))]);
+    const b = takeoff({ floors: [f1, f2b] } as unknown as BuildingModel, { grade: 'P', eavesMm: 0, pitch: 0.5, roofType: 'shed' });
+    expect(b.insulArea).toBeCloseTo(60, 0);
+  });
+});

@@ -21,7 +21,7 @@ await page.evaluate(async () => {
 const go = page.getByRole('button', { name: /3D パースを作成する/ });
 await go.waitFor({ timeout: 180000 });
 await go.click({ timeout: 180000 });
-await page.waitForSelector('.shot-card', { timeout: 180000 });
+await page.waitForSelector('.shot-card', { timeout: 180000, state: 'attached' });
 await page.waitForTimeout(6000);
 const files = [];
 page.on('download', async (d) => {

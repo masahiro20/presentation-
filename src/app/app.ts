@@ -10,7 +10,7 @@ import { auditEnvelope } from '../scene/selfCheck';
 import { createFurnitureTool } from './furnitureTool';
 import { createEditTool3d } from './editTool3d';
 import { createExteriorTool } from './exteriorTool';
-import { furnitureItems } from '../scene/furniture';
+import { furnitureDims, furnitureItems } from '../scene/furniture';
 
 export interface StepCtx {
   app: App;
@@ -116,7 +116,7 @@ export class App {
     const top = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'brand' }, h('div', { class: 'wordmark' }, 'Home Landick')),
+      h('div', { class: 'brand', title: 'Home Landick' }, h('img', { class: 'logo', src: './brand/logo-hl.png', alt: 'Home Landick' })),
       office,
       nameInput,
       h('div', { class: 'spacer' }),
@@ -254,6 +254,7 @@ export class App {
       // 点検用（裏の Chrome から構図を確かめる）
       (globalThis as unknown as { __viewer: Viewer }).__viewer = this._viewer;
       (globalThis as unknown as { __furnitureItems: typeof furnitureItems }).__furnitureItems = furnitureItems;
+      (globalThis as unknown as { __furnitureDims: typeof furnitureDims }).__furnitureDims = furnitureDims;
       this.buildNavBar(this._viewer);
     }
     return this._viewer;
@@ -337,6 +338,17 @@ export class App {
         this.editTool?.setActive(false);
       },
     );
+    // 道具を開いていないときのクリック: 家具 → 家具の道具、外構の物 → 外構の道具、窓・戸・壁・床 → 窓・戸の道具（CAD のように、見ている物をそのまま選んで直す）
+    const furnTool = this.furnTool;
+    const extTool = this.extTool;
+    const editTool = this.editTool;
+    v.onPickIdle = (hit, ndc) => {
+      if (hit.group === 'furniture') return furnTool.pickHere(hit.point) || editTool.pickHere(hit, ndc);
+      if (hit.group === 'landscape') return extTool.pickHere(hit.point);
+      if (hit.group === 'building' || hit.group === 'cut') return editTool.pickHere(hit, ndc) || furnTool.pickHere(hit.point);
+      if (hit.group === 'ground') return extTool.pickHere(hit.point);
+      return false;
+    };
     bar.append(
       orbit,
       pan,

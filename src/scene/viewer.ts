@@ -55,6 +55,15 @@ export interface CameraView {
   architectural?: boolean;
 }
 
+/** クリックした点の下にある物（どのグループの、どの素材の面か） */
+export interface PickHit {
+  group: 'building' | 'furniture' | 'landscape' | 'roof' | 'cut' | 'ground';
+  matKey: string;
+  point: THREE.Vector3;
+  normal: THREE.Vector3;
+  distance: number;
+}
+
 export interface SceneState {
   model: BuildingModel;
   meta: BuildingMeta;
@@ -284,7 +293,12 @@ export class Viewer {
           return;
         }
       }
-      this.toggleDoorAt(ndc);
+      if (this.toggleDoorAt(ndc)) return;
+      // 道具を開いていなければ、クリックした物を選んで直す（歩くモードでは扉の開閉だけ）
+      if (this.onPickIdle && this.navMode !== 'walk') {
+        const hit = this.pickHit(ndc);
+        if (hit) this.onPickIdle(hit, ndc);
+      }
     });
     el.addEventListener('pointerdown', (e) => {
       if (this.navMode === 'pan') el.style.cursor = 'grabbing';
@@ -301,6 +315,21 @@ export class Viewer {
       const rotates = (this.navMode === 'orbit' && e.button === 0) || (this.navMode === 'pan' && e.button === 2);
       if (rotates && e.pointerType !== 'touch') this.pivotToCursor(e.clientX, e.clientY);
       else if (rotates && e.pointerType === 'touch' && this.walkPtrs.size === 0) this.pivotToCursor(e.clientX, e.clientY);
+    });
+    // ホバー: 選べる物（家具・外構の物・扉・シャッター・窓）の上ではカーソルを手の形に（CAD のように「触れる物」が分かる）。100ms に 1 回だけ当たり判定
+    let hoverAt = 0;
+    el.addEventListener('pointermove', (e) => {
+      if (this.navMode === 'walk' || e.buttons !== 0 || this.cut) return;
+      const now = performance.now();
+      if (now - hoverAt < 100) return;
+      hoverAt = now;
+      const r = el.getBoundingClientRect();
+      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      const hit = this.pickHit(ndc);
+      const k = hit?.matKey ?? '';
+      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k));
+      const want = touchable ? 'pointer' : this.navMode === 'pan' ? 'grab' : '';
+      if (el.style.cursor !== want) el.style.cursor = want;
     });
     el.addEventListener('pointermove', (e) => {
       if (this.navMode !== 'walk') return;
@@ -458,8 +487,39 @@ export class Viewer {
     this.camMoved();
   }
 
-  /** クリックした点を受け取る（家具を置く・選ぶモード）。null で通常（扉の開閉） */
+  /** クリックした点を受け取る（家具を置く・選ぶモード）。null で通常（扉の開閉 → onPickIdle） */
   onPick: ((p: THREE.Vector3, ndc?: THREE.Vector2) => void) | null = null;
+  /** 道具を開いていないときのクリック（扉・シャッターでなければ呼ばれる）: クリックした物をそのまま選んで直す */
+  onPickIdle: ((hit: PickHit, ndc: THREE.Vector2) => boolean) | null = null;
+
+  /** 画面上の点の下に何があるか（扉・屋根・天井は透かさず、いちばん手前の面）。何も無ければ地面の点 */
+  pickHit(ndc: THREE.Vector2): PickHit | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const shown = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+      return (o as THREE.Mesh).isMesh === true;
+    };
+    const groups: [PickHit['group'], THREE.Object3D][] = [
+      ['building', this.groups.building],
+      ['furniture', this.groups.furniture],
+      ['landscape', this.groups.landscape],
+      ['roof', this.groups.roof],
+      ['cut', this.groups.cut],
+    ];
+    const hits = rc.intersectObjects(groups.map((g) => g[1]), true).filter((x) => shown(x.object) && x.distance > 0.05 && !x.object.userData.noShadow);
+    for (const x of hits) {
+      const key = String(x.object.userData.matKey ?? '');
+      // 外部の実物モデル（観葉植物など）はキーが無い。家具扱い
+      let group: PickHit['group'] | null = null;
+      for (let o: THREE.Object3D | null = x.object; o && !group; o = o.parent) group = groups.find((g) => g[1] === o)?.[0] ?? null;
+      if (!group) continue;
+      return { group, matKey: key, point: x.point.clone(), normal: x.face ? x.face.normal.clone().transformDirection(x.object.matrixWorld) : new THREE.Vector3(0, 1, 0), distance: x.distance };
+    }
+    const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const p = new THREE.Vector3();
+    return rc.ray.intersectPlane(ground, p) ? { group: 'ground', matKey: '', point: p, normal: new THREE.Vector3(0, 1, 0), distance: p.distanceTo(this.camera.position) } : null;
+  }
 
   /** 画面上の点（NDC）の下にある「床」の点（屋根・壁・天井は透かす。家具の天板はその下の床の高さに落とす）。床が無ければ null */
   pickFloorPoint(ndc: THREE.Vector2): THREE.Vector3 | null {
@@ -1118,7 +1178,9 @@ export class Viewer {
   private poseDoor(info: DoorInfo, group: THREE.Group, frac: number) {
     group.position.copy(info.origin);
     group.rotation.set(0, info.yaw0, 0);
+    group.scale.set(1, 1, 1);
     if (info.kind === 'swing') group.rotation.y = info.yaw0 + info.openAngle * frac;
+    else if (info.kind === 'roll') group.scale.y = Math.max(0.04, 1 - frac * 0.96); // 巻き取り: 上端のボックスへ縮む
     else group.position.addScaledVector(info.slideDir, info.slideDist * frac);
     group.userData.frac = frac;
   }
@@ -1138,8 +1200,11 @@ export class Viewer {
     const vis = this.doors.filter((d) => shown(d.group) || d.group.visible);
     const hits = rc.intersectObjects(vis.map((d) => d.group), true).filter((x) => shown(x.object));
     if (!hits.length) return false;
-    // 扉より手前に壁があれば無視
-    const wall = rc.intersectObjects([this.groups.building], true).filter((x) => shown(x.object) && !String(x.object.userData.matKey ?? '').startsWith('ext.glass')).find((x) => !this.doors.some((d) => d.group === x.object.parent?.parent || d.group === x.object.parent));
+    // 扉より手前に壁・家具・外構の物があれば無視（車の向こうのシャッターが開かないように）
+    const wall = rc
+      .intersectObjects([this.groups.building, this.groups.furniture, this.groups.landscape], true)
+      .filter((x) => shown(x.object) && !String(x.object.userData.matKey ?? '').startsWith('ext.glass') && !x.object.userData.noShadow)
+      .find((x) => !this.doors.some((d) => d.group === x.object.parent?.parent || d.group === x.object.parent));
     if (wall && wall.distance < hits[0].distance - 0.05) return false;
     let o: THREE.Object3D | null = hits[0].object;
     while (o && !this.doors.some((d) => d.group === o)) o = o.parent;
@@ -1707,6 +1772,7 @@ export class Viewer {
           // 断面では切り口を合わせるため閉じたまま。輪切りでは少し開ける
           const frac = sec ? 0 : info.kind === 'swing' ? Math.max(info.staticOpen, 0.35) : info.staticOpen;
           if (info.kind === 'swing') g.rotation.y = info.yaw0 + info.openAngle * frac;
+          else if (info.kind === 'roll') g.scale.y = Math.max(0.04, 1 - frac * 0.96);
           else g.position.addScaledVector(info.slideDir, info.slideDist * frac);
           this.groups.cut.add(g);
         }

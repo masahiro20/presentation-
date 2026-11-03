@@ -70,7 +70,7 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
     return 0;
   };
 
-  const onPick = (pt: THREE.Vector3) => {
+  const onPick = (pt: THREE.Vector3, ndc?: THREE.Vector2) => {
     const p = { x: Math.round(pt.x * 1000), y: Math.round(pt.z * 1000) };
     if (add || (moving && sel)) {
       if (add) {
@@ -92,9 +92,25 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
       commit();
       return;
     }
+    // 見ている物を優先: 外構の物でない物（家具・窓・壁・床）をクリックしたら、その物の道具へ
+    if (ndc && v.onPickIdle) {
+      const hit = v.pickHit(ndc);
+      if (hit && hit.group !== 'landscape' && hit.group !== 'ground' && v.onPickIdle(hit, ndc)) return;
+    }
     const it = itemAt(p);
     sel = it ? it.id : null;
     render();
+  };
+  /** 道具を開いていないときのクリック: その点に置いた物があれば道具を開いて選ぶ */
+  const pickHere = (pt: THREE.Vector3): boolean => {
+    const it = itemAt({ x: Math.round(pt.x * 1000), y: Math.round(pt.z * 1000) });
+    if (!it) return false;
+    if (!active) setActive(true);
+    sel = it.id;
+    add = null;
+    moving = false;
+    render();
+    return true;
   };
 
   const num = (label: string, value: number, step: number, min: number, max: number, set: (x: ExteriorItem, v: number) => void) =>
@@ -164,5 +180,5 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
   }
 
   const btn = h('button', { class: 'nav-btn', title: '外構に置く（植栽・フェンス・車・BBQ・ベンチ・自転車・物置・ポスト・庭園灯）\n地面をクリックで置く、物をクリックで選ぶ', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '🌳'), '外構');
-  return { button: btn, setActive, isActive: () => active };
+  return { button: btn, setActive, isActive: () => active, pickHere };
 }

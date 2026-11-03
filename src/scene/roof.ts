@@ -185,68 +185,6 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
         return parts;
       },
     };
-    const cellIn = (m: Uint8Array, x: number, z: number) => {
-      let i = xs.findIndex((v, idx) => idx < nx && x >= v && x < xs[idx + 1]);
-      let j = zs.findIndex((v, idx) => idx < nz && z >= v && z < zs[idx + 1]);
-      if (i < 0 || j < 0) return false;
-      return !!m[j * nx + i];
-    };
-    // 下屋: 上階に接する辺（いちばん多く接する辺）ごとに四角形をまとめ、まとめた範囲を 1 枚の屋根面にする
-    const lowerSide = new Map<Rect, 'n' | 's' | 'e' | 'w'>();
-    const lowerGroups = new Map<'n' | 's' | 'e' | 'w', Region>();
-    if (!isTop && type !== 'flat') {
-      for (const r of rects) {
-        const probe = 150;
-        const sideTouch = (side: 'n' | 's' | 'e' | 'w') => {
-          let hits = 0;
-          const N = 6;
-          for (let q = 1; q < N; q++) {
-            const fq = q / N;
-            let x = 0;
-            let z = 0;
-            if (side === 'n') [x, z] = [r.minX + (r.maxX - r.minX) * fq, r.minY - probe];
-            if (side === 's') [x, z] = [r.minX + (r.maxX - r.minX) * fq, r.maxY + probe];
-            if (side === 'w') [x, z] = [r.minX - probe, r.minY + (r.maxY - r.minY) * fq];
-            if (side === 'e') [x, z] = [r.maxX + probe, r.minY + (r.maxY - r.minY) * fq];
-            if (cellIn(maskUpper, x, z)) hits++;
-          }
-          return hits / (N - 1);
-        };
-        const best = (['n', 's', 'e', 'w'] as const).map((s) => ({ s, v: sideTouch(s) })).sort((a, b) => b.v - a.v)[0];
-        if (best.v <= 0.3) continue;
-        lowerSide.set(r, best.s);
-      }
-      // 上階に接しない四角形でも、下屋の四角形と重なる・辺を共有するなら同じ屋根面に入れる
-      // （極大矩形は重なり合うので、別の屋根を架けると重なった所で屋根面が交差して斜めの筋が出る）
-      const shareLen = (a: Rect, b: Rect) => {
-        const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
-        const oy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
-        if (ox < -1 || oy < -1) return 0;
-        return Math.max(ox, oy);
-      };
-      for (let pass = 0; pass < rects.length; pass++) {
-        let changed = false;
-        for (const r of rects) {
-          if (lowerSide.has(r)) continue;
-          let bestS: 'n' | 's' | 'e' | 'w' | null = null;
-          let bestL = 300;
-          for (const [q, sd] of lowerSide) {
-            const L = shareLen(r, q);
-            if (L > bestL) [bestL, bestS] = [L, sd];
-          }
-          if (bestS) {
-            lowerSide.set(r, bestS);
-            changed = true;
-          }
-        }
-        if (!changed) break;
-      }
-      for (const [r, sd] of lowerSide) {
-        const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
-        const g = lowerGroups.get(sd);
-        lowerGroups.set(sd, g ? { minX: Math.min(g.minX, R.minX), maxX: Math.max(g.maxX, R.maxX), minZ: Math.min(g.minZ, R.minZ), maxZ: Math.max(g.maxZ, R.maxZ) } : R);
-      }
-    }
     // 斜めの外形の辺: 四角形の中を通るものだけ、その辺から軒の出だけ外の線で屋根を切る
     const diag: { a: { x: number; y: number }; b: { x: number; y: number }; nx: number; ny: number }[] = [];
     for (const l of polys)
@@ -298,50 +236,135 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       info.eaveY = Math.max(info.eaveY, H + 0.5);
       continue;
     }
+    // 片流れ（最上階）と下屋（下の階の、上階の載らない範囲）: マスクのつながった範囲ごとに 1 枚の屋根面。
+    // 重ならない四角形に分けて張る（極大矩形は重なり合うので、同じ面でも二重に描かれてちらつき、向きの違う面が交差して壁に差し込んでいた）
+    if (!isTop || type === 'shed') {
+      for (const comp of maskComponents(xs, zs, mask)) {
+        const G = { minX: comp.bbox.minX * MM, maxX: comp.bbox.maxX * MM, minZ: comp.bbox.minY * MM, maxZ: comp.bbox.maxY * MM };
+        // 下屋は上階に接する辺を高い側に（接する辺が無ければ御社の定番の向き）。最上階は南流し（北が高い）か東流し（西が高い）
+        const touch = isTop ? null : touchingSide(comp, nx, nz, maskUpper);
+        const high = touch ?? preferredHigh(G, north);
+        const alongZ = high === 'n' || high === 's';
+        const span = alongZ ? G.maxZ - G.minZ : G.maxX - G.minX;
+        // 下屋は 0.5〜1 寸の緩い片流れ。最上階は高い側の壁の立ち上がりが 2.4m を超えない勾配まで
+        const slope = isTop ? Math.min(ctx.slope, 2.4 / Math.max(0.5, span)) : Math.min(ctx.slope, 0.1);
+        const sub: RoofCtx = { ...ctx, slope, gableKey: isTop ? ctx.gableKey : 'ext.wall', gableKeyAt: isTop ? ctx.gableKeyAt : undefined };
+        for (const r of comp.rects) {
+          const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+          sub.clips = clipsFor(r);
+          sub.wallTopY = H;
+          const y = shedRoofPlane(sub, R, H, high, G);
+          info.maxY = Math.max(info.maxY, y);
+        }
+        if (isTop) info.eaveY = Math.max(info.eaveY, H);
+      }
+      continue;
+    }
+    // 切妻・寄棟（最上階）: 外形を覆う極大矩形ごとに架ける（L 字では屋根どうしが交差して谷ができる）
     for (const r of rects) {
       const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
       ctx.clips = clipsFor(r);
       ctx.wallTopY = H;
-      if (!isTop) {
-        // 上階に接する辺がある四角形は下屋
-        const side = lowerSide.get(r);
-        if (side) {
-          // 下屋は御社の立面図（吉田様邸ほか）のとおり 0.5〜1 寸の緩い片流れ（上階の壁から外へ流す。軒ゼロで薄い鼻隠し）。
-          // 同じ向きに流す下屋は 1 枚の屋根面にそろえる（四角形ごとに高さ・勾配を決めると、重なった所で屋根面が交差して斜めの筋が出る）
-          const lowSlope = Math.min(ctx.slope, 0.1);
-          const y = shedRoofPlane({ ...ctx, slope: lowSlope, gableKey: 'ext.wall' }, R, H, side, lowerGroups.get(side)!);
-          info.maxY = Math.max(info.maxY, y);
-          continue;
-        }
-      }
-      let y = 0;
-      if (type === 'gable') y = gableRoof(ctx, R, H);
-      else if (type === 'hip') y = hipRoof(ctx, R, H);
-      else {
-        // 片流れ: 建物の短い方向に流し（長い方向に流すと高い側の壁が1階分も高くなる）、北寄りの側を高く
-        const gx = (Math.max(...rects.map((q) => q.maxX)) - Math.min(...rects.map((q) => q.minX))) * MM;
-        const gz = (Math.max(...rects.map((q) => q.maxY)) - Math.min(...rects.map((q) => q.minY))) * MM;
-        const alongZ = gz <= gx * 1.15; // ほぼ正方形なら南北に流す
-        const high: 'n' | 's' | 'e' | 'w' = alongZ ? (north.y <= 0 ? 'n' : 's') : north.x > 0 ? 'e' : 'w';
-        // 高い側の壁の立ち上がりは最大でも 2.4m（勾配を急にしても壁が1階分伸びないように）
-        const span = alongZ ? gz : gx;
-        if (span * ctx.slope > 2.4) ctx.slope = 2.4 / span;
-        // 最上階は1枚の屋根面にそろえる（四角形ごとに屋根を架けると高さの違う屋根が段々に重なり、まとまりのない外観になる）
-        if (isTop && rects.length > 1) {
-          const g = {
-            minX: Math.min(...rects.map((q) => q.minX)) * MM,
-            maxX: Math.max(...rects.map((q) => q.maxX)) * MM,
-            minZ: Math.min(...rects.map((q) => q.minY)) * MM,
-            maxZ: Math.max(...rects.map((q) => q.maxY)) * MM,
-          };
-          y = shedRoofPlane(ctx, R, H, high, g);
-        } else y = shedRoof(ctx, R, H, high, false);
-      }
+      const y = type === 'gable' ? gableRoof(ctx, R, H) : hipRoof(ctx, R, H);
       info.maxY = Math.max(info.maxY, y);
-      if (isTop) info.eaveY = Math.max(info.eaveY, H);
+      info.eaveY = Math.max(info.eaveY, H);
     }
   }
   return { mb, info };
+}
+
+
+/** マスク（格子）のつながった範囲（4 近傍）。rects は重ならない四角形（行ごとの連続区間を、同じ区間が続く行でまとめたもの） */
+function maskComponents(xs: number[], zs: number[], mask: Uint8Array): { cells: Set<number>; rects: Rect[]; bbox: Rect }[] {
+  const nx = xs.length - 1;
+  const nz = zs.length - 1;
+  const seen = new Uint8Array(nx * nz);
+  const out: { cells: Set<number>; rects: Rect[]; bbox: Rect }[] = [];
+  for (let start = 0; start < nx * nz; start++) {
+    if (!mask[start] || seen[start]) continue;
+    const cells = new Set<number>();
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length) {
+      const c = stack.pop()!;
+      cells.add(c);
+      const i = c % nx;
+      const j = (c - i) / nx;
+      for (const [di, dj] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const ii = i + di;
+        const jj = j + dj;
+        if (ii < 0 || jj < 0 || ii >= nx || jj >= nz) continue;
+        const k = jj * nx + ii;
+        if (mask[k] && !seen[k]) {
+          seen[k] = 1;
+          stack.push(k);
+        }
+      }
+    }
+    // 行ごとの連続区間 → 同じ区間が続く行をまとめる
+    const runs: { j0: number; j1: number; i0: number; i1: number }[] = [];
+    for (let j = 0; j < nz; j++) {
+      let i = 0;
+      while (i < nx) {
+        if (!cells.has(j * nx + i)) {
+          i++;
+          continue;
+        }
+        let k = i;
+        while (k + 1 < nx && cells.has(j * nx + k + 1)) k++;
+        const prev = runs.find((r) => r.j1 === j - 1 && r.i0 === i && r.i1 === k);
+        if (prev) prev.j1 = j;
+        else runs.push({ j0: j, j1: j, i0: i, i1: k });
+        i = k + 1;
+      }
+    }
+    const rects = runs.map((r) => ({ minX: xs[r.i0], maxX: xs[r.i1 + 1], minY: zs[r.j0], maxY: zs[r.j1 + 1] }));
+    const bbox = { minX: Math.min(...rects.map((r) => r.minX)), maxX: Math.max(...rects.map((r) => r.maxX)), minY: Math.min(...rects.map((r) => r.minY)), maxY: Math.max(...rects.map((r) => r.maxY)) };
+    out.push({ cells, rects, bbox });
+  }
+  return out;
+}
+
+/** 下屋の範囲が上階に接する辺（接する格子の辺の長さがいちばん長い向き）。接していなければ null */
+function touchingSide(comp: { cells: Set<number> }, nx: number, nz: number, maskUpper: Uint8Array): 'n' | 's' | 'e' | 'w' | null {
+  const len: Record<'n' | 's' | 'e' | 'w', number> = { n: 0, s: 0, e: 0, w: 0 };
+  for (const c of comp.cells) {
+    const i = c % nx;
+    const j = (c - i) / nx;
+    if (j > 0 && maskUpper[(j - 1) * nx + i]) len.n++;
+    if (j + 1 < nz && maskUpper[(j + 1) * nx + i]) len.s++;
+    if (i > 0 && maskUpper[j * nx + i - 1]) len.w++;
+    if (i + 1 < nx && maskUpper[j * nx + i + 1]) len.e++;
+  }
+  const best = (Object.keys(len) as ('n' | 's' | 'e' | 'w')[]).sort((a, b) => len[b] - len[a])[0];
+  return len[best] > 0 ? best : null;
+}
+
+/**
+ * 片流れの高い側（御社の定番: 南流し = 北が高い。南北に長い建物は東流し = 西が高い）。
+ * north は平面座標の真北の向き。辺の外向き（n: (0,-1) s: (0,1) e: (1,0) w: (-1,0)）と真北・真西の内積で決める
+ */
+function preferredHigh(G: { minX: number; maxX: number; minZ: number; maxZ: number }, north: { x: number; y: number }): 'n' | 's' | 'e' | 'w' {
+  const west = { x: north.y, y: -north.x };
+  const sides: { s: 'n' | 's' | 'e' | 'w'; n: { x: number; y: number } }[] = [
+    { s: 'n', n: { x: 0, y: -1 } },
+    { s: 's', n: { x: 0, y: 1 } },
+    { s: 'e', n: { x: 1, y: 0 } },
+    { s: 'w', n: { x: -1, y: 0 } },
+  ];
+  const pick = (dir: { x: number; y: number }) => sides.slice().sort((a, b) => b.n.x * dir.x + b.n.y * dir.y - (a.n.x * dir.x + a.n.y * dir.y))[0].s;
+  const toNorth = pick(north);
+  // 真北方向の長さと、それと直交する方向の長さ。南北に 15% 以上長ければ東流し
+  const w = G.maxX - G.minX;
+  const d = G.maxZ - G.minZ;
+  const nsSpan = Math.abs(north.x) * w + Math.abs(north.y) * d;
+  const ewSpan = Math.abs(west.x) * w + Math.abs(west.y) * d;
+  return nsSpan > ewSpan * 1.15 ? pick(west) : toNorth;
 }
 
 /** 屋根面（上面・下面・外周の鼻隠し） */
@@ -563,7 +586,22 @@ function gutter(ctx: RoofCtx, a: V3, b: V3, outward: V3) {
   const len = dir.length();
   dir.normalize();
   const c = a.clone().add(b).multiplyScalar(0.5).addScaledVector(outward, 0.06);
-  ctx.mb.box('ext.gutter', c.setY(a.y - ctx.T - 0.02), dir, len, 0.09, 0.11);
+  const gy = a.y - ctx.T - 0.02;
+  ctx.mb.box('ext.gutter', c.setY(gy), dir, len, 0.09, 0.11);
+  // 竪樋（φ60）: 軒樋の端から呼び樋で壁ぎわへ落とし、GL+0.25 まで。2m 未満の短い軒樋には付けない（写真の立面で必ず見える部材）
+  if (len < 2) return;
+  const ends = len >= 9 ? [a.clone().addScaledVector(dir, 0.35), b.clone().addScaledVector(dir, -0.35)] : [b.clone().addScaledVector(dir, -0.35)];
+  for (const p of ends) {
+    const wall = p.clone().addScaledVector(outward, -(ctx.eaves - 0.06));
+    const elbowY = gy - 0.12;
+    // 呼び樋（軒樋の底から壁ぎわへ）
+    const mid = p.clone().addScaledVector(outward, 0.06).add(wall).multiplyScalar(0.5).setY(elbowY);
+    ctx.mb.box('ext.gutter', mid, outward, Math.max(0.08, ctx.eaves), 0.06, 0.06);
+    // 竪樋
+    ctx.mb.cylinder('ext.gutter', wall.clone().setY(0.25), 0.03, elbowY - 0.25, 12, false);
+    // 支持金物（2.0m ごとの帯）
+    for (let y = 1.0; y < elbowY - 0.3; y += 2.0) ctx.mb.cylinder('ext.frame', wall.clone().setY(y), 0.037, 0.03, 12, false);
+  }
 }
 
 function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number): number {

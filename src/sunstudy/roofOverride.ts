@@ -15,7 +15,13 @@ const CACHE_MAX = 600;
 
 export function applyUserRoof(n: Neighbor, spec: UserRoof, pin: LatLon | null): Neighbor {
   const a = n.plateau;
-  if (!a || !n.mesh || !pin || n.ring.length < 3) return n;
+  // 箱形の建物（国土地理院・OSM・手入力）: roofSpec と高さを入れ替えるだけ（形は描くときに ring から作る）
+  if (!a || !n.mesh) {
+    if (n.ring.length < 3 || n.planned) return n;
+    const norm = normalizeSpec({ ...spec, user: true });
+    return { ...n, roofSpec: norm, height: round2(specTop(norm)), heightKind: 'manual' };
+  }
+  if (!pin) return n;
   const key = `${n.id}|${JSON.stringify(spec)}|${n.ring.length}|${n.ring[0].e.toFixed(2)},${n.ring[0].n.toFixed(2)}|${pin.lat.toFixed(6)},${pin.lon.toFixed(6)}|${n.height}`;
   const hit = cache.get(key);
   if (hit) return hit;

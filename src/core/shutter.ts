@@ -46,7 +46,10 @@ export function shutterSpans(L: number, layout: ShutterLayout): { t0: number; t1
     const t0 = EDGE + (full - w) / 2;
     return [{ t0, t1: t0 + w }];
   }
-  return [{ t0: EDGE, t1: Math.min(L - EDGE, EDGE + 6400) }];
+  // 2 台一体: 壁いっぱい（最大 6,400。壁が長ければ中央に）
+  const w = Math.min(full, 6400);
+  const t0 = EDGE + (full - w) / 2;
+  return [{ t0, t1: t0 + w }];
 }
 
 /** その壁のシャッターを、この形に置き直す（他の建具はそのまま）。戻り値は置いた数 */

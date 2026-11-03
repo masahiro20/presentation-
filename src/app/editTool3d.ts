@@ -9,7 +9,7 @@ import { h, clear, toast } from './dom';
 import { state } from './state';
 import type { Viewer } from '../scene/viewer';
 import { pointInPolygon } from '../core/geometry';
-import { OUTDOOR_TYPES, type BuildingModel, type Floor, type Opening, type Wall } from '../core/types';
+import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 
@@ -69,7 +69,25 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     render();
   };
 
+  /** クリックした面の素材から「床」「壁・窓・戸」を見分ける（CAD のように、見ている物をそのまま選ぶため） */
+  const FLOOR_KEYS = /^int\.(floor|wetFloor|entranceFloor|tatami|slab)$|^ext\.(balcony|terrace|concrete)$/;
+  const WALL_KEYS = /^(ext\.(wall|accent|glass\w*|frame|door|shutter|sash\w*)|int\.(wall|accent|bathWall|wallTop|door\w*|frame\w*|glass\w*)|f\.metal)$/;
+
   const onPick = (pt0: THREE.Vector3, ndc?: THREE.Vector2) => {
+    // 見ている物を優先: 家具・外構の物ならその道具へ。床なら部屋（天井高・床）、壁・窓・戸なら窓・戸。シャッターの道具のときは従来どおり外壁
+    if (mode !== 'shutter' && ndc) {
+      const hit = v.pickHit(ndc);
+      if (hit) {
+        if (hit.group === 'furniture' || hit.group === 'landscape') {
+          if (v.onPickIdle?.(hit, ndc)) return;
+          // 家具・外構の飾り（照明の笠・植栽の鉢など、選べる物に属さない部品）: 壁を選びに行かない
+          toast(hit.group === 'furniture' ? '家具・造作をクリックすると「家具」の道具で直せます' : '置いた物をクリックすると「外構」の道具で直せます', 'info', 2500);
+          return;
+        }
+        if (mode === 'opening' && FLOOR_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
+        if (mode === 'ceiling' && WALL_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
+      }
+    }
     // 天井高: 屋根越しに見ているときは、その下の床の点を使う（屋根の点では隣の部屋になる）
     const pt = mode === 'ceiling' && ndc ? (v.pickFloorPoint(ndc) ?? pt0) : pt0;
     const f = floorAt(pt.y);
@@ -103,6 +121,11 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         if (d < 500 && (!near || d < near.d)) near = { w, d, t };
       }
       if (!near) {
+        // 壁でない物（家具・外構）をクリックしたら、その物の道具へ
+        if (ndc && v.onPickIdle) {
+          const hit = v.pickHit(ndc);
+          if (hit && hit.group !== 'building' && hit.group !== 'cut' && v.onPickIdle(hit, ndc)) return;
+        }
         toast('窓・戸のある壁をクリックしてください');
         return;
       }
@@ -203,12 +226,25 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       const rs = roomsSelected();
       const custom = m ? m.floors.flatMap((f) => f.rooms.filter((r) => r.ceilingHeight).map((r) => `${f.level}階 ${r.name} ${r.ceilingHeight}`)) : [];
       panel.append(
-        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '部屋の床をクリックして選びます（複数可。もう一度で外す）。選んだ部屋だけの天井高になります。例: LDK と水まわりだけ 3,500。'),
-        h('div', { class: 'furn-sel' }, rs.length ? rs.map(({ f, r }) => h('div', null, `${f.level}階 ${r.name || r.type}${r.ceilingHeight ? `（今 ${r.ceilingHeight}）` : ''}`)) : h('div', { class: 'hint' }, 'まだ選んでいません')),
+        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '部屋の床をクリックして選びます（複数可。もう一度で外す）。選んだ部屋だけの天井高・床の仕上げになります。例: LDK と水まわりだけ 3,500。'),
+        h('div', { class: 'furn-sel' }, rs.length ? rs.map(({ f, r }) => h('div', null, `${f.level}階 ${r.name || r.type}${r.ceilingHeight ? `（天井 ${r.ceilingHeight}）` : ''}${r.floorFinish ? `（床: ${FLOOR_FINISH_LABEL[r.floorFinish]}）` : ''}`)) : h('div', { class: 'hint' }, 'まだ選んでいません')),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '天井高 (mm)'), h('input', { type: 'number', step: 50, min: 2000, max: 6000, value: ceilH, onchange: (e: Event) => (ceilH = +(e.target as HTMLInputElement).value || 3500) })),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm primary', onclick: applyCeiling }, '選んだ部屋に適用'), ...(rs.some(({ r }) => r.ceilingHeight) ? [h('button', { class: 'btn sm ghost', onclick: resetCeiling }, '階の天井高に戻す')] : [])),
-        ...(custom.length ? [h('p', { class: 'hint', style: 'margin-top:8px' }, `個別の天井高: ${custom.join('・')}`)] : []),
       );
+      if (rs.length) {
+        // 床の仕上げ（選んだ部屋に）。「部屋の種類のまま」で上書きを消す
+        const cur = rs.length === 1 ? rs[0].r.floorFinish ?? '' : '';
+        panel.append(
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, '床の仕上げ'),
+          h(
+            'div',
+            { class: 'segmented' },
+            h('button', { class: cur === '' ? 'on' : '', onclick: () => { for (const { r } of rs) delete r.floorFinish; commit(); } }, '種類のまま'),
+            ...(Object.keys(FLOOR_FINISH_LABEL) as FloorFinish[]).map((k) => h('button', { class: cur === k ? 'on' : '', title: FLOOR_FINISH_LABEL[k], onclick: () => { for (const { r } of rs) r.floorFinish = k; toast(`${rs.length} 室の床を${FLOOR_FINISH_LABEL[k]}にしました`, 'ok'); commit(); } }, FLOOR_FINISH_LABEL[k].replace(/（.*）/, ''))),
+          ),
+        );
+      }
+      if (custom.length) panel.append(h('p', { class: 'hint', style: 'margin-top:8px' }, `個別の天井高: ${custom.join('・')}`));
     } else {
       const n = m ? m.floors.reduce((s, f) => s + f.openings.filter((o) => o.kind === 'shutter').length, 0) : 0;
       panel.append(h('p', { class: 'hint', style: 'margin:0' }, 'ガレージの外壁をクリック → シャッター。もう一度で外す。'), h('p', { class: 'hint' }, n ? `シャッター ${n} か所` : 'シャッターはまだありません'));
@@ -303,9 +339,20 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           opSpot = null;
           commit();
         };
+        // 壁の仕上げ: テイストのアクセント材（外壁）／アクセントクロス（内壁）をこの壁だけに
+        const setAccent = (val: boolean | undefined) => {
+          if (val === undefined) delete w.accent;
+          else w.accent = val;
+          toast(val === undefined ? 'テイストの決まりに戻しました' : val ? (w.exterior ? 'この壁をアクセント仕上げにしました' : 'この壁をアクセントクロスにしました') : '通常の仕上げにしました', 'ok');
+          commit();
+        };
         panel.append(
-          h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${fl.level}階 ${w.exterior ? '外壁' : '内壁'}（長さ ${Math.round(L).toLocaleString()}）のここに置く`)),
+          h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${fl.level}階 ${w.exterior ? '外壁' : '内壁'}（長さ ${Math.round(L).toLocaleString()}）`)),
+          h('div', { class: 'field-label' }, 'ここに置く'),
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => put('window') }, '窓'), h('button', { class: 'btn sm', onclick: () => put('door') }, w.exterior && fl.level === 1 ? '玄関ドア' : '開き戸'), h('button', { class: 'btn sm', onclick: () => put('sliding') }, '引戸')),
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, w.exterior ? '壁の仕上げ（テイストのアクセント材）' : '壁の仕上げ（アクセントクロス）'),
+          h('div', { class: 'segmented' }, h('button', { class: w.accent === undefined ? 'on' : '', onclick: () => setAccent(undefined) }, 'テイストのまま'), h('button', { class: w.accent === true ? 'on' : '', onclick: () => setAccent(true) }, 'アクセント'), h('button', { class: w.accent === false ? 'on' : '', onclick: () => setAccent(false) }, '通常')),
+          h('p', { class: 'hint' }, w.exterior ? 'アクセント材はテイスト（外観）で決まります。' : '内壁は両面とも変わります。'),
         );
       }
       return;
@@ -328,6 +375,34 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     btn.classList.toggle('on', on);
   }
 
-  const btn = h('button', { class: 'nav-btn', title: '窓・戸・天井高・シャッター（3D を見ながら、窓や壁・部屋をクリックして直す）', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '⌂'), '窓・戸');
-  return { button: btn, setActive, isActive: () => active };
+  /** 道具を開いていないときのクリック: 床なら部屋（天井高・床の仕上げ）、壁・窓・戸なら窓・戸の道具を開いて選ぶ。該当すれば true */
+  function pickHere(hit: { matKey: string; point: THREE.Vector3 }, ndc?: THREE.Vector2): boolean {
+    const f = floorAt(hit.point.y);
+    if (!f) return false;
+    const p = { x: hit.point.x * 1000, y: hit.point.z * 1000 };
+    if (FLOOR_KEYS.test(hit.matKey)) {
+      const room = f.rooms.find((r) => pointInPolygon(p, r.polygon));
+      if (!room || OUTDOOR_TYPES.includes(room.type) || room.type === 'void' || room.type === 'stairs') return false;
+      if (!active) setActive(true);
+      mode = 'ceiling';
+      selected.clear();
+      selected.add(room.id);
+      paintOverlay();
+      render();
+      toast(`${f.level}階 ${room.name || room.type} を選びました（天井高・床の仕上げ）`, 'ok', 2500);
+      return true;
+    }
+    if (WALL_KEYS.test(hit.matKey)) {
+      if (!active) setActive(true);
+      mode = 'opening';
+      selected.clear();
+      paintOverlay();
+      onPick(hit.point, ndc);
+      return true;
+    }
+    return false;
+  }
+
+  const btn = h('button', { class: 'nav-btn', title: '窓・戸・壁・天井高・シャッター（3D を見ながら、窓や壁・部屋の床をクリックして直す）', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '⌂'), '窓・戸');
+  return { button: btn, setActive, isActive: () => active, pickHere };
 }

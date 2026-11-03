@@ -2,7 +2,7 @@
  * 積算の「面」シートにあたる数量: 読み込んだ間取り（部屋・外形・開口）と屋根・軒の設定から自動で拾う。
  * 設計士が直せるように、すべての値は上書きできる（areasOverride）。
  */
-import type { BuildingModel, Floor, RoomType, Vec2 } from '../core/types';
+import { isSeparateGarage, type BuildingModel, type Floor, type Room, type RoomType, type Vec2 } from '../core/types';
 import { polygonArea } from '../core/geometry';
 import type { Grade } from './catalog';
 
@@ -20,8 +20,10 @@ export interface Areas {
   porchOut: number;
   /** 内部ポーチ・テラス面積 (㎡) */
   porchIn: number;
-  /** 施工面積に加える分（ポーチ・庇など） (㎡) */
+  /** 施工面積に加える分（ポーチ・庇・ビルトインガレージなど） (㎡) */
   extraArea: number;
+  /** ビルトインガレージの面積 (㎡)。床面積には入れず施工面積に入れる。土間は外部ポーチと同じ扱い。断熱は入れない */
+  garageArea: number;
   balconyArea: number;
   /** 吹抜 (㎡) */
   voidArea: number;
@@ -46,8 +48,10 @@ export interface Areas {
   ridgeLen: number;
   /** 建物角（1〜3階の合計） */
   corners: number;
-  /** 断熱面積（室内天井＆外部床） (㎡) */
+  /** 断熱面積（室内天井＆外部床） (㎡) = 屋根の下の天井（ガレージの上を除く）＋ 外気に接する床（オーバーハングした 2 階の床） */
   insulArea: number;
+  /** 壁の断熱面積 (㎡) = 外壁面積 − ガレージの外壁（ガレージには断熱を入れない） */
+  insulWall: number;
   /** 高天井（H2500からの差） (㎥) */
   highCeil: number;
   /** 勾配天井 (㎡) */
@@ -123,6 +127,7 @@ export const AREA_FIELDS: { key: keyof Areas; label: string; unit: string; group
   { key: 'porchOut', label: '外部ポーチ・テラス面積', unit: '㎡', group: '面積' },
   { key: 'porchIn', label: '内部ポーチ・テラス面積', unit: '㎡', group: '面積' },
   { key: 'extraArea', label: '施工面積（追加分）', unit: '㎡', group: '面積' },
+  { key: 'garageArea', label: 'ビルトインガレージ ※施工面積に', unit: '㎡', group: '面積' },
   { key: 'balconyArea', label: 'バルコニー面積', unit: '㎡', group: '面積' },
   { key: 'voidArea', label: '吹き抜け', unit: '㎡', group: '面積' },
   { key: 'loftArea', label: 'ロフト ※半分換算', unit: '㎡', group: '面積' },
@@ -135,6 +140,7 @@ export const AREA_FIELDS: { key: keyof Areas; label: string; unit: string; group
   { key: 'ridgeLen', label: '棟長さ', unit: 'm', group: '外部' },
   { key: 'corners', label: '建物角 1階・2階・3階', unit: 'ヵ所', group: '外部' },
   { key: 'insulArea', label: '断熱面積 室内天井＆外部床', unit: '㎡', group: '外部' },
+  { key: 'insulWall', label: '断熱面積 壁 ※ガレージを除く', unit: '㎡', group: '外部' },
   { key: 'siteEdge', label: '敷地外周', unit: 'm', group: '外部' },
   { key: 'downspouts1', label: '竪樋 1階', unit: '本', group: '外部' },
   { key: 'downspouts2', label: '竪樋 2階', unit: '本', group: '外部' },
@@ -280,6 +286,57 @@ function uncoveredEdge(f: Floor, upper: Floor | undefined, step = 100): number {
   return len / 1000;
 }
 
+/** 家の中に組み込まれたガレージ（床は土間。床面積に入れず施工面積に、断熱は入れない） */
+function isBuiltinGarage(r: Room): boolean {
+  return r.type === 'garage' && !isSeparateGarage(r) && r.polygon.length >= 3;
+}
+
+/** 多角形のうち、上の階の外形に覆われていない面積 (㎡)（50mm 格子）: ガレージの上が屋根（天井の断熱の対象外）かどうか */
+function uncoveredArea(poly: Vec2[], uppers: Floor[], step = 50): number {
+  if (poly.length < 3) return 0;
+  const bb = bboxOf(poly);
+  const cell = (step * step) / 1e6;
+  let area = 0;
+  for (let x = bb.minX + step / 2; x < bb.maxX; x += step)
+    for (let y = bb.minY + step / 2; y < bb.maxY; y += step) {
+      if (!inPoly(poly, x, y)) continue;
+      if (!uppers.some((u) => inFloor(u, x, y))) area += cell;
+    }
+  return area;
+}
+
+function inPoly(poly: Vec2[], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** 多角形の辺のうち外壁になっている長さ (m)（辺の中点を外へ 150 ずらした点が階の外形の外） */
+function exteriorEdgeLen(f: Floor, poly: Vec2[], step = 100): number {
+  let len = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 1) continue;
+    const nx = -(b.y - a.y) / L;
+    const ny = (b.x - a.x) / L;
+    const n = Math.max(1, Math.round(L / step));
+    for (let k = 0; k < n; k++) {
+      const t = (k + 0.5) / n;
+      const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      const outA = !inFloor(f, p.x + nx * 150, p.y + ny * 150);
+      const outB = !inFloor(f, p.x - nx * 150, p.y - ny * 150);
+      if (outA !== outB) len += L / n;
+    }
+  }
+  return len / 1000;
+}
+
 /** 外形の出隅（外側に尖った角）の数 */
 function convexCorners(f: Floor): number {
   let n = 0;
@@ -303,10 +360,13 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const fl = (lv: number) => floors.find((f) => f.level === lv);
   // 床面積 = 外形 − 外形の内側にある吹抜・バルコニー（中庭のように外形の外にある区画は引かない。
   // 以前は外形の外の中庭まで引いていて、堀様邸の 1 階が 81.59 → 65.00㎡ と 2 割少なく出ていた）
+  // ビルトインガレージ（外形の内側）: 床面積には入れない。施工面積に入れ、土間は外部ポーチと同じ扱い、断熱は入れない（御社の拾い方）
+  const garageRooms = (f: Floor) => f.rooms.filter((r) => isBuiltinGarage(r) && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
+  const garageArea = r2(floors.reduce((s, f) => s + garageRooms(f).reduce((t, r) => t + r.area, 0), 0));
   const floorArea = (f?: Floor) => {
     if (!f) return 0;
     const inner = f.rooms.filter((r) => (r.type === 'void' || r.type === 'balcony') && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
-    return Math.max(0, outlineArea(f) - inner.reduce((s, r) => s + r.area, 0));
+    return Math.max(0, outlineArea(f) - inner.reduce((s, r) => s + r.area, 0) - garageRooms(f).reduce((s, r) => s + r.area, 0));
   };
   const floor1 = r2(floorArea(fl(1)));
   const floor2 = r2(floorArea(fl(2)));
@@ -321,8 +381,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const ov = overlay(floors);
   const pilotis = ov.exposedBelow[1] ?? 0; // 2 階の下の屋外（ポーチ・ビルトインガレージ・張り出し）
   const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0); // 外気に接する床（2 階以上の張り出しの床下）
-  // 施工面積の追加分: ポーチの区画＋上の階の下に入る屋外（有元様邸: 1 階の外の 2 階の下 34.6㎡ ≒ 社内の 34.09㎡）
-  const extraArea = r2(porchRooms + pilotis);
+  // 施工面積の追加分: ポーチの区画＋上の階の下に入る屋外（有元様邸: 1 階の外の 2 階の下 34.6㎡ ≒ 社内の 34.09㎡）＋ビルトインガレージ
+  const extraArea = r2(porchRooms + pilotis + garageArea);
   const loftArea = 0;
   const constArea = r2(totalArea + extraArea + balconyArea + loftArea + voidArea);
   // 建築面積: 各階の外形を真上から重ねた面積（2 階の張り出しも入る）
@@ -370,8 +430,19 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const eaveLen = r2(opts.roofType === 'gable' ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === 'shed' ? shortSide + 2 * eaveOut : topPerim + 8 * eaveOut);
   // 換気棟: 片流れの箱は御社の見積で毎回 10m（堀様邸・有元様邸・積算シートの既定）。切妻・寄棟は長手
   const ridgeLen = r2(opts.roofType === 'flat' ? 0 : opts.roofType === 'shed' ? 10 : longSide);
-  // 断熱（室内天井＆外部床）: 屋根の下の天井（重ね合わせた外形）＋ 外気に接する床（張り出しの床下）
-  const insulArea = r2(roofPlan + overhang);
+  // 断熱（室内天井＆外部床）: 屋根の下の天井（重ね合わせた外形 ≒ 屋根面積の平面）＋ 外気に接する床（オーバーハングした 2 階の床下）。
+  // ガレージには断熱を入れないので、ガレージの上が屋根の所（上の階が載っていない所）は天井の断熱から引く
+  let garageCeil = 0;
+  let garageWall = 0;
+  for (let i = 0; i < floors.length; i++) {
+    const f = floors[i];
+    for (const g of garageRooms(f)) {
+      garageCeil += uncoveredArea(g.polygon, floors.slice(i + 1));
+      garageWall += exteriorEdgeLen(f, g.polygon) * (f.height / 1000 + (f.level === 1 ? FOUND_H : 0));
+    }
+  }
+  const insulArea = r2(Math.max(0, roofPlan - garageCeil + overhang));
+  const insulWall = r2(Math.max(0, extWall - garageWall));
   const siteEdge = r2(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1000 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
   const doors = floors.reduce((s, f) => s + f.openings.filter((o) => (o.kind === 'door' || o.kind === 'sliding') && !f.walls.find((w) => w.id === o.wallId)?.exterior).length, 0);
   // 床仕上げ: 挽板フローリングは居室・ホール・書斎。フロアタイルは洗面脱衣・トイレ・収納（土間の収納は除く）
@@ -380,7 +451,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const floorTileArea = r2(floors.reduce((s, f) => s + f.rooms.filter((r) => ['washroom', 'toilet', 'closet', 'storage'].includes(r.type) && !isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
   // 内部ポーチ（玄関土間）: 玄関＋土間の収納。外部ポーチ: ポーチの区画、無ければ御社の標準 1,365×1,820（2.48㎡）
   const porchIn = r2(floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === 'entrance' || ((r.type === 'storage' || r.type === 'closet') && isDoma(r.name))).reduce((t, r) => t + r.area, 0), 0));
-  const porchOut = r2(porchRooms > 0 ? porchRooms : 2.48);
+  // ガレージの土間も外部ポーチと同じ扱い（土間コン・刷毛引きの数量に入る）
+  const porchOut = r2(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
   // トイレ: 便所の区画のほか、「洗面・トイレ」のように洗面室と一緒の区画も 1 か所と数える（堀様邸の 1 階）
   const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === 'toilet' || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
   const stairs = Math.max(0, floors.length - 1);
@@ -404,6 +476,7 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     porchOut,
     porchIn,
     extraArea,
+    garageArea,
     balconyArea,
     voidArea,
     loftArea,
@@ -418,6 +491,7 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     ridgeLen,
     corners,
     insulArea,
+    insulWall,
     highCeil: 0,
     slopeCeil: 0,
     siteEdge,

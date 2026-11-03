@@ -8,6 +8,7 @@ import type { Step, StepCtx } from '../app';
 import { exteriorById } from '../../styles/presets';
 import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '../../estimate/areas';
 import { CATEGORIES, type Grade } from '../../estimate/catalog';
+import { suggestOptions } from '../../estimate/suggest';
 import { computeEstimate, newChoice, defaultGroups, groupOptions, priceFromCost, yen, TAX_RATE, type EstimateChoice, type EstimateResult, type LineResult } from '../../estimate/calc';
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
 import { estimateGroupsFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
@@ -655,6 +656,27 @@ export const estimateStep: Step = {
         areaBody.appendChild(h('label', { class: 'area-row', title: changed ? `図面からの値: ${num(auto)}` : '' }, h('span', { class: 'lbl' }, fdef.label), input, h('span', { class: 'unit' }, fdef.unit), changed ? h('button', { class: 'linkbtn', title: '図面からの値に戻す', onclick: () => { delete (es.areasOverride as Record<string, unknown>)[fdef.key]; render(); } }, '↺') : h('span', null)));
       }
       const optBody = h('div', { class: 'opt-grid' }, ...AREA_OPTIONS.map((o) => h('label', { class: 'opt' }, h('input', { type: 'checkbox', checked: !!areas[o.key], onchange: (e: Event) => { (es.areasOverride as Record<string, unknown>)[o.key] = (e.target as HTMLInputElement).checked; render(); } }), o.label)));
+      // この間取りで検討するオプション（読み取った間取りから理由つきで提案。入れる／外すはここで）
+      const sugBody = h('div', { class: 'sug-list' });
+      for (const sg of suggestOptions(state.model!, areas, es.choice)) {
+        const toggle = (on: boolean) => {
+          if (sg.lineId) {
+            if (on) es.choice.qty[sg.lineId] = sg.qty ?? 1;
+            else delete es.choice.qty[sg.lineId];
+          } else if (sg.flag) (es.areasOverride as Record<string, unknown>)[sg.flag] = on;
+          render();
+        };
+        const canToggle = !!(sg.lineId || sg.flag);
+        sugBody.appendChild(
+          h(
+            'div',
+            { class: `sug-row ${sg.applied ? 'on' : ''}` },
+            h('div', { class: 'sug-main' }, h('b', null, sg.label), h('div', { class: 'hint' }, sg.reason)),
+            canToggle ? h('button', { class: `btn xs ${sg.applied ? 'ghost' : 'dark'}`, onclick: () => toggle(!sg.applied) }, sg.applied ? '外す' : '入れる') : h('span', { class: 'sug-auto' }, '自動'),
+          ),
+        );
+      }
+      if (!sugBody.children.length) sugBody.appendChild(h('div', { class: 'hint' }, 'この間取りで特に検討するオプションはありません'));
       // 仕様の選択（group）
       const groupBody = h('div', { class: 'group-list' });
       const seen = new Set<string>();
@@ -708,6 +730,7 @@ export const estimateStep: Step = {
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: es.customerView !== false, onchange: (e: Event) => { es.customerView = (e.target as HTMLInputElement).checked; render(); } }), 'お客様向け（内訳書の数量・単位・単価を隠す）'),
         fold('会社情報・担当', { open: false, meta: companyInfo().designer || companyInfo().name }, companyForm(render)),
         fold('面積・数量（図面から自動）', { open: false, meta: `延床 ${num(areas.totalTsubo)} 坪 ／ 施工 ${num(areas.constTsubo)} 坪` }, areaBody, h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => { es.areasOverride = {}; render(); } }, 'すべて図面の値に戻す'))),
+        fold('この間取りで検討するオプション', { open: true, meta: `${sugBody.querySelectorAll('.sug-row').length} 件` }, sugBody),
         fold('仕様の選択', { open: true, meta: `${Object.keys(GROUP_LABEL).length} 項目` }, groupBody),
         fold('任意の項目', { open: false }, optBody),
         fold('資金計画書の入力', { open: which === 'funding', meta: `総合計 ¥${yen(computeFunding(funding).grand)}` }, fundBody),

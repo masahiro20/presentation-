@@ -199,6 +199,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
   it('既定は PLATEAU（半径 110 m）。実形状 2 棟 + 離れた国土地理院 1 棟（重なる建物は補完しない・敷地の中は除く）。キーは plateau:<gml_id>', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const progress: [string, number][] = [];
     const r = await sc.loadNeighbors(undefined, { onProgress: (m, ratio) => progress.push([m, ratio]) });
     expect(fake.calls).toEqual([{ lat: PIN.lat, lon: PIN.lon, radius: 110 }]);
@@ -231,6 +232,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
   it('国土地理院が落ちていても PLATEAU だけで続ける（補完なし）', async () => {
     fake.gsiFail = true;
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('plateau');
     expect(r.count).toBe(2);
     expect(r.used).toEqual(['plateau']);
@@ -240,6 +242,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
   it('未整備（none）→ 国土地理院（注記「未整備」）。国土地理院が空なら OSM。通信エラー（error）は注記「通信エラー」', async () => {
     fake.plateau = { status: 'none', reason: 'outside', muniCds: ['11201'] };
     let sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     let r = await sc.loadNeighbors('plateau');
     expect(r.count).toBe(2);
     expect(r.used).toEqual(['gsi']);
@@ -250,6 +253,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     // PLATEAU 未整備のまま国土地理院も空 → OSM（従来順）
     fake.gsi = [];
     sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     r = await sc.loadNeighbors('plateau');
     expect(r.used).toEqual(['osm']);
     expect(sc.state.neighbors.map((b) => b.source)).toEqual(['osm']);
@@ -258,6 +262,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     fake.gsi = [{ ll: rectLL(15, -19, 10, 8), height: 6.8 }];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     r = await sc.loadNeighbors('plateau');
     warn.mockRestore();
     expect(r.used).toEqual(['gsi']);
@@ -268,11 +273,13 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     fake.gsiFail = true;
     fake.osmFail = true;
     sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await expect(sc.loadNeighbors('plateau')).rejects.toThrow(/接続できません/);
   });
 
   it("'gsi' / 'osm' を選ぶと PLATEAU を呼ばない（従来どおり）。lastSource は選んだ取得元", async () => {
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('gsi');
     expect(fetchPlateauBuildings).not.toHaveBeenCalled();
     expect(r).toEqual({ count: 2, used: ['gsi'], notes: [] });
@@ -285,6 +292,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
 
   it('中止（signal）は理由を投げ、一覧を変えない', async () => {
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const ac = new AbortController();
     ac.abort(new Error('やめた'));
@@ -295,6 +303,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
   it('建設地の微調整（ピンを 2 m 北へ）で取り直しても同じキー。ring はずれ、mesh は anchor 基準のまま', async () => {
     const site = { ...SITE };
     const sc = new SunContext(fakeViewer(), site);
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     const a0 = sc.state.neighbors[0];
     const mesh0 = a0.mesh;
@@ -314,6 +323,7 @@ describe('SunContext.loadNeighbors: 同時実行（微調整の連打）は後�
     fake.delays = [60, 5];
     const site = { ...SITE };
     const sc = new SunContext(fakeViewer(), site);
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const p1 = sc.loadNeighbors('plateau');
     sc.state.site = { ...site, offsetN: 2 };
     const p2 = sc.loadNeighbors('plateau');
@@ -338,6 +348,7 @@ describe('SunContext.loadNeighbors: 同時実行（微調整の連打）は後�
   it('後の取得が失敗しても、古い取得の結果で一覧を上書きしない（一覧は前の状態のまま）', async () => {
     const site = { ...SITE };
     const sc = new SunContext(fakeViewer(), site);
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const before = sc.state.neighbors;
     fake.delays = [40, 0];
@@ -370,6 +381,7 @@ describe('SunContext.loadNeighbors: 国土地理院の補完・退路の待ち�
   it('PLATEAU が covered で国土地理院が無応答でも、上限（fillTimeoutMs）で打ち切って PLATEAU だけで返す。既定の上限は 10 s', async () => {
     fake.hang.gsi = true;
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const t0 = Date.now();
     const r = await sc.loadNeighbors('plateau', { fillTimeoutMs: 30 });
     expect(Date.now() - t0).toBeLessThan(1000);
@@ -381,6 +393,7 @@ describe('SunContext.loadNeighbors: 国土地理院の補完・退路の待ち�
 
   it('国土地理院の補完を待っている間の中止は signal.reason を投げ、一覧を変えない。fetchGsiBuildings / fetchOsmBuildings に signal を渡す', async () => {
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const before = sc.state.neighbors;
     vi.mocked(fetchGsiBuildings).mockClear();
@@ -399,6 +412,7 @@ describe('SunContext.loadNeighbors: 国土地理院の補完・退路の待ち�
     fake.plateau = { status: 'none', reason: 'outside', muniCds: ['11201'] };
     const ac2 = new AbortController();
     const sc2 = new SunContext(fakeViewer(), { ...SITE });
+    sc2.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc2.loadNeighbors('plateau', { signal: ac2.signal });
     expect(fetchOsmBuildings).toHaveBeenLastCalledWith(PIN.lat, PIN.lon, 110, { signal: ac2.signal });
   });
@@ -407,11 +421,13 @@ describe('SunContext.loadNeighbors: 国土地理院の補完・退路の待ち�
     fake.plateau = { status: 'none', reason: 'outside', muniCds: ['11201'] };
     fake.hang.gsi = true;
     let sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('plateau', { fillTimeoutMs: 30 });
     expect(r.used).toEqual(['osm']);
     expect(r.notes).toEqual([NOTE_PLATEAU_MISSING]);
     fake.hang.osm = true;
     sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await expect(sc.loadNeighbors('gsi', { fillTimeoutMs: 30 })).rejects.toThrow(/応答がありません（時間切れ）/);
     expect(sc.state.neighbors).toEqual([]);
   });
@@ -485,6 +501,7 @@ describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方�
   it('mesh 建物は遮蔽物（userData.neighbor）に入る: 三角形 12・material 2・groups 2。真北 0° なら bbox x 15..25・z 11..19・y 0..7', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     expect(meshes(sc).filter((m) => m.userData.neighbor)).toHaveLength(3);
     const m = meshOf(sc, 'plateau:bldg_A');
@@ -529,6 +546,7 @@ describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方�
   it('高さを直すと足元を固定して縦に伸びる（heightScale）。元に戻せる。足元の面積は変わらない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     const key = 'plateau:bldg_A';
     sc.setHeight(key, 14);
@@ -546,6 +564,7 @@ describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方�
   it('真北を 30° 回しても、ring の重心（toWorld）と mesh の bbox 中心が ±0.1 m で一致する', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     for (const deg of [30, -75, 180]) {
       (v.state!.model as { northAngleDeg: number }).northAngleDeg = deg;
@@ -570,6 +589,7 @@ describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方�
   it('航空写真があれば屋根に写真の UV（0..1 の範囲）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     // loadAerial は DOM（canvas）が要るので、写真の範囲だけ入れる
     (sc as unknown as { aerialInfo: unknown }).aerialInfo = { west: -220, east: 220, south: -220, north: 220, tex: new THREE.Texture() };
@@ -591,6 +611,7 @@ describe('国土地理院で隠した・直した記録は、外形の照合で 
   it('国土地理院で A と同じ足元の建物を隠し高さを直す → PLATEAU に切り替えると plateau:bldg_A が隠れたまま・高さも残る。B には移らない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const g = sc.state.neighbors.find((b) => Math.abs(ringCentroid(b.ring).e - 20) < 0.5)!;
     const kg = sc.keyOf(g);
@@ -627,6 +648,7 @@ describe('取得後のトーストの内訳は一覧に残った建物で数え�
     const boxC = plateauBox({ gmlId: 'bldg_C', anchor: ll(0, 0), w: 6, d: 6, h: 8, zmin: 40, attrs: { ...dsAttrs(), lod: 2 } });
     fake.plateau = { ...covered(), buildings: [boxA(), boxB(), boxC], lodCounts: { '1': 1, '2': 2 } };
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('plateau');
     // 一覧: A（箱形）・B（屋根形状）・国土地理院 1 棟。C は敷地に重なるので無い
     expect(sc.state.neighbors.map((b) => b.id)).toEqual(['plateau:bldg_A', 'plateau:bldg_B', 'gsi-1']);
@@ -666,6 +688,7 @@ describe('開示・文言', () => {
   it('collectDisclosure.sources: 出典の行（PLATEAU のデータセット・国土地理院（推定））と共通の開示文。rooms/heatmap/deck/diagram の注記に出る', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     let d = collectDisclosure(sc);
     expect(d.included).toBe(3);
@@ -725,6 +748,7 @@ describe('開示・文言', () => {
   it('表の高さの括弧: PLATEAU は無し、国土地理院は（推定）、手入力の隣家は（手入力）、直した高さは（手入力）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('plateau');
     sc.addManualNeighbor(180, 30, 8, 8, 7);
     const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
@@ -748,6 +772,7 @@ describe('開示・文言', () => {
 
   it('案内: 取得後のトースト・建物の案内の出典の行・ボタン・説明', async () => {
     const sc = new SunContext(fakeViewer(), { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('plateau');
     expect(neighborsLoadedToast(r)).toBe('周辺の建物を 3 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟・国土地理院で補完）');
     expect(neighborsLoadedToast({ ...r, used: ['plateau'], count: 2 }, 1)).toBe('周辺の建物を 2 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 1 棟）（隠した 1 棟は隠したままです）');
@@ -767,5 +792,26 @@ describe('開示・文言', () => {
     expect(NEIGHBORS_HINT).toContain('地盤の高低差は表現しません');
     expect(NEIGHBORS_HINT).toMatch(/LOD1 は箱形、LOD2 は屋根形状/);
     expect(NEIGHBORS_HINT).toMatch(/普通建物 約7m/);
+  });
+});
+
+describe('箱形の建物（国土地理院・OSM）の推定の屋根（既定 ON）', () => {
+  it('住宅らしい足元の国土地理院の建物は寄棟になり、高さは棟（屋根の最高点）。注記に「推定の屋根」。高さを直すと推定の屋根は外れる', async () => {
+    const sc = new SunContext(fakeViewer(), { ...SITE });
+    const r = await sc.loadNeighbors('gsi');
+    const g = sc.state.neighbors.find((b) => b.source === 'gsi' && b.ring.length >= 4)!;
+    expect(g.roofSpec?.kind).toBe('hip');
+    expect(sc.estimatedRoofOf(g)?.kind).toBe('hip');
+    expect(sc.heightOf(g)).toBeGreaterThan(6.8);
+    expect(sc.heightOf(g)).toBe(g.roofSpec!.ridge);
+    expect(r.notes.some((t) => /推定した屋根/.test(t))).toBe(true);
+    // 高さを数値で直したら、その高さの箱に戻る
+    sc.edits.heights.set(sc.keyOf(g), 9);
+    expect(sc.estimatedRoofOf(g)).toBeNull();
+    expect(sc.heightOf(g)).toBe(9);
+    // 「推定の屋根」を切ると元の推定の高さ
+    sc.edits.heights.delete(sc.keyOf(g));
+    sc.roofEstimate = false;
+    expect(sc.heightOf(g)).toBe(6.8);
   });
 });

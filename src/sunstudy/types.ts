@@ -10,6 +10,7 @@ import { metersPerDegree } from '../sun/geo';
 import type { AerialImage } from '../sun/geo';
 import type { PlannedHouse } from '../sun/plannedHouse';
 import type { NeighborMesh, PlateauAttrs, PlateauDatasetInfo, QuantizedMesh } from '../sun/plateau/types';
+import type { RoofSpec } from '../sun/plateau/roofSpec';
 
 export type { AerialImage };
 
@@ -235,6 +236,11 @@ export interface Neighbor {
   mesh?: NeighborMesh;
   /** PLATEAU の属性（出典・年度・LOD・実測の最高高さ・地盤 T.P. など。保存される） */
   plateau?: PlateauAttrs;
+  /**
+   * 箱形の建物（国土地理院・OSM・手入力）にかぶせた屋根の仕様（推定 or 手入力。boxRoof.ts）。描くとき ring から specMesh で形を作る。
+   * height はこの屋根の最高点。PLATEAU の建物は plateau.roofEstimate を使うのでここには入れない
+   */
+  roofSpec?: RoofSpec;
 }
 
 /** 保存形の周辺建物: mesh は Int16 cm の meshQ にして同梱する（無ければ ring の押し出しで描く） */
@@ -274,7 +280,7 @@ export interface NeighborOverride {
   height?: number;
   /** 高さを現地で測って確定した（要確認の建物で確定。日影図の脚注・レポートに「実測で確定した建物 N 棟」と出す） */
   confirmed?: boolean;
-  /** 利用者が直した屋根（形・軒高・棟高・向き・階数・階高）。PLATEAU の建物の mesh・高さ・属性をこの仕様で作り直す */
+  /** 利用者が直した屋根（形・軒高・棟高・向き・階数・階高）。PLATEAU の建物は mesh・高さ・属性を、箱形の建物は roofSpec・高さをこの仕様で作り直す */
   roof?: NonNullable<PlateauAttrs['roofEstimate']>;
   hidden?: boolean;
   hideMode?: NeighborHideMode;

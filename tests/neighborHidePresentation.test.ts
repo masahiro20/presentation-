@@ -257,6 +257,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('隠した建物は実体を作らず、遮蔽物（buildOccluder）にも入らない。薄い表示は影・解析に入らない', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     expect(neighborMeshes(v)).toBe(4);
     const tri0 = buildOccluder(v).triangles;
@@ -293,6 +294,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('PLATEAU の実形状の建物（mesh）を 1 棟混ぜる: 隠すと実体も遮蔽物（12 三角形）も外れ、薄い表示は mesh の高さ。pickNeighbor で中心を拾う。戻せる', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     // 足元の中心がピンから西 30 m・北 20 m の 10×8×9 m の箱（取得したときのピン基準）
     const mb = plateauToNeighborBuilding(plateauBox({ gmlId: 'bldg_pick', anchor: ll(-30, 20), w: 10, d: 8, h: 9, zmin: 40 }), PIN);
@@ -338,6 +340,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('選んだ建物はオレンジ（2 点合わせの航空写真側と同じ色）', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const k = sc.keyOf(sc.state.neighbors[1]);
     sc.setHighlight([k]);
@@ -353,6 +356,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     const v = fakeViewer();
     const site = { ...SITE };
     const sc = new SunContext(v, site);
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const k0 = sc.keyOf(sc.state.neighbors[0]);
     sc.setHidden([k0], true);
@@ -390,6 +394,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('高さを直すと影の形（遮蔽物の高さ）も変わり、元に戻せる', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const b = sc.state.neighbors[0];
     const k = sc.keyOf(b);
@@ -409,6 +414,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
   it('pickNeighbor: 真上から見て建物の中心をクリック → その建物。隠した建物は薄く表示している間だけ拾う', async () => {
     const v = fakeViewer();
     const sc = new SunContext(v, { ...SITE });
+    sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     await sc.loadNeighbors('gsi');
     const b = sc.state.neighbors[2];
     const k = sc.keyOf(b);

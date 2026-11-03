@@ -59,7 +59,13 @@ export interface Wall {
   /** 端部が他の壁と接続しているか（3D生成時の端面省略に使う） */
   joinedA?: boolean;
   joinedB?: boolean;
+  /** この壁だけの仕上げ: true = アクセント（外壁ならテイストのアクセント材、内壁ならアクセントクロス）、false = 通常に戻す。省略時はテイストの決まり */
+  accent?: boolean;
 }
+
+/** 部屋ごとの床仕上げの上書き（省略時は部屋の種類から: 水まわりはタイル、和室は畳、玄関・ガレージは土間） */
+export type FloorFinish = 'wood' | 'tile' | 'tatami' | 'doma';
+export const FLOOR_FINISH_LABEL: Record<FloorFinish, string> = { wood: 'フローリング', tile: 'タイル', tatami: '畳', doma: '土間（モルタル・タイル）' };
 
 export interface Opening {
   id: string;
@@ -100,6 +106,8 @@ export interface Room {
   garageKind?: GarageKind;
   /** この部屋だけの天井高 (mm)。無ければ階の天井高（LDK と水まわりだけ 3,500 などの部分的な高天井） */
   ceilingHeight?: number;
+  /** この部屋だけの床仕上げ（3D で床をクリックして変える）。無ければ部屋の種類から */
+  floorFinish?: FloorFinish;
 }
 
 export interface Stair {

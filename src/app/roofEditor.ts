@@ -7,18 +7,26 @@ import { HIGH_SIDES, HIGH_SIDE_LABEL, ROOF_KINDS, ROOF_KIND_LABEL, normalizeSpec
 import type { HighSide, PlateauAttrs, RoofKind, RoofSpec } from '../sun/plateau';
 import { field, h } from './dom';
 
-/** 編集欄に必要な建物の欄（日照ツールの Neighbor・プレゼンの NeighborBuilding 共通） */
+/** 編集欄に必要な建物の欄（日照ツールの Neighbor・プレゼンの NeighborBuilding 共通）。箱形の建物は height（と推定の roofSpec）から */
 export interface RoofEditable {
   plateau?: PlateauAttrs;
   mesh?: unknown;
+  /** 箱形の建物の高さ（m）。roofSpec が無ければ陸屋根（屋上 = 高さ）を初期値にする */
+  height?: number;
+  /** 箱形の建物にかぶせた屋根（推定・手入力。boxRoof.ts） */
+  roofSpec?: RoofSpec;
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
 /** 編集欄の初期値: 今の屋根（推定・手入力）、無ければ箱（陸屋根・屋上 = 箱の高さ） */
-export function initialRoofSpec(n: Pick<RoofEditable, 'plateau'>): RoofSpec | null {
+export function initialRoofSpec(n: Pick<RoofEditable, 'plateau' | 'height' | 'roofSpec'>): RoofSpec | null {
   const a = n.plateau;
-  if (!a) return null;
+  if (!a) {
+    if (n.roofSpec) return { ...n.roofSpec };
+    if (n.height && n.height > 0) return { kind: 'flat', eave: r2(n.height), ridge: r2(n.height), boxHeight: r2(n.height), parapet: 0 };
+    return null;
+  }
   if (a.roofEstimate) return { ...a.roofEstimate };
   const box = a.zmax - a.zmin;
   return { kind: 'flat', eave: r2(box), ridge: r2(box), boxHeight: r2(box), parapet: 0, ...(a.storeys ? { storeys: a.storeys, floorH: r2(box / a.storeys) } : {}) };
@@ -32,7 +40,7 @@ export interface RoofEditor {
 
 export function createRoofEditor(n: RoofEditable, hasOverride: boolean, onApply: (spec: RoofSpec) => void, onReset: () => void): RoofEditor | null {
   const init = initialRoofSpec(n);
-  if (!init || !n.mesh) return null;
+  if (!init || (n.plateau && !n.mesh)) return null;
   const num = (v: number | undefined, step: number, min = 0, max = 300) => h('input', { type: 'number', value: v == null ? '' : String(v), min, max, step, style: 'width:100%;box-sizing:border-box' }) as HTMLInputElement;
   const kindSel = h('select', { style: 'width:100%' }, ...ROOF_KINDS.map((k) => h('option', { value: k, selected: k === init.kind }, ROOF_KIND_LABEL[k]))) as HTMLSelectElement;
   const dirSel = h('select', { style: 'width:100%' }, h('option', { value: 'long', selected: (init.ridgeDir ?? 'long') === 'long' }, '長手'), h('option', { value: 'short', selected: init.ridgeDir === 'short' }, '短手')) as HTMLSelectElement;
@@ -87,7 +95,7 @@ export function createRoofEditor(n: RoofEditable, hasOverride: boolean, onApply:
   const el = h(
     'div',
     { class: 'roof-editor', style: 'margin:6px 0;padding:6px 8px;border:1px solid var(--line, #ddd);border-radius:8px' },
-    h('div', { class: 'field-label' }, `屋根・階高${init.user ? '（手入力）' : n.plateau?.roofEstimate ? '（推定）' : '（箱形）'}`),
+    h('div', { class: 'field-label' }, `屋根・階高${init.user ? '（手入力）' : n.plateau?.roofEstimate || n.roofSpec ? '（推定）' : '（箱形）'}`),
     h(
       'div',
       { style: 'display:grid;grid-template-columns:1fr 1fr;gap:2px 8px' },

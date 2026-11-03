@@ -17,6 +17,7 @@ import { PointCloudLayer } from './pointcloud/layer';
 import { fitBuildings, type CloudFitResult } from './pointcloud/fit';
 import type { SiteCloud } from './pointcloud/place';
 import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
+import { estimateBoxRoof } from '../sunstudy/boxRoof';
 
 /** 想定の家（planned 付きの周辺建物） */
 export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
@@ -729,7 +730,18 @@ export class SunContext {
     const key = this.keyOf(b);
     const roof = this.edits.roofs.get(key);
     if (roof && !b.planned) return specTop(roof);
-    return this.edits.heights.get(key) ?? b.height;
+    const h = this.edits.heights.get(key);
+    if (h != null) return h;
+    const est = this.estimatedRoofOf(b);
+    return est ? specTop(est) : b.height;
+  }
+
+  /** 箱形の建物（国土地理院・OSM）の推定の屋根（「推定の屋根」が ON のときだけ。利用者が屋根・高さを直した建物は無し） */
+  estimatedRoofOf(b: NeighborBuilding): RoofSpec | null {
+    if (!this.roofEstimate || !b.roofSpec || b.planned || b.plateau) return null;
+    const key = this.keyOf(b);
+    if (this.edits.roofs.has(key) || this.edits.heights.has(key)) return null;
+    return b.roofSpec;
   }
 
   /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物（開示・出典の数え方用。元のオブジェクトは変えない） */
@@ -1338,6 +1350,14 @@ export class SunContext {
     const fresh = list.filter((b) => !overlapsHouse(b));
     // PLATEAU は gml_id（ピン移動・取り直しで不変）、国土地理院・OSM は連番
     for (const b of fresh) b.id = b.plateau?.gmlId ? `plateau:${b.plateau.gmlId}` : `${b.source}-${++this.seq}`;
+    // 国土地理院・OSM の箱形の建物に推定の屋根（住宅らしい足元は寄棟、集合住宅は陸屋根）。「推定の屋根」を切ると描くときに箱に戻る
+    for (const b of fresh) {
+      if (b.plateau || b.mesh || b.ring.length < 3) continue;
+      const spec = estimateBoxRoof(b.ring, b.height, { heightKind: b.heightKind === 'measured' || (b.source === 'osm' && b.height !== 6.8) ? 'measured' : 'estimated', levels: b.levels, roofShape: b.roofShape, buildingType: b.buildingType, label: b.label });
+      if (spec) b.roofSpec = spec;
+    }
+    const boxRoofs = fresh.filter((b) => b.roofSpec && !b.plateau).length;
+    if (boxRoofs && this.roofEstimate) notes.push(`国土地理院・OpenStreetMap の箱形の建物 ${boxRoofs} 棟に、足元の形と高さから推定した屋根（住宅は寄棟・集合住宅は陸屋根）をかぶせています。実際の屋根の形ではありません。建物クリックで形・高さを直せます。`);
     // 外形は取得したときのピンから測っている（キー・照合はここから地点によらない座標に直す）
     this.neighborsOrigin = { lat, lon };
     this.state.neighbors = [...manual, ...fresh];
@@ -1439,7 +1459,8 @@ export class SunContext {
       // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く。地面は y=0（地盤の高低差は表現しない。計画建物・他の建物と同じ平面）
       // 屋根の仕様（手入力・点群の実測）がある建物は、国土地理院・OSM の建物でも仕様どおりに作る
       const shapedPa = !!b.mesh && !!b.plateau;
-      const specOnly = !planned && !shapedPa && this.edits.roofs.has(key) ? specMesh(b.ring, this.edits.roofs.get(key)!) : null;
+      const boxSpec = !planned && !shapedPa ? (this.edits.roofs.get(key) ?? this.estimatedRoofOf(b)) : null;
+      const specOnly = boxSpec ? specMesh(b.ring, boxSpec) : null;
       const shaped = !planned && (shapedPa || !!specOnly);
       let geo: THREE.BufferGeometry;
       if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });

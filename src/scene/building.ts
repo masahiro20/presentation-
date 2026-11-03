@@ -81,7 +81,8 @@ export interface SashInfo {
 export interface DoorInfo {
   /** 開口の ID */
   id: string;
-  kind: 'swing' | 'slide';
+  /** swing: 開き戸（回転）、slide: 引戸（平行移動）、roll: 巻き取りシャッター（上端を原点に縦に縮む） */
+  kind: 'swing' | 'slide' | 'roll';
   level: number;
   /** Group の位置（床の高さ 0。板の高さは局所座標に含む） */
   origin: THREE.Vector3;
@@ -454,11 +455,13 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       pieces.push(...splitAtVoid(f, w0, ops0));
     }
     for (const { w, ops } of pieces) {
+      // 壁ごとの指定（3D でクリックして決めた仕上げ）が最優先。無ければテイストの決まり（上階だけ・下階だけ・玄関の柱型）
       const accentHere =
-        !!ext.accent &&
-        ((ext.accentRule === 'upper' && f.level >= 2) ||
-          (ext.accentRule === 'lower' && f.level === 1) ||
-          (ext.accentRule === 'entrance' && w.exterior && isEntranceColumn(w, entranceRanges)));
+        w.accent ??
+        (!!ext.accent &&
+          ((ext.accentRule === 'upper' && f.level >= 2) ||
+            (ext.accentRule === 'lower' && f.level === 1) ||
+            (ext.accentRule === 'entrance' && w.exterior && isEntranceColumn(w, entranceRanges))));
       buildWall(mb, f, w, ops, fl, top, accentHere ? 'ext.accent' : 'ext.wall', isTop, spec);
       for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec, upperOutlinesOf(model, f));
     }
@@ -811,6 +814,7 @@ function buildAnnexRoof(mb: MeshBuilder, f: Floor, r: Room) {
 }
 
 export function floorKeyFor(r: Room): string {
+  if (r.floorFinish) return { wood: 'int.floor', tile: 'int.wetFloor', tatami: 'int.tatami', doma: 'int.entranceFloor' }[r.floorFinish];
   switch (r.type) {
     case 'bath':
     case 'washroom':
@@ -1170,6 +1174,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     // 部屋が無い側（ピロティ・ポーチの下など屋外）は外壁の仕上げ
     if (isOutdoor(r) || !r) return extKey;
     if (r?.type === 'bath') return 'int.bathWall';
+    // 壁ごとの指定（3D でクリック）が最優先。無ければ LDK の窓の無い長い壁をアクセントクロスに
+    if (!w.exterior && w.accent !== undefined) return w.accent ? 'int.accent' : 'int.wall';
     if (r && (r.type === 'ldk' || r.type === 'living') && !w.exterior && ops.length === 0 && L > 2.2) return 'int.accent';
     return 'int.wall';
   };
@@ -1393,8 +1399,29 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   if (o.kind === 'shutter') {
     // ガレージのシャッター（閉）: 開口いっぱいのスラット付きパネル、両脇のガイドレール、上のシャッターボックス
     const plane = mid.clone().addScaledVector(outN, t / 2 - 0.06);
-    mb.box('ext.shutter', plane.clone().setY(sill + 0.02), dir, width - 0.1, H - 0.08, 0.05);
-    for (let y = sill + 0.25; y < head - 0.12; y += 0.25) mb.box('ext.frame', plane.clone().setY(y), dir, width - 0.14, 0.008, 0.056);
+    // スラット付きのパネルは独立した部品（上端が原点）。クリックで巻き取り式に上のボックスへ巻き上がる
+    const panelH = H - 0.08;
+    const top = plane.clone().setY(sill + 0.02 + panelH);
+    const yaw = Math.atan2(-dir.z, dir.x);
+    const smb = new MeshBuilder();
+    smb.clip = localClip(top, yaw);
+    smb.box('ext.shutter', V(0, -panelH, 0), V(1, 0, 0), width - 0.1, panelH, 0.05);
+    for (let y = -panelH + 0.23; y < -0.1; y += 0.25) smb.box('ext.frame', V(0, y, 0), V(1, 0, 0), width - 0.14, 0.008, 0.056);
+    // 下端の座板（巻き上げても残る）
+    smb.box('ext.frame', V(0, -panelH, 0), V(1, 0, 0), width - 0.1, 0.06, 0.06);
+    meta.doors.push({
+      id: o.id,
+      kind: 'roll',
+      level: f.level,
+      origin: top,
+      yaw0: yaw,
+      openAngle: 0,
+      slideDir: new THREE.Vector3(),
+      slideDist: 0,
+      staticOpen: 0,
+      mb: smb,
+      width: width - 0.1,
+    });
     mb.box('ext.frame', plane.clone().addScaledVector(dir, -width / 2 + 0.025).setY(sill), dir, 0.05, H, 0.1);
     mb.box('ext.frame', plane.clone().addScaledVector(dir, width / 2 - 0.025).setY(sill), dir, 0.05, H, 0.1);
     mb.box('ext.frame', plane.clone().addScaledVector(outN, -0.05).setY(head - 0.3), dir, width, 0.3, 0.2);

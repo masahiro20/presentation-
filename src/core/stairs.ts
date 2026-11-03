@@ -68,55 +68,47 @@ export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps'> | null) 
   return Math.max(10, Math.round(riseMm / 200));
 }
 
-/** 踏面の最小寸法 (mm)。これより浅くなる階段は、昇り口側へ延ばして勾配を緩める（鉄骨のストリップ階段の標準的な勾配） */
+/** 踏面の最小寸法 (mm)。段数はこれを下回らない範囲で決める（鉄骨のストリップ階段の標準的な勾配） */
 export const MIN_TREAD = 240;
+/** 蹴上の上限 (mm)。住宅の法規の上限 230 */
+export const MAX_RISER = 230;
+
+/** 矩形（kind・entry を考慮）に踏面 MIN_TREAD で納まる最大の段数 */
+export function maxStepsInRect(s0: Stair): number {
+  const s = effectiveStair(s0);
+  const { Ls, Lt } = stairFrame(s);
+  if (s.kind === 'straight') return Math.max(2, Math.floor(Ls / MIN_TREAD));
+  if (s.kind === 'u' || s.kind === 'uOpen') {
+    const fw = s.kind === 'uOpen' ? Math.min(1000, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
+    const land = Math.min(Ls * 0.4, s.kind === 'uOpen' ? fw : Lt / 2);
+    const k = Math.floor((Ls - land) / MIN_TREAD);
+    return Math.max(3, 2 * k + 1);
+  }
+  const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  const len1 = Math.max(0, Ls - fw);
+  const len2 = Math.max(0, Lt - fw);
+  return Math.max(3, Math.floor(len1 / MIN_TREAD) + Math.floor(len2 / MIN_TREAD) + 1);
+}
 
 /**
- * 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
- * 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
+ * 実際に使う段数: 図面の段数があればそれ。無ければ階高 ÷ 200 前後を目安に、矩形に踏面 240 で納まる段数まで減らす
+ * （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
  */
-export function stairRunExtended(s0: Stair, n: number): Stair {
-  const s = effectiveStair(s0);
-  const F = stairFrame(s);
-  const { Ls, Lt } = F;
-  let need = 0;
-  if (s.kind === 'straight') need = MIN_TREAD * n - Ls;
-  else if (s.kind === 'u' || s.kind === 'uOpen') {
-    const land = Math.min(Ls * 0.4, Lt / 2);
-    const n1 = Math.floor(n / 2);
-    const n2 = n - n1 - 1;
-    const run = Ls - land;
-    const want = MIN_TREAD * Math.max(n1, n2);
-    // 延ばすと踊り場も少し伸びる（land = 0.4Ls のとき）ので、その分を見込む
-    need = want > run ? (want - run) / (Ls * 0.4 < Lt / 2 ? 0.6 : 1) : 0;
-  } else {
-    const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
-    const len1 = Math.max(0, Ls - fw);
-    const len2 = Math.max(0, Lt - fw);
-    const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round(((n - 1) * len1) / Math.max(1, len1 + len2))));
-    need = MIN_TREAD * n1 - len1;
-  }
-  if (need <= 10) return s;
-  const ext = Math.min(need, 1500);
-  const o = { ...s };
-  switch (s.entry) {
-    case 'n':
-      o.minY -= ext;
-      break;
-    case 's':
-      o.maxY += ext;
-      break;
-    case 'w':
-      o.minX -= ext;
-      break;
-    default:
-      o.maxX += ext;
-  }
-  return o;
+export function effectiveStepCount(riseMm: number, s: Stair): number {
+  if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+  const n0 = stairStepCount(riseMm);
+  const nMin = Math.max(6, Math.ceil(riseMm / MAX_RISER));
+  return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
+}
+
+/** 互換のため残す（矩形を延ばさなくなったので、そのまま返す） */
+export function stairRunExtended(s0: Stair, _n: number): Stair {
+  void _n;
+  return effectiveStair(s0);
 }
 
 export function stairLayout(s0: Stair, n = 14): StairLayout {
-  const s = stairRunExtended(effectiveStair(s0), n);
+  const s = effectiveStair(s0);
   const F = stairFrame(s);
   const P = (sv: number, tv: number) => ({ x: F.o.x + F.u.x * sv + F.r.x * tv, y: F.o.y + F.u.y * sv + F.r.y * tv });
   const rect = (s0: number, s1: number, t0: number, t1: number) => {
@@ -202,7 +194,7 @@ export interface StairDrawing {
  *  - 昇り口に○、終わりに矢じり。UP／DN と段数
  */
 export function stairDrawing(st: Stair, riseMm: number, opts: { cut?: boolean } = {}): StairDrawing {
-  const n = stairStepCount(riseMm, st);
+  const n = effectiveStepCount(riseMm, st);
   const lay = stairLayout(st, n);
   const pieces = lay.pieces;
   const riser = riseMm / Math.max(1, n);

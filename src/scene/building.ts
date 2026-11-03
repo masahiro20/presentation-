@@ -4,11 +4,11 @@
  */
 import * as THREE from 'three';
 import { postInWall, postSpan } from '../core/posts';
-import { isExteriorWorks, isSeparateGarage, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Wall } from '../core/types';
+import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Wall } from '../core/types';
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
-import { stairLayout, stairStepCount } from '../core/stairs';
+import { stairLayout, effectiveStepCount } from '../core/stairs';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
@@ -150,6 +150,38 @@ function roomAt(f: Floor, x: number, y: number): Room | null {
 /** この階より上の階の外形（玄関の庇が要るかの判定: 上階・下屋の下なら庇は要らない） */
 function upperOutlinesOf(model: BuildingModel, f: Floor): { x: number; y: number }[][] {
   return model.floors.filter((x) => x.level > f.level).flatMap((x) => x.outline.filter((l) => l.length >= 3 && !isHoleLoop(l, x.outline)));
+}
+
+/** 玄関の土間の下がり（m）: 上がり框の段差 */
+export const DOMA_DROP = DOMA_DROP_MM * MM;
+
+/**
+ * 上がり框: 土間の区画の縁のうち、家の床（ホール・LDK など室内の部屋）と接する辺に、FL までの段（框 = 木の縦面と天端）を付ける。
+ * 壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。框の天端はホール側の床を 30mm 持ち出す
+ */
+function buildAgarikamachi(mb: MeshBuilder, f: Floor, doma: Room, fl: number) {
+  const P = doma.polygon;
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i];
+    const b = P[(i + 1) % P.length];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 300) continue;
+    const ux = (b.x - a.x) / L;
+    const uy = (b.y - a.y) / L;
+    const nx = -uy;
+    const ny = ux;
+    const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // 土間の側（内側）と、向こう側の部屋
+    const inSide = pointInPolygon({ x: m.x + nx * 200, y: m.y + ny * 200 }, P) ? 1 : -1;
+    const other = roomAt(f, m.x - nx * inSide * 250, m.y - ny * inSide * 250);
+    if (!other || other === doma || isDomaRoom(other) || outdoorRoom(other) || other.type === 'void' || isBuiltinGarage(other)) continue;
+    // 向こう側も土間でなければ段差。框: 縁の線から土間側へ 120 の木の段（高さ = 下がり分）、天端は少し持ち出し
+    const dir = V(ux, 0, uy);
+    const c = V((m.x + nx * inSide * 60) * MM, fl - DOMA_DROP, (m.y + ny * inSide * 60) * MM);
+    mb.box('f.wood', c, dir, L * MM, DOMA_DROP, 0.12);
+    const top = V((m.x + nx * inSide * 75) * MM, fl - 0.03, (m.y + ny * inSide * 75) * MM);
+    mb.box('f.wood', top, dir, L * MM, 0.03, 0.15);
+  }
 }
 
 /** ビルトインガレージの土間の高さ（GL+40。家の床 FL ではない） */
@@ -462,13 +494,21 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
         continue;
       }
       const key = floorKeyFor(r);
-      const y = fl + (r.type === 'entrance' ? -0.0 : 0);
-      emitFlat(mb, key, r.polygon, voids, y, true);
+      if (isDomaRoom(r)) {
+        // 玄関・土間収納の土間: FL − 180。スラブもその分下げ、家の床との境に上がり框
+        const y = fl - DOMA_DROP;
+        emitFlat(mb, key, r.polygon, voids, y, true);
+        emitSlab(mb, 'int.slab', r.polygon, voids, fl - 0.24, y - 0.005, 'ext.wall');
+        buildAgarikamachi(mb, f, r, fl);
+        continue;
+      }
+      emitFlat(mb, key, r.polygon, voids, fl, true);
     }
     // 構造スラブ（断面表示・光漏れ防止）
-    // 中庭などの穴の部分・ガレージの土間にはスラブを張らない
+    // 中庭などの穴の部分・ガレージの土間にはスラブを張らない。玄関の土間は上で下げて張った
     const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
-    const holeRects = [...(holes.length ? polygonToRects(holes) : []), ...garageRects];
+    const domaRects = polygonToRects(f.rooms.filter((r) => isDomaRoom(r)).map((r) => r.polygon));
+    const holeRects = [...(holes.length ? polygonToRects(holes) : []), ...garageRects, ...domaRects];
     const lower = model.floors[model.floors.indexOf(f) - 1];
     const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
     for (const poly of f.outline) {
@@ -1139,7 +1179,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
   // ガレージ（土間）に面する間仕切りは土間まで下ろす（家の床の高さで止めると、土間との間に隙間が開く）
   const garageSide = f.level === 1 && !w.exterior && (isBuiltinGarage(rPlus) || isBuiltinGarage(rMinus));
-  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : garageSide ? GARAGE_FLOOR_Y - 0.01 : fl;
+  // 玄関の土間（FL − 180）に面する間仕切りも土間まで下ろす
+  const domaSide = !w.exterior && (isDomaRoom(rPlus) || isDomaRoom(rMinus));
+  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : garageSide ? GARAGE_FLOOR_Y - 0.01 : domaSide ? fl - DOMA_DROP - 0.01 : fl;
   // 後付け・離れのガレージ、物置の囲い（両側とも家の外）はその建物の高さまで
   const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
   // 敷地の塀（家から離れて立つ両側とも屋外の壁）は目隠し塀の高さ 1.8m（建物の高さまで立ち上げると敷地が箱で囲まれて見える）。
@@ -1194,10 +1236,6 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   const s1 = o.t1 * MM;
   const width = s1 - s0;
   const mid = A.clone().addScaledVector(dir, (s0 + s1) / 2);
-  const base = o.kind === 'shutter' && f.level === 1 ? GARAGE_FLOOR_Y : fl;
-  const sill = base + o.sill * MM;
-  const head = base + (o.sill + o.height) * MM;
-  const H = head - sill;
   let outSign = w.exterior ? (w.outsideSign ?? 1) : 1;
   // 1 階の外壁に置いた「開き戸」で、外側に部屋が無い（または外構・ポーチ）ものは玄関ドア扱い（外開き・庇付き）。
   // 室内の開き戸として作ると、玄関なのに内開きで庇の無い戸になっていた（吉田様邸）
@@ -1206,6 +1244,15 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const outsideRoom = roomAt(f, q.x / MM, q.z / MM);
     if (!outsideRoom || (outdoorRoom(outsideRoom) && outsideRoom.type !== 'balcony')) o = { ...o, kind: 'entrance', height: Math.max(o.height, 2200) };
   }
+  // 開口の基準の高さ: シャッターはガレージの土間、玄関ドアは玄関の土間（FL − 180）、ほかは家の床
+  let base = o.kind === 'shutter' && f.level === 1 ? GARAGE_FLOOR_Y : fl;
+  if (o.kind === 'entrance') {
+    const qi = mid.clone().addScaledVector(nW, -outSign * (t / 2 + 0.3));
+    if (isDomaRoom(roomAt(f, qi.x / MM, qi.z / MM))) base = fl - DOMA_DROP;
+  }
+  const sill = base + o.sill * MM;
+  const head = base + (o.sill + o.height) * MM;
+  const H = head - sill;
   // 外壁の外向きは、外形の内外で確かめる（向きを取り違えるとサッシ・カーテンが外に出る）
   if (w.exterior && f.outline.length) {
     const probe = (sg: number) => {
@@ -1393,10 +1440,12 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const outPt = mid.clone().addScaledVector(outN, t / 2 + 0.6);
     const outRoom = roomAt(f, outPt.x / MM, outPt.z / MM);
     if (!outRoom) {
+      // ポーチは土間（玄関ドアの基準）より 30 下。その先に半分の高さの段
+      const porchTop = Math.max(0.1, base - 0.03);
       const pc = mid.clone().addScaledVector(outN, t / 2 + porchD / 2);
-      mb.box('l.porch', pc.clone().setY(0), dir, porchW, fl - 0.02, porchD);
+      mb.box('l.porch', pc.clone().setY(0), dir, porchW, porchTop, porchD);
       const step = mid.clone().addScaledVector(outN, t / 2 + porchD + 0.2);
-      mb.box('l.porch', step.clone().setY(0), dir, porchW, (fl - 0.02) / 2, 0.4);
+      mb.box('l.porch', step.clone().setY(0), dir, porchW, porchTop / 2, 0.4);
     }
     const covered = (upperOutlines ?? []).some((l) => pointInPolygon({ x: outPt.x / MM, y: outPt.z / MM }, l)) || outRoom?.type === 'porch';
     if (!covered) {
@@ -1676,7 +1725,7 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
 /** 階段（直・折り返し） */
 function buildStairs(mb: MeshBuilder, s: Stair, y0: number, y1: number, f?: Floor) {
   const rise = y1 - y0;
-  const n = stairStepCount(rise / MM, s);
+  const n = effectiveStepCount(rise / MM, s);
   const rh = rise / n;
   const tread = 'int.stairs';
   // 蹴込みの無い「ストリップ階段」: 厚さ 40mm の踏板を、両端の細いスチールの受け材で支える（重い箱の積み重ねに見せない）

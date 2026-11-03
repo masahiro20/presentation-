@@ -63,6 +63,12 @@ function isExteriorWorks(t) {
 function isSeparateGarage(r) {
 	return r.type === "garage" && (r.garageKind === "attached" || r.garageKind === "detached");
 }
+/** 土間の部屋（玄関、土間収納、「土間」の名の付く区画）。床は FL − 180 で、家の床との境に上がり框が付く */
+function isDomaRoom(r) {
+	if (!r) return false;
+	if (r.type === "entrance") return true;
+	return (r.type === "storage" || r.type === "other" || r.type === "hall") && /土間|ＳＩＣ|SIC|シューズクローク|シューズクローゼット/.test(r.name ?? "");
+}
 //#endregion
 //#region src/core/geometry.ts
 var v = (x, y) => ({
@@ -12105,47 +12111,34 @@ function stairStepCount(riseMm, s) {
 	if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
 	return Math.max(10, Math.round(riseMm / 200));
 }
-/**
-* 図面の階段の矩形が短く、段割りすると踏面が浅く（勾配が急に）なる場合は、昇り口側へ矩形を延ばす。
-* 実際の階段も下の数段はホール側へ出ることが多い。返す矩形は延ばした後のもの（平面図・3D で共通）。
-*/
-function stairRunExtended(s0, n) {
+/** 矩形（kind・entry を考慮）に踏面 MIN_TREAD で納まる最大の段数 */
+function maxStepsInRect(s0) {
 	const s = effectiveStair(s0);
 	const { Ls, Lt } = stairFrame(s);
-	let need = 0;
-	if (s.kind === "straight") need = 240 * n - Ls;
-	else if (s.kind === "u" || s.kind === "uOpen") {
-		const land = Math.min(Ls * .4, Lt / 2);
-		const n1 = Math.floor(n / 2);
-		const n2 = n - n1 - 1;
-		const run = Ls - land;
-		const want = 240 * Math.max(n1, n2);
-		need = want > run ? (want - run) / (Ls * .4 < Lt / 2 ? .6 : 1) : 0;
-	} else {
-		const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
-		const len1 = Math.max(0, Ls - fw);
-		const len2 = Math.max(0, Lt - fw);
-		need = 240 * (len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))))) - len1;
+	if (s.kind === "straight") return Math.max(2, Math.floor(Ls / 240));
+	if (s.kind === "u" || s.kind === "uOpen") {
+		const fw = s.kind === "uOpen" ? Math.min(1e3, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
+		const land = Math.min(Ls * .4, s.kind === "uOpen" ? fw : Lt / 2);
+		const k = Math.floor((Ls - land) / 240);
+		return Math.max(3, 2 * k + 1);
 	}
-	if (need <= 10) return s;
-	const ext = Math.min(need, 1500);
-	const o = { ...s };
-	switch (s.entry) {
-		case "n":
-			o.minY -= ext;
-			break;
-		case "s":
-			o.maxY += ext;
-			break;
-		case "w":
-			o.minX -= ext;
-			break;
-		default: o.maxX += ext;
-	}
-	return o;
+	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	const len1 = Math.max(0, Ls - fw);
+	const len2 = Math.max(0, Lt - fw);
+	return Math.max(3, Math.floor(len1 / 240) + Math.floor(len2 / 240) + 1);
+}
+/**
+* 実際に使う段数: 図面の段数があればそれ。無ければ階高 ÷ 200 前後を目安に、矩形に踏面 240 で納まる段数まで減らす
+* （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
+*/
+function effectiveStepCount(riseMm, s) {
+	if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+	const n0 = stairStepCount(riseMm);
+	const nMin = Math.max(6, Math.ceil(riseMm / 230));
+	return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
 }
 function stairLayout(s0, n = 14) {
-	const s = stairRunExtended(effectiveStair(s0), n);
+	const s = effectiveStair(s0);
 	const F = stairFrame(s);
 	const P = (sv, tv) => ({
 		x: F.o.x + F.u.x * sv + F.r.x * tv,
@@ -12263,7 +12256,7 @@ function stairLayout(s0, n = 14) {
 *  - 昇り口に○、終わりに矢じり。UP／DN と段数
 */
 function stairDrawing(st, riseMm, opts = {}) {
-	const n = stairStepCount(riseMm, st);
+	const n = effectiveStepCount(riseMm, st);
 	const lay = stairLayout(st, n);
 	const pieces = lay.pieces;
 	const riser = riseMm / Math.max(1, n);
@@ -13217,7 +13210,7 @@ function woodCheck(model) {
 		for (const st0 of f.stairs.filter((x) => x.goesUp)) {
 			const st = effectiveStair(st0);
 			const rise = f.height || 2900;
-			const n = stairStepCount(rise, st);
+			const n = effectiveStepCount(rise, st);
 			const riser = rise / n;
 			const F = stairFrame(st);
 			let tread;
@@ -14733,6 +14726,40 @@ function roomAt(f, x, y) {
 function upperOutlinesOf(model, f) {
 	return model.floors.filter((x) => x.level > f.level).flatMap((x) => x.outline.filter((l) => l.length >= 3 && !isHoleLoop(l, x.outline)));
 }
+/** 玄関の土間の下がり（m）: 上がり框の段差 */
+var DOMA_DROP = 180 * MM;
+/**
+* 上がり框: 土間の区画の縁のうち、家の床（ホール・LDK など室内の部屋）と接する辺に、FL までの段（框 = 木の縦面と天端）を付ける。
+* 壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。框の天端はホール側の床を 30mm 持ち出す
+*/
+function buildAgarikamachi(mb, f, doma, fl) {
+	const P = doma.polygon;
+	for (let i = 0; i < P.length; i++) {
+		const a = P[i];
+		const b = P[(i + 1) % P.length];
+		const L = Math.hypot(b.x - a.x, b.y - a.y);
+		if (L < 300) continue;
+		const ux = (b.x - a.x) / L;
+		const uy = (b.y - a.y) / L;
+		const nx = -uy;
+		const ny = ux;
+		const m = {
+			x: (a.x + b.x) / 2,
+			y: (a.y + b.y) / 2
+		};
+		const inSide = pointInPolygon({
+			x: m.x + nx * 200,
+			y: m.y + ny * 200
+		}, P) ? 1 : -1;
+		const other = roomAt(f, m.x - nx * inSide * 250, m.y - ny * inSide * 250);
+		if (!other || other === doma || isDomaRoom(other) || outdoorRoom(other) || other.type === "void" || isBuiltinGarage(other)) continue;
+		const dir = V(ux, 0, uy);
+		const c = V((m.x + nx * inSide * 60) * MM, fl - DOMA_DROP, (m.y + ny * inSide * 60) * MM);
+		mb.box("f.wood", c, dir, L * MM, DOMA_DROP, .12);
+		const top = V((m.x + nx * inSide * 75) * MM, fl - .03, (m.y + ny * inSide * 75) * MM);
+		mb.box("f.wood", top, dir, L * MM, .03, .15);
+	}
+}
 /** ビルトインガレージの土間の高さ（GL+40。家の床 FL ではない） */
 var GARAGE_FLOOR_Y = .04;
 /** 家の中に組み込まれたガレージ（床は土間、車の口には段差を作らない） */
@@ -15070,11 +15097,22 @@ function buildBuilding(model, opts) {
 				continue;
 			}
 			const key = floorKeyFor(r);
-			const y = fl + (r.type === "entrance" ? -0 : 0);
-			emitFlat(mb, key, r.polygon, voids, y, true);
+			if (isDomaRoom(r)) {
+				const y = fl - DOMA_DROP;
+				emitFlat(mb, key, r.polygon, voids, y, true);
+				emitSlab(mb, "int.slab", r.polygon, voids, fl - .24, y - .005, "ext.wall");
+				buildAgarikamachi(mb, f, r, fl);
+				continue;
+			}
+			emitFlat(mb, key, r.polygon, voids, fl, true);
 		}
 		const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
-		const holeRects = [...holes.length ? polygonToRects(holes) : [], ...garageRects];
+		const domaRects = polygonToRects(f.rooms.filter((r) => isDomaRoom(r)).map((r) => r.polygon));
+		const holeRects = [
+			...holes.length ? polygonToRects(holes) : [],
+			...garageRects,
+			...domaRects
+		];
 		const lower = model.floors[model.floors.indexOf(f) - 1];
 		const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
 		for (const poly of f.outline) {
@@ -15827,7 +15865,8 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const kMinus = sideKey(-1);
 	const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
 	const garageSide = f.level === 1 && !w.exterior && (isBuiltinGarage(rPlus) || isBuiltinGarage(rMinus));
-	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : garageSide ? .03 : fl;
+	const domaSide = !w.exterior && (isDomaRoom(rPlus) || isDomaRoom(rMinus));
+	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : garageSide ? .03 : domaSide ? fl - DOMA_DROP - .01 : fl;
 	const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
 	const fence = f.elevation < 1500 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
 	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
@@ -15873,10 +15912,6 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 	const s1 = o.t1 * MM;
 	const width = s1 - s0;
 	const mid = A.clone().addScaledVector(dir, (s0 + s1) / 2);
-	const base = o.kind === "shutter" && f.level === 1 ? GARAGE_FLOOR_Y : fl;
-	const sill = base + o.sill * MM;
-	const head = base + (o.sill + o.height) * MM;
-	const H = head - sill;
 	let outSign = w.exterior ? w.outsideSign ?? 1 : 1;
 	if (o.kind === "door" && w.exterior && f.level === 1) {
 		const q = mid.clone().addScaledVector(nW, outSign * (t / 2 + .3));
@@ -15887,6 +15922,14 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 			height: Math.max(o.height, 2200)
 		};
 	}
+	let base = o.kind === "shutter" && f.level === 1 ? GARAGE_FLOOR_Y : fl;
+	if (o.kind === "entrance") {
+		const qi = mid.clone().addScaledVector(nW, -outSign * (t / 2 + .3));
+		if (isDomaRoom(roomAt(f, qi.x / .001, qi.z / .001))) base = fl - DOMA_DROP;
+	}
+	const sill = base + o.sill * MM;
+	const head = base + (o.sill + o.height) * MM;
+	const H = head - sill;
 	if (w.exterior && f.outline.length) {
 		const probe = (sg) => {
 			const q = mid.clone().addScaledVector(nW, sg * (t / 2 + .35));
@@ -16089,10 +16132,11 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		const outPt = mid.clone().addScaledVector(outN, t / 2 + .6);
 		const outRoom = roomAt(f, outPt.x / MM, outPt.z / MM);
 		if (!outRoom) {
+			const porchTop = Math.max(.1, base - .03);
 			const pc = mid.clone().addScaledVector(outN, t / 2 + porchD / 2);
-			mb.box("l.porch", pc.clone().setY(0), dir, porchW, fl - .02, porchD);
+			mb.box("l.porch", pc.clone().setY(0), dir, porchW, porchTop, porchD);
 			const step = mid.clone().addScaledVector(outN, t / 2 + porchD + .2);
-			mb.box("l.porch", step.clone().setY(0), dir, porchW, (fl - .02) / 2, .4);
+			mb.box("l.porch", step.clone().setY(0), dir, porchW, porchTop / 2, .4);
 		}
 		if (!((upperOutlines ?? []).some((l) => pointInPolygon({
 			x: outPt.x / .001,
@@ -16401,7 +16445,7 @@ function buildCeilingDetails(mb, f, fl, spec) {
 /** 階段（直・折り返し） */
 function buildStairs(mb, s, y0, y1, f) {
 	const rise = y1 - y0;
-	const n = stairStepCount(rise / MM, s);
+	const n = effectiveStepCount(rise / MM, s);
 	const rh = rise / n;
 	const tread = "int.stairs";
 	const put = (p, yTop) => {
@@ -16732,10 +16776,14 @@ function buildFurniture(model, opts = {}) {
 			currentOcc = [];
 			occupancy.set(room.id, currentOcc);
 			currentRoomId = room.id;
+			const roomEnv = isDomaRoom(room) ? {
+				...env,
+				y: env.y - 180 * MM
+			} : env;
 			const ctx = {
 				mb,
 				R,
-				y: f.elevation * MM,
+				y: roomEnv.y,
 				blocked: {
 					n: [],
 					s: [],
@@ -16750,7 +16798,7 @@ function buildFurniture(model, opts = {}) {
 				},
 				lights,
 				room,
-				env,
+				env: roomEnv,
 				has: /* @__PURE__ */ new Set()
 			};
 			collectBlocked(ctx, f, inner);
@@ -16770,7 +16818,7 @@ function buildFurniture(model, opts = {}) {
 			}
 			for (const it of f.planItems ?? []) {
 				if (it.roomId !== room.id) continue;
-				emitItem({ ...it }, env);
+				emitItem({ ...it }, roomEnv);
 				ctx.has.add(it.kind);
 				if (it.kind === "kitchen") ctx.planKitchen = it;
 				if (it.kind === "sofa") (ctx.planSofas ??= []).push(it);
@@ -16850,10 +16898,11 @@ function buildFurniture(model, opts = {}) {
 			}
 		}
 		if (override) for (const it of override.items) {
-			currentRoomId = (it.roomId && f.rooms.find((r) => r.id === it.roomId) || f.rooms.find((r) => pointInPolygon({
+			const room = it.roomId && f.rooms.find((r) => r.id === it.roomId) || f.rooms.find((r) => pointInPolygon({
 				x: it.x,
 				y: it.y
-			}, r.polygon)))?.id ?? "";
+			}, r.polygon));
+			currentRoomId = room?.id ?? "";
 			if (currentRoomId && !occupancy.has(currentRoomId)) occupancy.set(currentRoomId, []);
 			currentOcc = currentRoomId ? occupancy.get(currentRoomId) : null;
 			emitItem({
@@ -16861,7 +16910,8 @@ function buildFurniture(model, opts = {}) {
 				roomId: currentRoomId || void 0
 			}, {
 				...env,
-				walls: void 0
+				walls: void 0,
+				y: isDomaRoom(room) ? env.y - 180 * MM : env.y
 			});
 		}
 	}

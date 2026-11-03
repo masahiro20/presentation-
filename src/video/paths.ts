@@ -11,7 +11,7 @@ import { pointInPolygon } from '../core/geometry';
 import type { BuildingMeta } from '../scene/building';
 import type { SiteInfo } from '../scene/landscape';
 import type { Shot } from '../scene/shots';
-import { stairLayout, stairFrame, stairStepCount } from '../core/stairs';
+import { stairLayout, stairFrame, effectiveStepCount } from '../core/stairs';
 
 export interface CamSample {
   pos: THREE.Vector3;
@@ -361,7 +361,7 @@ export function walkthroughProgram(model: BuildingModel, meta: BuildingMeta, sit
       target = cands[0]?.room.id ?? null;
     }
     if (target && walkTo(target)) {
-      const lay = stairLayout(stair, stairStepCount((f2.elevation - (f1?.elevation ?? 0)) || 2900, stair));
+      const lay = stairLayout(stair, effectiveStepCount((f2.elevation - (f1?.elevation ?? 0)) || 2900, stair));
       const F = stairFrame(stair);
       const rise = f2y - f1y;
       const entryPt = new THREE.Vector3((F.o.x + F.r.x * (F.Lt / 2) - F.u.x * 700) * MM, f1y + eye, (F.o.y + F.r.y * (F.Lt / 2) - F.u.y * 700) * MM);

@@ -14,7 +14,7 @@ import { overhangPoints, hasPostNear, OVERHANG_POST_MIN, OVERHANG_POST_WARN } fr
 import { excludedFromFloorArea, type BuildingModel, type Floor, type Room, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
-import { effectiveStair, stairFrame, stairStepCount } from '../core/stairs';
+import { effectiveStair, effectiveStepCount, stairFrame } from '../core/stairs';
 import { classifyRoomName } from './labels';
 import { mustSeparate } from './roomKnowledge';
 
@@ -519,7 +519,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
     for (const st0 of f.stairs.filter((x) => x.goesUp)) {
       const st = effectiveStair(st0);
       const rise = f.height || 2900;
-      const n = stairStepCount(rise, st);
+      const n = effectiveStepCount(rise, st);
       const riser = rise / n;
       const F = stairFrame(st);
       let tread: number;

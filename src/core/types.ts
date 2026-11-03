@@ -379,6 +379,15 @@ export function isSeparateGarage(r: { type: RoomType; garageKind?: GarageKind })
   return r.type === 'garage' && (r.garageKind === 'attached' || r.garageKind === 'detached');
 }
 
+/** 玄関の土間は家の床（FL）より下がる（上がり框の段差）。mm */
+export const DOMA_DROP_MM = 180;
+/** 土間の部屋（玄関、土間収納、「土間」の名の付く区画）。床は FL − 180 で、家の床との境に上がり框が付く */
+export function isDomaRoom(r: { type: RoomType; name?: string } | null | undefined): boolean {
+  if (!r) return false;
+  if (r.type === 'entrance') return true;
+  return (r.type === 'storage' || r.type === 'other' || r.type === 'hall') && /土間|ＳＩＣ|SIC|シューズクローク|シューズクローゼット/.test(r.name ?? '');
+}
+
 /** 居室（人が長く過ごす部屋）か */
 export function isHabitable(t: RoomType): boolean {
   return ['ldk', 'living', 'dining', 'kitchen', 'japanese', 'bedroom', 'kids', 'study'].includes(t);

@@ -4,9 +4,9 @@
  */
 import { postInWall } from '../core/posts';
 import { takeoff } from '../estimate/areas';
-import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2 } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2, roomFloorOffsetMm } from '../core/types';
 import { stairDrawing } from '../core/stairs';
-import { polygonCentroid } from '../core/geometry';
+import { pointInPolygon, polygonCentroid } from '../core/geometry';
 import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
 import { buildLandscape, planExteriorOf, type LandscapePlan } from '../scene/landscape';
@@ -433,6 +433,40 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
       for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
     }
   }
+  // 上の階の吹抜（この階から見上げる範囲）: 破線で囲み「上部吹抜」（木造の平面図の一般的な表記。御社の図面も同じ）
+  {
+    const upperF = model.floors.find((u) => u.level === f.level + 1);
+    const haloS = `stroke="#fff" stroke-width="40" stroke-linejoin="round" paint-order="stroke"`;
+    if (upperF)
+      for (const v of upperF.rooms) {
+        if (v.type !== 'void' || v.polygon.length < 3) continue;
+        const pts = v.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ');
+        s += `<polygon points="${pts}" fill="none" stroke="#333" stroke-width="${hl ? 7 : 9}" stroke-dasharray="150 90"/>`;
+        const cc = polygonCentroid(v.polygon);
+        s += `<text x="${cc.x.toFixed(0)}" y="${(cc.y + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${haloS}>上部吹抜</text>`;
+      }
+    // 床の段差の線（小上がり・ダウンリビングの框）: 床の高さが違う部屋どうしの境。壁がある所は壁の線が上に描かれる
+    for (const r of f.rooms) {
+      if (!r.floorOffset) continue;
+      const here = roomFloorOffsetMm(r);
+      const P = r.polygon;
+      for (let i = 0; i < P.length; i++) {
+        const a = P[i];
+        const b = P[(i + 1) % P.length];
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        if (L < 200) continue;
+        const nx = -(b.y - a.y) / L;
+        const ny = (b.x - a.x) / L;
+        const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const inSide = pointInPolygon({ x: m.x + nx * 150, y: m.y + ny * 150 }, P) ? 1 : -1;
+        const other = f.rooms.find((q) => q !== r && pointInPolygon({ x: m.x - nx * inSide * 200, y: m.y - ny * inSide * 200 }, q.polygon));
+        if (!other || Math.abs(roomFloorOffsetMm(other) - here) < 20) continue;
+        const lowSide = roomFloorOffsetMm(other) < here ? -inSide : inSide;
+        s += `<line x1="${a.x.toFixed(0)}" y1="${a.y.toFixed(0)}" x2="${b.x.toFixed(0)}" y2="${b.y.toFixed(0)}" stroke="#222" stroke-width="10"/>`;
+        s += `<line x1="${(a.x + nx * lowSide * 70).toFixed(0)}" y1="${(a.y + ny * lowSide * 70).toFixed(0)}" x2="${(b.x + nx * lowSide * 70).toFixed(0)}" y2="${(b.y + ny * lowSide * 70).toFixed(0)}" stroke="#222" stroke-width="4"/>`;
+      }
+    }
+  }
   // 家具
   if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf(model, f.level), hl);
   // 階段（CAD の表記: 段鼻の線・側桁・歩行線（○→矢じり）・UP/DN と段数・切断線。切断線より上は破線）
@@ -696,10 +730,13 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
       const tj = Math.abs(tatami - Math.round(tatami)) < 0.08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
       s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * 0.15 : fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * 0.08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
       if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * 0.85}" font-size="${(fs * 0.82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
+      // 床の段差: 「FL+400」（小上がり・ダウンリビング・中二階。玄関の土間は書かない）
+      if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (showTatami ? 1.6 : 1.1)).toFixed(0)}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>FL${r.floorOffset > 0 ? '+' : '−'}${Math.abs(r.floorOffset)}</text>`;
       continue;
     }
     s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * 0.06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
     if (big) s += `<text x="${c.x}" y="${c.y + fs * 0.95}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
+    if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (big ? 1.7 : 1.1)).toFixed(0)}" font-size="${(fs * 0.62).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>FL${r.floorOffset > 0 ? '+' : '−'}${Math.abs(r.floorOffset)}</text>`;
   }
   // 寸法（外壁の通り芯ごとの寸法と全体寸法。道路・敷地境界と重なりにくい側に）
   let dimsBelow = false;

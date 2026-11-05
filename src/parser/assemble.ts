@@ -4,7 +4,7 @@
 import { ensureGarageShutters } from './garageShutter';
 import { ensureOpenings, relocateAutoShutters } from './ensureOpenings';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
-import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind } from '../core/types';
+import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
@@ -2084,6 +2084,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     for (const t of assignLdkRoles(rooms, rec.renamed, mergedItems, plan.texts)) warnings.push(`${level}階 ${t}`);
   }
   // 天井高の注記（「天井高2.6m」「CH=2400」）はその部屋だけの天井高
+  // 室名から分かる床の段差（小上がり畳コーナー +400、ダウンリビング −400）
+  for (const r of rooms) {
+    const off = floorOffsetByName(r.name);
+    if (off != null && r.floorOffset == null) r.floorOffset = off;
+  }
   for (const c of applyCeilingNotes(rooms, plan.texts)) {
     const r = rooms.find((x) => x.id === c.roomId)!;
     notes.push({ text: `${r.name}: 天井高 ${c.ch} mm（図面の注記）`, x: r.labelPos.x, y: r.labelPos.y, roomId: r.id });
@@ -2945,6 +2950,12 @@ export interface RoomLabel {
   type?: RoomType;
   /** ガレージの建て方を手で指定した場合 */
   garageKind?: GarageKind;
+  /** 床の FL からの段差 (mm)（小上がり・ダウンリビング。修正画面・3D で指定） */
+  floorOffset?: number;
+  /** 吹抜の落下防止の種類 */
+  voidGuard?: VoidGuard;
+  /** 床の仕上げの上書き（3D で指定） */
+  floorFinish?: FloorFinish;
 }
 
 /**
@@ -3095,6 +3106,15 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
     if (r.type === 'garage' && l.garageKind) r.garageKind = l.garageKind;
     if (l.ceilingHeight) r.ceilingHeight = l.ceilingHeight;
     else delete r.ceilingHeight;
+    // 床の段差・吹抜の手すり・床の仕上げ（修正画面・3D で決めたもの。無ければ室名から: 小上がり +400 など）
+    const byName = floorOffsetByName(r.name);
+    if (l.floorOffset != null && l.floorOffset !== 0) r.floorOffset = l.floorOffset;
+    else if (l.floorOffset === 0 || byName == null) delete r.floorOffset;
+    else r.floorOffset = byName;
+    if (l.voidGuard) r.voidGuard = l.voidGuard;
+    else delete r.voidGuard;
+    if (l.floorFinish) r.floorFinish = l.floorFinish;
+    else delete r.floorFinish;
     r.labelPos = { x: l.x, y: l.y };
   }
   // 図面から読んだ家具は、部屋が描き直されても同じ位置にあるものとして部屋を引き直す

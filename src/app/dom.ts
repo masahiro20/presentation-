@@ -27,7 +27,8 @@ function append(el: Node, children: Child[]) {
 }
 
 export function clear(el: Element) {
-  while (el.firstChild) el.removeChild(el.firstChild);
+  // 一括で消す（1 つずつ removeChild すると、フォーカス中の入力欄が外れて change が再入し、途中で子が入れ替わって例外になることがある）
+  el.replaceChildren();
 }
 
 export function toast(msg: string, kind: 'info' | 'error' | 'ok' = 'info', ms = 3500) {

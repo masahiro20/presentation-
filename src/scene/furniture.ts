@@ -3,7 +3,7 @@
  * 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
  */
 import * as THREE from 'three';
-import { DOMA_DROP_MM, excludedFromFloorArea, isDomaRoom, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall } from '../core/types';
+import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -341,10 +341,12 @@ export function buildFurniture(
       occupancy.set(room.id, currentOcc);
       currentRoomId = room.id;
       // 玄関・土間収納の土間は FL − 180（下駄箱などはその床の上に）
-      const roomEnv: ItemEnv = isDomaRoom(room) ? { ...env, y: env.y - DOMA_DROP_MM * MM } : env;
+      // 床の段差（玄関の土間 −180・小上がり +400・ダウンリビング −400）の上に置く。天井までの高さはその分変わる
+      const offMm = roomFloorOffsetMm(room);
+      const roomEnv: ItemEnv = offMm !== 0 ? { ...env, y: env.y + offMm * MM } : env;
       const ctx: RoomCtx = { mb, R, y: roomEnv.y, blocked: { n: [], s: [], e: [], w: [] }, windows: { n: 0, s: 0, e: 0, w: 0 }, lights, room, env: roomEnv, has: new Set() };
       collectBlocked(ctx, f, inner);
-      const ceilingY = f.ceilingHeight * MM;
+      const ceilingY = Math.max(1.8, ((room.ceilingHeight ?? f.ceilingHeight) - offMm) * MM);
       const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - 0.02, (R.minZ + R.maxZ) / 2);
       if (override) {
         if (!excludedFromFloorArea(room.type) && !['other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
@@ -410,7 +412,7 @@ export function buildFurniture(
         currentRoomId = room?.id ?? '';
         if (currentRoomId && !occupancy.has(currentRoomId)) occupancy.set(currentRoomId, []);
         currentOcc = currentRoomId ? occupancy.get(currentRoomId)! : null;
-        emitItem({ ...it, roomId: currentRoomId || undefined }, { ...env, walls: undefined, y: isDomaRoom(room) ? env.y - DOMA_DROP_MM * MM : env.y });
+        emitItem({ ...it, roomId: currentRoomId || undefined }, { ...env, walls: undefined, y: env.y + roomFloorOffsetMm(room) * MM });
       }
     }
   }

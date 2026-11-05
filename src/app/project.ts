@@ -32,6 +32,7 @@ export interface ProjectFile {
   render: ProjectState['render'];
   elevations: ProjectState['elevations'];
   sheets?: ProjectState['sheets'];
+  sheetLayout?: ProjectState['sheetLayout'];
   plans: ProjectState['plans'];
   gallery: (Omit<GalleryItem, 'url'> & { url: string })[];
   sun: { seasons: ProjectState['sun']['seasons']; highlights: ProjectState['sun']['highlights']; diagramSvg?: string; images: { label: string; url: string }[]; sightlines?: ProjectState['sun']['sightlines'] };
@@ -92,6 +93,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     render: state.render,
     elevations: state.elevations,
     sheets: state.sheets,
+    sheetLayout: state.sheetLayout,
     plans: state.plans,
     gallery,
     sun: { seasons: state.sun.seasons, highlights: state.sun.highlights, diagramSvg: state.sun.diagramSvg, images, sightlines: state.sun.sightlines },
@@ -123,6 +125,7 @@ export function applyProject(p: ProjectFile) {
   if (p.render) state.render = { ...state.render, ...p.render };
   state.elevations = p.elevations ?? [];
   state.sheets = p.sheets ?? [];
+  state.sheetLayout = p.sheetLayout;
   state.plans = p.plans ?? [];
   state.gallery = (p.gallery ?? []).map((g) => ({ ...g }));
   state.sun = { seasons: p.sun?.seasons ?? [], highlights: p.sun?.highlights ?? [], diagramSvg: p.sun?.diagramSvg, images: p.sun?.images ?? [], sightlines: p.sun?.sightlines };

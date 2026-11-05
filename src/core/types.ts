@@ -108,6 +108,31 @@ export interface Room {
   ceilingHeight?: number;
   /** この部屋だけの床仕上げ（3D で床をクリックして変える）。無ければ部屋の種類から */
   floorFinish?: FloorFinish;
+  /** 床の FL からの段差 (mm)。小上がり +300〜400、ダウンリビング −300〜400、中二階 +1,400 など。無ければ 0（玄関の土間は isDomaRoom で −180） */
+  floorOffset?: number;
+  /** 吹抜（type 'void'）の落下防止の種類。無ければテイスト（仕様）の既定 */
+  voidGuard?: VoidGuard;
+}
+
+/** 吹抜の落下防止: 腰壁／腰壁＋ガラス／スチール手すり／アイアン手すり／ガラス手すり／天井までの壁 */
+export type VoidGuard = 'half' | 'halfGlass' | 'steel' | 'iron' | 'glass' | 'wall';
+export const VOID_GUARDS: readonly VoidGuard[] = ['half', 'halfGlass', 'steel', 'iron', 'glass', 'wall'];
+export const VOID_GUARD_LABEL: Record<VoidGuard, string> = { half: '腰壁', halfGlass: '腰壁＋ガラス', steel: 'スチール手すり（縦桟）', iron: 'アイアン手すり（細い丸棒）', glass: 'ガラス手すり', wall: '壁（天井まで）' };
+/** 床の段差のプリセット（FL からの mm） */
+export const FLOOR_OFFSET_PRESETS: { label: string; v: number }[] = [
+  { label: '段差なし', v: 0 },
+  { label: '小上がり +300', v: 300 },
+  { label: '小上がり +400', v: 400 },
+  { label: 'ダウンリビング −300', v: -300 },
+  { label: 'ダウンリビング −400', v: -400 },
+  { label: '中二階 +1,400', v: 1400 },
+];
+/** 室名から分かる床の段差（小上がり → +400、ダウンリビング・ダウンフロア → −400）。分からなければ undefined */
+export function floorOffsetByName(name: string): number | undefined {
+  const n = (name ?? '').normalize('NFKC');
+  if (/小上がり|小上り|小上|段上がり/.test(n)) return 400;
+  if (/ダウンリビング|ダウンフロア|ピットリビング|ダウンダイニング/.test(n)) return -400;
+  return undefined;
 }
 
 export interface Stair {
@@ -390,6 +415,13 @@ export function isSeparateGarage(r: { type: RoomType; garageKind?: GarageKind })
 /** 玄関の土間は家の床（FL）より下がる（上がり框の段差）。mm */
 export const DOMA_DROP_MM = 180;
 /** 土間の部屋（玄関、土間収納、「土間」の名の付く区画）。床は FL − 180 で、家の床との境に上がり框が付く */
+/** 部屋の床の FL からの段差 (mm): 指定があればそれ、無ければ玄関・土間収納の土間は −180、ほかは 0 */
+export function roomFloorOffsetMm(r: { type: RoomType; name?: string; floorOffset?: number } | null | undefined): number {
+  if (!r) return 0;
+  if (r.floorOffset != null && r.floorOffset !== 0) return r.floorOffset;
+  return isDomaRoom(r) ? -DOMA_DROP_MM : 0;
+}
+
 export function isDomaRoom(r: { type: RoomType; name?: string } | null | undefined): boolean {
   if (!r) return false;
   if (r.type === 'entrance') return true;

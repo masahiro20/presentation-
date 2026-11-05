@@ -55,7 +55,9 @@ export interface ProjectState {
   elevations: { dir: string; title: string; svg: string }[];
   plans: { level: number; svg: string }[];
   /** A3 図面シート（図枠・表題欄付き: 平面図・立面図・断面図） */
-  sheets: { title: string; svg: string }[];
+  sheets: { title: string; svg: string; floors?: number[] }[];
+  /** 図面シートの配置（手で直した分。平面図の縮尺・1 階と 2 階の間隔・並び・パネルごとのずらし） */
+  sheetLayout?: SheetLayout;
   sun: {
     seasons: SeasonResult[];
     highlights: SunHighlight[];
@@ -78,6 +80,19 @@ export interface ProjectState {
   estimate: EstimateState | null;
   /** コーディネートの段取り（部位ごとの候補・決定・お客様の選択） */
   coord: CoordState;
+}
+
+/** 図面シートの配置の手直し。offsets は図面のパネル（1 階・2 階 …）ごとの紙の上のずらし (mm) */
+export interface SheetLayout {
+  plan?: {
+    /** 縮尺の分母（100・150・200）。無ければ自動 */
+    scale?: number;
+    /** 1 階と 2 階の間隔 (m)。既定 0.6 */
+    gapM?: number;
+    /** 並べ方: 横一列（既定）／縦 */
+    stack?: 'row' | 'col';
+    offsets?: Record<string, { x: number; y: number }>;
+  };
 }
 
 export const state: ProjectState = {

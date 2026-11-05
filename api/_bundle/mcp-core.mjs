@@ -4,6 +4,12 @@ import path from "node:path";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 //#region src/core/types.ts
+/** 室名から分かる床の段差（小上がり → +400、ダウンリビング・ダウンフロア → −400）。分からなければ undefined */
+function floorOffsetByName(name) {
+	const n = (name ?? "").normalize("NFKC");
+	if (/小上がり|小上り|小上|段上がり/.test(n)) return 400;
+	if (/ダウンリビング|ダウンフロア|ピットリビング|ダウンダイニング/.test(n)) return -400;
+}
 var ROOM_TYPE_LABEL = {
 	ldk: "LDK",
 	living: "リビング",
@@ -64,6 +70,12 @@ function isSeparateGarage(r) {
 	return r.type === "garage" && (r.garageKind === "attached" || r.garageKind === "detached");
 }
 /** 土間の部屋（玄関、土間収納、「土間」の名の付く区画）。床は FL − 180 で、家の床との境に上がり框が付く */
+/** 部屋の床の FL からの段差 (mm): 指定があればそれ、無ければ玄関・土間収納の土間は −180、ほかは 0 */
+function roomFloorOffsetMm(r) {
+	if (!r) return 0;
+	if (r.floorOffset != null && r.floorOffset !== 0) return r.floorOffset;
+	return isDomaRoom(r) ? -180 : 0;
+}
 function isDomaRoom(r) {
 	if (!r) return false;
 	if (r.type === "entrance") return true;
@@ -10138,6 +10150,10 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		warnings.push(...rec.warnings);
 		for (const t of assignLdkRoles(rooms, rec.renamed, mergedItems, plan.texts)) warnings.push(`${level}階 ${t}`);
 	}
+	for (const r of rooms) {
+		const off = floorOffsetByName(r.name);
+		if (off != null && r.floorOffset == null) r.floorOffset = off;
+	}
 	for (const c of applyCeilingNotes(rooms, plan.texts)) {
 		const r = rooms.find((x) => x.id === c.roomId);
 		notes.push({
@@ -13854,6 +13870,10 @@ var AREA_FIELDS = [
 ];
 var T$1 = .3025;
 var r2$1 = (v) => Math.round(v * 100) / 100;
+/** 1 階の外壁に足す基礎の立ち上がり（GL+500）(m) */
+var FOUND_H = .5;
+/** 陸屋根・片流れの箱のパラペットの高さ (m) */
+var PARAPET_H = .9;
 function perimeter(poly) {
 	let s = 0;
 	for (let i = 0; i < poly.length; i++) {
@@ -13919,22 +13939,47 @@ function overlay(floors, step = 50) {
 }
 /** i 階の外周のうち、上の階の外形の下に入っていない長さ（m）: 下屋の屋根の縁（パラペット・軒先になる） */
 function uncoveredEdge(f, upper, step = 100) {
-	let len = 0;
+	return uncoveredRuns(f, upper, step).reduce((s, r) => s + r.len, 0) / 1e3;
+}
+/** 下屋の縁の区間: i 階の外形の辺のうち、上の階の外形の下に入っていない部分（辺ごとに区切る。根拠の図に描く） */
+function uncoveredRuns(f, upper, step = 100) {
+	const out = [];
 	for (const l of f.outline) for (let i = 0; i < l.length; i++) {
 		const a = l[i];
 		const b = l[(i + 1) % l.length];
 		const L = Math.hypot(b.x - a.x, b.y - a.y);
+		if (L < 1) continue;
 		const n = Math.max(1, Math.round(L / step));
-		for (let k = 0; k < n; k++) {
-			const t = (k + .5) / n;
-			const p = {
-				x: a.x + (b.x - a.x) * t,
-				y: a.y + (b.y - a.y) * t
-			};
-			if (!upper || !inFloor(upper, p.x, p.y)) len += L / n;
+		let run = null;
+		for (let k = 0; k <= n; k++) {
+			const open = k < n && (() => {
+				const t = (k + .5) / n;
+				const p = {
+					x: a.x + (b.x - a.x) * t,
+					y: a.y + (b.y - a.y) * t
+				};
+				return !upper || !inFloor(upper, p.x, p.y);
+			})();
+			if (open && run == null) run = k;
+			if (!open && run != null) {
+				const t0 = run / n;
+				const t1 = k / n;
+				out.push({
+					a: {
+						x: a.x + (b.x - a.x) * t0,
+						y: a.y + (b.y - a.y) * t0
+					},
+					b: {
+						x: a.x + (b.x - a.x) * t1,
+						y: a.y + (b.y - a.y) * t1
+					},
+					len: L * (k - run) / n
+				});
+				run = null;
+			}
 		}
 	}
-	return len / 1e3;
+	return out;
 }
 /** 家の中に組み込まれたガレージ（床は土間。床面積に入れず施工面積に、断熱は入れない） */
 function isBuiltinGarage$1(r) {
@@ -13963,7 +14008,13 @@ function inPoly(poly, x, y) {
 }
 /** 多角形の辺のうち外壁になっている長さ (m)（辺の中点を外へ 150 ずらした点が階の外形の外） */
 function exteriorEdgeLen(f, poly, step = 100) {
-	let len = 0;
+	return exteriorRuns(f, poly, step).reduce((s, r) => s + r.len, 0) / 1e3;
+}
+/**
+* 多角形の辺のうち外壁になっている区間（根拠の図に描く）。outward は外側（階の外形の外）へ向く単位法線
+*/
+function exteriorRuns(f, poly, step = 100) {
+	const out = [];
 	for (let i = 0; i < poly.length; i++) {
 		const a = poly[i];
 		const b = poly[(i + 1) % poly.length];
@@ -13972,16 +14023,51 @@ function exteriorEdgeLen(f, poly, step = 100) {
 		const nx = -(b.y - a.y) / L;
 		const ny = (b.x - a.x) / L;
 		const n = Math.max(1, Math.round(L / step));
-		for (let k = 0; k < n; k++) {
-			const t = (k + .5) / n;
-			const p = {
-				x: a.x + (b.x - a.x) * t,
-				y: a.y + (b.y - a.y) * t
-			};
-			if (!inFloor(f, p.x + nx * 150, p.y + ny * 150) !== !inFloor(f, p.x - nx * 150, p.y - ny * 150)) len += L / n;
+		let run = null;
+		let sign = 1;
+		const flush = (k) => {
+			if (run == null) return;
+			const t0 = run / n;
+			const t1 = k / n;
+			out.push({
+				a: {
+					x: a.x + (b.x - a.x) * t0,
+					y: a.y + (b.y - a.y) * t0
+				},
+				b: {
+					x: a.x + (b.x - a.x) * t1,
+					y: a.y + (b.y - a.y) * t1
+				},
+				len: L * (k - run) / n,
+				outward: {
+					x: nx * sign,
+					y: ny * sign
+				}
+			});
+			run = null;
+		};
+		for (let k = 0; k <= n; k++) {
+			let ext = false;
+			let s = 1;
+			if (k < n) {
+				const t = (k + .5) / n;
+				const p = {
+					x: a.x + (b.x - a.x) * t,
+					y: a.y + (b.y - a.y) * t
+				};
+				const outA = !inFloor(f, p.x + nx * 150, p.y + ny * 150);
+				ext = outA !== !inFloor(f, p.x - nx * 150, p.y - ny * 150);
+				s = outA ? 1 : -1;
+			}
+			if (ext && run != null && s !== sign) flush(k);
+			if (ext && run == null) {
+				run = k;
+				sign = s;
+			}
+			if (!ext) flush(k);
 		}
 	}
-	return len / 1e3;
+	return out;
 }
 /** 外形の出隅（外側に尖った角）の数 */
 function convexCorners(f) {
@@ -14025,8 +14111,6 @@ function takeoff(model, opts) {
 	const loftArea = 0;
 	const constArea = r2$1(totalArea + extraArea + balconyArea + loftArea + voidArea);
 	const buildArea = r2$1(Math.max(ov.union, floor1));
-	const FOUND_H = .5;
-	const PARAPET_H = .9;
 	let extWall = 0;
 	let corners = 0;
 	for (const f of floors) {
@@ -14041,11 +14125,7 @@ function takeoff(model, opts) {
 	let lowerEdges = 0;
 	for (let i = 0; i < floors.length - 1; i++) lowerEdges += uncoveredEdge(floors[i], floors[i + 1]);
 	if (opts.roofType === "flat" || opts.roofType === "shed") extWall += (topPerim + lowerEdges) * PARAPET_H;
-	else if (opts.roofType === "gable" && top) {
-		const tb = bboxOf(top.outline.flat());
-		const shortSide = Math.min(tb.maxX - tb.minX, tb.maxY - tb.minY) / 1e3;
-		extWall += shortSide / 2 * (shortSide / 2 * (opts.pitch / 10));
-	}
+	else if (opts.roofType === "gable" && top) extWall += 2 * gableTriangleArea(top, opts.pitch);
 	extWall = r2$1(Math.max(0, extWall));
 	const eaveOut = opts.roofType === "flat" ? 0 : opts.eavesMm / 1e3;
 	const roofPlan = ov.union;
@@ -14070,30 +14150,15 @@ function takeoff(model, opts) {
 	const insulArea = r2$1(Math.max(0, roofPlan - garageCeil + overhang));
 	const insulWall = r2$1(Math.max(0, extWall - garageWall));
 	const siteEdge = r2$1(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1e3 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
-	const doors = floors.reduce((s, f) => s + f.openings.filter((o) => (o.kind === "door" || o.kind === "sliding") && !f.walls.find((w) => w.id === o.wallId)?.exterior).length, 0);
-	const isDoma = (name) => /土間|SIC|シューズ/.test(name);
-	const flooringArea = r2$1(floors.reduce((s, f) => s + roomsArea(f, [
-		"ldk",
-		"living",
-		"dining",
-		"kitchen",
-		"bedroom",
-		"kids",
-		"study",
-		"hall",
-		"other"
-	]), 0));
-	const floorTileArea = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => [
-		"washroom",
-		"toilet",
-		"closet",
-		"storage"
-	].includes(r.type) && !isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
-	const porchIn = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "entrance" || (r.type === "storage" || r.type === "closet") && isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
+	const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
+	const catArea = (cat) => r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === cat).reduce((t, r) => t + r.area, 0), 0));
+	const flooringArea = catArea("flooring");
+	const floorTileArea = catArea("tile");
+	const porchIn = catArea("doma");
 	const porchOut = r2$1(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
 	const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "toilet" || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
 	const stairs = Math.max(0, floors.length - 1);
-	const tatami = floors.reduce((s, f) => s + roomsArea(f, ["japanese"]), 0) / 1.62;
+	const tatami = floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === "tatami").reduce((t, r) => t + r.area, 0), 0) / 1.62;
 	const totalTsubo = Math.floor(totalArea * T$1 * 100) / 100;
 	const constTsubo = Math.floor(constArea * T$1 * 100) / 100;
 	const f2 = fl(2);
@@ -14180,6 +14245,45 @@ function takeoff(model, opts) {
 		travelKm: 0,
 		kitchenType: [...(model.furniture ?? []).flatMap((x) => x.items), ...floors.flatMap((f) => f.planItems ?? [])].find((it) => it.kind === "kitchen" && it.kitchenType)?.kitchenType
 	};
+}
+/** 切妻の妻壁の三角 1 面の面積 (㎡): 底辺 = 最上階の短辺、高さ = 短辺の半分 × 勾配 */
+function gableTriangleArea(top, pitch) {
+	const tb = bboxOf(top.outline.flat());
+	const shortSide = Math.min(tb.maxX - tb.minX, tb.maxY - tb.minY) / 1e3;
+	return shortSide / 2 * (shortSide / 2 * (pitch / 10));
+}
+var FLOORING_TYPES = [
+	"ldk",
+	"living",
+	"dining",
+	"kitchen",
+	"bedroom",
+	"kids",
+	"study",
+	"hall",
+	"other"
+];
+var TILE_TYPES = [
+	"washroom",
+	"toilet",
+	"closet",
+	"storage"
+];
+var isDomaName = (name) => /土間|SIC|シューズ/.test(name);
+function floorCategory(r) {
+	if (r.floorFinish === "wood") return "flooring";
+	if (r.floorFinish === "tile") return "tile";
+	if (r.floorFinish === "tatami") return "tatami";
+	if (r.floorFinish === "doma") return "doma";
+	if (r.type === "japanese") return "tatami";
+	if (r.type === "entrance" || (r.type === "storage" || r.type === "closet") && isDomaName(r.name)) return "doma";
+	if (FLOORING_TYPES.includes(r.type)) return "flooring";
+	if (TILE_TYPES.includes(r.type)) return "tile";
+	return "none";
+}
+/** 室内の建具（片開き戸・引戸。外壁の戸は玄関ドア・勝手口なので数えない） */
+function interiorDoors(f) {
+	return f.openings.filter((o) => (o.kind === "door" || o.kind === "sliding") && !f.walls.find((w) => w.id === o.wallId)?.exterior);
 }
 function bboxOf(pts) {
 	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -14805,14 +14909,15 @@ function roomAt(f, x, y) {
 function upperOutlinesOf(model, f) {
 	return model.floors.filter((x) => x.level > f.level).flatMap((x) => x.outline.filter((l) => l.length >= 3 && !isHoleLoop(l, x.outline)));
 }
-/** 玄関の土間の下がり（m）: 上がり框の段差 */
-var DOMA_DROP = 180 * MM;
+180 * MM;
 /**
-* 上がり框: 土間の区画の縁のうち、家の床（ホール・LDK など室内の部屋）と接する辺に、FL までの段（框 = 木の縦面と天端）を付ける。
-* 壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。框の天端はホール側の床を 30mm 持ち出す
+* 床の段差の縁（上がり框・小上がりの框・ダウンリビングの段）: この部屋の縁のうち、床の高さが違う部屋と接する辺に、
+* 低い側へ 120 の木の蹴込み（高さ = 段差）と、高い側の床を 30mm 持ち出す天端（框）を付ける。壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。
+* 玄関の土間（−180）とホールの境は従来の上がり框と同じ
 */
-function buildAgarikamachi(mb, f, doma, fl) {
-	const P = doma.polygon;
+function buildStepEdges(mb, f, room, fl) {
+	const here = roomFloorOffsetMm(room);
+	const P = room.polygon;
 	for (let i = 0; i < P.length; i++) {
 		const a = P[i];
 		const b = P[(i + 1) % P.length];
@@ -14831,13 +14936,62 @@ function buildAgarikamachi(mb, f, doma, fl) {
 			y: m.y + ny * 200
 		}, P) ? 1 : -1;
 		const other = roomAt(f, m.x - nx * inSide * 250, m.y - ny * inSide * 250);
-		if (!other || other === doma || isDomaRoom(other) || outdoorRoom(other) || other.type === "void" || isBuiltinGarage(other)) continue;
+		if (!other || other === room || outdoorRoom(other) || other.type === "void" || isBuiltinGarage(other)) continue;
+		const there = roomFloorOffsetMm(other);
+		const diff = here - there;
+		if (Math.abs(diff) < 20) continue;
+		if (there !== 0 && here < there) continue;
+		const lowSide = diff > 0 ? -inSide : inSide;
+		const yLow = fl + Math.min(here, there) * MM;
+		const hgt = Math.abs(diff) * MM;
 		const dir = V(ux, 0, uy);
-		const c = V((m.x + nx * inSide * 60) * MM, fl - DOMA_DROP, (m.y + ny * inSide * 60) * MM);
-		mb.box("f.wood", c, dir, L * MM, DOMA_DROP, .12);
-		const top = V((m.x + nx * inSide * 75) * MM, fl - .03, (m.y + ny * inSide * 75) * MM);
-		mb.box("f.wood", top, dir, L * MM, .03, .15);
+		for (const [t0, t1] of openRuns(f, a, ux, uy, L)) {
+			const len = t1 - t0;
+			if (len < 150) continue;
+			const mx = a.x + ux * (t0 + t1) / 2;
+			const my = a.y + uy * (t0 + t1) / 2;
+			const c = V((mx + nx * lowSide * 60) * MM, yLow, (my + ny * lowSide * 60) * MM);
+			mb.box("f.wood", c, dir, len * MM, hgt, .12);
+			const top = V((mx + nx * lowSide * 75) * MM, yLow + hgt - .03, (my + ny * lowSide * 75) * MM);
+			mb.box("f.wood", top, dir, len * MM, .03, .15);
+		}
 	}
+}
+/**
+* 部屋の縁（a から向き (ux, uy) に長さ L）のうち、壁に隠れない区間 [t0, t1]（mm）。
+* 縁に重なる壁の区間を引き、その壁の戸・引戸・開口・玄関戸の区間は戻す（出入口には框が見える）
+*/
+function openRuns(f, a, ux, uy, L) {
+	const subtract = (spans, s0, s1) => {
+		const out = [];
+		for (const [p0, p1] of spans) if (s1 <= p0 || s0 >= p1) out.push([p0, p1]);
+		else {
+			if (s0 > p0) out.push([p0, s0]);
+			if (s1 < p1) out.push([s1, p1]);
+		}
+		return out;
+	};
+	const along = (p) => (p.x - a.x) * ux + (p.y - a.y) * uy;
+	const off = (p) => Math.abs(-(p.x - a.x) * uy + (p.y - a.y) * ux);
+	let open = [[0, L]];
+	for (const w of f.walls) {
+		if (off(w.a) > 120 || off(w.b) > 120) continue;
+		const wa = along(w.a);
+		const wb = along(w.b);
+		const t0 = Math.max(0, Math.min(wa, wb));
+		const t1 = Math.min(L, Math.max(wa, wb));
+		if (t1 - t0 < 50) continue;
+		let covered = [[t0, t1]];
+		const wl = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		for (const o of f.openings) {
+			if (o.wallId !== w.id || o.kind === "window" || o.kind === "shutter") continue;
+			const p0 = wa + (wb - wa) * o.t0 / wl;
+			const p1 = wa + (wb - wa) * o.t1 / wl;
+			covered = subtract(covered, Math.min(p0, p1), Math.max(p0, p1));
+		}
+		for (const [c0, c1] of covered) open = subtract(open, c0, c1);
+	}
+	return open;
 }
 /** ビルトインガレージの土間の高さ（GL+40。家の床 FL ではない） */
 var GARAGE_FLOOR_Y = .04;
@@ -15176,17 +15330,18 @@ function buildBuilding(model, opts) {
 				continue;
 			}
 			const key = floorKeyFor(r);
-			if (isDomaRoom(r)) {
-				const y = fl - DOMA_DROP;
+			const offMm = roomFloorOffsetMm(r);
+			if (offMm !== 0) {
+				const y = fl + offMm * MM;
 				emitFlat(mb, key, r.polygon, voids, y, true);
-				emitSlab(mb, "int.slab", r.polygon, voids, fl - .24, y - .005, "ext.wall");
-				buildAgarikamachi(mb, f, r, fl);
+				emitSlab(mb, "int.slab", r.polygon, voids, fl - .24, y - .005, offMm > 0 ? "int.wall" : "ext.wall");
+				buildStepEdges(mb, f, r, fl);
 				continue;
 			}
 			emitFlat(mb, key, r.polygon, voids, fl, true);
 		}
 		const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
-		const domaRects = polygonToRects(f.rooms.filter((r) => isDomaRoom(r)).map((r) => r.polygon));
+		const domaRects = polygonToRects(f.rooms.filter((r) => r.type !== "void" && roomFloorOffsetMm(r) !== 0).map((r) => r.polygon));
 		const holeRects = [
 			...holes.length ? polygonToRects(holes) : [],
 			...garageRects,
@@ -15737,6 +15892,48 @@ function voidGlassOnTop(mb, A, B, y) {
 	mb.box("ext.glass", mid.clone().setY(y), dir, L - .02, .3, .012);
 	mb.box("ext.frame", mid.clone().setY(y + .3), dir, L, .03, .04);
 }
+/** 吹抜の落下防止の種類: 部屋ごとの指定（3D・方眼）が最優先。無ければテイスト（仕様）の既定（rail = スチール手すり） */
+function guardKindOf(r, spec) {
+	if (r?.voidGuard) return r.voidGuard;
+	return spec.voidGuard === "rail" ? "steel" : spec.voidGuard;
+}
+/** 手すり型の落下防止（スチール縦桟・アイアン丸棒・ガラス）を A→B（床 fl）に作る */
+function buildVoidGuard(mb, kind, A, B, fl) {
+	if (kind === "steel") return buildVoidRail(mb, A, B, fl);
+	if (kind === "iron") return buildIronRail(mb, A, B, fl);
+	buildGlassRail(mb, A, B, fl);
+}
+/** アイアン手すり: 20mm 角の支柱 @1.2m、上に平鋼 40×12 の笠木、φ12 の細い丸棒 @100 */
+function buildIronRail(mb, A, B, fl) {
+	const L = A.distanceTo(B);
+	if (L < .15) return;
+	const dir = new THREE.Vector3().subVectors(B, A).normalize();
+	const H = 1.1;
+	const key = "f.metal";
+	const nPost = Math.max(2, Math.ceil(L / 1.2) + 1);
+	for (let i = 0; i < nPost; i++) {
+		const s = .02 + (L - .04) * i / (nPost - 1);
+		mb.box(key, A.clone().addScaledVector(dir, s).setY(fl), dir, .02, 1.088, .02);
+	}
+	const mid = A.clone().addScaledVector(dir, L / 2);
+	mb.box(key, mid.clone().setY(fl + H - .012), dir, L, .012, .04);
+	for (let s = .1; s < L - .05; s += .1) mb.cylinder(key, A.clone().addScaledVector(dir, s).setY(fl + .02), .006, 1.05, 8, false);
+}
+/** ガラス手すり: 30mm 角の支柱 @1.5m、t12 のガラス全面、木の笠木 45×40 */
+function buildGlassRail(mb, A, B, fl) {
+	const L = A.distanceTo(B);
+	if (L < .15) return;
+	const dir = new THREE.Vector3().subVectors(B, A).normalize();
+	const H = 1.1;
+	const nPost = Math.max(2, Math.ceil(L / 1.5) + 1);
+	for (let i = 0; i < nPost; i++) {
+		const s = .03 + (L - .06) * i / (nPost - 1);
+		mb.box("f.metal", A.clone().addScaledVector(dir, s).setY(fl), dir, .03, 1.06, .03);
+	}
+	const mid = A.clone().addScaledVector(dir, L / 2);
+	mb.box("ext.glass", mid.clone().setY(fl + .05), dir, L - .02, 1.01, .012);
+	mb.box("f.wood", mid.clone().setY(fl + H - .04), dir, L, .04, .045);
+}
 /**
 * 壁の無い吹抜の縁（図面で手すりの細い線だけ、または何も描かれていない縁）にも仕様の落下防止を付ける。
 * 吹抜の多角形の辺ごとに、壁が沿っていなければ、外側（部屋側）に向けて手すり／腰壁／ガラス／壁を作る
@@ -15785,33 +15982,21 @@ function buildVoidGuardsOnOpenEdges(mb, f, fl, spec) {
 			const L = A.distanceTo(B);
 			const midV = A.clone().addScaledVector(dir, L / 2);
 			const inset = new THREE.Vector3(nx, 0, ny).multiplyScalar(.06);
-			if (spec.voidGuard === "rail") buildVoidRail(mb, A.clone().add(inset), B.clone().add(inset), fl);
-			else if (spec.voidGuard === "half") mb.box([
+			const kind = guardKindOf(r, spec);
+			const wallKeys = [
 				"int.wall",
 				"int.wall",
 				"int.wallTop",
 				"int.wallTop",
 				"int.wall",
 				"int.wall"
-			], midV.clone().add(inset).setY(fl), dir, L, 1.1, .12);
-			else if (spec.voidGuard === "halfGlass") {
-				mb.box([
-					"int.wall",
-					"int.wall",
-					"int.wallTop",
-					"int.wallTop",
-					"int.wall",
-					"int.wall"
-				], midV.clone().add(inset).setY(fl), dir, L, .9, .12);
+			];
+			if (kind === "half") mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, 1.1, .12);
+			else if (kind === "halfGlass") {
+				mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, .9, .12);
 				voidGlassOnTop(mb, A.clone().add(inset), B.clone().add(inset), fl + .9);
-			} else mb.box([
-				"int.wall",
-				"int.wall",
-				"int.wallTop",
-				"int.wallTop",
-				"int.wall",
-				"int.wall"
-			], midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, .12);
+			} else if (kind === "wall") mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, .12);
+			else buildVoidGuard(mb, kind, A.clone().add(inset), B.clone().add(inset), fl);
 		}
 	}
 }
@@ -15933,9 +16118,9 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		"entrance",
 		"other"
 	].includes(other.type);
-	const guard = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && openSide ? spec.voidGuard : "wall";
-	if (guard === "rail") {
-		buildVoidRail(mb, A, B, fl);
+	const guard = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && openSide ? guardKindOf(voidPlus ? rPlus : rMinus, spec) : "wall";
+	if (guard === "steel" || guard === "iron" || guard === "glass") {
+		buildVoidGuard(mb, guard, A, B, fl);
 		return;
 	}
 	const sideKey = (sign) => {
@@ -15951,8 +16136,8 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const kMinus = sideKey(-1);
 	const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
 	const garageSide = f.level === 1 && !w.exterior && (isBuiltinGarage(rPlus) || isBuiltinGarage(rMinus));
-	const domaSide = !w.exterior && (isDomaRoom(rPlus) || isDomaRoom(rMinus));
-	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : garageSide ? .03 : domaSide ? fl - DOMA_DROP - .01 : fl;
+	const lowest = w.exterior ? 0 : Math.min(0, roomFloorOffsetMm(rPlus), roomFloorOffsetMm(rMinus));
+	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : garageSide ? .03 : lowest < 0 ? fl + lowest * MM - .01 : fl;
 	const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
 	const fence = f.elevation < 1500 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
 	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
@@ -16011,7 +16196,8 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 	let base = o.kind === "shutter" && f.level === 1 ? GARAGE_FLOOR_Y : fl;
 	if (o.kind === "entrance") {
 		const qi = mid.clone().addScaledVector(nW, -outSign * (t / 2 + .3));
-		if (isDomaRoom(roomAt(f, qi.x / .001, qi.z / .001))) base = fl - DOMA_DROP;
+		const offIn = roomFloorOffsetMm(roomAt(f, qi.x / MM, qi.z / MM));
+		if (offIn < 0) base = fl + offIn * MM;
 	}
 	const sill = base + o.sill * MM;
 	const head = base + (o.sill + o.height) * MM;
@@ -16881,9 +17067,10 @@ function buildFurniture(model, opts = {}) {
 			currentOcc = [];
 			occupancy.set(room.id, currentOcc);
 			currentRoomId = room.id;
-			const roomEnv = isDomaRoom(room) ? {
+			const offMm = roomFloorOffsetMm(room);
+			const roomEnv = offMm !== 0 ? {
 				...env,
-				y: env.y - 180 * MM
+				y: env.y + offMm * MM
 			} : env;
 			const ctx = {
 				mb,
@@ -16907,7 +17094,7 @@ function buildFurniture(model, opts = {}) {
 				has: /* @__PURE__ */ new Set()
 			};
 			collectBlocked(ctx, f, inner);
-			const ceilingY = f.ceilingHeight * MM;
+			const ceilingY = Math.max(1.8, ((room.ceilingHeight ?? f.ceilingHeight) - offMm) * MM);
 			const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - .02, (R.minZ + R.maxZ) / 2);
 			if (override) {
 				if (!excludedFromFloorArea(room.type) && ![
@@ -17016,7 +17203,7 @@ function buildFurniture(model, opts = {}) {
 			}, {
 				...env,
 				walls: void 0,
-				y: isDomaRoom(room) ? env.y - 180 * MM : env.y
+				y: env.y + roomFloorOffsetMm(room) * MM
 			});
 		}
 	}
@@ -20857,7 +21044,7 @@ function composeSheet(panels, info, opts = {}) {
 		let rowH = 0;
 		let maxW = 0;
 		for (const p of panels) {
-			if (x > 0 && x + p.vb.w > availW) {
+			if (x > 0 && (opts.stack === "col" || x + p.vb.w > availW)) {
 				y += rowH + gap;
 				x = 0;
 				rowH = 0;
@@ -20910,12 +21097,18 @@ function composeSheet(panels, info, opts = {}) {
 	const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
 	const rx = W - margin - rightW - sw * 8;
 	const ry = margin + topH(denom) + sw * 10;
-	let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
+	let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}" data-denom="${denom}">`;
 	s += opts.defs ?? "";
 	s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
 	s += `<rect x="${margin * .5}" y="${margin * .5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
 	s += `<rect x="${margin * .5 + sw * 6}" y="${margin * .5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * .6}"/>`;
-	for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+	lay.placed.forEach((pl, i) => {
+		const off = opts.offsets?.[i];
+		const tx = ox + pl.x - pl.p.vb.x + (off?.x ?? 0) * denom;
+		const ty = oy + pl.y - pl.p.vb.y + (off?.y ?? 0) * denom;
+		const hit = opts.draggable ? `<rect x="${pl.p.vb.x}" y="${pl.p.vb.y}" width="${pl.p.vb.w}" height="${pl.p.vb.h}" fill="none" pointer-events="all"/>` : "";
+		s += `<g${opts.draggable ? ` data-panel="${i}"` : ""} transform="translate(${tx.toFixed(0)} ${ty.toFixed(0)})">${hit}${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+	});
 	if (opts.right) s += `<g transform="translate(${rx.toFixed(0)} ${ry.toFixed(0)})">${opts.right.svg}</g>`;
 	if (opts.top) {
 		const k = (W - margin * 2) / opts.top.w;
@@ -21426,6 +21619,46 @@ function floorPlanParts(model, f, opts = {}) {
 			for (let y = y0 + 1820; y < y1 - 100; y += 1820) s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${tc}" stroke-width="${hl ? 7 : 12}"/>`;
 		}
 	}
+	{
+		const upperF = model.floors.find((u) => u.level === f.level + 1);
+		const haloS = `stroke="#fff" stroke-width="40" stroke-linejoin="round" paint-order="stroke"`;
+		if (upperF) for (const v of upperF.rooms) {
+			if (v.type !== "void" || v.polygon.length < 3) continue;
+			const pts = v.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ");
+			s += `<polygon points="${pts}" fill="none" stroke="#333" stroke-width="${hl ? 7 : 9}" stroke-dasharray="150 90"/>`;
+			const cc = polygonCentroid(v.polygon);
+			s += `<text x="${cc.x.toFixed(0)}" y="${(cc.y + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${haloS}>上部吹抜</text>`;
+		}
+		for (const r of f.rooms) {
+			if (!r.floorOffset) continue;
+			const here = roomFloorOffsetMm(r);
+			const P = r.polygon;
+			for (let i = 0; i < P.length; i++) {
+				const a = P[i];
+				const b = P[(i + 1) % P.length];
+				const L = Math.hypot(b.x - a.x, b.y - a.y);
+				if (L < 200) continue;
+				const nx = -(b.y - a.y) / L;
+				const ny = (b.x - a.x) / L;
+				const m = {
+					x: (a.x + b.x) / 2,
+					y: (a.y + b.y) / 2
+				};
+				const inSide = pointInPolygon({
+					x: m.x + nx * 150,
+					y: m.y + ny * 150
+				}, P) ? 1 : -1;
+				const other = f.rooms.find((q) => q !== r && pointInPolygon({
+					x: m.x - nx * inSide * 200,
+					y: m.y - ny * inSide * 200
+				}, q.polygon));
+				if (!other || Math.abs(roomFloorOffsetMm(other) - here) < 20) continue;
+				const lowSide = roomFloorOffsetMm(other) < here ? -inSide : inSide;
+				s += `<line x1="${a.x.toFixed(0)}" y1="${a.y.toFixed(0)}" x2="${b.x.toFixed(0)}" y2="${b.y.toFixed(0)}" stroke="#222" stroke-width="10"/>`;
+				s += `<line x1="${(a.x + nx * lowSide * 70).toFixed(0)}" y1="${(a.y + ny * lowSide * 70).toFixed(0)}" x2="${(b.x + nx * lowSide * 70).toFixed(0)}" y2="${(b.y + ny * lowSide * 70).toFixed(0)}" stroke="#222" stroke-width="4"/>`;
+			}
+		}
+	}
 	if (opts.showFurniture !== false) s += furnitureSvg(furnitureOf$1(model, f.level), hl);
 	for (const st of f.stairs) {
 		const dr = stairDrawing(st, f.height || 2900, { cut: hl });
@@ -21674,10 +21907,12 @@ function floorPlanParts(model, f, opts = {}) {
 			const tj = Math.abs(tatami - Math.round(tatami)) < .08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
 			s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * .15 : fs * .35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * .08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
 			if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * .85}" font-size="${(fs * .82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
+			if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (showTatami ? 1.6 : 1.1)).toFixed(0)}" font-size="${(fs * .68).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>FL${r.floorOffset > 0 ? "+" : "−"}${Math.abs(r.floorOffset)}</text>`;
 			continue;
 		}
 		s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * .35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * .06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
 		if (big) s += `<text x="${c.x}" y="${c.y + fs * .95}" font-size="${(fs * .68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
+		if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (big ? 1.7 : 1.1)).toFixed(0)}" font-size="${(fs * .62).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>FL${r.floorOffset > 0 ? "+" : "−"}${Math.abs(r.floorOffset)}</text>`;
 	}
 	let dimsBelow = false;
 	if (opts.showDims !== false) {

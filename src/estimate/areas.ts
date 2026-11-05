@@ -202,8 +202,12 @@ export interface TakeoffOptions {
 
 const T = 0.3025;
 const r2 = (v: number) => Math.round(v * 100) / 100;
+/** 1 階の外壁に足す基礎の立ち上がり（GL+500）(m) */
+export const FOUND_H = 0.5;
+/** 陸屋根・片流れの箱のパラペットの高さ (m) */
+export const PARAPET_H = 0.9;
 
-function perimeter(poly: Vec2[]): number {
+export function perimeter(poly: Vec2[]): number {
   let s = 0;
   for (let i = 0; i < poly.length; i++) {
     const p = poly[i];
@@ -217,12 +221,12 @@ function roomsArea(f: Floor, types: RoomType[]): number {
   return f.rooms.filter((r) => types.includes(r.type)).reduce((s, r) => s + r.area, 0);
 }
 
-function outlineArea(f: Floor): number {
+export function outlineArea(f: Floor): number {
   return f.outline.reduce((s, l) => s + Math.abs(polygonArea(l)) / 1e6, 0);
 }
 
 /** 点が階の外形の内側か（外形の輪が複数・中庭の穴があっても偶奇で判定） */
-function inFloor(f: Floor, x: number, y: number): boolean {
+export function inFloor(f: Floor, x: number, y: number): boolean {
   let inside = false;
   for (const l of f.outline) {
     for (let i = 0, j = l.length - 1; i < l.length; j = i++) {
@@ -234,7 +238,7 @@ function inFloor(f: Floor, x: number, y: number): boolean {
   return inside;
 }
 
-function centroid(poly: Vec2[]): Vec2 {
+export function centroid(poly: Vec2[]): Vec2 {
   let x = 0;
   let y = 0;
   for (const p of poly) {
@@ -249,7 +253,7 @@ function centroid(poly: Vec2[]): Vec2 {
  *  union: どれかの階の外形に入る（建築面積・屋根の平面）
  *  exposedBelow[i]: i 階の外形のうち、すぐ下の階の外形の外にある所（ピロティ・オーバーハング・張り出しの床下）
  */
-function overlay(floors: Floor[], step = 50) {
+export function overlay(floors: Floor[], step = 50) {
   const loops = floors.flatMap((f) => f.outline);
   const xs = loops.flat().map((p) => p.x);
   const ys = loops.flat().map((p) => p.y);
@@ -268,31 +272,47 @@ function overlay(floors: Floor[], step = 50) {
 }
 
 /** i 階の外周のうち、上の階の外形の下に入っていない長さ（m）: 下屋の屋根の縁（パラペット・軒先になる） */
-function uncoveredEdge(f: Floor, upper: Floor | undefined, step = 100): number {
-  let len = 0;
+export function uncoveredEdge(f: Floor, upper: Floor | undefined, step = 100): number {
+  return uncoveredRuns(f, upper, step).reduce((s, r) => s + r.len, 0) / 1000;
+}
+
+/** 下屋の縁の区間: i 階の外形の辺のうち、上の階の外形の下に入っていない部分（辺ごとに区切る。根拠の図に描く） */
+export function uncoveredRuns(f: Floor, upper: Floor | undefined, step = 100): { a: Vec2; b: Vec2; len: number }[] {
+  const out: { a: Vec2; b: Vec2; len: number }[] = [];
   for (const l of f.outline) {
     for (let i = 0; i < l.length; i++) {
       const a = l[i];
       const b = l[(i + 1) % l.length];
       const L = Math.hypot(b.x - a.x, b.y - a.y);
+      if (L < 1) continue;
       const n = Math.max(1, Math.round(L / step));
-      for (let k = 0; k < n; k++) {
-        const t = (k + 0.5) / n;
-        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-        if (!upper || !inFloor(upper, p.x, p.y)) len += L / n;
+      let run: number | null = null;
+      for (let k = 0; k <= n; k++) {
+        const open = k < n && (() => {
+          const t = (k + 0.5) / n;
+          const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+          return !upper || !inFloor(upper, p.x, p.y);
+        })();
+        if (open && run == null) run = k;
+        if (!open && run != null) {
+          const t0 = run / n;
+          const t1 = k / n;
+          out.push({ a: { x: a.x + (b.x - a.x) * t0, y: a.y + (b.y - a.y) * t0 }, b: { x: a.x + (b.x - a.x) * t1, y: a.y + (b.y - a.y) * t1 }, len: (L * (k - run)) / n });
+          run = null;
+        }
       }
     }
   }
-  return len / 1000;
+  return out;
 }
 
 /** 家の中に組み込まれたガレージ（床は土間。床面積に入れず施工面積に、断熱は入れない） */
-function isBuiltinGarage(r: Room): boolean {
+export function isBuiltinGarage(r: Room): boolean {
   return r.type === 'garage' && !isSeparateGarage(r) && r.polygon.length >= 3;
 }
 
 /** 多角形のうち、上の階の外形に覆われていない面積 (㎡)（50mm 格子）: ガレージの上が屋根（天井の断熱の対象外）かどうか */
-function uncoveredArea(poly: Vec2[], uppers: Floor[], step = 50): number {
+export function uncoveredArea(poly: Vec2[], uppers: Floor[], step = 50): number {
   if (poly.length < 3) return 0;
   const bb = bboxOf(poly);
   const cell = (step * step) / 1e6;
@@ -316,8 +336,15 @@ function inPoly(poly: Vec2[], x: number, y: number): boolean {
 }
 
 /** 多角形の辺のうち外壁になっている長さ (m)（辺の中点を外へ 150 ずらした点が階の外形の外） */
-function exteriorEdgeLen(f: Floor, poly: Vec2[], step = 100): number {
-  let len = 0;
+export function exteriorEdgeLen(f: Floor, poly: Vec2[], step = 100): number {
+  return exteriorRuns(f, poly, step).reduce((s, r) => s + r.len, 0) / 1000;
+}
+
+/**
+ * 多角形の辺のうち外壁になっている区間（根拠の図に描く）。outward は外側（階の外形の外）へ向く単位法線
+ */
+export function exteriorRuns(f: Floor, poly: Vec2[], step = 100): { a: Vec2; b: Vec2; len: number; outward: Vec2 }[] {
+  const out: { a: Vec2; b: Vec2; len: number; outward: Vec2 }[] = [];
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
@@ -326,19 +353,39 @@ function exteriorEdgeLen(f: Floor, poly: Vec2[], step = 100): number {
     const nx = -(b.y - a.y) / L;
     const ny = (b.x - a.x) / L;
     const n = Math.max(1, Math.round(L / step));
-    for (let k = 0; k < n; k++) {
-      const t = (k + 0.5) / n;
-      const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-      const outA = !inFloor(f, p.x + nx * 150, p.y + ny * 150);
-      const outB = !inFloor(f, p.x - nx * 150, p.y - ny * 150);
-      if (outA !== outB) len += L / n;
+    let run: number | null = null;
+    let sign = 1;
+    const flush = (k: number) => {
+      if (run == null) return;
+      const t0 = run / n;
+      const t1 = k / n;
+      out.push({ a: { x: a.x + (b.x - a.x) * t0, y: a.y + (b.y - a.y) * t0 }, b: { x: a.x + (b.x - a.x) * t1, y: a.y + (b.y - a.y) * t1 }, len: (L * (k - run)) / n, outward: { x: nx * sign, y: ny * sign } });
+      run = null;
+    };
+    for (let k = 0; k <= n; k++) {
+      let ext = false;
+      let s = 1;
+      if (k < n) {
+        const t = (k + 0.5) / n;
+        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        const outA = !inFloor(f, p.x + nx * 150, p.y + ny * 150);
+        const outB = !inFloor(f, p.x - nx * 150, p.y - ny * 150);
+        ext = outA !== outB;
+        s = outA ? 1 : -1;
+      }
+      if (ext && run != null && s !== sign) flush(k);
+      if (ext && run == null) {
+        run = k;
+        sign = s;
+      }
+      if (!ext) flush(k);
     }
   }
-  return len / 1000;
+  return out;
 }
 
 /** 外形の出隅（外側に尖った角）の数 */
-function convexCorners(f: Floor): number {
+export function convexCorners(f: Floor): number {
   let n = 0;
   for (const l of f.outline) {
     const sgn = Math.sign(polygonArea(l)) || 1;
@@ -389,8 +436,6 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const buildArea = r2(Math.max(ov.union, floor1));
   // 外壁面積（社内の拾い方: 開口は引かない）: 各階の外周 × 階高。1 階は基礎の立ち上がり（GL+500）から。
   // 陸屋根・片流れの箱はパラペット（約 900）を、最上階の外周と下屋の縁（上の階が載っていない外周）に回す
-  const FOUND_H = 0.5;
-  const PARAPET_H = 0.9;
   let extWall = 0;
   let corners = 0;
   for (const f of floors) {
@@ -408,10 +453,9 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const box = opts.roofType === 'flat' || opts.roofType === 'shed';
   if (box) extWall += (topPerim + lowerEdges) * PARAPET_H;
   else if (opts.roofType === 'gable' && top) {
-    // 切妻の妻壁（三角形 2 面）: 短辺の半分 × 勾配の高さ
-    const tb = bboxOf(top.outline.flat());
-    const shortSide = Math.min(tb.maxX - tb.minX, tb.maxY - tb.minY) / 1000;
-    extWall += (shortSide / 2) * ((shortSide / 2) * (opts.pitch / 10));
+    // 切妻の妻壁（三角形 2 面）: 底辺 = 短辺、高さ = 短辺の半分 × 勾配。三角 1 面 = 短辺 × 高さ ÷ 2 を 2 面
+    // （以前は 1 面分しか足していなかった。妻側の立面を見れば三角は両端に 1 つずつある）
+    extWall += 2 * gableTriangleArea(top, opts.pitch);
   }
   extWall = r2(Math.max(0, extWall));
   const eaveOut = opts.roofType === 'flat' ? 0 : opts.eavesMm / 1000;
@@ -444,19 +488,20 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const insulArea = r2(Math.max(0, roofPlan - garageCeil + overhang));
   const insulWall = r2(Math.max(0, extWall - garageWall));
   const siteEdge = r2(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1000 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
-  const doors = floors.reduce((s, f) => s + f.openings.filter((o) => (o.kind === 'door' || o.kind === 'sliding') && !f.walls.find((w) => w.id === o.wallId)?.exterior).length, 0);
-  // 床仕上げ: 挽板フローリングは居室・ホール・書斎。フロアタイルは洗面脱衣・トイレ・収納（土間の収納は除く）
-  const isDoma = (name: string) => /土間|SIC|シューズ/.test(name);
-  const flooringArea = r2(floors.reduce((s, f) => s + roomsArea(f, ['ldk', 'living', 'dining', 'kitchen', 'bedroom', 'kids', 'study', 'hall', 'other']), 0));
-  const floorTileArea = r2(floors.reduce((s, f) => s + f.rooms.filter((r) => ['washroom', 'toilet', 'closet', 'storage'].includes(r.type) && !isDoma(r.name)).reduce((t, r) => t + r.area, 0), 0));
-  // 内部ポーチ（玄関土間）: 玄関＋土間の収納。外部ポーチ: ポーチの区画、無ければ御社の標準 1,365×1,820（2.48㎡）
-  const porchIn = r2(floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === 'entrance' || ((r.type === 'storage' || r.type === 'closet') && isDoma(r.name))).reduce((t, r) => t + r.area, 0), 0));
+  const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
+  // 床仕上げ: 挽板フローリングは居室・ホール・書斎。フロアタイルは洗面脱衣・トイレ・収納（土間の収納は除く）。
+  // 設計士が 3D・方眼で床の仕上げを変えた部屋（畳コーナー・土間リビングなど）はそれに従う（floorCategory）
+  const catArea = (cat: FloorCategory) => r2(floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === cat).reduce((t, r) => t + r.area, 0), 0));
+  const flooringArea = catArea('flooring');
+  const floorTileArea = catArea('tile');
+  // 内部ポーチ（玄関土間）: 玄関＋土間の収納（＋土間に変えた部屋）。外部ポーチ: ポーチの区画、無ければ御社の標準 1,365×1,820（2.48㎡）
+  const porchIn = catArea('doma');
   // ガレージの土間も外部ポーチと同じ扱い（土間コン・刷毛引きの数量に入る）
   const porchOut = r2(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
   // トイレ: 便所の区画のほか、「洗面・トイレ」のように洗面室と一緒の区画も 1 か所と数える（堀様邸の 1 階）
   const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === 'toilet' || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
   const stairs = Math.max(0, floors.length - 1);
-  const tatami = floors.reduce((s, f) => s + roomsArea(f, ['japanese']), 0) / 1.62;
+  const tatami = floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === 'tatami').reduce((t, r) => t + r.area, 0), 0) / 1.62;
   const totalTsubo = Math.floor(totalArea * T * 100) / 100;
   const constTsubo = Math.floor(constArea * T * 100) / 100;
   const f2 = fl(2);
@@ -543,7 +588,37 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   };
 }
 
-function bboxOf(pts: Vec2[]) {
+/** 切妻の妻壁の三角 1 面の面積 (㎡): 底辺 = 最上階の短辺、高さ = 短辺の半分 × 勾配 */
+export function gableTriangleArea(top: Floor, pitch: number): number {
+  const tb = bboxOf(top.outline.flat());
+  const shortSide = Math.min(tb.maxX - tb.minX, tb.maxY - tb.minY) / 1000;
+  return (shortSide / 2) * ((shortSide / 2) * (pitch / 10));
+}
+
+/** 床の仕上げの拾い分け（見積の床材・土間・畳の数量）。設計士が変えた床の仕上げ（Room.floorFinish）が最優先 */
+export type FloorCategory = 'flooring' | 'tile' | 'tatami' | 'doma' | 'none';
+export const FLOOR_CATEGORY_LABEL: Record<FloorCategory, string> = { flooring: 'フローリング', tile: 'フロアタイル', tatami: '畳', doma: '土間（内部ポーチ）', none: '拾わない' };
+const FLOORING_TYPES: RoomType[] = ['ldk', 'living', 'dining', 'kitchen', 'bedroom', 'kids', 'study', 'hall', 'other'];
+const TILE_TYPES: RoomType[] = ['washroom', 'toilet', 'closet', 'storage'];
+const isDomaName = (name: string) => /土間|SIC|シューズ/.test(name);
+export function floorCategory(r: Room): FloorCategory {
+  if (r.floorFinish === 'wood') return 'flooring';
+  if (r.floorFinish === 'tile') return 'tile';
+  if (r.floorFinish === 'tatami') return 'tatami';
+  if (r.floorFinish === 'doma') return 'doma';
+  if (r.type === 'japanese') return 'tatami';
+  if (r.type === 'entrance' || ((r.type === 'storage' || r.type === 'closet') && isDomaName(r.name))) return 'doma';
+  if (FLOORING_TYPES.includes(r.type)) return 'flooring';
+  if (TILE_TYPES.includes(r.type)) return 'tile';
+  return 'none';
+}
+
+/** 室内の建具（片開き戸・引戸。外壁の戸は玄関ドア・勝手口なので数えない） */
+export function interiorDoors(f: Floor) {
+  return f.openings.filter((o) => (o.kind === 'door' || o.kind === 'sliding') && !f.walls.find((w) => w.id === o.wallId)?.exterior);
+}
+
+export function bboxOf(pts: Vec2[]) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const p of pts) {
     if (p.x < minX) minX = p.x;

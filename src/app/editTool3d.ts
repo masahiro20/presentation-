@@ -9,7 +9,7 @@ import { h, clear, toast } from './dom';
 import { state } from './state';
 import type { Viewer } from '../scene/viewer';
 import { pointInPolygon } from '../core/geometry';
-import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type Wall } from '../core/types';
+import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 
@@ -99,7 +99,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         toast('部屋の床をクリックしてください');
         return;
       }
-      if (OUTDOOR_TYPES.includes(room.type) || room.type === 'void' || room.type === 'stairs') {
+      if (OUTDOOR_TYPES.includes(room.type) || room.type === 'stairs') {
         toast(`${room.name || room.type} には天井がありません`);
         return;
       }
@@ -185,6 +185,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       return;
     }
     for (const { f, r } of rs) {
+      if (r.type === 'void') continue;
       if (ceilH === f.ceilingHeight) delete r.ceilingHeight;
       else r.ceilingHeight = ceilH;
     }
@@ -226,7 +227,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       const rs = roomsSelected();
       const custom = m ? m.floors.flatMap((f) => f.rooms.filter((r) => r.ceilingHeight).map((r) => `${f.level}階 ${r.name} ${r.ceilingHeight}`)) : [];
       panel.append(
-        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '部屋の床をクリックして選びます（複数可。もう一度で外す）。選んだ部屋だけの天井高・床の仕上げになります。例: LDK と水まわりだけ 3,500。'),
+        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '部屋の床をクリックして選びます（複数可。もう一度で外す）。選んだ部屋だけの天井高・床の仕上げ・床の段差（小上がり・ダウンリビング）になります。吹抜を選ぶと落下防止の種類を選べます。'),
         h('div', { class: 'furn-sel' }, rs.length ? rs.map(({ f, r }) => h('div', null, `${f.level}階 ${r.name || r.type}${r.ceilingHeight ? `（天井 ${r.ceilingHeight}）` : ''}${r.floorFinish ? `（床: ${FLOOR_FINISH_LABEL[r.floorFinish]}）` : ''}`)) : h('div', { class: 'hint' }, 'まだ選んでいません')),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '天井高 (mm)'), h('input', { type: 'number', step: 50, min: 2000, max: 6000, value: ceilH, onchange: (e: Event) => (ceilH = +(e.target as HTMLInputElement).value || 3500) })),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn sm primary', onclick: applyCeiling }, '選んだ部屋に適用'), ...(rs.some(({ r }) => r.ceilingHeight) ? [h('button', { class: 'btn sm ghost', onclick: resetCeiling }, '階の天井高に戻す')] : [])),
@@ -243,6 +244,44 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
             ...(Object.keys(FLOOR_FINISH_LABEL) as FloorFinish[]).map((k) => h('button', { class: cur === k ? 'on' : '', title: FLOOR_FINISH_LABEL[k], onclick: () => { for (const { r } of rs) r.floorFinish = k; toast(`${rs.length} 室の床を${FLOOR_FINISH_LABEL[k]}にしました`, 'ok'); commit(); } }, FLOOR_FINISH_LABEL[k].replace(/（.*）/, ''))),
           ),
         );
+      }
+      if (rs.length) {
+        // 床の段差（小上がり・ダウンリビング・中二階）
+        const cur = rs.length === 1 ? rs[0].r.floorOffset ?? 0 : 0;
+        const opts = FLOOR_OFFSET_PRESETS.slice();
+        if (!opts.some((o) => o.v === cur)) opts.push({ label: `指定 ${cur > 0 ? '+' : ''}${cur}`, v: cur });
+        const setOff = (v: number) => {
+          for (const { r } of rs) {
+            if (v) r.floorOffset = v;
+            else delete r.floorOffset;
+          }
+          toast(v ? `${rs.length} 室の床を FL${v > 0 ? '+' : ''}${v} にしました（框と蹴込みが付きます）` : `${rs.length} 室の段差を無くしました`, 'ok');
+          commit();
+        };
+        panel.append(
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, '床の高さ（FL からの段差）'),
+          h(
+            'div',
+            { style: 'display:flex;gap:6px;align-items:center' },
+            h('select', { onchange: (e: Event) => setOff(Number((e.target as HTMLSelectElement).value)) }, ...opts.map((o) => h('option', { value: String(o.v), selected: o.v === cur }, o.label))),
+            h('input', { type: 'number', step: 50, min: -1500, max: 2500, value: cur, style: 'width:84px', title: 'mm', onchange: (e: Event) => setOff(Math.round(Number((e.target as HTMLInputElement).value) / 10) * 10) }),
+            h('span', { class: 'hint', style: 'margin:0' }, 'mm'),
+          ),
+          h('p', { class: 'hint' }, '小上がりの畳コーナーは +300〜400、ダウンリビングは −300〜400。中二階（+1,400 など）はその部屋の天井高も上げてください。'),
+        );
+        const voids = rs.filter(({ r }) => r.type === 'void');
+        if (voids.length) {
+          const g = voids.length === 1 ? voids[0].r.voidGuard : undefined;
+          panel.append(
+            h('div', { class: 'field-label', style: 'margin-top:8px' }, '吹抜の落下防止（上階の縁）'),
+            h(
+              'select',
+              { onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value as VoidGuard | ''; for (const { r } of voids) { if (v) r.voidGuard = v; else delete r.voidGuard; } toast(v ? `吹抜の縁を${VOID_GUARD_LABEL[v]}にしました` : 'テイストの既定に戻しました', 'ok'); commit(); } },
+              h('option', { value: '', selected: !g }, 'テイストの既定'),
+              ...VOID_GUARDS.map((k) => h('option', { value: k, selected: g === k }, VOID_GUARD_LABEL[k])),
+            ),
+          );
+        }
       }
       if (custom.length) panel.append(h('p', { class: 'hint', style: 'margin-top:8px' }, `個別の天井高: ${custom.join('・')}`));
     } else {
@@ -382,7 +421,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const p = { x: hit.point.x * 1000, y: hit.point.z * 1000 };
     if (FLOOR_KEYS.test(hit.matKey)) {
       const room = f.rooms.find((r) => pointInPolygon(p, r.polygon));
-      if (!room || OUTDOOR_TYPES.includes(room.type) || room.type === 'void' || room.type === 'stairs') return false;
+      if (!room || OUTDOOR_TYPES.includes(room.type) || room.type === 'stairs') return false;
       if (!active) setActive(true);
       mode = 'ceiling';
       selected.clear();

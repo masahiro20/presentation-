@@ -6,8 +6,10 @@ import { h, clear, section, fold, field, segmented, toast, download, setPrintPag
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { exteriorById } from '../../styles/presets';
-import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas } from '../../estimate/areas';
-import { CATEGORIES, type Grade } from '../../estimate/catalog';
+import { takeoff, applyOverrides, AREA_FIELDS, AREA_OPTIONS, type Areas, type TakeoffOptions } from '../../estimate/areas';
+import { basisSheets, basisSheetFor, type BasisSheetId } from '../../drawings/basis';
+import { sheetInfo } from '../sheetInfo';
+import { CATEGORIES, lineById, type Grade } from '../../estimate/catalog';
 import { suggestOptions } from '../../estimate/suggest';
 import { computeEstimate, newChoice, defaultGroups, groupOptions, priceFromCost, yen, TAX_RATE, type EstimateChoice, type EstimateResult, type LineResult } from '../../estimate/calc';
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
@@ -106,16 +108,20 @@ function finishDrivenGroups(): Set<string> {
   return new Set(Object.keys(estimateGroupsFor(state.design)));
 }
 
-function baseAreas(grade: Grade): Areas {
-  const model = state.model!;
+/** 拾いの条件（テイストの屋根・軒の出・アクセント外壁） */
+function takeoffOpts(grade: Grade): TakeoffOptions {
   const ext = exteriorById(state.design.exteriorId);
-  return takeoff(model, {
+  return {
     grade,
     eavesMm: state.design.eaves ?? ext.roof.eaves,
     pitch: state.design.roofPitch ?? ext.roof.pitch,
     roofType: state.design.roofOverride ?? ext.roof.type,
     solido: ext.accent ? ext.accentRule : 'none',
-  });
+  };
+}
+
+function baseAreas(grade: Grade): Areas {
+  return takeoff(state.model!, takeoffOpts(grade));
 }
 
 interface Computed {
@@ -424,6 +430,69 @@ function addRowForm(catId: string, es: EstimateState, rerender: () => void): HTM
   );
 }
 
+/**
+ * 追加・増減を 1 か所で: 工事の種類 → 項目（その工事の価格表の行、または自由入力）→ コメント → 金額（税抜。マイナスで減額）。
+ * 追加した行は内訳書のその工事の欄に「追加」として載り、御見積書の合計に入る。一覧と削除も同じ場所で（各工事の表まで行かなくてよい）
+ */
+function quickAddForm(es: EstimateState, rerender: () => void): HTMLElement {
+  const catSel = h('select', null, ...CATEGORIES.map((c) => h('option', { value: c.id }, `${c.no}. ${c.name}`))) as HTMLSelectElement;
+  const lineSel = h('select') as HTMLSelectElement;
+  const desc = h('input', { type: 'text', placeholder: 'コメント（例: 造作カウンター 2.4m を追加）' }) as HTMLInputElement;
+  const amount = h('input', { type: 'number', step: 1000, placeholder: '金額（税抜・円。減額はマイナス）' }) as HTMLInputElement;
+  const fillLines = () => {
+    clear(lineSel);
+    const cat = CATEGORIES.find((c) => c.id === catSel.value);
+    lineSel.appendChild(h('option', { value: '' }, '自由入力（コメントの内容で 1 行）'));
+    for (const l of cat?.lines ?? []) lineSel.appendChild(h('option', { value: l.id }, `${l.spec}｜${l.desc}`.slice(0, 64)));
+  };
+  fillLines();
+  catSel.onchange = fillLines;
+  lineSel.onchange = () => {
+    const l = lineById(lineSel.value);
+    if (l && !desc.value.trim()) desc.value = `${l.desc} の増減`;
+  };
+  const add = () => {
+    const amt = Math.round(Number(amount.value));
+    if (!desc.value.trim() || !amt) {
+      toast('コメントと金額（税抜）を入れてください', 'info');
+      return;
+    }
+    const l = lineById(lineSel.value);
+    es.choice.extras.push({ id: `x${Date.now().toString(36)}`, cat: catSel.value, spec: l ? l.spec : amt < 0 ? '減額' : '追加', desc: desc.value.trim(), unit: '式', price: amt, cost: Math.round(amt * 0.7), qty: 1 });
+    desc.value = '';
+    amount.value = '';
+    toast(`${amt < 0 ? '減額' : '追加'} ¥${yen(Math.abs(amt))} を入れました`, 'ok');
+    rerender();
+  };
+  amount.addEventListener('keydown', (e) => e.key === 'Enter' && add());
+  const list = h('div', { class: 'qa-list' });
+  for (const x of es.choice.extras) {
+    const cat = CATEGORIES.find((c) => c.id === x.cat);
+    const total = (x.margin ? priceFromCost(x.cost, x.margin) : x.price) * x.qty;
+    list.appendChild(
+      h(
+        'div',
+        { class: `qa-row ${total < 0 ? 'neg' : ''}` },
+        h('span', { class: 'qa-cat' }, cat?.name ?? x.cat),
+        h('span', { class: 'qa-desc' }, `${x.spec && x.spec !== '追加' && x.spec !== '減額' ? `${x.spec}　` : ''}${x.desc}${x.qty !== 1 ? `（${x.qty}${x.unit}）` : ''}`),
+        h('span', { class: 'qa-amt' }, `${total < 0 ? '△' : ''}¥${yen(Math.abs(total))}`),
+        h('button', { class: 'linkbtn', title: 'この行を消す', onclick: () => { es.choice.extras = es.choice.extras.filter((e) => e.id !== x.id); rerender(); } }, '削除'),
+      ),
+    );
+  }
+  const sum = es.choice.extras.reduce((t, x) => t + (x.margin ? priceFromCost(x.cost, x.margin) : x.price) * x.qty, 0);
+  return h(
+    'div',
+    { class: 'quick-add' },
+    h('div', { class: 'qa-grid' }, field('工事の種類', catSel), field('項目', lineSel)),
+    field('コメント（内容）', desc),
+    h('div', { class: 'qa-grid' }, field('金額（税抜・1 式）', amount), h('div', { class: 'btn-row', style: 'align-items:flex-end' }, h('button', { class: 'btn sm dark', onclick: add }, '＋ 追加する'))),
+    h('p', { class: 'hint' }, '内訳書のその工事の欄に「追加」として載り、御見積書の合計に入ります。減額はマイナスの金額で。原価は売価の 7 割として粗利を計算します（内訳書の編集で直せます）。'),
+    list.children.length ? list : h('p', { class: 'hint' }, 'まだ追加・増減はありません'),
+    list.children.length ? h('div', { class: 'qa-sum' }, `合計 ${sum < 0 ? '△' : ''}¥${yen(Math.abs(sum))}（税抜）`) : null,
+  );
+}
+
 /** 資金計画書 */
 function fundingSheet(c: Computed): HTMLElement {
   const f = c.funding;
@@ -560,8 +629,14 @@ export const estimateStep: Step = {
     const es = ensure();
     const view = h('div', { class: 'est-view' });
     ctx.stage.appendChild(view);
-    let which: 'quote' | 'detail' | 'funding' = 'quote';
+    let which: 'quote' | 'detail' | 'funding' | 'basis' = 'quote';
     const panel = h('div', null);
+    /** 数量の根拠シートを開いて、その項目のシートまで送る */
+    const goBasis = (id: BasisSheetId | null) => {
+      which = 'basis';
+      render();
+      if (id) requestAnimationFrame(() => document.getElementById(`basis-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    };
     /** 選択肢を足すフォームを開いている group */
     let addingGroup: string | null = null;
     /**
@@ -615,11 +690,17 @@ export const estimateStep: Step = {
     const render = () => {
       const c = compute(es);
       clear(view);
-      setPrintPage(which === 'funding' ? 'A3 landscape' : 'A4 portrait');
+      setPrintPage(which === 'funding' || which === 'basis' ? 'A3 landscape' : 'A4 portrait');
       if (which === 'quote') view.appendChild(quoteSheet(c));
       else if (which === 'detail') {
         for (const s of detailSheets(c, es, render)) view.appendChild(s);
         paginateDetail(view);
+      } else if (which === 'basis') {
+        // 数量の根拠: 図面に色を塗って「なぜこの数量か」を示す A3 シート（床面積・外壁・屋根・内部）
+        const notes = suggestOptions(state.model!, c.areas, es.choice).map((sg) => `${sg.label}：${sg.reason}`);
+        const sheets = basisSheets(state.model!, takeoffOpts(es.choice.grade), sheetInfo('数量の根拠'), { overrides: es.areasOverride, notes });
+        view.appendChild(h('div', { class: 'basis-lead' }, h('b', null, '数量の根拠'), '　色を塗った範囲が、その数量として拾った所です。数字を見比べなくても、図面と色で「なぜこの数量か」を確かめられます。上書きした数量は表の右端に出ます。'));
+        for (const sh of sheets) view.appendChild(h('div', { class: 'sheet wide basis', id: `basis-${sh.id}`, html: sh.svg }));
       } else {
         view.appendChild(fundingSheet(c));
         fitFunding(view);
@@ -653,8 +734,21 @@ export const estimateStep: Step = {
             render();
           },
         });
-        areaBody.appendChild(h('label', { class: 'area-row', title: changed ? `図面からの値: ${num(auto)}` : '' }, h('span', { class: 'lbl' }, fdef.label), input, h('span', { class: 'unit' }, fdef.unit), changed ? h('button', { class: 'linkbtn', title: '図面からの値に戻す', onclick: () => { delete (es.areasOverride as Record<string, unknown>)[fdef.key]; render(); } }, '↺') : h('span', null)));
+        const sheetId = basisSheetFor(fdef.key);
+        const why = sheetId ? h('button', { class: 'linkbtn why', title: 'この数量の根拠を図面で見る', onclick: () => goBasis(sheetId) }, '根拠') : h('span', null);
+        areaBody.appendChild(h('label', { class: 'area-row', title: changed ? `図面からの値: ${num(auto)}` : '' }, h('span', { class: 'lbl' }, fdef.label), input, h('span', { class: 'unit' }, fdef.unit), changed ? h('button', { class: 'linkbtn', title: '図面からの値に戻す', onclick: () => { delete (es.areasOverride as Record<string, unknown>)[fdef.key]; render(); } }, '↺') : why));
       }
+      // 数量の根拠（図面で確かめる）: 4 枚のシートへのボタン
+      const basisNav = h(
+        'div',
+        { class: 'basis-nav' },
+        ...([
+          ['area', '床面積・施工面積', '各階の平面図に、入る所・入れない所・足す所を色分け'],
+          ['wall', '外壁面積', '方位ごとの立面に、基礎・各階・パラペットの帯と ㎡'],
+          ['roof', '屋根・軒天・断熱', '屋根の平面と軒の出の帯、張り出しの床下、ガレージの上'],
+          ['interior', '床仕上げ・建具', 'フローリング・フロアタイル・畳・土間の色分けと建具の位置'],
+        ] as [BasisSheetId, string, string][]).map(([id, lbl, desc]) => h('button', { class: `btn sm ${which === 'basis' ? 'ghost' : ''}`, title: desc, onclick: () => goBasis(id) }, lbl)),
+      );
       const optBody = h('div', { class: 'opt-grid' }, ...AREA_OPTIONS.map((o) => h('label', { class: 'opt' }, h('input', { type: 'checkbox', checked: !!areas[o.key], onchange: (e: Event) => { (es.areasOverride as Record<string, unknown>)[o.key] = (e.target as HTMLInputElement).checked; render(); } }), o.label)));
       // この間取りで検討するオプション（読み取った間取りから理由つきで提案。入れる／外すはここで）
       const sugBody = h('div', { class: 'sug-list' });
@@ -723,13 +817,15 @@ export const estimateStep: Step = {
       panel.append(
         h('h2', null, '見積・資金計画'),
         section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g, baseAreas(g)); render(); })),
-        section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }], which, (w) => { which = w; render(); })),
+        section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }, { value: 'basis', label: '数量の根拠' }], which, (w) => { which = w; render(); })),
         h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　坪単価 ¥${yen(Math.round(est.perTsubo))}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`)),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', onclick: () => window.print() }, '印刷・PDF'), h('button', { class: 'btn', onclick: () => download('data:text/csv;charset=utf-8,' + encodeURIComponent(csvOf(c)), `${state.name}_見積.csv`) }, 'CSV'), h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!es.showAll, onchange: (e: Event) => { es.showAll = (e.target as HTMLInputElement).checked; if (es.showAll) which = 'detail'; render(); } }), '内訳を編集（全行表示）')),
         field('端数調整', segmented([{ value: '10000', label: '万円単位' }, { value: '1000', label: '千円単位' }, { value: '0', label: 'なし' }], String(es.choice.roundUnit ?? 10000), (v) => { es.choice.roundUnit = Number(v); render(); }), est.adjust ? `税抜 ¥${yen(est.rawSubtotal)} → △${yen(-est.adjust)} 切り捨て` : '切り捨てなし'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: es.customerView !== false, onchange: (e: Event) => { es.customerView = (e.target as HTMLInputElement).checked; render(); } }), 'お客様向け（内訳書の数量・単位・単価を隠す）'),
+        fold('追加・増減（概算で入れる）', { open: true, meta: es.choice.extras.length ? `${es.choice.extras.length} 行` : '' }, quickAddForm(es, render)),
         fold('会社情報・担当', { open: false, meta: companyInfo().designer || companyInfo().name }, companyForm(render)),
-        fold('面積・数量（図面から自動）', { open: false, meta: `延床 ${num(areas.totalTsubo)} 坪 ／ 施工 ${num(areas.constTsubo)} 坪` }, areaBody, h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => { es.areasOverride = {}; render(); } }, 'すべて図面の値に戻す'))),
+        fold('数量の根拠（図面で確かめる）', { open: which === 'basis' || Object.keys(es.areasOverride).length === 0, meta: '4 枚' }, h('p', { class: 'hint', style: 'margin-top:0' }, '平面図・立面図に色を塗って、どこを拾ってその数量になったかを示します。数字の見比べではなく、図面で確かめるための社内用のシートです（印刷は A3 横）。'), basisNav),
+        fold('面積・数量（図面から自動）', { open: false, meta: `延床 ${num(areas.totalTsubo)} 坪 ／ 施工 ${num(areas.constTsubo)} 坪` }, h('div', { class: 'btn-row', style: 'margin-bottom:6px' }, h('button', { class: 'btn sm', onclick: () => goBasis('area') }, '図面で根拠を見る'), h('span', { class: 'hint' }, '各行の「根拠」でその項目のシートへ')), areaBody, h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => { es.areasOverride = {}; render(); } }, 'すべて図面の値に戻す'))),
         fold('この間取りで検討するオプション', { open: true, meta: `${sugBody.querySelectorAll('.sug-row').length} 件` }, sugBody),
         fold('仕様の選択', { open: true, meta: `${Object.keys(GROUP_LABEL).length} 項目` }, groupBody),
         fold('任意の項目', { open: false }, optBody),

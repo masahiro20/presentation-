@@ -7,7 +7,7 @@
  * - 部屋名を置く・変える（用途も選べる）
  * 壁を直すたびに、図面の読み取りと同じ方法で部屋を作り直す。
  */
-import { POST_KIND_LABEL, OUTDOOR_TYPES, type BuildingModel, type BuiltinVariant, type Floor, type FurnitureItem, type FurnitureKind, type Opening, type Post, type PostKind, type Room, type Vec2, type Wall } from '../core/types';
+import { POST_KIND_LABEL, OUTDOOR_TYPES, type BuildingModel, type BuiltinVariant, type Floor, type FurnitureItem, type FurnitureKind, type Opening, type Post, type PostKind, type Room, type Vec2, type Wall, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, type VoidGuard } from '../core/types';
 import { overhangPoints, suggestOverhangPosts, hasPostNear, OVERHANG_POST_MIN, postLabel } from '../core/posts';
 import { STAIR_KIND_LABEL, STAIR_ENTRY_LABEL } from '../core/stairs';
 import { furnitureSymbol } from './furnitureSymbols';
@@ -61,7 +61,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const autoFloors = clone(model.floors);
   const works: FloorWork[] = model.floors.map((f) => ({
     floor: clone(f),
-    labels: f.rooms.filter((r) => r.type !== 'stairs').map((r) => ({ name: r.name, x: r.labelPos.x, y: r.labelPos.y, ceilingHeight: r.ceilingHeight })),
+    labels: f.rooms.filter((r) => r.type !== 'stairs').map((r) => ({ name: r.name, x: r.labelPos.x, y: r.labelPos.y, ceilingHeight: r.ceilingHeight, floorOffset: r.floorOffset, voidGuard: r.voidGuard, floorFinish: r.floorFinish })),
     removed: [],
     original: clone(f.rooms),
   }));
@@ -1135,6 +1135,44 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             useSelect(l.type ? useValueOf({ type: l.type, garageKind: l.garageKind }) : room ? useValueOf(room) : 'other', (v) => { pushUndo(); applyUseValue(l, v); rebuild(); draw(); }),
           ),
           room ? h('p', { class: 'hint' }, `この部屋: 約${room.area.toFixed(1)}㎡（${(room.labeledTatami ?? room.area / 1.62).toFixed(1)}帖）`) : h('p', { class: 'warn' }, 'このラベルは部屋の外にあります（壁で囲まれていない可能性があります）'),
+          // 床の段差（小上がり・ダウンリビング・中二階）: FL からの mm。室名が「小上がり」なら自動で +400
+          h(
+            'label',
+            { class: 'field' },
+            h('span', { class: 'field-label' }, '床の高さ（FL からの段差）'),
+            h(
+              'div',
+              { style: 'display:flex;gap:6px;align-items:center' },
+              h(
+                'select',
+                { onchange: (e: Event) => { const v = Number((e.target as HTMLSelectElement).value); pushUndo(); if (v) l.floorOffset = v; else l.floorOffset = 0; rebuild(); draw(); } },
+                ...(() => {
+                  const cur = l.floorOffset ?? room?.floorOffset ?? 0;
+                  const opts = FLOOR_OFFSET_PRESETS.slice();
+                  if (!opts.some((o) => o.v === cur)) opts.push({ label: `指定 ${cur > 0 ? '+' : ''}${cur}`, v: cur });
+                  return opts.map((o) => h('option', { value: String(o.v), selected: o.v === cur }, o.label));
+                })(),
+              ),
+              h('input', { type: 'number', step: 50, min: -1500, max: 2500, value: l.floorOffset ?? room?.floorOffset ?? 0, style: 'width:84px', title: 'mm（＋は上がる、−は下がる）', onchange: (e: Event) => { const v = Math.round(Number((e.target as HTMLInputElement).value) / 10) * 10; pushUndo(); l.floorOffset = v; rebuild(); draw(); } }),
+              h('span', { class: 'hint', style: 'margin:0' }, 'mm'),
+            ),
+          ),
+          ...((room?.type === 'void' || l.type === 'void')
+            ? [
+                h(
+                  'label',
+                  { class: 'field' },
+                  h('span', { class: 'field-label' }, '吹抜の落下防止（上階の縁）'),
+                  h(
+                    'select',
+                    { onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value as VoidGuard | ''; pushUndo(); if (v) l.voidGuard = v; else delete l.voidGuard; rebuild(); draw(); } },
+                    h('option', { value: '', selected: !(l.voidGuard ?? room?.voidGuard) }, 'テイストの既定'),
+                    ...VOID_GUARDS.map((g) => h('option', { value: g, selected: (l.voidGuard ?? room?.voidGuard) === g }, VOID_GUARD_LABEL[g])),
+                  ),
+                ),
+                h('p', { class: 'hint' }, '1 階の平面図には、この範囲が破線で「上部吹抜」と出ます。'),
+              ]
+            : []),
           h('button', { class: 'btn sm block', onclick: () => deleteSel() }, 'この部屋名を消す（Delete）'),
         );
         setTimeout(() => input.focus(), 0);

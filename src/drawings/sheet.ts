@@ -133,6 +133,12 @@ export interface ComposeOpts {
   gap?: number;
   /** 試す縮尺（分母）。既定は 1/100 から順に */
   scales?: number[];
+  /** 並べ方: 横一列に並べ収まらなければ次の段（既定）／1 枚ずつ縦に */
+  stack?: 'row' | 'col';
+  /** パネルごとの手直しのずらし（紙の mm。自動の配置に足す） */
+  offsets?: ({ x: number; y: number } | undefined)[];
+  /** パネルを掴める印（data-panel と透明の当たり面）を付ける（画面でドラッグして配置を直す用） */
+  draggable?: boolean;
 }
 
 /** この内容が収まる縮尺（分母）。scales のどれにも収まらなければ 0 */
@@ -160,7 +166,7 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
     let rowH = 0;
     let maxW = 0;
     for (const p of panels) {
-      if (x > 0 && x + p.vb.w > availW) {
+      if (x > 0 && (opts.stack === 'col' || x + p.vb.w > availW)) {
         y += rowH + gap;
         x = 0;
         rowH = 0;
@@ -209,13 +215,20 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
   const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
   const rx = W - margin - rightW - sw * 8;
   const ry = margin + topH(denom) + sw * 10;
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}">`;
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="${FONT}" data-denom="${denom}">`;
   s += opts.defs ?? '';
   s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;
   // 図枠（二重線）
   s += `<rect x="${margin * 0.5}" y="${margin * 0.5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
   s += `<rect x="${margin * 0.5 + sw * 6}" y="${margin * 0.5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * 0.6}"/>`;
-  for (const pl of lay.placed) s += `<g transform="translate(${ox + pl.x - pl.p.vb.x} ${oy + pl.y - pl.p.vb.y})">${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+  lay.placed.forEach((pl, i) => {
+    // 手直しのずらし（紙の mm → 図面の mm）
+    const off = opts.offsets?.[i];
+    const tx = ox + pl.x - pl.p.vb.x + (off?.x ?? 0) * denom;
+    const ty = oy + pl.y - pl.p.vb.y + (off?.y ?? 0) * denom;
+    const hit = opts.draggable ? `<rect x="${pl.p.vb.x}" y="${pl.p.vb.y}" width="${pl.p.vb.w}" height="${pl.p.vb.h}" fill="none" pointer-events="all"/>` : '';
+    s += `<g${opts.draggable ? ` data-panel="${i}"` : ''} transform="translate(${tx.toFixed(0)} ${ty.toFixed(0)})">${hit}${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+  });
   if (opts.right) s += `<g transform="translate(${rx.toFixed(0)} ${ry.toFixed(0)})">${opts.right.svg}</g>`;
   if (opts.top) {
     const k = (W - margin * 2) / opts.top.w;

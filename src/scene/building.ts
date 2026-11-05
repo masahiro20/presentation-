@@ -4,7 +4,7 @@
  */
 import * as THREE from 'three';
 import { postInWall, postSpan } from '../core/posts';
-import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Wall } from '../core/types';
+import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, roomFloorOffsetMm, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Vec2, type VoidGuard, type Wall } from '../core/types';
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -157,11 +157,13 @@ function upperOutlinesOf(model: BuildingModel, f: Floor): { x: number; y: number
 export const DOMA_DROP = DOMA_DROP_MM * MM;
 
 /**
- * 上がり框: 土間の区画の縁のうち、家の床（ホール・LDK など室内の部屋）と接する辺に、FL までの段（框 = 木の縦面と天端）を付ける。
- * 壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。框の天端はホール側の床を 30mm 持ち出す
+ * 床の段差の縁（上がり框・小上がりの框・ダウンリビングの段）: この部屋の縁のうち、床の高さが違う部屋と接する辺に、
+ * 低い側へ 120 の木の蹴込み（高さ = 段差）と、高い側の床を 30mm 持ち出す天端（框）を付ける。壁の中に隠れる所はそのまま埋め、戸・開口の所で段として見える。
+ * 玄関の土間（−180）とホールの境は従来の上がり框と同じ
  */
-function buildAgarikamachi(mb: MeshBuilder, f: Floor, doma: Room, fl: number) {
-  const P = doma.polygon;
+function buildStepEdges(mb: MeshBuilder, f: Floor, room: Room, fl: number) {
+  const here = roomFloorOffsetMm(room);
+  const P = room.polygon;
   for (let i = 0; i < P.length; i++) {
     const a = P[i];
     const b = P[(i + 1) % P.length];
@@ -172,17 +174,70 @@ function buildAgarikamachi(mb: MeshBuilder, f: Floor, doma: Room, fl: number) {
     const nx = -uy;
     const ny = ux;
     const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    // 土間の側（内側）と、向こう側の部屋
+    // この部屋の側（内側）と、向こう側の部屋
     const inSide = pointInPolygon({ x: m.x + nx * 200, y: m.y + ny * 200 }, P) ? 1 : -1;
     const other = roomAt(f, m.x - nx * inSide * 250, m.y - ny * inSide * 250);
-    if (!other || other === doma || isDomaRoom(other) || outdoorRoom(other) || other.type === 'void' || isBuiltinGarage(other)) continue;
-    // 向こう側も土間でなければ段差。框: 縁の線から土間側へ 120 の木の段（高さ = 下がり分）、天端は少し持ち出し
+    if (!other || other === room || outdoorRoom(other) || other.type === 'void' || isBuiltinGarage(other)) continue;
+    const there = roomFloorOffsetMm(other);
+    const diff = here - there;
+    if (Math.abs(diff) < 20) continue;
+    // 両方に段差があるときは高い側の部屋から描く（同じ縁を二重に描かない）
+    if (there !== 0 && here < there) continue;
+    const lowSide = diff > 0 ? -inSide : inSide;
+    const yLow = fl + Math.min(here, there) * MM;
+    const hgt = Math.abs(diff) * MM;
     const dir = V(ux, 0, uy);
-    const c = V((m.x + nx * inSide * 60) * MM, fl - DOMA_DROP, (m.y + ny * inSide * 60) * MM);
-    mb.box('f.wood', c, dir, L * MM, DOMA_DROP, 0.12);
-    const top = V((m.x + nx * inSide * 75) * MM, fl - 0.03, (m.y + ny * inSide * 75) * MM);
-    mb.box('f.wood', top, dir, L * MM, 0.03, 0.15);
+    // 壁が立っている区間の框は壁の中に隠れるので描かない。戸・開口の区間（出入口）と、壁の無い縁（開けた小上がり）だけ
+    for (const [t0, t1] of openRuns(f, a, ux, uy, L)) {
+      const len = t1 - t0;
+      if (len < 150) continue;
+      const mx = a.x + ux * (t0 + t1) / 2;
+      const my = a.y + uy * (t0 + t1) / 2;
+      const c = V((mx + nx * lowSide * 60) * MM, yLow, (my + ny * lowSide * 60) * MM);
+      mb.box('f.wood', c, dir, len * MM, hgt, 0.12);
+      const top = V((mx + nx * lowSide * 75) * MM, yLow + hgt - 0.03, (my + ny * lowSide * 75) * MM);
+      mb.box('f.wood', top, dir, len * MM, 0.03, 0.15);
+    }
   }
+}
+
+/**
+ * 部屋の縁（a から向き (ux, uy) に長さ L）のうち、壁に隠れない区間 [t0, t1]（mm）。
+ * 縁に重なる壁の区間を引き、その壁の戸・引戸・開口・玄関戸の区間は戻す（出入口には框が見える）
+ */
+export function openRuns(f: Floor, a: Vec2, ux: number, uy: number, L: number): [number, number][] {
+  const subtract = (spans: [number, number][], s0: number, s1: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (const [p0, p1] of spans) {
+      if (s1 <= p0 || s0 >= p1) out.push([p0, p1]);
+      else {
+        if (s0 > p0) out.push([p0, s0]);
+        if (s1 < p1) out.push([s1, p1]);
+      }
+    }
+    return out;
+  };
+  const along = (p: Vec2) => (p.x - a.x) * ux + (p.y - a.y) * uy;
+  const off = (p: Vec2) => Math.abs(-(p.x - a.x) * uy + (p.y - a.y) * ux);
+  let open: [number, number][] = [[0, L]];
+  for (const w of f.walls) {
+    if (off(w.a) > 120 || off(w.b) > 120) continue;
+    const wa = along(w.a);
+    const wb = along(w.b);
+    const t0 = Math.max(0, Math.min(wa, wb));
+    const t1 = Math.min(L, Math.max(wa, wb));
+    if (t1 - t0 < 50) continue;
+    let covered: [number, number][] = [[t0, t1]];
+    const wl = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    for (const o of f.openings) {
+      if (o.wallId !== w.id || o.kind === 'window' || o.kind === 'shutter') continue;
+      const p0 = wa + ((wb - wa) * o.t0) / wl;
+      const p1 = wa + ((wb - wa) * o.t1) / wl;
+      covered = subtract(covered, Math.min(p0, p1), Math.max(p0, p1));
+    }
+    for (const [c0, c1] of covered) open = subtract(open, c0, c1);
+  }
+  return open;
 }
 
 /** ビルトインガレージの土間の高さ（GL+40。家の床 FL ではない） */
@@ -497,12 +552,13 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
         continue;
       }
       const key = floorKeyFor(r);
-      if (isDomaRoom(r)) {
-        // 玄関・土間収納の土間: FL − 180。スラブもその分下げ、家の床との境に上がり框
-        const y = fl - DOMA_DROP;
+      const offMm = roomFloorOffsetMm(r);
+      if (offMm !== 0) {
+        // 床の段差（玄関の土間 −180・小上がり +400・ダウンリビング −400 など）: その高さに床を張り、縁に蹴込みと框
+        const y = fl + offMm * MM;
         emitFlat(mb, key, r.polygon, voids, y, true);
-        emitSlab(mb, 'int.slab', r.polygon, voids, fl - 0.24, y - 0.005, 'ext.wall');
-        buildAgarikamachi(mb, f, r, fl);
+        emitSlab(mb, 'int.slab', r.polygon, voids, fl - 0.24, y - 0.005, offMm > 0 ? 'int.wall' : 'ext.wall');
+        buildStepEdges(mb, f, r, fl);
         continue;
       }
       emitFlat(mb, key, r.polygon, voids, fl, true);
@@ -510,7 +566,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     // 構造スラブ（断面表示・光漏れ防止）
     // 中庭などの穴の部分・ガレージの土間にはスラブを張らない。玄関の土間は上で下げて張った
     const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
-    const domaRects = polygonToRects(f.rooms.filter((r) => isDomaRoom(r)).map((r) => r.polygon));
+    const domaRects = polygonToRects(f.rooms.filter((r) => r.type !== 'void' && roomFloorOffsetMm(r) !== 0).map((r) => r.polygon));
     const holeRects = [...(holes.length ? polygonToRects(holes) : []), ...garageRects, ...domaRects];
     const lower = model.floors[model.floors.indexOf(f) - 1];
     const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
@@ -1015,6 +1071,52 @@ function voidGlassOnTop(mb: MeshBuilder, A: THREE.Vector3, B: THREE.Vector3, y: 
   mb.box('ext.frame', mid.clone().setY(y + 0.3), dir, L, 0.03, 0.04);
 }
 
+/** 吹抜の落下防止の種類: 部屋ごとの指定（3D・方眼）が最優先。無ければテイスト（仕様）の既定（rail = スチール手すり） */
+export function guardKindOf(r: Room | null | undefined, spec: BuilderSpec): VoidGuard {
+  if (r?.voidGuard) return r.voidGuard;
+  return spec.voidGuard === 'rail' ? 'steel' : spec.voidGuard;
+}
+
+/** 手すり型の落下防止（スチール縦桟・アイアン丸棒・ガラス）を A→B（床 fl）に作る */
+function buildVoidGuard(mb: MeshBuilder, kind: 'steel' | 'iron' | 'glass', A: THREE.Vector3, B: THREE.Vector3, fl: number) {
+  if (kind === 'steel') return buildVoidRail(mb, A, B, fl);
+  if (kind === 'iron') return buildIronRail(mb, A, B, fl);
+  buildGlassRail(mb, A, B, fl);
+}
+
+/** アイアン手すり: 20mm 角の支柱 @1.2m、上に平鋼 40×12 の笠木、φ12 の細い丸棒 @100 */
+function buildIronRail(mb: MeshBuilder, A: THREE.Vector3, B: THREE.Vector3, fl: number) {
+  const L = A.distanceTo(B);
+  if (L < 0.15) return;
+  const dir = new THREE.Vector3().subVectors(B, A).normalize();
+  const H = 1.1;
+  const key = 'f.metal';
+  const nPost = Math.max(2, Math.ceil(L / 1.2) + 1);
+  for (let i = 0; i < nPost; i++) {
+    const s = 0.02 + ((L - 0.04) * i) / (nPost - 1);
+    mb.box(key, A.clone().addScaledVector(dir, s).setY(fl), dir, 0.02, H - 0.012, 0.02);
+  }
+  const mid = A.clone().addScaledVector(dir, L / 2);
+  mb.box(key, mid.clone().setY(fl + H - 0.012), dir, L, 0.012, 0.04);
+  for (let s = 0.1; s < L - 0.05; s += 0.1) mb.cylinder(key, A.clone().addScaledVector(dir, s).setY(fl + 0.02), 0.006, H - 0.05, 8, false);
+}
+
+/** ガラス手すり: 30mm 角の支柱 @1.5m、t12 のガラス全面、木の笠木 45×40 */
+function buildGlassRail(mb: MeshBuilder, A: THREE.Vector3, B: THREE.Vector3, fl: number) {
+  const L = A.distanceTo(B);
+  if (L < 0.15) return;
+  const dir = new THREE.Vector3().subVectors(B, A).normalize();
+  const H = 1.1;
+  const nPost = Math.max(2, Math.ceil(L / 1.5) + 1);
+  for (let i = 0; i < nPost; i++) {
+    const s = 0.03 + ((L - 0.06) * i) / (nPost - 1);
+    mb.box('f.metal', A.clone().addScaledVector(dir, s).setY(fl), dir, 0.03, H - 0.04, 0.03);
+  }
+  const mid = A.clone().addScaledVector(dir, L / 2);
+  mb.box('ext.glass', mid.clone().setY(fl + 0.05), dir, L - 0.02, H - 0.09, 0.012);
+  mb.box('f.wood', mid.clone().setY(fl + H - 0.04), dir, L, 0.04, 0.045);
+}
+
 /**
  * 壁の無い吹抜の縁（図面で手すりの細い線だけ、または何も描かれていない縁）にも仕様の落下防止を付ける。
  * 吹抜の多角形の辺ごとに、壁が沿っていなければ、外側（部屋側）に向けて手すり／腰壁／ガラス／壁を作る
@@ -1061,12 +1163,14 @@ function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec:
       const midV = A.clone().addScaledVector(dir, L / 2);
       // 縁から部屋側へ少し（6cm）寄せて、床の小口に重ねない
       const inset = new THREE.Vector3(nx, 0, ny).multiplyScalar(0.06);
-      if (spec.voidGuard === 'rail') buildVoidRail(mb, A.clone().add(inset), B.clone().add(inset), fl);
-      else if (spec.voidGuard === 'half') mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, 1.1, 0.12);
-      else if (spec.voidGuard === 'halfGlass') {
-        mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, 0.9, 0.12);
+      const kind = guardKindOf(r, spec);
+      const wallKeys = ['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'];
+      if (kind === 'half') mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, 1.1, 0.12);
+      else if (kind === 'halfGlass') {
+        mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, 0.9, 0.12);
         voidGlassOnTop(mb, A.clone().add(inset), B.clone().add(inset), fl + 0.9);
-      } else mb.box(['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'], midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, 0.12);
+      } else if (kind === 'wall') mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, f.ceilingHeight * MM, 0.12);
+      else buildVoidGuard(mb, kind, A.clone().add(inset), B.clone().add(inset), fl);
     }
   }
 }
@@ -1161,9 +1265,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const other = voidPlus ? rMinus : rPlus;
   const openSide = !!other && ['hall', 'ldk', 'living', 'dining', 'kitchen', 'stairs', 'entrance', 'other'].includes(other.type);
   const voidEdge = f.level >= 2 && voidPlus !== voidMinus && !w.exterior && !facesOutdoor && openSide;
-  const guard: BuilderSpec['voidGuard'] = voidEdge ? spec.voidGuard : 'wall';
-  if (guard === 'rail') {
-    buildVoidRail(mb, A, B, fl);
+  const guard: VoidGuard = voidEdge ? guardKindOf(voidPlus ? rPlus : rMinus, spec) : 'wall';
+  if (guard === 'steel' || guard === 'iron' || guard === 'glass') {
+    buildVoidGuard(mb, guard, A, B, fl);
     return;
   }
   // 各面の素材
@@ -1185,9 +1289,9 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const bothOutdoor = (!rPlus || isOutdoor(rPlus)) && (!rMinus || isOutdoor(rMinus));
   // ガレージ（土間）に面する間仕切りは土間まで下ろす（家の床の高さで止めると、土間との間に隙間が開く）
   const garageSide = f.level === 1 && !w.exterior && (isBuiltinGarage(rPlus) || isBuiltinGarage(rMinus));
-  // 玄関の土間（FL − 180）に面する間仕切りも土間まで下ろす
-  const domaSide = !w.exterior && (isDomaRoom(rPlus) || isDomaRoom(rMinus));
-  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : garageSide ? GARAGE_FLOOR_Y - 0.01 : domaSide ? fl - DOMA_DROP - 0.01 : fl;
+  // 玄関の土間（FL − 180）やダウンリビングなど下がった床に面する間仕切りは、その床まで下ろす
+  const lowest = w.exterior ? 0 : Math.min(0, roomFloorOffsetMm(rPlus), roomFloorOffsetMm(rMinus));
+  const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : garageSide ? GARAGE_FLOOR_Y - 0.01 : lowest < 0 ? fl + lowest * MM - 0.01 : fl;
   // 後付け・離れのガレージ、物置の囲い（両側とも家の外）はその建物の高さまで
   const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
   // 敷地の塀（家から離れて立つ両側とも屋外の壁）は目隠し塀の高さ 1.8m（建物の高さまで立ち上げると敷地が箱で囲まれて見える）。
@@ -1254,7 +1358,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   let base = o.kind === 'shutter' && f.level === 1 ? GARAGE_FLOOR_Y : fl;
   if (o.kind === 'entrance') {
     const qi = mid.clone().addScaledVector(nW, -outSign * (t / 2 + 0.3));
-    if (isDomaRoom(roomAt(f, qi.x / MM, qi.z / MM))) base = fl - DOMA_DROP;
+    const offIn = roomFloorOffsetMm(roomAt(f, qi.x / MM, qi.z / MM));
+    if (offIn < 0) base = fl + offIn * MM;
   }
   const sill = base + o.sill * MM;
   const head = base + (o.sill + o.height) * MM;

@@ -99,11 +99,15 @@ export class MeshBuilder {
     for (let i = 1; i + 1 < pts.length; i++) this.pushTri(clip.capKey, [pts[0], pts[i], pts[i + 1]], n, a, b);
   }
 
+  /** 材料キーの差し替え（家具ごとの素材: 'f.wood' → 'f.wood@dark' など）。null で差し替え無し */
+  keyMap: Record<string, string> | null = null;
+
   private bucket(key: string): Bucket {
-    let b = this.buckets.get(key);
+    const k = this.keyMap?.[key] ?? key;
+    let b = this.buckets.get(k);
     if (!b) {
       b = { pos: [], nor: [], uv: [] };
-      this.buckets.set(key, b);
+      this.buckets.set(k, b);
     }
     return b;
   }

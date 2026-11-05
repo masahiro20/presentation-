@@ -14390,15 +14390,18 @@ var MeshBuilder = class {
 			pts[i + 1]
 		], n, a, b);
 	}
+	/** 材料キーの差し替え（家具ごとの素材: 'f.wood' → 'f.wood@dark' など）。null で差し替え無し */
+	keyMap = null;
 	bucket(key) {
-		let b = this.buckets.get(key);
+		const k = this.keyMap?.[key] ?? key;
+		let b = this.buckets.get(k);
 		if (!b) {
 			b = {
 				pos: [],
 				nor: [],
 				uv: []
 			};
-			this.buckets.set(key, b);
+			this.buckets.set(k, b);
 		}
 		return b;
 	}
@@ -17026,6 +17029,7 @@ var modelsAvailable = typeof document !== "undefined";
 function buildFurniture(model, opts = {}) {
 	const mb = new MeshBuilder();
 	mb.clip = opts.clip ?? (opts.cut ? topClip(opts.cut.y) : null);
+	itemSeq = 0;
 	currentModels = [];
 	const lights = [];
 	const occupancy = /* @__PURE__ */ new Map();
@@ -17418,7 +17422,26 @@ function emitItem(it, env) {
 	Object.assign(it, best);
 	emitItemRaw(it, env);
 }
+/** 家具ごとの素材（木の色味・張地の色）→ 材料キーの差し替え表。既定（テイストの色）なら null */
+function finishKeyMap(it) {
+	const m = {};
+	if (it.woodTone && it.woodTone !== "natural") m["f.wood"] = `f.wood@${it.woodTone}`;
+	if (it.fabricColor && it.fabricColor !== "preset") {
+		m["f.fabric"] = `f.fabric@${it.fabricColor}`;
+		m["f.fabric2"] = `f.fabric2@${it.fabricColor}`;
+	}
+	return Object.keys(m).length ? m : null;
+}
 function emitItemRaw(it, env) {
+	const prev = env.mb.keyMap;
+	env.mb.keyMap = finishKeyMap(it) ?? prev;
+	try {
+		emitItemBody(it, env);
+	} finally {
+		env.mb.keyMap = prev;
+	}
+}
+function emitItemBody(it, env) {
 	currentItems?.push(it);
 	const r = it.rot / DEG;
 	const fr = new Frame(env.mb, V(it.x * MM, env.y, it.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));

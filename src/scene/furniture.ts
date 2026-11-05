@@ -308,6 +308,8 @@ export function buildFurniture(
   const mb = new MeshBuilder();
   // 輪切り（模型）: 切断面より上は作らず、切った階より上の階の家具は置かない
   mb.clip = opts.clip ?? (opts.cut ? topClip(opts.cut.y) : null);
+  // 自動配置の家具の id は作るたびに同じ（fi1, fi2 …）にする。連番を戻さないと、3D で選んだ家具が次の描画で見つからない
+  itemSeq = 0;
   currentModels = [];
   const lights: LightPoint[] = [];
   const occupancy = new Map<string, Footprint[]>();
@@ -557,7 +559,29 @@ function emitItem(it: FurnitureItem, env: ItemEnv) {
   emitItemRaw(it, env);
 }
 
+/** 家具ごとの素材（木の色味・張地の色）→ 材料キーの差し替え表。既定（テイストの色）なら null */
+export function finishKeyMap(it: Pick<FurnitureItem, 'woodTone' | 'fabricColor'>): Record<string, string> | null {
+  const m: Record<string, string> = {};
+  if (it.woodTone && it.woodTone !== 'natural') m['f.wood'] = `f.wood@${it.woodTone}`;
+  if (it.fabricColor && it.fabricColor !== 'preset') {
+    m['f.fabric'] = `f.fabric@${it.fabricColor}`;
+    m['f.fabric2'] = `f.fabric2@${it.fabricColor}`;
+  }
+  return Object.keys(m).length ? m : null;
+}
+
 function emitItemRaw(it: FurnitureItem, env: ItemEnv) {
+  // この家具の素材（木の色味・張地）を部品の材料キーに掛ける（Frame は元のキーで角丸などを判断する）
+  const prev = env.mb.keyMap;
+  env.mb.keyMap = finishKeyMap(it) ?? prev;
+  try {
+    emitItemBody(it, env);
+  } finally {
+    env.mb.keyMap = prev;
+  }
+}
+
+function emitItemBody(it: FurnitureItem, env: ItemEnv) {
   currentItems?.push(it);
   const r = it.rot / DEG;
   const fr = new Frame(env.mb, V(it.x * MM, env.y, it.y * MM), V(Math.cos(r), 0, Math.sin(r)), V(-Math.sin(r), 0, Math.cos(r)));

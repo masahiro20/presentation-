@@ -4,7 +4,7 @@
  * 置き直した階は手配置（model.furniture）になり、平面図・見積（キッチンの型）にもつながる。
  */
 import * as THREE from 'three';
-import type { BuildingModel, BuiltinVariant, Floor, FurnitureItem, FurnitureKind, Vec2 } from '../core/types';
+import { FABRIC_COLORS, WOOD_TONES, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type FabricColor, type Floor, type FurnitureItem, type FurnitureKind, type Vec2 } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDES, WASH_STYLES, furnitureDims, furnitureItems } from '../scene/furniture';
 import type { Viewer } from '../scene/viewer';
@@ -16,6 +16,10 @@ const WALL_KINDS = new Set<FurnitureKind>(['kitchen', 'cupboard', 'fridge', 'tv'
 
 /** 追加できる家具（造作は形ごとに並べる） */
 const ADD_FURNITURE: FurnitureKind[] = ['sofa', 'dining', 'tv', 'rug', 'coffeeTable', 'desk', 'bookshelf', 'cupboard', 'hanger', 'washstand', 'bed', 'plant', 'chair', 'lowTable'];
+/** 木の色味を選べる家具（木の部品がある物） */
+const WOOD_KINDS = new Set<FurnitureKind>(['dining', 'coffeeTable', 'tv', 'chair', 'bed', 'nightstand', 'desk', 'cabinet', 'bookshelf', 'lowTable', 'shoeCabinet', 'cupboard', 'hanger', 'builtin', 'washstand']);
+/** 張地の色を選べる家具 */
+const FABRIC_KINDS = new Set<FurnitureKind>(['sofa', 'chair', 'bed', 'dining']);
 
 interface Add {
   kind: FurnitureKind;
@@ -30,8 +34,11 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
   let sel: { level: number; id: string } | null = null;
   let add: Add | null = null;
   let moving = false;
+  /** 選んだ家具を掴んで動かしている間の状態（元の位置と、いま置こうとしている位置） */
+  let drag: { x0: number; y0: number; rot0: number; p0: THREE.Vector3; f: Floor; preview: { x: number; y: number; rot: number } | null } | null = null;
 
   const model = () => state.model as BuildingModel | null;
+  const floorOf = (level: number): Floor | null => model()?.floors.find((f) => f.level === level) ?? null;
   const floorAt = (y: number): Floor | null => {
     const m = model();
     if (!m) return null;
@@ -72,12 +79,12 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     commit();
   };
 
-  /** 点（mm）に最も近い壁に背を付ける位置と向き */
-  const snapToWall = (f: Floor, p: Vec2): { x: number; y: number; rot: number } | null => {
+  /** 点（mm）に最も近い壁に背を付ける位置と向き（maxD より遠い壁には付けない） */
+  const snapToWall = (f: Floor, p: Vec2, maxD = 2500): { x: number; y: number; rot: number } | null => {
     let best: { d: number; q: Vec2; n: Vec2; t: number } | null = null;
     for (const w of f.walls) {
       const d = distPointSegment(p, w.a, w.b);
-      if (d > 2500 || (best && d >= best.d)) continue;
+      if (d > maxD || (best && d >= best.d)) continue;
       const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
       const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
       const t = Math.max(0, Math.min(L, (p.x - w.a.x) * u.x + (p.y - w.a.y) * u.y));
@@ -113,6 +120,57 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     }
     if (best) return best.it;
     return near > 0 && nearest && nearest.d <= near ? nearest.it : null;
+  };
+
+  /** 家具の足元の外形（world m）。選択の枠・ドラッグ中の下見せに使う */
+  const footprintWorld = (it: FurnitureItem, f: Floor, pos: { x: number; y: number; rot: number } = it): THREE.Vector3[] => {
+    const { w, d, v0 } = furnitureDims(it);
+    const r = (pos.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const room = f.rooms.find((rm) => pointInPolygon({ x: pos.x, y: pos.y }, rm.polygon));
+    const y = f.elevation / 1000 + (room ? roomFloorOffsetMm(room) / 1000 : 0);
+    const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
+    return [P(-w / 2, v0), P(w / 2, v0), P(w / 2, v0 + d), P(-w / 2, v0 + d)];
+  };
+  /** 選んでいる家具に枠を出す（無ければ消す） */
+  const showSel = () => {
+    const it = selected();
+    const f = it && sel ? floorOf(sel.level) : null;
+    v.setSelection(it && f ? footprintWorld(it, f) : null);
+  };
+  /** 選んだ家具の上で押したらドラッグ開始（道具を開いていて、その家具を選んでいるときだけ。それ以外はカメラ操作のまま） */
+  const dragStart = (p: THREE.Vector3): boolean => {
+    if (!active || add || !sel) return false;
+    const f = floorAt(p.y);
+    if (!f || f.level !== sel.level) return false;
+    const it = itemAt(f.level, { x: p.x * 1000, y: p.z * 1000 }, 0.08, 0.6);
+    if (!it || it.id !== sel.id) return false;
+    drag = { x0: it.x, y0: it.y, rot0: it.rot, p0: p.clone(), f, preview: null };
+    moving = false;
+    return true;
+  };
+  const dragMove = (p: THREE.Vector3) => {
+    if (!drag) return;
+    const it = selected();
+    if (!it) return;
+    const raw = { x: drag.x0 + (p.x - drag.p0.x) * 1000, y: drag.y0 + (p.z - drag.p0.z) * 1000 };
+    // 壁に背を付ける家具は、壁ぎわ（70cm 以内）まで持っていくと壁に吸着（向きも壁に沿う）。部屋の中では自由に動く
+    const snap = WALL_KINDS.has(it.kind) ? snapToWall(drag.f, raw, 700) : null;
+    drag.preview = snap ?? { x: Math.round(raw.x), y: Math.round(raw.y), rot: drag.rot0 };
+    v.setSelection(footprintWorld(it, drag.f, drag.preview));
+  };
+  const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (!moved || !d.preview) {
+      showSel();
+      return;
+    }
+    const pv = d.preview;
+    const room = d.f.rooms.find((r) => pointInPolygon({ x: pv.x, y: pv.y }, r.polygon));
+    editSel((x) => Object.assign(x, pv, { roomId: room?.id ?? x.roomId }));
   };
 
   const onPick = (pt: THREE.Vector3, ndc?: THREE.Vector2) => {
@@ -176,10 +234,11 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
   function render() {
     clear(panel);
     panel.hidden = !active;
+    showSel();
     if (!active) return;
     panel.append(
       h('div', { class: 'furn-head' }, h('strong', null, '家具・造作'), h('button', { class: 'btn sm ghost', onclick: () => setActive(false) }, '閉じる')),
-      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
+      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : sel ? '橙の枠が選んだ家具。そのまま掴んでドラッグで動かせます（壁ぎわの家具は壁に沿います）' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
     );
     const it = selected();
     if (it) {
@@ -227,6 +286,9 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
           pick('作り', WASH_STYLES as unknown as ['unit' | 'custom', string][], it.washStyle ?? 'unit', (x, val) => (x.washStyle = val)),
         );
       }
+      // 素材（木の色味・張地の色）: この家具だけ変える。標準はテイストの色
+      if (WOOD_KINDS.has(it.kind)) box.append(pick('木の色味', WOOD_TONES, it.woodTone ?? 'natural', (x, val) => { if (val === 'natural') delete x.woodTone; else x.woodTone = val; }));
+      if (FABRIC_KINDS.has(it.kind)) box.append(pick('張地の色', FABRIC_COLORS.map(([k, l]) => [k, l] as [FabricColor, string]), it.fabricColor ?? 'preset', (x, val) => { if (val === 'preset') delete x.fabricColor; else x.fabricColor = val; }));
       box.append(
         h('div', { class: 'btn-row' },
           h('button', { class: 'btn sm', onclick: () => { const s = sel!; const list = explicit(s.level); const i = list.findIndex((q) => q.id === s.id); if (i >= 0) list.splice(i, 1); sel = null; commit(); } }, '消す'),
@@ -266,6 +328,6 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     btn.classList.toggle('on', on);
   }
 
-  const btn = h('button', { class: 'nav-btn', title: '家具・造作（パースを見ながら造作本棚を置く、キッチンの型を変える）\n床をクリックで置く、家具をクリックで選ぶ', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '▦'), '家具');
-  return { button: btn, setActive, isActive: () => active, pickHere };
+  const btn = h('button', { class: 'nav-btn', title: '家具・造作（パースを見ながら造作本棚を置く、キッチンの型を変える）\n床をクリックで置く、家具をクリックで選ぶ、選んだ家具はドラッグで動かす', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '▦'), '家具');
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
 }

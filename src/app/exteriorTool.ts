@@ -20,6 +20,8 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
   let add: ExteriorKind | null = null;
   let moving = false;
   let seq = 0;
+  /** 選んだ物を掴んで動かしている間の状態 */
+  let drag: { x0: number; y0: number; p0: THREE.Vector3; preview: { x: number; y: number } | null } | null = null;
 
   const model = () => state.model as BuildingModel | null;
   const items = (): ExteriorItem[] => {
@@ -68,6 +70,58 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
     if (kind === 'car') return Math.round(a);
     if (kind === 'fence' || kind === 'bench') return Math.round(a + 90);
     return 0;
+  };
+
+  /** 置いた物の足元の外形（world m）。木・低木は樹冠の円、フェンスは置いた点から向きの方へ */
+  const footprintWorld = (it: ExteriorItem, pos: { x: number; y: number } = it): THREE.Vector3[] => {
+    const fp = exteriorFootprint(it);
+    const r = (it.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const y = 0.02;
+    if (fp.r) {
+      const n = 24;
+      return Array.from({ length: n }, (_, i) => {
+        const a = (i / n) * Math.PI * 2;
+        return new THREE.Vector3(cx + Math.cos(a) * fp.r!, y, cz + Math.sin(a) * fp.r!);
+      });
+    }
+    const P = (u: number, w: number) => new THREE.Vector3(cx + u * Math.cos(r) - w * Math.sin(r), y, cz + u * Math.sin(r) + w * Math.cos(r));
+    if (it.kind === 'fence') return [P(0, -0.15), P(fp.w, -0.15), P(fp.w, 0.15), P(0, 0.15)];
+    return [P(-fp.w / 2, -fp.d / 2), P(fp.w / 2, -fp.d / 2), P(fp.w / 2, fp.d / 2), P(-fp.w / 2, fp.d / 2)];
+  };
+  const showSel = () => {
+    const it = selected();
+    v.setSelection(it ? footprintWorld(it) : null);
+  };
+  const dragStart = (p: THREE.Vector3): boolean => {
+    if (!active || add || !sel) return false;
+    const it = itemAt({ x: Math.round(p.x * 1000), y: Math.round(p.z * 1000) });
+    if (!it || it.id !== sel) return false;
+    drag = { x0: it.x, y0: it.y, p0: p.clone(), preview: null };
+    moving = false;
+    return true;
+  };
+  const dragMove = (p: THREE.Vector3) => {
+    if (!drag) return;
+    const it = selected();
+    if (!it) return;
+    drag.preview = { x: Math.round(drag.x0 + (p.x - drag.p0.x) * 1000), y: Math.round(drag.y0 + (p.z - drag.p0.z) * 1000) };
+    v.setSelection(footprintWorld(it, drag.preview));
+  };
+  const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (!moved || !d.preview) {
+      showSel();
+      return;
+    }
+    const pv = d.preview;
+    editSel((x) => {
+      x.x = pv.x;
+      x.y = pv.y;
+    });
   };
 
   const onPick = (pt: THREE.Vector3, ndc?: THREE.Vector2) => {
@@ -119,10 +173,11 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
   function render() {
     clear(panel);
     panel.hidden = !active;
+    showSel();
     if (!active) return;
     panel.append(
       h('div', { class: 'furn-head' }, h('strong', null, '外構に置く'), h('button', { class: 'btn sm ghost', onclick: () => setActive(false) }, '閉じる')),
-      h('p', { class: 'hint' }, add ? `「${EXTERIOR_LABEL[add]}」: 置きたい地面をクリック` : moving ? '移す先の地面をクリック' : '置いた物をクリックして選ぶ／下から選んで地面をクリックで置く'),
+      h('p', { class: 'hint' }, add ? `「${EXTERIOR_LABEL[add]}」: 置きたい地面をクリック` : moving ? '移す先の地面をクリック' : sel ? '橙の枠が選んだ物。そのまま掴んでドラッグで動かせます' : '置いた物をクリックして選ぶ／下から選んで地面をクリックで置く'),
     );
     const it = selected();
     if (it) {
@@ -180,5 +235,5 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
   }
 
   const btn = h('button', { class: 'nav-btn', title: '外構に置く（植栽・フェンス・車・BBQ・ベンチ・自転車・物置・ポスト・庭園灯）\n地面をクリックで置く、物をクリックで選ぶ', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '🌳'), '外構');
-  return { button: btn, setActive, isActive: () => active, pickHere };
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
 }

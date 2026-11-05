@@ -301,6 +301,19 @@ export class Viewer {
       }
     });
     el.addEventListener('pointerdown', (e) => {
+      // 選んだ物を掴んで動かす（家具・外構の道具が受け取る）。カメラ操作より先に判定
+      if (e.button === 0 && this.onDragStart && this.navMode !== 'walk' && !this.cut) {
+        const r = el.getBoundingClientRect();
+        const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+        const p = this.pickPoint(ndc);
+        if (p && this.onDragStart(p, ndc)) {
+          this.drag = { y: p.y, sx: e.clientX, sy: e.clientY, moved: false, last: p.clone() };
+          this.controls.enabled = false;
+          el.setPointerCapture(e.pointerId);
+          el.style.cursor = 'grabbing';
+          return;
+        }
+      }
       if (this.navMode === 'pan') el.style.cursor = 'grabbing';
       if (this.navMode === 'walk') {
         this.walkPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -319,6 +332,16 @@ export class Viewer {
     // ホバー: 選べる物（家具・外構の物・扉・シャッター・窓）の上ではカーソルを手の形に（CAD のように「触れる物」が分かる）。100ms に 1 回だけ当たり判定
     let hoverAt = 0;
     el.addEventListener('pointermove', (e) => {
+      if (this.drag) {
+        const d = this.drag;
+        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
+        const p = this.planePoint(e.clientX, e.clientY, d.y);
+        if (p) {
+          d.last.copy(p);
+          this.onDragMove?.(p);
+        }
+        return;
+      }
       if (this.navMode === 'walk' || e.buttons !== 0 || this.cut) return;
       const now = performance.now();
       if (now - hoverAt < 100) return;
@@ -350,6 +373,22 @@ export class Viewer {
       const k = (0.0032 * this.camera.fov) / 55;
       this.lookBy(dx * k, dy * k);
     });
+    const endDrag = (e: PointerEvent) => {
+      if (!this.drag) return;
+      const d = this.drag;
+      this.drag = null;
+      this.controls.enabled = true;
+      el.style.cursor = '';
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // 取得していないときは何もしない
+      }
+      const p = this.planePoint(e.clientX, e.clientY, d.y) ?? d.last;
+      this.onDragEnd?.(p, d.moved);
+    };
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
     const endPtr = (e: PointerEvent) => {
       this.walkPtrs.delete(e.pointerId);
       if (this.walkPtrs.size < 2) this.walkPinch = null;
@@ -388,6 +427,8 @@ export class Viewer {
     });
 
     this.scene.add(this.root);
+    this.selGroup.name = 'selection';
+    this.scene.add(this.selGroup);
     for (const g of Object.values(this.groups)) this.root.add(g);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
@@ -491,8 +532,53 @@ export class Viewer {
   onPick: ((p: THREE.Vector3, ndc?: THREE.Vector2) => void) | null = null;
   /** 道具を開いていないときのクリック（扉・シャッターでなければ呼ばれる）: クリックした物をそのまま選んで直す */
   onPickIdle: ((hit: PickHit, ndc: THREE.Vector2) => boolean) | null = null;
+  /**
+   * 選んだ物を掴んで動かす（家具・外構の道具）。押した点で true を返すとカメラ操作を止め、
+   * 押した点と同じ高さの水平面に沿った点を move / end に渡す（end の moved は 3px 以上動いたか）
+   */
+  onDragStart: ((p: THREE.Vector3, ndc: THREE.Vector2) => boolean) | null = null;
+  onDragMove: ((p: THREE.Vector3) => void) | null = null;
+  onDragEnd: ((p: THREE.Vector3, moved: boolean) => void) | null = null;
+  private drag: { y: number; sx: number; sy: number; moved: boolean; last: THREE.Vector3 } | null = null;
+  /** 選んだ物の足元の枠（CAD の選択表示）。撮影には写さない */
+  private selGroup = new THREE.Group();
 
   /** 画面上の点の下に何があるか（扉・屋根・天井は透かさず、いちばん手前の面）。何も無ければ地面の点 */
+  /** 画面の点から、高さ y の水平面との交点（ドラッグで物を滑らせる面） */
+  private planePoint(cx: number, cy: number, y: number): THREE.Vector3 | null {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((cx - r.left) / Math.max(1, r.width)) * 2 - 1, -((cy - r.top) / Math.max(1, r.height)) * 2 + 1);
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const p = new THREE.Vector3();
+    return rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), p) ? p : null;
+  }
+
+  /**
+   * 選んだ物の足元の枠（CAD の選択表示）: world の多角形（m。凸な四角・円を想定）。橙の線と薄い塗りを、物の手前でも見えるように描く。null で消す
+   */
+  setSelection(points: THREE.Vector3[] | null) {
+    clearGroup(this.selGroup);
+    if (points && points.length >= 3) {
+      const pts = points.map((p) => p.clone().setY(p.y + 0.02));
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xff7a1a, depthTest: false, transparent: true, opacity: 0.95 }));
+      line.renderOrder = 999;
+      const pos: number[] = [];
+      for (let i = 1; i + 1 < pts.length; i++) pos.push(pts[0].x, pts[0].y, pts[0].z, pts[i].x, pts[i].y, pts[i].z, pts[i + 1].x, pts[i + 1].y, pts[i + 1].z);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      const fill = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.16, depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
+      fill.renderOrder = 998;
+      for (const o of [line, fill]) {
+        o.userData.noShadow = true;
+        o.castShadow = false;
+        o.receiveShadow = false;
+      }
+      this.selGroup.add(fill, line);
+    }
+    this.dirty = true;
+  }
+
   pickHit(ndc: THREE.Vector2): PickHit | null {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(ndc, this.camera);
@@ -1839,7 +1925,10 @@ export class Viewer {
     this.camera.aspect = width / height;
     this.applyView(view);
     this.flushShadow();
+    const selVis = this.selGroup.visible;
+    this.selGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
+    this.selGroup.visible = selVis;
     const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
     // 後処理のバッファ（composer）は触らない: 作り直すたびに GPU メモリを確保し直してカクつく
     this.renderer.setPixelRatio(prev.pr);
@@ -1864,8 +1953,12 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
     const qPrev = this.quality;
     this.quality = 'high';
+    // 選択の枠は撮影に写さない
+    const selVis = this.selGroup.visible;
+    this.selGroup.visible = false;
     this.renderFrame(true);
     const url = this.renderer.domElement.toDataURL(mime, q);
+    this.selGroup.visible = selVis;
     this.quality = qPrev;
     this.motionPR = false;
     this.renderer.setPixelRatio(prev.pr);

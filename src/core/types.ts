@@ -277,6 +277,25 @@ export type FurnitureKind =
 /** 造作家具の形 */
 export type BuiltinVariant = 'wallShelf' | 'shelfDesk' | 'floatTv' | 'openShelf' | 'bench' | 'counter' | 'tallStorage' | 'lowShelf';
 
+/** 家具の木の色味（3D で選んだ物の「素材」。標準はテイストの色） */
+export type WoodTone = 'natural' | 'light' | 'dark';
+export const WOOD_TONES: [WoodTone, string][] = [
+  ['natural', '標準（テイストの色）'],
+  ['light', '明るい（ナラ・メープル）'],
+  ['dark', '濃い（ウォールナット）'],
+];
+/** 張地の色（ソファ・椅子・ベッド）。[値, 名前, 布 1 の色, 布 2 の色] */
+export type FabricColor = 'preset' | 'gray' | 'beige' | 'navy' | 'green' | 'terracotta' | 'white';
+export const FABRIC_COLORS: [FabricColor, string, string, string][] = [
+  ['preset', '標準（テイストの色）', '', ''],
+  ['gray', 'グレー', '#8f949a', '#6c7076'],
+  ['beige', 'ベージュ', '#d9cdb8', '#b9ad98'],
+  ['navy', 'ネイビー', '#3f4b63', '#2e3749'],
+  ['green', 'グリーン', '#6f7d66', '#55614e'],
+  ['terracotta', 'テラコッタ', '#b3684a', '#94523a'],
+  ['white', 'オフホワイト', '#ece9e2', '#cfcac0'],
+];
+
 /** 置いた家具 1 つ（平面座標 mm。rot は壁に沿う向きの角度（度）: 0 = 東向きに並び手前が南） */
 export interface FurnitureItem {
   id: string;
@@ -311,6 +330,10 @@ export interface FurnitureItem {
   leg?: number;
   /** 洗面台の作り: ユニット（既定）か造作（カウンター＋ボウル＋オープン棚＋大きな鏡） */
   washStyle?: 'unit' | 'custom';
+  /** 木の色味（省略 = テイストの色） */
+  woodTone?: WoodTone;
+  /** 張地の色（省略 = テイストの色） */
+  fabricColor?: FabricColor;
 }
 
 /** 木造のモジュール（壁芯を合わせる基準の格子） */

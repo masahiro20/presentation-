@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { makeMaterial, leafCardTexture, leafSprayTexture, type MatSpec } from '../styles/textures';
 import { TATAMI, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
+import { FABRIC_COLORS } from '../core/types';
 
 export class MaterialRegistry {
   private map = new Map<string, THREE.Material>();
@@ -115,6 +116,15 @@ export class MaterialRegistry {
     set('f.wood', M(F.wood));
     set('f.fabric', M(F.fabric));
     set('f.fabric2', M(F.fabric2));
+    // 家具ごとの素材の切替（3D で選んだ物の「素材」）: 木の色味 2 段階（標準はテイストの色）と張地の色。
+    // 家具の部品は 'f.wood' などのキーで作られ、MeshBuilder.keyMap で 'f.wood@dark' に差し替わる
+    set('f.wood@light', M({ ...F.wood, color: '#d6c2a0', color2: '#c4ac86' }));
+    set('f.wood@dark', M({ ...F.wood, color: '#5b4432', color2: '#4b3728' }));
+    for (const [k, , c1, c2] of FABRIC_COLORS) {
+      if (!c1) continue;
+      set(`f.fabric@${k}`, M({ ...F.fabric, color: c1 }));
+      set(`f.fabric2@${k}`, M({ ...F.fabric2, color: c2 }));
+    }
     set('f.metal', color(F.metal, 0.35, 0.8));
     set('f.handle', color('#262626', 0.4, 0.6));
     set('f.hood', color('#e9e7e3', 0.45, 0.2));

@@ -305,7 +305,8 @@ export class Viewer {
       if (e.button === 0 && this.onDragStart && this.navMode !== 'walk' && !this.cut) {
         const r = el.getBoundingClientRect();
         const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-        const p = this.pickPoint(ndc);
+        // 押した面そのもの（窓ガラスも含む）の点。pickPoint はガラスを飛ばして奥の床に当たるので、窓を掴めない
+        const p = this.pickHit(ndc)?.point ?? this.pickPoint(ndc);
         if (p && this.onDragStart(p, ndc)) {
           this.drag = { y: p.y, sx: e.clientX, sy: e.clientY, moved: false, last: p.clone() };
           this.controls.enabled = false;

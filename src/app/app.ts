@@ -350,14 +350,16 @@ export class App {
       return false;
     };
     // 選んだ家具・外構の物は、そのまま掴んでドラッグで動かせる（CAD の直接操作。道具を開いて選んでいる物だけ）
-    v.onDragStart = (p) => furnTool.dragStart(p) || extTool.dragStart(p);
+    v.onDragStart = (p) => furnTool.dragStart(p) || extTool.dragStart(p) || editTool.dragStart(p);
     v.onDragMove = (p) => {
       furnTool.dragMove(p);
       extTool.dragMove(p);
+      editTool.dragMove(p);
     };
     v.onDragEnd = (p, moved) => {
       furnTool.dragEnd(p, moved);
       extTool.dragEnd(p, moved);
+      editTool.dragEnd(p, moved);
     };
     bar.append(
       orbit,

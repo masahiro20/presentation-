@@ -12,6 +12,7 @@ import { pointInPolygon } from '../core/geometry';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
+import { effectiveOpening, resolveSpec } from '../styles/spec';
 
 export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool edit3d', hidden: true });
@@ -25,6 +26,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   /** 窓・戸: 選んだ開口。無い所をクリックしたときは「ここに置く」候補（壁と位置） */
   let opSel: { level: number; id: string } | null = null;
   let opSpot: { level: number; wallId: string; t: number } | null = null;
+  /** 選んだ窓・戸を掴んで壁に沿って動かしている間の状態 */
+  let opDrag: { f: Floor; op: Opening; w: Wall; L: number; width: number; t0Start: number; tPress: number; preview: number | null } | null = null;
   const overlay = new THREE.Group();
   overlay.name = 'edit3d-overlay';
   v.scene.add(overlay);
@@ -67,6 +70,93 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const commit = () => {
     onModelEdited();
     render();
+  };
+
+  /** 点（world）を壁に落とした位置 t（壁の始点から mm）と壁からの距離 d */
+  const wallParam = (w: Wall, p: THREE.Vector3) => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const px = p.x * 1000;
+    const py = p.z * 1000;
+    const t = (px - w.a.x) * ux + (py - w.a.y) * uy;
+    return { t, d: Math.hypot(px - (w.a.x + ux * t), py - (w.a.y + uy * t)), L };
+  };
+  /** 窓・戸の枠（壁面上の矩形。world m）: 選択の表示とドラッグ中の下見せ。高さは 3D と同じ仕様の補正（サッシ上端＝天井など）を掛ける */
+  const openingFrame = (f: Floor, w: Wall, t0: number, t1: number, op: Opening): THREE.Vector3[] => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const fl = f.elevation / 1000;
+    const eff = effectiveOpening(op, f.ceilingHeight, resolveSpec(state.design.specId, state.design.specPatch));
+    const y0 = fl + eff.sill / 1000;
+    const y1 = fl + (eff.sill + eff.height) / 1000;
+    const P = (t: number, y: number) => new THREE.Vector3((w.a.x + ux * t) / 1000, y, (w.a.y + uy * t) / 1000);
+    return [P(t0, y0), P(t1, y0), P(t1, y1), P(t0, y1)];
+  };
+  const selectedOpening = () => {
+    const m = model();
+    const f = m && opSel ? m.floors.find((x) => x.level === opSel!.level) : null;
+    const op = f?.openings.find((o) => o.id === opSel!.id) ?? null;
+    const w = f && op ? f.walls.find((x) => x.id === op.wallId) ?? null : null;
+    return f && op && w ? { f, op, w } : null;
+  };
+  /** 選んだ窓・戸に橙の枠を出す（無ければ消す） */
+  const showOpSel = () => {
+    const s = selectedOpening();
+    v.setSelection(s ? openingFrame(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
+  };
+  /** 選んだ窓・戸の上で押したらドラッグ開始（壁に沿って動く）。それ以外はカメラ操作のまま */
+  const dragStart = (p: THREE.Vector3): boolean => {
+    if (!active || mode !== 'opening' || !opSel) return false;
+    const s = selectedOpening();
+    if (!s) return false;
+    const { t, d } = wallParam(s.w, p);
+    if (d > 450 || t < s.op.t0 - 150 || t > s.op.t1 + 150) return false;
+    const fl = s.f.elevation / 1000;
+    const eff = effectiveOpening(s.op, s.f.ceilingHeight, resolveSpec(state.design.specId, state.design.specPatch));
+    if (p.y < fl + eff.sill / 1000 - 0.3 || p.y > fl + (eff.sill + eff.height) / 1000 + 0.3) return false;
+    opDrag = { f: s.f, op: s.op, w: s.w, L: wallParam(s.w, p).L, width: s.op.t1 - s.op.t0, t0Start: s.op.t0, tPress: t, preview: null };
+    return true;
+  };
+  const dragMove = (p: THREE.Vector3) => {
+    if (!opDrag) return;
+    const { f, op, w, L, width } = opDrag;
+    const { t } = wallParam(w, p);
+    let t0 = opDrag.t0Start + (t - opDrag.tPress);
+    // ほかの窓・戸と重ならない範囲（隣の開口の端で止まる）と、壁の端
+    let lo = 40;
+    let hi = L - 40 - width;
+    for (const o of f.openings) {
+      if (o.wallId !== w.id || o.id === op.id) continue;
+      if (o.t1 <= opDrag.t0Start + 1) lo = Math.max(lo, o.t1 + 20);
+      else if (o.t0 >= opDrag.t0Start + width - 1) hi = Math.min(hi, o.t0 - 20 - width);
+    }
+    // 半間（455）の格子に止める: 開口の端が格子に乗る所（6cm 以内）
+    const grid = model()?.module?.grid ?? 455;
+    for (const edge of [0, width]) {
+      const g = Math.round((t0 + edge) / grid) * grid - edge;
+      if (Math.abs(g - t0) < 60) {
+        t0 = g;
+        break;
+      }
+    }
+    t0 = Math.max(lo, Math.min(hi, Math.round(t0)));
+    opDrag.preview = t0;
+    v.setSelection(openingFrame(f, w, t0, t0 + width, op));
+  };
+  const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (!opDrag) return;
+    const d = opDrag;
+    opDrag = null;
+    if (!moved || d.preview == null || Math.abs(d.preview - d.t0Start) < 1) {
+      showOpSel();
+      return;
+    }
+    d.op.t0 = d.preview;
+    d.op.t1 = d.preview + d.width;
+    toast(`${OPENING_LABEL[d.op.kind]}を壁の始点から ${Math.round(d.op.t0).toLocaleString()} mm へ動かしました`, 'ok', 2500);
+    commit();
   };
 
   /** クリックした面の素材から「床」「壁・窓・戸」を見分ける（CAD のように、見ている物をそのまま選ぶため） */
@@ -202,6 +292,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const render = () => {
     clear(panel);
     panel.hidden = !active;
+    if (active && mode === 'opening') showOpSel();
+    else if (active) v.setSelection(null);
     if (!active) return;
     const m = model();
     const modeBtn = (id: typeof mode, label: string) =>
@@ -320,7 +412,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const renderOpening = (m: BuildingModel | null) => {
     const f = m && opSel ? m.floors.find((x) => x.level === opSel!.level) : null;
     const op = f?.openings.find((o) => o.id === opSel!.id);
-    panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
+    panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, opSel ? '橙の枠が選んだ窓・戸。そのまま掴んで壁に沿ってドラッグで動かせます（半間の格子に止まり、隣の窓・戸の手前で止まります）。' : '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
     if (op && f) {
       const wall = f.walls.find((x) => x.id === op.wallId);
       const wallLen = wall ? Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) : 10000;
@@ -408,7 +500,9 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       selected.clear();
       opSel = null;
       opSpot = null;
+      opDrag = null;
       paintOverlay();
+      v.setSelection(null);
     }
     render();
     btn.classList.toggle('on', on);
@@ -442,6 +536,6 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     return false;
   }
 
-  const btn = h('button', { class: 'nav-btn', title: '窓・戸・壁・天井高・シャッター（3D を見ながら、窓や壁・部屋の床をクリックして直す）', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '⌂'), '窓・戸');
-  return { button: btn, setActive, isActive: () => active, pickHere };
+  const btn = h('button', { class: 'nav-btn', title: '窓・戸・壁・天井高・シャッター（3D を見ながら、窓や壁・部屋の床をクリックして直す。選んだ窓・戸はドラッグで動かす）', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '⌂'), '窓・戸');
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
 }

@@ -15301,7 +15301,7 @@ function buildBuilding(model, opts) {
 				...o,
 				...effectiveOpening(o, f.ceilingHeight, spec)
 			})).sort((a, b) => a.t0 - b.t0);
-			pieces.push(...splitAtVoid(f, w0, ops0));
+			pieces.push(...splitAtVoid(f, w0, ops0).flatMap((p) => splitAtBalcony(f, p.w, p.ops)));
 		}
 		for (const { w, ops } of pieces) {
 			buildWall(mb, f, w, ops, fl, top, w.accent ?? (!!ext.accent && (ext.accentRule === "upper" && f.level >= 2 || ext.accentRule === "lower" && f.level === 1 || ext.accentRule === "entrance" && w.exterior && isEntranceColumn(w, entranceRanges))) ? "ext.accent" : "ext.wall", isTop, spec);
@@ -16079,6 +16079,90 @@ function splitAtVoid(f, w, ops) {
 	out.push(sub(t0, t1, true));
 	if (t1 < L - 50) out.push(sub(t1, L, false));
 	return out;
+}
+/**
+* 1 本の壁のうち「バルコニーの縁（両側とも屋外 → 手すり壁 1.1m）」の区間と、室内に面する区間（天井までの外壁）が混ざっているときに分ける。
+* 有元様邸の 3 階: 南の外壁がバルコニー（西）とパントリー（東）にまたがって 1 本で読めていて、壁の中点がバルコニー側だったため
+* 全長が手すり壁になり、パントリーの外壁が無かった（外周の抜け 1.6m）。窓・戸の途中では切らない
+*/
+function splitAtBalcony(f, w, ops) {
+	const whole = [{
+		w,
+		ops
+	}];
+	if (!f.rooms.some((r) => r.type === "balcony")) return whole;
+	const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+	if (L < 600) return whole;
+	const ux = (w.b.x - w.a.x) / L;
+	const uy = (w.b.y - w.a.y) / L;
+	const nx = -uy;
+	const ny = ux;
+	const off = w.thickness / 2 + 80;
+	const parapetAt = (s) => {
+		const p = {
+			x: w.a.x + ux * s,
+			y: w.a.y + uy * s
+		};
+		const rp = roomAt(f, p.x + nx * off, p.y + ny * off);
+		const rm = roomAt(f, p.x - nx * off, p.y - ny * off);
+		const openPlus = w.exterior && w.outsideSign === 1 || !rp || outdoorRoom(rp);
+		const openMinus = w.exterior && w.outsideSign === -1 || !rm || outdoorRoom(rm);
+		return openPlus && openMinus && (rp?.type === "balcony" || rm?.type === "balcony");
+	};
+	const step = 50;
+	const runs = [];
+	for (let s = step / 2; s < L; s += step) {
+		const par = parapetAt(s);
+		const a = s - step / 2;
+		const b = Math.min(L, s + step / 2);
+		const last = runs[runs.length - 1];
+		if (last && last.par === par) last.b = b;
+		else runs.push({
+			a,
+			b,
+			par
+		});
+	}
+	const merged = [];
+	for (const r of runs) {
+		const last = merged[merged.length - 1];
+		if (last && (r.b - r.a < 150 || last.b - last.a < 150)) {
+			if (last.b - last.a < 150 && r.b - r.a >= 150) last.par = r.par;
+			last.b = r.b;
+		} else if (last && last.par === r.par) last.b = r.b;
+		else merged.push({ ...r });
+	}
+	if (merged.length < 2) return whole;
+	for (let i = 1; i < merged.length; i++) {
+		const s = merged[i].a;
+		const o = ops.find((x) => x.t0 < s - 1 && x.t1 > s + 1);
+		if (o) {
+			const to = s - o.t0 < o.t1 - s ? o.t0 : o.t1;
+			merged[i - 1].b = to;
+			merged[i].a = to;
+		}
+	}
+	const sub = (a, b) => ({
+		w: {
+			...w,
+			a: {
+				x: w.a.x + ux * a,
+				y: w.a.y + uy * a
+			},
+			b: {
+				x: w.a.x + ux * b,
+				y: w.a.y + uy * b
+			},
+			joinedA: a > 0 ? true : w.joinedA,
+			joinedB: b < L ? true : w.joinedB
+		},
+		ops: ops.filter((o) => o.t0 >= a - 1 && o.t1 <= b + 1).map((o) => ({
+			...o,
+			t0: o.t0 - a,
+			t1: o.t1 - a
+		}))
+	});
+	return merged.filter((r) => r.b - r.a > 20).map((r) => sub(r.a, r.b));
 }
 function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);

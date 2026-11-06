@@ -1,4 +1,5 @@
 import { h, clear, section, segmented, field, download, svgToDataUrl, svgToPng, toast } from '../dom';
+import { zoomPane } from '../zoomPane';
 import { state } from '../state';
 import { openDesignReview } from '../docs';
 import type { Step, StepCtx } from '../app';
@@ -93,6 +94,8 @@ export const elevationStep: Step = {
     let color = false;
     const view = h('div', { class: 'plan-view' });
     ctx.stage.appendChild(view);
+    // シートは拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）
+    const zp = zoomPane(view);
     const layoutPanel = h('div', null);
     /** 平面図シートの上でパネル（1 階・2 階）をドラッグして動かす。離したら紙の mm に直して保存し、組み直す */
     const enableDrag = (el: HTMLElement, floors: number[]) => {
@@ -101,9 +104,9 @@ export const elevationStep: Step = {
       const denom = Number(svg.dataset.denom || '100');
       const vbw = svg.viewBox.baseVal.width;
       for (const g of svg.querySelectorAll<SVGGElement>('g[data-panel]')) {
-        g.style.cursor = 'move';
         g.addEventListener('pointerdown', (e) => {
-          if (e.button !== 0) return;
+          // 拡大中はドラッグで見る位置を動かす（zoomPane）。配置の直しは全体表示（100%）のときだけ
+          if (e.button !== 0 || e.pointerType !== 'mouse' || view.classList.contains('zp-zoomed')) return;
           e.preventDefault();
           const fi = floors[Number(g.dataset.panel)] ?? Number(g.dataset.panel);
           const m = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(g.getAttribute('transform') ?? '');
@@ -135,10 +138,10 @@ export const elevationStep: Step = {
       }
     };
     const draw = () => {
-      clear(view);
+      clear(zp.content);
       for (const sh of state.sheets) {
         const el = h('div', { class: 'sheet wide', html: sh.svg });
-        view.appendChild(el);
+        zp.content.appendChild(el);
         if (sh.floors) enableDrag(el, sh.floors);
       }
       renderDownloads();

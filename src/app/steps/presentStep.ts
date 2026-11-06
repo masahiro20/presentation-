@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 import { h, clear, toast, progressModal, section, download, setPrintPage } from '../dom';
+import { zoomPane } from '../zoomPane';
 import { woodCheck } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans } from '../../core/planDiff';
@@ -675,6 +676,17 @@ export const presentStep: Step = {
     setPrintPage('A4 landscape');
     const deck = h('div', { class: 'deck view' });
     ctx.stage.appendChild(deck);
+    // ページは拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）。操作のボタンはステージの上に固定（拡大・スクロールで動かない）
+    const zp = zoomPane(deck);
+    ctx.stage.appendChild(
+      h(
+        'div',
+        { class: 'deck-tools' },
+        h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
+        h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
+        h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
+      ),
+    );
     // 解析結果に写しが無いときは、今の周辺建物の扱いで注記する
     const deckOpts = () => ({ disclosure: collectDisclosure(activeSunContext()) });
     // 収録内容（自動作成の後にも数が更新されるよう、資料と一緒に描き直す）
@@ -708,19 +720,9 @@ export const presentStep: Step = {
       );
     };
     const render = () => {
-      clear(deck);
+      clear(zp.content);
       paintContents();
-      const slides = buildDeck(deckOpts());
-      deck.append(
-        h(
-          'div',
-          { class: 'deck-tools' },
-          h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
-          h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
-          h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
-        ),
-        ...slides,
-      );
+      zp.content.append(...buildDeck(deckOpts()));
     };
     render();
     // 読み込み直後の「提案一式をまとめて作る」から来たときは、そのまま自動作成を始める

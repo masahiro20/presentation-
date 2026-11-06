@@ -721,7 +721,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     const rw = Math.max(...xs) - Math.min(...xs);
     const rh = Math.max(...ys) - Math.min(...ys);
     const big = r.area > 4;
-    const fs = Math.max(140, Math.min(big ? 270 : 210, (rw * 0.86) / textEm(name), rh * 0.3));
+    // 室名は紙の上で 2.4〜3.1mm（1/100）。以前の 2.1〜2.7mm は画面で小さすぎた
+    const fs = Math.max(160, Math.min(big ? 310 : 240, (rw * 0.86) / textEm(name), rh * 0.3));
     const tatami = r.labeledTatami ?? r.area / 1.62;
     const halo = `stroke="#fff" stroke-width="${Math.round(fs * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
     if (hl) {
@@ -849,8 +850,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
           const to = { x: m.x + n.x * 190, y: m.y + n.y * 190 };
           const ti = { x: m.x - n.x * 150, y: m.y - n.y * 150 };
           const up = n.y < 0 || (Math.abs(n.y) < 1e-6 && n.x < 0); // 法線が上向き（紙の上側）なら外側の文字は上に
-          s += `<text x="${to.x.toFixed(0)}" y="${to.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 0 : 150}" fill="#222" transform="rotate(${deg.toFixed(1)} ${to.x.toFixed(0)} ${to.y.toFixed(0)})">${esc(lab)}</text>`;
-          s += `<text x="${ti.x.toFixed(0)}" y="${ti.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 150 : 0}" fill="#222" transform="rotate(${deg.toFixed(1)} ${ti.x.toFixed(0)} ${ti.y.toFixed(0)})">${(L / 1000).toFixed(3)}</text>`;
+          s += `<text x="${to.x.toFixed(0)}" y="${to.y.toFixed(0)}" font-size="195" text-anchor="middle" dy="${up ? 0 : 170}" fill="#222" transform="rotate(${deg.toFixed(1)} ${to.x.toFixed(0)} ${to.y.toFixed(0)})">${esc(lab)}</text>`;
+          s += `<text x="${ti.x.toFixed(0)}" y="${ti.y.toFixed(0)}" font-size="195" text-anchor="middle" dy="${up ? 170 : 0}" fill="#222" transform="rotate(${deg.toFixed(1)} ${ti.x.toFixed(0)} ${ti.y.toFixed(0)})">${(L / 1000).toFixed(3)}</text>`;
         }
         for (const p of [e.a, e.b]) {
           ext.minX = Math.min(ext.minX, p.x - 500);

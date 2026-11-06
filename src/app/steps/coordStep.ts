@@ -10,6 +10,7 @@
  * ステージ: 3D（選んだ部位の見える構図へ自動で移動）／決定ボード（大きな画面でお客様と見る）／仕様決定書（印刷）
  */
 import { h, clear, section, fold, toast, modal, download } from '../dom';
+import { zoomPane } from '../zoomPane';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import type { Shot } from '../../scene/shots';
@@ -122,6 +123,8 @@ export const coordStep: Step = {
     const modeBar = h('div', { class: 'view-tools', style: 'pointer-events:auto;z-index:31' });
     const overlay = h('div', { class: 'coord-overlay', style: 'pointer-events:auto' });
     ctx.stage.append(modeBar, overlay);
+    // 決定ボード・仕様決定書は拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）
+    const zp = zoomPane(overlay);
     const renderModeBar = () => {
       clear(modeBar);
       for (const [m, label] of [
@@ -721,10 +724,10 @@ export const coordStep: Step = {
     const renderAll = () => {
       const adv = harmonyCheck(state.design);
       renderModeBar();
-      clear(overlay);
+      clear(zp.content);
       overlay.hidden = stageMode === '3d';
-      if (stageMode === 'board') overlay.appendChild(renderBoard(adv));
-      else if (stageMode === 'doc') overlay.appendChild(renderDoc());
+      if (stageMode === 'board') zp.content.appendChild(renderBoard(adv));
+      else if (stageMode === 'doc') zp.content.appendChild(renderDoc());
       const scroll = side.scrollTop;
       renderSide(adv);
       side.scrollTop = scroll;

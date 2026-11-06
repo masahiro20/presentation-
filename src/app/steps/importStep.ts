@@ -1,4 +1,5 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
+import { zoomPane } from '../zoomPane';
 import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
@@ -833,17 +834,21 @@ function renderResult(ctx: StepCtx) {
   document.body.classList.remove('cover', 'cover-settings');
   const model = state.model!;
   const view = h('div', { class: 'plan-view' });
+  // 図面は拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）。バーはステージに置くので先に付けておく
+  ctx.stage.appendChild(view);
+  const zp = zoomPane(view);
+  const sheets = zp.content;
   // 木造チェックの「図面で見る」で赤表示する項目（state.plans には入れない: 資料・図面出力には載せない）
   let shownIssue: WoodIssue | null = null;
   let plansStale = false;
   const drawPlans = () => {
     plansStale = false;
-    clear(view);
+    clear(sheets);
     // 確認表示は設計図書らしく: 方眼紙の背景（通り芯の格子）に、御社の表記（黒塗りの壁・JIS の建具記号）
     state.plans = model.floors.map((f) => ({ level: f.level, svg: floorPlanSvg(model, f, { paper: 'grid' }) }));
     state.sheets = [];
     if (shownIssue) {
-      view.appendChild(
+      sheets.appendChild(
         h(
           'div',
           { class: 'plan-marks-banner' },
@@ -865,7 +870,7 @@ function renderResult(ctx: StepCtx) {
     for (const f of model.floors) {
       const mk = shownIssue?.marks?.filter((x) => x.level === f.level) ?? [];
       const svg = mk.length ? floorPlanSvg(model, f, { marks: mk, paper: 'grid' }) : state.plans.find((p) => p.level === f.level)!.svg;
-      view.appendChild(h('div', { class: `sheet level-${f.level} ${mk.length ? 'marked' : ''}`, html: svg }));
+      sheets.appendChild(h('div', { class: `sheet level-${f.level} ${mk.length ? 'marked' : ''}`, html: svg }));
     }
   };
   /** 図面で見ている間だけ描き直す（方眼で直している間は、離れるときにまとめて作る） */
@@ -891,7 +896,6 @@ function renderResult(ctx: StepCtx) {
     resultCleanup = null;
   };
   view.hidden = true;
-  ctx.stage.appendChild(view);
   const modeSeg = h('div', { class: 'segmented imp-mode' });
   const setMode = (m: 'edit' | 'sheet') => {
     mode = m;

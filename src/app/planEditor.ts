@@ -1429,6 +1429,9 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
 
   // ---- 操作 ----
   let pan: { x: number; y: number; vb: typeof vb } | null = null;
+  /** タッチパネル: 2 本指のピンチで拡大縮小・移動（1 本指は道具の操作）。指の位置と、前回の指の間隔・中点 */
+  const touches = new Map<number, { x: number; y: number }>();
+  let pinch: { d: number; mid: { x: number; y: number } } | null = null;
   /** 壁の端点のドラッグ: 動かす端と、同じ点につながった他の壁の端、窓・戸の元の位置（絶対座標） */
   let endDrag: { moved: boolean; start: Vec2; ends: { w: Wall; end: 'a' | 'b' }[]; ops: { op: Opening; c0: Vec2; c1: Vec2 }[]; anchor: Vec2 } | null = null;
   /** 窓・戸を壁に沿って動かす（st = 掴んだ時の壁上の位置、ot0 = 元の t0） */
@@ -1475,6 +1478,28 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     draw();
   }, { passive: false });
   svg.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') {
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size >= 2) {
+        // 2 本目の指: ピンチ（拡大縮小・移動）に切り替え、1 本目の指で始まっていた操作は取り消す
+        const [a, b] = [...touches.values()];
+        pinch = { d: Math.hypot(b.x - a.x, b.y - a.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+        pan = null;
+        drag = null;
+        endDrag = null;
+        opDrag = null;
+        stairDrag = null;
+        stairDraw = null;
+        ceilDraw = null;
+        while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
+        try {
+          svg.setPointerCapture(e.pointerId);
+        } catch {
+          /* 合成イベントなど、ポインタが無いとき */
+        }
+        return;
+      }
+    }
     if (e.button === 2 || e.button === 1 || spaceDown) {
       if (e.button === 2 && tool === 'wall' && wallStart) {
         wallStart = null;
@@ -1608,6 +1633,22 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     }
   });
   svg.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch' && touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch) {
+      if (touches.size < 2) return;
+      const [a, b] = [...touches.values()];
+      const d = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      // 指の間が開く → 拡大（中点の下の図面の点を動かさない）。中点の移動ぶんは図面を動かす
+      const pm = toMm({ clientX: mid.x, clientY: mid.y } as MouseEvent);
+      const k = pinch.d / d;
+      const px = mmPerPx();
+      vb = { x: pm.x - (pm.x - vb.x) * k - (mid.x - pinch.mid.x) * px * k, y: pm.y - (pm.y - vb.y) * k - (mid.y - pinch.mid.y) * px * k, w: vb.w * k, h: vb.h * k };
+      pinch = { d, mid };
+      applyVb();
+      draw();
+      return;
+    }
     if (pan) {
       const k = mmPerPx();
       vb = { ...pan.vb, x: pan.vb.x - (e.clientX - pan.x) * k, y: pan.vb.y - (e.clientY - pan.y) * k };
@@ -1847,7 +1888,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       status.textContent = hit ? `${OPENING_LABEL[tool]}を置く` : '壁の上にカーソルを合わせてください';
     } else status.textContent = '';
   });
-  svg.addEventListener('pointerup', () => {
+  svg.addEventListener('pointercancel', (e) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinch = null;
+  });
+  svg.addEventListener('pointerup', (e) => {
+    if (e.pointerType === 'touch') {
+      touches.delete(e.pointerId);
+      if (pinch) {
+        // ピンチの指を離した: 道具の操作としては扱わない
+        if (touches.size < 2) pinch = null;
+        return;
+      }
+    }
     if (opDrag) {
       const d = opDrag;
       opDrag = null;

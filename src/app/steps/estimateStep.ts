@@ -3,6 +3,7 @@
  * 画面の左（ステージ）に御見積書・内訳書・資金計画書の清書、右（パネル）に数量・仕様の選択・資金計画の入力。
  */
 import { h, clear, section, fold, field, segmented, toast, download, setPrintPage } from '../dom';
+import { zoomPane } from '../zoomPane';
 import { state, emit } from '../state';
 import type { Step, StepCtx } from '../app';
 import { exteriorById } from '../../styles/presets';
@@ -629,7 +630,12 @@ export const estimateStep: Step = {
     const es = ensure();
     const view = h('div', { class: 'est-view' });
     ctx.stage.appendChild(view);
-    let which: 'quote' | 'detail' | 'funding' | 'basis' = 'quote';
+    // 書類・根拠シートは拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）
+    const zp = zoomPane(view);
+    const sheets = zp.content;
+    type Which = 'quote' | 'detail' | 'funding' | 'basis';
+    let which: Which = 'quote';
+    let shownWhich: Which | null = null;
     const panel = h('div', null);
     /** 数量の根拠シートを開いて、その項目のシートまで送る */
     const goBasis = (id: BasisSheetId | null) => {
@@ -689,21 +695,26 @@ export const estimateStep: Step = {
     };
     const render = () => {
       const c = compute(es);
-      clear(view);
+      clear(sheets);
+      // 書類の種類を切り替えたときは全体（100%）に戻す（同じ書類の編集中は倍率を保つ）
+      if (shownWhich !== which) {
+        shownWhich = which;
+        zp.reset();
+      }
       setPrintPage(which === 'funding' || which === 'basis' ? 'A3 landscape' : 'A4 portrait');
-      if (which === 'quote') view.appendChild(quoteSheet(c));
+      if (which === 'quote') sheets.appendChild(quoteSheet(c));
       else if (which === 'detail') {
-        for (const s of detailSheets(c, es, render)) view.appendChild(s);
-        paginateDetail(view);
+        for (const s of detailSheets(c, es, render)) sheets.appendChild(s);
+        paginateDetail(sheets);
       } else if (which === 'basis') {
         // 数量の根拠: 図面に色を塗って「なぜこの数量か」を示す A3 シート（床面積・外壁・屋根・内部）
         const notes = suggestOptions(state.model!, c.areas, es.choice).map((sg) => `${sg.label}：${sg.reason}`);
-        const sheets = basisSheets(state.model!, takeoffOpts(es.choice.grade), sheetInfo('数量の根拠'), { overrides: es.areasOverride, notes });
-        view.appendChild(h('div', { class: 'basis-lead' }, h('b', null, '数量の根拠'), '　色を塗った範囲が、その数量として拾った所です。数字を見比べなくても、図面と色で「なぜこの数量か」を確かめられます。上書きした数量は表の右端に出ます。'));
-        for (const sh of sheets) view.appendChild(h('div', { class: 'sheet wide basis', id: `basis-${sh.id}`, html: sh.svg }));
+        const bs = basisSheets(state.model!, takeoffOpts(es.choice.grade), sheetInfo('数量の根拠'), { overrides: es.areasOverride, notes });
+        sheets.appendChild(h('div', { class: 'basis-lead' }, h('b', null, '数量の根拠'), '　色を塗った範囲が、その数量として拾った所です。数字を見比べなくても、図面と色で「なぜこの数量か」を確かめられます。上書きした数量は表の右端に出ます。拡大は Ctrl＋ホイール・ピンチ・右下の ＋。'));
+        for (const sh of bs) sheets.appendChild(h('div', { class: 'sheet wide basis', id: `basis-${sh.id}`, html: sh.svg }));
       } else {
-        view.appendChild(fundingSheet(c));
-        fitFunding(view);
+        sheets.appendChild(fundingSheet(c));
+        fitFunding(sheets);
       }
       renderPanel(c);
       emit('estimate');

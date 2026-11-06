@@ -22006,7 +22006,7 @@ function floorPlanParts(model, f, opts = {}) {
 		const rw = Math.max(...xs) - Math.min(...xs);
 		const rh = Math.max(...ys) - Math.min(...ys);
 		const big = r.area > 4;
-		const fs = Math.max(140, Math.min(big ? 270 : 210, rw * .86 / textEm(name), rh * .3));
+		const fs = Math.max(160, Math.min(big ? 310 : 240, rw * .86 / textEm(name), rh * .3));
 		const tatami = r.labeledTatami ?? r.area / 1.62;
 		const halo = `stroke="#fff" stroke-width="${Math.round(fs * .22)}" stroke-linejoin="round" paint-order="stroke"`;
 		if (hl) {
@@ -22159,8 +22159,8 @@ function floorPlanParts(model, f, opts = {}) {
 						y: m.y - n.y * 150
 					};
 					const up = n.y < 0 || Math.abs(n.y) < 1e-6 && n.x < 0;
-					s += `<text x="${to.x.toFixed(0)}" y="${to.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 0 : 150}" fill="#222" transform="rotate(${deg.toFixed(1)} ${to.x.toFixed(0)} ${to.y.toFixed(0)})">${esc(lab)}</text>`;
-					s += `<text x="${ti.x.toFixed(0)}" y="${ti.y.toFixed(0)}" font-size="170" text-anchor="middle" dy="${up ? 150 : 0}" fill="#222" transform="rotate(${deg.toFixed(1)} ${ti.x.toFixed(0)} ${ti.y.toFixed(0)})">${(L / 1e3).toFixed(3)}</text>`;
+					s += `<text x="${to.x.toFixed(0)}" y="${to.y.toFixed(0)}" font-size="195" text-anchor="middle" dy="${up ? 0 : 170}" fill="#222" transform="rotate(${deg.toFixed(1)} ${to.x.toFixed(0)} ${to.y.toFixed(0)})">${esc(lab)}</text>`;
+					s += `<text x="${ti.x.toFixed(0)}" y="${ti.y.toFixed(0)}" font-size="195" text-anchor="middle" dy="${up ? 170 : 0}" fill="#222" transform="rotate(${deg.toFixed(1)} ${ti.x.toFixed(0)} ${ti.y.toFixed(0)})">${(L / 1e3).toFixed(3)}</text>`;
 				}
 				for (const p of [e.a, e.b]) {
 					ext.minX = Math.min(ext.minX, p.x - 500);

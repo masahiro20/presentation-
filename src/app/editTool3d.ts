@@ -9,7 +9,7 @@ import { h, clear, toast } from './dom';
 import { state } from './state';
 import type { Viewer } from '../scene/viewer';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
-import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type VoidGuard, type Wall } from '../core/types';
+import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type Canopy, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 import { effectiveOpening, resolveSpec } from '../styles/spec';
@@ -48,6 +48,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   /** 窓・戸: 選んだ開口。無い所をクリックしたときは「ここに置く」候補（壁と位置） */
   let opSel: { level: number; id: string } | null = null;
   let opSpot: { level: number; wallId: string; t: number } | null = null;
+  /** 選んだ庇（3D でクリック、または「庇を付ける」で足した直後） */
+  let canopySel: { level: number; id: string } | null = null;
   /** 選んだ窓・戸を掴んで壁に沿って動かしている間の状態 */
   let opDrag: { f: Floor; op: Opening; w: Wall; L: number; width: number; t0Start: number; tPress: number; preview: number | null } | null = null;
   const overlay = new THREE.Group();
@@ -222,7 +224,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       list.push(p);
     }
     fn(p);
-    if (!p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
+    if (!p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
     if (msg) toast(msg, 'ok', 2500);
     commit();
   };
@@ -289,6 +291,76 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     return true;
   };
 
+  // ---- 庇（壁の外面に取り付く薄い屋根） ----
+  /** 庇の 3D の位置（壁の外面から depth 出す板）。当たり判定と橙の枠に使う */
+  const canopyBox = (f: Floor, c: Canopy) => {
+    const w = f.walls.find((x) => x.id === c.wallId);
+    if (!w) return null;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    let sg = w.outsideSign ?? 0;
+    if (!sg) {
+      const mid = { x: w.a.x + ux * ((c.t0 + c.t1) / 2), y: w.a.y + uy * ((c.t0 + c.t1) / 2) };
+      const inside = (s: number) => f.outline.some((l) => pointInPolygon({ x: mid.x - uy * s * (w.thickness / 2 + 350), y: mid.y + ux * s * (w.thickness / 2 + 350) }, l));
+      sg = inside(1) && !inside(-1) ? -1 : 1;
+    }
+    const nx = -uy * sg;
+    const ny = ux * sg;
+    const t = w.thickness / 2;
+    const t0 = Math.max(0, Math.min(c.t0, c.t1));
+    const t1 = Math.min(L, Math.max(c.t0, c.t1));
+    const yb = f.elevation / 1000 + c.bottomMm / 1000;
+    const th = (c.thickness ?? 120) / 1000;
+    const slope = (c.pitch ?? 0.5) / 10;
+    const D = c.depth;
+    const P = (s: number, d: number, y: number) => new THREE.Vector3((w.a.x + ux * s + nx * d) / 1000, y, (w.a.y + uy * s + ny * d) / 1000);
+    return { w, L, ux, uy, nx, ny, t0, t1, yb, th, D, slope, top: [P(t0, t, yb + th), P(t1, t, yb + th), P(t1, t + D, yb + th - (D / 1000) * slope), P(t0, t + D, yb + th - (D / 1000) * slope)] };
+  };
+  const canopyAt = (pt: THREE.Vector3): { f: Floor; c: Canopy } | null => {
+    const m = model();
+    if (!m?.canopies?.length) return null;
+    for (const f of m.floors)
+      for (const c of m.canopies) {
+        if (c.level !== f.level) continue;
+        const b = canopyBox(f, c);
+        if (!b) continue;
+        const px = pt.x * 1000 - b.w.a.x;
+        const py = pt.z * 1000 - b.w.a.y;
+        const s = px * b.ux + py * b.uy;
+        const d = px * b.nx + py * b.ny;
+        const yTip = b.yb - (b.D / 1000) * b.slope;
+        if (s >= b.t0 - 60 && s <= b.t1 + 60 && d >= b.w.thickness / 2 - 80 && d <= b.w.thickness / 2 + b.D + 80 && pt.y >= Math.min(b.yb, yTip) - 0.06 && pt.y <= b.yb + b.th + 0.1) return { f, c };
+      }
+    return null;
+  };
+  const showCanopySel = () => {
+    const m = model();
+    const f = m && canopySel ? m.floors.find((x) => x.level === canopySel!.level) : null;
+    const c = m?.canopies?.find((x) => x.id === canopySel?.id);
+    const b = f && c ? canopyBox(f, c) : null;
+    v.setSelection(b ? b.top.map((p) => p.clone().setY(p.y + 0.02)) : null);
+  };
+  /** 庇を足す（壁の始点からの位置 t0〜t1、床からの下端の高さ、出 mm）→ 選んだ状態に */
+  const addCanopy = (f: Floor, w: Wall, t0: number, t1: number, bottomMm: number, depth: number) => {
+    const m = model();
+    if (!m) return;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const a = Math.max(0, Math.min(t0, t1));
+    const b = Math.min(L, Math.max(t0, t1));
+    if (b - a < 300) {
+      toast('壁が短すぎて庇を付けられません');
+      return;
+    }
+    const c: Canopy = { id: `C${f.level}-${Date.now().toString(36)}`, level: f.level, wallId: w.id, t0: Math.round(a), t1: Math.round(b), bottomMm: Math.round(bottomMm / 10) * 10, depth };
+    (m.canopies ??= []).push(c);
+    canopySel = { level: f.level, id: c.id };
+    opSel = null;
+    opSpot = null;
+    toast(`庇を付けました（幅 ${Math.round(b - a).toLocaleString()}・出 ${depth}）。右で出・高さ・幅を直せます`, 'ok', 3000);
+    commit();
+  };
+
   const onPick = (pt0: THREE.Vector3, ndc?: THREE.Vector2) => {
     if (mode === 'opening' && wallDraw.on) {
       // 壁を足す: 床の点（屋根・家具越しでもその下の床）を半間の格子か壁の端に吸着
@@ -333,6 +405,18 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           toast(hit.group === 'furniture' ? '家具・造作をクリックすると「家具」の道具で直せます' : '置いた物をクリックすると「外構」の道具で直せます', 'info', 2500);
           return;
         }
+        if (mode === 'opening' && hit.matKey === 'ext.canopy') {
+          const cs = canopyAt(hit.point);
+          if (cs) {
+            canopySel = { level: cs.f.level, id: cs.c.id };
+            opSel = null;
+            opSpot = null;
+            showCanopySel();
+            render();
+            toast('庇を選びました（出・高さ・幅・消す）', 'ok', 2000);
+            return;
+          }
+        }
         if ((hit.group === 'roof' || ROOF_KEYS.test(hit.matKey)) && pickHere(hit, ndc)) return;
         if (mode === 'opening' && FLOOR_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
         if (mode === 'ceiling' && WALL_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
@@ -360,6 +444,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       return;
     }
     if (mode === 'opening') {
+      canopySel = null;
       // 窓・戸: クリックした点にいちばん近い壁の、その位置の開口を選ぶ。無ければ「ここに置く」
       let near: { w: Wall; d: number; t: number } | null = null;
       for (const w of f.walls) {
@@ -453,6 +538,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     clear(panel);
     panel.hidden = !active;
     if (active && mode === 'opening' && wallDraw.on) showWallDrawMark();
+    if (active && mode === 'opening' && canopySel) showCanopySel();
     else if (active && mode === 'opening') showOpSel();
     else if (active && mode === 'roof') showRoofSel();
     else if (active) v.setSelection(null);
@@ -658,13 +744,50 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           h('label', { class: 'field' }, h('span', { class: 'field-label' }, '軒の出 (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.eaves; else q.eaves = Number(val); }, val === '' ? '軒の出をおまかせに戻しました' : `軒の出を ${val} mm にしました`); } }, h('option', { value: '', selected: p?.eaves == null }, `おまかせ（${state.design.eaves ?? ext.roof.eaves}）`), ...[0, 150, 300, 450, 600, 750, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.eaves === x }, `${x}`)))),
         ),
       );
+      // 屋根を片側だけ伸ばす: 辺ごとの軒の出（寄棟は 4 辺同じ出でないと隅が合わないので対象外）
+      if (ms.kind !== 'hip') {
+        const sides: RoofHigh[] = ['n', 'e', 's', 'w'];
+        const baseEaves = p?.eaves ?? state.design.eaves ?? ext.roof.eaves;
+        panel.append(
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, '屋根を伸ばす（辺ごとの軒の出 mm）'),
+          h(
+            'div',
+            { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 8px' },
+            ...sides.map((s) =>
+              h(
+                'label',
+                { class: 'field', style: 'margin:0' },
+                h('span', { class: 'field-label' }, sideLabel(s, north)),
+                h(
+                  'select',
+                  {
+                    onchange: (e: Event) => {
+                      const val = (e.target as HTMLSelectElement).value;
+                      patchRoof((q) => {
+                        const by = { ...(q.eavesBy ?? {}) };
+                        if (val === '') delete by[s];
+                        else by[s] = Number(val);
+                        if (Object.keys(by).length) q.eavesBy = by;
+                        else delete q.eavesBy;
+                      }, val === '' ? `${sideLabel(s, north)}の出をほかの辺と同じに戻しました` : `${sideLabel(s, north)}の屋根を ${val} mm 出しました`);
+                    },
+                  },
+                  h('option', { value: '', selected: p?.eavesBy?.[s] == null }, `同じ（${baseEaves}）`),
+                  ...[0, 150, 300, 450, 600, 900, 1200, 1500, 1820, 2730].map((x) => h('option', { value: String(x), selected: p?.eavesBy?.[s] === x }, `${x}`)),
+                ),
+              ),
+            ),
+          ),
+          h('p', { class: 'hint', style: 'margin:2px 0 0' }, '庭側だけ深い軒にする・窓の上に屋根を伸ばすときに。窓 1 か所だけなら「窓・戸」の道具で庇を付けます。'),
+        );
+      }
     } else {
       panel.append(
         h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, 'パラペットの立ち上がり (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.parapet; else q.parapet = Number(val); }, val === '' ? 'パラペットを標準（550）に戻しました' : `パラペットを ${val} mm にしました`); } }, h('option', { value: '', selected: p?.parapet == null }, '標準（550）'), ...[300, 450, 700, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.parapet === x }, `${x}`)))),
       );
     }
     panel.append(
-      h('div', { class: 'btn-row' }, p ? h('button', { class: 'btn sm', onclick: () => patchRoof((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.parapet; }, 'この屋根をおまかせに戻しました') }, 'この塊をおまかせに戻す') : null, h('button', { class: 'btn sm ghost', onclick: () => { roofSel = null; render(); } }, '選ぶのをやめる')),
+      h('div', { class: 'btn-row' }, p ? h('button', { class: 'btn sm', onclick: () => patchRoof((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.eavesBy; delete q.parapet; }, 'この屋根をおまかせに戻しました') }, 'この塊をおまかせに戻す') : null, h('button', { class: 'btn sm ghost', onclick: () => { roofSel = null; render(); } }, '選ぶのをやめる')),
       h('p', { class: 'hint' }, '屋根が抜けて見える・出ないときは、方眼の修正画面で外形（外壁）を直すと屋根も作り直されます。塊の分け方は外形のつながり（上の階が載らない範囲）で決まります。'),
     );
   };
@@ -680,6 +803,36 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         h('p', { class: 'hint' }, '壁の抜け（外から室内が見える所）を塞ぐときに。部屋の区画や平面図は、方眼の修正画面で作り直されます。'),
       );
       return;
+    }
+    if (canopySel && m) {
+      const cf = m.floors.find((x) => x.level === canopySel!.level);
+      const c = m.canopies?.find((x) => x.id === canopySel!.id);
+      const cw = cf?.walls.find((x) => x.id === c?.wallId);
+      if (cf && c && cw) {
+        const L = Math.hypot(cw.b.x - cw.a.x, cw.b.y - cw.a.y);
+        const upd = (fn: () => void) => {
+          fn();
+          const a = Math.max(0, Math.min(c.t0, c.t1));
+          const b = Math.min(L, Math.max(c.t0, c.t1));
+          c.t0 = a;
+          c.t1 = b;
+          commit();
+        };
+        const segN = (items: number[], cur: number, fmt: (x: number) => string, set: (x: number) => void) => h('div', { class: 'segmented' }, ...items.map((x) => h('button', { class: Math.abs(cur - x) < 0.01 ? 'on' : '', onclick: () => upd(() => set(x)) }, fmt(x))));
+        const num = (label: string, get: () => number, set: (v: number) => void, step = 10) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'number', value: Math.round(get()), step, onchange: (e: Event) => upd(() => set(+(e.target as HTMLInputElement).value)) }));
+        panel.append(
+          h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${cf.level}階 庇（幅 ${Math.round(c.t1 - c.t0).toLocaleString()}・出 ${c.depth.toLocaleString()}・下端 FL+${c.bottomMm.toLocaleString()}）`), h('div', { class: 'hint' }, '壁の外面から出る薄い板。先端がわずかに下がります（勾配）。窓の上なら下端は窓の上端＋100 が目安。')),
+          h('div', { class: 'field-label' }, '出 (mm)'),
+          segN([450, 600, 900, 1200, 1500, 1820], c.depth, (x) => x.toLocaleString(), (x) => (c.depth = x)),
+          h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' }, num('下端の高さ FL+ (mm)', () => c.bottomMm, (v) => (c.bottomMm = Math.max(1500, v)), 50), num('幅 (mm)', () => c.t1 - c.t0, (v) => { const mid = (c.t0 + c.t1) / 2; const w2 = Math.max(300, v) / 2; c.t0 = mid - w2; c.t1 = mid + w2; }, 50)),
+          h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' }, num('壁の始点から (mm)', () => c.t0, (v) => { const w0 = c.t1 - c.t0; c.t0 = v; c.t1 = v + w0; }, 50), num('厚み (mm)', () => c.thickness ?? 120, (v) => (c.thickness = Math.max(40, v)), 20)),
+          h('div', { class: 'field-label' }, '勾配（寸）'),
+          segN([0, 0.5, 1, 2, 3], c.pitch ?? 0.5, (x) => `${x}`, (x) => (c.pitch = x)),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => { m.canopies = (m.canopies ?? []).filter((x) => x.id !== c.id); if (!m.canopies.length) delete m.canopies; canopySel = null; v.setSelection(null); toast('庇を消しました', 'ok'); commit(); } }, '消す'), h('button', { class: 'btn sm ghost', onclick: () => { canopySel = null; v.setSelection(null); render(); } }, '選ぶのをやめる')),
+        );
+        return;
+      }
+      canopySel = null;
     }
     panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, opSel ? '橙の枠が選んだ窓・戸。そのまま掴んで壁に沿ってドラッグで動かせます（半間の格子に止まり、隣の窓・戸の手前で止まります）。' : '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
     if (op && f) {
@@ -717,7 +870,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         );
       panel.append(
         h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' }, numField('幅 (mm)', () => op.t1 - op.t0, (v) => setOpeningWidth(op, v, wallLen)), numField('壁の始点から (mm)', () => op.t0, (v) => { const w0 = op.t1 - op.t0; op.t0 = Math.max(20, v); op.t1 = op.t0 + w0; }, 5)),
-        h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => { f.openings = f.openings.filter((o) => o.id !== op.id); opSel = null; commit(); } }, '消す'), h('button', { class: 'btn sm ghost', onclick: () => { opSel = null; render(); } }, '選ぶのをやめる')),
+        h('div', { class: 'btn-row' }, wall && op.kind !== 'open' ? h('button', { class: 'btn sm', title: 'この窓・戸の上に庇を付けます（上端＋100 の高さ、左右 150 ずつ広く）', onclick: () => addCanopy(f, wall, op.t0 - 150, op.t1 + 150, op.sill + op.height + 100, op.kind === 'window' ? 900 : 1200) }, 'この上に庇を付ける') : null, h('button', { class: 'btn sm', onclick: () => { f.openings = f.openings.filter((o) => o.id !== op.id); opSel = null; commit(); } }, '消す'), h('button', { class: 'btn sm ghost', onclick: () => { opSel = null; render(); } }, '選ぶのをやめる')),
       );
       return;
     }
@@ -772,7 +925,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         panel.append(
           h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${fl.level}階 ${w.exterior ? '外壁' : '内壁'}（長さ ${Math.round(L).toLocaleString()}${w.topMm != null ? `・天端 FL+${w.topMm.toLocaleString()}` : ''}）`)),
           h('div', { class: 'field-label' }, 'ここに置く'),
-          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => put('window') }, '窓'), h('button', { class: 'btn sm', onclick: () => put('door') }, w.exterior && fl.level === 1 ? '玄関ドア' : '開き戸'), h('button', { class: 'btn sm', onclick: () => put('sliding') }, '引戸')),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => put('window') }, '窓'), h('button', { class: 'btn sm', onclick: () => put('door') }, w.exterior && fl.level === 1 ? '玄関ドア' : '開き戸'), h('button', { class: 'btn sm', onclick: () => put('sliding') }, '引戸'), w.exterior ? h('button', { class: 'btn sm', title: 'ここに幅 1,820・出 900 の庇を付けます（勝手口や掃き出し窓の上、ウッドデッキの屋根に）', onclick: () => addCanopy(fl, w, opSpot!.t - 910, opSpot!.t + 910, 2200, 900) }, '庇を付ける') : null),
           h('div', { class: 'field-label', style: 'margin-top:8px' }, '壁の高さ（天端）'),
           h('div', { class: 'segmented' }, ...topOpts.map((o) => h('button', { class: curTop === o.v ? 'on' : '', onclick: () => setTop(o.mm) }, o.label))),
           h(

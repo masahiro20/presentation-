@@ -399,8 +399,30 @@ export interface RoofPatch {
   pitch?: number;
   /** 軒の出 (mm) */
   eaves?: number;
+  /** 辺ごとの軒の出 (mm)。屋根を片側だけ伸ばす（北・東・南・西は図面の上・右・下・左）。無い辺は eaves */
+  eavesBy?: Partial<Record<RoofHigh, number>>;
   /** 陸屋根のパラペットの高さ (mm)。省略 550 */
   parapet?: number;
+}
+
+/**
+ * 庇（壁に取り付く薄い屋根。窓・勝手口・掃き出し窓の上や、玄関ポーチの延長）。
+ * 壁の始点からの位置 t0〜t1 (mm) に、床からの高さ bottomMm で、壁の外側へ depth (mm) 出す
+ */
+export interface Canopy {
+  id: string;
+  level: number;
+  wallId: string;
+  t0: number;
+  t1: number;
+  /** 床から庇の下端までの高さ (mm) */
+  bottomMm: number;
+  /** 壁の外面からの出 (mm) */
+  depth: number;
+  /** 厚み (mm)。省略 120 */
+  thickness?: number;
+  /** 勾配（寸）。省略 0.5（先端がわずかに下がる） */
+  pitch?: number;
 }
 
 export interface BuildingModel {
@@ -408,6 +430,8 @@ export interface BuildingModel {
   floors: Floor[];
   /** 屋根の塊ごとの手直し（3D の「屋根」の道具で）。無い塊はおまかせ */
   roofPatches?: RoofPatch[];
+  /** 手で足した庇（3D の「窓・戸」の道具で） */
+  canopies?: Canopy[];
   /** 木造のモジュール（尺 910／メーター 1000）。読み取った壁芯を格子へ寄せた結果 */
   module?: ModuleInfo;
   /** 手で置き直した家具（階ごと）。無い階は自動配置 */

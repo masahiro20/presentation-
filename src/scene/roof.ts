@@ -129,6 +129,8 @@ interface RoofCtx {
   T: number; // 屋根厚
   eaves: number;
   verge: number;
+  /** 辺ごとの軒の出 (m)。屋根を片側だけ伸ばすとき。無い辺は eaves（軒側）／verge（けらば側） */
+  eavesBy?: Partial<Record<RoofHigh, number>>;
   slope: number;
   wallT: number;
   gableKey: string;
@@ -321,10 +323,12 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       const cmask = new Uint8Array(nx * nz);
       for (const c of comp.cells) cmask[c] = 1;
       const eavesMm = patch?.eaves ?? style.roof.eaves;
+      const eavesBy = patch?.eavesBy ? Object.fromEntries(Object.entries(patch.eavesBy).filter(([, v]) => v != null).map(([k, v]) => [k, v! * MM])) : undefined;
       const cctx: RoofCtx = {
         ...ctx,
         eaves: eavesMm * MM,
         verge: (patch?.eaves != null ? Math.min(style.roof.verge, patch.eaves) : style.roof.verge) * MM,
+        eavesBy: eavesBy && Object.keys(eavesBy).length ? eavesBy : undefined,
         slope: (patch?.pitch ?? pitchOverride ?? style.roof.pitch) / 10,
         gableKey: isTop ? ctx.gableKey : 'ext.wall',
         gableKeyAt: isTop ? ctx.gableKeyAt : undefined,
@@ -750,7 +754,8 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
   const { slope, eaves: e, verge: g, T } = ctx;
   const alongX = ridge ? ridge === 'x' : R.maxX - R.minX >= R.maxZ - R.minZ;
   const base = H + 0.04 + T;
-  const o = (s: RoofHigh, v: number) => (attached?.has(s) ? -ctx.wallT / 2 : v);
+  // 辺ごとの出（屋根を片側だけ伸ばす）。上の階に取り付く辺は壁の面で止める
+  const o = (s: RoofHigh, v: number) => (attached?.has(s) ? -ctx.wallT / 2 : (ctx.eavesBy?.[s] ?? v));
   if (alongX) {
     const eN = o('n', e);
     const eS = o('s', e);
@@ -949,10 +954,14 @@ function shedRoofPlane(
   const bLow = edge(sB, w0, sB, w1);
   const bW1 = edge(sA, w1, sB, w1);
   const bHi = edge(sA, w0, sA, w1);
-  const oHi = bHi ? e : 0;
-  const oLow = bLow ? e : 0;
-  const oW0 = bW0 ? g : 0;
-  const oW1 = bW1 ? g : 0;
+  // 辺ごとの出（屋根を片側だけ伸ばす）: 高い側・低い側は軒、横は けらば
+  const lowSide: RoofHigh = high === 'n' ? 's' : high === 's' ? 'n' : high === 'w' ? 'e' : 'w';
+  const w0Side: RoofHigh = alongZ ? 'w' : 'n';
+  const w1Side: RoofHigh = alongZ ? 'e' : 's';
+  const oHi = bHi ? (ctx.eavesBy?.[high] ?? e) : 0;
+  const oLow = bLow ? (ctx.eavesBy?.[lowSide] ?? e) : 0;
+  const oW0 = bW0 ? (ctx.eavesBy?.[w0Side] ?? g) : 0;
+  const oW1 = bW1 ? (ctx.eavesBy?.[w1Side] ?? g) : 0;
   const s0 = sA - oHi;
   const s1 = sB + oLow;
   const top = [W(s0, w0 - oW0, yTop(s0)), W(s1, w0 - oW0, yTop(s1)), W(s1, w1 + oW1, yTop(s1)), W(s0, w1 + oW1, yTop(s0))];

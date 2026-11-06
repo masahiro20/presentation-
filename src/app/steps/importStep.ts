@@ -14,6 +14,7 @@ import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site'
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { GRADE_LABEL, readingScore } from '../../parser/readingScore';
+import { ENTRANCE_VIA_LABEL, entranceDoorOf } from '../../core/entrance';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
 import { estimateSummary } from './estimateStep';
@@ -1239,13 +1240,14 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     action: thin.length ? { label: '方眼で確認', fn: () => openLevel(thin[0].level) } : undefined,
   });
   // 玄関
-  const entF = floors.find((f) => f.openings.some((o) => o.kind === 'entrance'));
+  const entHit = floors.map((f) => ({ f, e: entranceDoorOf(f) })).find((x) => x.e);
   const entRoom = floors.flatMap((f) => f.rooms).find((r) => r.type === 'entrance');
+  const noGround = floors.length > 0 && !floors.some((f) => f.level === 1);
   rows.push({
-    ok: !!entF,
+    ok: entHit ? true : noGround ? null : false,
     label: '玄関',
-    detail: entF ? `${entF.level}階に玄関ドア${entRoom ? `（${entRoom.name}）` : ''}` : entRoom ? `「${entRoom.name}」はありますが玄関ドアが読めていません` : '玄関が見つかりません',
-    action: entF ? undefined : { label: '方眼で玄関を置く', fn: openEditor },
+    detail: entHit ? `${entHit.f.level}階に${ENTRANCE_VIA_LABEL[entHit.e!.via]}${entRoom ? `（${entRoom.name}）` : ''}` : noGround ? '1 階の図面が無いので玄関は確認できません' : entRoom ? `「${entRoom.name}」はありますが玄関ドアが読めていません` : '玄関が見つかりません',
+    action: entHit || noGround ? undefined : { label: '方眼で玄関を置く', fn: openEditor },
   });
   // 方位
   const nd = model.report.northDetected;

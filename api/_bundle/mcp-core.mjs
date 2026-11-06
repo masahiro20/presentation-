@@ -2042,10 +2042,33 @@ function ensureOpenings(walls, openings, rooms, level) {
 		if (e.type !== "entrance") continue;
 		const mine = segsOf(e);
 		if (mine.some((s) => openings.some((o) => o.wallId === s.wall.id && o.kind === "entrance" && o.t1 > s.t0 && o.t0 < s.t1))) continue;
-		const cand = mine.map((s) => ({
+		const existing = mine.map((s) => ({
+			s,
+			o: other(s, e),
+			door: openings.find((op) => op.wallId === s.wall.id && (op.kind === "door" || op.kind === "sliding") && op.t1 > s.t0 + 50 && op.t0 < s.t1 - 50)
+		})).find(({ o, door }) => !!door && (!o || o.type === "porch" || o.type === "carport" || o.type === "garage" && (!o.garageKind || o.garageKind === "builtin")));
+		if (existing) {
+			const { o, door } = existing;
+			if (door.kind === "door" && (!o || o.type === "porch" || o.type === "carport")) {
+				door.kind = "entrance";
+				door.height = Math.max(door.height, 2200);
+			}
+			continue;
+		}
+		const outer = mine.map((s) => ({
 			s,
 			o: other(s, e)
-		})).filter(({ o }) => !o || o.type === "porch").map(({ s, o }) => ({
+		})).filter(({ o }) => !o || o.type === "porch" || o.type === "carport");
+		const misread = outer.flatMap(({ s }) => openings.filter((op) => op.wallId === s.wall.id && op.kind === "window" && op.t1 - op.t0 >= 700 && op.t1 > s.t0 + 50 && op.t0 < s.t1 - 50)).sort((a, b) => b.t1 - b.t0 - (a.t1 - a.t0))[0];
+		if (misread) {
+			misread.kind = "entrance";
+			misread.sill = 0;
+			misread.height = Math.max(2200, misread.height);
+			delete misread.windowStyle;
+			notes.push(`${level}階 ${e.name}: 外に面した窓（幅 ${Math.round(misread.t1 - misread.t0).toLocaleString()}）を玄関ドアとして扱いました（違えば方眼で直せます）`);
+			continue;
+		}
+		const cand = outer.filter(({ o }) => !o || o.type === "porch").map(({ s, o }) => ({
 			s,
 			score: (o?.type === "porch" ? 1e4 : 0) + (freeSpans(s, openings)[0]?.t1 ?? 0) - (freeSpans(s, openings)[0]?.t0 ?? 0)
 		})).sort((a, b) => b.score - a.score);
@@ -15541,6 +15564,7 @@ function buildBuilding(model, opts) {
 			for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec, upperOutlinesOf(model, f));
 		}
 		buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
+		buildCanopies(mb, model, f, fl);
 		for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
 			const w = j.w;
 			const outdoorAt = (x, y) => {
@@ -16396,6 +16420,86 @@ function splitAtBalcony(f, w, ops) {
 		}))
 	});
 	return merged.filter((r) => r.b - r.a > 20).map((r) => sub(r.a, r.b));
+}
+/**
+* 手で足した庇（model.canopies）: 壁の外面に取り付く薄い板。先端がわずかに下がる（既定 0.5 寸）。
+* 黒い薄い板（鼻隠しと同じ色）に、壁との取り付きの水切り
+*/
+function buildCanopies(mb, model, f, fl) {
+	for (const c of model.canopies ?? []) {
+		if (c.level !== f.level) continue;
+		const w = f.walls.find((x) => x.id === c.wallId);
+		if (!w) continue;
+		const A = V(w.a.x * MM, 0, w.a.y * MM);
+		const B = V(w.b.x * MM, 0, w.b.y * MM);
+		const L = A.distanceTo(B);
+		if (L < .05) continue;
+		const dir = B.clone().sub(A).normalize();
+		const nW = V(-dir.z, 0, dir.x);
+		const t = w.thickness * MM;
+		const t0 = Math.max(0, Math.min(c.t0, c.t1) * MM);
+		const t1 = Math.min(L, Math.max(c.t0, c.t1) * MM);
+		if (t1 - t0 < .2) continue;
+		const mid = A.clone().addScaledVector(dir, (t0 + t1) / 2);
+		let sg = w.outsideSign ?? 0;
+		if (!sg) {
+			const inside = (s) => {
+				const q = mid.clone().addScaledVector(nW, s * (t / 2 + .35));
+				return f.outline.length ? f.outline.some((l) => pointInPolygon({
+					x: q.x / MM,
+					y: q.z / MM
+				}, l)) : !!roomAt(f, q.x / MM, q.z / MM);
+			};
+			sg = inside(1) && !inside(-1) ? -1 : 1;
+		}
+		const out = nW.clone().multiplyScalar(sg);
+		const depth = Math.max(.3, c.depth * MM);
+		const thick = (c.thickness ?? 120) * MM;
+		const slope = (c.pitch ?? .5) / 10;
+		const yWall = fl + c.bottomMm * MM;
+		const yTip = yWall - depth * slope;
+		const half = dir.clone().multiplyScalar((t1 - t0) / 2);
+		const back = mid.clone().addScaledVector(out, t / 2 - .02);
+		const front = back.clone().addScaledVector(out, depth);
+		const b0 = back.clone().sub(half).setY(yWall);
+		const b1 = back.clone().add(half).setY(yWall);
+		const f0 = front.clone().sub(half).setY(yTip);
+		const f1 = front.clone().add(half).setY(yTip);
+		const up = V(0, thick, 0);
+		const key = "ext.canopy";
+		const tilt = V(out.x * slope, 1, out.z * slope).normalize();
+		mb.polygon(key, [
+			b0,
+			b1,
+			f1,
+			f0
+		], tilt.clone().negate());
+		mb.polygon(key, [
+			b0.clone().add(up),
+			b1.clone().add(up),
+			f1.clone().add(up),
+			f0.clone().add(up)
+		], tilt);
+		mb.polygon(key, [
+			f0,
+			f1,
+			f1.clone().add(up),
+			f0.clone().add(up)
+		], out);
+		mb.polygon(key, [
+			b0,
+			f0,
+			f0.clone().add(up),
+			b0.clone().add(up)
+		], dir.clone().negate());
+		mb.polygon(key, [
+			b1,
+			f1,
+			f1.clone().add(up),
+			b1.clone().add(up)
+		], dir);
+		mb.box("ext.frame", mid.clone().addScaledVector(out, t / 2 + .01).setY(yWall + thick), dir, t1 - t0 + .04, .03, .06);
+	}
 }
 function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);
@@ -21971,6 +22075,44 @@ function floorPlanParts(model, f, opts = {}) {
 			s += `<polygon points="${pts}" fill="none" stroke="#333" stroke-width="${hl ? 7 : 9}" stroke-dasharray="150 90"/>`;
 			const cc = polygonCentroid(v.polygon);
 			s += `<text x="${cc.x.toFixed(0)}" y="${(cc.y + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${haloS}>上部吹抜</text>`;
+		}
+		for (const c of model.canopies ?? []) {
+			if (c.level !== f.level) continue;
+			const w = f.walls.find((x) => x.id === c.wallId);
+			if (!w) continue;
+			const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+			const ux = (w.b.x - w.a.x) / L;
+			const uy = (w.b.y - w.a.y) / L;
+			let sg = w.outsideSign ?? 0;
+			if (!sg) {
+				const mid = {
+					x: w.a.x + ux * ((c.t0 + c.t1) / 2),
+					y: w.a.y + uy * ((c.t0 + c.t1) / 2)
+				};
+				const inside = (k) => f.outline.some((l) => pointInPolygon({
+					x: mid.x - uy * k * (w.thickness / 2 + 350),
+					y: mid.y + ux * k * (w.thickness / 2 + 350)
+				}, l));
+				sg = inside(1) && !inside(-1) ? -1 : 1;
+			}
+			const nx = -uy * sg;
+			const ny = ux * sg;
+			const t0 = Math.max(0, Math.min(c.t0, c.t1));
+			const t1 = Math.min(L, Math.max(c.t0, c.t1));
+			const d0 = w.thickness / 2;
+			const d1 = d0 + c.depth;
+			const P = (t, d) => `${(w.a.x + ux * t + nx * d).toFixed(0)},${(w.a.y + uy * t + ny * d).toFixed(0)}`;
+			s += `<polygon points="${[
+				P(t0, d0),
+				P(t1, d0),
+				P(t1, d1),
+				P(t0, d1)
+			].join(" ")}" fill="none" stroke="#555" stroke-width="${hl ? 6 : 8}" stroke-dasharray="120 70"/>`;
+			if (t1 - t0 >= 900 && c.depth >= 600) {
+				const cx = w.a.x + ux * ((t0 + t1) / 2) + nx * ((d0 + d1) / 2);
+				const cy = w.a.y + uy * ((t0 + t1) / 2) + ny * ((d0 + d1) / 2);
+				s += `<text x="${cx.toFixed(0)}" y="${(cy + 50).toFixed(0)}" font-size="140" text-anchor="middle" fill="#555" ${haloS}>庇</text>`;
+			}
 		}
 		for (const r of f.rooms) {
 			if (!r.floorOffset) continue;

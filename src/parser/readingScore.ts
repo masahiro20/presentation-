@@ -5,6 +5,7 @@
  */
 import { excludedFromFloorArea, type BuildingModel, type Floor, type Room } from '../core/types';
 import { woodCheck, type WoodIssue } from './woodCheck';
+import { entranceDoorOf } from '../core/entrance';
 
 export interface ScorePart {
   id: 'tatami' | 'areaTable' | 'floors' | 'openings' | 'walls' | 'rooms';
@@ -150,7 +151,8 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     const nodoor = issues.filter((i) => /^nodoor-/.test(i.id));
     const nowin = issues.filter((i) => /^nowin-/.test(i.id));
     const living = rooms.filter(isLivingRoom);
-    const hasEntrance = floors.some((f) => f.openings.some((o) => o.kind === 'entrance'));
+    // 1 階が無い読み取り（2 階だけの図面）は玄関ドアを問わない
+    const hasEntrance = floors.some((f) => !!entranceDoorOf(f)) || !floors.some((f) => f.level === 1);
     const doorPt = !readable ? 0 : 10 * Math.max(0, 1 - (nodoor.length * 1.5) / rooms.length);
     const winPt = !readable ? 0 : living.length ? 7 * Math.max(0, 1 - (nowin.length * 1.5) / living.length) : 7;
     const entPt = hasEntrance ? 3 : 0;

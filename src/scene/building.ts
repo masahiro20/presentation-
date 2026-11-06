@@ -522,6 +522,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
     }
     // 吹抜の縁（壁の無い所）の落下防止
     buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
+    // 手で足した庇
+    buildCanopies(mb, model, f, fl);
     // 斜めの壁の継ぎ目（外側の角のくさび状の隙間）を丸柱で埋める
     for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
       const w = j.w;
@@ -1291,6 +1293,61 @@ export function splitAtBalcony(f: Floor, w: Wall, ops: Opening[]): { w: Wall; op
     ops: ops.filter((o) => o.t0 >= a - 1 && o.t1 <= b + 1).map((o) => ({ ...o, t0: o.t0 - a, t1: o.t1 - a })),
   });
   return merged.filter((r) => r.b - r.a > 20).map((r) => sub(r.a, r.b));
+}
+
+/**
+ * 手で足した庇（model.canopies）: 壁の外面に取り付く薄い板。先端がわずかに下がる（既定 0.5 寸）。
+ * 黒い薄い板（鼻隠しと同じ色）に、壁との取り付きの水切り
+ */
+function buildCanopies(mb: MeshBuilder, model: BuildingModel, f: Floor, fl: number) {
+  for (const c of model.canopies ?? []) {
+    if (c.level !== f.level) continue;
+    const w = f.walls.find((x) => x.id === c.wallId);
+    if (!w) continue;
+    const A = V(w.a.x * MM, 0, w.a.y * MM);
+    const B = V(w.b.x * MM, 0, w.b.y * MM);
+    const L = A.distanceTo(B);
+    if (L < 0.05) continue;
+    const dir = B.clone().sub(A).normalize();
+    const nW = V(-dir.z, 0, dir.x);
+    const t = w.thickness * MM;
+    const t0 = Math.max(0, Math.min(c.t0, c.t1) * MM);
+    const t1 = Math.min(L, Math.max(c.t0, c.t1) * MM);
+    if (t1 - t0 < 0.2) continue;
+    const mid = A.clone().addScaledVector(dir, (t0 + t1) / 2);
+    // 外向き: 壁の外向きの印、無ければ外形の内外（外形が無ければ部屋の無い側）
+    let sg = w.outsideSign ?? 0;
+    if (!sg) {
+      const inside = (s: number) => {
+        const q = mid.clone().addScaledVector(nW, s * (t / 2 + 0.35));
+        return f.outline.length ? f.outline.some((l) => pointInPolygon({ x: q.x / MM, y: q.z / MM }, l)) : !!roomAt(f, q.x / MM, q.z / MM);
+      };
+      sg = inside(1) && !inside(-1) ? -1 : 1;
+    }
+    const out = nW.clone().multiplyScalar(sg);
+    const depth = Math.max(0.3, c.depth * MM);
+    const thick = (c.thickness ?? 120) * MM;
+    const slope = (c.pitch ?? 0.5) / 10;
+    const yWall = fl + c.bottomMm * MM;
+    const yTip = yWall - depth * slope;
+    const half = dir.clone().multiplyScalar((t1 - t0) / 2);
+    const back = mid.clone().addScaledVector(out, t / 2 - 0.02);
+    const front = back.clone().addScaledVector(out, depth);
+    const b0 = back.clone().sub(half).setY(yWall);
+    const b1 = back.clone().add(half).setY(yWall);
+    const f0 = front.clone().sub(half).setY(yTip);
+    const f1 = front.clone().add(half).setY(yTip);
+    const up = V(0, thick, 0);
+    const key = 'ext.canopy';
+    const tilt = V(out.x * slope, 1, out.z * slope).normalize();
+    mb.polygon(key, [b0, b1, f1, f0], tilt.clone().negate()); // 下面（軒天）
+    mb.polygon(key, [b0.clone().add(up), b1.clone().add(up), f1.clone().add(up), f0.clone().add(up)], tilt); // 上面
+    mb.polygon(key, [f0, f1, f1.clone().add(up), f0.clone().add(up)], out); // 先端
+    mb.polygon(key, [b0, f0, f0.clone().add(up), b0.clone().add(up)], dir.clone().negate()); // 脇
+    mb.polygon(key, [b1, f1, f1.clone().add(up), b1.clone().add(up)], dir); // 脇
+    // 壁との取り付き（水切り）
+    mb.box('ext.frame', mid.clone().addScaledVector(out, t / 2 + 0.01).setY(yWall + thick), dir, t1 - t0 + 0.04, 0.03, 0.06);
+  }
 }
 
 function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean, spec: BuilderSpec) {

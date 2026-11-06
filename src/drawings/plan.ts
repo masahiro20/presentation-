@@ -445,6 +445,34 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         const cc = polygonCentroid(v.polygon);
         s += `<text x="${cc.x.toFixed(0)}" y="${(cc.y + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${haloS}>上部吹抜</text>`;
       }
+    // 手で足した庇: 壁の外面から出る範囲を破線で（平面図の庇の表記）
+    for (const c of model.canopies ?? []) {
+      if (c.level !== f.level) continue;
+      const w = f.walls.find((x) => x.id === c.wallId);
+      if (!w) continue;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      let sg = w.outsideSign ?? 0;
+      if (!sg) {
+        const mid = { x: w.a.x + ux * ((c.t0 + c.t1) / 2), y: w.a.y + uy * ((c.t0 + c.t1) / 2) };
+        const inside = (k: number) => f.outline.some((l) => pointInPolygon({ x: mid.x - uy * k * (w.thickness / 2 + 350), y: mid.y + ux * k * (w.thickness / 2 + 350) }, l));
+        sg = inside(1) && !inside(-1) ? -1 : 1;
+      }
+      const nx = -uy * sg;
+      const ny = ux * sg;
+      const t0 = Math.max(0, Math.min(c.t0, c.t1));
+      const t1 = Math.min(L, Math.max(c.t0, c.t1));
+      const d0 = w.thickness / 2;
+      const d1 = d0 + c.depth;
+      const P = (t: number, d: number) => `${(w.a.x + ux * t + nx * d).toFixed(0)},${(w.a.y + uy * t + ny * d).toFixed(0)}`;
+      s += `<polygon points="${[P(t0, d0), P(t1, d0), P(t1, d1), P(t0, d1)].join(' ')}" fill="none" stroke="#555" stroke-width="${hl ? 6 : 8}" stroke-dasharray="120 70"/>`;
+      if (t1 - t0 >= 900 && c.depth >= 600) {
+        const cx = w.a.x + ux * ((t0 + t1) / 2) + nx * ((d0 + d1) / 2);
+        const cy = w.a.y + uy * ((t0 + t1) / 2) + ny * ((d0 + d1) / 2);
+        s += `<text x="${cx.toFixed(0)}" y="${(cy + 50).toFixed(0)}" font-size="140" text-anchor="middle" fill="#555" ${haloS}>庇</text>`;
+      }
+    }
     // 床の段差の線（小上がり・ダウンリビングの框）: 床の高さが違う部屋どうしの境。壁がある所は壁の線が上に描かれる
     for (const r of f.rooms) {
       if (!r.floorOffset) continue;

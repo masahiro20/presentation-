@@ -159,9 +159,34 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
       if (e.type !== 'entrance') continue;
       const mine = segsOf(e);
       if (mine.some((s) => openings.some((o) => o.wallId === s.wall.id && o.kind === 'entrance' && o.t1 > s.t0 && o.t0 < s.t1))) continue;
+      // 外・ポーチ・ビルトインガレージに面した区間に戸（開き戸・引戸）が読めていれば、それが玄関の戸。
+      // 外・ポーチに面した開き戸は玄関ドアに（引戸の玄関はそのまま。ガレージから入る玄関はガレージとの戸が出入口）
+      const existing = mine
+        .map((s) => ({ s, o: other(s, e), door: openings.find((op) => op.wallId === s.wall.id && (op.kind === 'door' || op.kind === 'sliding') && op.t1 > s.t0 + 50 && op.t0 < s.t1 - 50) }))
+        .find(({ o, door }) => !!door && (!o || o.type === 'porch' || o.type === 'carport' || (o.type === 'garage' && (!o.garageKind || o.garageKind === 'builtin'))));
+      if (existing) {
+        const { o, door } = existing;
+        if (door!.kind === 'door' && (!o || o.type === 'porch' || o.type === 'carport')) {
+          door!.kind = 'entrance';
+          door!.height = Math.max(door!.height, 2200);
+        }
+        continue;
+      }
+      // 外に面した区間に幅 700 以上の「窓」だけがある玄関: 玄関ドア（袖付き・親子）の記号を窓と読んだものなので玄関ドアにする（伊藤様邸）
+      const outer = mine.map((s) => ({ s, o: other(s, e) })).filter(({ o }) => !o || o.type === 'porch' || o.type === 'carport');
+      const misread = outer
+        .flatMap(({ s }) => openings.filter((op) => op.wallId === s.wall.id && op.kind === 'window' && op.t1 - op.t0 >= 700 && op.t1 > s.t0 + 50 && op.t0 < s.t1 - 50))
+        .sort((a, b) => b.t1 - b.t0 - (a.t1 - a.t0))[0];
+      if (misread) {
+        misread.kind = 'entrance';
+        misread.sill = 0;
+        misread.height = Math.max(2200, misread.height);
+        delete misread.windowStyle;
+        notes.push(`${level}階 ${e.name}: 外に面した窓（幅 ${Math.round(misread.t1 - misread.t0).toLocaleString()}）を玄関ドアとして扱いました（違えば方眼で直せます）`);
+        continue;
+      }
       // ポーチに接する区間 → 外に面した区間。窓のある区間は避け、長い順
-      const cand = mine
-        .map((s) => ({ s, o: other(s, e) }))
+      const cand = outer
         .filter(({ o }) => !o || o.type === 'porch')
         .map(({ s, o }) => ({ s, score: (o?.type === 'porch' ? 10000 : 0) + (freeSpans(s, openings)[0]?.t1 ?? 0) - (freeSpans(s, openings)[0]?.t0 ?? 0) }))
         .sort((a, b) => b.score - a.score);

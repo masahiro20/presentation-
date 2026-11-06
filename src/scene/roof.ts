@@ -31,6 +31,8 @@ export interface RoofMass {
   high: RoofHigh;
   /** 下屋が上の階に接している辺 */
   attached: RoofHigh[];
+  /** 手で足した屋根（RoofPatch.rect） */
+  manual?: boolean;
 }
 
 /**
@@ -82,7 +84,7 @@ function cellIndex(axis: number[], v: number): number {
 function patchFor(patches: RoofPatch[] | undefined, level: number, comp: { cells: Set<number> }, xs: number[], zs: number[], nx: number): RoofPatch | undefined {
   if (!patches) return undefined;
   for (const p of patches) {
-    if (p.level !== level) continue;
+    if (p.level !== level || p.rect) continue; // 足した屋根（rect）は塊の手直しではない
     const i = cellIndex(xs, p.at.x);
     const j = cellIndex(zs, p.at.y);
     if (i >= 0 && j >= 0 && comp.cells.has(j * nx + i)) return p;
@@ -376,6 +378,60 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       }
     }
   }
+  // 手で足した屋根（RoofPatch.rect）: 外形とは別に、その四角形に掛ける（屋根の抜け・ポーチ・カーポート・物置など）。
+  // 4 辺とも外周（妻壁・パラペットが立つ）。既定は下屋と同じ緩い片流れ（全体が陸屋根なら陸屋根）
+  for (const p of model.roofPatches ?? []) {
+    if (!p.rect) continue;
+    const r = p.rect;
+    if (r.maxX - r.minX < 300 || r.maxY - r.minY < 300) continue;
+    const f = floors.find((x) => x.level === p.level) ?? floors[0];
+    const H = p.topMm != null ? (f.elevation + p.topMm) * MM : wallTopOf(model, f) * MM;
+    const kind: RoofKind = p.kind ?? (type === 'flat' ? 'flat' : 'shed');
+    const eavesMm = p.eaves ?? style.roof.eaves;
+    const eavesBy = p.eavesBy ? Object.fromEntries(Object.entries(p.eavesBy).filter(([, v]) => v != null).map(([k, v]) => [k, v! * MM])) : undefined;
+    const cctx: RoofCtx = {
+      mb,
+      T: 0.16,
+      eaves: eavesMm * MM,
+      verge: (p.eaves != null ? Math.min(style.roof.verge, p.eaves) : style.roof.verge) * MM,
+      eavesBy: eavesBy && Object.keys(eavesBy).length ? eavesBy : undefined,
+      slope: (p.pitch ?? pitchOverride ?? style.roof.pitch) / 10,
+      wallT: extT,
+      gableKey: 'ext.wall',
+      gutter: style.roof.gutter,
+      onBoundary: () => true,
+      boundaryParts: () => [[0, 1]],
+      clips: [],
+      wallTopY: H,
+    };
+    const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+    // 建物の外形の外に出た角には柱を立てる（ポーチ・カーポートの屋根が浮かないように。外形の中の角は壁の上）
+    const polys = roofLoops(f);
+    const cx = (r.minX + r.maxX) / 2;
+    const cy = (r.minY + r.maxY) / 2;
+    for (const c of [{ x: r.minX, y: r.minY }, { x: r.maxX, y: r.minY }, { x: r.maxX, y: r.maxY }, { x: r.minX, y: r.maxY }]) {
+      const inward = { x: c.x + Math.sign(cx - c.x) * 120, y: c.y + Math.sign(cy - c.y) * 120 };
+      if (polys.length && insideLoops(inward, polys)) continue;
+      const px = inward.x * MM;
+      const pz = inward.y * MM;
+      mb.aabb('ext.frame', V(px - 0.05, f.elevation * MM - 0.1, pz - 0.05), V(px + 0.05, H + 0.02, pz + 0.05));
+    }
+    if (kind === 'flat') {
+      const para = (p.parapet ?? 550) * MM;
+      flatRoofMask(cctx, [r.minX, r.maxX], [r.minY, r.maxY], new Uint8Array([1]), new Uint8Array([0]), H, para);
+      info.maxY = Math.max(info.maxY, H + para);
+      info.eaveY = Math.max(info.eaveY, H + para);
+    } else if (kind === 'shed') {
+      const high = p.high ?? preferredHigh(R, north);
+      const slope = p.pitch != null ? p.pitch / 10 : Math.min(cctx.slope, 0.1);
+      info.maxY = Math.max(info.maxY, shedRoofPlane({ ...cctx, slope }, R, H, high, R));
+      info.eaveY = Math.max(info.eaveY, H);
+    } else {
+      const y = kind === 'gable' ? gableRoof(cctx, R, H, p.ridge, new Set()) : hipRoof(cctx, R, H, p.ridge);
+      info.maxY = Math.max(info.maxY, y);
+      info.eaveY = Math.max(info.eaveY, H);
+    }
+  }
   return { mb, info };
 }
 
@@ -404,13 +460,22 @@ export function roofMasses(model: BuildingModel, style: ExteriorStyle, typeOverr
       out.push({ level: f.level, isTop, rects: comp.rects, bbox: comp.bbox, center, patch, kind, high, attached: isTop ? [] : touchingSides(comp, nx, nz, maskUpper) });
     }
   }
+  // 手で足した屋根
+  for (const p of model.roofPatches ?? []) {
+    if (!p.rect) continue;
+    const r = { ...p.rect };
+    const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+    const kind: RoofKind = p.kind ?? (type === 'flat' ? 'flat' : 'shed');
+    out.push({ level: p.level, isTop: false, rects: [r], bbox: r, center: { x: (r.minX + r.maxX) / 2, y: (r.minY + r.maxY) / 2 }, patch: p, kind, high: p.high ?? preferredHigh(R, north), attached: [], manual: true });
+  }
   return out;
 }
 
 /** 点（図面座標 mm）の下にある屋根の塊。軒の出のぶん外側（marginMm）まで当たりにする。上の階の屋根を優先 */
 export function roofMassAt(masses: RoofMass[], p: Vec2, marginMm = 700): RoofMass | null {
   const inRect = (r: Rect, m: number) => p.x >= r.minX - m && p.x <= r.maxX + m && p.y >= r.minY - m && p.y <= r.maxY + m;
-  const sorted = masses.slice().sort((a, b) => b.level - a.level);
+  // 上の階を優先。同じ階では足した屋根（自動の塊の上に重ねて足したもの）を優先
+  const sorted = masses.slice().sort((a, b) => b.level - a.level || (b.manual ? 1 : 0) - (a.manual ? 1 : 0));
   for (const m of [0, marginMm]) for (const ms of sorted) if (ms.rects.some((r) => inRect(r, m))) return ms;
   return null;
 }

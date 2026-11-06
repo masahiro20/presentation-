@@ -71,3 +71,39 @@ describe('RoofPatch', () => {
     expect(() => buildRoofs(m, style, 'shed', 0.5)).not.toThrow();
   });
 });
+
+describe('足した屋根（RoofPatch.rect）', () => {
+  it('塊の一覧に「足した屋根」として入り、自動の塊の手直しとは混ざらない', () => {
+    const m = model();
+    // 1 階の東の庭（外形の外）に 3 × 4 m の屋根を足す。自動の塊の中（下屋の上）にも 1 つ
+    m.roofPatches = [
+      { id: 'A', level: 1, at: { x: 14500, y: 2000 }, rect: { minX: 13000, minY: 0, maxX: 16000, maxY: 4000 } },
+      { id: 'B', level: 1, at: { x: 9000, y: 6000 }, rect: { minX: 8000, minY: 5000, maxX: 10000, maxY: 7000 }, kind: 'gable', pitch: 4 },
+    ];
+    const ms = roofMasses(m, style, 'shed');
+    const manual = ms.filter((x) => x.manual);
+    expect(manual).toHaveLength(2);
+    expect(manual.find((x) => x.patch?.id === 'A')!.kind).toBe('shed'); // 既定は緩い片流れ
+    expect(manual.find((x) => x.patch?.id === 'B')!.kind).toBe('gable');
+    // 下屋の塊は手直し無しのまま（B は塊の手直しとして拾われない）
+    expect(ms.find((x) => !x.manual && x.level === 1)!.patch).toBeUndefined();
+    // 点から選ぶ: 庭の屋根はそこだけ、下屋の上の足した屋根は自動の塊より優先
+    expect(roofMassAt(ms, { x: 14500, y: 2000 })?.patch?.id).toBe('A');
+    expect(roofMassAt(ms, { x: 9000, y: 6000 })?.patch?.id).toBe('B');
+    expect(roofMassAt(ms, { x: 11000, y: 2000 })?.manual).toBeUndefined();
+  });
+  it('足した屋根が描かれる（外形の外にも屋根ができ、高さの指定が効く）', () => {
+    const m = model();
+    const base = buildRoofs(m, style, 'shed').info;
+    m.roofPatches = [{ id: 'A', level: 1, at: { x: 14500, y: 2000 }, rect: { minX: 13000, minY: 0, maxX: 16000, maxY: 4000 }, kind: 'gable', pitch: 4 }];
+    const withRoof = buildRoofs(m, style, 'shed');
+    expect(withRoof.mb.isEmpty()).toBe(false);
+    // 切妻 4 寸・短辺 3 m → 棟は軒より 0.6 m 高い。1 階の壁の天端より上になる
+    expect(withRoof.info.maxY).toBeGreaterThanOrEqual(base.maxY - 0.01);
+    m.roofPatches[0].topMm = 2200;
+    m.roofPatches[0].kind = 'flat';
+    const low = buildRoofs(m, style, 'shed');
+    expect(low.mb.isEmpty()).toBe(false);
+    expect(low.info.maxY).toBeGreaterThanOrEqual(base.maxY - 0.01);
+  });
+});

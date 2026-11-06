@@ -403,6 +403,13 @@ export interface RoofPatch {
   eavesBy?: Partial<Record<RoofHigh, number>>;
   /** 陸屋根のパラペットの高さ (mm)。省略 550 */
   parapet?: number;
+  /**
+   * 手で足した屋根: 外形から自動で分けた塊ではなく、この四角形（図面座標 mm）に掛ける（屋根の抜け・ポーチ・カーポート・物置など）。
+   * at はその中心。kind を省くと緩い片流れ（全体が陸屋根なら陸屋根）
+   */
+  rect?: { minX: number; minY: number; maxX: number; maxY: number };
+  /** 足した屋根の軒の高さ（その階の床からの mm）。省略 = その階の壁の天端 */
+  topMm?: number;
 }
 
 /**

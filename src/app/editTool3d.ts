@@ -42,6 +42,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   let roofSel: { level: number; at: { x: number; y: number } } | null = null;
   /** 壁を足す（床を 2 回クリック）: 道具を開いている間の状態と、1 点目（図面座標 mm） */
   let wallDraw: { on: boolean; level: number | null; a: { x: number; y: number } | null } = { on: false, level: null, a: null };
+  /** 屋根を足す（床を 2 回クリックして四角）: 1 つ目の角（図面座標 mm） */
+  let roofDraw: { on: boolean; level: number | null; a: { x: number; y: number } | null } = { on: false, level: null, a: null };
   const selected = new Set<string>();
   /** シャッター: 最後に触った壁（形を選び直す対象） */
   let lastShutter: { level: number; wallId: string } | null = null;
@@ -203,9 +205,37 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       v.setSelection(null);
       return;
     }
-    const y = wallTopOf(m, f) / 1000 + 0.1;
+    const y = (ms.patch?.rect && ms.patch.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000) + 0.1;
     const b = ms.bbox;
     v.setSelection([new THREE.Vector3(b.minX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.maxY / 1000), new THREE.Vector3(b.minX / 1000, y, b.maxY / 1000)]);
+  };
+  /** 屋根を足す: 1 つ目の角に橙の印 */
+  const showRoofDrawMark = () => {
+    const m = model();
+    const f = m && roofDraw.level != null ? m.floors.find((x) => x.level === roofDraw.level) : null;
+    if (!f || !roofDraw.a) {
+      v.setSelection(null);
+      return;
+    }
+    const y = wallTopOf(m!, f) / 1000 + 0.1;
+    const { x, y: z } = roofDraw.a;
+    const r = 150;
+    v.setSelection([new THREE.Vector3((x - r) / 1000, y, (z - r) / 1000), new THREE.Vector3((x + r) / 1000, y, (z - r) / 1000), new THREE.Vector3((x + r) / 1000, y, (z + r) / 1000), new THREE.Vector3((x - r) / 1000, y, (z + r) / 1000)]);
+  };
+  /** 2 つ目の角: 四角形の屋根を足して選ぶ */
+  const addRoofRect = (f: Floor, a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const m = model();
+    if (!m) return false;
+    const rect = { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
+    if (rect.maxX - rect.minX < 600 || rect.maxY - rect.minY < 600) {
+      toast('小さすぎます（60cm 以上の四角にしてください）');
+      return false;
+    }
+    const p: RoofPatch = { id: `R${f.level}-${Date.now().toString(36)}`, level: f.level, at: { x: (rect.minX + rect.maxX) / 2, y: (rect.minY + rect.maxY) / 2 }, rect };
+    (m.roofPatches ??= []).push(p);
+    roofSel = { level: f.level, at: { ...p.at } };
+    toast(`${f.level}階に屋根を足しました（${((rect.maxX - rect.minX) / 1000).toFixed(1)} × ${((rect.maxY - rect.minY) / 1000).toFixed(1)} m）。右で掛け方・向き・勾配・高さを直せます`, 'ok', 3500);
+    return true;
   };
   const selectMassAt = (p: { x: number; y: number }): RoofMass | null => {
     const ms = roofMassAt(masses(), p, 900);
@@ -224,11 +254,12 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       list.push(p);
     }
     fn(p);
-    if (!p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
+    // 足した屋根（rect）は項目が空でも残す
+    if (!p.rect && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
     if (msg) toast(msg, 'ok', 2500);
     commit();
   };
-  const massName = (ms: RoofMass) => `${ms.level}階の${ms.isTop ? '屋根' : '下屋'}（${((ms.bbox.maxX - ms.bbox.minX) / 1000).toFixed(1)} × ${((ms.bbox.maxY - ms.bbox.minY) / 1000).toFixed(1)} m）`;
+  const massName = (ms: RoofMass) => `${ms.level}階${ms.manual ? 'に足した屋根' : ms.isTop ? 'の屋根' : 'の下屋'}（${((ms.bbox.maxX - ms.bbox.minX) / 1000).toFixed(1)} × ${((ms.bbox.maxY - ms.bbox.minY) / 1000).toFixed(1)} m）`;
 
   // ---- 壁を足す（床の 2 点をクリック。壁の端に吸着、無ければ半間の格子） ----
   const snapWallPoint = (f: Floor, p: { x: number; y: number }): { p: { x: number; y: number }; joined: boolean } => {
@@ -382,6 +413,25 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         wallDraw = { on: true, level: f.level, a: snap.p };
         commit();
         showWallDrawMark();
+      }
+      return;
+    }
+    if (mode === 'roof' && roofDraw.on) {
+      // 屋根を足す: 床の点（屋根・家具越しでもその下の床）を壁の端か半間の格子に吸着。2 回目の角で四角形の屋根を足す
+      const fp = (ndc ? v.pickFloorPoint(ndc) : null) ?? pt0;
+      const f = floorAt(fp.y);
+      if (!f) return;
+      const snap = snapWallPoint(f, { x: fp.x * 1000, y: fp.z * 1000 });
+      if (!roofDraw.a || roofDraw.level !== f.level) {
+        roofDraw = { on: true, level: f.level, a: snap.p };
+        toast(`${f.level}階 屋根の 1 つ目の角（${snap.joined ? '壁の端' : '格子'}）。次に対角の角の床をクリック`, 'info', 2500);
+        showRoofDrawMark();
+        render();
+        return;
+      }
+      if (addRoofRect(f, roofDraw.a, snap.p)) {
+        roofDraw = { on: false, level: null, a: null };
+        commit();
       }
       return;
     }
@@ -540,7 +590,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     if (active && mode === 'opening' && wallDraw.on) showWallDrawMark();
     if (active && mode === 'opening' && canopySel) showCanopySel();
     else if (active && mode === 'opening') showOpSel();
-    else if (active && mode === 'roof') showRoofSel();
+    else if (active && mode === 'roof') {
+      if (roofDraw.on && roofDraw.a) showRoofDrawMark();
+      else showRoofSel();
+    }
     else if (active) v.setSelection(null);
     if (!active) return;
     const m = model();
@@ -686,13 +739,29 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         },
       ),
     );
+    // 足す: 屋根（抜けている所・ポーチ・カーポート）と壁（抜けている所）
+    if (roofDraw.on) {
+      panel.append(
+        h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, '屋根を足す'), h('div', { class: 'hint' }, roofDraw.a ? `${roofDraw.level}階 1 つ目の角を取りました（橙）。対角の角の床をクリックすると四角形の屋根になります。` : '屋根を掛けたい範囲の床を、四角形の対角の 2 点でクリックします（壁の端に吸着、無ければ半間の格子）。屋根の高さはその階の壁の天端。')),
+        h('div', { class: 'btn-row' }, roofDraw.a ? h('button', { class: 'btn sm', onclick: () => { roofDraw = { on: true, level: null, a: null }; v.setSelection(null); render(); } }, '1 つ目を取り直す') : null, h('button', { class: 'btn sm ghost', onclick: () => { roofDraw = { on: false, level: null, a: null }; v.setSelection(null); render(); } }, '屋根を足すのをやめる')),
+        h('p', { class: 'hint' }, '屋根が抜けている所を塞ぐ・ポーチやカーポートに屋根を掛けるときに。足した屋根は 3D でクリックすると掛け方・向き・勾配・高さを直せ、消せます。'),
+      );
+      return;
+    }
     const ms = selectedMass();
+    const addRow = h(
+      'div',
+      { class: 'btn-row', style: 'margin-top:8px' },
+      h('button', { class: 'btn sm', onclick: () => { roofDraw = { on: true, level: null, a: null }; roofSel = null; v.setSelection(null); render(); } }, '屋根を足す（床を 2 回クリックで四角）'),
+      h('button', { class: 'btn sm', onclick: () => { mode = 'opening'; wallDraw = { on: true, level: null, a: null }; roofSel = null; opSel = null; opSpot = null; v.setSelection(null); render(); } }, '壁を足す（床を 2 回クリック）'),
+    );
     if (!ms || !m) {
       const n = m?.roofPatches?.length ?? 0;
-      panel.append(h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n} か所` : 'まだ塊を選んでいません'));
+      const added = m?.roofPatches?.filter((x) => x.rect).length ?? 0;
+      panel.append(addRow, h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n - added} か所${added ? `・足した屋根 ${added} か所` : ''}` : 'まだ塊を選んでいません'));
       if (n)
         panel.append(
-          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { if (m) m.roofPatches = []; toast('屋根をすべておまかせに戻しました', 'ok'); commit(); } }, 'すべておまかせに戻す')),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { if (m) m.roofPatches = m.roofPatches?.filter((x) => x.rect) ?? []; toast('屋根の手直しをすべておまかせに戻しました（足した屋根は残します）', 'ok'); commit(); } }, 'すべておまかせに戻す')),
         );
       return;
     }
@@ -700,10 +769,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const north = m.northAngleDeg;
     const kindCur = p?.kind ?? 'auto';
     panel.append(
-      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms)), h('div', { class: 'hint' }, `今: ${ROOF_KIND_LABEL[ms.kind]}${ms.kind === 'shed' ? `・高い側 ${sideLabel(ms.high, north)}` : ''}${ms.attached.length ? `・上の階に接する辺 ${ms.attached.map((s) => sideLabel(s, north).replace(/（.*/, '')).join('・')}` : ''}${p ? '（手直しあり）' : ''}`)),
-      h('div', { class: 'field-label' }, 'この塊の掛け方'),
+      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms)), h('div', { class: 'hint' }, `今: ${ROOF_KIND_LABEL[ms.kind]}${ms.kind === 'shed' ? `・高い側 ${sideLabel(ms.high, north)}` : ''}${ms.attached.length ? `・上の階に接する辺 ${ms.attached.map((s) => sideLabel(s, north).replace(/（.*/, '')).join('・')}` : ''}${p && !ms.manual ? '（手直しあり）' : ''}`)),
+      h('div', { class: 'field-label' }, ms.manual ? 'この屋根の掛け方' : 'この塊の掛け方'),
       seg(
-        [{ v: 'auto', label: 'おまかせ', title: ms.isTop ? '全体の屋根と同じ' : '緩い片流れの下屋（上の階に接する辺が高い）' }, ...(Object.keys(ROOF_KIND_LABEL) as RoofKind[]).map((k) => ({ v: k, label: ROOF_KIND_LABEL[k] }))],
+        [{ v: 'auto', label: 'おまかせ', title: ms.manual ? '緩い片流れ（全体が陸屋根なら陸屋根）' : ms.isTop ? '全体の屋根と同じ' : '緩い片流れの下屋（上の階に接する辺が高い）' }, ...(Object.keys(ROOF_KIND_LABEL) as RoofKind[]).map((k) => ({ v: k, label: ROOF_KIND_LABEL[k] }))],
         kindCur,
         (val) =>
           patchRoof((q) => {
@@ -786,9 +855,27 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, 'パラペットの立ち上がり (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.parapet; else q.parapet = Number(val); }, val === '' ? 'パラペットを標準（550）に戻しました' : `パラペットを ${val} mm にしました`); } }, h('option', { value: '', selected: p?.parapet == null }, '標準（550）'), ...[300, 450, 700, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.parapet === x }, `${x}`)))),
       );
     }
+    if (ms.manual && p) {
+      // 足した屋根: 軒の高さ（その階の床から）
+      const f = m.floors.find((x) => x.level === ms.level);
+      const autoTop = f ? wallTopOf(m, f) - f.elevation : 0;
+      panel.append(
+        h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '軒の高さ（この階の床から mm）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.topMm; else q.topMm = Number(val); }, val === '' ? '高さを壁の天端に戻しました' : `屋根の高さを床から ${val} mm にしました`); } }, h('option', { value: '', selected: p.topMm == null }, `壁の天端（${Math.round(autoTop)}）`), ...[2000, 2200, 2400, 2700, 3000, 3300, 3600, 4000].map((x) => h('option', { value: String(x), selected: p.topMm === x }, `${x}`)))),
+      );
+    }
     panel.append(
-      h('div', { class: 'btn-row' }, p ? h('button', { class: 'btn sm', onclick: () => patchRoof((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.eavesBy; delete q.parapet; }, 'この屋根をおまかせに戻しました') }, 'この塊をおまかせに戻す') : null, h('button', { class: 'btn sm ghost', onclick: () => { roofSel = null; render(); } }, '選ぶのをやめる')),
-      h('p', { class: 'hint' }, '屋根が抜けて見える・出ないときは、方眼の修正画面で外形（外壁）を直すと屋根も作り直されます。塊の分け方は外形のつながり（上の階が載らない範囲）で決まります。'),
+      h(
+        'div',
+        { class: 'btn-row' },
+        ms.manual && p
+          ? h('button', { class: 'btn sm', onclick: () => { m.roofPatches = (m.roofPatches ?? []).filter((x) => x !== p); roofSel = null; v.setSelection(null); toast('足した屋根を消しました', 'ok'); commit(); } }, 'この屋根を消す')
+          : p
+            ? h('button', { class: 'btn sm', onclick: () => patchRoof((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.eavesBy; delete q.parapet; }, 'この屋根をおまかせに戻しました') }, 'この塊をおまかせに戻す')
+            : null,
+        h('button', { class: 'btn sm ghost', onclick: () => { roofSel = null; render(); } }, '選ぶのをやめる'),
+      ),
+      addRow,
+      h('p', { class: 'hint' }, '屋根が抜けている所は「屋根を足す」で塞げます。外形（外壁）が欠けて屋根が出ないときは「壁を足す」か方眼の修正画面で外壁を直すと屋根も作り直されます。'),
     );
   };
 
@@ -959,6 +1046,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opDrag = null;
       roofSel = null;
       wallDraw = { on: false, level: null, a: null };
+      roofDraw = { on: false, level: null, a: null };
       paintOverlay();
       v.setSelection(null);
     }

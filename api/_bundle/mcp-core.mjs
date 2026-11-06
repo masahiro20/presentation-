@@ -4174,7 +4174,7 @@ var RULES = [
 	[/トイレ|便所|^W\.?C$|TOILET|^WC\d*$|^トイ$|化粧室/, "toilet"],
 	[/玄関ホール|玄関ﾎｰﾙ/, "hall"],
 	[/玄関|エントランス|土間|ENTRANCE|^ENT$/, "entrance"],
-	[/ホール|廊下|HALL|ろうか|通路/, "hall"],
+	[/ホール|廊下|HALL|ろうか|通路|縁側|エンガワ/, "hall"],
 	[/階段|STAIRS?/, "stairs"],
 	[/外部物置|屋外物置|外物置|物置小屋|ストックヤード|サイクルポート|駐輪/, "shed"],
 	[/納戸|物入|収納|^S$|^P\.?S$|物置|倉庫|STORAGE|^収$|ロフト|LOFT|小屋裏|グルニエ|^ST$/, "storage"],
@@ -11189,7 +11189,8 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		site: site ?? void 0,
 		module: moduleInfo,
 		thicknesses: [...thicknesses].sort((a, b) => a - b),
-		northDetected: northDeg != null
+		northDetected: northDeg != null,
+		areaTable
 	};
 }
 function translateFloor(f, dx, dy) {
@@ -11893,7 +11894,7 @@ function modelFromVectors(pages, opts = {}) {
 			elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ""
 		].filter(Boolean).join("・")}）`);
 	}
-	const { thicknesses, ...model } = res;
+	const { thicknesses, areaTable, ...model } = res;
 	return {
 		...model,
 		...heights ? { heights } : {},
@@ -11905,7 +11906,8 @@ function modelFromVectors(pages, opts = {}) {
 			wallThicknesses: scanned ? [...new Set(res.floors.flatMap((f) => f.walls.map((w) => Math.round(w.thickness))))].sort((a, b) => a - b) : thicknesses,
 			warnings: [...new Set(warnings)],
 			timingsMs: { analyze: Math.round(performance.now() - t0) },
-			northDetected: res.northDetected
+			northDetected: res.northDetected,
+			...Object.keys(areaTable).length ? { areaTable } : {}
 		}
 	};
 }

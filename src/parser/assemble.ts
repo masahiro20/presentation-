@@ -2700,7 +2700,7 @@ export interface AssembleOptions {
   module?: ModuleMode;
 }
 
-export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean } {
+export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number> } {
   let plans = detectPlans(pages, warnings);
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
@@ -2910,7 +2910,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     if (site) translateSite(site, dx, dy);
     if (moduleInfo) translateModule(moduleInfo, dx, dy);
   }
-  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null };
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null, areaTable };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

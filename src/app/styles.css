@@ -511,6 +511,29 @@ body.presenting .main { grid-template-columns: 1fr; }
 .check-head { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: #f1f6ef; font-size: 14.5px; }
 .check-card.has-ng .check-head { background: #fff6e8; }
 .check-head span { color: var(--ink2); font-size: 14px; }
+/* 読み取りの点数と「まず直す 3 つ」 */
+.score-box { padding: 10px 12px 8px; border-top: 1px solid #f0ece5; background: #fff; }
+.score-line { display: flex; align-items: center; gap: 10px; }
+.score-num { font-size: 26px; font-weight: 700; letter-spacing: 0.01em; color: var(--good); font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1; }
+.score-num small { font-size: 13px; font-weight: 500; color: var(--ink2); }
+.score-line.fair .score-num { color: #b4621e; }
+.score-line.poor .score-num { color: var(--warn); }
+.score-bar { flex: 1; height: 8px; border-radius: 4px; background: #ece9e2; overflow: hidden; min-width: 60px; }
+.score-bar i { display: block; height: 100%; border-radius: 4px; background: var(--good); }
+.score-line.fair .score-bar i { background: #d9a066; }
+.score-line.poor .score-bar i { background: var(--warn); }
+.score-grade { font-size: 13.5px; color: var(--ink2); white-space: nowrap; }
+.score-parts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 13px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.score-parts span { cursor: help; border-bottom: 1px dotted #c9c4ba; }
+.score-parts span.full { color: var(--good); }
+.score-parts span.low { color: var(--warn); font-weight: 600; }
+.fix-list { padding: 8px 12px 10px; border-top: 1px solid #f0ece5; background: #fffdf8; }
+.fix-item { display: grid; grid-template-columns: 22px 1fr; gap: 6px; padding: 6px 0; border-top: 1px dashed #ece6da; }
+.fix-item:first-of-type { border-top: none; }
+.fix-no { width: 22px; height: 22px; border-radius: 50%; background: #d9822b; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.fix-title { font-size: 14px; font-weight: 600; line-height: 1.5; color: #6b4714; }
+.fix-lost { font-size: 12.5px; font-weight: 500; color: #b4621e; margin-left: 6px; white-space: nowrap; }
+.fix-detail { font-size: 13.5px; line-height: 1.6; color: var(--ink2); margin: 2px 0 4px; }
 .check-rows { display: flex; flex-direction: column; }
 .check-row { display: grid; grid-template-columns: 18px 76px 1fr auto; align-items: center; gap: 6px; padding: 7px 12px; border-top: 1px solid #f0ece5; font-size: 14px; }
 .check-row .ic { font-weight: 700; text-align: center; }

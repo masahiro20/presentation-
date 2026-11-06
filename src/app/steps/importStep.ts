@@ -13,6 +13,7 @@ import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../
 import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
+import { GRADE_LABEL, readingScore } from '../../parser/readingScore';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
 import { estimateSummary } from './estimateStep';
@@ -1326,8 +1327,34 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
   }
 
   const ng = rows.filter((r) => r.ok === false).length;
+  // 読み取りの点数（帖数・面積表・上下階・戸と窓・壁・階と部屋名）と「まず直す 3 つ」
+  const rs = readingScore(model, issues);
+  const scoreEl = h(
+    'div',
+    { class: `score-line ${rs.grade}` },
+    h('b', { class: 'score-num' }, `${rs.score}`, h('small', null, ' 点')),
+    h('div', { class: 'score-bar' }, h('i', { style: `width:${rs.score}%` })),
+    h('span', { class: 'score-grade' }, GRADE_LABEL[rs.grade]),
+  );
+  const parts = h('div', { class: 'score-parts' }, ...rs.parts.map((p) => h('span', { class: p.got >= p.max - 0.01 ? 'full' : p.got < p.max * 0.5 ? 'low' : '', title: p.note }, `${p.label} ${Math.round(p.got)}/${p.max}`)));
+  const top = rs.fixes.slice(0, 3);
+  const fixList = top.length
+    ? h(
+        'div',
+        { class: 'fix-list' },
+        h('div', { class: 'field-label' }, `まず直す ${top.length} つ（点数の戻りが大きい順）`),
+        ...top.map((fx, i) => {
+          const it = fx.issue;
+          const primary = it?.fix
+            ? h('button', { class: 'btn sm', onclick: () => { it.fix!.apply(model); onFix(); } }, it.fix.label)
+            : h('button', { class: 'btn sm', onclick: () => (fx.level != null ? openLevel(fx.level) : openEditor()) }, fx.level != null ? `${fx.level}階を方眼で直す` : '方眼で直す');
+          const secondary = it?.marks?.length ? h('button', { class: 'btn sm ghost', onclick: () => showMarks(it) }, '図面で見る') : null;
+          return h('div', { class: 'fix-item' }, h('span', { class: 'fix-no' }, `${i + 1}`), h('div', { class: 'fix-body' }, h('div', { class: 'fix-title' }, fx.title, h('span', { class: 'fix-lost' }, `＋${Math.round(fx.lost)} 点`)), h('div', { class: 'fix-detail' }, fx.detail), h('div', { class: 'check-actions' }, primary, secondary)));
+        }),
+      )
+    : null;
   // 問題が無ければ 1 行に畳む（開くと項目ごとの結果）
-  const head = h('summary', { class: 'check-head' }, h('b', null, ng ? `確認してください（${ng} 件）` : '読み取りチェック: 問題なし'), h('span', null, ng ? '⚠ の項目はパースの出来に影響します' : '階・玄関・階段・部屋・窓が揃っています（開くと詳細）'));
+  const head = h('summary', { class: 'check-head' }, h('b', null, `読み取り ${rs.score} 点`, ng ? `　確認してください（${ng} 件）` : '　読み取りチェック: 問題なし'), h('span', null, ng ? '⚠ の項目はパースの出来に影響します' : '階・玄関・階段・部屋・窓が揃っています（開くと詳細）'));
   const list = h(
     'div',
     { class: 'check-rows' },
@@ -1344,7 +1371,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       ),
     ),
   );
-  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 }, head, list);
+  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 || rs.score < 80 }, head, h('div', { class: 'score-box' }, scoreEl, parts), fixList, list);
 }
 
 

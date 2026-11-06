@@ -274,7 +274,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     warnings.push(`立面図の寸法から高さを読みました（${[elev.floor1 ? `1 階床 GL+${elev.floor1}` : '', elev.storyHeights.length ? `階高 ${elev.storyHeights.join(' / ')}` : '', elev.maxHeight ? `最高高さ ${elev.maxHeight}` : '', elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ''].filter(Boolean).join('・')}）`);
   }
 
-  const { thicknesses, ...model } = res;
+  const { thicknesses, areaTable, ...model } = res;
   return {
     ...model,
     ...(heights ? { heights } : {}),
@@ -287,6 +287,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       warnings: [...new Set(warnings)],
       timingsMs: { analyze: Math.round(performance.now() - t0) },
       northDetected: res.northDetected,
+      ...(Object.keys(areaTable).length ? { areaTable } : {}),
     },
   };
 }

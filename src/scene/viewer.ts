@@ -21,7 +21,7 @@ import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
 import { buildLandscape, planExteriorOf, type SiteInfo, type LandscapePlan } from './landscape';
 import { buildExteriorLights } from './interiorLights';
 import { MaterialRegistry } from './materials';
-import { makeSkyTexture } from './sky';
+import { makeNeutralEnvTexture, makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle } from '../styles/presets';
 import { exteriorFor, interiorFor } from '../coordinate/catalog';
 import { preloadPhotoTextures } from '../styles/photoTextures';
@@ -191,6 +191,10 @@ export class Viewer {
       this.bounce.intensity = b.bounce;
       this.scene.environmentIntensity = b.env;
     }
+    // 室内の視点では空（青）の環境光をやめ、暖かい無彩色の環境光にする（グレーの壁・白い布が青くかぶらない）
+    const indoorEnv = !outside && this.envIndoorRT ? this.envIndoorRT.texture : this.envRT?.texture ?? null;
+    if (this.scene.environment !== indoorEnv) this.scene.environment = indoorEnv;
+    this.hemi.color.set(outside ? '#dbe8ff' : '#efeae2');
     this._dirty = true;
   }
   /** カメラが建物の箱の中（室内の視点）か */
@@ -205,6 +209,8 @@ export class Viewer {
   private skyDome: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null;
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
+  /** 室内の視点用の環境光（空の青を持ち込まない暖かい無彩色）。施工写真の室内は白が白く、グレーがグレーに見える */
+  private envIndoorRT: THREE.WebGLRenderTarget | null = null;
   quality: 'fast' | 'high' = 'high';
   /**
    * 表示の重さ: 'browse'（閲覧。見て回る間は後処理なし・操作中は解像度を落として軽く）／'finish'（仕上げ。止まると GTAO・SMAA 込みで描く）。
@@ -1469,6 +1475,10 @@ export class Viewer {
     this.envRT?.dispose();
     this.envRT = this.pmrem.fromEquirectangular(this.skyTex);
     this.scene.environment = this.envRT.texture;
+    this.envIndoorRT?.dispose();
+    const indoorTex = makeNeutralEnvTexture(mode);
+    this.envIndoorRT = this.pmrem.fromEquirectangular(indoorTex);
+    indoorTex.dispose();
     if (this.skyDome) {
       this.skyDome.material.map = this.skyTex;
       this.skyDome.material.needsUpdate = true;

@@ -179,8 +179,9 @@ export class MaterialRegistry {
     set('l.driveway', M(L.driveway));
     set('l.approach', M(L.approach));
     set('l.porch', M(L.approach));
-    set('l.block', M({ pattern: 'concrete', color: '#bdbab3', tile: 2 }));
-    set('l.fenceWood', M({ pattern: 'wood', color: '#9a7654', color2: '#7d5d40', roughness: 0.8 }));
+    // 塀のブロックはグレーに塗る（施工写真）。木ルーバーは黄味を抑えた落ち着いた茶（ウリンや塗装のアコヤ）
+    set('l.block', M({ pattern: 'plaster', color: '#a9a6a0', color2: '#9e9b95', roughness: 0.92, normalStrength: 0.2 }));
+    set('l.fenceWood', M({ pattern: 'wood', color: '#7a6350', color2: '#64503f', roughness: 0.75 }));
     set('l.trunk', color('#5a4636', 0.9));
     set('l.leaf', color('#4d7a33', 0.75));
     set('l.leafDark', color('#3a5f2a', 0.8));

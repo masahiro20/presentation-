@@ -24,6 +24,41 @@ function smoothstep(a: number, b: number, x: number) {
   return t * t * (3 - 2 * t);
 }
 
+/**
+ * 室内用の環境光（正距円筒図法）。空の青を室内に持ち込まない、暖かみのある無彩色の上下グラデーション
+ * （上＝天井・窓からの柔らかい白、下＝床の照り返しの暖かいグレー）。施工写真の「白は白く、グレーはグレーに」見える室内に合わせる
+ */
+export function makeNeutralEnvTexture(mode: SkyParams['mode'] = 'day'): THREE.DataTexture {
+  const W = 64;
+  const H = 32;
+  const data = new Float32Array(W * H * 4);
+  const night = mode === 'night';
+  const evening = mode === 'evening';
+  const top = night ? new THREE.Color(0.05, 0.045, 0.04) : evening ? new THREE.Color(0.9, 0.78, 0.62) : new THREE.Color(0.92, 0.9, 0.86);
+  const mid = night ? new THREE.Color(0.03, 0.028, 0.025) : evening ? new THREE.Color(0.62, 0.52, 0.42) : new THREE.Color(0.66, 0.63, 0.58);
+  const bottom = night ? new THREE.Color(0.012, 0.011, 0.01) : evening ? new THREE.Color(0.28, 0.23, 0.19) : new THREE.Color(0.34, 0.31, 0.27);
+  for (let y = 0; y < H; y++) {
+    const el = ((y + 0.5) / H - 0.5) * Math.PI;
+    const s = Math.sin(el);
+    const c = s >= 0 ? mid.clone().lerp(top, smoothstep(0, 0.9, s)) : mid.clone().lerp(bottom, smoothstep(0, 0.8, -s));
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      data[i] = c.r;
+      data[i + 1] = c.g;
+      data[i + 2] = c.b;
+      data[i + 3] = 1;
+    }
+  }
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.FloatType);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.LinearSRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export function makeSkyTexture(p: SkyParams): THREE.DataTexture {
   const W = p.width ?? 512;
   const H = W / 2;

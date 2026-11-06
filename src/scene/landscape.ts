@@ -268,16 +268,21 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     if (L < 0.3) continue;
     dir.normalize();
     if (fenceType === 'block' || fenceType === 'wood') {
-      mb.box('l.block', mid.clone(), dir, L, 0.4, 0.12);
       if (fenceType === 'wood') {
-        const n = Math.floor(L / 0.12);
-        for (let i = 0; i < n; i += 1) {
-          if (i % 2) continue;
-          const p = a.clone().addScaledVector(dir, (i + 0.5) * 0.12).setY(0.4);
-          mb.box('l.fenceWood', p, dir, 0.09, 0.8, 0.02);
+        // ホームランディックの塀: グレーに塗ったブロックの基壇（高さ 0.5）の上に、木の縦ルーバー（幅 60・厚 30・隙間 30、高さ 1.2）。
+        // 施工写真の「ブロック＋木の縦格子」。笠木と中段の胴縁で締める
+        mb.box('l.block', mid.clone(), dir, L, 0.5, 0.15);
+        const pitch = 0.09;
+        const n = Math.max(1, Math.floor((L - 0.03) / pitch));
+        const off = (L - n * pitch) / 2;
+        for (let i = 0; i < n; i++) {
+          const p = a.clone().addScaledVector(dir, off + (i + 0.5) * pitch).setY(0.5);
+          mb.box('l.fenceWood', p, dir, 0.06, 1.2, 0.03);
         }
-        mb.box('l.fenceWood', mid.clone().setY(1.15), dir, L, 0.04, 0.05);
-      }
+        // 笠木（上）と胴縁（裏側、中段）
+        mb.box('l.fenceWood', mid.clone().setY(1.7), dir, L, 0.04, 0.09);
+        mb.box('l.fenceWood', mid.clone().setY(1.06), dir, L, 0.045, 0.03);
+      } else mb.box('l.block', mid.clone(), dir, L, 0.4, 0.12);
     } else if (fenceType === 'hedge') {
       const n = Math.max(1, Math.floor(L / 0.9));
       for (let i = 0; i < n; i++) {

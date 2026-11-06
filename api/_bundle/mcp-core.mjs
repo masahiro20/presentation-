@@ -19502,16 +19502,18 @@ function buildLandscape(meta, style, siteData, planExt) {
 		if (L < .3) continue;
 		dir.normalize();
 		if (fenceType === "block" || fenceType === "wood") {
-			mb.box("l.block", mid.clone(), dir, L, .4, .12);
 			if (fenceType === "wood") {
-				const n = Math.floor(L / .12);
-				for (let i = 0; i < n; i += 1) {
-					if (i % 2) continue;
-					const p = a.clone().addScaledVector(dir, (i + .5) * .12).setY(.4);
-					mb.box("l.fenceWood", p, dir, .09, .8, .02);
+				mb.box("l.block", mid.clone(), dir, L, .5, .15);
+				const pitch = .09;
+				const n = Math.max(1, Math.floor((L - .03) / pitch));
+				const off = (L - n * pitch) / 2;
+				for (let i = 0; i < n; i++) {
+					const p = a.clone().addScaledVector(dir, off + (i + .5) * pitch).setY(.5);
+					mb.box("l.fenceWood", p, dir, .06, 1.2, .03);
 				}
-				mb.box("l.fenceWood", mid.clone().setY(1.15), dir, L, .04, .05);
-			}
+				mb.box("l.fenceWood", mid.clone().setY(1.7), dir, L, .04, .09);
+				mb.box("l.fenceWood", mid.clone().setY(1.06), dir, L, .045, .03);
+			} else mb.box("l.block", mid.clone(), dir, L, .4, .12);
 		} else if (fenceType === "hedge") {
 			const n = Math.max(1, Math.floor(L / .9));
 			for (let i = 0; i < n; i++) shrub(a.clone().addScaledVector(dir, (i + .5) * (L / n)), .6);

@@ -2,8 +2,9 @@
  * 積算の「面」シートにあたる数量: 読み込んだ間取り（部屋・外形・開口）と屋根・軒の設定から自動で拾う。
  * 設計士が直せるように、すべての値は上書きできる（areasOverride）。
  */
-import { isSeparateGarage, type BuildingModel, type Floor, type Room, type RoomType, type Vec2 } from '../core/types';
+import { excludedFromFloorArea, isSeparateGarage, type BuildingModel, type Floor, type Room, type RoomType, type Vec2 } from '../core/types';
 import { polygonArea } from '../core/geometry';
+import { isStairwellVoid } from '../core/floorArea';
 import type { Grade } from './catalog';
 
 export interface Areas {
@@ -106,6 +107,8 @@ export interface Areas {
   septic: boolean;
   structCalc: boolean;
   evOutlet: boolean;
+  /** ホームエレベーター（図面に EV の区画があれば自動で入る） */
+  elevator: boolean;
   soundArea: number;
   innerTileArea: number;
   innerSolidoArea: number;
@@ -187,6 +190,7 @@ export const AREA_OPTIONS: { key: keyof Areas; label: string }[] = [
   { key: 'septic', label: '浄化槽' },
   { key: 'structCalc', label: '許容応力度計算（別途）' },
   { key: 'evOutlet', label: 'EV コンセント' },
+  { key: 'elevator', label: 'ホームエレベーター' },
 ];
 
 export interface TakeoffOptions {
@@ -410,9 +414,11 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   // ビルトインガレージ（外形の内側）: 床面積には入れない。施工面積に入れ、土間は外部ポーチと同じ扱い、断熱は入れない（御社の拾い方）
   const garageRooms = (f: Floor) => f.rooms.filter((r) => isBuiltinGarage(r) && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
   const garageArea = r2(floors.reduce((s, f) => s + garageRooms(f).reduce((t, r) => t + r.area, 0), 0));
+  // 階段室の吹抜（下の階の階段の真上の小さな吹抜）は図面の面積表と同じく床に数える（有元様邸 3 階: 65.33 ㎡ に階段の上 8.28 ㎡ を含む）
+  const isStairwell = (f: Floor, r: Room) => isStairwellVoid(r, fl(f.level - 1));
   const floorArea = (f?: Floor) => {
     if (!f) return 0;
-    const inner = f.rooms.filter((r) => (r.type === 'void' || r.type === 'balcony') && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
+    const inner = f.rooms.filter((r) => (r.type === 'void' || r.type === 'balcony') && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y) && !isStairwell(f, r));
     return Math.max(0, outlineArea(f) - inner.reduce((s, r) => s + r.area, 0) - garageRooms(f).reduce((s, r) => s + r.area, 0));
   };
   const floor1 = r2(floorArea(fl(1)));
@@ -423,7 +429,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   // バルコニーは 2 階以上の屋外の床だけ（1 階の中庭・テラスはバルコニーではない。堀様邸で中庭 16.56㎡ が防水・施工面積に入っていた）
   const isCourt = (name: string) => /中庭|坪庭|パティオ|ライトコート|テラス|ドッグラン/.test(name);
   const balconyArea = r2(floors.filter((f) => f.level >= 2).reduce((s, f) => s + f.rooms.filter((r) => r.type === 'balcony' && !isCourt(r.name)).reduce((t, r) => t + r.area, 0), 0));
-  const voidArea = r2(floors.filter((f) => f.level >= 2).reduce((s, f) => s + roomsArea(f, ['void']), 0));
+  // 吹抜（内部足場・施工面積）: 階段室の吹抜は入れない（御社の積算でも 0）
+  const voidArea = r2(floors.filter((f) => f.level >= 2).reduce((s, f) => s + f.rooms.filter((r) => r.type === 'void' && !isStairwell(f, r)).reduce((t, r) => t + r.area, 0), 0));
   // 各階の外形の重ね合わせ: 建築面積・屋根・ピロティ（上の階の下の屋外）
   const ov = overlay(floors);
   const pilotis = ov.exposedBelow[1] ?? 0; // 2 階の下の屋外（ポーチ・ビルトインガレージ・張り出し）
@@ -478,14 +485,17 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   // ガレージには断熱を入れないので、ガレージの上が屋根の所（上の階が載っていない所）は天井の断熱から引く
   let garageCeil = 0;
   let garageWall = 0;
+  // 外形の中にある屋根付きの屋外（ポーチ・テラス）の天井は軒天であって断熱しない（吉田大仁様邸の積算: 室内天井 83.12 ＋ 外気床 4.55 で、19 ㎡ のテラスは入れない）
+  let porchCeil = 0;
   for (let i = 0; i < floors.length; i++) {
     const f = floors[i];
     for (const g of garageRooms(f)) {
       garageCeil += uncoveredArea(g.polygon, floors.slice(i + 1));
       garageWall += exteriorEdgeLen(f, g.polygon) * (f.height / 1000 + (f.level === 1 ? FOUND_H : 0));
     }
+    for (const p of f.rooms.filter((r) => r.type === 'porch' && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y))) porchCeil += uncoveredArea(p.polygon, floors.slice(i + 1));
   }
-  const insulArea = r2(Math.max(0, roofPlan - garageCeil + overhang));
+  const insulArea = r2(Math.max(0, roofPlan - garageCeil - porchCeil + overhang));
   const insulWall = r2(Math.max(0, extWall - garageWall));
   const siteEdge = r2(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1000 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
   const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
@@ -511,6 +521,21 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const upperWall = f2 ? (f2.outline.reduce((s, l) => s + perimeter(l), 0) / 1000) * (f2.height / 1000) * 0.85 : 0;
   const solidoArea = r2(solido === 'upper' ? upperWall : solido === 'lower' ? extWall - upperWall : solido === 'entrance' ? 15 : 0);
   const solidoCorners = solido === 'upper' ? (f2?.outline.reduce((s, l) => s + l.length, 0) ?? 0) : solido === 'lower' ? (f1?.outline.reduce((s, l) => s + l.length, 0) ?? 0) : solido === 'entrance' ? 2 : 0;
+  // 高天井（H2500 からの差）: 階の天井高・部屋ごとの天井高（図面の注記「CH=2700」・修正画面の範囲指定）が 2,500 を超える分 × 床面積（㎥）。
+  // 御社の積算の「高天井（H2500からの差）」（吉田大仁様邸 1st plan: 102 ㎥）に当たる
+  const highCeil = r2(
+    floors.reduce(
+      (s, f) =>
+        s +
+        f.rooms
+          .filter((r) => !excludedFromFloorArea(r.type))
+          .reduce((t, r) => {
+            const ch = r.ceilingHeight ?? f.ceilingHeight;
+            return t + (ch > 2500 ? ((ch - 2500) / 1000) * r.area : 0);
+          }, 0),
+      0,
+    ),
+  );
   return {
     grade: opts.grade,
     floor1,
@@ -537,7 +562,7 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     corners,
     insulArea,
     insulWall,
-    highCeil: 0,
+    highCeil,
     slopeCeil: 0,
     siteEdge,
     doors,
@@ -574,6 +599,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     septic: false,
     structCalc: false,
     evOutlet: false,
+    // 図面に EV（エレベーター）の区画があれば家庭用エレベーターを入れる（有元様邸: 3 階建てで各階に ＥＶ）
+    elevator: floors.some((f) => f.rooms.some((r) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, '')))),
     soundArea: 0,
     innerTileArea: 0,
     innerSolidoArea: 0,

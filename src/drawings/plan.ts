@@ -3,6 +3,7 @@
  * 部屋を色分けし、壁・建具・室名・帖数・寸法・方位を描く。
  */
 import { postInWall } from '../core/posts';
+import { floorAreaOf } from '../core/floorArea';
 import { takeoff } from '../estimate/areas';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2, roomFloorOffsetMm } from '../core/types';
 import { stairDrawing } from '../core/stairs';
@@ -272,9 +273,9 @@ export function openingSchedule(f: Floor): OpeningScheduleEntry[] {
   return out;
 }
 
-/** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く */
-export function floorArea(f: Floor): number {
-  return f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0);
+/** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く（階段室の吹抜は床に数える） */
+export function floorArea(f: Floor, floors: Floor[] = []): number {
+  return floorAreaOf(f, floors);
 }
 
 /** 外形の面積（㎡。穴は引く） */
@@ -301,7 +302,7 @@ export function areaTableSvg(model: BuildingModel, x: number, y: number) {
   const rows: string[][] = [];
   let total = 0;
   for (const f of model.floors) {
-    const a = floorArea(f);
+    const a = floorArea(f, model.floors);
     total += a;
     rows.push([`${f.level}階 床面積`, `${a.toFixed(2)} ㎡`, `${(a / 3.30579).toFixed(2)} 坪`]);
   }

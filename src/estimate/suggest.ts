@@ -40,11 +40,10 @@ export function suggestOptions(model: BuildingModel, a: Areas, choice: EstimateC
   const voids = a.voidArea;
   if (voids > 0) out.push({ label: `吹抜 ${voids.toFixed(1)}㎡`, reason: '吹抜の足場（内部足場）は施工面積から自動で計上済み。手摺（St 手摺）を検討', applied: true });
   if (voids > 0) line('ib.handrail', Math.max(2, Math.round(Math.sqrt(voids) * 2)), `St 手摺 ${Math.max(2, Math.round(Math.sqrt(voids) * 2))} m`, '吹抜・階段まわりの鉄骨手摺');
-  const high = floors.flatMap((f) => f.rooms.filter((r) => r.ceilingHeight && r.ceilingHeight > f.ceilingHeight));
-  if (high.length) {
-    const m3 = high.reduce((s, r) => s + (r.area * ((r.ceilingHeight ?? 0) - 2500)) / 1000, 0);
-    if (m3 > 0) line('ib.highCeil', Math.round(m3 * 10) / 10, `高天井 ${high.map((r) => r.name).join('・')}`, `天井高 ${high.map((r) => r.ceilingHeight).join('・')} の部屋（H2500 からの差 ${m3.toFixed(1)}㎥）`);
-  }
+  // 高天井（H2500 からの差）は拾い（Areas.highCeil）で自動計上
+  const high = floors.flatMap((f) => f.rooms.filter((r) => (r.ceilingHeight ?? f.ceilingHeight) > 2500 && r.type !== 'void'));
+  if (a.highCeil > 0) out.push({ label: `高天井 ${a.highCeil.toFixed(1)}㎥`, reason: `天井高 2,500 を超える部屋（${[...new Set(high.map((r) => r.name))].slice(0, 4).join('・')}）の高天井変更費は自動で計上済み（H2500 からの差）`, applied: true });
+  if (a.elevator) out.push({ label: '家庭用エレベーター', reason: '図面に EV の区画があるので設備工事に概算で計上済み（メーカー見積で確定）', applied: true });
   if (a.tatami1 > 0) out.push({ label: `畳 ${a.tatami1} 枚`, reason: '和室の畳は自動で計上済み', applied: true });
   if (a.wet2f !== 'none') flag('handwash', 'トイレ手洗いカウンター', `2 階に水まわり（${a.wet2f === 'ldk' ? '2 階リビング' : 'トイレ・洗面'}）。2 階トイレの手洗いを検討`);
   if (a.balconyArea > 0) flag('balconyTile', 'バルコニータイル', `バルコニー ${a.balconyArea.toFixed(1)}㎡（防水は自動計上。タイル仕上げは任意）`);

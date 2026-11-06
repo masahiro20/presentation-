@@ -11,6 +11,7 @@
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
 import { overhangPoints, hasPostNear, OVERHANG_POST_MIN, OVERHANG_POST_WARN } from '../core/posts';
+import { floorAreaOf } from '../core/floorArea';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type Opening, type Room, type Vec2, type Wall } from '../core/types';
 import { isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
@@ -782,7 +783,7 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
     }
     // 収納率: 収納（物入・クローゼット・SIC・パントリー）の面積が床面積の 8% 未満
     const storage = f.rooms.filter((r) => r.type === 'closet' || r.type === 'storage').reduce((s, r) => s + r.area, 0);
-    const floorArea = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0);
+    const floorArea = floorAreaOf(f, model.floors);
     if (floorArea > 30 && storage / floorArea < 0.08) {
       out.push({ id: `storage-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 収納が床面積の ${Math.round((storage / floorArea) * 100)}% と少なめです`, detail: `戸建ての収納率は 10〜12% が目安（${Math.round(floorArea * 0.1)} ㎡ 程度）。WIC・SIC・パントリー・階段下などで補うのが御社の定番です。読み取りで収納が別の部屋に結合している可能性もあります` });
     }

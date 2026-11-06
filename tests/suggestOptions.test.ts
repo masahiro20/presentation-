@@ -32,7 +32,9 @@ describe('この間取りで検討するオプションの提案', () => {
     expect(ids).toContain('sash.shutterElec2');
     expect(ids).toContain('evOutlet');
     expect(ids).toContain('ib.handrail');
-    expect(ids).toContain('ib.highCeil');
+    // 高天井は拾いで自動計上（LDK 36 ㎡ × (3,500 − 2,500) = 36 ㎥）し、提案には「計上済み」として出る
+    expect(areas.highCeil).toBeCloseTo(36, 1);
+    expect(s.find((x) => /^高天井/.test(x.label))?.applied).toBe(true);
     expect(ids).toContain('handwash');
     expect(ids).toContain('slopSink');
     expect(ids).toContain('kanta');

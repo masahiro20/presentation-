@@ -3,9 +3,11 @@
  * 図面に書いてある数字（帖数・面積表）と読み取った結果を突き合わせ、上下階の整合・戸と窓の有無・壁の読み取りの疑いを点にする。
  * 設計の注意（梁のスパン・直下率など）は点数に入れない（読み取りの出来だけを見る）。
  */
-import { excludedFromFloorArea, type BuildingModel, type Floor, type Room } from '../core/types';
+import { type BuildingModel, type Floor, type Room } from '../core/types';
 import { woodCheck, type WoodIssue } from './woodCheck';
 import { entranceDoorOf } from '../core/entrance';
+import { floorAreaOf } from '../core/floorArea';
+import { overlay } from '../estimate/areas';
 
 export interface ScorePart {
   id: 'tatami' | 'areaTable' | 'floors' | 'openings' | 'walls' | 'rooms';
@@ -39,7 +41,7 @@ const WALL_IDS = /^(stub|dup|merged|jog|narrow|ub|wc|door|offgrid)-\d/;
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const tatamiOf = (r: Room) => r.area / 1.62;
 const isLivingRoom = (r: Room) => ['ldk', 'living', 'dining', 'kitchen', 'bedroom', 'japanese', 'study', 'kids'].includes(r.type);
-const floorArea = (f: Floor) => f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0);
+const floorArea = (f: Floor, floors: Floor[]) => floorAreaOf(f, floors);
 
 export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): ReadingScore {
   const issues = issuesIn ?? woodCheck(model);
@@ -84,7 +86,7 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
   // 2. 面積表との照合（15）: 階ごとの床面積（±3% で満点、±8% で半分）
   {
     const table = model.report.areaTable ?? {};
-    const rows = floors.filter((f) => table[f.level] > 5).map((f) => ({ f, want: table[f.level], got: floorArea(f) }));
+    const rows = floors.filter((f) => table[f.level] > 5).map((f) => ({ f, want: table[f.level], got: floorArea(f, floors) }));
     let got: number;
     let note: string;
     if (!rows.length) {
@@ -118,15 +120,28 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     const notes: string[] = [];
     const table = model.report.areaTable ?? {};
     if (floors.length >= 2) {
+      let widerIssue = false;
       for (let i = 1; i < floors.length; i++) {
-        const lo = floorArea(floors[i - 1]);
-        const hi = floorArea(floors[i]);
+        const lo = floorArea(floors[i - 1], floors);
+        const hi = floorArea(floors[i], floors);
         const byDesign = table[floors[i].level] > 0 && table[floors[i - 1].level] > 0 && table[floors[i].level] > table[floors[i - 1].level];
         if (lo > 0 && hi > lo * 1.1 && !byDesign) {
           got -= 8;
+          widerIssue = true;
           notes.push(`${floors[i].level}階（${hi.toFixed(1)}㎡）が${floors[i - 1].level}階（${lo.toFixed(1)}㎡）より広い`);
           fixes.push({ lost: 8, level: floors[i].level, title: `${floors[i].level}階が${floors[i - 1].level}階より広く読めています`, detail: '下の階の外周の壁の読み落とし（部屋が欠けている）か、上の階に屋外（バルコニー）が部屋として入っています。方眼で両方の階の外形を見比べてください' });
           break;
+        }
+      }
+      // 建築面積（各階の外形を真上から重ねた面積）が図面の面積表と合わない → 上下階の重ね位置がずれている疑い
+      // （有元様邸: 3 階を 2 階ではなく 1 階に合わせていて 1.82m ずれ、建築面積 68.31 → 82.2 ㎡・屋根と軒天が 2 割増しになっていた）
+      if (!widerIssue && table.build != null && table.build > 5) {
+        const union = overlay(floors).union;
+        const err = Math.abs(union - table.build) / table.build;
+        if (err > 0.08) {
+          got -= 8;
+          notes.push(`建築面積が面積表 ${table.build.toFixed(2)}㎡ に対して ${union.toFixed(2)}㎡`);
+          fixes.push({ lost: 8, title: `建築面積: 面積表 ${table.build.toFixed(2)} ㎡に対して読み取り ${union.toFixed(2)} ㎡（${Math.round(err * 100)}% の差）`, detail: union > table.build ? '上の階と下の階の重ね位置がずれているか、上の階にバルコニー・屋根が部屋として入っています。3D で上下階のずれを確かめ、方眼で外形を見直してください。屋根・軒天・断熱の数量に効きます' : '外周の壁が欠けて外形が小さく読めている階があります。方眼で外周を確認してください' });
         }
       }
       const stairIssue = issues.find((i) => /^stair-/.test(i.id));
@@ -187,7 +202,8 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
   // 6. 階と部屋名（10）: 各階に 3 室以上（5）、用途の分からない部屋が無い（3）、LDK がある（2）
   {
     const thin = floors.filter((f) => f.rooms.filter((r) => r.type !== 'void').length < 3);
-    const unnamed = rooms.filter((r) => r.type === 'other' || /^室$|^部屋$/.test(r.name.trim()));
+    // EV（エレベーター）は用途が分かっている（部屋の種類は other のまま）
+    const unnamed = rooms.filter((r) => (r.type === 'other' && !/^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, ''))) || /^室$|^部屋$/.test(r.name.trim()));
     const got = readable ? (floors.length && !thin.length ? 5 : 0) + (unnamed.length ? Math.max(0, 3 - unnamed.length) : 3) + (hasLdk ? 2 : 0) : 0;
     const notes: string[] = [];
     if (!floors.length) notes.push('階が読めていない');

@@ -8577,7 +8577,7 @@ function looksLikeRoomName(raw) {
 * 吹抜の範囲: 「吹抜」の文字を含み、対角線（×印）が引かれた長方形。
 * 吹抜は手すり・腰壁の細い線で描かれ壁として拾えないため、×印から範囲を求める。
 */
-function voidRectangles(plan) {
+function voidRectangles(plan, level) {
 	const voidTexts = plan.texts.filter((t) => /吹抜|吹き抜け|VOID/i.test(t.str));
 	if (!voidTexts.length) return [];
 	const raw = plan.segs.filter((sg) => {
@@ -8672,6 +8672,61 @@ function voidRectangles(plan) {
 		if (!voidTexts.some((t) => t.x > bb.minX && t.x < bb.maxX && t.y > bb.minY && t.y < bb.maxY)) continue;
 		if (out.some((o) => Math.abs(o.minX - bb.minX) < 200 && Math.abs(o.minY - bb.minY) < 200)) continue;
 		out.push(bb);
+	}
+	if (level == null || level >= 2) {
+		const H = [];
+		const V = [];
+		const addLn = (a, b) => {
+			const L = Math.hypot(b.x - a.x, b.y - a.y);
+			if (L < 300) return;
+			if (Math.abs(b.y - a.y) < L * .02) H.push({
+				o: (a.y + b.y) / 2,
+				t0: Math.min(a.x, b.x),
+				t1: Math.max(a.x, b.x)
+			});
+			else if (Math.abs(b.x - a.x) < L * .02) V.push({
+				o: (a.x + b.x) / 2,
+				t0: Math.min(a.y, b.y),
+				t1: Math.max(a.y, b.y)
+			});
+		};
+		for (const s of plan.segs) if (!s.dashed) addLn(s.a, s.b);
+		for (const w of plan.walls ?? []) addLn(w.a, w.b);
+		const covered = (lines, o, t0, t1) => {
+			const ivs = lines.filter((l) => Math.abs(l.o - o) <= 60 && l.t1 > t0 && l.t0 < t1).map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)]).sort((p, q) => p[0] - q[0]);
+			let s = 0;
+			let cur = -Infinity;
+			for (const [a, b] of ivs) {
+				const a2 = Math.max(a, cur);
+				if (b > a2) {
+					s += b - a2;
+					cur = b;
+				}
+			}
+			return s;
+		};
+		const isRoomLabel = (s) => /[぀-ヿ㐀-鿿]{2,}/.test(s) && !/吹抜|吹き抜け|手摺|手すり|腰壁|笠木|勾配|天井|ガラス|窓/.test(s);
+		for (const t of voidTexts) {
+			if (!/^(吹抜|吹き抜け|VOID)$/i.test(t.str.replace(/\s/g, ""))) continue;
+			if (out.some((o) => t.x > o.minX && t.x < o.maxX && t.y > o.minY && t.y < o.maxY)) continue;
+			const above = H.filter((l) => l.o < t.y - 150 && l.t0 <= t.x && l.t1 >= t.x).sort((p, q) => q.o - p.o)[0];
+			const below = H.filter((l) => l.o > t.y + 150 && l.t0 <= t.x && l.t1 >= t.x).sort((p, q) => p.o - q.o)[0];
+			const left = V.filter((l) => l.o < t.x - 150 && l.t0 <= t.y && l.t1 >= t.y).sort((p, q) => q.o - p.o)[0];
+			const right = V.filter((l) => l.o > t.x + 150 && l.t0 <= t.y && l.t1 >= t.y).sort((p, q) => p.o - q.o)[0];
+			if (!above || !below || !left || !right) continue;
+			const bb = {
+				minX: left.o,
+				maxX: right.o,
+				minY: above.o,
+				maxY: below.o
+			};
+			const w = bb.maxX - bb.minX;
+			const h = bb.maxY - bb.minY;
+			if (w < 1200 || h < 1200 || w * h > 6e7) continue;
+			if (covered(H, bb.minY, bb.minX, bb.maxX) < w * .8 || covered(H, bb.maxY, bb.minX, bb.maxX) < w * .8 || covered(V, bb.minX, bb.minY, bb.maxY) < h * .8 || covered(V, bb.maxX, bb.minY, bb.maxY) < h * .8) continue;
+			if (plan.texts.some((q) => q !== t && q.x > bb.minX + 100 && q.x < bb.maxX - 100 && q.y > bb.minY + 100 && q.y < bb.maxY - 100 && isRoomLabel(q.str))) continue;
+			out.push(bb);
+		}
 	}
 	return out;
 }
@@ -9052,13 +9107,15 @@ function followingOnLine(t, texts, maxSizes) {
 function readAreaTable(pages) {
 	const out = {};
 	for (const p of pages) for (const t of p.texts) {
-		const m = /^([1-9])階$/.exec(normalizeText(t.str).replace(/\s/g, ""));
-		if (!m) continue;
+		const s = normalizeText(t.str).replace(/\s/g, "");
+		const m = /^([1-9])階$/.exec(s);
+		const key = m ? +m[1] : /^建築面積$/.test(s) ? "build" : /^延床面積$|^延べ床面積$/.test(s) ? "total" : null;
+		if (key == null) continue;
 		const cands = followingOnLine(t, p.texts, 20).map((q) => ({
 			q,
 			v: /^(\d{1,3}\.\d{1,2})(㎡|m2|m²)?$/.exec(normalizeText(q.str).replace(/\s/g, ""))
 		})).filter((o) => o.v);
-		if (cands.length && out[+m[1]] == null) out[+m[1]] = parseFloat(cands[0].v[1]);
+		if (cands.length && out[key] == null) out[key] = parseFloat(cands[0].v[1]);
 	}
 	return out;
 }
@@ -9313,7 +9370,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	if (curved.length) globalThis.__curvedTrace = [...globalThis.__curvedTrace ?? [], curved.length];
 	const res = 20;
 	const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
-	const voidRects = voidRectangles(plan);
+	const voidRects = voidRectangles(plan, level);
 	const drawBarriers = () => {
 		for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, 1);
 		for (const poly of plan.wallPolys) grid.fillPolygon(poly, 1);
@@ -10635,6 +10692,28 @@ function assignFloorTitles(plans, pages) {
 		usedFloor.add(fk);
 	}
 }
+/** 各階の外形を真上から重ねた面積（㎡。100mm の格子で数える。建築面積の検算用） */
+function outlineUnionArea(floors) {
+	const loops = floors.flatMap((f) => f.outline).filter((l) => l.length >= 3);
+	if (!loops.length) return 0;
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const l of loops) for (const q of l) {
+		minX = Math.min(minX, q.x);
+		minY = Math.min(minY, q.y);
+		maxX = Math.max(maxX, q.x);
+		maxY = Math.max(maxY, q.y);
+	}
+	const step = 100;
+	let n = 0;
+	for (let y = minY + step / 2; y < maxY; y += step) for (let x = minX + step / 2; x < maxX; x += step) if (loops.some((l) => pointInPolygon({
+		x,
+		y
+	}, l))) n++;
+	return n * step * step / 1e6;
+}
 /** 上階の図面を下階に位置合わせするための平行移動量（壁の重なり・階段位置・外形の包含で評価） */
 function alignOffset(base, other) {
 	const axesOf = (p, vertical) => p.walls.filter((w) => vertical ? Math.abs(w.u.y) > .99 : Math.abs(w.u.x) > .99).map((w) => vertical ? {
@@ -10676,6 +10755,13 @@ function alignOffset(base, other) {
 		dxs.add(Math.round((a.minX + a.maxX) / 2 - (b.minX + b.maxX) / 2));
 		dys.add(Math.round((a.minY + a.maxY) / 2 - (b.minY + b.maxY) / 2));
 	}
+	const evOf = (p) => p.texts.filter((t) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター)$/i.test(normalizeText(t.str).replace(/\s/g, "")));
+	const evA = evOf(base);
+	const evB = evOf(other);
+	for (const a of evA) for (const b of evB) {
+		dxs.add(Math.round(a.x - b.x));
+		dys.add(Math.round(a.y - b.y));
+	}
 	const areaB = (other.bbox.maxX - other.bbox.minX) * (other.bbox.maxY - other.bbox.minY);
 	let best = {
 		x: 0,
@@ -10684,6 +10770,7 @@ function alignOffset(base, other) {
 	let bestScore = -Infinity;
 	for (const dx of dxs) for (const dy of dys) {
 		let score = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
+		for (const a of evA) for (const b of evB) score += 3e4 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
 		for (const a of sa) for (const b of sb) {
 			const inter = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx)) * Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
 			const ar = (a.maxX - a.minX) * (a.maxY - a.minY);
@@ -11027,7 +11114,13 @@ function assembleModel(pages, name, warnings, opts = {}) {
 	const sorted = ordered.slice().sort((a, b) => levelOf.get(a) - levelOf.get(b));
 	const base = sorted[0];
 	if (base) {
-		if (!samePageUnhinted) for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
+		if (!samePageUnhinted) {
+			let below = base;
+			for (const p of sorted.slice(1)) {
+				translatePlan(p, alignOffset(below, p));
+				below = p;
+			}
+		}
 		const o = {
 			x: -base.bbox.minX,
 			y: -base.bbox.minY
@@ -11079,6 +11172,49 @@ function assembleModel(pages, name, warnings, opts = {}) {
 			f.level = lv++;
 			f.elevation = e;
 			e += f.height;
+		}
+	}
+	if (!samePageUnhinted && floors.length >= 2 && areaTable.build != null && areaTable.build > 5) {
+		const build = areaTable.build;
+		const err0 = Math.abs(outlineUnionArea(floors) - build) / build;
+		if (err0 > .05) for (let i = 1; i < floors.length; i++) {
+			const shifts = [
+				-910,
+				-455,
+				0,
+				455,
+				910
+			];
+			let best = null;
+			for (const dx of shifts) for (const dy of shifts) {
+				if (!dx && !dy) continue;
+				const moved = floors.map((f, k) => k >= i ? {
+					...f,
+					outline: f.outline.map((l) => l.map((q) => ({
+						x: q.x + dx,
+						y: q.y + dy
+					})))
+				} : f);
+				const err = Math.abs(outlineUnionArea(moved) - build) / build;
+				if (!best || err < best.err) best = {
+					d: {
+						x: dx,
+						y: dy
+					},
+					err
+				};
+			}
+			if (!best || best.err > .03 || best.err >= err0 / 2) continue;
+			for (let k = i; k < floors.length; k++) {
+				const p = planOf.get(floors[k]);
+				translatePlan(p, best.d);
+				const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+				nf.elevation = floors[k].elevation;
+				planOf.set(nf, p);
+				floors[k] = nf;
+			}
+			warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ""}${best.d.x && best.d.y ? "・" : ""}${best.d.y ? `上下 ${best.d.y} mm` : ""} 動かしました（方眼で上下階の重なりを確認してください）`);
+			break;
 		}
 	}
 	if (floors.length >= 2) {
@@ -11966,6 +12102,40 @@ function parseDxf(text, opts = {}) {
 	model.report.scaleDenominator = null;
 	model.report.warnings = model.report.warnings.filter((w) => !/縮尺/.test(w));
 	return model;
+}
+//#endregion
+//#region src/core/floorArea.ts
+/**
+* 階の床面積の数え方（図面の面積表・読み取りの点数・見積の拾いで共通）。
+* 吹抜・バルコニー・ポーチ・車庫は床面積に入れない。ただし「階段室の吹抜」（下の階の階段の真上にある小さな吹抜 ＝ 上の階で階段が着く所）は、
+* 図面の面積表でも床に数えられている（有元様邸の 3 階: 階段の上 8.28 ㎡ を吹抜と読んでいたが、面積表の 65.33 ㎡ はそれを含む）ので床に数える。
+*/
+/** 下の階の階段の真上にある小さな吹抜（12 ㎡ まで）で、その半分以上が階段に重なるもの */
+function isStairwellVoid(r, below) {
+	if (r.type !== "void" || !below || r.polygon.length < 3 || r.area <= 0 || r.area > 12) return false;
+	const stairRooms = below.rooms.filter((s) => s.type === "stairs" && s.polygon.length >= 3);
+	const stairRects = below.stairs ?? [];
+	if (!stairRooms.length && !stairRects.length) return false;
+	const xs = r.polygon.map((p) => p.x);
+	const ys = r.polygon.map((p) => p.y);
+	const step = 100;
+	let inVoid = 0;
+	let inStair = 0;
+	for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step) for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step) {
+		const p = {
+			x,
+			y
+		};
+		if (!pointInPolygon(p, r.polygon)) continue;
+		inVoid++;
+		if (stairRooms.some((s) => pointInPolygon(p, s.polygon)) || stairRects.some((s) => x >= s.minX && x <= s.maxX && y >= s.minY && y <= s.maxY)) inStair++;
+	}
+	return inVoid > 0 && inStair / inVoid >= .5;
+}
+/** 階の床面積（㎡）: 部屋の面積の合計から吹抜・バルコニー・ポーチ・車庫を除く（階段室の吹抜は床に数える） */
+function floorAreaOf(f, floors) {
+	const below = floors.find((x) => x.level === f.level - 1);
+	return f.rooms.filter((r) => !excludedFromFloorArea(r.type) || isStairwellVoid(r, below)).reduce((s, r) => s + r.area, 0);
 }
 //#endregion
 //#region src/core/sash.ts
@@ -13798,7 +13968,7 @@ function livabilityChecks(model) {
 			});
 		}
 		const storage = f.rooms.filter((r) => r.type === "closet" || r.type === "storage").reduce((s, r) => s + r.area, 0);
-		const floorArea = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0);
+		const floorArea = floorAreaOf(f, model.floors);
 		if (floorArea > 30 && storage / floorArea < .08) out.push({
 			id: `storage-${f.level}`,
 			level: f.level,
@@ -14347,9 +14517,10 @@ function takeoff(model, opts) {
 	const fl = (lv) => floors.find((f) => f.level === lv);
 	const garageRooms = (f) => f.rooms.filter((r) => isBuiltinGarage$1(r) && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
 	const garageArea = r2$1(floors.reduce((s, f) => s + garageRooms(f).reduce((t, r) => t + r.area, 0), 0));
+	const isStairwell = (f, r) => isStairwellVoid(r, fl(f.level - 1));
 	const floorArea = (f) => {
 		if (!f) return 0;
-		const inner = f.rooms.filter((r) => (r.type === "void" || r.type === "balcony") && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y));
+		const inner = f.rooms.filter((r) => (r.type === "void" || r.type === "balcony") && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y) && !isStairwell(f, r));
 		return Math.max(0, outlineArea$1(f) - inner.reduce((s, r) => s + r.area, 0) - garageRooms(f).reduce((s, r) => s + r.area, 0));
 	};
 	const floor1 = r2$1(floorArea(fl(1)));
@@ -14359,7 +14530,7 @@ function takeoff(model, opts) {
 	const porchRooms = floors.reduce((s, f) => s + roomsArea(f, ["porch"]), 0);
 	const isCourt = (name) => /中庭|坪庭|パティオ|ライトコート|テラス|ドッグラン/.test(name);
 	const balconyArea = r2$1(floors.filter((f) => f.level >= 2).reduce((s, f) => s + f.rooms.filter((r) => r.type === "balcony" && !isCourt(r.name)).reduce((t, r) => t + r.area, 0), 0));
-	const voidArea = r2$1(floors.filter((f) => f.level >= 2).reduce((s, f) => s + roomsArea(f, ["void"]), 0));
+	const voidArea = r2$1(floors.filter((f) => f.level >= 2).reduce((s, f) => s + f.rooms.filter((r) => r.type === "void" && !isStairwell(f, r)).reduce((t, r) => t + r.area, 0), 0));
 	const ov = overlay(floors);
 	const pilotis = ov.exposedBelow[1] ?? 0;
 	const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0);
@@ -14396,14 +14567,16 @@ function takeoff(model, opts) {
 	const ridgeLen = r2$1(opts.roofType === "flat" ? 0 : opts.roofType === "shed" ? 10 : longSide);
 	let garageCeil = 0;
 	let garageWall = 0;
+	let porchCeil = 0;
 	for (let i = 0; i < floors.length; i++) {
 		const f = floors[i];
 		for (const g of garageRooms(f)) {
 			garageCeil += uncoveredArea(g.polygon, floors.slice(i + 1));
 			garageWall += exteriorEdgeLen(f, g.polygon) * (f.height / 1e3 + (f.level === 1 ? FOUND_H : 0));
 		}
+		for (const p of f.rooms.filter((r) => r.type === "porch" && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y))) porchCeil += uncoveredArea(p.polygon, floors.slice(i + 1));
 	}
-	const insulArea = r2$1(Math.max(0, roofPlan - garageCeil + overhang));
+	const insulArea = r2$1(Math.max(0, roofPlan - garageCeil - porchCeil + overhang));
 	const insulWall = r2$1(Math.max(0, extWall - garageWall));
 	const siteEdge = r2$1(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1e3 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
 	const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
@@ -14427,6 +14600,10 @@ function takeoff(model, opts) {
 	const upperWall = f2 ? f2.outline.reduce((s, l) => s + perimeter(l), 0) / 1e3 * (f2.height / 1e3) * .85 : 0;
 	const solidoArea = r2$1(solido === "upper" ? upperWall : solido === "lower" ? extWall - upperWall : solido === "entrance" ? 15 : 0);
 	const solidoCorners = solido === "upper" ? f2?.outline.reduce((s, l) => s + l.length, 0) ?? 0 : solido === "lower" ? f1?.outline.reduce((s, l) => s + l.length, 0) ?? 0 : solido === "entrance" ? 2 : 0;
+	const highCeil = r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((t, r) => {
+		const ch = r.ceilingHeight ?? f.ceilingHeight;
+		return t + (ch > 2500 ? (ch - 2500) / 1e3 * r.area : 0);
+	}, 0), 0));
 	return {
 		grade: opts.grade,
 		floor1,
@@ -14453,7 +14630,7 @@ function takeoff(model, opts) {
 		corners,
 		insulArea,
 		insulWall,
-		highCeil: 0,
+		highCeil,
 		slopeCeil: 0,
 		siteEdge,
 		doors,
@@ -14490,6 +14667,7 @@ function takeoff(model, opts) {
 		septic: false,
 		structCalc: false,
 		evOutlet: false,
+		elevator: floors.some((f) => f.rooms.some((r) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, "")))),
 		soundArea: 0,
 		innerTileArea: 0,
 		innerSolidoArea: 0,
@@ -21827,9 +22005,9 @@ function openingSchedule(f) {
 	}
 	return out;
 }
-/** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く */
-function floorArea(f) {
-	return f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0);
+/** 階の床面積（㎡）: 吹抜・バルコニー・ポーチ・車庫を除く（階段室の吹抜は床に数える） */
+function floorArea(f, floors = []) {
+	return floorAreaOf(f, floors);
 }
 /** 外形の面積（㎡。穴は引く） */
 function outlineArea(f) {
@@ -21853,7 +22031,7 @@ function areaTableSvg(model, x, y) {
 	const rows = [];
 	let total = 0;
 	for (const f of model.floors) {
-		const a = floorArea(f);
+		const a = floorArea(f, model.floors);
 		total += a;
 		rows.push([
 			`${f.level}階 床面積`,
@@ -24551,6 +24729,18 @@ var CATEGORIES = [
 				cost: 0,
 				group: "pv",
 				on: "none"
+			},
+			{
+				id: "eq.elevator",
+				spec: "昇降設備",
+				desc: "家庭用エレベーター ※概算（メーカー見積で確定）",
+				unit: "式",
+				cost: 3081e3,
+				margin: .8,
+				qty: (a) => a.elevator ? 1 : 0,
+				qtyNote: "図面に EV の区画があれば 1",
+				optional: true,
+				on: "both"
 			}
 		]
 	},

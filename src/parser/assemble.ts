@@ -486,7 +486,7 @@ export function looksLikeRoomName(raw: string): boolean {
  * 吹抜の範囲: 「吹抜」の文字を含み、対角線（×印）が引かれた長方形。
  * 吹抜は手すり・腰壁の細い線で描かれ壁として拾えないため、×印から範囲を求める。
  */
-export function voidRectangles(plan: { segs: Seg[]; texts: MmText[] }): BBox[] {
+export function voidRectangles(plan: { segs: Seg[]; texts: MmText[]; walls?: { a: Vec2; b: Vec2 }[] }, level?: number): BBox[] {
   const voidTexts = plan.texts.filter((t) => /吹抜|吹き抜け|VOID/i.test(t.str));
   if (!voidTexts.length) return [];
   // 斜めの線（文字の部分などで途切れたものは、同じ直線上でつなぐ）
@@ -555,6 +555,55 @@ export function voidRectangles(plan: { segs: Seg[]; texts: MmText[] }): BBox[] {
       if (!cr(A.a, A.b, B.a, B.b)) continue;
       if (!voidTexts.some((t) => t.x > bb.minX && t.x < bb.maxX && t.y > bb.minY && t.y < bb.maxY)) continue;
       if (out.some((o) => Math.abs(o.minX - bb.minX) < 200 && Math.abs(o.minY - bb.minY) < 200)) continue;
+      out.push(bb);
+    }
+  }
+  // × 印の無い吹抜（堀様邸の 2 階: 白い長方形に「吹抜」の文字だけで、ホールとの境は手すりの細い線）:
+  // 文字の上下左右で最も近い細い線（手すり・腰壁）または壁を 4 辺とする長方形。4 辺とも 8 割以上が線で囲まれ、中にほかの室名が無いもの。
+  // 1 階の「上部吹抜」（破線の範囲）は対象外（2 階以上の「吹抜」だけ）
+  if (level == null || level >= 2) {
+    type Ln = { o: number; t0: number; t1: number };
+    const H: Ln[] = [];
+    const V: Ln[] = [];
+    const addLn = (a: Vec2, b: Vec2) => {
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      if (L < 300) return;
+      if (Math.abs(b.y - a.y) < L * 0.02) H.push({ o: (a.y + b.y) / 2, t0: Math.min(a.x, b.x), t1: Math.max(a.x, b.x) });
+      else if (Math.abs(b.x - a.x) < L * 0.02) V.push({ o: (a.x + b.x) / 2, t0: Math.min(a.y, b.y), t1: Math.max(a.y, b.y) });
+    };
+    for (const s of plan.segs) if (!s.dashed) addLn(s.a, s.b);
+    for (const w of plan.walls ?? []) addLn(w.a, w.b);
+    const covered = (lines: Ln[], o: number, t0: number, t1: number) => {
+      const ivs = lines
+        .filter((l) => Math.abs(l.o - o) <= 60 && l.t1 > t0 && l.t0 < t1)
+        .map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)] as [number, number])
+        .sort((p, q) => p[0] - q[0]);
+      let s = 0;
+      let cur = -Infinity;
+      for (const [a, b] of ivs) {
+        const a2 = Math.max(a, cur);
+        if (b > a2) {
+          s += b - a2;
+          cur = b;
+        }
+      }
+      return s;
+    };
+    const isRoomLabel = (s: string) => /[぀-ヿ㐀-鿿]{2,}/.test(s) && !/吹抜|吹き抜け|手摺|手すり|腰壁|笠木|勾配|天井|ガラス|窓/.test(s);
+    for (const t of voidTexts) {
+      if (!/^(吹抜|吹き抜け|VOID)$/i.test(t.str.replace(/\s/g, ''))) continue;
+      if (out.some((o) => t.x > o.minX && t.x < o.maxX && t.y > o.minY && t.y < o.maxY)) continue;
+      const above = H.filter((l) => l.o < t.y - 150 && l.t0 <= t.x && l.t1 >= t.x).sort((p, q) => q.o - p.o)[0];
+      const below = H.filter((l) => l.o > t.y + 150 && l.t0 <= t.x && l.t1 >= t.x).sort((p, q) => p.o - q.o)[0];
+      const left = V.filter((l) => l.o < t.x - 150 && l.t0 <= t.y && l.t1 >= t.y).sort((p, q) => q.o - p.o)[0];
+      const right = V.filter((l) => l.o > t.x + 150 && l.t0 <= t.y && l.t1 >= t.y).sort((p, q) => p.o - q.o)[0];
+      if (!above || !below || !left || !right) continue;
+      const bb: BBox = { minX: left.o, maxX: right.o, minY: above.o, maxY: below.o };
+      const w = bb.maxX - bb.minX;
+      const h = bb.maxY - bb.minY;
+      if (w < 1200 || h < 1200 || w * h > 60e6) continue;
+      if (covered(H, bb.minY, bb.minX, bb.maxX) < w * 0.8 || covered(H, bb.maxY, bb.minX, bb.maxX) < w * 0.8 || covered(V, bb.minX, bb.minY, bb.maxY) < h * 0.8 || covered(V, bb.maxX, bb.minY, bb.maxY) < h * 0.8) continue;
+      if (plan.texts.some((q) => q !== t && q.x > bb.minX + 100 && q.x < bb.maxX - 100 && q.y > bb.minY + 100 && q.y < bb.maxY - 100 && isRoomLabel(q.str))) continue;
       out.push(bb);
     }
   }
@@ -907,16 +956,19 @@ function followingOnLine(t: MmText, texts: MmText[], maxSizes: number): MmText[]
 }
 
 /** 面積表（「1階 100.20」「2階 34.15」）を読む。階 → ㎡ */
-export function readAreaTable(pages: PageMm[]): Record<number, number> {
-  const out: Record<number, number> = {};
+export function readAreaTable(pages: PageMm[]): Record<number, number> & { build?: number; total?: number } {
+  const out: Record<number, number> & { build?: number; total?: number } = {};
   for (const p of pages) {
     for (const t of p.texts) {
-      const m = /^([1-9])階$/.exec(normalizeText(t.str).replace(/\s/g, ''));
-      if (!m) continue;
+      const s = normalizeText(t.str).replace(/\s/g, '');
+      const m = /^([1-9])階$/.exec(s);
+      // 建築面積・延床面積も拾う（上下階の重ね位置の検算に使う）
+      const key: number | 'build' | 'total' | null = m ? +m[1] : /^建築面積$/.test(s) ? 'build' : /^延床面積$|^延べ床面積$/.test(s) ? 'total' : null;
+      if (key == null) continue;
       const cands = followingOnLine(t, p.texts, 20)
         .map((q) => ({ q, v: /^(\d{1,3}\.\d{1,2})(㎡|m2|m²)?$/.exec(normalizeText(q.str).replace(/\s/g, '')) }))
         .filter((o) => o.v);
-      if (cands.length && out[+m[1]] == null) out[+m[1]] = parseFloat(cands[0].v![1]);
+      if (cands.length && (out as Record<string, number | undefined>)[key] == null) (out as Record<string, number>)[key] = parseFloat(cands[0].v![1]);
     }
   }
   return out;
@@ -1168,7 +1220,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
   // 部屋の区切り: 壁・壁の塗り・窓の白抜き・吹抜（×印の四角）の輪郭
-  const voidRects = voidRectangles(plan);
+  const voidRects = voidRectangles(plan, level);
   const drawBarriers = () => {
     for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, WALL);
     for (const poly of plan.wallPolys) grid.fillPolygon(poly, WALL);
@@ -2411,6 +2463,27 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
   }
 }
 
+/** 各階の外形を真上から重ねた面積（㎡。100mm の格子で数える。建築面積の検算用） */
+export function outlineUnionArea(floors: { outline: Vec2[][] }[]): number {
+  const loops = floors.flatMap((f) => f.outline).filter((l) => l.length >= 3);
+  if (!loops.length) return 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const l of loops)
+    for (const q of l) {
+      minX = Math.min(minX, q.x);
+      minY = Math.min(minY, q.y);
+      maxX = Math.max(maxX, q.x);
+      maxY = Math.max(maxY, q.y);
+    }
+  const step = 100;
+  let n = 0;
+  for (let y = minY + step / 2; y < maxY; y += step) for (let x = minX + step / 2; x < maxX; x += step) if (loops.some((l) => pointInPolygon({ x, y }, l))) n++;
+  return (n * step * step) / 1e6;
+}
+
 /** 上階の図面を下階に位置合わせするための平行移動量（壁の重なり・階段位置・外形の包含で評価） */
 export function alignOffset(base: PlanData, other: PlanData): Vec2 {
   type AX = { c: number; t0: number; t1: number };
@@ -2458,12 +2531,22 @@ export function alignOffset(base: PlanData, other: PlanData): Vec2 {
       dxs.add(Math.round((a.minX + a.maxX) / 2 - (b.minX + b.maxX) / 2));
       dys.add(Math.round((a.minY + a.maxY) / 2 - (b.minY + b.maxY) / 2));
     }
+  // エレベーター（EV）は上下階で同じ位置に通る → 文字の位置を合わせる候補と加点
+  const evOf = (p: PlanData) => p.texts.filter((t) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター)$/i.test(normalizeText(t.str).replace(/\s/g, '')));
+  const evA = evOf(base);
+  const evB = evOf(other);
+  for (const a of evA)
+    for (const b of evB) {
+      dxs.add(Math.round(a.x - b.x));
+      dys.add(Math.round(a.y - b.y));
+    }
   const areaB = (other.bbox.maxX - other.bbox.minX) * (other.bbox.maxY - other.bbox.minY);
   let best = { x: 0, y: 0 };
   let bestScore = -Infinity;
   for (const dx of dxs)
     for (const dy of dys) {
       let score = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
+      for (const a of evA) for (const b of evB) score += 30000 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
       // 階段が重なる
       for (const a of sa)
         for (const b of sb) {
@@ -2746,7 +2829,14 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   // 位置合わせ
   const base = sorted[0];
   if (base) {
-    if (!samePageUnhinted) for (const p of sorted.slice(1)) translatePlan(p, alignOffset(base, p));
+    // 上の階は「すぐ下の階」に順に合わせる（3 階を 1 階に合わせると、1 階が小さい 3 階建て（有元様邸: 1 階 5m 四方の下屋・駐車場）で手がかりが足りずにずれる）
+    if (!samePageUnhinted) {
+      let below = base;
+      for (const p of sorted.slice(1)) {
+        translatePlan(p, alignOffset(below, p));
+        below = p;
+      }
+    }
     // 原点を1階の左上へ
     const o = { x: -base.bbox.minX, y: -base.bbox.minY };
     for (const p of sorted) translatePlan(p, o);
@@ -2800,6 +2890,37 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       f.level = lv++;
       f.elevation = e;
       e += f.height;
+    }
+  }
+  // 面積表の建築面積で上下階の重ね位置を検算: 各階の外形を重ねた面積が建築面積と 5% 以上違い、上の階を半間・1 間だけずらすと 3% 以内に収まるなら、その位置に直す。
+  // 910 の格子に乗った家は壁の重なりだけでは半間ずれた位置も同じくらい良く見える（舟橋様邸: 2 階が 910 北にずれて重なり、建築面積 77.29 → 84.28 ㎡、無いはずの張り出し 8.5 ㎡ が生まれていた）
+  if (!samePageUnhinted && floors.length >= 2 && areaTable.build != null && areaTable.build > 5) {
+    const build = areaTable.build;
+    const err0 = Math.abs(outlineUnionArea(floors) - build) / build;
+    if (err0 > 0.05) {
+      for (let i = 1; i < floors.length; i++) {
+        const shifts = [-910, -455, 0, 455, 910];
+        let best: { d: Vec2; err: number } | null = null;
+        for (const dx of shifts)
+          for (const dy of shifts) {
+            if (!dx && !dy) continue;
+            const moved = floors.map((f, k) => (k >= i ? { ...f, outline: f.outline.map((l) => l.map((q) => ({ x: q.x + dx, y: q.y + dy }))) } : f));
+            const err = Math.abs(outlineUnionArea(moved) - build) / build;
+            if (!best || err < best.err) best = { d: { x: dx, y: dy }, err };
+          }
+        if (!best || best.err > 0.03 || best.err >= err0 / 2) continue;
+        // その階とその上の階の図面をずらして組み立て直す（上の階はその階に合わせてあるので一緒に動く）
+        for (let k = i; k < floors.length; k++) {
+          const p = planOf.get(floors[k])!;
+          translatePlan(p, best.d);
+          const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+          nf.elevation = floors[k].elevation;
+          planOf.set(nf, p);
+          floors[k] = nf;
+        }
+        warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ''}${best.d.x && best.d.y ? '・' : ''}${best.d.y ? `上下 ${best.d.y} mm` : ''} 動かしました（方眼で上下階の重なりを確認してください）`);
+        break;
+      }
     }
   }
   // 1階の室名の無い区画で、上階に床が無く（2階図で空白）、周囲の大半がガラス戸・窓なら中庭（コの字プランの光庭）。

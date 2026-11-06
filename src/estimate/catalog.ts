@@ -278,6 +278,8 @@ export const CATEGORIES: CategoryDef[] = [
       { id: 'eq.ecoone', spec: '給湯器', desc: 'エコワン 70L ※ウルトラファインバブル付き', unit: '式', cost: 650000, group: 'water', on: 'none' },
       { id: 'eq.pv43', spec: '太陽光', desc: '【キューセルズ】4.3kw パワコン込', unit: '式', cost: 1100000, group: 'pv', on: 'both' },
       { id: 'eq.pvNone', spec: '太陽光', desc: '太陽光なし', unit: '式', cost: 0, group: 'pv', on: 'none' },
+      // 図面に EV の区画があれば入る（有元様邸の積算 26.10.12: 家庭用エレベーター 3,851,420 円）
+      { id: 'eq.elevator', spec: '昇降設備', desc: '家庭用エレベーター ※概算（メーカー見積で確定）', unit: '式', cost: 3081000, margin: 0.8, qty: (a) => (a.elevator ? 1 : 0), qtyNote: '図面に EV の区画があれば 1', optional: true, on: 'both' },
     ],
   },
   {

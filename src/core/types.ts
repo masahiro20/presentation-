@@ -217,8 +217,8 @@ export interface ParseReport {
   timingsMs: Record<string, number>;
   /** 方位記号が読み取れたか（false = 図面の上を北とみなした） */
   northDetected?: boolean;
-  /** 図面の面積表（階 → ㎡）。読み取りの点数で階の広さの検算に使う */
-  areaTable?: Record<number, number>;
+  /** 図面の面積表（階 → ㎡。build = 建築面積、total = 延床面積）。読み取りの点数で階の広さ・上下階の重なりの検算に使う */
+  areaTable?: Record<number, number> & { build?: number; total?: number };
 }
 
 /** 図面上の辺（図面の上 = top） */

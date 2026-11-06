@@ -22,6 +22,7 @@ import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
+import { siteSize, syncSiteFromPolygon } from '../parser/site';
 import { stairDrawing } from '../core/stairs';
 import { SOFA_SHAPES, LEG_SIDES, WASH_STYLES } from '../scene/furniture';
 
@@ -125,7 +126,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let seq = 0;
 
   const W = () => works[fi];
-  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null });
+  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null, site: model.site ?? null });
   const pushUndo = () => {
     undo.push(`${fi}|${snapshot()}`);
     if (undo.length > 60) undo.shift();
@@ -139,12 +140,32 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     W().labels = o.labels;
     W().removed = o.removed;
     furn.set(W().floor.level, o.furn ?? null);
+    if ('site' in o) {
+      if (o.site) model.site = o.site;
+      else delete model.site;
+    }
     autoCache = null;
     sel = null;
     furnSel = null;
     markChanged();
     draw();
   };
+  /** 敷地の形（図面座標）: 多角形があればそれ、無ければ 4 辺の境界の位置から。分からなければ null */
+  const sitePolygonOf = (): Vec2[] | null => {
+    const s = model.site;
+    if (!s) return null;
+    if (s.polygon && s.polygon.length >= 3) return s.polygon;
+    const b = s.bounds;
+    if (b.left != null && b.right != null && b.top != null && b.bottom != null)
+      return [
+        { x: b.left, y: b.top },
+        { x: b.right, y: b.top },
+        { x: b.right, y: b.bottom },
+        { x: b.left, y: b.bottom },
+      ];
+    return null;
+  };
+  const isBaseFloor = () => W().floor.level === Math.min(...works.map((w) => w.floor.level));
 
   // ---- 画面 ----
   const root = h('div', { class: `pe-root${embedded ? ' pe-embedded' : ''}` });
@@ -155,7 +176,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const floorTabs = h('div', { class: 'pe-tabs' });
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolDefs: [Tool, string, string][] = [
-    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）。選んだ壁の両端の丸をドラッグすると伸ばせます（方眼の格子に止まる。Alt でフリー）'],
+    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）。選んだ壁の両端の丸をドラッグすると伸ばせます（方眼の格子に止まる。Alt でフリー）。1 階では敷地の角（緑の丸）をドラッグして敷地の形を直せます'],
     ['wall', '壁を描く', 'クリックで始点、もう一度クリックで終点。続けて描けます。方眼の格子（半間 455）に止まります（Esc / 右クリックで終了、Shift で斜め、Alt を押している間はフリー）'],
     ['window', '窓', '壁をクリックすると窓を置きます'],
     ['door', '開き戸', '壁をクリックすると開き戸を置きます'],
@@ -567,6 +588,23 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
+    // 敷地（1 階だけ）: 境界線を一点鎖線で。選択の道具では角の丸をドラッグして直せる
+    const sitePoly = isBaseFloor() ? sitePolygonOf() : null;
+    if (sitePoly) {
+      const px = mmPerPx();
+      el('polygon', { points: sitePoly.map((p) => `${p.x},${p.y}`).join(' '), fill: '#6f9a5a', 'fill-opacity': 0.06, stroke: '#4f8a3c', 'stroke-width': 2 * px, 'stroke-dasharray': `${26 * px} ${7 * px} ${5 * px} ${7 * px}`, 'pointer-events': 'none' }, gGhost);
+      const sz = siteSize(model.site);
+      if (sz) {
+        const top = sitePoly.reduce((a, p) => (p.y < a.y || (p.y === a.y && p.x < a.x) ? p : a), sitePoly[0]);
+        const t = el('text', { x: top.x + 10 * px, y: top.y - 6 * px, 'font-size': 11 * px, fill: '#4f8a3c', 'pointer-events': 'none', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gGhost);
+        t.textContent = `敷地 ${(sz.w / 1000).toFixed(1)} × ${(sz.h / 1000).toFixed(1)} m（${sz.areaM2.toFixed(1)} ㎡・${(sz.areaM2 / 3.30579).toFixed(1)} 坪）`;
+      }
+      if (tool === 'select')
+        sitePoly.forEach((p, i) => {
+          const c = el('circle', { cx: p.x, cy: p.y, r: 6.5 * px, fill: '#fff', stroke: '#4f8a3c', 'stroke-width': 2.5 * px, class: 'pe-site', cursor: 'move' }, gPreviewStatic);
+          (c as SVGElement).dataset.index = String(i);
+        });
+    }
     // 他の階（位置合わせの目安）
     for (const o of works)
       if (o !== W())
@@ -1444,6 +1482,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let endDrag: { moved: boolean; start: Vec2; ends: { w: Wall; end: 'a' | 'b' }[]; ops: { op: Opening; c0: Vec2; c1: Vec2 }[]; anchor: Vec2 } | null = null;
   /** 窓・戸を壁に沿って動かす（st = 掴んだ時の壁上の位置、ot0 = 元の t0） */
   let opDrag: { op: Opening; w: Wall; st: number; ot0: number; moved: boolean } | null = null;
+  /** 敷地の角のドラッグ（1 階の選択の道具） */
+  let siteDrag: { index: number; moved: boolean; start: Vec2 } | null = null;
   /** 壁を描く途中の数字入力（長さ mm）と、最後のカーソル位置（向きに使う） */
   let lenBuf = '';
   let lastCursor: Vec2 | null = null;
@@ -1496,6 +1536,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         drag = null;
         endDrag = null;
         opDrag = null;
+        siteDrag = null;
         stairDrag = null;
         stairDraw = null;
         ceilDraw = null;
@@ -1586,6 +1627,17 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     }
     if (tool === 'select') {
       const t = e.target as SVGElement;
+      if (t.classList.contains('pe-site') && model.site) {
+        // 敷地の角: 多角形が無ければ 4 辺の境界から作ってから動かす
+        const poly = sitePolygonOf();
+        const index = +(t.dataset.index ?? -1);
+        if (poly && poly[index]) {
+          if (!model.site.polygon) model.site.polygon = poly.map((q) => ({ ...q }));
+          siteDrag = { index, moved: false, start: { ...poly[index] } };
+          svg.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       if (t.classList.contains('pe-handle') && sel?.kind === 'wall') {
         const sw = W().floor.walls.find((x) => x.id === (sel as { id: string }).id);
         if (sw) {
@@ -1666,6 +1718,29 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     const p = toMm(e);
     const px = mmPerPx();
+    if (siteDrag && model.site?.polygon) {
+      if (!siteDrag.moved && Math.hypot(p.x - siteDrag.start.x, p.y - siteDrag.start.y) < 3 * px) return;
+      if (!siteDrag.moved) {
+        pushUndo();
+        siteDrag.moved = true;
+      }
+      // 5cm 刻み。Shift で隣の角と縦横をそろえる
+      const poly = model.site.polygon;
+      let q = { x: Math.round(p.x / 50) * 50, y: Math.round(p.y / 50) * 50 };
+      if (e.shiftKey) {
+        const prev = poly[(siteDrag.index + poly.length - 1) % poly.length];
+        const next = poly[(siteDrag.index + 1) % poly.length];
+        const nearX = [prev, next].map((o) => ({ o, d: Math.abs(o.x - q.x) })).sort((a, b) => a.d - b.d)[0];
+        const nearY = [prev, next].map((o) => ({ o, d: Math.abs(o.y - q.y) })).sort((a, b) => a.d - b.d)[0];
+        q = { x: nearX.d < 600 ? nearX.o.x : q.x, y: nearY.d < 600 ? nearY.o.y : q.y };
+      }
+      poly[siteDrag.index] = q;
+      syncSiteFromPolygon(model.site);
+      draw();
+      const t = el('text', { x: q.x + 12 * px, y: q.y - 10 * px, 'font-size': 12 * px, fill: '#4f8a3c', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke' }, gPreview);
+      t.textContent = `(${(q.x / 1000).toFixed(2)}, ${(q.y / 1000).toFixed(2)}) m`;
+      return;
+    }
     if (endDrag) {
       if (!endDrag.moved && Math.hypot(p.x - endDrag.start.x, p.y - endDrag.start.y) < 3 * px) return;
       if (!endDrag.moved) {
@@ -1908,6 +1983,12 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         if (touches.size < 2) pinch = null;
         return;
       }
+    }
+    if (siteDrag) {
+      const d = siteDrag;
+      siteDrag = null;
+      if (d.moved) markChanged();
+      draw();
     }
     if (opDrag) {
       const d = opDrag;

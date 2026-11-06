@@ -105,7 +105,7 @@ var lerp = (a, b, t) => ({
 	x: a.x + (b.x - a.x) * t,
 	y: a.y + (b.y - a.y) * t
 });
-function polygonArea(poly) {
+function polygonArea$1(poly) {
 	let s = 0;
 	for (let i = 0; i < poly.length; i++) {
 		const p = poly[i];
@@ -3791,7 +3791,7 @@ function traceMask(mask, grid, simplifyTol) {
 		}
 	}
 	const tol = simplifyTol ?? grid.res * 1.2;
-	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea(b)) - Math.abs(polygonArea(a)));
+	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea$1(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea$1(b)) - Math.abs(polygonArea$1(a)));
 }
 //#endregion
 //#region src/parser/rasterWalls.ts
@@ -4664,7 +4664,7 @@ function detectSite(texts, segs, bbox, northAngleDeg) {
 		})).filter((l) => l.dashed && l.d > 300 && l.d < 12e3).sort((p, q) => q.d - p.d);
 		if (lines.length) bounds[side] = lines[0].pos;
 	}
-	const edges = labeledEdges(texts, segs);
+	let edges = labeledEdges(texts, segs, bbox);
 	let polygon;
 	let roadList = [...roads.values()].map(({ textDist: _d, ...r }) => r);
 	if (edges.length) {
@@ -4695,6 +4695,7 @@ function detectSite(texts, segs, bbox, northAngleDeg) {
 			roadList = [...bySide.values()].map(({ len: _l, ...r }) => r);
 		}
 		polygon = sitePolygon(edges, c);
+		const labeledSides = /* @__PURE__ */ new Set();
 		for (const e of edges) {
 			const m = {
 				x: (e.a.x + e.b.x) / 2,
@@ -4706,7 +4707,8 @@ function detectSite(texts, segs, bbox, northAngleDeg) {
 			});
 			const v = side === "left" || side === "right" ? m.x : m.y;
 			const cur = bounds[side];
-			if (cur == null || (side === "left" || side === "top" ? cur == null || v < cur : cur == null || v > cur)) bounds[side] = v;
+			if (cur == null || (side === "left" || side === "top" ? cur == null || v < cur : cur == null || v > cur) || !labeledSides.has(side)) bounds[side] = v;
+			labeledSides.add(side);
 		}
 		if (polygon) {
 			bounds.left = Math.min(...polygon.map((q) => q.x));
@@ -4715,18 +4717,36 @@ function detectSite(texts, segs, bbox, northAngleDeg) {
 			bounds.bottom = Math.max(...polygon.map((q) => q.y));
 		}
 	}
-	if (!roadList.length && !Object.keys(bounds).length && !areaM2 && !edges.length) return null;
+	let warning;
+	const bw = Math.max(1, bbox.maxX - bbox.minX);
+	const bh = Math.max(1, bbox.maxY - bbox.minY);
+	const sw = bounds.left != null && bounds.right != null ? bounds.right - bounds.left : 0;
+	const sh = bounds.top != null && bounds.bottom != null ? bounds.bottom - bounds.top : 0;
+	if (sw > bw * SITE_MAX_RATIO + SITE_MAX_EXTRA || sh > bh * SITE_MAX_RATIO + SITE_MAX_EXTRA) {
+		warning = `敷地境界線が建物の ${Math.max(sw / bw, sh / bh).toFixed(1)} 倍（${(sw / 1e3).toFixed(1)} × ${(sh / 1e3).toFixed(1)} m）に読めたため、図面の敷地線は使わず標準の余白にしました（図面読込の「接道・敷地」で作り直せます）`;
+		polygon = void 0;
+		edges = [];
+		for (const sd of SIDES) delete bounds[sd];
+	}
+	if (!roadList.length && !Object.keys(bounds).length && !areaM2 && !edges.length && !warning) return null;
 	return {
 		roads: roadList,
 		edges: edges.length ? edges : void 0,
 		polygon,
 		bounds,
-		areaM2
+		areaM2,
+		...warning ? { warning } : {}
 	};
 }
-/** 境界線の文字に沿った線を探し、同じ直線上の線（1点鎖線の断片）をつないで1本の辺にする */
-function labeledEdges(texts, segs) {
-	const out = [];
+/** 敷地は建物の外形（幅・奥行）の何倍まで信じるか。都市部の建蔽率 40〜60% なら 1.5〜2 倍、郊外でも 3 倍程度 */
+var SITE_MAX_RATIO = 4;
+var SITE_MAX_EXTRA = 8e3;
+/**
+* 境界線の文字に沿った線を探し、同じ直線上の線（1点鎖線の断片）をつないで1本の辺にする。
+* 文字の近くに線が何本もあるとき（図枠・寸法線が並ぶ）は、ほかの境界線の文字の線と端でつながる線を境界線と見る
+*/
+function labeledEdges(texts, segs, bbox) {
+	const labels = [];
 	for (const t of texts) {
 		const s = normalizeText(t.str);
 		const kind = /道路境界/.test(s) ? "road" : /隣地境界|敷地境界/.test(s) ? "neighbor" : null;
@@ -4734,36 +4754,62 @@ function labeledEdges(texts, segs) {
 		const ang = t.angle ?? 0;
 		const dx = Math.cos(ang);
 		const dy = Math.sin(ang);
-		let best = null;
-		let bestD = Math.max(t.size * 3, 500);
+		const tol = Math.max(t.size * 3, 500);
+		const cands = [];
 		for (const sg of segs) {
 			const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
-			if (L < 300) continue;
+			if (L < 150) continue;
 			const ux = (sg.b.x - sg.a.x) / L;
 			const uy = (sg.b.y - sg.a.y) / L;
 			if (Math.abs(ux * dy - uy * dx) > .07) continue;
 			const d = Math.abs((t.x - sg.a.x) * -uy + (t.y - sg.a.y) * ux);
 			const tt = (t.x - sg.a.x) * ux + (t.y - sg.a.y) * uy;
 			if (tt < -3e3 || tt > L + 3e3) continue;
-			if (d < bestD) {
-				bestD = d;
-				best = sg;
+			if (d < tol) cands.push({
+				sg,
+				d,
+				L
+			});
+		}
+		if (cands.length) labels.push({
+			t,
+			kind,
+			tol,
+			cands
+		});
+	}
+	const bmax = bbox ? Math.max(bbox.maxX - bbox.minX, bbox.maxY - bbox.minY) : 0;
+	const tooLong = (L) => bmax > 0 && L > bmax * SITE_MAX_RATIO + SITE_MAX_EXTRA;
+	const joinCap = bmax > 0 ? bmax * SITE_MAX_RATIO + SITE_MAX_EXTRA : 6e4;
+	const endsNear = (p, q) => [p.a, p.b].some((u) => [q.a, q.b].some((v) => Math.hypot(u.x - v.x, u.y - v.y) < 250));
+	const out = [];
+	for (let i = 0; i < labels.length; i++) {
+		const { kind, tol, cands } = labels[i];
+		let best = null;
+		let bestScore = Infinity;
+		for (const c of cands) {
+			const connected = labels.some((o, j) => j !== i && o.cands.some((oc) => oc.sg !== c.sg && endsNear(c.sg, oc.sg)));
+			const score = c.d / tol + (connected ? -1.2 : 0) + (c.sg.dashed ? -.3 : 0) + (tooLong(c.L) ? 1.5 : 0);
+			if (score < bestScore) {
+				bestScore = score;
+				best = c;
 			}
 		}
 		if (!best) continue;
-		const L0 = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y);
-		const ux = (best.b.x - best.a.x) / L0;
-		const uy = (best.b.y - best.a.y) / L0;
+		const base = best.sg;
+		const L0 = best.L;
+		const ux = (base.b.x - base.a.x) / L0;
+		const uy = (base.b.y - base.a.y) / L0;
 		const dashLike = (sg) => !!sg.dashed || Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 1500;
-		const bestDash = dashLike(best);
+		const bestDash = dashLike(base);
 		const ivs = [];
 		for (const sg of segs) {
-			const offA = (sg.a.x - best.a.x) * -uy + (sg.a.y - best.a.y) * ux;
-			const offB = (sg.b.x - best.a.x) * -uy + (sg.b.y - best.a.y) * ux;
+			const offA = (sg.a.x - base.a.x) * -uy + (sg.a.y - base.a.y) * ux;
+			const offB = (sg.b.x - base.a.x) * -uy + (sg.b.y - base.a.y) * ux;
 			if (Math.abs(offA) > 40 || Math.abs(offB) > 40) continue;
 			if (bestDash && !dashLike(sg)) continue;
-			const ta = (sg.a.x - best.a.x) * ux + (sg.a.y - best.a.y) * uy;
-			const tb = (sg.b.x - best.a.x) * ux + (sg.b.y - best.a.y) * uy;
+			const ta = (sg.a.x - base.a.x) * ux + (sg.a.y - base.a.y) * uy;
+			const tb = (sg.b.x - base.a.x) * ux + (sg.b.y - base.a.y) * uy;
 			ivs.push([Math.min(ta, tb), Math.max(ta, tb)]);
 		}
 		ivs.sort((p, q) => p[0] - q[0]);
@@ -4783,9 +4829,13 @@ function labeledEdges(texts, segs) {
 				}
 			}
 		}
+		if (hi - lo > joinCap) {
+			lo = 0;
+			hi = L0;
+		}
 		const P = (tt) => ({
-			x: best.a.x + ux * tt,
-			y: best.a.y + uy * tt
+			x: base.a.x + ux * tt,
+			y: base.a.y + uy * tt
 		});
 		const e = {
 			a: P(lo),
@@ -4800,21 +4850,66 @@ function labeledEdges(texts, segs) {
 		});
 		if (dup) {
 			if (dup.kind === "neighbor" && kind === "road") dup.kind = "road";
+			const ol = Math.hypot(dup.b.x - dup.a.x, dup.b.y - dup.a.y);
+			const ox = (dup.b.x - dup.a.x) / ol;
+			const oy = (dup.b.y - dup.a.y) / ol;
+			const ts = [
+				0,
+				ol,
+				...[e.a, e.b].map((q) => (q.x - dup.a.x) * ox + (q.y - dup.a.y) * oy)
+			];
+			const t0 = Math.min(...ts);
+			const t1 = Math.max(...ts);
+			const a0 = {
+				x: dup.a.x + ox * t0,
+				y: dup.a.y + oy * t0
+			};
+			const b0 = {
+				x: dup.a.x + ox * t1,
+				y: dup.a.y + oy * t1
+			};
+			dup.a = a0;
+			dup.b = b0;
 			continue;
 		}
 		out.push(e);
 	}
-	return out;
+	return out.filter((e) => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y) >= 500);
 }
-/** 境界の辺を建物中心まわりの角度順に並べ、隣り合う辺の交点で敷地の形を作る */
+/**
+* 境界の辺を建物中心まわりの角度順に並べ、隣り合う辺をつないで敷地の形を作る。
+* 端が近ければそこで、交わるなら交点で、どちらでもなく端が 4m 以内なら（文字の無い短い辺を補って）両方の端でつなぐ
+*/
 function sitePolygon(edges, c) {
 	if (edges.length < 3) return void 0;
 	const ang = (e) => Math.atan2((e.a.y + e.b.y) / 2 - c.y, (e.a.x + e.b.x) / 2 - c.x);
 	const es = edges.slice().sort((p, q) => ang(p) - ang(q));
 	const pts = [];
+	const push = (p) => {
+		const last = pts[pts.length - 1];
+		if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 50) pts.push(p);
+	};
 	for (let i = 0; i < es.length; i++) {
 		const A = es[i];
 		const B = es[(i + 1) % es.length];
+		let pA = A.a;
+		let pB = B.a;
+		let dist = Infinity;
+		for (const u of [A.a, A.b]) for (const v of [B.a, B.b]) {
+			const d = Math.hypot(u.x - v.x, u.y - v.y);
+			if (d < dist) {
+				dist = d;
+				pA = u;
+				pB = v;
+			}
+		}
+		if (dist < 600) {
+			push({
+				x: (pA.x + pB.x) / 2,
+				y: (pA.y + pB.y) / 2
+			});
+			continue;
+		}
 		const d1 = {
 			x: A.b.x - A.a.x,
 			y: A.b.y - A.a.y
@@ -4824,17 +4919,35 @@ function sitePolygon(edges, c) {
 			y: B.b.y - B.a.y
 		};
 		const den = d1.x * d2.y - d1.y * d2.x;
-		if (Math.abs(den) < 1e-6 * Math.hypot(d1.x, d1.y) * Math.hypot(d2.x, d2.y)) return void 0;
-		const t = ((B.a.x - A.a.x) * d2.y - (B.a.y - A.a.y) * d2.x) / den;
-		const P = {
-			x: A.a.x + d1.x * t,
-			y: A.a.y + d1.y * t
-		};
-		const near = (e) => Math.min(Math.hypot(P.x - e.a.x, P.y - e.a.y), Math.hypot(P.x - e.b.x, P.y - e.b.y));
-		if (near(A) > 6e3 || near(B) > 6e3) return void 0;
-		pts.push(P);
+		if (Math.abs(den) >= .001 * Math.hypot(d1.x, d1.y) * Math.hypot(d2.x, d2.y)) {
+			const t = ((B.a.x - A.a.x) * d2.y - (B.a.y - A.a.y) * d2.x) / den;
+			const P = {
+				x: A.a.x + d1.x * t,
+				y: A.a.y + d1.y * t
+			};
+			if (Math.hypot(P.x - pA.x, P.y - pA.y) <= 6e3 && Math.hypot(P.x - pB.x, P.y - pB.y) <= 6e3) {
+				push(P);
+				continue;
+			}
+		}
+		if (dist < 4e3) {
+			push(pA);
+			push(pB);
+			continue;
+		}
+		return;
 	}
-	return pts;
+	if (pts.length >= 3 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) <= 50) pts.pop();
+	return pts.length >= 3 && Math.abs(polygonArea(pts)) > 1e6 ? pts : void 0;
+}
+function polygonArea(p) {
+	let s = 0;
+	for (let i = 0; i < p.length; i++) {
+		const a = p[i];
+		const b = p[(i + 1) % p.length];
+		s += a.x * b.y - b.x * a.y;
+	}
+	return s / 2;
 }
 /** 敷地データを平行移動 */
 function translateSite(site, dx, dy) {
@@ -6281,7 +6394,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			"garage"
 		].includes(room.type)) continue;
 		const bb = roomBBox(room);
-		const roomArea = Math.abs(polygonArea(room.polygon));
+		const roomArea = Math.abs(polygonArea$1(room.polygon));
 		const cands = [];
 		for (const r of rects) {
 			const cx = (r.minX + r.maxX) / 2;
@@ -6526,7 +6639,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			if (hit) applyDict(c, hit, "辞書");
 		}
 		const free = () => cands.filter((c) => !used.has(c) && !c.kind);
-		if (t === "ldk" || t === "living" || t === "dining" || t === "kitchen" || t === "japanese" || t === "other" && Math.abs(polygonArea(room.polygon)) >= 8e6) {
+		if (t === "ldk" || t === "living" || t === "dining" || t === "kitchen" || t === "japanese" || t === "other" && Math.abs(polygonArea$1(room.polygon)) >= 8e6) {
 			const counters = free().filter((c) => within(c.S, 550, 1100) && within(c.L, 1600, 9e3) && c.rect.innerRects <= 8);
 			let kitchenDone = false;
 			if (t !== "japanese" && t !== "other") {
@@ -9546,7 +9659,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		const loops = traceMask(dilateMask(mask, grid.w, grid.h, k, (i) => grid.data[i] === 1), grid);
 		if (!loops.length) continue;
 		const poly = loops[0];
-		const area = Math.abs(polygonArea(poly)) / 1e6;
+		const area = Math.abs(polygonArea$1(poly)) / 1e6;
 		const a = acc.get(l);
 		let name = "";
 		let type = "other";
@@ -9774,7 +9887,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const building = new Uint8Array(grid.w * grid.h);
 	for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== 2 && !courtLabels.has(labels[i]) ? 1 : 0;
 	const extD = walls.length ? Math.max(...walls.map((w) => w.d)) : 150;
-	const outline = traceMask(erodeMask(building, grid.w, grid.h, Math.max(1, Math.round(extD / 2 / res))), grid, res * 1.5).filter((l) => Math.abs(polygonArea(l)) > 2e6);
+	const outline = traceMask(erodeMask(building, grid.w, grid.h, Math.max(1, Math.round(extD / 2 / res))), grid, res * 1.5).filter((l) => Math.abs(polygonArea$1(l)) > 2e6);
 	const sideState = (p) => {
 		const [x, y] = grid.cellOf(p);
 		if (x >= 0 && y >= 0 && x < grid.w && y < grid.h && courtLabels.has(labels[y * grid.w + x])) return 2;
@@ -10214,7 +10327,7 @@ function isRoomShaped(poly) {
 }
 /** 細長い帯状の塗り（手すり壁・腰壁・曲面の壁など）: 幅 40〜180mm、長さ 600mm 以上 */
 function isStripFill(poly) {
-	const area = Math.abs(polygonArea(poly));
+	const area = Math.abs(polygonArea$1(poly));
 	let per = 0;
 	for (let i = 0; i < poly.length; i++) per += Math.hypot(poly[(i + 1) % poly.length].x - poly[i].x, poly[(i + 1) % poly.length].y - poly[i].y);
 	if (per < 1200) return false;
@@ -10234,7 +10347,7 @@ function wallFillColors(fills, walls) {
 		st.polys++;
 		let per = 0;
 		for (let i = 0; i < f.poly.length; i++) per += Math.hypot(f.poly[(i + 1) % f.poly.length].x - f.poly[i].x, f.poly[(i + 1) % f.poly.length].y - f.poly[i].y);
-		if (per > 0 && 2 * Math.abs(polygonArea(f.poly)) / per <= 400) st.thin++;
+		if (per > 0 && 2 * Math.abs(polygonArea$1(f.poly)) / per <= 400) st.thin++;
 		for (const q of f.poly) {
 			st.n++;
 			if (walls.some((w) => distPointSegment(q, w.a, w.b) <= w.d / 2 + 40)) st.on++;
@@ -10353,7 +10466,7 @@ function detectPlans(pages, warnings) {
 			const roomFills = [];
 			const cand = page.colorFills.filter((f) => !wallColors.has(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin))).map((f) => ({
 				poly: f.poly,
-				area: Math.abs(polygonArea(f.poly)) / 1e6,
+				area: Math.abs(polygonArea$1(f.poly)) / 1e6,
 				bb: bboxOf$2(f.poly)
 			})).filter((c) => c.area >= .6 && c.area <= 150 && isRoomShaped(c.poly)).map((c) => ({
 				...c,
@@ -10748,7 +10861,7 @@ function snapFloorWalls(f, m) {
 	};
 	for (const r of f.rooms) {
 		r.polygon = movePoly(r.polygon);
-		r.area = Math.round(Math.abs(polygonArea(r.polygon)) / 1e6 * 100) / 100;
+		r.area = Math.round(Math.abs(polygonArea$1(r.polygon)) / 1e6 * 100) / 100;
 	}
 	f.outline = f.outline.map(movePoly);
 }
@@ -11022,6 +11135,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		}
 	}
 	const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
+	if (site?.warning) warnings.push(site.warning);
 	if (site && base && !site.roads.length && site.edges?.length) {
 		const c = {
 			x: (base.bbox.minX + base.bbox.maxX) / 2,
@@ -12046,7 +12160,7 @@ function largestInnerRect(poly, tol = 5) {
 /** 多角形のオフセット（マイタ結合、外向き正） */
 function offsetPolygon(poly, d) {
 	const n = poly.length;
-	const sign = polygonArea(poly) > 0 ? 1 : -1;
+	const sign = polygonArea$1(poly) > 0 ? 1 : -1;
 	const out = [];
 	for (let i = 0; i < n; i++) {
 		const p0 = poly[(i - 1 + n) % n];
@@ -14004,7 +14118,7 @@ function roomsArea(f, types) {
 	return f.rooms.filter((r) => types.includes(r.type)).reduce((s, r) => s + r.area, 0);
 }
 function outlineArea$1(f) {
-	return f.outline.reduce((s, l) => s + Math.abs(polygonArea(l)) / 1e6, 0);
+	return f.outline.reduce((s, l) => s + Math.abs(polygonArea$1(l)) / 1e6, 0);
 }
 /** 点が階の外形の内側か（外形の輪が複数・中庭の穴があっても偶奇で判定） */
 function inFloor(f, x, y) {
@@ -14190,7 +14304,7 @@ function exteriorRuns(f, poly, step = 100) {
 function convexCorners(f) {
 	let n = 0;
 	for (const l of f.outline) {
-		const sgn = Math.sign(polygonArea(l)) || 1;
+		const sgn = Math.sign(polygonArea$1(l)) || 1;
 		for (let i = 0; i < l.length; i++) {
 			const a = l[(i - 1 + l.length) % l.length];
 			const b = l[i];

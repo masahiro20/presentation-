@@ -248,6 +248,8 @@ export interface SiteData {
   bounds: Partial<Record<PlanSide, number>>;
   /** 敷地面積（図面の表記） */
   areaM2?: number;
+  /** 図面の敷地線を使わなかった理由（建物に比べて広すぎた等）。作り直す・直すと消える */
+  warning?: string;
 }
 
 /** 家具・設備の種類 */

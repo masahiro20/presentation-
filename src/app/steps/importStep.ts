@@ -10,6 +10,7 @@ import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../core/types';
+import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
@@ -767,6 +768,69 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
       ? `道路の文字は無く、${inferred.map((r) => r.label).filter(Boolean).join('・')}から推定`
       : detected.length ? `図面の「${detected.map((r) => r.label).filter(Boolean).join('」「')}」から読み取り` : roads.length ? '手動で設定' : '';
     const nb = site ? Object.keys(site.bounds).length : 0;
+    // 敷地の大きさ（建物の外形との比）と、作り直し・使わない
+    const sz = siteSize(site);
+    const bpts = model.floors.flatMap((f) => f.outline.flat());
+    const bw = bpts.length ? Math.max(...bpts.map((p) => p.x)) - Math.min(...bpts.map((p) => p.x)) : 0;
+    const bh = bpts.length ? Math.max(...bpts.map((p) => p.y)) - Math.min(...bpts.map((p) => p.y)) : 0;
+    const ratio = sz && bw && bh ? Math.max(sz.w / bw, sz.h / bh) : 0;
+    const marginRoad = h('input', { type: 'number', step: 0.5, min: 0.5, max: 20, value: 6, style: 'width:64px' }) as HTMLInputElement;
+    const marginOther = h('input', { type: 'number', step: 0.5, min: 0.3, max: 20, value: 1.5, style: 'width:64px' }) as HTMLInputElement;
+    const apply = (msg: string) => {
+      emit('model');
+      redraw();
+      render();
+      toast(msg, 'ok', 3000);
+    };
+    const siteBox = h(
+      'div',
+      { style: 'margin-top:6px' },
+      sz
+        ? h('div', { style: 'font-size:13px;line-height:1.8' }, h('b', null, '敷地：'), `${(sz.w / 1000).toFixed(1)} × ${(sz.h / 1000).toFixed(1)} m（約 ${sz.areaM2.toFixed(1)} ㎡・${(sz.areaM2 / 3.30579).toFixed(1)} 坪）`, bw ? `／建物の外形 ${(bw / 1000).toFixed(1)} × ${(bh / 1000).toFixed(1)} m` : '', ratio >= 3 ? h('span', { style: 'color:#b4621e' }, `　建物の ${ratio.toFixed(1)} 倍と広めです。図面と違えば作り直してください`) : null)
+        : h('div', { class: 'hint', style: 'margin:0' }, site?.warning ?? '敷地の形は読めていません（標準の余白: 道路側 6m・ほか 1.6〜2.2m で作っています）'),
+      h(
+        'div',
+        { class: 'btn-row', style: 'align-items:center;gap:6px;flex-wrap:wrap' },
+        h('span', { class: 'hint', style: 'margin:0' }, '道路側'),
+        marginRoad,
+        h('span', { class: 'hint', style: 'margin:0' }, 'm・ほかの辺'),
+        marginOther,
+        h('span', { class: 'hint', style: 'margin:0' }, 'm'),
+        h(
+          'button',
+          {
+            class: 'btn sm',
+            title: '建物の外形（全階）の周りに、道路側とほかの辺の余白で長方形の敷地を作り直します',
+            onclick: () => {
+              const r = parseFloat(marginRoad.value);
+              const o = parseFloat(marginOther.value);
+              if (!siteAroundBuilding(model, (Number.isFinite(r) ? r : 6) * 1000, (Number.isFinite(o) ? o : 1.5) * 1000)) {
+                toast('建物の外形が無いので作れません');
+                return;
+              }
+              apply('建物の周りに敷地を作り直しました');
+            },
+          },
+          '建物の周りに作り直す',
+        ),
+        sz
+          ? h(
+              'button',
+              {
+                class: 'btn sm ghost',
+                title: '図面から読んだ敷地境界線を使わず、標準の余白にします（道路の向き・幅員は残します）',
+                onclick: () => {
+                  if (!model.site) return;
+                  clearSiteLines(model.site);
+                  apply('図面の敷地線を使わないようにしました（標準の余白）');
+                },
+              },
+              '図面の敷地線を使わない',
+            )
+          : null,
+      ),
+      h('p', { class: 'hint' }, '敷地の角は「図面で見る → 方眼」の 1 階で、緑の丸をドラッグして直せます（Shift で隣の角とそろえる）。'),
+    );
     const parts: (HTMLElement | null)[] = [
       h('div', { style: 'font-size:13px;line-height:1.8' }, h('b', null, '道路：'), summary),
       src ? h('div', { class: 'hint', style: 'margin:0' }, src) : null,
@@ -816,8 +880,9 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
       h(
         'div',
         { style: 'font-size:12.5px;color:#5b6068;line-height:1.8' },
-        `敷地境界線：${nb ? `${nb}辺を図面から読み取り` : '図面から読み取れなかったため標準の余白で作成'}${site?.areaM2 ? `／敷地面積 ${site.areaM2.toFixed(2)}㎡（${(site.areaM2 / 3.30579).toFixed(1)}坪）` : ''}`,
+        `敷地境界線：${nb ? `${nb}辺を図面から読み取り` : site?.warning ? '図面の敷地線は使っていません' : '図面から読み取れなかったため標準の余白で作成'}${site?.areaM2 ? `／敷地面積 ${site.areaM2.toFixed(2)}㎡（${(site.areaM2 / 3.30579).toFixed(1)}坪）` : ''}`,
       ),
+      siteBox,
       h('p', { class: 'hint' }, '道路側に駐車スペース・アプローチを配置し、「道路側から見た外観パース」を作成します。'),
     ];
     box.append(...parts.filter((x): x is HTMLElement => !!x));

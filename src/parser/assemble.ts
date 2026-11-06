@@ -2878,6 +2878,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   }
   // 接道・敷地（1階の図面の周囲から）
   const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
+  if (site?.warning) warnings.push(site.warning);
   // 道路の文字が無い図面: 隣地境界線の無い側、駐車場（車の記号）のある側を接道と見る
   if (site && base && !site.roads.length && site.edges?.length) {
     const c = { x: (base.bbox.minX + base.bbox.maxX) / 2, y: (base.bbox.minY + base.bbox.maxY) / 2 };

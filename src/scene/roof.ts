@@ -5,7 +5,7 @@
  *  - 切妻 / 寄棟 / 片流れ / 陸屋根（パラペット）
  */
 import * as THREE from 'three';
-import type { BuildingModel } from '../core/types';
+import { OUTDOOR_TYPES, type BuildingModel, type RoofHigh, type RoofKind, type RoofPatch, type Vec2 } from '../core/types';
 import { insideLoops } from '../core/geometry';
 import { maximalRectCoverMask, type Rect } from '../core/rects';
 import { MeshBuilder, type ClipPlane, V } from './meshBuilder';
@@ -13,6 +13,116 @@ import { MM, wallTopOf } from './building';
 import type { ExteriorStyle, RoofType } from '../styles/presets';
 
 type V3 = THREE.Vector3;
+
+/** 屋根の塊（上の階が載らない範囲のつながった所）。3D の「屋根」の道具で選ぶ単位 */
+export interface RoofMass {
+  level: number;
+  isTop: boolean;
+  /** 重ならない四角形（図面座標 mm） */
+  rects: Rect[];
+  bbox: Rect;
+  /** 塊の中の点（いちばん大きい四角形の中心。手直しの目印に使う） */
+  center: Vec2;
+  /** この塊の手直し（あれば） */
+  patch?: RoofPatch;
+  /** 実際の掛け方（手直し、無ければ全体の設定） */
+  kind: RoofKind;
+  /** 片流れの高い側（実際） */
+  high: RoofHigh;
+  /** 下屋が上の階に接している辺 */
+  attached: RoofHigh[];
+}
+
+/**
+ * 屋根を架ける範囲の輪郭。外形が読めていない階（壁に隙間があって外形が追えなかった・画像の図面）は、
+ * 屋根が丸ごと出ない（「屋根が表示されない」）ので、屋内の部屋の区画を代わりに使う
+ */
+function roofLoops(f: BuildingModel['floors'][number]): Vec2[][] {
+  const loops = f.outline.filter((l) => l.length >= 3);
+  if (loops.length) return loops;
+  return f.rooms.filter((r) => r.polygon.length >= 3 && !OUTDOOR_TYPES.includes(r.type)).map((r) => r.polygon);
+}
+
+/** 階 k の屋根の格子: 外形の頂点で座標を圧縮し、この階の範囲（上の階が載らない所）と上の階の範囲をマスクにする */
+function floorGrid(floors: BuildingModel['floors'], k: number) {
+  const f = floors[k];
+  const higher = floors.slice(k + 1).map((h) => ({ ...h, outline: roofLoops(h) }));
+  const polys = roofLoops(f);
+  const all = [...polys, ...higher.flatMap((h) => h.outline)].flat();
+  const uniq = (vals: number[]) => {
+    const s = vals.slice().sort((a, b) => a - b);
+    const out: number[] = [];
+    for (const v of s) if (!out.length || v - out[out.length - 1] > 20) out.push(v);
+    return out;
+  };
+  const xs = uniq(all.map((p) => p.x));
+  const zs = uniq(all.map((p) => p.y));
+  const nx = xs.length - 1;
+  const nz = zs.length - 1;
+  const mask = new Uint8Array(Math.max(0, nx * nz));
+  const maskUpper = new Uint8Array(Math.max(0, nx * nz));
+  for (let j = 0; j < nz; j++)
+    for (let i = 0; i < nx; i++) {
+      const c = { x: (xs[i] + xs[i + 1]) / 2, y: (zs[j] + zs[j + 1]) / 2 };
+      const inThis = insideLoops(c, polys);
+      const inUpper = higher.some((h) => insideLoops(c, h.outline));
+      mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
+      maskUpper[j * nx + i] = inUpper ? 1 : 0;
+    }
+  return { f, higher, polys, xs, zs, nx, nz, mask, maskUpper };
+}
+
+/** 格子の座標 v が入る区間の番号（無ければ -1） */
+function cellIndex(axis: number[], v: number): number {
+  for (let i = 0; i + 1 < axis.length; i++) if (v >= axis[i] && v < axis[i + 1]) return i;
+  return -1;
+}
+
+/** この塊に当たる手直し（at がその塊の格子の中にある物） */
+function patchFor(patches: RoofPatch[] | undefined, level: number, comp: { cells: Set<number> }, xs: number[], zs: number[], nx: number): RoofPatch | undefined {
+  if (!patches) return undefined;
+  for (const p of patches) {
+    if (p.level !== level) continue;
+    const i = cellIndex(xs, p.at.x);
+    const j = cellIndex(zs, p.at.y);
+    if (i >= 0 && j >= 0 && comp.cells.has(j * nx + i)) return p;
+  }
+  return undefined;
+}
+
+/** 下屋の塊が上の階に接している辺（接する格子の辺が 1 つでもあれば） */
+function touchingSides(comp: { cells: Set<number> }, nx: number, nz: number, maskUpper: Uint8Array): RoofHigh[] {
+  const hit = new Set<RoofHigh>();
+  for (const c of comp.cells) {
+    const i = c % nx;
+    const j = (c - i) / nx;
+    if (j > 0 && maskUpper[(j - 1) * nx + i]) hit.add('n');
+    if (j + 1 < nz && maskUpper[(j + 1) * nx + i]) hit.add('s');
+    if (i > 0 && maskUpper[j * nx + i - 1]) hit.add('w');
+    if (i + 1 < nx && maskUpper[j * nx + i + 1]) hit.add('e');
+  }
+  return [...hit];
+}
+
+/** 四角形（格子座標 mm）の辺のうち、そのすぐ外が上の階の範囲（軒・けらばを出さず、上の階の壁に取り付く辺） */
+function rectAttached(r: Rect, xs: number[], zs: number[], nx: number, nz: number, maskUpper: Uint8Array): Set<RoofHigh> {
+  const out = new Set<RoofHigh>();
+  const i0 = cellIndex(xs, r.minX + 1);
+  const i1 = cellIndex(xs, r.maxX - 1);
+  const j0 = cellIndex(zs, r.minY + 1);
+  const j1 = cellIndex(zs, r.maxY - 1);
+  if (i0 < 0 || i1 < 0 || j0 < 0 || j1 < 0) return out;
+  const up = (i: number, j: number) => i >= 0 && j >= 0 && i < nx && j < nz && maskUpper[j * nx + i] === 1;
+  for (let i = i0; i <= i1; i++) {
+    if (up(i, j0 - 1)) out.add('n');
+    if (up(i, j1 + 1)) out.add('s');
+  }
+  for (let j = j0; j <= j1; j++) {
+    if (up(i0 - 1, j)) out.add('w');
+    if (up(i1 + 1, j)) out.add('e');
+  }
+  return out;
+}
 
 interface RoofCtx {
   mb: MeshBuilder;
@@ -89,34 +199,10 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
   const north = { x: Math.sin(na), y: -Math.cos(na) };
 
   for (let k = floors.length - 1; k >= 0; k--) {
-    const f = floors[k];
-    const higher = floors.slice(k + 1);
-    const polys = f.outline;
-    if (!polys.length) continue;
-    // 座標圧縮グリッド
-    const all = [...polys, ...higher.flatMap((h) => h.outline)].flat();
-    const uniq = (vals: number[]) => {
-      const s = vals.slice().sort((a, b) => a - b);
-      const out: number[] = [];
-      for (const v of s) if (!out.length || v - out[out.length - 1] > 20) out.push(v);
-      return out;
-    };
-    const xs = uniq(all.map((p) => p.x));
-    const zs = uniq(all.map((p) => p.y));
-    const nx = xs.length - 1;
-    const nz = zs.length - 1;
-    const mask = new Uint8Array(nx * nz);
-    const maskUpper = new Uint8Array(nx * nz);
-    for (let j = 0; j < nz; j++)
-      for (let i = 0; i < nx; i++) {
-        const c = { x: (xs[i] + xs[i + 1]) / 2, y: (zs[j] + zs[j + 1]) / 2 };
-        const inThis = insideLoops(c, polys);
-        const inUpper = higher.some((h) => insideLoops(c, h.outline));
-        mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
-        maskUpper[j * nx + i] = inUpper ? 1 : 0;
-      }
-    const rects = maximalRectCoverMask(xs, zs, mask);
-    if (!rects.length) continue;
+    const { f, polys, xs, zs, nx, nz, mask, maskUpper } = floorGrid(floors, k);
+    if (!polys.length || nx <= 0 || nz <= 0) continue;
+    const comps = maskComponents(xs, zs, mask);
+    if (!comps.length) continue;
     const H = wallTopOf(model, f) * MM;
     const isTop = k === floors.length - 1;
     const upperAccent = style.accent && style.accentRule === 'upper' && f.level >= 2;
@@ -226,29 +312,44 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
       }
       return out;
     };
-    if (type === 'flat') {
-      // 陸屋根は四角形ごとではなく、この階の範囲（上階の載らない所）全体に 1 枚。
-      // 四角形ごとに架けると、重なった所で屋上が二重になり、一部だけ外周の辺にパラペットが全長で立って屋根の上に壁が出ていた
-      ctx.clips = [];
-      ctx.wallTopY = H;
-      flatRoofMask(ctx, xs, zs, mask, maskUpper, H);
-      info.maxY = Math.max(info.maxY, H + 0.5);
-      info.eaveY = Math.max(info.eaveY, H + 0.5);
-      continue;
-    }
-    // 片流れ（最上階）と下屋（下の階の、上階の載らない範囲）: マスクのつながった範囲ごとに 1 枚の屋根面。
-    // 重ならない四角形に分けて張る（極大矩形は重なり合うので、同じ面でも二重に描かれてちらつき、向きの違う面が交差して壁に差し込んでいた）
-    if (!isTop || type === 'shed') {
-      for (const comp of maskComponents(xs, zs, mask)) {
+    // 塊（上の階が載らない範囲のつながった所）ごとに掛ける。塊ごとの手直し（model.roofPatches）があればそれを優先。
+    // 最上階は全体の掛け方、下屋は緩い片流れ（全体が陸屋根なら下屋も陸屋根）
+    const defaultKind: RoofKind = type === 'flat' ? 'flat' : isTop ? type : 'shed';
+    for (const comp of comps) {
+      const patch = patchFor(model.roofPatches, f.level, comp, xs, zs, nx);
+      const kind: RoofKind = patch?.kind ?? defaultKind;
+      const cmask = new Uint8Array(nx * nz);
+      for (const c of comp.cells) cmask[c] = 1;
+      const eavesMm = patch?.eaves ?? style.roof.eaves;
+      const cctx: RoofCtx = {
+        ...ctx,
+        eaves: eavesMm * MM,
+        verge: (patch?.eaves != null ? Math.min(style.roof.verge, patch.eaves) : style.roof.verge) * MM,
+        slope: (patch?.pitch ?? pitchOverride ?? style.roof.pitch) / 10,
+        gableKey: isTop ? ctx.gableKey : 'ext.wall',
+        gableKeyAt: isTop ? ctx.gableKeyAt : undefined,
+      };
+      if (kind === 'flat') {
+        // 陸屋根は四角形ごとではなく塊全体に 1 枚（四角形ごとに架けると重なった所で屋上が二重になり、屋根の上に壁が出ていた）
+        const para = (patch?.parapet ?? 550) * MM;
+        cctx.clips = [];
+        cctx.wallTopY = H;
+        flatRoofMask(cctx, xs, zs, cmask, maskUpper, H, para);
+        info.maxY = Math.max(info.maxY, H + para);
+        info.eaveY = Math.max(info.eaveY, H + para);
+        continue;
+      }
+      if (kind === 'shed') {
+        // 片流れ: 塊ごとに 1 枚の屋根面を、重ならない四角形に分けて張る（極大矩形は重なり合うので二重に描かれてちらついていた）
         const G = { minX: comp.bbox.minX * MM, maxX: comp.bbox.maxX * MM, minZ: comp.bbox.minY * MM, maxZ: comp.bbox.maxY * MM };
         // 下屋は上階に接する辺を高い側に（接する辺が無ければ御社の定番の向き）。最上階は南流し（北が高い）か東流し（西が高い）
         const touch = isTop ? null : touchingSide(comp, nx, nz, maskUpper);
-        const high = touch ?? preferredHigh(G, north);
+        const high = patch?.high ?? touch ?? preferredHigh(G, north);
         const alongZ = high === 'n' || high === 's';
         const span = alongZ ? G.maxZ - G.minZ : G.maxX - G.minX;
-        // 下屋は 0.5〜1 寸の緩い片流れ。最上階は高い側の壁の立ち上がりが 2.4m を超えない勾配まで
-        const slope = isTop ? Math.min(ctx.slope, 2.4 / Math.max(0.5, span)) : Math.min(ctx.slope, 0.1);
-        const sub: RoofCtx = { ...ctx, slope, gableKey: isTop ? ctx.gableKey : 'ext.wall', gableKeyAt: isTop ? ctx.gableKeyAt : undefined };
+        // 下屋は 0.5〜1 寸の緩い片流れ。最上階は高い側の壁の立ち上がりが 2.4m を超えない勾配まで（手直しで勾配を決めたときはそのまま）
+        const slope = patch?.pitch != null ? patch.pitch / 10 : isTop ? Math.min(cctx.slope, 2.4 / Math.max(0.5, span)) : Math.min(cctx.slope, 0.1);
+        const sub: RoofCtx = { ...cctx, slope };
         for (const r of comp.rects) {
           const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
           sub.clips = clipsFor(r);
@@ -257,20 +358,57 @@ export function buildRoofs(model: BuildingModel, style: ExteriorStyle, typeOverr
           info.maxY = Math.max(info.maxY, y);
         }
         if (isTop) info.eaveY = Math.max(info.eaveY, H);
+        continue;
       }
-      continue;
-    }
-    // 切妻・寄棟（最上階）: 外形を覆う極大矩形ごとに架ける（L 字では屋根どうしが交差して谷ができる）
-    for (const r of rects) {
-      const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
-      ctx.clips = clipsFor(r);
-      ctx.wallTopY = H;
-      const y = type === 'gable' ? gableRoof(ctx, R, H) : hipRoof(ctx, R, H);
-      info.maxY = Math.max(info.maxY, y);
-      info.eaveY = Math.max(info.eaveY, H);
+      // 切妻・寄棟: 塊を覆う極大矩形ごとに架ける（L 字では屋根どうしが交差して谷ができる）。下屋では上の階に接する辺に軒・けらばを出さない
+      for (const r of maximalRectCoverMask(xs, zs, cmask)) {
+        const R = { minX: r.minX * MM, maxX: r.maxX * MM, minZ: r.minY * MM, maxZ: r.maxY * MM };
+        cctx.clips = clipsFor(r);
+        cctx.wallTopY = H;
+        const attached = isTop ? new Set<RoofHigh>() : rectAttached(r, xs, zs, nx, nz, maskUpper);
+        const y = kind === 'gable' ? gableRoof(cctx, R, H, patch?.ridge, attached) : hipRoof(cctx, R, H, patch?.ridge);
+        info.maxY = Math.max(info.maxY, y);
+        info.eaveY = Math.max(info.eaveY, H);
+      }
     }
   }
   return { mb, info };
+}
+
+/**
+ * 屋根の塊の一覧（3D の「屋根」の道具用）。buildRoofs と同じ分け方で、塊ごとの実際の掛け方・向きと手直しを返す
+ */
+export function roofMasses(model: BuildingModel, style: ExteriorStyle, typeOverride?: RoofType): RoofMass[] {
+  const type = typeOverride ?? style.roof.type;
+  const floors = model.floors;
+  const na = (model.northAngleDeg * Math.PI) / 180;
+  const north = { x: Math.sin(na), y: -Math.cos(na) };
+  const out: RoofMass[] = [];
+  for (let k = floors.length - 1; k >= 0; k--) {
+    const { f, polys, xs, zs, nx, nz, mask, maskUpper } = floorGrid(floors, k);
+    if (!polys.length || nx <= 0 || nz <= 0) continue;
+    const isTop = k === floors.length - 1;
+    const defaultKind: RoofKind = type === 'flat' ? 'flat' : isTop ? type : 'shed';
+    for (const comp of maskComponents(xs, zs, mask)) {
+      const patch = patchFor(model.roofPatches, f.level, comp, xs, zs, nx);
+      const kind = patch?.kind ?? defaultKind;
+      const G = { minX: comp.bbox.minX * MM, maxX: comp.bbox.maxX * MM, minZ: comp.bbox.minY * MM, maxZ: comp.bbox.maxY * MM };
+      const touch = isTop ? null : touchingSide(comp, nx, nz, maskUpper);
+      const high = patch?.high ?? touch ?? preferredHigh(G, north);
+      const big = comp.rects.slice().sort((a, b) => (b.maxX - b.minX) * (b.maxY - b.minY) - (a.maxX - a.minX) * (a.maxY - a.minY))[0];
+      const center = { x: (big.minX + big.maxX) / 2, y: (big.minY + big.maxY) / 2 };
+      out.push({ level: f.level, isTop, rects: comp.rects, bbox: comp.bbox, center, patch, kind, high, attached: isTop ? [] : touchingSides(comp, nx, nz, maskUpper) });
+    }
+  }
+  return out;
+}
+
+/** 点（図面座標 mm）の下にある屋根の塊。軒の出のぶん外側（marginMm）まで当たりにする。上の階の屋根を優先 */
+export function roofMassAt(masses: RoofMass[], p: Vec2, marginMm = 700): RoofMass | null {
+  const inRect = (r: Rect, m: number) => p.x >= r.minX - m && p.x <= r.maxX + m && p.y >= r.minY - m && p.y <= r.maxY + m;
+  const sorted = masses.slice().sort((a, b) => b.level - a.level);
+  for (const m of [0, marginMm]) for (const ms of sorted) if (ms.rects.some((r) => inRect(r, m))) return ms;
+  return null;
 }
 
 
@@ -604,23 +742,31 @@ function gutter(ctx: RoofCtx, a: V3, b: V3, outward: V3) {
   }
 }
 
-function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number): number {
+/**
+ * 切妻。ridge = 棟の向き（x: 横に棟 = 南北に流れる、z: 縦に棟）。省略時は長い辺に沿う。
+ * attached = 上の階の壁に取り付く辺（下屋）。その辺には軒・けらばを出さず、壁の面で止める
+ */
+function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number, ridge?: 'x' | 'z', attached?: Set<RoofHigh>): number {
   const { slope, eaves: e, verge: g, T } = ctx;
-  const alongX = R.maxX - R.minX >= R.maxZ - R.minZ;
+  const alongX = ridge ? ridge === 'x' : R.maxX - R.minX >= R.maxZ - R.minZ;
   const base = H + 0.04 + T;
+  const o = (s: RoofHigh, v: number) => (attached?.has(s) ? -ctx.wallT / 2 : v);
   if (alongX) {
+    const eN = o('n', e);
+    const eS = o('s', e);
     const zc = (R.minZ + R.maxZ) / 2;
     const hs = (R.maxZ - R.minZ) / 2;
     const yR = base + hs * slope;
-    const yE = base - e * slope;
-    const x0 = R.minX - g;
-    const x1 = R.maxX + g;
+    const yN = base - eN * slope;
+    const yS = base - eS * slope;
+    const x0 = R.minX - o('w', g);
+    const x1 = R.maxX + o('e', g);
     // 北側（-Z）
-    roofPlane(ctx, [V(x0, yE, R.minZ - e), V(x1, yE, R.minZ - e), V(x1, yR, zc), V(x0, yR, zc)], [0, 1, 3], V(0, -slope, -1));
-    roofPlane(ctx, [V(x1, yE, R.maxZ + e), V(x0, yE, R.maxZ + e), V(x0, yR, zc), V(x1, yR, zc)], [0, 1, 3], V(0, -slope, 1));
+    roofPlane(ctx, [V(x0, yN, R.minZ - eN), V(x1, yN, R.minZ - eN), V(x1, yR, zc), V(x0, yR, zc)], [0, 1, 3], V(0, -slope, -1));
+    roofPlane(ctx, [V(x1, yS, R.maxZ + eS), V(x0, yS, R.maxZ + eS), V(x0, yR, zc), V(x1, yR, zc)], [0, 1, 3], V(0, -slope, 1));
     ctx.mb.box('ext.fascia', V((x0 + x1) / 2, yR - 0.02, zc), V(1, 0, 0), x1 - x0, 0.07, 0.2);
-    gutter(ctx, V(x0, yE, R.minZ - e), V(x1, yE, R.minZ - e), V(0, 0, -1));
-    gutter(ctx, V(x0, yE, R.maxZ + e), V(x1, yE, R.maxZ + e), V(0, 0, 1));
+    if (!attached?.has('n')) gutter(ctx, V(x0, yN, R.minZ - eN), V(x1, yN, R.minZ - eN), V(0, 0, -1));
+    if (!attached?.has('s')) gutter(ctx, V(x0, yS, R.maxZ + eS), V(x1, yS, R.maxZ + eS), V(0, 0, 1));
     // 妻壁
     for (const x of [R.minX, R.maxX]) {
       if (!ctx.onBoundary(x, R.minZ, x, R.maxZ)) continue;
@@ -628,17 +774,20 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
     }
     return yR;
   } else {
+    const eW = o('w', e);
+    const eE = o('e', e);
     const xc = (R.minX + R.maxX) / 2;
     const hs = (R.maxX - R.minX) / 2;
     const yR = base + hs * slope;
-    const yE = base - e * slope;
-    const z0 = R.minZ - g;
-    const z1 = R.maxZ + g;
-    roofPlane(ctx, [V(R.minX - e, yE, z1), V(R.minX - e, yE, z0), V(xc, yR, z0), V(xc, yR, z1)], [0, 1, 3], V(-1, -slope, 0));
-    roofPlane(ctx, [V(R.maxX + e, yE, z0), V(R.maxX + e, yE, z1), V(xc, yR, z1), V(xc, yR, z0)], [0, 1, 3], V(1, -slope, 0));
+    const yW = base - eW * slope;
+    const yE2 = base - eE * slope;
+    const z0 = R.minZ - o('n', g);
+    const z1 = R.maxZ + o('s', g);
+    roofPlane(ctx, [V(R.minX - eW, yW, z1), V(R.minX - eW, yW, z0), V(xc, yR, z0), V(xc, yR, z1)], [0, 1, 3], V(-1, -slope, 0));
+    roofPlane(ctx, [V(R.maxX + eE, yE2, z0), V(R.maxX + eE, yE2, z1), V(xc, yR, z1), V(xc, yR, z0)], [0, 1, 3], V(1, -slope, 0));
     ctx.mb.box('ext.fascia', V(xc, yR - 0.02, (z0 + z1) / 2), V(0, 0, 1), z1 - z0, 0.07, 0.2);
-    gutter(ctx, V(R.minX - e, yE, z0), V(R.minX - e, yE, z1), V(-1, 0, 0));
-    gutter(ctx, V(R.maxX + e, yE, z0), V(R.maxX + e, yE, z1), V(1, 0, 0));
+    if (!attached?.has('w')) gutter(ctx, V(R.minX - eW, yW, z0), V(R.minX - eW, yW, z1), V(-1, 0, 0));
+    if (!attached?.has('e')) gutter(ctx, V(R.maxX + eE, yE2, z0), V(R.maxX + eE, yE2, z1), V(1, 0, 0));
     for (const z of [R.minZ, R.maxZ]) {
       if (!ctx.onBoundary(R.minX, z, R.maxX, z)) continue;
       gablePrism(ctx, R, [V(R.minX - ctx.wallT / 2, H - 0.01, z), V(xc, yR - T + 0.01, z), V(R.maxX + ctx.wallT / 2, H - 0.01, z)], V(0, 0, 1));
@@ -647,7 +796,8 @@ function gableRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; 
   }
 }
 
-function hipRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number): number {
+/** 寄棟。ridge = 棟の向き（省略時は長い辺に沿う）。軒は 4 辺とも同じ出（隅で面が合うため） */
+function hipRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; maxZ: number }, H: number, ridge?: 'x' | 'z'): number {
   const { slope, eaves: e, T } = ctx;
   const X0 = R.minX - e;
   const X1 = R.maxX + e;
@@ -655,7 +805,7 @@ function hipRoof(ctx: RoofCtx, R: { minX: number; maxX: number; minZ: number; ma
   const Z1 = R.maxZ + e;
   const base = H + 0.04 + T;
   const yE = base - e * slope;
-  const alongX = X1 - X0 >= Z1 - Z0;
+  const alongX = ridge ? ridge === 'x' : X1 - X0 >= Z1 - Z0;
   if (alongX) {
     const hsE = (Z1 - Z0) / 2;
     const zc = (Z0 + Z1) / 2;
@@ -837,9 +987,8 @@ function shedRoofPlane(
  * 陸屋根（パラペット）: この階の範囲（上階の載らない所）に、重ならない四角形で屋上を張り、
  * 外形の外周に当たる格子の辺だけにパラペットを立てる（四角形ごとに架けていた頃の二重の屋上・屋根の上の壁を無くす）
  */
-function flatRoofMask(ctx: RoofCtx, xs: number[], zs: number[], mask: Uint8Array, maskUpper: Uint8Array, H: number) {
+function flatRoofMask(ctx: RoofCtx, xs: number[], zs: number[], mask: Uint8Array, maskUpper: Uint8Array, H: number, para = 0.55) {
   const t = ctx.wallT;
-  const para = 0.55;
   const nx = xs.length - 1;
   const nz = zs.length - 1;
   const y = H + 0.12;

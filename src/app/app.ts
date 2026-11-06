@@ -346,6 +346,7 @@ export class App {
       if (hit.group === 'furniture') return furnTool.pickHere(hit.point) || editTool.pickHere(hit, ndc);
       if (hit.group === 'landscape') return extTool.pickHere(hit.point);
       if (hit.group === 'building' || hit.group === 'cut') return editTool.pickHere(hit, ndc) || furnTool.pickHere(hit.point);
+      if (hit.group === 'roof') return editTool.pickHere(hit, ndc);
       if (hit.group === 'ground') return extTool.pickHere(hit.point);
       return false;
     };

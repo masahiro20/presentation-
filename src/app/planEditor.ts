@@ -21,6 +21,7 @@ import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
+import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { stairDrawing } from '../core/stairs';
 import { SOFA_SHAPES, LEG_SIDES, WASH_STYLES } from '../scene/furniture';
 
@@ -1118,6 +1119,13 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             numField('幅 (mm)', () => op.t1 - op.t0, (v) => setOpeningWidth(op, v, wallLen), 10),
             numField('壁の始点から (mm)', () => op.t0, (v) => { const w0 = op.t1 - op.t0; op.t0 = Math.max(20, v); op.t1 = op.t0 + w0; }, 5, '記号の●側ではなく、壁の線の始点から。ドラッグでも動かせます（方眼に止まる）'),
           ),
+          // 窓の標準の幅（半間の割）: 柱芯 910 → 780、1,365 → 1,235、1,820 → 1,690、2,730 → 2,600 …
+          ...(op.kind === 'window'
+            ? [
+                h('div', { class: 'field-label' }, isStandardSashWidth(op.t1 - op.t0) ? '標準の幅（半間の割）' : `W${Math.round(op.t1 - op.t0).toLocaleString()} は半間の割に合いません → ${sashWidthLabel(nearestSashWidth(op.t1 - op.t0))} が近い寸法`),
+                h('div', { class: 'segmented' }, ...SASH_QUICK_WIDTHS.map((x) => h('button', { class: Math.abs(op.t1 - op.t0 - x) <= 70 ? 'on' : '', title: sashWidthLabel(x), disabled: x > wallLen - 40, onclick: () => { pushUndo(); setOpeningWidth(op, x, wallLen); markChanged(); rebuild(); draw(); } }, x.toLocaleString()))),
+              ]
+            : []),
           h('button', { class: 'btn sm block', onclick: () => deleteSel() }, '消す（Delete）'),
         );
       }

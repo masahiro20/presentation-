@@ -368,9 +368,37 @@ export interface ExteriorItem {
   len?: number;
 }
 
+/** 屋根の掛け方 */
+export type RoofKind = 'gable' | 'hip' | 'shed' | 'flat';
+export const ROOF_KIND_LABEL: Record<RoofKind, string> = { gable: '切妻', hip: '寄棟', shed: '片流れ', flat: '陸屋根' };
+/** 片流れの高い側（図面の上 n・下 s・右 e・左 w） */
+export type RoofHigh = 'n' | 's' | 'e' | 'w';
+/**
+ * 屋根の塊（上の階が載らない範囲のつながった所）ごとの手直し。at はその塊の中の点（図面座標 mm）。
+ * 省略した項目は全体の設定（パースの「細かく調整」とテイスト）のまま
+ */
+export interface RoofPatch {
+  id: string;
+  level: number;
+  at: Vec2;
+  kind?: RoofKind;
+  /** 片流れの高い側 */
+  high?: RoofHigh;
+  /** 切妻・寄棟の棟の向き（x = 図面の横に棟、z = 縦に棟）。省略 = 長い辺に沿う */
+  ridge?: 'x' | 'z';
+  /** 勾配（寸） */
+  pitch?: number;
+  /** 軒の出 (mm) */
+  eaves?: number;
+  /** 陸屋根のパラペットの高さ (mm)。省略 550 */
+  parapet?: number;
+}
+
 export interface BuildingModel {
   name: string;
   floors: Floor[];
+  /** 屋根の塊ごとの手直し（3D の「屋根」の道具で）。無い塊はおまかせ */
+  roofPatches?: RoofPatch[];
   /** 木造のモジュール（尺 910／メーター 1000）。読み取った壁芯を格子へ寄せた結果 */
   module?: ModuleInfo;
   /** 手で置き直した家具（階ごと）。無い階は自動配置 */

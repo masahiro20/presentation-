@@ -11,7 +11,8 @@
  * 構造計算（壁量計算・許容応力度）ではなく、読み取りの検算と設計の注意点を出す
  */
 import { overhangPoints, hasPostNear, OVERHANG_POST_MIN, OVERHANG_POST_WARN } from '../core/posts';
-import { excludedFromFloorArea, type BuildingModel, type Floor, type Room, type Vec2, type Wall } from '../core/types';
+import { excludedFromFloorArea, type BuildingModel, type Floor, type Opening, type Room, type Vec2, type Wall } from '../core/types';
+import { isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
 import { effectiveStair, effectiveStepCount, stairFrame } from '../core/stairs';
@@ -652,6 +653,63 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
           ? `${lens.join('・')} mm の段差があります。外壁と内壁の厚みの差や、線を二重に読んだ揺れのことが多く、設計上の出入りではありません。気になるときは修正画面で壁を揃えてください`
           : `${lens.join('・')} mm の出入りがあります。木造では外壁の出入りごとに柱が 2 本と基礎の角が増え、屋根・樋の納まりも複雑になります。意図した出入りなら 455 か 910 に、読み取りの揺れ（二重の壁・梁の線）なら修正画面で外形を直してください`,
       marks: [{ level: f.level, lines: short.map((x) => ({ a: x.a, b: x.b })), label: jagged ? 'ギザギザ' : '細かい段差' }],
+    });
+  }
+  // (q) 窓の割付: 木造は柱芯 910（半間 455）の割に窓を入れるので、サッシの幅は 780・1,235・1,690・2,600 など標準の寸法になる。
+  //     どれにも近くない幅は、記号の読み違い（枠の線を取り損ねた）か特注の窓。読み取りの検算として出し、ワンクリックで標準の幅に直せる
+  for (const f of floors) {
+    const odd: { op: Opening; w: Wall; width: number; to: number }[] = [];
+    for (const o of f.openings) {
+      if (o.kind !== 'window') continue;
+      const width = o.t1 - o.t0;
+      if (isStandardSashWidth(width)) continue;
+      const w = f.walls.find((x) => x.id === o.wallId);
+      if (!w) continue;
+      odd.push({ op: o, w, width, to: nearestSashWidth(width) });
+    }
+    if (!odd.length) continue;
+    const segOf = (w: Wall, t0: number, t1: number) => {
+      const L = len(w) || 1;
+      const at = (t: number) => ({ x: w.a.x + ((w.b.x - w.a.x) * t) / L, y: w.a.y + ((w.b.y - w.a.y) * t) / L });
+      return { a: at(t0), b: at(t1) };
+    };
+    const ids = odd.map((x) => x.op.id);
+    out.push({
+      id: `sash-${f.level}`,
+      level: f.level,
+      severity: odd.length >= 3 ? 'warn' : 'info',
+      title: `${f.level}階: 半間の割に合わない幅の窓が ${odd.length} か所`,
+      detail: `${odd.slice(0, 5).map((x) => `W${Math.round(x.width).toLocaleString()} → ${sashWidthLabel(x.to)}`).join('・')}${odd.length > 5 ? ' …' : ''}。木造は柱芯 910（半間 455）の割に窓を入れるので、サッシの幅は 780・1,235・1,690・2,600 などになります。記号の読み違いなら標準の幅に直し、特注の窓ならそのままで構いません`,
+      marks: [{ level: f.level, lines: odd.map((x) => segOf(x.w, x.op.t0, x.op.t1)), label: '割に合わない窓' }],
+      fix: {
+        label: '標準の幅に直す',
+        apply: (mm) => {
+          const fl = mm.floors.find((x) => x.level === f.level);
+          if (!fl) return;
+          for (const id of ids) {
+            const op = fl.openings.find((o) => o.id === id);
+            const w = op ? fl.walls.find((x) => x.id === op.wallId) : undefined;
+            if (!op || !w) continue;
+            const L = len(w);
+            const to = nearestSashWidth(op.t1 - op.t0);
+            const c = (op.t0 + op.t1) / 2;
+            let t0 = c - to / 2;
+            let t1 = c + to / 2;
+            if (t0 < 20) {
+              t0 = 20;
+              t1 = t0 + to;
+            }
+            if (t1 > L - 20) {
+              t1 = L - 20;
+              t0 = Math.max(20, t1 - to);
+            }
+            // 隣の窓・戸と重なるなら直さない（手で見てもらう）
+            if (fl.openings.some((o) => o.wallId === w.id && o.id !== op.id && o.t1 > t0 + 5 && o.t0 < t1 - 5)) continue;
+            op.t0 = t0;
+            op.t1 = t1;
+          }
+        },
+      },
     });
   }
   out.push(...livabilityChecks(model));

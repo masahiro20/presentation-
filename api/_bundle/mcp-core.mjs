@@ -9865,7 +9865,8 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		const excluded = rooms.filter((r) => excludedFromFloorArea(r.type) && r.type !== "balcony" && r.type !== "porch" || r.type === "balcony" && !/庭/.test(r.name)).reduce((s0, r) => s0 + r.area, 0);
 		const A = cells * res * res / 1e6 - excluded;
 		const err0 = (A - expectedArea) / expectedArea;
-		if (err0 > .04) {
+		if (globalThis.__alignDebug) console.log(`[area] level ${level} A=${A.toFixed(2)} expected=${expectedArea} err0=${(err0 * 100).toFixed(1)}% unnamed=${JSON.stringify(rooms.filter((r) => r.name === "室").map((r) => +r.area.toFixed(2)))}`);
+		if (err0 > .025) {
 			const cand = rooms.map((r, idx) => ({
 				r,
 				idx
@@ -9883,7 +9884,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 					err
 				};
 			}
-			if (best && best.err < .025 && best.err < err0 / 2) for (const b of best.set) {
+			if (best && best.err < .025 && best.err < err0 * .75) for (const b of best.set) {
 				const { r, idx } = cand[b];
 				const l = labelOfRoom.get(idx);
 				if (l == null) continue;
@@ -10715,7 +10716,7 @@ function outlineUnionArea(floors) {
 	return n * step * step / 1e6;
 }
 /** 上階の図面を下階に位置合わせするための平行移動量（壁の重なり・階段位置・外形の包含で評価） */
-function alignOffset(base, other) {
+function alignOffset(base, other, mode = "walls") {
 	const axesOf = (p, vertical) => p.walls.filter((w) => vertical ? Math.abs(w.u.y) > .99 : Math.abs(w.u.x) > .99).map((w) => vertical ? {
 		c: w.a.x,
 		t0: Math.min(w.a.y, w.b.y),
@@ -10751,6 +10752,18 @@ function alignOffset(base, other) {
 	dys.add(Math.round(base.bbox.minY - other.bbox.minY));
 	const sa = detectStairs(base.segs, base.bbox);
 	const sb = detectStairs(other.segs, other.bbox);
+	const dbg = globalThis.__alignDebug;
+	if (dbg) console.log(`[align] base stairs ${JSON.stringify(sa.map((s) => [
+		s.minX,
+		s.minY,
+		s.maxX,
+		s.maxY
+	]))} other stairs ${JSON.stringify(sb.map((s) => [
+		s.minX,
+		s.minY,
+		s.maxX,
+		s.maxY
+	]))} other bbox ${JSON.stringify(other.bbox)}`);
 	for (const a of sa) for (const b of sb) {
 		dxs.add(Math.round((a.minX + a.maxX) / 2 - (b.minX + b.maxX) / 2));
 		dys.add(Math.round((a.minY + a.maxY) / 2 - (b.minY + b.maxY) / 2));
@@ -10769,13 +10782,16 @@ function alignOffset(base, other) {
 	};
 	let bestScore = -Infinity;
 	for (const dx of dxs) for (const dy of dys) {
-		let score = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
-		for (const a of evA) for (const b of evB) score += 3e4 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
+		const wallScore = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
+		let stairBest = 0;
 		for (const a of sa) for (const b of sb) {
 			const inter = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx)) * Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
-			const ar = (a.maxX - a.minX) * (a.maxY - a.minY);
-			if (ar > 0) score += 2e4 * (inter / ar);
+			const union = (a.maxX - a.minX) * (a.maxY - a.minY) + (b.maxX - b.minX) * (b.maxY - b.minY) - inter;
+			if (union > 0) stairBest = Math.max(stairBest, inter / union);
 		}
+		let score = mode === "stairs" && sa.length && sb.length ? wallScore * (.15 + .85 * stairBest) + 8e4 * stairBest : wallScore + 2e4 * stairBest;
+		for (const a of evA) for (const b of evB) score += 3e4 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
+		if (dbg && (stairBest > 0 || score > 2e4)) console.log(`[align] d=(${dx},${dy}) wall=${Math.round(wallScore)} stair=${stairBest.toFixed(2)} score=${Math.round(score)}`);
 		const ix = Math.max(0, Math.min(base.bbox.maxX, other.bbox.maxX + dx) - Math.max(base.bbox.minX, other.bbox.minX + dx));
 		const iy = Math.max(0, Math.min(base.bbox.maxY, other.bbox.maxY + dy) - Math.max(base.bbox.minY, other.bbox.minY + dy));
 		score -= 1e4 * (1 - ix * iy / Math.max(1, areaB));
@@ -11185,26 +11201,33 @@ function assembleModel(pages, name, warnings, opts = {}) {
 				455,
 				910
 			];
+			const cands = [];
+			for (const dx of shifts) for (const dy of shifts) if (dx || dy) cands.push({
+				x: dx,
+				y: dy
+			});
+			const pBelow = planOf.get(floors[i - 1]);
+			const pThis = planOf.get(floors[i]);
+			if (pBelow && pThis) {
+				const d = alignOffset(pBelow, pThis, "stairs");
+				if (Math.abs(d.x) > 50 || Math.abs(d.y) > 50) cands.push(d);
+			}
 			let best = null;
-			for (const dx of shifts) for (const dy of shifts) {
-				if (!dx && !dy) continue;
+			for (const d of cands) {
 				const moved = floors.map((f, k) => k >= i ? {
 					...f,
 					outline: f.outline.map((l) => l.map((q) => ({
-						x: q.x + dx,
-						y: q.y + dy
+						x: q.x + d.x,
+						y: q.y + d.y
 					})))
 				} : f);
 				const err = Math.abs(outlineUnionArea(moved) - build) / build;
 				if (!best || err < best.err) best = {
-					d: {
-						x: dx,
-						y: dy
-					},
+					d,
 					err
 				};
 			}
-			if (!best || best.err > .03 || best.err >= err0 / 2) continue;
+			if (!best || !(best.err <= .03 && best.err < err0 * .75 || best.err < err0 * .75 && best.err <= .08)) continue;
 			for (let k = i; k < floors.length; k++) {
 				const p = planOf.get(floors[k]);
 				translatePlan(p, best.d);
@@ -12040,6 +12063,7 @@ function modelFromVectors(pages, opts = {}) {
 		for (let i = 0; i < fl.length; i++) {
 			const h = elev.storyHeights[i];
 			if (h) fl[i].height = h;
+			if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
 			if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
 		}
 		heights = {
@@ -14551,7 +14575,7 @@ function takeoff(model, opts) {
 	const topPerim = top ? top.outline.reduce((s, l) => s + perimeter(l), 0) / 1e3 : 0;
 	let lowerEdges = 0;
 	for (let i = 0; i < floors.length - 1; i++) lowerEdges += uncoveredEdge(floors[i], floors[i + 1]);
-	if (opts.roofType === "flat" || opts.roofType === "shed") extWall += (topPerim + lowerEdges) * PARAPET_H;
+	if (opts.roofType === "flat" || opts.roofType === "shed") extWall += topPerim * PARAPET_H;
 	else if (opts.roofType === "gable" && top) extWall += 2 * gableTriangleArea(top, opts.pitch);
 	extWall = r2$1(Math.max(0, extWall));
 	const eaveOut = opts.roofType === "flat" ? 0 : opts.eavesMm / 1e3;
@@ -14559,11 +14583,18 @@ function takeoff(model, opts) {
 	const slope = opts.roofType === "flat" ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
 	const roofArea = r2$1((roofPlan + (topPerim + lowerEdges) * eaveOut) * slope);
 	const overhang = exposedFloors;
-	const soffitArea = r2$1((topPerim + lowerEdges) * eaveOut + overhang);
 	const bb = top ? bboxOf(top.outline.flat()) : null;
 	const longSide = bb ? Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1e3 : 0;
 	const shortSide = bb ? Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1e3 : 0;
-	const eaveLen = r2$1(opts.roofType === "gable" ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === "shed" ? shortSide + 2 * eaveOut : topPerim + 8 * eaveOut);
+	let lowerShort = 0;
+	for (let i = 0; i < floors.length - 1; i++) for (const loop of floors[i].outline) {
+		if (loop.length < 3) continue;
+		const area = Math.abs(polygonArea$1(loop)) / 1e6;
+		if (area < 6 || uncoveredArea(loop, floors.slice(i + 1)) < area * .5) continue;
+		const lb = bboxOf(loop);
+		lowerShort += Math.min(lb.maxX - lb.minX, lb.maxY - lb.minY) / 1e3;
+	}
+	const eaveLen = r2$1(opts.roofType === "gable" ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === "shed" ? shortSide + 2 * eaveOut + lowerShort : topPerim + 8 * eaveOut);
 	const ridgeLen = r2$1(opts.roofType === "flat" ? 0 : opts.roofType === "shed" ? 10 : longSide);
 	let garageCeil = 0;
 	let garageWall = 0;
@@ -14577,14 +14608,18 @@ function takeoff(model, opts) {
 		for (const p of f.rooms.filter((r) => r.type === "porch" && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y))) porchCeil += uncoveredArea(p.polygon, floors.slice(i + 1));
 	}
 	const insulArea = r2$1(Math.max(0, roofPlan - garageCeil - porchCeil + overhang));
+	const soffitArea = r2$1((topPerim + lowerEdges) * eaveOut + overhang + garageCeil + porchCeil);
 	const insulWall = r2$1(Math.max(0, extWall - garageWall));
 	const siteEdge = r2$1(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1e3 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
 	const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
 	const catArea = (cat) => r2$1(floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === cat).reduce((t, r) => t + r.area, 0), 0));
-	const flooringArea = catArea("flooring");
-	const floorTileArea = catArea("tile");
+	const budgetTile = opts.grade === "S";
+	const defaultWood = (r) => floorCategory(r) === "flooring" && !r.floorFinish;
+	const defaultWoodArea = r2$1(floors.reduce((s, f) => s + f.rooms.filter(defaultWood).reduce((t, r) => t + r.area, 0), 0));
+	const flooringArea = r2$1(catArea("flooring") - (budgetTile ? defaultWoodArea : 0));
+	const floorTileArea = r2$1(catArea("tile") + (budgetTile ? defaultWoodArea : 0));
 	const porchIn = catArea("doma");
-	const porchOut = r2$1(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
+	const porchOut = r2$1(porchRooms > 0 ? porchRooms : 2.48);
 	const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === "toilet" || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
 	const stairs = Math.max(0, floors.length - 1);
 	const tatami = floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === "tatami").reduce((t, r) => t + r.area, 0), 0) / 1.62;
@@ -24637,7 +24672,7 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 42e4,
 				group: "ac",
-				on: "both"
+				on: ["P"]
 			},
 			{
 				id: "eq.acDaikin",
@@ -24647,6 +24682,15 @@ var CATEGORIES = [
 				cost: 13e5,
 				group: "ac",
 				on: "none"
+			},
+			{
+				id: "eq.acNone",
+				spec: "空調",
+				desc: "空調なし（エアコンは別途）",
+				unit: "式",
+				cost: 0,
+				group: "ac",
+				on: ["S"]
 			},
 			{
 				id: "eq.acc",
@@ -24683,7 +24727,7 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 25e4,
 				group: "water",
-				on: "none"
+				on: ["S"]
 			},
 			{
 				id: "eq.ecocute360",
@@ -24692,7 +24736,7 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 38e4,
 				group: "water",
-				on: "both"
+				on: ["P"]
 			},
 			{
 				id: "eq.ecocute460",
@@ -24719,7 +24763,7 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 11e5,
 				group: "pv",
-				on: "both"
+				on: ["P"]
 			},
 			{
 				id: "eq.pvNone",
@@ -24728,7 +24772,7 @@ var CATEGORIES = [
 				unit: "式",
 				cost: 0,
 				group: "pv",
-				on: "none"
+				on: ["S"]
 			},
 			{
 				id: "eq.elevator",

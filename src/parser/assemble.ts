@@ -1685,7 +1685,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const excluded = rooms.filter((r) => (excludedFromFloorArea(r.type) && r.type !== 'balcony' && r.type !== 'porch') || (r.type === 'balcony' && !/庭/.test(r.name))).reduce((s0, r) => s0 + r.area, 0);
     const A = (cells * res * res) / 1e6 - excluded;
     const err0 = (A - expectedArea) / expectedArea;
-    if (err0 > 0.04) {
+    if ((globalThis as { __alignDebug?: boolean }).__alignDebug) console.log(`[area] level ${level} A=${A.toFixed(2)} expected=${expectedArea} err0=${(err0 * 100).toFixed(1)}% unnamed=${JSON.stringify(rooms.filter((r) => r.name === '室').map((r) => +r.area.toFixed(2)))}`);
+    // 2.5% 以上多ければ探す（吉田大仁様邸: 斜めの外壁の外側の庭の隅 3.4 ㎡ を室内と読んで 1 階が 3.8% 多かった）
+    if (err0 > 0.025) {
       const cand = rooms.map((r, idx) => ({ r, idx })).filter(({ r }) => r.name === '室' && r.area >= 1.5).slice(0, 12);
       let best: { set: number[]; err: number } | null = null;
       const n = cand.length;
@@ -1697,7 +1699,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         const err = Math.abs(A - sub - expectedArea) / expectedArea;
         if (!best || err < best.err) best = { set, err };
       }
-      if (best && best.err < 0.025 && best.err < err0 / 2) {
+      if (best && best.err < 0.025 && best.err < err0 * 0.75) {
         for (const b of best.set) {
           const { r, idx } = cand[b];
           const l = labelOfRoom.get(idx);
@@ -2485,7 +2487,7 @@ export function outlineUnionArea(floors: { outline: Vec2[][] }[]): number {
 }
 
 /** 上階の図面を下階に位置合わせするための平行移動量（壁の重なり・階段位置・外形の包含で評価） */
-export function alignOffset(base: PlanData, other: PlanData): Vec2 {
+export function alignOffset(base: PlanData, other: PlanData, mode: 'walls' | 'stairs' = 'walls'): Vec2 {
   type AX = { c: number; t0: number; t1: number };
   const axesOf = (p: PlanData, vertical: boolean): AX[] =>
     p.walls
@@ -2526,6 +2528,8 @@ export function alignOffset(base: PlanData, other: PlanData): Vec2 {
   // 階段の一致
   const sa = detectStairs(base.segs, base.bbox);
   const sb = detectStairs(other.segs, other.bbox);
+  const dbg = (globalThis as { __alignDebug?: boolean }).__alignDebug;
+  if (dbg) console.log(`[align] base stairs ${JSON.stringify(sa.map((s) => [s.minX, s.minY, s.maxX, s.maxY]))} other stairs ${JSON.stringify(sb.map((s) => [s.minX, s.minY, s.maxX, s.maxY]))} other bbox ${JSON.stringify(other.bbox)}`);
   for (const a of sa)
     for (const b of sb) {
       dxs.add(Math.round((a.minX + a.maxX) / 2 - (b.minX + b.maxX) / 2));
@@ -2545,17 +2549,26 @@ export function alignOffset(base: PlanData, other: PlanData): Vec2 {
   let bestScore = -Infinity;
   for (const dx of dxs)
     for (const dy of dys) {
-      let score = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
-      for (const a of evA) for (const b of evB) score += 30000 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
-      // 階段が重なる
+      const wallScore = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
+      // 階段は上下階で必ず同じ位置に通る → いちばん良く重なる階段の組で壁の点を重み付けし、さらに加点する
+      // （吉田大仁様邸: 2 階 5 × 6.4 m の壁は 1 階の玄関・ガレージの壁にも 910 の格子で良く重なり、階段から 6 m 離れた所に載っていた。
+      //   壁の重なりだけでは小さな 2 階の位置は決まらない。階段が読めていない図面は壁だけで決める）
+      // 重なりは IoU（重なり ÷ 合わせた範囲）で見る: 同じ大きさの階段が同じ位置にあるときだけ 1 に近づき、
+      // 車の記号の縞（吉田大仁様邸のガレージで階段に見えた 1.3 × 0.9 m）に 2 階の階段 1.8 × 1.8 m が載っても 0.4 止まり
+      let stairBest = 0;
       for (const a of sa)
         for (const b of sb) {
           const ix = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx));
           const iy = Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
           const inter = ix * iy;
-          const ar = (a.maxX - a.minX) * (a.maxY - a.minY);
-          if (ar > 0) score += 20000 * (inter / ar);
+          const union = (a.maxX - a.minX) * (a.maxY - a.minY) + (b.maxX - b.minX) * (b.maxY - b.minY) - inter;
+          if (union > 0) stairBest = Math.max(stairBest, inter / union);
         }
+      // 'walls': 壁の重なりが主で階段は加点（既定）。'stairs': 階段の重なりが主（面積表の建築面積が合わないときの再試行。
+      // 既定にすると、デッキの縞・車の記号を階段と見た図面（伊藤様・池本様・舟橋様）で逆にずれる）
+      let score = mode === 'stairs' && sa.length && sb.length ? wallScore * (0.15 + 0.85 * stairBest) + 80000 * stairBest : wallScore + 20000 * stairBest;
+      for (const a of evA) for (const b of evB) score += 30000 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
+      if (dbg && (stairBest > 0 || score > 20000)) console.log(`[align] d=(${dx},${dy}) wall=${Math.round(wallScore)} stair=${stairBest.toFixed(2)} score=${Math.round(score)}`);
       // 上階が下階の外形からはみ出す面積にペナルティ
       const ix = Math.max(0, Math.min(base.bbox.maxX, other.bbox.maxX + dx) - Math.max(base.bbox.minX, other.bbox.minX + dx));
       const iy = Math.max(0, Math.min(base.bbox.maxY, other.bbox.maxY + dy) - Math.max(base.bbox.minY, other.bbox.minY + dy));
@@ -2899,16 +2912,24 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     const err0 = Math.abs(outlineUnionArea(floors) - build) / build;
     if (err0 > 0.05) {
       for (let i = 1; i < floors.length; i++) {
+        // 候補: 半間・1 間のずらし と、階段の重なりを主にした位置合わせ（吉田大仁様邸: 2 階の壁が 1 階の玄関・ガレージの壁に良く重なり、階段から 6 m 離れて載っていた）
         const shifts = [-910, -455, 0, 455, 910];
+        const cands: Vec2[] = [];
+        for (const dx of shifts) for (const dy of shifts) if (dx || dy) cands.push({ x: dx, y: dy });
+        const pBelow = planOf.get(floors[i - 1]);
+        const pThis = planOf.get(floors[i]);
+        if (pBelow && pThis) {
+          const d = alignOffset(pBelow, pThis, 'stairs');
+          if (Math.abs(d.x) > 50 || Math.abs(d.y) > 50) cands.push(d);
+        }
         let best: { d: Vec2; err: number } | null = null;
-        for (const dx of shifts)
-          for (const dy of shifts) {
-            if (!dx && !dy) continue;
-            const moved = floors.map((f, k) => (k >= i ? { ...f, outline: f.outline.map((l) => l.map((q) => ({ x: q.x + dx, y: q.y + dy }))) } : f));
-            const err = Math.abs(outlineUnionArea(moved) - build) / build;
-            if (!best || err < best.err) best = { d: { x: dx, y: dy }, err };
-          }
-        if (!best || best.err > 0.03 || best.err >= err0 / 2) continue;
+        for (const d of cands) {
+          const moved = floors.map((f, k) => (k >= i ? { ...f, outline: f.outline.map((l) => l.map((q) => ({ x: q.x + d.x, y: q.y + d.y }))) } : f));
+          const err = Math.abs(outlineUnionArea(moved) - build) / build;
+          if (!best || err < best.err) best = { d, err };
+        }
+        // 3% 以内に収まるか、差が 3/4 以下に縮んで 8% 以内なら採用
+        if (!best || !((best.err <= 0.03 && best.err < err0 * 0.75) || (best.err < err0 * 0.75 && best.err <= 0.08))) continue;
         // その階とその上の階の図面をずらして組み立て直す（上の階はその階に合わせてあるので一緒に動く）
         for (let k = i; k < floors.length; k++) {
           const p = planOf.get(floors[k])!;

@@ -74,7 +74,8 @@ describe('数量の根拠: 拾いと同じ数字に分解できる', () => {
     const rb = roofBasis(model, shed);
     expect(rb.roofArea).toBeCloseTo(a.roofArea, 2);
     expect((rb.union + rb.eaveArea) * rb.slope).toBeCloseTo(a.roofArea, 0);
-    expect(rb.soffitArea).toBeCloseTo(rb.eaveArea + rb.overhang, 0);
+    // 軒天 = 軒の出の裏 ＋ 張り出しの床下 ＋ 屋根の下のガレージ・ポーチの天井
+    expect(rb.soffitArea).toBeCloseTo(rb.eaveArea + rb.overhang + rb.garageCeil + rb.porchCeil, 0);
     // ガレージ 4m × 6m のうち、2 階が載っていない所 = 全部（2 階は x ≥ 4000）
     expect(rb.garageCeil).toBeCloseTo(24, 0);
     expect(rb.insulArea).toBeCloseTo(rb.union - rb.garageCeil + rb.overhang, 0);

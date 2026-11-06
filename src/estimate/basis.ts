@@ -252,7 +252,7 @@ export function wallBasis(model: BuildingModel, opts: TakeoffOptions): WallBasis
   const top = floors[floors.length - 1];
   const box = opts.roofType === 'flat' || opts.roofType === 'shed';
   if (box && top) {
-    // パラペット: 最上階の全辺＋下屋の縁（上の階が載っていない区間）
+    // パラペット: 最上階の全辺だけ（下屋の縁は鼻隠しで立ち上がりは無い。拾いと同じ）
     const tb = bandOf(top.level);
     for (const loop of top.outline)
       for (let k = 0; k < loop.length; k++) {
@@ -260,11 +260,6 @@ export function wallBasis(model: BuildingModel, opts: TakeoffOptions): WallBasis
         const b = loop[(k + 1) % loop.length];
         add(wallDirOf(outwardOf(top, a, b), axes), top.level, 'parapet', a, b, tb.y1, tb.y1 + PARAPET_H * 1000);
       }
-    for (let i = 0; i < floors.length - 1; i++) {
-      const f = floors[i];
-      const fb = bandOf(f.level);
-      for (const run of uncoveredRuns(f, floors[i + 1])) add(wallDirOf(outwardOf(f, run.a, run.b), axes), f.level, 'parapet', run.a, run.b, fb.y1, fb.y1 + PARAPET_H * 1000);
-    }
   } else if (opts.roofType === 'gable' && top) {
     // 妻壁の三角 2 面: 棟は長手に通るので、三角は短辺側の 2 方位に 1 つずつ
     const bb = bboxOf(top.outline.flat());
@@ -350,9 +345,11 @@ export interface RoofBasis {
   /** 外気に接する床（上の階が下の階より張り出した所の床下） (㎡) */
   overhang: number;
   soffitArea: number;
-  /** ガレージの上が屋根になっている面積 (㎡)（天井の断熱から引く） */
+  /** ガレージの上が屋根になっている面積 (㎡)（天井の断熱から引き、軒天に足す） */
   garageCeil: number;
   garage: { level: number; room: Room; uncovered: number }[];
+  /** 外形の中のポーチ・テラスの上が屋根になっている面積 (㎡)（天井の断熱から引き、軒天に足す） */
+  porchCeil: number;
   insulArea: number;
   roofName: string;
 }
@@ -380,11 +377,13 @@ export function roofBasis(model: BuildingModel, opts: TakeoffOptions): RoofBasis
   const eaveLen = r2(eaveRuns.reduce((s, r) => s + r.len, 0) / 1000);
   const slope = opts.roofType === 'flat' ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
   const garage: RoofBasis['garage'] = [];
+  let porchCeil = 0;
   for (let i = 0; i < floors.length; i++) {
     const f = floors[i];
     for (const g of f.rooms) {
-      if (!isBuiltinGarage(g) || !inFloor(f, centroid(g.polygon).x, centroid(g.polygon).y)) continue;
-      garage.push({ level: f.level, room: g, uncovered: r2(uncoveredArea(g.polygon, floors.slice(i + 1))) });
+      if (g.polygon.length < 3 || !inFloor(f, centroid(g.polygon).x, centroid(g.polygon).y)) continue;
+      if (isBuiltinGarage(g)) garage.push({ level: f.level, room: g, uncovered: r2(uncoveredArea(g.polygon, floors.slice(i + 1))) });
+      else if (g.type === 'porch') porchCeil += uncoveredArea(g.polygon, floors.slice(i + 1));
     }
   }
   const roofName = opts.roofType === 'flat' ? '陸屋根' : opts.roofType === 'shed' ? `片流れ ${opts.pitch} 寸` : opts.roofType === 'gable' ? `切妻 ${opts.pitch} 寸` : `寄棟 ${opts.pitch} 寸`;
@@ -403,6 +402,7 @@ export function roofBasis(model: BuildingModel, opts: TakeoffOptions): RoofBasis
     soffitArea: areas.soffitArea,
     garageCeil: r2(garage.reduce((s, g) => s + g.uncovered, 0)),
     garage,
+    porchCeil: r2(porchCeil),
     insulArea: areas.insulArea,
     roofName,
   };

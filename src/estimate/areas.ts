@@ -458,7 +458,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   let lowerEdges = 0;
   for (let i = 0; i < floors.length - 1; i++) lowerEdges += uncoveredEdge(floors[i], floors[i + 1]);
   const box = opts.roofType === 'flat' || opts.roofType === 'shed';
-  if (box) extWall += (topPerim + lowerEdges) * PARAPET_H;
+  // パラペットは最上階の外周だけ（下屋の縁は鼻隠しで、立ち上がりは無い。吉田大仁様邸: 外壁 393 → 342 ㎡ で御社の 344 に一致）
+  if (box) extWall += topPerim * PARAPET_H;
   else if (opts.roofType === 'gable' && top) {
     // 切妻の妻壁（三角形 2 面）: 底辺 = 短辺、高さ = 短辺の半分 × 勾配。三角 1 面 = 短辺 × 高さ ÷ 2 を 2 面
     // （以前は 1 面分しか足していなかった。妻側の立面を見れば三角は両端に 1 つずつある）
@@ -470,15 +471,23 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const roofPlan = ov.union;
   const slope = opts.roofType === 'flat' ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
   const roofArea = r2((roofPlan + (topPerim + lowerEdges) * eaveOut) * slope);
-  // 軒天: 軒の出の裏 ＋ 上階が下階より張り出す部分の裏（オーバーハング・ピロティ）
   const overhang = exposedFloors;
-  const soffitArea = r2((topPerim + lowerEdges) * eaveOut + overhang);
   // 軒先: 切妻・片流れは長手の辺、寄棟・陸屋根（パラペット）は外周
   const bb = top ? bboxOf(top.outline.flat()) : null;
   const longSide = bb ? Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1000 : 0;
   const shortSide = bb ? Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) / 1000 : 0;
-  // 片流れ: 御社の低勾配の箱は長手方向に流し、軒先（軒樋）は短辺側の 1 辺（堀様邸・有元様邸とも 6.5m）
-  const eaveLen = r2(opts.roofType === 'gable' ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === 'shed' ? shortSide + 2 * eaveOut : topPerim + 8 * eaveOut);
+  // 片流れ: 御社の低勾配の箱は長手方向に流し、軒先（軒樋）は短辺側の 1 辺（堀様邸・有元様邸とも 6.5m）。
+  // 上の階がほとんど載らない下屋の塊（ガレージ・平屋部分）は別の屋根なので、その短辺にも軒樋が付く（吉田大仁様邸: 2 階 5.0 ＋ 母屋 9.55 ＋ ガレージ 6.37 ≒ 御社 26.4 のうち 21）
+  let lowerShort = 0;
+  for (let i = 0; i < floors.length - 1; i++)
+    for (const loop of floors[i].outline) {
+      if (loop.length < 3) continue;
+      const area = Math.abs(polygonArea(loop)) / 1e6;
+      if (area < 6 || uncoveredArea(loop, floors.slice(i + 1)) < area * 0.5) continue;
+      const lb = bboxOf(loop);
+      lowerShort += Math.min(lb.maxX - lb.minX, lb.maxY - lb.minY) / 1000;
+    }
+  const eaveLen = r2(opts.roofType === 'gable' ? longSide * 2 + 2 * eaveOut * 2 : opts.roofType === 'shed' ? shortSide + 2 * eaveOut + lowerShort : topPerim + 8 * eaveOut);
   // 換気棟: 片流れの箱は御社の見積で毎回 10m（堀様邸・有元様邸・積算シートの既定）。切妻・寄棟は長手
   const ridgeLen = r2(opts.roofType === 'flat' ? 0 : opts.roofType === 'shed' ? 10 : longSide);
   // 断熱（室内天井＆外部床）: 屋根の下の天井（重ね合わせた外形 ≒ 屋根面積の平面）＋ 外気に接する床（オーバーハングした 2 階の床下）。
@@ -496,18 +505,24 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     for (const p of f.rooms.filter((r) => r.type === 'porch' && r.polygon.length >= 3 && inFloor(f, centroid(r.polygon).x, centroid(r.polygon).y))) porchCeil += uncoveredArea(p.polygon, floors.slice(i + 1));
   }
   const insulArea = r2(Math.max(0, roofPlan - garageCeil - porchCeil + overhang));
+  // 軒天: 軒の出の裏 ＋ 上階が下階より張り出す部分の裏（オーバーハング・ピロティ）＋ 屋根の下の屋外の天井（ビルトインガレージ・ポーチ。御社の積算は外部天井 PB として軒天に数える）
+  const soffitArea = r2((topPerim + lowerEdges) * eaveOut + overhang + garageCeil + porchCeil);
   const insulWall = r2(Math.max(0, extWall - garageWall));
   const siteEdge = r2(model.site?.polygon?.length ? perimeter(model.site.polygon) / 1000 : Math.max(40, 4 * Math.sqrt(buildArea * 2.4)));
   const doors = floors.reduce((s, f) => s + interiorDoors(f).length, 0);
   // 床仕上げ: 挽板フローリングは居室・ホール・書斎。フロアタイルは洗面脱衣・トイレ・収納（土間の収納は除く）。
   // 設計士が 3D・方眼で床の仕上げを変えた部屋（畳コーナー・土間リビングなど）はそれに従う（floorCategory）
   const catArea = (cat: FloorCategory) => r2(floors.reduce((s, f) => s + f.rooms.filter((r) => floorCategory(r) === cat).reduce((t, r) => t + r.area, 0), 0));
-  const flooringArea = catArea('flooring');
-  const floorTileArea = catArea('tile');
+  // S 仕様の既定の床はフロアタイル（吉田大仁様邸の積算S: フローリング 0・フロアタイル 97 ㎡）。設計士が部屋の床を木（挽板）にしたときはそれに従う
+  const budgetTile = opts.grade === 'S';
+  const defaultWood = (r: Room) => floorCategory(r) === 'flooring' && !r.floorFinish;
+  const defaultWoodArea = r2(floors.reduce((s, f) => s + f.rooms.filter(defaultWood).reduce((t, r) => t + r.area, 0), 0));
+  const flooringArea = r2(catArea('flooring') - (budgetTile ? defaultWoodArea : 0));
+  const floorTileArea = r2(catArea('tile') + (budgetTile ? defaultWoodArea : 0));
   // 内部ポーチ（玄関土間）: 玄関＋土間の収納（＋土間に変えた部屋）。外部ポーチ: ポーチの区画、無ければ御社の標準 1,365×1,820（2.48㎡）
   const porchIn = catArea('doma');
-  // ガレージの土間も外部ポーチと同じ扱い（土間コン・刷毛引きの数量に入る）
-  const porchOut = r2(porchRooms + garageArea > 0 ? porchRooms + garageArea : 2.48);
+  // ガレージの土間は基礎（建築面積）の中なので外部ポーチには入れない（吉田大仁様邸の積算: 外部ポーチ・テラス 19.04 にガレージ 43.47 は含まない）
+  const porchOut = r2(porchRooms > 0 ? porchRooms : 2.48);
   // トイレ: 便所の区画のほか、「洗面・トイレ」のように洗面室と一緒の区画も 1 か所と数える（堀様邸の 1 階）
   const toilets = Math.max(1, floors.reduce((s, f) => s + f.rooms.filter((r) => r.type === 'toilet' || /トイレ|便所|ＷＣ|WC/.test(r.name)).length, 0));
   const stairs = Math.max(0, floors.length - 1);

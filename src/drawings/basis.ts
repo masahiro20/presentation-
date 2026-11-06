@@ -361,10 +361,10 @@ function roofSheet(model: BuildingModel, opts: TakeoffOptions, info: SheetInfo, 
     ['＋ 軒の出', `${f2(rb.eaveArea)} ㎡`, `${f1(rb.eaveLen)} m × ${rb.eavesM.toFixed(2)} m`],
     ['× 勾配の倍率', rb.slope.toFixed(3), rb.roofName],
     ['屋根面積', `${f1(rb.roofArea)} ㎡`, ovNote(bo.overrides, 'roofArea', rb.roofArea)],
-    ['軒先（鼻隠し）', `${f1(a.eaveLen)} m`, opts.roofType === 'gable' ? '長手 2 辺＋軒の出' : opts.roofType === 'shed' ? '短辺 1 辺（水下）' : '外周'],
+    ['軒先（鼻隠し）', `${f1(a.eaveLen)} m`, opts.roofType === 'gable' ? '長手 2 辺＋軒の出' : opts.roofType === 'shed' ? '短辺 1 辺（水下）＋下屋の塊の短辺' : '外周'],
     ['棟長さ', `${f1(a.ridgeLen)} m`, opts.roofType === 'shed' ? '片流れは社内の既定 10 m' : opts.roofType === 'flat' ? 'なし' : '長手'],
-    ['軒天面積', `${f1(rb.soffitArea)} ㎡`, `軒の出 ${f2(rb.eaveArea)} ＋ 張り出しの裏 ${f2(rb.overhang)}`],
-    ['断熱（天井＆外部床）', `${f1(rb.insulArea)} ㎡`, `平面 ${f2(rb.union)} − ガレージの上 ${f2(rb.garageCeil)} ＋ 外気に接する床 ${f2(rb.overhang)}`],
+    ['軒天面積', `${f1(rb.soffitArea)} ㎡`, `軒の出 ${f2(rb.eaveArea)} ＋ 張り出しの裏 ${f2(rb.overhang)}${rb.garageCeil + rb.porchCeil > 0 ? ` ＋ ガレージ・ポーチの天井 ${f2(rb.garageCeil + rb.porchCeil)}` : ''}`],
+    ['断熱（天井＆外部床）', `${f1(rb.insulArea)} ㎡`, `平面 ${f2(rb.union)} − ガレージ・ポーチの上 ${f2(rb.garageCeil + rb.porchCeil)} ＋ 外気に接する床 ${f2(rb.overhang)}`],
   ];
   const tbl = svgTable(0, 0, '屋根・軒天・断熱（見積の拾い）', [{ label: '項目', w: 3400 }, { label: '数量', w: 2300, align: 'right' }, { label: '根拠', w: 6200 }], rows, { fontSize: 230, rowH: 420 });
   const lg = legend(0, tbl.h + 600, [

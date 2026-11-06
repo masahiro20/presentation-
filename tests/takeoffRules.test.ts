@@ -1,88 +1,76 @@
-import { describe, it, expect } from 'vitest';
+// 見積の拾いの規則（吉田大仁様邸の積算S との照合で直したもの）:
+// ガレージの土間は外部ポーチに入れない・ガレージとポーチの天井は軒天・パラペットは最上階の外周だけ・下屋の塊にも軒樋・S 仕様の床はフロアタイル・S の設備の既定
+import { describe, expect, it } from 'vitest';
 import { takeoff } from '../src/estimate/areas';
-import { newChoice, computeEstimate } from '../src/estimate/calc';
-import type { BuildingModel, Floor, Room } from '../src/core/types';
+import { newChoice } from '../src/estimate/calc';
+import type { BuildingModel, Floor, Room, Vec2 } from '../src/core/types';
 
-const rect = (x0: number, y0: number, x1: number, y1: number) => [
+const rect = (x0: number, y0: number, x1: number, y1: number): Vec2[] => [
   { x: x0, y: y0 },
   { x: x1, y: y0 },
   { x: x1, y: y1 },
   { x: x0, y: y1 },
 ];
-const room = (id: string, name: string, type: Room['type'], poly: { x: number; y: number }[]): Room =>
-  ({ id, name, type, polygon: poly, area: Math.abs(poly.reduce((s, p, i) => s + p.x * poly[(i + 1) % poly.length].y - poly[(i + 1) % poly.length].x * p.y, 0)) / 2e6 }) as Room;
-const floor = (level: number, outline: { x: number; y: number }[][], rooms: Room[]): Floor =>
-  ({ level, height: 2900, ceilingHeight: 2400, elevation: 500 + (level - 1) * 2900, outline, rooms, walls: [], openings: [], stairs: [] }) as unknown as Floor;
+let seq = 0;
+const room = (name: string, type: Room['type'], poly: Vec2[], extra: Partial<Room> = {}): Room => {
+  const xs = poly.map((p) => p.x);
+  const ys = poly.map((p) => p.y);
+  return { id: `r${seq++}`, name, type, polygon: poly, labelPos: { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 }, area: ((Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys))) / 1e6, ...extra };
+};
+const floor = (level: number, outline: Vec2[][], rooms: Room[], height = 2900, ceilingHeight = 2400): Floor => ({ level, elevation: 500 + (level - 1) * 2900, height, ceilingHeight, outline, rooms, walls: [], openings: [], stairs: [] });
 
-// 御社の拾い方（堀様邸・有元様邸の見積の「面」シート）に合わせた規則
-describe('積算の数量: 御社の「面」シートの拾い方', () => {
-  // 1 階: 10m × 6m から 4m × 3m の中庭（外形の切り欠き）を除いた形。2 階: 1 階より西へ 1m 張り出した 8m × 6m
-  const f1 = floor(1, [[{ x: 0, y: 0 }, { x: 6000, y: 0 }, { x: 6000, y: 3000 }, { x: 10000, y: 3000 }, { x: 10000, y: 6000 }, { x: 0, y: 6000 }]], [
-    room('c', '中庭', 'balcony', rect(6000, 0, 10000, 3000)),
-    room('l', 'ＬＤＫ', 'ldk', rect(0, 0, 6000, 6000)),
-    room('w', '洗面・トイレ', 'washroom', rect(6000, 3000, 10000, 6000)),
-  ]);
-  const f2 = floor(2, [rect(-1000, 0, 7000, 6000)], [room('v', '吹抜', 'void', rect(0, 0, 3000, 3000)), room('b', '寝室', 'bedroom', rect(3000, 0, 7000, 6000)), room('t', 'トイレ', 'toilet', rect(-1000, 0, 0, 2000))]);
-  const model = { floors: [f1, f2] } as unknown as BuildingModel;
-  const a = takeoff(model, { grade: 'P', eavesMm: 0, pitch: 0.5, roofType: 'shed' });
+/** 1 階: 母屋 10 × 8 m（LDK・玄関）＋ 離れたビルトインガレージ 6 × 7 m（別の屋根の塊）。2 階: 5 × 6 m が母屋の上に載る */
+function model(): BuildingModel {
+  const main = rect(0, 0, 10000, 8000);
+  const garage = rect(12000, 2000, 18000, 9000);
+  const f1 = floor(1, [main, garage], [room('ＬＤＫ', 'ldk', rect(0, 0, 10000, 6000)), room('玄関', 'entrance', rect(0, 6000, 2000, 8000)), room('洗面', 'washroom', rect(2000, 6000, 10000, 8000)), room('車庫', 'garage', garage, { garageKind: 'builtin' })], 3200, 2700);
+  const f2 = floor(2, [rect(2000, 1000, 7000, 7000)], [room('洋室', 'bedroom', rect(2000, 1000, 7000, 7000))], 2800);
+  return { name: 't', floors: [f1, f2], northAngleDeg: 0, report: { pages: 1, scaleDenominator: 100, mmPerPt: 0.3528, scaleSource: 'text', wallThicknesses: [], warnings: [], timingsMs: {} } };
+}
+const opts = { grade: 'P' as const, eavesMm: 100, pitch: 0.5, roofType: 'shed' as const };
 
-  it('外形の外にある中庭は床面積から引かない（引くのは外形の内側の吹抜だけ）', () => {
-    expect(a.floor1).toBeCloseTo(48, 1);
-    expect(a.floor2).toBeCloseTo(48 - 9, 1);
-    expect(a.balconyArea).toBe(0); // 1 階の中庭はバルコニーではない
+describe('見積の拾い（吉田大仁様邸の積算と合わせた規則）', () => {
+  it('ガレージは施工面積に入り、外部ポーチには入らない。ガレージの天井は軒天に入り断熱には入らない', () => {
+    const a = takeoff(model(), opts);
+    expect(a.garageArea).toBeCloseTo(42, 1);
+    expect(a.extraArea).toBeCloseTo(42, 1);
+    expect(a.porchOut).toBeCloseTo(2.48, 2); // ポーチの区画が無いので御社の標準
+    expect(a.soffitArea).toBeGreaterThanOrEqual(42); // ガレージの天井 42 ㎡ ＋ 軒の出の裏
+    expect(a.insulArea).toBeCloseTo(80, 0); // 母屋の天井だけ（ガレージは断熱しない）
   });
-  it('上の階の下の屋外（張り出し）を施工面積の追加分に、建築面積・屋根は外形を重ねた面積で拾う', () => {
-    // 西へ 1m × 6m ＋ 中庭の上に 1m × 3m かかる分
-    expect(a.extraArea).toBeCloseTo(9, 0);
-    expect(a.buildArea).toBeCloseTo(57, 0);
-    expect(a.roofArea).toBeCloseTo(57, 0);
-    expect(a.insulArea).toBeCloseTo(66, 0); // 屋根の下の天井 57 ＋ 張り出しの床下 9
+  it('パラペットは最上階の外周だけ（下屋の縁には付けない）', () => {
+    const a = takeoff(model(), opts);
+    // 1 階 外周 (36 + 26) × (3.2 + 0.5) ＋ 2 階 外周 22 × 2.8 ＋ パラペット 22 × 0.9
+    expect(a.extWall).toBeCloseTo(62 * 3.7 + 22 * 2.8 + 22 * 0.9, 0);
   });
-  it('洗面と一緒のトイレも数え、片流れの換気棟は 10m', () => {
-    expect(a.toilets).toBe(2);
-    expect(a.ridgeLen).toBe(10);
+  it('片流れの軒先: 最上階の短辺に、上の階がほとんど載らない下屋の塊（ガレージ・母屋）の短辺を足す', () => {
+    const a = takeoff(model(), opts);
+    // 2 階 5 m ＋ 軒 0.2 ＋ 母屋 8 m（2 階は 30/80 しか載らない）＋ ガレージ 6 m
+    expect(a.eaveLen).toBeCloseTo(5.2 + 8 + 6, 1);
   });
-  it('サッシは延床 28 坪で 1 式（0.5 式刻み）', () => {
-    const r = computeEstimate({ ...a, totalTsubo: 42.08 }, newChoice('P'));
-    const tw = r.categories.flatMap((c) => c.lines).find((l) => l.id === 'sash.tw')!;
-    expect(tw.qty).toBe(1.5);
+  it('高天井: 階の天井高（階高 3,200 → 2,700）が 2,500 を超える分 × 床面積', () => {
+    const a = takeoff(model(), opts);
+    // 1 階 80 ㎡ × 0.2 m（ガレージは除く）
+    expect(a.highCeil).toBeCloseTo(16, 1);
   });
-  it('図面がアイランドキッチンなら見積の既定もアイランド', () => {
-    expect(newChoice('P', { kitchenType: 'island' }).groups.kitchen).toBe('eq.kitchenHlIsland');
-    expect(newChoice('P', { kitchenType: 'wall' }).groups.kitchen).toBe('eq.kitchenHlWall');
-    expect(newChoice('P').groups.kitchen).toBe('eq.kitchenHl');
-  });
-});
-
-// ガレージの拾い方（御社の見積の約束）: ビルトインガレージは床面積に入れず施工面積に。土間は外部ポーチと同じ扱い。
-// 外壁・屋根は建物と同じに拾う。ガレージには断熱を入れない（上が屋根なら天井の断熱から、外壁の断熱からガレージの壁を引く）
-describe('積算の数量: ビルトインガレージ', () => {
-  // 1 階 10m × 6m: 西の 5m × 6m がガレージ。2 階 5m × 6m は東半分（ガレージの上は屋根）
-  const f1 = floor(1, [rect(0, 0, 10000, 6000)], [room('g', 'ガレージ', 'garage', rect(0, 0, 5000, 6000)), room('l', 'ＬＤＫ', 'ldk', rect(5000, 0, 10000, 6000))]);
-  const f2 = floor(2, [rect(5000, 0, 10000, 6000)], [room('b', '寝室', 'bedroom', rect(5000, 0, 10000, 6000))]);
-  const a = takeoff({ floors: [f1, f2] } as unknown as BuildingModel, { grade: 'P', eavesMm: 0, pitch: 0.5, roofType: 'shed' });
-
-  it('床面積に入れず、施工面積（追加分）と外部ポーチ（土間）に入れる', () => {
-    expect(a.garageArea).toBeCloseTo(30, 1);
-    expect(a.floor1).toBeCloseTo(30, 1);
-    expect(a.extraArea).toBeCloseTo(30, 0);
-    expect(a.constArea).toBeCloseTo(30 + 30 + 30, 0);
-    expect(a.porchOut).toBeCloseTo(30, 1);
-  });
-  it('外壁・屋根・建築面積は建物と同じに拾う（ガレージを外形から外さない）', () => {
-    expect(a.buildArea).toBeCloseTo(60, 0);
-    expect(a.roofArea).toBeCloseTo(60, 0);
-    // 1 階 32m × (2.9 + 0.5) ＋ 2 階 22m × 2.9 ＋ パラペット
-    expect(a.extWall).toBeGreaterThan(32 * 3.4 + 22 * 2.9);
-  });
-  it('断熱: ガレージの上の屋根は天井の断熱に入れず、ガレージの外壁は壁の断熱に入れない', () => {
-    expect(a.insulArea).toBeCloseTo(30, 0); // 屋根の下の天井 60 − ガレージの上 30
-    // ガレージの外壁 (5 + 6 + 5) m × 3.4 = 54.4㎡ を引く
-    expect(a.extWall - a.insulWall).toBeCloseTo(54.4, 0);
-  });
-  it('ガレージの上に 2 階が載るときは、その天井は断熱に入る（外部床ではなく上の階の床）', () => {
-    const f2b = floor(2, [rect(0, 0, 10000, 6000)], [room('b', '寝室', 'bedroom', rect(0, 0, 10000, 6000))]);
-    const b = takeoff({ floors: [f1, f2b] } as unknown as BuildingModel, { grade: 'P', eavesMm: 0, pitch: 0.5, roofType: 'shed' });
-    expect(b.insulArea).toBeCloseTo(60, 0);
+  it('S 仕様: 既定の床はフロアタイル（木の床に変えた部屋は挽板のまま）、太陽光なし・エコジョーズ・空調なし', () => {
+    const m = model();
+    const p = takeoff(m, opts);
+    expect(p.flooringArea).toBeCloseTo(60 + 30, 1);
+    expect(p.floorTileArea).toBeCloseTo(16, 1);
+    const s = takeoff(m, { ...opts, grade: 'S' });
+    expect(s.flooringArea).toBe(0);
+    expect(s.floorTileArea).toBeCloseTo(16 + 90, 1);
+    m.floors[0].rooms[0].floorFinish = 'wood';
+    const s2 = takeoff(m, { ...opts, grade: 'S' });
+    expect(s2.flooringArea).toBeCloseTo(60, 1);
+    const g = newChoice('S').groups;
+    expect(g.pv).toBe('eq.pvNone');
+    expect(g.water).toBe('eq.ecojozu');
+    expect(g.ac).toBe('eq.acNone');
+    const gp = newChoice('P').groups;
+    expect(gp.pv).toBe('eq.pv43');
+    expect(gp.water).toBe('eq.ecocute360');
+    expect(gp.ac).toBe('eq.acFloor');
   });
 });

@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { h, clear, toast } from './dom';
 import { state } from './state';
 import type { Viewer } from '../scene/viewer';
-import { pointInPolygon } from '../core/geometry';
+import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
@@ -40,6 +40,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   let ceilH = 3500;
   /** 屋根: 選んだ塊（階と、その塊の中の点） */
   let roofSel: { level: number; at: { x: number; y: number } } | null = null;
+  /** 壁を足す（床を 2 回クリック）: 道具を開いている間の状態と、1 点目（図面座標 mm） */
+  let wallDraw: { on: boolean; level: number | null; a: { x: number; y: number } | null } = { on: false, level: null, a: null };
   const selected = new Set<string>();
   /** シャッター: 最後に触った壁（形を選び直す対象） */
   let lastShutter: { level: number; wallId: string } | null = null;
@@ -226,7 +228,91 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   };
   const massName = (ms: RoofMass) => `${ms.level}階の${ms.isTop ? '屋根' : '下屋'}（${((ms.bbox.maxX - ms.bbox.minX) / 1000).toFixed(1)} × ${((ms.bbox.maxY - ms.bbox.minY) / 1000).toFixed(1)} m）`;
 
+  // ---- 壁を足す（床の 2 点をクリック。壁の端に吸着、無ければ半間の格子） ----
+  const snapWallPoint = (f: Floor, p: { x: number; y: number }): { p: { x: number; y: number }; joined: boolean } => {
+    let best: { p: { x: number; y: number }; d: number } | null = null;
+    for (const w of f.walls) for (const e of [w.a, w.b]) {
+      const d = Math.hypot(e.x - p.x, e.y - p.y);
+      if (d < 300 && (!best || d < best.d)) best = { p: { x: e.x, y: e.y }, d };
+    }
+    if (best) return { p: best.p, joined: true };
+    const m = model();
+    const g = m?.module?.grid ?? 455;
+    const px = m?.module?.phaseX ?? 0;
+    const py = m?.module?.phaseY ?? 0;
+    return { p: { x: px + Math.round((p.x - px) / g) * g, y: py + Math.round((p.y - py) / g) * g }, joined: false };
+  };
+  const showWallDrawMark = () => {
+    const m = model();
+    const f = m && wallDraw.level != null ? m.floors.find((x) => x.level === wallDraw.level) : null;
+    if (!f || !wallDraw.a) {
+      v.setSelection(null);
+      return;
+    }
+    const y = f.elevation / 1000 + 0.05;
+    const { x, y: z } = wallDraw.a;
+    const r = 0.12;
+    v.setSelection([new THREE.Vector3((x - r * 1000) / 1000, y, (z - r * 1000) / 1000), new THREE.Vector3((x + r * 1000) / 1000, y, (z - r * 1000) / 1000), new THREE.Vector3((x + r * 1000) / 1000, y, (z + r * 1000) / 1000), new THREE.Vector3((x - r * 1000) / 1000, y, (z + r * 1000) / 1000)]);
+  };
+  /** 2 点目: 壁を足す。外形の線上なら外壁（外向きは外形の内外で決める）、そうでなければ間仕切り */
+  const addWallTo = (f: Floor, a: { x: number; y: number }, b: { x: number; y: number }, joinedA: boolean, joinedB: boolean) => {
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 200) {
+      toast('短すぎます（20cm 以上）');
+      return false;
+    }
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const loops = f.outline.filter((l) => l.length >= 3);
+    const distToOutline = Math.min(Infinity, ...loops.flatMap((l) => l.map((p, i) => distPointSegment(mid, p, l[(i + 1) % l.length]))));
+    const exterior = distToOutline < 200;
+    const ux = (b.x - a.x) / L;
+    const uy = (b.y - a.y) / L;
+    // a→b に対して左側の法線
+    const n = { x: -uy, y: ux };
+    const probe = { x: mid.x + n.x * 400, y: mid.y + n.y * 400 };
+    const leftInside = loops.some((l) => pointInPolygon(probe, l));
+    const thick = exterior ? Math.max(120, ...f.walls.filter((w) => w.exterior).map((w) => w.thickness)) : Math.max(90, Math.min(...f.walls.filter((w) => !w.exterior).map((w) => w.thickness), 120));
+    const wall: Wall = { id: `F${f.level}-W${Date.now().toString(36)}`, a: { ...a }, b: { ...b }, thickness: thick, exterior, joinedA, joinedB, ...(exterior ? { outsideSign: (leftInside ? -1 : 1) as 1 | -1 } : {}) };
+    f.walls.push(wall);
+    // 端がつながった既存の壁側にも「つながっている」印を付ける（小口の仕上げが外に出ないように）
+    for (const w of f.walls) {
+      if (w === wall) continue;
+      for (const end of ['a', 'b'] as const) {
+        const e = w[end];
+        if ((joinedA && Math.hypot(e.x - a.x, e.y - a.y) < 1) || (joinedB && Math.hypot(e.x - b.x, e.y - b.y) < 1)) {
+          if (end === 'a') w.joinedA = true;
+          else w.joinedB = true;
+        }
+      }
+    }
+    toast(`${f.level}階に${exterior ? '外壁' : '間仕切り'}を足しました（${(L / 1000).toFixed(2)} m。部屋の区画は方眼の修正画面で作り直されます）`, 'ok', 3500);
+    return true;
+  };
+
   const onPick = (pt0: THREE.Vector3, ndc?: THREE.Vector2) => {
+    if (mode === 'opening' && wallDraw.on) {
+      // 壁を足す: 床の点（屋根・家具越しでもその下の床）を半間の格子か壁の端に吸着
+      const fp = (ndc ? v.pickFloorPoint(ndc) : null) ?? pt0;
+      const f = floorAt(fp.y);
+      if (!f) return;
+      const snap = snapWallPoint(f, { x: fp.x * 1000, y: fp.z * 1000 });
+      if (!wallDraw.a || wallDraw.level !== f.level) {
+        wallDraw = { on: true, level: f.level, a: snap.p };
+        toast(`${f.level}階 1 点目（${snap.joined ? '壁の端' : '格子'}）。次に 2 点目の床をクリック`, 'info', 2500);
+        showWallDrawMark();
+        render();
+        return;
+      }
+      const a = wallDraw.a;
+      const joinedA = f.walls.some((w) => Math.hypot(w.a.x - a.x, w.a.y - a.y) < 1 || Math.hypot(w.b.x - a.x, w.b.y - a.y) < 1);
+      if (addWallTo(f, a, snap.p, joinedA, snap.joined)) {
+        // 続けて描けるように 2 点目を次の 1 点目に
+        wallDraw = { on: true, level: f.level, a: snap.p };
+        commit();
+        showWallDrawMark();
+      }
+      return;
+    }
     if (mode === 'roof') {
       const hit = ndc ? v.pickHit(ndc) : null;
       const p = hit ? { x: hit.point.x * 1000, y: hit.point.z * 1000 } : { x: pt0.x * 1000, y: pt0.z * 1000 };
@@ -366,7 +452,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const render = () => {
     clear(panel);
     panel.hidden = !active;
-    if (active && mode === 'opening') showOpSel();
+    if (active && mode === 'opening' && wallDraw.on) showWallDrawMark();
+    else if (active && mode === 'opening') showOpSel();
     else if (active && mode === 'roof') showRoofSel();
     else if (active) v.setSelection(null);
     if (!active) return;
@@ -586,6 +673,14 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const renderOpening = (m: BuildingModel | null) => {
     const f = m && opSel ? m.floors.find((x) => x.level === opSel!.level) : null;
     const op = f?.openings.find((o) => o.id === opSel!.id);
+    if (wallDraw.on) {
+      panel.append(
+        h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, '壁を足す'), h('div', { class: 'hint' }, wallDraw.a ? `${wallDraw.level}階 1 点目を取りました（橙）。2 点目の床をクリックすると壁になります。続けてクリックすると次の壁。` : '床を 2 回クリックします（壁の端に吸着、無ければ半間の格子）。外形の線上なら外壁、そうでなければ間仕切りになります。')),
+        h('div', { class: 'btn-row' }, wallDraw.a ? h('button', { class: 'btn sm', onclick: () => { wallDraw = { on: true, level: null, a: null }; v.setSelection(null); render(); } }, '1 点目を取り直す') : null, h('button', { class: 'btn sm ghost', onclick: () => { wallDraw = { on: false, level: null, a: null }; v.setSelection(null); render(); } }, '壁を足すのをやめる')),
+        h('p', { class: 'hint' }, '壁の抜け（外から室内が見える所）を塞ぐときに。部屋の区画や平面図は、方眼の修正画面で作り直されます。'),
+      );
+      return;
+    }
     panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, opSel ? '橙の枠が選んだ窓・戸。そのまま掴んで壁に沿ってドラッグで動かせます（半間の格子に止まり、隣の窓・戸の手前で止まります）。' : '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
     if (op && f) {
       const wall = f.walls.find((x) => x.id === op.wallId);
@@ -657,10 +752,35 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           toast(val === undefined ? 'テイストの決まりに戻しました' : val ? (w.exterior ? 'この壁をアクセント仕上げにしました' : 'この壁をアクセントクロスにしました') : '通常の仕上げにしました', 'ok');
           commit();
         };
+        // 壁の天端: 自動（天井まで／外壁は軒まで）・腰壁・袖壁・軒まで・軒より高く（パラペット）
+        const eaveMm = Math.round(wallTopOf(m, fl) - fl.elevation);
+        const topOpts: { v: string; label: string; mm: number | null }[] = [
+          { v: 'auto', label: '自動', mm: null },
+          { v: '1100', label: '腰壁 1,100', mm: 1100 },
+          { v: '2400', label: '袖壁 2,400', mm: 2400 },
+          { v: 'eave', label: `軒まで ${eaveMm.toLocaleString()}`, mm: eaveMm },
+          { v: 'eave300', label: '軒＋300（パラペット）', mm: eaveMm + 300 },
+          { v: 'eave600', label: '軒＋600', mm: eaveMm + 600 },
+        ];
+        const curTop = w.topMm == null ? 'auto' : topOpts.find((o) => o.mm === w.topMm)?.v ?? 'custom';
+        const setTop = (mm: number | null) => {
+          if (mm == null) delete w.topMm;
+          else w.topMm = Math.max(300, Math.round(mm / 10) * 10);
+          toast(mm == null ? '壁の高さを自動に戻しました' : `壁の天端を床から ${w.topMm!.toLocaleString()} mm にしました`, 'ok', 2500);
+          commit();
+        };
         panel.append(
-          h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${fl.level}階 ${w.exterior ? '外壁' : '内壁'}（長さ ${Math.round(L).toLocaleString()}）`)),
+          h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${fl.level}階 ${w.exterior ? '外壁' : '内壁'}（長さ ${Math.round(L).toLocaleString()}${w.topMm != null ? `・天端 FL+${w.topMm.toLocaleString()}` : ''}）`)),
           h('div', { class: 'field-label' }, 'ここに置く'),
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => put('window') }, '窓'), h('button', { class: 'btn sm', onclick: () => put('door') }, w.exterior && fl.level === 1 ? '玄関ドア' : '開き戸'), h('button', { class: 'btn sm', onclick: () => put('sliding') }, '引戸')),
+          h('div', { class: 'field-label', style: 'margin-top:8px' }, '壁の高さ（天端）'),
+          h('div', { class: 'segmented' }, ...topOpts.map((o) => h('button', { class: curTop === o.v ? 'on' : '', onclick: () => setTop(o.mm) }, o.label))),
+          h(
+            'div',
+            { style: 'display:flex;gap:6px;align-items:center;margin-top:4px' },
+            h('input', { type: 'number', step: 50, min: 300, max: 9000, value: w.topMm ?? '', placeholder: '指定 mm', style: 'width:110px', onchange: (e: Event) => { const val = Number((e.target as HTMLInputElement).value); if (val >= 300) setTop(val); } }),
+            h('span', { class: 'hint', style: 'margin:0' }, '床からの mm。袖壁の天端、パラペットの立ち上げ、腰壁に'),
+          ),
           h('div', { class: 'field-label', style: 'margin-top:8px' }, w.exterior ? '壁の仕上げ（テイストのアクセント材）' : '壁の仕上げ（アクセントクロス）'),
           h('div', { class: 'segmented' }, h('button', { class: w.accent === undefined ? 'on' : '', onclick: () => setAccent(undefined) }, 'テイストのまま'), h('button', { class: w.accent === true ? 'on' : '', onclick: () => setAccent(true) }, 'アクセント'), h('button', { class: w.accent === false ? 'on' : '', onclick: () => setAccent(false) }, '通常')),
           h('p', { class: 'hint' }, w.exterior ? 'アクセント材はテイスト（外観）で決まります。' : '内壁は両面とも変わります。'),
@@ -669,7 +789,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       return;
     }
     const n = m ? m.floors.reduce((s, f) => s + f.openings.length, 0) : 0;
-    panel.append(h('p', { class: 'hint' }, n ? `窓・戸 ${n} か所` : '窓・戸はまだありません'));
+    panel.append(
+      h('p', { class: 'hint' }, n ? `窓・戸 ${n} か所` : '窓・戸はまだありません'),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => { wallDraw = { on: true, level: null, a: null }; opSel = null; opSpot = null; render(); } }, '壁を足す（床を 2 回クリック）')),
+    );
   };
 
   function setActive(on: boolean) {
@@ -682,6 +805,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opSpot = null;
       opDrag = null;
       roofSel = null;
+      wallDraw = { on: false, level: null, a: null };
       paintOverlay();
       v.setSelection(null);
     }

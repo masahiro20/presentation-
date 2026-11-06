@@ -263,15 +263,19 @@ export function labeledEdges(texts: SiteText[], segs: Seg[]): SiteEdge[] {
       }
     }
     if (!best) continue;
-    // 同一直線上の線をつなぐ
+    // 同一直線上の線をつなぐ（1 点鎖線の断片）。境界線が破線なら、同じ線上の長い実線（寸法線・図枠の線）はつながない
+    // （つなぐと敷地が図面の端まで伸びて、建物の 3 倍もの広さに読めていた）
     const L0 = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y);
     const ux = (best.b.x - best.a.x) / L0;
     const uy = (best.b.y - best.a.y) / L0;
+    const dashLike = (sg: Seg) => !!sg.dashed || Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 1500;
+    const bestDash = dashLike(best);
     const ivs: [number, number][] = [];
     for (const sg of segs) {
       const offA = (sg.a.x - best.a.x) * -uy + (sg.a.y - best.a.y) * ux;
       const offB = (sg.b.x - best.a.x) * -uy + (sg.b.y - best.a.y) * ux;
       if (Math.abs(offA) > 40 || Math.abs(offB) > 40) continue;
+      if (bestDash && !dashLike(sg)) continue;
       const ta = (sg.a.x - best.a.x) * ux + (sg.a.y - best.a.y) * uy;
       const tb = (sg.b.x - best.a.x) * ux + (sg.b.y - best.a.y) * uy;
       ivs.push([Math.min(ta, tb), Math.max(ta, tb)]);

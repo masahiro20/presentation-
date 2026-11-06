@@ -4754,11 +4754,14 @@ function labeledEdges(texts, segs) {
 		const L0 = Math.hypot(best.b.x - best.a.x, best.b.y - best.a.y);
 		const ux = (best.b.x - best.a.x) / L0;
 		const uy = (best.b.y - best.a.y) / L0;
+		const dashLike = (sg) => !!sg.dashed || Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 1500;
+		const bestDash = dashLike(best);
 		const ivs = [];
 		for (const sg of segs) {
 			const offA = (sg.a.x - best.a.x) * -uy + (sg.a.y - best.a.y) * ux;
 			const offB = (sg.b.x - best.a.x) * -uy + (sg.b.y - best.a.y) * ux;
 			if (Math.abs(offA) > 40 || Math.abs(offB) > 40) continue;
+			if (bestDash && !dashLike(sg)) continue;
 			const ta = (sg.a.x - best.a.x) * ux + (sg.a.y - best.a.y) * uy;
 			const tb = (sg.b.x - best.a.x) * ux + (sg.b.y - best.a.y) * uy;
 			ivs.push([Math.min(ta, tb), Math.max(ta, tb)]);
@@ -11826,6 +11829,51 @@ function parseDxf(text, opts = {}) {
 	return model;
 }
 //#endregion
+//#region src/core/sash.ts
+/**
+* 窓（サッシ）の標準の幅。木造は柱芯 910（半間 455）の割に窓を入れるので、サッシの枠外寸法は
+* 「柱芯の割 − 柱（105）と取り合い（計 130）」の値になる: 780（柱芯 910）・1,235（1,365）・1,690（1,820）・2,600（2,730）…
+* 半間（455）には 405、ほかに 640・730・1,370・1,640・2,550・3,510 などのメーカー標準寸法がある。
+* 読み取った幅がこのどれにも近くない窓は、記号を読み違えたか（枠の線を取り損ねた）、特注の窓。
+*/
+/** 柱芯の割から外れる標準寸法（メーカーの呼称 06・07・13・16・25・34 など） */
+var EXTRA = [
+	405,
+	640,
+	730,
+	1370,
+	1640,
+	2550,
+	3510
+];
+/** 柱芯の割（半間 455 の整数倍、1 間以上）からの引き（柱 105 ＋ 取り合い 25） */
+var BAY_DEDUCT = 130;
+/** 標準の幅の一覧（昇順）。maxBays = 半間の数（既定 12 = 5.46 m まで） */
+function standardSashWidths(maxBays = 12) {
+	const set = new Set(EXTRA);
+	for (let n = 2; n <= maxBays; n++) set.add(n * 455 - BAY_DEDUCT);
+	return [...set].sort((a, b) => a - b);
+}
+/** いちばん近い標準の幅 */
+function nearestSashWidth(w) {
+	const list = standardSashWidths();
+	let best = list[0];
+	for (const x of list) if (Math.abs(x - w) < Math.abs(best - w)) best = x;
+	return best;
+}
+/** 標準の幅か（tol 以内）。スリット・小窓（450 以下）は常に可 */
+function isStandardSashWidth(w, tol = 70) {
+	if (w <= 450) return true;
+	return Math.abs(nearestSashWidth(w) - w) <= tol;
+}
+/** 標準の幅の説明（「1,235（柱芯 1,365）」「405（半間）」） */
+function sashWidthLabel(w) {
+	const bay = w + BAY_DEDUCT;
+	const n = Math.round(bay / 455);
+	const onBay = Math.abs(n * 455 - bay) <= 1 && n >= 2;
+	return `${w.toLocaleString()}${onBay ? `（柱芯 ${(n * 455).toLocaleString()}）` : w === 405 ? "（半間）" : ""}`;
+}
+//#endregion
 //#region src/core/rects.ts
 var rectW = (r) => r.maxX - r.minX;
 var rectH = (r) => r.maxY - r.minY;
@@ -13421,6 +13469,75 @@ function woodCheck(model) {
 				})),
 				label: jagged ? "ギザギザ" : "細かい段差"
 			}]
+		});
+	}
+	for (const f of floors) {
+		const odd = [];
+		for (const o of f.openings) {
+			if (o.kind !== "window") continue;
+			const width = o.t1 - o.t0;
+			if (isStandardSashWidth(width)) continue;
+			const w = f.walls.find((x) => x.id === o.wallId);
+			if (!w) continue;
+			odd.push({
+				op: o,
+				w,
+				width,
+				to: nearestSashWidth(width)
+			});
+		}
+		if (!odd.length) continue;
+		const segOf = (w, t0, t1) => {
+			const L = len(w) || 1;
+			const at = (t) => ({
+				x: w.a.x + (w.b.x - w.a.x) * t / L,
+				y: w.a.y + (w.b.y - w.a.y) * t / L
+			});
+			return {
+				a: at(t0),
+				b: at(t1)
+			};
+		};
+		const ids = odd.map((x) => x.op.id);
+		out.push({
+			id: `sash-${f.level}`,
+			level: f.level,
+			severity: odd.length >= 3 ? "warn" : "info",
+			title: `${f.level}階: 半間の割に合わない幅の窓が ${odd.length} か所`,
+			detail: `${odd.slice(0, 5).map((x) => `W${Math.round(x.width).toLocaleString()} → ${sashWidthLabel(x.to)}`).join("・")}${odd.length > 5 ? " …" : ""}。木造は柱芯 910（半間 455）の割に窓を入れるので、サッシの幅は 780・1,235・1,690・2,600 などになります。記号の読み違いなら標準の幅に直し、特注の窓ならそのままで構いません`,
+			marks: [{
+				level: f.level,
+				lines: odd.map((x) => segOf(x.w, x.op.t0, x.op.t1)),
+				label: "割に合わない窓"
+			}],
+			fix: {
+				label: "標準の幅に直す",
+				apply: (mm) => {
+					const fl = mm.floors.find((x) => x.level === f.level);
+					if (!fl) return;
+					for (const id of ids) {
+						const op = fl.openings.find((o) => o.id === id);
+						const w = op ? fl.walls.find((x) => x.id === op.wallId) : void 0;
+						if (!op || !w) continue;
+						const L = len(w);
+						const to = nearestSashWidth(op.t1 - op.t0);
+						const c = (op.t0 + op.t1) / 2;
+						let t0 = c - to / 2;
+						let t1 = c + to / 2;
+						if (t0 < 20) {
+							t0 = 20;
+							t1 = t0 + to;
+						}
+						if (t1 > L - 20) {
+							t1 = L - 20;
+							t0 = Math.max(20, t1 - to);
+						}
+						if (fl.openings.some((o) => o.wallId === w.id && o.id !== op.id && o.t1 > t0 + 5 && o.t0 < t1 - 5)) continue;
+						op.t0 = t0;
+						op.t1 = t1;
+					}
+				}
+			}
 		});
 	}
 	out.push(...livabilityChecks(model));
@@ -16227,7 +16344,8 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	const bottom = w.exterior && f.level === 1 ? bothOutdoor ? -.05 : fl - .1 : garageSide ? .03 : lowest < 0 ? fl + lowest * MM - .01 : fl;
 	const annexTop = bothOutdoor ? Math.max(annexHeight(rPlus) ?? 0, annexHeight(rMinus) ?? 0) : 0;
 	const fence = f.elevation < 1500 && bothOutdoor && annexTop === 0 && distToOutlineMm(f, w) > 900;
-	const wallTop = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
+	const wallTopAuto = parapet ? Math.min(top, fl + 1.1) : guard === "half" ? fl + 1.1 : guard === "halfGlass" ? fl + .9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
+	const wallTop = w.topMm != null ? fl + Math.max(300, w.topMm) * MM : wallTopAuto;
 	const topKey = w.exterior || facesOutdoor ? "ext.wallTop" : "int.wallTop";
 	if (guard === "halfGlass") voidGlassOnTop(mb, A, B, fl + .9);
 	const jambKey = w.exterior ? spec.windows.interiorReveal === "plaster" ? "int.wall" : "int.trim" : spec.doors.frame === "casing" ? "int.trim" : "int.wall";

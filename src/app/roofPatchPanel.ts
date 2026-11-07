@@ -20,6 +20,9 @@ export function sideLabel(s: RoofHigh, northDeg: number): string {
   return `${names[s]}（${comp}）`;
 }
 
+/** 選択肢の一覧に今の値が無ければ（3D のハンドルで自由な値にしたとき）その値も入れて返す */
+const withCur = (list: number[], cur: number | undefined): number[] => (cur == null || list.includes(cur) ? list : [...list, cur].sort((a, b) => a - b));
+
 /** 横並びの選択ボタン */
 export const segButtons = (items: { v: string; label: string; title?: string }[], cur: string, on: (val: string) => void) =>
   h('div', { class: 'segmented' }, ...items.map((it) => h('button', { class: cur === it.v ? 'on' : '', title: it.title, onclick: () => on(it.v) }, it.label)));
@@ -108,13 +111,13 @@ export function roofPatchControls(ctx: RoofPanelCtx): HTMLElement[] {
       ),
     );
   if (ms.kind !== 'flat') {
-    const pitches = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6];
+    const pitches = withCur([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6], p?.pitch);
     out.push(
       h(
         'div',
         { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px;margin-top:8px' },
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '勾配（寸）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.pitch; else q.pitch = Number(val); }, val === '' ? '勾配をおまかせに戻しました' : `勾配を ${val} 寸にしました`); } }, h('option', { value: '', selected: p?.pitch == null }, `おまかせ（${ms.isTop ? ctx.wholePitch : '0.5〜1'}）`), ...pitches.map((x) => h('option', { value: String(x), selected: p?.pitch === x }, `${x} 寸`)))),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '軒の出 (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.eaves; else q.eaves = Number(val); }, val === '' ? '軒の出をおまかせに戻しました' : `軒の出を ${val} mm にしました`); } }, h('option', { value: '', selected: p?.eaves == null }, `おまかせ（${ctx.wholeEaves}）`), ...[0, 150, 300, 450, 600, 750, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.eaves === x }, `${x}`)))),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '軒の出 (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.eaves; else q.eaves = Number(val); }, val === '' ? '軒の出をおまかせに戻しました' : `軒の出を ${val} mm にしました`); } }, h('option', { value: '', selected: p?.eaves == null }, `おまかせ（${ctx.wholeEaves}）`), ...withCur([0, 150, 300, 450, 600, 750, 900, 1200], p?.eaves).map((x) => h('option', { value: String(x), selected: p?.eaves === x }, `${x}`)))),
       ),
     );
     // 屋根を片側だけ伸ばす: 辺ごとの軒の出（寄棟は 4 辺同じ出でないと隅が合わないので対象外）
@@ -146,7 +149,7 @@ export function roofPatchControls(ctx: RoofPanelCtx): HTMLElement[] {
                   },
                 },
                 h('option', { value: '', selected: p?.eavesBy?.[s] == null }, `同じ（${baseEaves}）`),
-                ...[0, 150, 300, 450, 600, 900, 1200, 1500, 1820, 2730].map((x) => h('option', { value: String(x), selected: p?.eavesBy?.[s] === x }, `${x}`)),
+                ...withCur([0, 150, 300, 450, 600, 900, 1200, 1500, 1820, 2730], p?.eavesBy?.[s]).map((x) => h('option', { value: String(x), selected: p?.eavesBy?.[s] === x }, `${x}`)),
               ),
             ),
           ),
@@ -156,7 +159,7 @@ export function roofPatchControls(ctx: RoofPanelCtx): HTMLElement[] {
     }
   } else {
     out.push(
-      h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, 'パラペットの立ち上がり (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.parapet; else q.parapet = Number(val); }, val === '' ? 'パラペットを標準（550）に戻しました' : `パラペットを ${val} mm にしました`); } }, h('option', { value: '', selected: p?.parapet == null }, '標準（550）'), ...[300, 450, 700, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.parapet === x }, `${x}`)))),
+      h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, 'パラペットの立ち上がり (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.parapet; else q.parapet = Number(val); }, val === '' ? 'パラペットを標準（550）に戻しました' : `パラペットを ${val} mm にしました`); } }, h('option', { value: '', selected: p?.parapet == null }, '標準（550）'), ...withCur([300, 450, 700, 900, 1200], p?.parapet).map((x) => h('option', { value: String(x), selected: p?.parapet === x }, `${x}`)))),
     );
   }
   if (ms.manual && p) {
@@ -164,7 +167,7 @@ export function roofPatchControls(ctx: RoofPanelCtx): HTMLElement[] {
     const f = m.floors.find((x) => x.level === ms.level);
     const autoTop = f ? wallTopOf(m, f) - f.elevation : 0;
     out.push(
-      h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '軒の高さ（この階の床から mm）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.topMm; else q.topMm = Number(val); }, val === '' ? '高さを壁の天端に戻しました' : `屋根の高さを床から ${val} mm にしました`); } }, h('option', { value: '', selected: p.topMm == null }, `壁の天端（${Math.round(autoTop)}）`), ...[2000, 2200, 2400, 2700, 3000, 3300, 3600, 4000].map((x) => h('option', { value: String(x), selected: p.topMm === x }, `${x}`)))),
+      h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '軒の高さ（この階の床から mm）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; edit((q) => { if (val === '') delete q.topMm; else q.topMm = Number(val); }, val === '' ? '高さを壁の天端に戻しました' : `屋根の高さを床から ${val} mm にしました`); } }, h('option', { value: '', selected: p.topMm == null }, `壁の天端（${Math.round(autoTop)}）`), ...withCur([2000, 2200, 2400, 2700, 3000, 3300, 3600, 4000], p.topMm).map((x) => h('option', { value: String(x), selected: p.topMm === x }, `${x}`)))),
     );
   }
   out.push(

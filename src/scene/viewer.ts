@@ -287,11 +287,11 @@ export class Viewer {
     el.addEventListener('pointerup', (e) => {
       const d0 = downAt;
       downAt = null;
-      if (!d0 || e.button !== 0 || this.cut) return;
+      if (!d0 || e.button !== 0) return;
       if (Math.hypot(e.clientX - d0.x, e.clientY - d0.y) > 5 || performance.now() - d0.t > 400) return;
       const r = el.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-      // 家具を置く・選ぶモードでは、扉の開閉より先にクリックを渡す
+      // 家具を置く・選ぶモードでは、扉の開閉より先にクリックを渡す（模型・断面の表示でも、上から見て家具を置ける）
       if (this.onPick) {
         const p = this.pickPoint(ndc);
         if (p) {
@@ -299,7 +299,8 @@ export class Viewer {
           return;
         }
       }
-      if (this.toggleDoorAt(ndc)) return;
+      // 扉の開閉は通常表示だけ（模型では扉を少し開けた形で作り直している）
+      if (!this.cut && this.toggleDoorAt(ndc)) return;
       // 道具を開いていなければ、クリックした物を選んで直す（歩くモードでは扉の開閉だけ）
       if (this.onPickIdle && this.navMode !== 'walk') {
         const hit = this.pickHit(ndc);
@@ -308,11 +309,13 @@ export class Viewer {
     });
     el.addEventListener('pointerdown', (e) => {
       // 選んだ物を掴んで動かす（家具・外構の道具が受け取る）。カメラ操作より先に判定
-      if (e.button === 0 && this.onDragStart && this.navMode !== 'walk' && !this.cut) {
+      if (e.button === 0 && this.onDragStart && this.navMode !== 'walk') {
         const r = el.getBoundingClientRect();
         const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-        // 押した面そのもの（窓ガラスも含む）の点。pickPoint はガラスを飛ばして奥の床に当たるので、窓を掴めない
-        const p = this.pickHit(ndc)?.point ?? this.pickPoint(ndc);
+        // ハンドル（回転・幅・軒の出の印）の上で押したときは、その印の位置を押した点にする（奥の面に当てると、面の高さの分だけ滑る面がずれる）。
+        // それ以外は押した面そのもの（窓ガラスも含む）の点。pickPoint はガラスを飛ばして奥の床に当たるので、窓を掴めない
+        const hd = this.pickHandle(ndc);
+        const p = hd ? hd.pos.clone() : (this.pickHit(ndc)?.point ?? this.pickPoint(ndc));
         if (p && this.onDragStart(p, ndc)) {
           this.drag = { y: p.y, sx: e.clientX, sy: e.clientY, moved: false, last: p.clone() };
           this.controls.enabled = false;
@@ -352,15 +355,20 @@ export class Viewer {
         }
         return;
       }
-      if (this.navMode === 'walk' || e.buttons !== 0 || this.cut) return;
+      if (this.navMode === 'walk' || e.buttons !== 0) return;
       const now = performance.now();
       if (now - hoverAt < 100) return;
       hoverAt = now;
       const r = el.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      // ハンドルの上は常に「掴める」
+      if (this.handles.length && this.pickHandle(ndc)) {
+        if (el.style.cursor !== 'pointer') el.style.cursor = 'pointer';
+        return;
+      }
       const hit = this.pickHit(ndc);
       const k = hit?.matKey ?? '';
-      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k));
+      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || (!this.cut && /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k)));
       const want = touchable ? 'pointer' : this.navMode === 'pan' ? 'grab' : '';
       if (el.style.cursor !== want) el.style.cursor = want;
     });
@@ -697,7 +705,11 @@ export class Viewer {
       const key = String(x.object.userData.matKey ?? '');
       // 外部の実物モデル（観葉植物など）はキーが無い。家具扱い
       let group: PickHit['group'] | null = null;
-      for (let o: THREE.Object3D | null = x.object; o && !group; o = o.parent) group = groups.find((g) => g[1] === o)?.[0] ?? null;
+      for (let o: THREE.Object3D | null = x.object; o && !group; o = o.parent) {
+        // 模型・断面の表示の中身は、切って作り直した建物・屋根・家具。元のグループとして返す（道具のクリック判定が通常表示と同じになる）
+        if (o.parent === this.groups.cut) group = o.name === 'cut-roof' ? 'roof' : o.name === 'cut-furniture' ? 'furniture' : o.name === 'cut-building' || o.name.startsWith('cutdoor') ? 'building' : 'cut';
+        else group = groups.find((g) => g[1] === o)?.[0] ?? null;
+      }
       if (!group) continue;
       return { group, matKey: key, point: x.point.clone(), normal: x.face ? x.face.normal.clone().transformDirection(x.object.matrixWorld) : new THREE.Vector3(0, 1, 0), distance: x.distance };
     }

@@ -41,6 +41,19 @@ await page.getByRole('button', { name: /3D パースを作成する/ }).waitFor(
 await page.waitForTimeout(1500);
 // 触らないボタン（破壊的・時間がかかる・外部）
 const SKIP = /3D パース|提案一式|別の PDF|再解析|保存|評価用|読み込む|取得|検索|動画|体験リンク|お客様に渡す|仕上げ（外部）|ZIP|PDF|印刷|ダウンロード|書き出|削除|やめる|消す|リセット|開く|3DS|点群|Google|API|ファイル|写真|ログ|送る|コピー|照合をやめる|比較をやめる|戻す/;
+/**
+ * 進行モーダル（資料の自動作成・日照の解析など）は中止せず、終わるまで待つ（最長 300 秒）。
+ * 以前は 220ms 後に「中止」を押していたが、重い描画の間はクリックが届かず作成が続き、
+ * 「ステップを往復」で 1 番目のボタンが 90 秒押せない原因になっていた。待てば本番の一気通貫の動作も点検できる
+ */
+const settleProgress = async (label) => {
+  const prog = page.locator('.modal.progress');
+  if (!(await prog.count().catch(() => 0))) return;
+  const t0 = Date.now();
+  const done = await prog.first().waitFor({ state: 'detached', timeout: 300000 }).then(() => true).catch(() => false);
+  const sec = Math.round((Date.now() - t0) / 1000);
+  log.push({ step: cur, kind: done ? 'progress' : 'check', msg: done ? `${label}: ${sec} 秒で完了` : `${label}: 300 秒たっても終わらない（中止して続ける）` });
+};
 const closeModals = async () => {
   const modal = page.locator('.modal-back').last();
   if (await modal.count()) {
@@ -70,6 +83,7 @@ const sweepIn = async (name, scope, { maxButtons = 120, skip = SKIP } = {}) => {
       await b.click({ timeout: 5000, noWaitAfter: true });
       clicked++;
       await page.waitForTimeout(220);
+      await settleProgress(label);
       await closeModals();
       if (log.length > before) log.push({ step: name, kind: 'after-click', msg: label });
     } catch (e) {
@@ -361,6 +375,8 @@ const main = async () => {
   // ステップを往復して壊れないか
   for (const i of [0, 1, 0, 4, 1, 6, 2]) {
     cur = `nav-${i}`;
+    await settleProgress('往復の前の進行モーダル');
+    await closeModals();
     await page.locator('button.step').nth(i).click({ noWaitAfter: true, timeout: 90000 });
     await page.waitForTimeout(3000);
   }
@@ -371,7 +387,8 @@ try {
   log.push({ step: cur, kind: 'crash', msg: String(e.message).split('\n')[0].slice(0, 200) });
 }
 writeFileSync(`${out}/log.json`, JSON.stringify(log, null, 1));
-const bad = log.filter((l) => !['summary', 'after-click', 'after-tool', 'unclickable'].includes(l.kind));
+const bad = log.filter((l) => !['summary', 'after-click', 'after-tool', 'unclickable', 'progress'].includes(l.kind));
+for (const l of log.filter((l) => l.kind === 'progress')) console.log(`[${l.step}] progress: ${l.msg}`);
 const unclickable = log.filter((l) => l.kind === 'unclickable');
 console.log('summary', log.filter((l) => l.kind === 'summary').map((l) => `${l.step}: ${l.msg}`).join(' | '));
 console.log('issues', bad.length, '(pageerror / console.error / check / crash)');

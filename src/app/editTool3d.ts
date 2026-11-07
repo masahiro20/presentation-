@@ -661,7 +661,13 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       }
     }
     // 天井高: 屋根越しに見ているときは、その下の床の点を使う（屋根の点では隣の部屋になる）
-    const pt = mode === 'ceiling' && ndc ? (v.pickFloorPoint(ndc) ?? pt0) : pt0;
+    let pt = mode === 'ceiling' && ndc ? (v.pickFloorPoint(ndc) ?? pt0) : pt0;
+    if (mode === 'opening' && ndc) {
+      // 窓・戸: ガラス・枠・戸そのものをクリックしたときは、その面の点を使う。
+      // pt0（pickPoint）はガラスを透かして奥の床に当たるので、外から斜めに見ると壁から 50cm 以上離れた点になり、窓を選べなかった
+      const hit = v.pickHit(ndc);
+      if (hit && (hit.group === 'building' || hit.group === 'cut') && /^(ext|int)\.(door|glass\w*|shutter|frame|sash)/.test(hit.matKey)) pt = hit.point;
+    }
     const f = floorAt(pt.y);
     if (!f) return;
     const p = { x: pt.x * 1000, y: pt.z * 1000 };

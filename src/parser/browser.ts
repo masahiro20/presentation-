@@ -1,7 +1,7 @@
 /** ブラウザ用の pdf.js 読み込み */
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import { parseFloorPlanPdf, type ParseOptions } from './index';
+import { parseFloorPlanPdf, readElevationPdf, type ParseOptions } from './index';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -38,6 +38,17 @@ export async function parsePdfInBrowser(data: Uint8Array, opts: Omit<ParseOption
   const base = assetBase();
   return parseFloorPlanPdf(data, pdfjs as any, {
     ...opts,
+    cMapUrl: `${base}pdfjs/cmaps/`,
+    standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
+    wasmUrl: `${base}pdfjs/wasm/`,
+    BinaryDataFactory: FallbackBinaryDataFactory,
+  });
+}
+
+/** 立面図だけの PDF（別ファイル）から高さ・屋根勾配を読む。立面図のページが無ければ null */
+export async function readElevationPdfInBrowser(data: Uint8Array) {
+  const base = assetBase();
+  return readElevationPdf(data, pdfjs as any, {
     cMapUrl: `${base}pdfjs/cmaps/`,
     standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
     wasmUrl: `${base}pdfjs/wasm/`,

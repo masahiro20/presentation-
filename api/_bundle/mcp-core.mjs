@@ -779,6 +779,30 @@ function readElevationHeights(pages) {
 	}
 	return null;
 }
+/**
+* 読めた高さを間取りに当てる（1 階床・各階の階高・天井高・上の階の床の高さ）。読み取り直後と、別ファイルの立面図を後から足したときの両方で使う。
+* 戻り値は人に見せる要約（「1 階床 GL+618・階高 3200 / 2800・最高高さ 7009・屋根 0.5 寸」）
+*/
+function applyElevationHeights(floors, elev) {
+	const fl = [...floors].sort((a, b) => a.level - b.level);
+	if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
+	for (let i = 0; i < fl.length; i++) {
+		const h = elev.storyHeights[i];
+		if (h) fl[i].height = h;
+		if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
+		if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
+	}
+	return describeElevationHeights(elev);
+}
+function describeElevationHeights(elev) {
+	return [
+		elev.floor1 ? `1 階床 GL+${elev.floor1}` : "",
+		elev.storyHeights.length ? `階高 ${elev.storyHeights.join(" / ")}` : "",
+		elev.maxHeight ? `最高高さ ${elev.maxHeight}` : "",
+		elev.maxEave ? `最高軒高 ${elev.maxEave}` : "",
+		elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ""
+	].filter(Boolean).join("・");
+}
 function dist$1(a, b) {
 	return Math.hypot(a.cx - b.cx, a.cy - b.cy);
 }
@@ -10439,9 +10463,61 @@ function wallFillColors(fills, walls) {
 	for (const [c, st] of stat) if (st.polys >= 5 && st.on / st.n >= .6 && st.thin / st.polys >= .6) out.add(c);
 	return out;
 }
+/**
+* ページが何の図面か（見出しと室名から）。
+* 吉田大仁様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
+* - elevation: 「立面図・断面図・矩計図・展開図」の見出しがあり「平面図」が無く、室名がほとんど無い → 平面図としては読まない（高さの寸法は別に読む）
+* - other: 他のページに室名があるのに、このページには室名も「平面図」の見出しも無い（表・図面枠・配置図など）
+* - plan: それ以外
+*/
+function pageDrawingKind(texts, opts) {
+	if (opts.raster) return "plan";
+	const norm = texts.map((t) => normalizeText(t.str));
+	const hasPlanTitle = norm.some((s) => /平面図|平面|PLAN/.test(s));
+	const hasElevTitle = norm.some((s) => /立面図|断面図|矩計図|展開図/.test(s));
+	const roomTextN = texts.filter((t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null).length;
+	if (hasElevTitle && !hasPlanTitle && roomTextN < 3) return "elevation";
+	if (opts.multiPage && opts.docHasRooms && roomTextN === 0 && !hasPlanTitle) return "other";
+	return "plan";
+}
+/** 同じページに平面図と立面図が並ぶとき: 区画にいちばん近い図面名が「立面図・断面図」なら、その区画は平面図ではない */
+function nearestTitleIsElevation(bbox, texts) {
+	const w = bbox.maxX - bbox.minX;
+	const hgt = bbox.maxY - bbox.minY;
+	let best = null;
+	for (const t of texts) {
+		const s = normalizeText(t.str);
+		const elev = /立面図|断面図|矩計図|展開図/.test(s);
+		if (!elev && !/平面図|PLAN/.test(s)) continue;
+		const dx = Math.max(0, bbox.minX - t.x, t.x - bbox.maxX);
+		const dy = Math.max(0, bbox.minY - t.y, t.y - bbox.maxY);
+		if (dx > w * .3 || dy > hgt * .8) continue;
+		const d = dx * 3 + dy;
+		if (!best || d < best.d) best = {
+			d,
+			elev
+		};
+	}
+	return !!best?.elev;
+}
 function detectPlans(pages, warnings) {
 	const plans = [];
+	const isRoomText = (t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
+	const docHasRooms = pages.some((pg) => pg.texts.some(isRoomText));
 	for (const page of pages) {
+		const kind = pageDrawingKind(page.texts, {
+			raster: !!page.rasterMask,
+			docHasRooms,
+			multiPage: pages.length > 1
+		});
+		if (kind === "elevation") {
+			warnings.push(`${page.pageIndex + 1}ページ目: 立面図・断面図のページなので平面図としては読みません（高さの寸法は使います）`);
+			continue;
+		}
+		if (kind === "other") {
+			warnings.push(`${page.pageIndex + 1}ページ目: 室名の無いページ（表・図面枠・配置図など）は平面図としては読みません`);
+			continue;
+		}
 		const pageExt = page.segs.length >= 50 || !page.rasterMask ? bboxOf$2(page.segs.flatMap((sg) => [sg.a, sg.b])) : {
 			minX: 0,
 			minY: 0,
@@ -10512,7 +10588,6 @@ function detectPlans(pages, warnings) {
 		}
 		const wallColors = wallFillColors(page.colorFills, ww);
 		if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
-		const isRoomText = (t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
 		const pageHasRooms = page.texts.some(isRoomText);
 		const boxes = groups.map((g) => bboxOf$2(g.flatMap((w) => [w.a, w.b])));
 		const ext = pageExt;
@@ -10525,6 +10600,7 @@ function detectPlans(pages, warnings) {
 			if (bbox.maxX - bbox.minX > (ext.maxX - ext.minX) * .8 && bbox.maxY - bbox.minY > (ext.maxY - ext.minY) * .8) continue;
 			const roomTexts = page.texts.filter((t) => t.x > bbox.minX && t.x < bbox.maxX && t.y > bbox.minY && t.y < bbox.maxY && isRoomText(t)).length;
 			if (pageHasRooms && roomTexts === 0) continue;
+			if (roomTexts === 0 && nearestTitleIsElevation(bbox, page.texts)) continue;
 			const margin = 400;
 			const inBox = (x, y, m) => x > bbox.minX - m && x < bbox.maxX + m && y > bbox.minY - m && y < bbox.maxY + m;
 			const texts = page.texts.filter((t) => inBox(t.x, t.y, margin));
@@ -12058,24 +12134,12 @@ function modelFromVectors(pages, opts = {}) {
 	const elev = readElevationHeights(pages);
 	let heights;
 	if (elev) {
-		const fl = [...res.floors].sort((a, b) => a.level - b.level);
-		if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
-		for (let i = 0; i < fl.length; i++) {
-			const h = elev.storyHeights[i];
-			if (h) fl[i].height = h;
-			if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
-			if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
-		}
+		const summary = applyElevationHeights(res.floors, elev);
 		heights = {
 			source: "elevation",
 			...elev
 		};
-		warnings.push(`立面図の寸法から高さを読みました（${[
-			elev.floor1 ? `1 階床 GL+${elev.floor1}` : "",
-			elev.storyHeights.length ? `階高 ${elev.storyHeights.join(" / ")}` : "",
-			elev.maxHeight ? `最高高さ ${elev.maxHeight}` : "",
-			elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ""
-		].filter(Boolean).join("・")}）`);
+		warnings.push(`立面図の寸法から高さを読みました（${summary}）`);
 	}
 	const { thicknesses, areaTable, ...model } = res;
 	return {

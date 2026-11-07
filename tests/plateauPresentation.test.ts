@@ -59,7 +59,7 @@ vi.mock('../src/sun/plateau/fetch', async (importOriginal) => {
   return { ...mod, fetchPlateauBuildings };
 });
 
-import { NEIGHBOR_FILL_TIMEOUT_MS, NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, countPlateauShapes, isAbortError, neighborKey, plateauCoveredNotes, plateauProgressText, plateauRegionAddedNote, plateauToNeighborBuilding, ringCentroid, roofShapeCount, supersededError, waitWithLimit } from '../src/sun/context';
+import { AUTO_HIDE_NOTE, NEIGHBOR_FILL_TIMEOUT_MS, NEIGHBOR_RADIUS_M, NOTE_PLATEAU_ERROR, NOTE_PLATEAU_MISSING, SunContext, autoHideNote, countPlateauShapes, isAbortError, neighborKey, plateauCoveredNotes, plateauProgressText, plateauRegionAddedNote, plateauToNeighborBuilding, ringCentroid, roofShapeCount, supersededError, waitWithLimit } from '../src/sun/context';
 import { buildOccluder } from '../src/sun/analysis';
 import { LOD1_BOX_NOTE, collectDisclosure, disclosureLines, excludedTableRows, heightKindOf, heightKindSuffix, isPlateauBox, plateauShapeCounts, sourceLines } from '../src/app/sunDisclosure';
 import { NEIGHBORS_HINT, NEIGHBOR_SOURCE_BUTTON, NO_NEIGHBORS_MSG, neighborSourceLine, neighborsLoadedToast, reloadSurroundings, type SurroundingsDeps } from '../src/app/steps/sunStep';
@@ -205,12 +205,16 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     expect(fake.calls).toEqual([{ lat: PIN.lat, lon: PIN.lon, radius: 110 }]);
     expect(r.count).toBe(3);
     expect(r.used).toEqual(['plateau', 'gsi']);
-    expect(r.notes).toEqual(['国土地理院の地図から 1 棟を補いました（高さは建物の種類から推定）。']);
+    expect(r.notes).toEqual(['国土地理院の地図から 1 棟を補いました（高さは建物の種類から推定）。', autoHideNote(1)]);
     expect(r.plateau).toEqual({ datasets: [DATASET], lodCounts: { '1': 1, '2': 1 }, status: 'covered', shapes: { est: 0, box: 1, roof: 1, unknown: 0 } });
     expect(sc.lastSource).toBe('plateau');
     expect(sc.lastLoad).toBe(r);
     expect(progress).toContainEqual(['周辺建物（PLATEAU）: 建物タイル 1/2（1.0 MB）', 0.5]);
-    const list = sc.state.neighbors;
+    // 新築の家に重なる建物（敷地の中の 4×4）は一覧ごと消さず、「敷地内の既存建物（自動）」として隠す（戻せる）
+    const auto = sc.state.neighbors.filter((b) => b.hidden);
+    expect(auto.map((b) => b.id)).toEqual(['gsi-2']);
+    expect(sc.hideRecord(sc.keyOf(auto[0]))).toEqual({ mode: 'exclude', reason: 'onSite', note: AUTO_HIDE_NOTE });
+    const list = sc.state.neighbors.filter((b) => !b.hidden);
     expect(list.map((b) => b.source)).toEqual(['plateau', 'plateau', 'gsi']);
     expect(list.map((b) => sc.keyOf(b))).toEqual(['plateau:bldg_A', 'plateau:bldg_B', expect.stringMatching(/^gsi:/)]);
     expect(list.map((b) => b.id)).toEqual(['plateau:bldg_A', 'plateau:bldg_B', 'gsi-1']);
@@ -246,7 +250,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     let r = await sc.loadNeighbors('plateau');
     expect(r.count).toBe(2);
     expect(r.used).toEqual(['gsi']);
-    expect(r.notes).toEqual([NOTE_PLATEAU_MISSING]);
+    expect(r.notes).toEqual([NOTE_PLATEAU_MISSING, autoHideNote(1)]);
     expect(r.notes[0]).toMatch(/PLATEAU.*未整備/);
     expect(r.plateau).toEqual({ datasets: [], lodCounts: {}, status: 'none', shapes: { est: 0, box: 0, roof: 0, unknown: 0 } });
     expect(sc.state.neighbors.every((b) => b.source === 'gsi' && !b.mesh)).toBe(true);
@@ -282,7 +286,7 @@ describe('SunContext.loadNeighbors: PLATEAU → 国土地理院で補完 → OSM
     sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('gsi');
     expect(fetchPlateauBuildings).not.toHaveBeenCalled();
-    expect(r).toEqual({ count: 2, used: ['gsi'], notes: [] });
+    expect(r).toEqual({ count: 2, used: ['gsi'], notes: [autoHideNote(1)] });
     expect(sc.lastSource).toBe('gsi');
     const r2 = await sc.loadNeighbors('osm');
     expect(r2.used).toEqual(['osm']);
@@ -341,8 +345,8 @@ describe('SunContext.loadNeighbors: 同時実行（微調整の連打）は後�
     expect(origin.lat).toBeCloseTo(PIN.lat + 2 / mLat, 12);
     expect(sc.lastLoad).toBe((r2 as PromiseFulfilledResult<unknown>).value);
     expect(sc.lastSource).toBe('plateau');
-    // 一覧は 1 回分だけ（古い結果が混ざらない）
-    expect(sc.state.neighbors.filter((b) => b.source !== 'manual')).toHaveLength(3);
+    // 一覧は 1 回分だけ（古い結果が混ざらない）。敷地の中の 1 棟は自動で隠した建物として残る
+    expect(sc.state.neighbors.filter((b) => b.source !== 'manual' && !b.hidden)).toHaveLength(3);
   });
 
   it('後の取得が失敗しても、古い取得の結果で一覧を上書きしない（一覧は前の状態のまま）', async () => {
@@ -624,7 +628,9 @@ describe('国土地理院で隠した・直した記録は、外形の照合で 
     expect(a.hidden).toBe(true);
     expect(sc.hideRecord('plateau:bldg_A')).toEqual({ mode: 'view', reason: 'other', note: '視点を遮る' });
     expect(sc.heightOf(a)).toBe(11.5);
-    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual(['plateau:bldg_A']);
+    // 隠した建物: A（利用者が隠した）と、敷地の中の国土地理院の 1 棟（自動）
+    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual(['plateau:bldg_A', expect.stringMatching(/^gsi:/)]);
+    expect(sc.hiddenList().filter((b) => sc.hideRecord(sc.keyOf(b))?.note === AUTO_HIDE_NOTE)).toHaveLength(1);
     expect(sc.edits.hidden.has(kg)).toBe(false);
     expect(sc.state.neighbors.find((b) => sc.keyOf(b) === 'plateau:bldg_B')!.hidden).toBeFalsy();
     // 影だけのメッシュ（表示だけ隠す）は実形状
@@ -634,8 +640,11 @@ describe('国土地理院で隠した・直した記録は、外形の照合で 
     // PLATEAU → PLATEAU の取り直し（ピン移動）でも gml_id で残る
     sc.state.site = { ...SITE, offsetE: 3 };
     await sc.loadNeighbors('plateau');
-    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual(['plateau:bldg_A']);
-    expect(sc.restoreAll()).toBe(1);
+    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual(['plateau:bldg_A', expect.stringMatching(/^gsi:/)]);
+    expect(sc.restoreAll()).toBe(2);
+    // 戻した建物は取り直しても自動で隠し直さない（新築の家に重なる隣家を戻したとき）
+    await sc.loadNeighbors('plateau');
+    expect(sc.hiddenList()).toEqual([]);
     sc.clearNeighbors();
     expect(sc.state.neighbors).toEqual([]);
     expect(sc.edits.heights.size).toBe(0);
@@ -650,8 +659,10 @@ describe('取得後のトーストの内訳は一覧に残った建物で数え�
     const sc = new SunContext(fakeViewer(), { ...SITE });
     sc.roofEstimate = false; // 箱形の建物の推定の屋根は別のテストで（ここは従来の高さ・注記）
     const r = await sc.loadNeighbors('plateau');
-    // 一覧: A（箱形）・B（屋根形状）・国土地理院 1 棟。C は敷地に重なるので無い
-    expect(sc.state.neighbors.map((b) => b.id)).toEqual(['plateau:bldg_A', 'plateau:bldg_B', 'gsi-1']);
+    // 一覧: A（箱形）・B（屋根形状）・国土地理院 1 棟。C は新築の家に重なるので「敷地内の既存建物（自動）」として隠す（数には入れない）
+    expect(sc.state.neighbors.filter((b) => !b.hidden).map((b) => b.id)).toEqual(['plateau:bldg_A', 'plateau:bldg_B', 'gsi-1']);
+    expect(sc.state.neighbors.filter((b) => b.hidden).map((b) => b.id)).toContain('plateau:bldg_C');
+    expect(sc.state.neighbors.filter((b) => b.hidden).every((b) => sc.hideRecord(sc.keyOf(b))?.note === AUTO_HIDE_NOTE)).toBe(true);
     expect(r.count).toBe(3);
     // lodCounts は取得全棟（C を含む）、shapes は残った建物
     expect(r.plateau?.lodCounts).toEqual({ '1': 1, '2': 2 });
@@ -701,7 +712,8 @@ describe('開示・文言', () => {
       const lines = disclosureLines(d, t);
       expect(lines[1]).toBe(d.sources![0]);
       expect(lines[2]).toBe(d.sources![1]);
-      expect(lines[3]).toBe('計算から除外した周辺建物 なし');
+      // 敷地の中の 1 棟は自動で除外しているので、注記に出る
+      expect(lines[3]).toBe('計算から除外した周辺建物 1 棟（敷地内の既存建物 1）');
     }
     // 除外した建物は出典の行に数えない（内訳も残った建物で数える）。箱形の A を除くと屋根形状の B だけ → 但し書きは消える
     sc.setHidden(['plateau:bldg_A'], true, { mode: 'exclude', reason: 'demolish' });
@@ -756,9 +768,10 @@ describe('開示・文言', () => {
     const d = collectDisclosure(sc);
     expect(d.included).toBe(0);
     expect(d.sources).toBeUndefined();
-    expect(d.excluded.map((e) => e.heightKind)).toEqual(['measured', 'measured', 'estimated', 'manual']);
+    // 敷地の中の国土地理院の 1 棟（自動で除外）も表に入る（理由は上書きした「試験」）
+    expect(d.excluded.map((e) => e.heightKind)).toEqual(['measured', 'measured', 'estimated', 'estimated', 'manual']);
     const rows = excludedTableRows(d);
-    expect(rows.map((r) => r.height)).toEqual(['7.0 m', '9.0 m', '6.8 m（推定）', '7.0 m（手入力）']);
+    expect(rows.map((r) => r.height)).toEqual(['7.0 m', '9.0 m', '6.8 m（推定）', '6.8 m（推定）', '7.0 m（手入力）']);
     expect(rows[0].source).toBe('PLATEAU（国土交通省）');
     expect(rows[1].source).toBe('PLATEAU（国土交通省）（共同住宅）');
     expect(rows[2].source).toBe('国土地理院');

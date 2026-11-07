@@ -20,7 +20,10 @@ vi.mock('../src/sun/geo', async (importOriginal) => {
   return { ...mod, fetchGsiBuildings: vi.fn(make('gsi')), fetchOsmBuildings: vi.fn(make('osm')) };
 });
 
-import { GHOST_OPACITY, NEIGHBOR_SELECT_COLOR, SunContext, absoluteEN, emptyEdits, keysInRect, neighborKey, pickRingAt, plateauToNeighborBuilding, reapplyEdits, ringArea, ringCentroid, sameFootprint, type LatLon } from '../src/sun/context';
+import { AUTO_HIDE_NOTE, GHOST_OPACITY, NEIGHBOR_SELECT_COLOR, SunContext, absoluteEN, emptyEdits, keysInRect, neighborKey, pickRingAt, plateauToNeighborBuilding, reapplyEdits, ringArea, ringCentroid, sameFootprint, type LatLon } from '../src/sun/context';
+
+/** 利用者が隠した建物（新築の家に重なるため自動で隠した建物は除く） */
+const userHidden = (sc: SunContext) => sc.hiddenList().filter((b) => sc.hideRecord(sc.keyOf(b))?.note !== AUTO_HIDE_NOTE);
 import { plateauBox } from './helpers/plateauBox';
 import { buildOccluder } from '../src/sun/analysis';
 import { ALIGN_COLORS } from '../src/sun/align';
@@ -261,19 +264,23 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     expect((await sc.loadNeighbors('gsi')).count).toBe(4);
     expect(neighborMeshes(v)).toBe(4);
     const tri0 = buildOccluder(v).triangles;
-    const keys = sc.state.neighbors.map((b) => sc.keyOf(b));
+    // 敷地の中の 1 棟は「敷地内の既存建物（自動）」として隠した建物に入る（一覧には残る）
+    const allKeys = sc.state.neighbors.map((b) => sc.keyOf(b));
+    expect(new Set(allKeys).size).toBe(5);
+    expect(sc.hiddenList().length).toBe(1);
+    const keys = sc.state.neighbors.filter((b) => !b.hidden).map((b) => sc.keyOf(b));
     expect(new Set(keys).size).toBe(4);
     expect(sc.state.neighbors.every((b) => typeof b.id === 'string')).toBe(true);
     expect(sc.setHidden([keys[0], keys[2]], true)).toBe(2);
     expect(neighborMeshes(v)).toBe(2);
-    expect(sc.hiddenList().length).toBe(2);
+    expect(userHidden(sc).length).toBe(2);
     const tri1 = buildOccluder(v).triangles;
     expect(tri1).toBeLessThan(tri0);
-    // 「建物を選んで隠す」の間の薄い表示
+    // 「建物を選んで隠す」の間の薄い表示（自動で隠した 1 棟も薄く見える）
     sc.setGhosts(true);
     expect(buildOccluder(v).triangles).toBe(tri1);
     const ghosts = sc.ghostGroup.children as THREE.Mesh[];
-    expect(ghosts.length).toBe(2);
+    expect(ghosts.length).toBe(3);
     for (const m of ghosts) {
       const mat = m.material as THREE.MeshStandardMaterial;
       expect(m.visible).toBe(true);
@@ -283,7 +290,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
       expect(m.castShadow).toBe(false);
       expect(m.userData.noShadow).toBe(true);
       expect(m.userData.neighbor).toBeUndefined();
-      expect(keys).toContain(m.userData.neighborKey);
+      expect(allKeys).toContain(m.userData.neighborKey);
     }
     sc.setGhosts(false);
     expect(ghosts.every((m) => !m.visible)).toBe(true);
@@ -316,7 +323,7 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     expect(sc.setHidden([key], true)).toBe(1);
     expect(neighborMeshes(v)).toBe(4);
     expect(buildOccluder(v).triangles).toBe(all - 12);
-    expect(sc.hiddenList().map((b) => sc.keyOf(b))).toEqual([key]);
+    expect(userHidden(sc).map((b) => sc.keyOf(b))).toEqual([key]);
     expect(sc.pickNeighbor(ndc())).toBeNull();
     // 薄い表示: mesh の形（高さ 9 m）で、影・解析に入らない。薄い表示の間は隠した建物として拾う
     sc.setGhosts(true);
@@ -364,8 +371,8 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     // 建設地を北へ 2 m（微調整）→ 取り直し
     sc.state.site = { ...site, offsetN: 2 };
     expect((await sc.loadNeighbors('gsi')).count).toBe(4);
-    expect(sc.hiddenList().length).toBe(1);
-    expect(sc.keyOf(sc.hiddenList()[0])).toBe(k0);
+    expect(userHidden(sc).length).toBe(1);
+    expect(sc.keyOf(userHidden(sc)[0])).toBe(k0);
     expect(neighborMeshes(v)).toBe(3);
     expect(sc.heightOf(sc.state.neighbors[3])).toBe(15);
     // 手動の隣家を足して隠す → 取り直しても隠したまま
@@ -374,11 +381,11 @@ describe('SunContext: 隠す・戻す・取り直し', () => {
     expect(km.startsWith('manual:')).toBe(true);
     sc.setHidden([km], true);
     await sc.loadNeighbors('gsi');
-    expect(sc.hiddenList().map((b) => sc.keyOf(b)).sort()).toEqual([k0, km].sort());
+    expect(userHidden(sc).map((b) => sc.keyOf(b)).sort()).toEqual([k0, km].sort());
     // OSM で取り直し: 外形が少し違う同じ建物も隠したまま
     await sc.loadNeighbors('osm');
     expect(sc.state.neighbors.filter((b) => b.source === 'osm').map((b) => !!b.hidden)).toEqual([true]);
-    // すべて戻す
+    // すべて戻す（OSM の一覧に残っている k0・手動の隣家の 2 棟。記録はすべて消え、戻した建物は取り直しても自動で隠し直さない）
     expect(sc.restoreAll()).toBe(2);
     expect(sc.hiddenKeys.size).toBe(0);
     await sc.loadNeighbors('gsi');

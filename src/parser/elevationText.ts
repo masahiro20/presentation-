@@ -94,6 +94,35 @@ export function readElevationHeights(pages: { texts: RawText[] }[]): ElevationHe
   return null;
 }
 
+/**
+ * 読めた高さを間取りに当てる（1 階床・各階の階高・天井高・上の階の床の高さ）。読み取り直後と、別ファイルの立面図を後から足したときの両方で使う。
+ * 戻り値は人に見せる要約（「1 階床 GL+618・階高 3200 / 2800・最高高さ 7009・屋根 0.5 寸」）
+ */
+export function applyElevationHeights(floors: { level: number; elevation: number; height: number; ceilingHeight: number }[], elev: ElevationHeights): string {
+  const fl = [...floors].sort((a, b) => a.level - b.level);
+  if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
+  for (let i = 0; i < fl.length; i++) {
+    const h = elev.storyHeights[i];
+    if (h) fl[i].height = h;
+    // 階高が標準（2,900）より高い階は天井も高い（吉田大仁様邸: 1 階 階高 3,200 → 天井 2,700。高天井の数量・3D の天井に効く。部屋ごとの注記が優先）
+    if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
+    if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
+  }
+  return describeElevationHeights(elev);
+}
+
+export function describeElevationHeights(elev: ElevationHeights): string {
+  return [
+    elev.floor1 ? `1 階床 GL+${elev.floor1}` : '',
+    elev.storyHeights.length ? `階高 ${elev.storyHeights.join(' / ')}` : '',
+    elev.maxHeight ? `最高高さ ${elev.maxHeight}` : '',
+    elev.maxEave ? `最高軒高 ${elev.maxEave}` : '',
+    elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : '',
+  ]
+    .filter(Boolean)
+    .join('・');
+}
+
 function dist(a: { cx: number; cy: number }, b: { cx: number; cy: number }) {
   return Math.hypot(a.cx - b.cx, a.cy - b.cy);
 }

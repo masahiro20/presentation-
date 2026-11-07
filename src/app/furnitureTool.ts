@@ -7,9 +7,16 @@ import * as THREE from 'three';
 import { FABRIC_COLORS, WOOD_TONES, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type FabricColor, type Floor, type FurnitureItem, type FurnitureKind, type Vec2 } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDES, WASH_STYLES, furnitureDims, furnitureItems } from '../scene/furniture';
-import type { Viewer } from '../scene/viewer';
+import type { Handle3D, Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
 import { state } from './state';
+
+/** 幅（w）をハンドルで変えられる家具。キッチンは長さ（len = w + 0.3） */
+const WIDTH_KINDS = new Set<FurnitureKind>(['sofa', 'bed', 'tv', 'rug', 'cupboard', 'dining', 'hanger', 'builtin', 'washstand', 'kitchen']);
+/** 奥行（d）をハンドルで変えられる家具（L 型キッチンは袖の長さ） */
+const DEPTH_KINDS = new Set<FurnitureKind>(['rug', 'builtin']);
+const snapTo = (v: number, step: number) => Math.round(v / step) * step;
+const normDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
 
 /** 壁に背を付けて置く家具（それ以外はクリックした点が中心） */
 const WALL_KINDS = new Set<FurnitureKind>(['kitchen', 'cupboard', 'fridge', 'tv', 'bookshelf', 'desk', 'cabinet', 'sofa', 'bed', 'shoeCabinet', 'washstand', 'washer', 'toilet', 'mirror', 'nightstand', 'bath', 'builtin', 'hanger']);
@@ -133,15 +140,127 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
     return [P(-w / 2, v0), P(w / 2, v0), P(w / 2, v0 + d), P(-w / 2, v0 + d)];
   };
-  /** 選んでいる家具に枠を出す（無ければ消す） */
+  /** 家具の寸法の読み書き（ハンドル用）。幅はキッチンだけ len（= 幅 + 0.3）で持つ */
+  const dimsOf = (it: FurnitureItem) => furnitureDims(it);
+  const applyWidth = (x: FurnitureItem, w: number) => {
+    if (x.kind === 'kitchen') x.len = +(w + 0.3).toFixed(2);
+    else if (x.kind === 'bed') x.w = +(w - 0.06).toFixed(2);
+    else x.w = +w.toFixed(2);
+  };
+  /**
+   * CAD のハンドル: 回転（前面の先の丸）・幅（左右の辺の四角）・奥行（前面の四角）。
+   * pos を渡すとその位置・寸法でのハンドル（ドラッグ中の下見せ）
+   */
+  const handlesFor = (it: FurnitureItem, f: Floor, pos: { x: number; y: number; rot: number } = it, dims: { w: number; d: number; v0: number } = dimsOf(it)): Handle3D[] => {
+    const { w, d, v0 } = dims;
+    const r = (pos.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const room = f.rooms.find((rm) => pointInPolygon({ x: pos.x, y: pos.y }, rm.polygon));
+    const y = f.elevation / 1000 + (room ? roomFloorOffsetMm(room) / 1000 : 0) + 0.05;
+    const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
+    const out: Handle3D[] = [{ id: 'rot', kind: 'rotate', pos: P(0, v0 + d + 0.45), title: 'ドラッグで回す（15° 刻み。Shift で自由）' }];
+    if (WIDTH_KINDS.has(it.kind)) {
+      out.push({ id: 'w+', kind: 'size', pos: P(w / 2, v0 + d / 2), title: 'ドラッグで幅を変える' }, { id: 'w-', kind: 'size', pos: P(-w / 2, v0 + d / 2), title: 'ドラッグで幅を変える' });
+    }
+    if (DEPTH_KINDS.has(it.kind) || (it.kind === 'kitchen' && it.kitchenType === 'l')) out.push({ id: 'd+', kind: 'size', pos: P(0, v0 + d), title: it.kind === 'kitchen' ? 'ドラッグで袖の長さを変える' : 'ドラッグで奥行を変える' });
+    return out;
+  };
+  /** 選んでいる家具に枠とハンドルを出す（無ければ消す） */
   const showSel = () => {
     const it = selected();
     const f = it && sel ? floorOf(sel.level) : null;
     v.setSelection(it && f ? footprintWorld(it, f) : null);
+    v.setHandles(it && f && active && !add ? handlesFor(it, f) : null);
   };
-  /** 選んだ家具の上で押したらドラッグ開始（道具を開いていて、その家具を選んでいるときだけ。それ以外はカメラ操作のまま） */
-  const dragStart = (p: THREE.Vector3): boolean => {
+  /** ハンドルを掴んで回す・広げる間の状態 */
+  let hdrag: { id: string; f: Floor; x0: number; y0: number; rot0: number; dims0: { w: number; d: number; v0: number }; preview: { x: number; y: number; rot: number; w: number; d: number } | null } | null = null;
+  const handleDragStart = (ndc: THREE.Vector2 | undefined): boolean => {
+    if (!ndc || !sel) return false;
+    const hd = v.pickHandle(ndc);
+    if (!hd) return false;
+    const it = selected();
+    const f = floorOf(sel.level);
+    if (!it || !f) return false;
+    hdrag = { id: hd.id, f, x0: it.x, y0: it.y, rot0: it.rot, dims0: dimsOf(it), preview: null };
+    moving = false;
+    return true;
+  };
+  const handleDragMove = (p: THREE.Vector3) => {
+    if (!hdrag) return;
+    const it = selected();
+    if (!it) return;
+    const { id, f, x0, y0, rot0, dims0 } = hdrag;
+    const fine = v.dragMods.shift;
+    const cx = x0 / 1000;
+    const cz = y0 / 1000;
+    const dx = p.x - cx;
+    const dz = p.z - cz;
+    let pv = { x: x0, y: y0, rot: rot0, w: dims0.w, d: dims0.d };
+    let label = '';
+    if (id === 'rot') {
+      // ハンドルは前面（local +v）の先にあるので、その向き = rot + 90°
+      const deg = (Math.atan2(dz, dx) * 180) / Math.PI - 90;
+      const rot = normDeg(fine ? Math.round(deg) : snapTo(deg, 15));
+      pv = { ...pv, rot };
+      label = `${rot}°`;
+    } else {
+      const r = (rot0 * Math.PI) / 180;
+      const u = dx * Math.cos(r) + dz * Math.sin(r);
+      const vv = -dx * Math.sin(r) + dz * Math.cos(r);
+      const step = fine ? 0.01 : 0.05;
+      if (id === 'w+' || id === 'w-') {
+        const far = dims0.w / 2;
+        const raw = id === 'w+' ? u + far : -u + far;
+        const w = Math.max(0.4, Math.min(6, snapTo(raw, step)));
+        const shift = ((w - dims0.w) / 2) * (id === 'w+' ? 1 : -1);
+        pv = { ...pv, w, x: Math.round(x0 + shift * Math.cos(r) * 1000), y: Math.round(y0 + shift * Math.sin(r) * 1000) };
+        label = `${it.kind === 'kitchen' ? '長さ' : it.kind === 'hanger' ? '長さ' : '幅'} ${(it.kind === 'kitchen' ? w + 0.3 : w).toFixed(2)} m`;
+      } else {
+        const d = Math.max(0.15, Math.min(3, snapTo(vv - dims0.v0, step)));
+        pv = { ...pv, d };
+        label = `${it.kind === 'kitchen' ? '袖' : '奥行'} ${d.toFixed(2)} m`;
+      }
+    }
+    hdrag.preview = pv;
+    const dims = { w: pv.w, d: pv.d, v0: dims0.v0 };
+    v.setSelection(footprintWorldDims(f, pv, dims));
+    v.setHandles(handlesFor(it, f, pv, dims));
+    v.setDragLabel(label);
+  };
+  const handleDragEnd = (moved: boolean) => {
+    if (!hdrag) return;
+    const d = hdrag;
+    hdrag = null;
+    if (!moved || !d.preview) {
+      showSel();
+      return;
+    }
+    const pv = d.preview;
+    editSel((x) => {
+      x.rot = pv.rot;
+      if (d.id === 'w+' || d.id === 'w-') {
+        applyWidth(x, pv.w);
+        x.x = pv.x;
+        x.y = pv.y;
+      } else if (d.id === 'd+') x.d = +pv.d.toFixed(2);
+    });
+  };
+  /** 寸法を指定した足元の外形（ドラッグ中の下見せ） */
+  const footprintWorldDims = (f: Floor, pos: { x: number; y: number; rot: number }, dims: { w: number; d: number; v0: number }): THREE.Vector3[] => {
+    const { w, d, v0 } = dims;
+    const r = (pos.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const room = f.rooms.find((rm) => pointInPolygon({ x: pos.x, y: pos.y }, rm.polygon));
+    const y = f.elevation / 1000 + (room ? roomFloorOffsetMm(room) / 1000 : 0);
+    const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
+    return [P(-w / 2, v0), P(w / 2, v0), P(w / 2, v0 + d), P(-w / 2, v0 + d)];
+  };
+  /** 選んだ家具の上で押したらドラッグ開始（道具を開いていて、その家具を選んでいるときだけ。それ以外はカメラ操作のまま）。先にハンドルを見る */
+  const dragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
     if (!active || add || !sel) return false;
+    if (handleDragStart(ndc)) return true;
     const f = floorAt(p.y);
     if (!f || f.level !== sel.level) return false;
     const it = itemAt(f.level, { x: p.x * 1000, y: p.z * 1000 }, 0.08, 0.6);
@@ -151,6 +270,10 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     return true;
   };
   const dragMove = (p: THREE.Vector3) => {
+    if (hdrag) {
+      handleDragMove(p);
+      return;
+    }
     if (!drag) return;
     const it = selected();
     if (!it) return;
@@ -159,8 +282,13 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     const snap = WALL_KINDS.has(it.kind) ? snapToWall(drag.f, raw, 700) : null;
     drag.preview = snap ?? { x: Math.round(raw.x), y: Math.round(raw.y), rot: drag.rot0 };
     v.setSelection(footprintWorld(it, drag.f, drag.preview));
+    v.setHandles(handlesFor(it, drag.f, drag.preview));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (hdrag) {
+      handleDragEnd(moved);
+      return;
+    }
     if (!drag) return;
     const d = drag;
     drag = null;
@@ -238,7 +366,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     if (!active) return;
     panel.append(
       h('div', { class: 'furn-head' }, h('strong', null, '家具・造作'), h('button', { class: 'btn sm ghost', onclick: () => setActive(false) }, '閉じる')),
-      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : sel ? '橙の枠が選んだ家具。そのまま掴んでドラッグで動かせます（壁ぎわの家具は壁に沿います）' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
+      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : sel ? '橙の枠が選んだ家具。掴んでドラッグで動かし、前の丸で回し、辺の四角で広げます（壁ぎわの家具は壁に沿います。Shift で細かく）' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
     );
     const it = selected();
     if (it) {
@@ -323,6 +451,8 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
       sel = null;
       add = null;
       moving = false;
+      hdrag = null;
+      v.setHandles(null);
     }
     render();
     btn.classList.toggle('on', on);

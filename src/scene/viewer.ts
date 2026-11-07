@@ -339,13 +339,16 @@ export class Viewer {
     // ホバー: 選べる物（家具・外構の物・扉・シャッター・窓）の上ではカーソルを手の形に（CAD のように「触れる物」が分かる）。100ms に 1 回だけ当たり判定
     let hoverAt = 0;
     el.addEventListener('pointermove', (e) => {
+      this.lastPtr = { x: e.clientX, y: e.clientY };
       if (this.drag) {
         const d = this.drag;
         if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
+        this.dragMods = { shift: e.shiftKey, alt: e.altKey };
         const p = this.planePoint(e.clientX, e.clientY, d.y);
         if (p) {
           d.last.copy(p);
-          this.onDragMove?.(p);
+          const r = el.getBoundingClientRect();
+          this.onDragMove?.(p, new THREE.Vector2(((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1, -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1));
         }
         return;
       }
@@ -392,7 +395,10 @@ export class Viewer {
         // 取得していないときは何もしない
       }
       const p = this.planePoint(e.clientX, e.clientY, d.y) ?? d.last;
-      this.onDragEnd?.(p, d.moved);
+      this.dragMods = { shift: e.shiftKey, alt: e.altKey };
+      const r = el.getBoundingClientRect();
+      this.setDragLabel(null);
+      this.onDragEnd?.(p, d.moved, new THREE.Vector2(((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1, -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1));
     };
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
@@ -436,6 +442,8 @@ export class Viewer {
     this.scene.add(this.root);
     this.selGroup.name = 'selection';
     this.scene.add(this.selGroup);
+    this.handleGroup.name = 'handles';
+    this.scene.add(this.handleGroup);
     for (const g of Object.values(this.groups)) this.root.add(g);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
@@ -544,11 +552,95 @@ export class Viewer {
    * 押した点と同じ高さの水平面に沿った点を move / end に渡す（end の moved は 3px 以上動いたか）
    */
   onDragStart: ((p: THREE.Vector3, ndc: THREE.Vector2) => boolean) | null = null;
-  onDragMove: ((p: THREE.Vector3) => void) | null = null;
-  onDragEnd: ((p: THREE.Vector3, moved: boolean) => void) | null = null;
+  onDragMove: ((p: THREE.Vector3, ndc: THREE.Vector2) => void) | null = null;
+  onDragEnd: ((p: THREE.Vector3, moved: boolean, ndc: THREE.Vector2) => void) | null = null;
   private drag: { y: number; sx: number; sy: number; moved: boolean; last: THREE.Vector3 } | null = null;
+  /** ドラッグ中の修飾キー（Shift = 細かく／自由、Alt = 格子に止めない）。道具が move の中で読む */
+  dragMods = { shift: false, alt: false };
   /** 選んだ物の足元の枠（CAD の選択表示）。撮影には写さない */
   private selGroup = new THREE.Group();
+  /** CAD のハンドル（回転・大きさ・軒の出・勾配を掴む印）。画面上の大きさは一定。撮影には写さない */
+  private handleGroup = new THREE.Group();
+  private handles: Handle3D[] = [];
+  private dragLabelEl: HTMLDivElement | null = null;
+  private lastPtr = { x: 0, y: 0 };
+
+  /** world の点 → キャンバス上の画素（左上原点） */
+  toScreen(p: THREE.Vector3): { x: number; y: number } {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const q = p.clone().project(this.camera);
+    return { x: ((q.x + 1) / 2) * r.width, y: ((1 - q.y) / 2) * r.height };
+  }
+  /** 画面の点（NDC）→ キャンバス上の画素 */
+  ndcToScreen(ndc: THREE.Vector2): { x: number; y: number } {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    return { x: ((ndc.x + 1) / 2) * r.width, y: ((1 - ndc.y) / 2) * r.height };
+  }
+  /** 画面の点から、anchor を通りカメラに正対する鉛直面との交点（高さ方向のドラッグ用: 勾配・パラペット・高さ） */
+  verticalPoint(ndc: THREE.Vector2, anchor: THREE.Vector3): THREE.Vector3 | null {
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const n = this.camera.getWorldDirection(new THREE.Vector3());
+    n.y = 0;
+    if (n.lengthSq() < 1e-6) n.set(0, 0, 1);
+    n.normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, anchor);
+    const p = new THREE.Vector3();
+    return rc.ray.intersectPlane(plane, p) ? p : null;
+  }
+  /** ハンドルを出す（null で消す）。選んだ物の枠（setSelection）とは別に管理 */
+  setHandles(handles: Handle3D[] | null) {
+    clearGroup(this.handleGroup);
+    this.handles = handles ? handles.slice() : [];
+    if (this.handles.length) {
+      const r = this.renderer.domElement.getBoundingClientRect();
+      // sizeAttenuation=false のスプライトは scale 1 ≒ 距離 1 の world 1m。画面の高さに対する比で画素数を決める
+      const px = 20;
+      const s = ((2 * px) / Math.max(1, r.height)) / Math.max(0.1, this.camera.projectionMatrix.elements[5]);
+      for (const hd of this.handles) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: handleTexture(hd.kind, !!hd.on), sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true }));
+        sp.scale.set(s, s, 1);
+        sp.position.copy(hd.pos);
+        sp.renderOrder = 1000;
+        sp.userData.noShadow = true;
+        sp.userData.handleId = hd.id;
+        this.handleGroup.add(sp);
+      }
+    }
+    this.dirty = true;
+  }
+  /** 画面の点の近く（radiusPx 以内）にあるハンドル。いちばん近いもの */
+  pickHandle(ndc: THREE.Vector2, radiusPx = 14): Handle3D | null {
+    if (!this.handles.length) return null;
+    const s = this.ndcToScreen(ndc);
+    let best: { h: Handle3D; d: number } | null = null;
+    for (const hd of this.handles) {
+      const q = this.toScreen(hd.pos);
+      const d = Math.hypot(q.x - s.x, q.y - s.y);
+      if (d <= radiusPx && (!best || d < best.d)) best = { h: hd, d };
+    }
+    return best?.h ?? null;
+  }
+  /** ドラッグ中にカーソルのそばに出す寸法の表示（「幅 2.10 m」「15°」）。null で消す */
+  setDragLabel(text: string | null) {
+    const host = this.renderer.domElement.parentElement;
+    if (!host) return;
+    if (!this.dragLabelEl) {
+      this.dragLabelEl = document.createElement('div');
+      this.dragLabelEl.className = 'drag-label';
+      host.appendChild(this.dragLabelEl);
+    }
+    const el = this.dragLabelEl;
+    if (!text) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.textContent = text;
+    const r = host.getBoundingClientRect();
+    el.style.left = `${this.lastPtr.x - r.left + 16}px`;
+    el.style.top = `${this.lastPtr.y - r.top - 30}px`;
+  }
 
   /** 画面上の点の下に何があるか（扉・屋根・天井は透かさず、いちばん手前の面）。何も無ければ地面の点 */
   /** 画面の点から、高さ y の水平面との交点（ドラッグで物を滑らせる面） */
@@ -1940,8 +2032,10 @@ export class Viewer {
     this.flushShadow();
     const selVis = this.selGroup.visible;
     this.selGroup.visible = false;
+    this.handleGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
     this.selGroup.visible = selVis;
+    this.handleGroup.visible = selVis;
     const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
     // 後処理のバッファ（composer）は触らない: 作り直すたびに GPU メモリを確保し直してカクつく
     this.renderer.setPixelRatio(prev.pr);
@@ -1966,12 +2060,14 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
     const qPrev = this.quality;
     this.quality = 'high';
-    // 選択の枠は撮影に写さない
+    // 選択の枠・ハンドルは撮影に写さない
     const selVis = this.selGroup.visible;
     this.selGroup.visible = false;
+    this.handleGroup.visible = false;
     this.renderFrame(true);
     const url = this.renderer.domElement.toDataURL(mime, q);
     this.selGroup.visible = selVis;
+    this.handleGroup.visible = selVis;
     this.quality = qPrev;
     this.motionPR = false;
     this.renderer.setPixelRatio(prev.pr);
@@ -1987,6 +2083,100 @@ function lerpView(a: CameraView, b: CameraView, t: number): CameraView {
     fov: a.fov + (b.fov - a.fov) * t,
     architectural: t > 0.98 ? b.architectural : false,
   };
+}
+
+/** CAD のハンドル: 選んだ物に付く、掴んで動かす印 */
+export interface Handle3D {
+  id: string;
+  /** rotate = 回転（丸に矢印）、size = 大きさ（四角）、end = 端を引っ張る（四角）、eave = 軒の出（矢印）、pitch = 勾配・高さ（上下の矢印）、arrow = 向き（三角） */
+  kind: 'rotate' | 'size' | 'end' | 'eave' | 'pitch' | 'arrow';
+  pos: THREE.Vector3;
+  /** 強調（片流れの高い側など） */
+  on?: boolean;
+  /** ホバーの説明 */
+  title?: string;
+}
+
+const handleTexCache = new Map<string, THREE.CanvasTexture>();
+/** ハンドルの絵（64px のキャンバス。白地に橙の縁、種類ごとの記号） */
+function handleTexture(kind: Handle3D['kind'], on: boolean): THREE.CanvasTexture {
+  const key = `${kind}:${on ? 1 : 0}`;
+  const hit = handleTexCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const orange = '#ff7a1a';
+  g.lineWidth = 5;
+  g.strokeStyle = orange;
+  g.fillStyle = on ? orange : '#fff';
+  const ink = on ? '#fff' : orange;
+  if (kind === 'size' || kind === 'end') {
+    g.fillRect(14, 14, 36, 36);
+    g.strokeRect(14, 14, 36, 36);
+  } else if (kind === 'arrow') {
+    g.beginPath();
+    g.moveTo(32, 8);
+    g.lineTo(56, 52);
+    g.lineTo(8, 52);
+    g.closePath();
+    g.fill();
+    g.stroke();
+  } else {
+    g.beginPath();
+    g.arc(32, 32, 24, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+    g.strokeStyle = ink;
+    g.fillStyle = ink;
+    g.lineWidth = 4;
+    if (kind === 'rotate') {
+      // 回る矢印
+      g.beginPath();
+      g.arc(32, 32, 12, -Math.PI * 0.2, Math.PI * 1.35);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(44, 16);
+      g.lineTo(46, 30);
+      g.lineTo(34, 26);
+      g.closePath();
+      g.fill();
+    } else if (kind === 'pitch') {
+      // 上下の矢印
+      g.beginPath();
+      g.moveTo(32, 16);
+      g.lineTo(32, 48);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(32, 12);
+      g.lineTo(24, 22);
+      g.lineTo(40, 22);
+      g.closePath();
+      g.fill();
+      g.beginPath();
+      g.moveTo(32, 52);
+      g.lineTo(24, 42);
+      g.lineTo(40, 42);
+      g.closePath();
+      g.fill();
+    } else {
+      // 軒の出: 外へ向く矢印
+      g.beginPath();
+      g.moveTo(16, 32);
+      g.lineTo(44, 32);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(50, 32);
+      g.lineTo(38, 24);
+      g.lineTo(38, 40);
+      g.closePath();
+      g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  handleTexCache.set(key, t);
+  return t;
 }
 
 export function clearGroup(g: THREE.Group) {

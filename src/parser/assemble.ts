@@ -2234,9 +2234,56 @@ function wallFillColors(fills: { poly: Vec2[]; color: string }[], walls: WWall[]
   return out;
 }
 
+/**
+ * ページが何の図面か（見出しと室名から）。
+ * 吉田大仁様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
+ * - elevation: 「立面図・断面図・矩計図・展開図」の見出しがあり「平面図」が無く、室名がほとんど無い → 平面図としては読まない（高さの寸法は別に読む）
+ * - other: 他のページに室名があるのに、このページには室名も「平面図」の見出しも無い（表・図面枠・配置図など）
+ * - plan: それ以外
+ */
+export function pageDrawingKind(texts: { str: string }[], opts: { raster?: boolean; docHasRooms: boolean; multiPage: boolean }): 'plan' | 'elevation' | 'other' {
+  if (opts.raster) return 'plan';
+  const norm = texts.map((t) => normalizeText(t.str));
+  const hasPlanTitle = norm.some((s) => /平面図|平面|PLAN/.test(s));
+  const hasElevTitle = norm.some((s) => /立面図|断面図|矩計図|展開図/.test(s));
+  const roomTextN = texts.filter((t) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null).length;
+  if (hasElevTitle && !hasPlanTitle && roomTextN < 3) return 'elevation';
+  if (opts.multiPage && opts.docHasRooms && roomTextN === 0 && !hasPlanTitle) return 'other';
+  return 'plan';
+}
+
+/** 同じページに平面図と立面図が並ぶとき: 区画にいちばん近い図面名が「立面図・断面図」なら、その区画は平面図ではない */
+function nearestTitleIsElevation(bbox: BBox, texts: MmText[]): boolean {
+  const w = bbox.maxX - bbox.minX;
+  const hgt = bbox.maxY - bbox.minY;
+  let best: { d: number; elev: boolean } | null = null;
+  for (const t of texts) {
+    const s = normalizeText(t.str);
+    const elev = /立面図|断面図|矩計図|展開図/.test(s);
+    if (!elev && !/平面図|PLAN/.test(s)) continue;
+    const dx = Math.max(0, bbox.minX - t.x, t.x - bbox.maxX);
+    const dy = Math.max(0, bbox.minY - t.y, t.y - bbox.maxY);
+    if (dx > w * 0.3 || dy > hgt * 0.8) continue;
+    const d = dx * 3 + dy;
+    if (!best || d < best.d) best = { d, elev };
+  }
+  return !!best?.elev;
+}
+
 export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
+  const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
+  const docHasRooms = pages.some((pg) => pg.texts.some(isRoomText));
   for (const page of pages) {
+    const kind = pageDrawingKind(page.texts, { raster: !!page.rasterMask, docHasRooms, multiPage: pages.length > 1 });
+    if (kind === 'elevation') {
+      warnings.push(`${page.pageIndex + 1}ページ目: 立面図・断面図のページなので平面図としては読みません（高さの寸法は使います）`);
+      continue;
+    }
+    if (kind === 'other') {
+      warnings.push(`${page.pageIndex + 1}ページ目: 室名の無いページ（表・図面枠・配置図など）は平面図としては読みません`);
+      continue;
+    }
     const pageExt =
       page.segs.length >= 50 || !page.rasterMask
         ? bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]))
@@ -2290,7 +2337,6 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     const wallColors = wallFillColors(page.colorFills, ww);
     if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
     // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
-    const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
     const pageHasRooms = page.texts.some(isRoomText);
     const boxes = groups.map((g) => bboxOf(g.flatMap((w) => [w.a, w.b])));
     const ext = pageExt;
@@ -2306,6 +2352,8 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       // 室名・帖数が1つも無い（立面図・表など）
       const roomTexts = page.texts.filter((t) => t.x > bbox.minX && t.x < bbox.maxX && t.y > bbox.minY && t.y < bbox.maxY && isRoomText(t)).length;
       if (pageHasRooms && roomTexts === 0) continue;
+      // 平面図と立面図が同じページに並ぶ図面: 立面図の見出しが付く区画は読まない
+      if (roomTexts === 0 && nearestTitleIsElevation(bbox, page.texts)) continue;
       const margin = 400;
       const inBox = (x: number, y: number, m: number) => x > bbox.minX - m && x < bbox.maxX + m && y > bbox.minY - m && y < bbox.maxY + m;
       const texts = page.texts.filter((t) => inBox(t.x, t.y, margin));

@@ -342,6 +342,8 @@ export class App {
     const furnTool = this.furnTool;
     const extTool = this.extTool;
     const editTool = this.editTool;
+    // 点検スクリプト用（ハンドルのドラッグなどを外から再現する）
+    (globalThis as unknown as { __tools: unknown }).__tools = { furnTool, extTool, editTool };
     v.onPickIdle = (hit, ndc) => {
       if (hit.group === 'furniture') return furnTool.pickHere(hit.point) || editTool.pickHere(hit, ndc);
       if (hit.group === 'landscape') return extTool.pickHere(hit.point);
@@ -351,11 +353,11 @@ export class App {
       return false;
     };
     // 選んだ家具・外構の物は、そのまま掴んでドラッグで動かせる（CAD の直接操作。道具を開いて選んでいる物だけ）
-    v.onDragStart = (p) => furnTool.dragStart(p) || extTool.dragStart(p) || editTool.dragStart(p);
-    v.onDragMove = (p) => {
+    v.onDragStart = (p, ndc) => furnTool.dragStart(p, ndc) || extTool.dragStart(p, ndc) || editTool.dragStart(p, ndc);
+    v.onDragMove = (p, ndc) => {
       furnTool.dragMove(p);
       extTool.dragMove(p);
-      editTool.dragMove(p);
+      editTool.dragMove(p, ndc);
     };
     v.onDragEnd = (p, moved) => {
       furnTool.dragEnd(p, moved);

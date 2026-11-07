@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { h, clear, toast } from './dom';
 import { state } from './state';
-import type { Viewer } from '../scene/viewer';
+import type { Handle3D, Viewer } from '../scene/viewer';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type Canopy, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
@@ -18,7 +18,7 @@ import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabe
 import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
-import { massName, massState, roofPatchControls, segButtons } from './roofPatchPanel';
+import { massName, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
 
 export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool edit3d', hidden: true });
@@ -115,16 +115,40 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const w = f && op ? f.walls.find((x) => x.id === op.wallId) ?? null : null;
     return f && op && w ? { f, op, w } : null;
   };
-  /** 選んだ窓・戸に橙の枠を出す（無ければ消す） */
+  /** 窓・戸の両端のハンドル（高さの中ほど）。端を引っ張ると幅が変わる */
+  const openingHandles = (f: Floor, w: Wall, t0: number, t1: number, op: Opening): Handle3D[] => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const fl = f.elevation / 1000;
+    const eff = effectiveOpening(op, f.ceilingHeight, resolveSpec(state.design.specId, state.design.specPatch));
+    const ym = fl + (eff.sill + eff.height / 2) / 1000;
+    const P = (t: number) => new THREE.Vector3((w.a.x + ux * t) / 1000, ym, (w.a.y + uy * t) / 1000);
+    const title = '端をドラッグで幅を変える（半間の格子に止まる。Shift で自由）';
+    return [
+      { id: 'op:t0', kind: 'end', pos: P(t0), title },
+      { id: 'op:t1', kind: 'end', pos: P(t1), title },
+    ];
+  };
+  /** 選んだ窓・戸に橙の枠とハンドルを出す（無ければ消す） */
   const showOpSel = () => {
     const s = selectedOpening();
     v.setSelection(s ? openingFrame(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
+    v.setHandles(s && active && mode === 'opening' ? openingHandles(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
   };
-  /** 選んだ窓・戸の上で押したらドラッグ開始（壁に沿って動く）。それ以外はカメラ操作のまま */
-  const dragStart = (p: THREE.Vector3): boolean => {
+  /** 窓・戸の端を掴んで幅を変えている間の状態 */
+  let opEdge: { f: Floor; op: Opening; w: Wall; L: number; which: 't0' | 't1'; preview: { t0: number; t1: number } | null } | null = null;
+  /** 選んだ窓・戸の上で押したらドラッグ開始（壁に沿って動く）。端のハンドルなら幅を変える。それ以外はカメラ操作のまま */
+  const dragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
+    if (active && mode === 'roof') return roofHandleStart(ndc);
     if (!active || mode !== 'opening' || !opSel) return false;
     const s = selectedOpening();
     if (!s) return false;
+    const hd = ndc ? v.pickHandle(ndc) : null;
+    if (hd && (hd.id === 'op:t0' || hd.id === 'op:t1')) {
+      opEdge = { f: s.f, op: s.op, w: s.w, L: wallParam(s.w, p).L, which: hd.id === 'op:t0' ? 't0' : 't1', preview: null };
+      return true;
+    }
     const { t, d } = wallParam(s.w, p);
     if (d > 450 || t < s.op.t0 - 150 || t > s.op.t1 + 150) return false;
     const fl = s.f.elevation / 1000;
@@ -133,7 +157,40 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     opDrag = { f: s.f, op: s.op, w: s.w, L: wallParam(s.w, p).L, width: s.op.t1 - s.op.t0, t0Start: s.op.t0, tPress: t, preview: null };
     return true;
   };
-  const dragMove = (p: THREE.Vector3) => {
+  const dragMove = (p: THREE.Vector3, ndc?: THREE.Vector2) => {
+    if (roofHd) {
+      roofHandleMove(p, ndc);
+      return;
+    }
+    if (opEdge) {
+      const { f, op, w, L, which } = opEdge;
+      let { t } = wallParam(w, p);
+      // ほかの窓・戸と重ならない範囲と壁の端。最小幅 300
+      const fixed = which === 't0' ? op.t1 : op.t0;
+      let lo = 40;
+      let hi = L - 40;
+      for (const o of f.openings) {
+        if (o.wallId !== w.id || o.id === op.id) continue;
+        if (o.t1 <= Math.min(op.t0, fixed) + 1) lo = Math.max(lo, o.t1 + 20);
+        else if (o.t0 >= Math.max(op.t1, fixed) - 1) hi = Math.min(hi, o.t0 - 20);
+      }
+      if (which === 't0') hi = Math.min(hi, fixed - 300);
+      else lo = Math.max(lo, fixed + 300);
+      // 半間（455）の格子に止める（Shift で自由）
+      const grid = model()?.module?.grid ?? 455;
+      if (!v.dragMods.shift) {
+        const g = Math.round(t / grid) * grid;
+        if (Math.abs(g - t) < 80) t = g;
+      }
+      t = Math.max(lo, Math.min(hi, Math.round(t)));
+      const t0 = which === 't0' ? t : op.t0;
+      const t1 = which === 't1' ? t : op.t1;
+      opEdge.preview = { t0, t1 };
+      v.setSelection(openingFrame(f, w, t0, t1, op));
+      v.setHandles(openingHandles(f, w, t0, t1, op));
+      v.setDragLabel(`幅 ${Math.round(t1 - t0).toLocaleString()} mm`);
+      return;
+    }
     if (!opDrag) return;
     const { f, op, w, L, width } = opDrag;
     const { t } = wallParam(w, p);
@@ -160,6 +217,23 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     v.setSelection(openingFrame(f, w, t0, t0 + width, op));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (roofHd) {
+      roofHandleEnd(moved);
+      return;
+    }
+    if (opEdge) {
+      const e = opEdge;
+      opEdge = null;
+      if (!moved || !e.preview || (Math.abs(e.preview.t0 - e.op.t0) < 1 && Math.abs(e.preview.t1 - e.op.t1) < 1)) {
+        showOpSel();
+        return;
+      }
+      e.op.t0 = e.preview.t0;
+      e.op.t1 = e.preview.t1;
+      toast(`${OPENING_LABEL[e.op.kind]}の幅を ${Math.round(e.op.t1 - e.op.t0).toLocaleString()} mm にしました`, 'ok', 2500);
+      commit();
+      return;
+    }
     if (!opDrag) return;
     const d = opDrag;
     opDrag = null;
@@ -196,6 +270,133 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const y = (ms.manual && ms.patch?.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000) + 0.1;
     const b = ms.bbox;
     v.setSelection([new THREE.Vector3(b.minX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.maxY / 1000), new THREE.Vector3(b.minX / 1000, y, b.maxY / 1000)]);
+    v.setHandles(ms.omit ? null : roofHandles(m, ms, f));
+  };
+  /** 屋根の塊の今の値（手直し → 全体の設定の順） */
+  const roofNow = (ms: RoofMass) => {
+    const ext = exteriorById(state.design.exteriorId);
+    const p = ms.patch;
+    const wholeEaves = state.design.eaves ?? ext.roof.eaves;
+    return {
+      eaveOf: (s: RoofHigh) => p?.eavesBy?.[s] ?? p?.eaves ?? wholeEaves,
+      pitch: p?.pitch ?? state.design.roofPitch ?? ext.roof.pitch,
+      parapet: p?.parapet ?? 550,
+      ridgeX: p?.ridge ? p.ridge === 'x' : ms.bbox.maxX - ms.bbox.minX >= ms.bbox.maxY - ms.bbox.minY,
+    };
+  };
+  type RoofPreview = { eavesBy?: Partial<Record<RoofHigh, number>>; pitch?: number; high?: RoofHigh; parapet?: number };
+  /**
+   * 屋根のハンドル（CAD 感覚で屋根を直す）:
+   *  - 軒の出: 4 辺の軒先の矢印。外へ引っ張ると伸びる（上の階に接する辺には無い）
+   *  - 勾配: 棟（片流れは高い側の軒先）の上下の矢印。上へ引くと急に。陸屋根ではパラペットの高さ
+   *  - 片流れの高い側: 真ん中の三角。高くしたい辺の方へドラッグ
+   * 位置の高さは目安（軒 = 壁の天端、棟 = 軒 + 勾配 × 半スパン）
+   */
+  const roofHandles = (m: BuildingModel, ms: RoofMass, f: Floor, pv: RoofPreview = {}): Handle3D[] => {
+    const now = roofNow(ms);
+    const eaveOf = (s: RoofHigh) => pv.eavesBy?.[s] ?? now.eaveOf(s);
+    const pitch = pv.pitch ?? now.pitch;
+    const high = pv.high ?? ms.high;
+    const y0 = ms.manual && ms.patch?.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000;
+    const b = ms.bbox;
+    const cx = (b.minX + b.maxX) / 2000;
+    const cz = (b.minY + b.maxY) / 2000;
+    const W = (b.maxX - b.minX) / 1000;
+    const D = (b.maxY - b.minY) / 1000;
+    const north = m.northAngleDeg;
+    const edgeMid = (s: RoofHigh, off: number): [number, number] => (s === 'n' ? [cx, b.minY / 1000 - off] : s === 's' ? [cx, b.maxY / 1000 + off] : s === 'e' ? [b.maxX / 1000 + off, cz] : [b.minX / 1000 - off, cz]);
+    const out: Handle3D[] = [];
+    for (const s of ['n', 's', 'e', 'w'] as RoofHigh[]) {
+      if (ms.attached.includes(s)) continue;
+      const [x, z] = edgeMid(s, eaveOf(s) / 1000);
+      out.push({ id: `eave:${s}`, kind: 'eave', pos: new THREE.Vector3(x, y0 + 0.1, z), title: `${sideLabel(s, north)}の軒の出 ${Math.round(eaveOf(s))} mm。外へ引っ張ると伸びる（50 mm 刻み。Shift で細かく）` });
+    }
+    if (ms.kind === 'flat') {
+      const par = (pv.parapet ?? now.parapet) / 1000;
+      out.push({ id: 'pitch', kind: 'pitch', pos: new THREE.Vector3(cx, y0 + par, cz), title: `パラペット ${Math.round(par * 1000)} mm。上下にドラッグ` });
+    } else if (ms.kind === 'shed') {
+      const span = high === 'n' || high === 's' ? D : W;
+      const [x, z] = edgeMid(high, 0);
+      out.push({ id: 'pitch', kind: 'pitch', pos: new THREE.Vector3(x, y0 + (pitch / 10) * span, z), title: `勾配 ${pitch} 寸。上下にドラッグ（0.5 寸刻み。Shift で 0.1）` });
+      out.push({ id: 'high', kind: 'arrow', on: true, pos: new THREE.Vector3(cx, y0 + ((pitch / 10) * span) / 2 + 0.25, cz), title: `高い側: ${sideLabel(high, north)}。高くしたい辺の方へドラッグ` });
+    } else {
+      const halfSpan = (now.ridgeX ? D : W) / 2;
+      out.push({ id: 'pitch', kind: 'pitch', pos: new THREE.Vector3(cx, y0 + (pitch / 10) * halfSpan, cz), title: `勾配 ${pitch} 寸。上下にドラッグ（0.5 寸刻み。Shift で 0.1）` });
+    }
+    return out;
+  };
+  /** 屋根のハンドルを掴んでいる間 */
+  let roofHd: { ms: RoofMass; f: Floor; m: BuildingModel; id: string; anchor: THREE.Vector3; y0: number; pv: RoofPreview; label: string } | null = null;
+  const roofHandleStart = (ndc: THREE.Vector2 | undefined): boolean => {
+    if (!ndc || !roofSel || roofDraw.on) return false;
+    const hd = v.pickHandle(ndc);
+    if (!hd) return false;
+    const ms = selectedMass();
+    const m = model();
+    const f = m && ms ? m.floors.find((x) => x.level === ms.level) : null;
+    if (!ms || !m || !f) return false;
+    const y0 = ms.manual && ms.patch?.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000;
+    roofHd = { ms, f, m, id: hd.id, anchor: hd.pos.clone(), y0, pv: {}, label: '' };
+    return true;
+  };
+  const roofHandleMove = (p: THREE.Vector3, ndc?: THREE.Vector2) => {
+    if (!roofHd) return;
+    const { ms, f, m, id, anchor, y0 } = roofHd;
+    const now = roofNow(ms);
+    const b = ms.bbox;
+    const fine = v.dragMods.shift;
+    const snap = (val: number, step: number) => Math.round(val / step) * step;
+    if (id.startsWith('eave:')) {
+      const s = id.slice(5) as RoofHigh;
+      const raw = s === 'n' ? b.minY / 1000 - p.z : s === 's' ? p.z - b.maxY / 1000 : s === 'e' ? p.x - b.maxX / 1000 : b.minX / 1000 - p.x;
+      const val = Math.max(0, Math.min(2500, snap(raw * 1000, fine ? 10 : 50)));
+      roofHd.pv = { eavesBy: { [s]: val } };
+      roofHd.label = `${sideLabel(s, m.northAngleDeg)}の軒の出 ${val} mm`;
+    } else if (id === 'pitch') {
+      const vp = ndc ? v.verticalPoint(ndc, anchor) : null;
+      if (!vp) return;
+      const dh = Math.max(0, vp.y - y0);
+      if (ms.kind === 'flat') {
+        const par = Math.max(0, Math.min(1500, snap(dh * 1000, fine ? 10 : 50)));
+        roofHd.pv = { parapet: par };
+        roofHd.label = `パラペット ${par} mm`;
+      } else {
+        const W = (b.maxX - b.minX) / 1000;
+        const D = (b.maxY - b.minY) / 1000;
+        const span = ms.kind === 'shed' ? (ms.high === 'n' || ms.high === 's' ? D : W) : (now.ridgeX ? D : W) / 2;
+        const pitch = Math.max(0.3, Math.min(10, snap((dh / Math.max(0.5, span)) * 10, fine ? 0.1 : 0.5)));
+        roofHd.pv = { pitch: +pitch.toFixed(1) };
+        roofHd.label = `勾配 ${+pitch.toFixed(1)} 寸`;
+      }
+    } else if (id === 'high') {
+      // いちばん近い辺を高い側に
+      const dn = Math.abs(p.z - b.minY / 1000);
+      const ds = Math.abs(p.z - b.maxY / 1000);
+      const de = Math.abs(p.x - b.maxX / 1000);
+      const dw = Math.abs(p.x - b.minX / 1000);
+      const best = Math.min(dn, ds, de, dw);
+      const high: RoofHigh = best === dn ? 'n' : best === ds ? 's' : best === de ? 'e' : 'w';
+      roofHd.pv = { high };
+      roofHd.label = `高い側: ${sideLabel(high, m.northAngleDeg)}`;
+    }
+    v.setHandles(roofHandles(m, ms, f, roofHd.pv));
+    v.setDragLabel(roofHd.label);
+  };
+  const roofHandleEnd = (moved: boolean) => {
+    if (!roofHd) return;
+    const d = roofHd;
+    roofHd = null;
+    const pv = d.pv;
+    if (!moved || !Object.keys(pv).length) {
+      showRoofSel();
+      return;
+    }
+    if (pv.eavesBy) {
+      const [s, val] = Object.entries(pv.eavesBy)[0] as [RoofHigh, number];
+      patchRoof((q) => { (q.eavesBy ??= {})[s] = val; }, `${sideLabel(s, d.m.northAngleDeg)}の軒の出を ${val} mm にしました`);
+    } else if (pv.parapet != null) patchRoof((q) => { q.parapet = pv.parapet; }, `パラペットを ${pv.parapet} mm にしました`);
+    else if (pv.pitch != null) patchRoof((q) => { q.pitch = pv.pitch; }, `勾配を ${pv.pitch} 寸にしました`);
+    else if (pv.high) patchRoof((q) => { q.high = pv.high; q.kind = 'shed'; }, `高い側を${sideLabel(pv.high, d.m.northAngleDeg)}にしました`);
   };
   /** 屋根を足す: 1 つ目の角に橙の印 */
   const showRoofDrawMark = () => {
@@ -574,6 +775,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const render = () => {
     clear(panel);
     panel.hidden = !active;
+    if (!(active && ((mode === 'opening' && opSel && !canopySel && !wallDraw.on) || (mode === 'roof' && roofSel && !roofDraw.on)))) v.setHandles(null);
     if (active && mode === 'opening' && wallDraw.on) showWallDrawMark();
     if (active && mode === 'opening' && canopySel) showCanopySel();
     else if (active && mode === 'opening') showOpSel();
@@ -940,11 +1142,14 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opSel = null;
       opSpot = null;
       opDrag = null;
+      opEdge = null;
+      roofHd = null;
       roofSel = null;
       wallDraw = { on: false, level: null, a: null };
       roofDraw = { on: false, level: null, a: null };
       paintOverlay();
       v.setSelection(null);
+      v.setHandles(null);
     }
     render();
     btn.classList.toggle('on', on);

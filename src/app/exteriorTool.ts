@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import type { BuildingModel, ExteriorItem, ExteriorKind } from '../core/types';
 import { EXTERIOR_DEFAULTS, EXTERIOR_LABEL, exteriorFootprint } from '../scene/exteriorItems';
-import type { Viewer } from '../scene/viewer';
+import type { Handle3D, Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
 import { state } from './state';
 
@@ -90,12 +90,41 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
     if (it.kind === 'fence') return [P(0, -0.15), P(fp.w, -0.15), P(fp.w, 0.15), P(0, 0.15)];
     return [P(-fp.w / 2, -fp.d / 2), P(fp.w / 2, -fp.d / 2), P(fp.w / 2, fp.d / 2), P(-fp.w / 2, fp.d / 2)];
   };
+  /**
+   * CAD のハンドル: 向きのある物は回転（前の丸）、フェンスは先端（引っ張ると向きと長さが一緒に変わる）、
+   * 物置・ベンチ・プランターは幅（右端の四角）。木・低木（円）には無い
+   */
+  const handlesFor = (it: ExteriorItem, pos: { x: number; y: number; rot: number; len?: number } = it): Handle3D[] => {
+    const fp = exteriorFootprint({ ...it, len: pos.len ?? it.len });
+    if (fp.r) return [];
+    const r = (pos.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const y = 0.06;
+    const P = (u: number, w: number) => new THREE.Vector3(cx + u * Math.cos(r) - w * Math.sin(r), y, cz + u * Math.sin(r) + w * Math.cos(r));
+    if (it.kind === 'fence') return [{ id: 'end', kind: 'end', pos: P(fp.w, 0), title: '先端をドラッグ: 向きと長さを変える（15°・0.1 m 刻み。Shift で自由）' }];
+    const out: Handle3D[] = [{ id: 'rot', kind: 'rotate', pos: P(0, fp.d / 2 + 0.5), title: 'ドラッグで回す（15° 刻み。Shift で自由）' }];
+    if (it.kind === 'shed' || it.kind === 'bench' || it.kind === 'planter') out.push({ id: 'w+', kind: 'size', pos: P(fp.w / 2, 0), title: 'ドラッグで幅を変える' });
+    return out;
+  };
   const showSel = () => {
     const it = selected();
     v.setSelection(it ? footprintWorld(it) : null);
+    v.setHandles(it && active && !add ? handlesFor(it) : null);
   };
-  const dragStart = (p: THREE.Vector3): boolean => {
+  /** ハンドルを掴んでいる間 */
+  let hdrag: { id: string; x0: number; y0: number; rot0: number; len0: number; preview: { rot: number; len?: number } | null } | null = null;
+  const snapTo = (val: number, step: number) => Math.round(val / step) * step;
+  const normDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
+  const dragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
     if (!active || add || !sel) return false;
+    const cur = selected();
+    const hd = cur && ndc ? v.pickHandle(ndc) : null;
+    if (cur && hd) {
+      hdrag = { id: hd.id, x0: cur.x, y0: cur.y, rot0: cur.rot, len0: cur.len ?? exteriorFootprint(cur).w, preview: null };
+      moving = false;
+      return true;
+    }
     const it = itemAt({ x: Math.round(p.x * 1000), y: Math.round(p.z * 1000) });
     if (!it || it.id !== sel) return false;
     drag = { x0: it.x, y0: it.y, p0: p.clone(), preview: null };
@@ -103,13 +132,61 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
     return true;
   };
   const dragMove = (p: THREE.Vector3) => {
-    if (!drag) return;
     const it = selected();
     if (!it) return;
+    if (hdrag) {
+      const fine = v.dragMods.shift;
+      const dx = p.x - hdrag.x0 / 1000;
+      const dz = p.z - hdrag.y0 / 1000;
+      let pv: { rot: number; len?: number };
+      let label: string;
+      if (hdrag.id === 'end') {
+        // フェンスの先端: 置いた点からの向きと距離
+        const deg = (Math.atan2(dz, dx) * 180) / Math.PI;
+        const rot = normDeg(fine ? Math.round(deg) : snapTo(deg, 15));
+        const len = Math.max(0.5, Math.min(30, snapTo(Math.hypot(dx, dz), fine ? 0.05 : 0.1)));
+        pv = { rot, len };
+        label = `${len.toFixed(1)} m・${rot}°`;
+      } else if (hdrag.id === 'rot') {
+        // 回転のハンドルは左手側（local +w）の先 = rot + 90°
+        const deg = (Math.atan2(dz, dx) * 180) / Math.PI - 90;
+        const rot = normDeg(fine ? Math.round(deg) : snapTo(deg, 15));
+        pv = { rot };
+        label = `${rot}°`;
+      } else {
+        const r = (hdrag.rot0 * Math.PI) / 180;
+        const u = dx * Math.cos(r) + dz * Math.sin(r);
+        const len = Math.max(0.5, Math.min(it.kind === 'shed' ? 3.6 : 4, snapTo(u * 2, fine ? 0.01 : 0.05)));
+        pv = { rot: hdrag.rot0, len };
+        label = `幅 ${len.toFixed(2)} m`;
+      }
+      hdrag.preview = pv;
+      const pos = { x: hdrag.x0, y: hdrag.y0, rot: pv.rot, len: pv.len ?? it.len };
+      v.setSelection(footprintWorld({ ...it, rot: pos.rot, len: pos.len }, pos));
+      v.setHandles(handlesFor(it, pos));
+      v.setDragLabel(label);
+      return;
+    }
+    if (!drag) return;
     drag.preview = { x: Math.round(drag.x0 + (p.x - drag.p0.x) * 1000), y: Math.round(drag.y0 + (p.z - drag.p0.z) * 1000) };
     v.setSelection(footprintWorld(it, drag.preview));
+    v.setHandles(handlesFor(it, { ...drag.preview, rot: it.rot }));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (hdrag) {
+      const d = hdrag;
+      hdrag = null;
+      if (!moved || !d.preview) {
+        showSel();
+        return;
+      }
+      const pv = d.preview;
+      editSel((x) => {
+        x.rot = pv.rot;
+        if (pv.len != null) x.len = +pv.len.toFixed(2);
+      });
+      return;
+    }
     if (!drag) return;
     const d = drag;
     drag = null;
@@ -177,7 +254,7 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
     if (!active) return;
     panel.append(
       h('div', { class: 'furn-head' }, h('strong', null, '外構に置く'), h('button', { class: 'btn sm ghost', onclick: () => setActive(false) }, '閉じる')),
-      h('p', { class: 'hint' }, add ? `「${EXTERIOR_LABEL[add]}」: 置きたい地面をクリック` : moving ? '移す先の地面をクリック' : sel ? '橙の枠が選んだ物。そのまま掴んでドラッグで動かせます' : '置いた物をクリックして選ぶ／下から選んで地面をクリックで置く'),
+      h('p', { class: 'hint' }, add ? `「${EXTERIOR_LABEL[add]}」: 置きたい地面をクリック` : moving ? '移す先の地面をクリック' : sel ? '橙の枠が選んだ物。掴んでドラッグで動かし、丸で回し、四角で広げます（フェンスは先端を引っ張る。Shift で細かく）' : '置いた物をクリックして選ぶ／下から選んで地面をクリックで置く'),
     );
     const it = selected();
     if (it) {
@@ -229,6 +306,8 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
       sel = null;
       add = null;
       moving = false;
+      hdrag = null;
+      v.setHandles(null);
     }
     render();
     btn.classList.toggle('on', on);

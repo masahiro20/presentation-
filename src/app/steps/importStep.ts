@@ -4,12 +4,14 @@ import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
-import { parsePdfInBrowser, extractPdfText } from '../../parser/browser';
+import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser } from '../../parser/browser';
 import { parseDxf, type ModuleMode } from '../../parser';
+import { applyElevationHeights, describeElevationHeights, type ElevationHeights } from '../../parser/elevationText';
 import { decodeDxf } from '../../parser/dxf';
 import { floorPlanSvg } from '../../drawings/plan';
 import { openPlanEditor } from '../planEditor';
 import { excludedFromFloorArea, type BuildingModel, type PlanSide } from '../../core/types';
+import { removeFloor } from '../../core/floors';
 import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site';
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
@@ -56,6 +58,16 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
           });
     const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
     if (!model.floors.length || rooms === 0) {
+      // 立面図だけの PDF（平面図と別ファイル）を置いたとき: 間取りが読めていれば高さとして取り込む
+      if (kind === 'pdf' && state.model) {
+        const elev = await readElevationPdfInBrowser(data.slice()).catch(() => null);
+        if (elev) {
+          applyElevationToModel(elev);
+          toast(`${name} は立面図として読み、高さを反映しました（${describeElevationHeights(elev)}）`, 'ok', 9000);
+          ctx.app.go('import');
+          return;
+        }
+      }
       toast('平面図を認識できませんでした。CAD から出力したベクター形式の PDF をお試しください', 'error', 6000);
       return;
     }
@@ -138,6 +150,52 @@ async function heightsFrom3dFile(ctx: StepCtx, f: File): Promise<boolean> {
   } finally {
     pm.close();
   }
+}
+
+/** 立面図から読めた高さを、開いている間取りに当てる（床・階高・天井・屋根勾配） */
+function applyElevationToModel(elev: ElevationHeights): string {
+  const model = state.model!;
+  const summary = applyElevationHeights(model.floors, elev);
+  model.heights = { source: 'elevation', ...elev };
+  if (elev.roofPitch != null) state.design = { ...state.design, roofPitch: elev.roofPitch };
+  emit('model');
+  return summary;
+}
+
+/**
+ * 別ファイルの立面図 PDF から高さ・屋根勾配を読んで間取りに当てる（平面図と立面図が別々に保存されているとき）。
+ * 読めるのは CAD から出力した立面図（「1階FL」「2,800（階高）」「最高高さ」の文字があるもの）
+ */
+async function heightsFromElevationPdf(f: File): Promise<boolean> {
+  if (!state.model) return false;
+  const pm = progressModal('立面図から高さを読んでいます', false);
+  try {
+    const data = new Uint8Array(await f.arrayBuffer());
+    const elev = await readElevationPdfInBrowser(data);
+    if (!elev) {
+      toast(`${f.name} に立面図の寸法（「1階FL」「階高」「最高高さ」の文字）が見つかりませんでした。CAD から出力したベクター PDF の立面図をお試しください`, 'error', 9000);
+      return false;
+    }
+    const summary = applyElevationToModel(elev);
+    toast(`${f.name} の立面図から高さを反映しました（${summary}）`, 'ok', 9000);
+    return true;
+  } catch (e) {
+    toast(`立面図を読めませんでした: ${(e as Error).message}`, 'error', 8000);
+    return false;
+  } finally {
+    pm.close();
+  }
+}
+
+/** 高さの出どころの表示（補助データの欄） */
+export function heightsSourceLabel(model: BuildingModel): string {
+  const hs = model.heights;
+  if (hs) {
+    const d = describeElevationHeights({ storyHeights: hs.storyHeights ?? [], floor1: hs.floor1, maxHeight: hs.maxHeight, maxEave: hs.maxEave, roofPitch: hs.roofPitch });
+    return `${hs.source === 'elevation' ? '立面図の寸法' : '設計の 3D データ'}${d ? `（${d}）` : ''}`;
+  }
+  const f1 = model.floors.slice().sort((a, b) => a.level - b.level)[0];
+  return `標準値の推定（1 階床 GL+${f1?.elevation ?? 500}・階高 ${f1?.height ?? 2900}）。立面図か 3D データがあれば正確になります`;
 }
 
 /** モジュールの表示名 */
@@ -257,7 +315,7 @@ function dropScreen(ctx: StepCtx) {
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
     h('b', null, '平面図の PDF をここに置く'),
-    h('span', null, 'DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、床・窓・屋根の高さも 3D のとおりに'),
+    h('span', null, '立面図が同じ PDF に入っていれば高さも読みます（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、床・窓・屋根の高さも 3D のとおりに'),
     h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
     input,
   );
@@ -1202,7 +1260,31 @@ function renderResult(ctx: StepCtx) {
     },
     ...DRAWING_KINDS.map((k) => h('option', { value: k.id, selected: k.id === (lastPdf?.drawing ?? 'auto') }, k.label)),
   ) as HTMLSelectElement;
+  // 補助データ: 立面図の PDF（別ファイル）・設計の 3D データ（3DS）。平面図だけでは分からない高さ・屋根を正確にする
+  const elevIn = h('input', { type: 'file', class: 'elev-pdf-input', accept: 'application/pdf,.pdf', style: 'display:none' }) as HTMLInputElement;
+  elevIn.addEventListener('change', async () => {
+    const f = elevIn.files?.[0];
+    elevIn.value = '';
+    if (!f) return;
+    resultCleanup?.();
+    await heightsFromElevationPdf(f);
+    void ctx.app.go('import');
+  });
   side.append(
+    fold(
+      '補助データ（読み取りの精度を上げる）',
+      { open: !model.heights },
+      h('p', { class: 'hint keep', style: 'margin:0 0 6px' }, h('b', null, '高さの出どころ: '), heightsSourceLabel(model)),
+      h(
+        'div',
+        { class: 'btn-row', style: 'margin-top:0' },
+        h('button', { class: 'btn sm', title: '平面図と別ファイルの立面図 PDF から、1 階床・階高・最高高さ・屋根勾配を読みます', onclick: () => elevIn.click() }, '立面図の PDF を足す'),
+        elevIn,
+        h('button', { class: 'btn sm', title: 'ARCHITREND の 3DS など。床・窓の腰高と高さ・屋根を 3D のとおりに直します', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
+        ext3dIn,
+      ),
+      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の高さ・屋根の形まで 3D のとおりになります。'),
+    ),
     fold(
       '読み込みのやり直し・保存',
       {},
@@ -1216,12 +1298,9 @@ function renderResult(ctx: StepCtx) {
         h('button', { class: 'btn sm', title: '図面の読み取り結果・修正・テイスト・建設地をファイルに保存（Ctrl+S）', onclick: () => void saveProjectFile() }, 'プロジェクトを保存'),
         h('button', { class: 'btn sm ghost', title: '読み取り精度の評価用に、自動の読み取り結果と、直した正解の間取りを1つのファイルに保存します', onclick: () => editor.saveTruth() }, '評価用に保存'),
       ),
-      h('p', { class: 'hint', style: 'margin:10px 0 4px' }, 'ARCHITREND の 3DS など、設計の 3D データがあれば、床・窓の腰高と高さ・屋根を 3D のとおりに直せます。'),
       h(
         'div',
-        { class: 'btn-row', style: 'margin-top:0' },
-        h('button', { class: 'btn sm', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
-        ext3dIn,
+        { class: 'btn-row', style: 'margin-top:6px' },
         h('button', { class: 'btn sm ghost', title: '次に読む図面との「前回からの変更」が出ます', onclick: () => { pendingRevision = summarizeCurrent(); state.model = null; emit('model'); ctx.app.go('import'); } }, '別の PDF を読み込む'),
       ),
     ),
@@ -1238,17 +1317,59 @@ function numInput(v: number, onChange: (v: number) => void) {
  * 怪しい所は修正画面へ直接飛べるようにする
  */
 function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () => void, onFix: () => void, showMarks: (issue: WoodIssue | null) => void, openLevel: (level: number) => void): HTMLElement {
-  type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void }; action2?: { label: string; fn: () => void } };
+  type Row = { ok: boolean | null; label: string; detail: string; action?: { label: string; fn: () => void }; action2?: { label: string; fn: () => void }; extra?: HTMLElement };
   const rows: Row[] = [];
   const floors = model.floors;
   const multi = floors.length >= 2;
   // 階
   const thin = floors.filter((f) => f.rooms.filter((r) => r.type !== 'void').length < 3);
+  // 読み取りで余分な階ができたとき（立面図・別案・部分図が階として読まれた）に、その場で消せる
+  const askRemoveFloor = (level: number) => {
+    const f = floors.find((x) => x.level === level);
+    const n = f ? f.rooms.filter((r) => r.type !== 'void').length : 0;
+    modal(
+      `${level}階を消しますか`,
+      h('div', null, h('p', null, `${level}階（${n} 室・壁 ${f?.walls.length ?? 0}）を間取りから消し、上の階の番号を詰めます。読み取りで余分にできた階（立面図・別案・部分図）を消すためのものです。`), h('p', { class: 'hint keep' }, '元に戻すには「読み込みのやり直し・保存」の「再解析」で読み直してください。')),
+      [
+        { label: 'やめる' },
+        {
+          label: `${level}階を消す`,
+          primary: true,
+          onClick: () => {
+            if (!removeFloor(model, level)) return;
+            toast(`${level}階を消しました（${model.floors.length} 階建て）`, 'ok');
+            onFix();
+          },
+        },
+      ],
+    );
+  };
+  const floorChips =
+    floors.length >= 2
+      ? h(
+          'div',
+          { class: 'floor-chips' },
+          ...floors
+            .slice()
+            .sort((a, b) => a.level - b.level)
+            .map((f) =>
+              h(
+                'span',
+                { class: 'floor-chip' },
+                `${f.level}階 ${f.rooms.filter((r) => r.type !== 'void').length}室`,
+                h('button', { class: 'chip-x', type: 'button', title: `${f.level}階を消す（読み取りで余分にできた階のとき）`, onclick: () => askRemoveFloor(f.level) }, '×'),
+              ),
+            ),
+          h('span', { class: 'hint keep', style: 'font-size:12.5px' }, floors.length >= 3 ? '3 階建てでなければ、余分な階は × で消せます' : '余分な階は × で消せます'),
+        )
+      : undefined;
   rows.push({
     ok: floors.length > 0 && thin.length === 0,
     label: '階',
-    detail: !floors.length ? '階が読み取れていません' : thin.length ? `${thin.map((f) => `${f.level}階`).join('・')}の部屋がほとんど読めていません（縮尺・壁線の太さを確認）` : floors.map((f) => `${f.level}階 ${f.rooms.filter((r) => r.type !== 'void').length}室`).join('　'),
+    detail: !floors.length ? '階が読み取れていません' : thin.length ? `${thin.map((f) => `${f.level}階`).join('・')}の部屋がほとんど読めていません（縮尺・壁線の太さを確認。余分な階なら消してください）` : floors.map((f) => `${f.level}階 ${f.rooms.filter((r) => r.type !== 'void').length}室`).join('　'),
     action: thin.length ? { label: '方眼で確認', fn: () => openLevel(thin[0].level) } : undefined,
+    action2: thin.length && floors.length >= 2 ? { label: `${thin[0].level}階を消す`, fn: () => askRemoveFloor(thin[0].level) } : undefined,
+    extra: floorChips,
   });
   // 玄関
   const entHit = floors.map((f) => ({ f, e: entranceDoorOf(f) })).find((x) => x.e);
@@ -1374,10 +1495,11 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
     ...rows.map((r) =>
       h(
         'div',
-        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}${r.detail.length > 48 || r.action || r.action2 ? ' long' : ''}` },
+        { class: `check-row ${r.ok === false ? 'ng' : r.ok === null ? 'info' : 'ok'}${r.detail.length > 48 || r.action || r.action2 || r.extra ? ' long' : ''}` },
         h('span', { class: 'ic' }, r.ok === false ? '⚠' : r.ok === null ? 'ℹ' : '✓'),
         h('span', { class: 'lb' }, r.label),
         h('span', { class: 'dt' }, r.detail),
+        r.extra ? h('div', { class: 'check-extra' }, r.extra) : null,
         r.action || r.action2
           ? h('div', { class: 'check-actions' }, r.action ? h('button', { class: 'btn sm', onclick: r.action.fn }, r.action.label) : null, r.action2 ? h('button', { class: 'btn sm ghost', onclick: r.action2.fn }, r.action2.label) : null)
           : null,

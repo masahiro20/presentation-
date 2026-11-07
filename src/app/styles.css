@@ -552,6 +552,15 @@ body.presenting .main { grid-template-columns: 1fr; }
 .check-row.long .lb { grid-area: lb; font-weight: 500; }
 .check-row.long .dt { grid-area: dt; font-size: 13.5px; line-height: 1.65; }
 .check-row.long .check-actions { grid-area: ac; flex-direction: row; justify-content: flex-start; flex-wrap: wrap; margin-top: 2px; }
+.check-row.long { grid-template-areas: 'ic lb' 'dt dt' 'ex ex' 'ac ac'; }
+.check-row .check-extra { grid-area: ex; min-width: 0; }
+/* 階の構成（× で余分な階を消す） */
+.floor-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+.floor-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px 2px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; background: #fff; }
+.chip-x { border: 0; background: transparent; color: var(--ink3); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 3px; border-radius: 50%; }
+.chip-x:hover { color: #fff; background: #b23a2f; }
+/* 3D のドラッグ中に出す寸法（幅 2.10 m・15° など） */
+.drag-label { position: absolute; z-index: 30; pointer-events: none; padding: 3px 8px; border-radius: 4px; background: rgba(20, 20, 20, 0.85); color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .check-row .btn.sm { white-space: nowrap; padding: 3px 8px; font-size: 14px; }
 .edit-callout { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfaf7; }
 .edit-callout b { font-size: 15px; }

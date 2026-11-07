@@ -3,7 +3,7 @@
  */
 import { autoOverhangPosts } from '../core/posts';
 import { repairEnvelope, mergeStackedWalls } from './envelope';
-import { readElevationHeights } from './elevationText';
+import { readElevationHeights, applyElevationHeights, type ElevationHeights } from './elevationText';
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
@@ -263,17 +263,9 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   const elev = readElevationHeights(pages);
   let heights: BuildingModel['heights'];
   if (elev) {
-    const fl = [...res.floors].sort((a, b) => a.level - b.level);
-    if (fl.length && elev.floor1) fl[0].elevation = elev.floor1;
-    for (let i = 0; i < fl.length; i++) {
-      const h = elev.storyHeights[i];
-      if (h) fl[i].height = h;
-      // 階高が標準（2,900）より高い階は天井も高い（吉田大仁様邸: 1 階 階高 3,200 → 天井 2,700。高天井の数量・3D の天井に効く。部屋ごとの注記が優先）
-      if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
-      if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
-    }
+    const summary = applyElevationHeights(res.floors, elev);
     heights = { source: 'elevation', ...elev };
-    warnings.push(`立面図の寸法から高さを読みました（${[elev.floor1 ? `1 階床 GL+${elev.floor1}` : '', elev.storyHeights.length ? `階高 ${elev.storyHeights.join(' / ')}` : '', elev.maxHeight ? `最高高さ ${elev.maxHeight}` : '', elev.roofPitch != null ? `屋根 ${elev.roofPitch} 寸` : ''].filter(Boolean).join('・')}）`);
+    warnings.push(`立面図の寸法から高さを読みました（${summary}）`);
   }
 
   const { thicknesses, areaTable, ...model } = res;
@@ -292,6 +284,15 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       ...(Object.keys(areaTable).length ? { areaTable } : {}),
     },
   };
+}
+
+/**
+ * 立面図だけの PDF（平面図と別ファイルで保存されているとき）から高さを読む。立面図のページが無ければ null。
+ * 文字だけ読めばよいので、壁の検出はしない（速い）
+ */
+export async function readElevationPdf(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<ElevationHeights | null> {
+  const pages = await loadPdfVectors(data, pdfjs, opts);
+  return readElevationHeights(pages);
 }
 
 export async function parseFloorPlanPdf(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<BuildingModel> {

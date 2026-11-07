@@ -373,10 +373,46 @@ export interface NeighborEdits {
   roofs: Map<string, RoofSpec>;
   /** 高さを現地で測って確定した建物 */
   confirmed: Set<string>;
+  /** 利用者が「戻す」で戻した建物。新築の家に重なっていても、取り直しのたびに自動で隠し直さない */
+  keepVisible: Set<string>;
 }
 
 export function emptyEdits(): NeighborEdits {
-  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map(), roofs: new Map(), confirmed: new Set() };
+  return { hidden: new Set(), hideInfo: new Map(), heights: new Map(), footprints: new Map(), roofs: new Map(), confirmed: new Set(), keepVisible: new Set() };
+}
+
+/** 自動で隠した建物の理由の補足（一覧に「敷地内の既存建物（新築の家に重なるため自動）」と出る） */
+export const AUTO_HIDE_NOTE = '新築の家に重なるため自動';
+
+/**
+ * 新築の家に重なる建物（建て替え前の既存建物など）を「敷地内の既存建物」として計算から除外し、「隠した建物」の一覧に入れる。
+ * 一覧ごと消していた頃は、北側の隣家に家の外形が少し食い込むだけで隣家が消え、戻す手段が無かった。
+ * 隠した建物なので「戻す」で戻せ、「表示だけにする」で重なっていても 3D に出せる。
+ * 利用者が一度戻した建物（edits.keepVisible）と、すでに記録のある建物はそのまま。戻り値: 今回新たに隠した棟数
+ */
+export function autoHideOverlapping(list: NeighborBuilding[], overlaps: (b: NeighborBuilding) => boolean, edits: NeighborEdits, keyOf: (b: NeighborBuilding) => string, footprintOf: (b: NeighborBuilding) => EN[] | null): number {
+  let n = 0;
+  for (const b of list) {
+    if (b.source === 'manual' || b.planned || !overlaps(b)) continue;
+    const k = keyOf(b);
+    if (edits.keepVisible.has(k) || edits.hidden.has(k)) continue;
+    b.hidden = true;
+    edits.hidden.add(k);
+    edits.hideInfo.set(k, { mode: 'exclude', reason: 'onSite', note: AUTO_HIDE_NOTE });
+    const fp = footprintOf(b);
+    if (fp) edits.footprints.set(k, fp);
+    n++;
+  }
+  return n;
+}
+
+/** 取得後の注記: 新築の家に重なる建物を自動で除外した */
+export const autoHideNote = (n: number) =>
+  `新築の家に重なる建物 ${n} 棟を「敷地内の既存建物」として計算から除外しました（建て替え前の家など）。隣の家なら「隠した建物」から戻すか、「表示だけにする」で重なったまま 3D に出せます。`;
+
+/** 自動で隠した建物か（理由の補足で見分ける） */
+export function isAutoHidden(edits: NeighborEdits, key: string): boolean {
+  return edits.hidden.has(key) && edits.hideInfo.get(key)?.note === AUTO_HIDE_NOTE;
 }
 
 /** キーの隠す記録（隠していなければ null。隠し方・理由の無い古い記録は 計算から除外・その他） */
@@ -948,6 +984,7 @@ export class SunContext {
     this.edits.roofs.delete(key);
     this.edits.confirmed.delete(key);
     this.edits.footprints.delete(key);
+    this.edits.keepVisible.delete(key);
     this.highlightKeys.delete(key);
     if (this.previewKey === key) this.previewKey = null;
   }
@@ -969,6 +1006,7 @@ export class SunContext {
         b.hidden = true;
         this.edits.hidden.add(k);
         this.edits.hideInfo.set(k, { ...info });
+        this.edits.keepVisible.delete(k);
         const fp = this.footprintOf(b);
         if (fp) this.edits.footprints.set(k, fp);
       } else {
@@ -978,6 +1016,8 @@ export class SunContext {
     }
     if (!hidden)
       for (const k of ks) {
+        // 戻した建物は、取り直しても自動で隠し直さない（新築の家に重なる隣家を戻したとき）
+        if (this.edits.hidden.has(k)) this.edits.keepVisible.add(k);
         this.edits.hidden.delete(k);
         this.edits.hideInfo.delete(k);
         if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
@@ -1002,7 +1042,10 @@ export class SunContext {
   /** 隠した建物をすべて戻す（今の一覧に無い建物の記録も消す）。戻り値: 戻した建物の数（今の一覧の中） */
   restoreAll(): number {
     const n = this.hiddenList().length;
-    for (const k of this.edits.hidden) if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
+    for (const k of this.edits.hidden) {
+      if (!this.edits.heights.has(k)) this.edits.footprints.delete(k);
+      this.edits.keepVisible.add(k);
+    }
     this.edits.hidden.clear();
     this.edits.hideInfo.clear();
     for (const b of this.state.neighbors) b.hidden = false;
@@ -1364,7 +1407,8 @@ export class SunContext {
       return x1 > bb.min.x - 0.8 && x0 < bb.max.x + 0.8 && z1 > bb.min.z - 0.8 && z0 < bb.max.z + 0.8;
     };
     const manual = this.state.neighbors.filter((b) => b.source === 'manual');
-    const fresh = list.filter((b) => !overlapsHouse(b));
+    // 重なる建物も一覧に残す（下で「敷地内の既存建物」として計算から除外し、隠した建物に入れる。戻せる）
+    const fresh = list;
     // PLATEAU は gml_id（ピン移動・取り直しで不変）、国土地理院・OSM は連番
     for (const b of fresh) b.id = b.plateau?.gmlId ? `plateau:${b.plateau.gmlId}` : `${b.source}-${++this.seq}`;
     // 国土地理院・OSM の箱形の建物に推定の屋根（住宅らしい足元は寄棟、集合住宅は陸屋根）。「推定の屋根」を切ると描くときに箱に戻る
@@ -1380,15 +1424,20 @@ export class SunContext {
     this.state.neighbors = [...manual, ...fresh];
     // 隠した建物・直した高さを、取り直した一覧の同じ建物に当て直す（国土地理院で隠した建物は外形の照合で PLATEAU の同じ建物に引き継がれる）
     reapplyEdits(this.state.neighbors, (b) => this.keyOf(b), (b) => this.footprintOf(b), this.edits);
+    // 新築の家に重なる建物は「敷地内の既存建物」として計算から除外（隠した建物の一覧から戻せる・表示だけにできる）
+    const autoN = autoHideOverlapping(fresh, overlapsHouse, this.edits, (b) => this.keyOf(b), (b) => this.footprintOf(b));
+    const autoHidden = fresh.filter((b) => isAutoHidden(this.edits, this.keyOf(b)));
+    const kept = fresh.filter((b) => !autoHidden.includes(b));
     if (coveredResult) {
       // 国土地理院で補った棟数（敷地に重なる建物を除いた後）
-      const fill = fresh.filter((b) => b.source === 'gsi').length;
+      const fill = kept.filter((b) => b.source === 'gsi').length;
       if (fill) used.push('gsi');
       notes.push(...plateauCoveredNotes(coveredResult, fill));
     }
-    const result: LoadNeighborsResult = { count: fresh.length, used, notes };
+    if (autoN) notes.push(autoHideNote(autoN));
+    const result: LoadNeighborsResult = { count: kept.length, used, notes };
     // 内訳（箱形 / 屋根形状あり）は一覧に残った建物で数える（取得全棟の lodCounts とは敷地に重なる建物の分だけずれる）
-    if (plateau) result.plateau = { ...plateau, shapes: countPlateauShapes(fresh) };
+    if (plateau) result.plateau = { ...plateau, shapes: countPlateauShapes(kept) };
     this.lastLoad = result;
     this.buildNeighbors();
     return result;
@@ -1428,6 +1477,7 @@ export class SunContext {
     for (const k of [...this.edits.hideInfo.keys()]) if (!keepKeys.has(k)) this.edits.hideInfo.delete(k);
     for (const k of [...this.edits.heights.keys()]) if (!keepKeys.has(k)) this.edits.heights.delete(k);
     for (const k of [...this.edits.footprints.keys()]) if (!keepKeys.has(k)) this.edits.footprints.delete(k);
+    for (const k of [...this.edits.keepVisible]) if (!keepKeys.has(k)) this.edits.keepVisible.delete(k);
     for (const k of [...this.highlightKeys]) if (!keepKeys.has(k)) this.highlightKeys.delete(k);
     if (this.previewKey && !keepKeys.has(this.previewKey)) this.previewKey = null;
     this.buildNeighbors();

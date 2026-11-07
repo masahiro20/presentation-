@@ -258,12 +258,26 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     return [P(-w / 2, v0), P(w / 2, v0), P(w / 2, v0 + d), P(-w / 2, v0 + d)];
   };
   /** 選んだ家具の上で押したらドラッグ開始（道具を開いていて、その家具を選んでいるときだけ。それ以外はカメラ操作のまま）。先にハンドルを見る */
+  /** 点（mm）から家具の足元の外形までの距離（m。中なら 0） */
+  const itemDist = (it: FurnitureItem, p: Vec2): number => {
+    const { w, d, v0 } = furnitureDims(it);
+    const r = (it.rot * Math.PI) / 180;
+    const dx = (p.x - it.x) / 1000;
+    const dy = (p.y - it.y) / 1000;
+    const u = dx * Math.cos(r) + dy * Math.sin(r);
+    const vv = -dx * Math.sin(r) + dy * Math.cos(r);
+    return Math.max(Math.abs(u) - w / 2, v0 - vv, vv - (v0 + d), 0);
+  };
   const dragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
     if (!active || add || !sel) return false;
     if (handleDragStart(ndc)) return true;
     const f = floorAt(p.y);
     if (!f || f.level !== sel.level) return false;
-    const it = itemAt(f.level, { x: p.x * 1000, y: p.z * 1000 }, 0.08, 0.6);
+    const pt = { x: p.x * 1000, y: p.z * 1000 };
+    // 選んでいる家具を優先: 押した面の点が足元の外形から 30cm 以内なら掴む
+    // （背もたれの天端・フードなど、斜めから見ると足元の外形の外に当たる面を押しても掴める。下に敷いたラグに取られない）
+    const cur = selected();
+    const it = cur && itemDist(cur, pt) <= 0.3 ? cur : itemAt(f.level, pt, 0.08, 0.6);
     if (!it || it.id !== sel.id) return false;
     drag = { x0: it.x, y0: it.y, rot0: it.rot, p0: p.clone(), f, preview: null };
     moving = false;

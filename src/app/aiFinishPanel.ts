@@ -170,7 +170,7 @@ function reviewMany(ctx: StepCtx, items: FinishedCut[], held: FinishedCut[], fai
   const card = (x: FinishedCut) => {
     const isHeld = held.includes(x);
     const acceptBtn = isHeld
-      ? (h('button', { class: 'btn xs primary', style: 'margin-left:6px' }, 'このまま入れる') as HTMLButtonElement)
+      ? (h('button', { class: 'btn xs', style: 'margin-left:6px' }, 'このまま入れる') as HTMLButtonElement)
       : null;
     if (acceptBtn) {
       acceptBtn.onclick = () => {

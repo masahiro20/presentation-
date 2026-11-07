@@ -60,6 +60,9 @@ input, select, textarea { font: inherit; }
 .step .lbl-short { display: none; }
 @media (max-width: 1700px) { .step .lbl-long { display: none; } .step .lbl-short { display: inline; } }
 @media (max-width: 1500px) { .office { display: none; } .project-name { width: 160px; } }
+/* ノート PC（1,400 px 前後）でステップの列が右端で切れて「1 図面読込」が隠れていた → 間を詰める。さらに狭ければ番号を外す */
+@media (max-width: 1520px) { .steps { gap: 0; } .step { padding: 7px 8px; gap: 5px; } .cost-pill { margin-right: 4px; } }
+@media (max-width: 1380px) { .step .num { display: none; } .project-name { width: 130px; } }
 .proj-btns { display: flex; gap: 6px; flex: none; }
 .proj-btns .btn { white-space: nowrap; }
 .side-toggle { flex: none; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink2); display: grid; place-items: center; font-size: 14.5px; }

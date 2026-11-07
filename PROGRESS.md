@@ -22,7 +22,9 @@
 ### 点検（第 27 巡）
 - `npx tsc --noEmit`・`npx vitest run`（99 ファイル 1,189 件。`tests/roofPatch.test.ts` に多角形の屋根・自動の屋根からの除外・屋根なしの範囲、`tests/rectsOutline.test.ts` に塊の輪郭と多角形の中の点）・`npm run build` OK。
 - 吉田大仁様（`scratchpad/yoshida/audit2` の model.json を `scripts/audit/scene-check.mjs`）: 屋根の穴 1 → **0**、外壁の抜け 0。
-- 林様で `scripts/audit/sweep.mjs` と全図面点検（`scripts/audit/shoot.mjs`）を回し、見つかった物は続けて直す（下に追記）。
+- 全図面点検 `scratchpad/audit_r27`（`scripts/audit/shoot.mjs`、10 件）: 8 件 OK（社長の画像 PDF 2 件は従来どおり読めない）、外壁の抜け 0・屋根の穴 0・エラー 0（格子の内外判定を 3 × 3 にしても他の邸の屋根は変わらない）。
+- 3D の屋根の道具 `scripts/tmp/roof-add-probe.mjs`（林様）: 共通化したパネルで、屋根を足す → 切妻・高さ 2,400 → 3D でクリックして選び直す → 消す → 壁を足すへ、エラー 0。
+- `scripts/audit/sweep.mjs`（林様）: 1 回目で見つけた 2 件を直した。方眼の道具の点検は側パネルの総当たりで「図面で見る」に切り替わったままだったので「方眼で直す」に戻してから触る（スクリプト側）。屋根の道具で建物の中をクリックしても塊が選べなかったのは、2 階の屋根の下（1 階に屋根が無い所）だったため → 他の階の屋根（薄い色）をクリックしたらその階に切り替えて選ぶようにした（屋根伏せ図は全部の階が見えているので、その方が自然）。
 
 ## 2026-11-06（第 26 巡）屋根を伸ばす・庇を足す・玄関ドアの自動補完・吉田大仁様の準備
 

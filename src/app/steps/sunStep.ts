@@ -30,7 +30,7 @@ import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
 import { recordProgram } from '../../video/recorder';
 import { sunTimelapseProgram, streetProgram, type CameraProgram } from '../../video/paths';
 import { showBaseVideoDone, streetVideoPrompt } from '../roomTour';
-import { hasRelief, sunBehindHorizon, terrainMetaText, terrainStatusText } from '../../sun/terrainContext';
+import { dirName as terrainDirName, hasRelief, sunBehindHorizon, terrainMetaText, terrainStatusText } from '../../sun/terrainContext';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -1332,6 +1332,33 @@ export const sunStep: Step = {
         return;
       }
       terrainNote.appendChild(h('div', { class: 'src' }, terrainStatusText(t.stats) + (sc.state.showTerrain ? '' : '（今は切っています: 平らな地面として計算）')));
+      if (hasRelief(t.stats) && sc.state.showTerrain) {
+        // 高台を見る: 家を手前に、いちばん高い所（maxAz の方向）を奥に見る視点へ。戻るは「鳥瞰」などの構図で
+        const s = t.stats;
+        const toward = s.maxAz;
+        terrainNote.appendChild(
+          h(
+            'div',
+            { class: 'btn-row', style: 'margin:4px 0' },
+            h(
+              'button',
+              { class: 'btn sm', title: '家を手前に、高台を奥に見る視点に飛びます（丘の上の建物と影の向きが分かります）', onclick: () => {
+                const a = (toward * Math.PI) / 180;
+                const dist = Math.max(60, Math.min(160, s.maxDist * 0.45));
+                const back = sc.toWorld(-Math.sin(a) * dist, -Math.cos(a) * dist, Math.max(30, s.relMax * 0.9 + 25));
+                const tgt = sc.toWorld(Math.sin(a) * s.maxDist * 0.45, Math.cos(a) * s.maxDist * 0.45, Math.max(2, s.relMax * 0.35));
+                v.flyTo({ pos: back, target: tgt, fov: 50 });
+              } },
+              `${terrainDirName(toward)}の高台を見る`,
+            ),
+            h('button', { class: 'btn sm', title: '高台の上から敷地を見下ろす視点（高台の建物から家がどう見えるか）', onclick: () => {
+              const a = (toward * Math.PI) / 180;
+              const d = Math.max(80, s.maxDist * 0.8);
+              v.flyTo({ pos: sc.toWorld(Math.sin(a) * d, Math.cos(a) * d, s.relMax + 25), target: sc.toWorld(0, 0, 3), fov: 45 });
+            } }, '高台から敷地を見る'),
+          ),
+        );
+      }
       if (t.horizon && sc.state.showTerrain) {
         const peak = Math.max(...Array.from(t.horizon.elevDeg));
         if (peak >= 2) terrainNote.appendChild(h('div', null, `遠くの山並み（±${t.horizon.radiusKm} km）も見ています: 地平線の仰角は最大 ${peak.toFixed(1)}°。太陽がその下にある時刻は「山の陰」として日当たりから除きます。`));

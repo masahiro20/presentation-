@@ -4,7 +4,10 @@ import { state, emit, type ProjectState } from '../state';
 import { sightlineCheck, type NeighborWorld } from '../../core/sightlines';
 import type { Step, StepCtx } from '../app';
 import { SunContext, isAbortError, keysInRect, ringArea, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, type NeighborBuilding } from '../../sun/geo';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, DEFAULT_SITE, type NeighborBuilding } from '../../sun/geo';
+import { siteLevelsPanel } from '../siteLevelsPanel';
+import { estimateSiteLevelsFromDem } from '../siteLevelsDem';
+import { hasLevels, levelsSummary } from '../../core/siteLevels';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
 import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
@@ -118,9 +121,9 @@ export async function reloadSurroundings(deps: SurroundingsDeps, mode: 'adjust' 
 
 /** 周辺建物の取得元のボタン名 */
 export const NEIGHBOR_SOURCE_BUTTON: Readonly<Record<NeighborSourceChoice, string>> = { plateau: '周辺建物（PLATEAU）', gsi: '周辺建物（国土地理院）', osm: '周辺建物（OSM）' };
-/** 周辺環境の説明（高さ・形状の根拠。地盤の高低差は表現しない） */
+/** 周辺環境の説明（高さ・形状の根拠。地盤の高低差は「敷地と道路の高低差」の設定で辺ごとに） */
 export const NEIGHBORS_HINT =
-  '周辺建物は PLATEAU（国土交通省 3D都市モデル）がある地域では実測の高さ・形状（LOD1 は箱形、LOD2 は屋根形状）、無い地域は国土地理院データの建物の種類から推定（普通建物 約7m）しています。地盤の高低差は表現しません。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。';
+  '周辺建物は PLATEAU（国土交通省 3D都市モデル）がある地域では実測の高さ・形状（LOD1 は箱形、LOD2 は屋根形状）、無い地域は国土地理院データの建物の種類から推定（普通建物 約7m）しています。地盤の高低差は「敷地と道路の高低差」で入れた辺ごとの高さに足元を置きます（入れなければ平ら）。実際の高さが分かる場合は、建物をクリックして直すか手動で追加してください（直した高さ・隠した建物は、周辺建物を取り直しても残ります）。';
 
 /**
  * 取得後の案内: 「周辺の建物を 38 棟取得しました（PLATEAU 2025年度・世田谷区・屋根形状あり 2 棟）」
@@ -2728,6 +2731,47 @@ export const sunStep: Step = {
     renderNbNotes();
     // 想定の家の一覧・区画の破線（ステップを出入りしても SunContext と viewer に残っている）
     refreshPlanned();
+    /** 敷地と道路・隣地の高低差: 入力（図面読込の「接道・敷地」と同じ）と、建設地が決まっていれば国土地理院の標高からの推定 */
+    const levelsFold = () => {
+      const m = state.model!;
+      const afterLevels = () => {
+        emit('model');
+        v.rebuildLandscape(state.model!);
+        sc.buildNeighbors();
+        invalidateResults();
+        apply(true);
+      };
+      const siteKnown = state.site.address !== DEFAULT_SITE.address;
+      return fold(
+        '敷地と道路の高低差',
+        { open: hasLevels(m.siteLevels), cls: 'sun-main', meta: levelsSummary(m.siteLevels, m.northAngleDeg).length ? 'あり' : '' },
+        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '道路や隣地と敷地の地面の高さが違うとき。パースは擁壁・玄関の階段・道路の高さの駐車場に、日照は周辺建物の足元の高さ（高い隣地の家は影が長い）に反映します。'),
+        siteLevelsPanel(m, {
+          onChange: afterLevels,
+          estimateHint: siteKnown ? undefined : '住所を決める（上の建設地）と、国土地理院の標高データから高低差を推定できます。',
+          estimate: siteKnown
+            ? async () => {
+                const model = state.model!;
+                const lv = await estimateSiteLevelsFromDem(model, (p) => sc.fromWorld(p), siteLatLon(state.site));
+                if (!lv) {
+                  toast('標高データから高低差を決められませんでした（建物の外形が読めていません）', 'error', 6000);
+                  return false;
+                }
+                const next: typeof model.siteLevels = { ...(model.siteLevels ?? {}), source: 'dem', note: lv.note };
+                if (lv.roadMm) next.roadMm = lv.roadMm;
+                else delete next.roadMm;
+                if (lv.neighborMm) next.neighborMm = lv.neighborMm;
+                else delete next.neighborMm;
+                model.siteLevels = next;
+                afterLevels();
+                const lines = levelsSummary(model.siteLevels, model.northAngleDeg);
+                toast(lines.length ? `標高から推定しました: ${lines.join('、')}` : '標高データでは、敷地のまわりに目立つ高低差はありません（誤差の範囲）', 'ok', 8000);
+                return true;
+              }
+            : undefined,
+        }),
+      );
+    };
     side.append(
       fold(
         '周辺環境',
@@ -2795,6 +2839,7 @@ export const sunStep: Step = {
           h('button', { class: 'btn sm ghost', onclick: () => { sc.clearNeighbors(); invalidateResults(); apply(true); } }, '周辺建物をすべて消す'),
         ),
       ),
+      levelsFold(),
     );
     // 3DS のパネルは解析の後に畳んで置く（使う人だけ開く）
     extPanel.section.querySelector('h4')?.remove();

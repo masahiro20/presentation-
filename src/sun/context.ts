@@ -18,6 +18,7 @@ import { fitBuildings, type CloudFitResult } from './pointcloud/fit';
 import type { SiteCloud } from './pointcloud/place';
 import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
 import { estimateBoxRoof } from '../sunstudy/boxRoof';
+import { hasLevels, levelAtSide, roadSideOf, sideOfOutward } from '../core/siteLevels';
 
 /** 想定の家（planned 付きの周辺建物） */
 export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
@@ -1194,6 +1195,22 @@ export class SunContext {
     return { e: dx * Math.cos(a) + dz * Math.sin(a), n: dx * Math.sin(a) - dz * Math.cos(a) };
   }
 
+  /**
+   * 周辺建物の足元の高さ (m): 敷地の高低差の設定（model.siteLevels）の、その建物がある辺（建物の中心から見た向き）の
+   * 路面（道路側）または隣地の地盤。設定が無ければ 0
+   */
+  groundLevelOf(b: Pick<NeighborBuilding, 'ring'>): number {
+    const st = this.viewer.state;
+    const lv = st?.model.siteLevels;
+    if (!st || !hasLevels(lv) || b.ring.length < 3) return 0;
+    const c = ringCentroid(b.ring);
+    const w = this.toWorld(c.e, c.n);
+    const bc = st.meta.bbox.getCenter(new THREE.Vector3());
+    const side = sideOfOutward(w.x - bc.x, w.z - bc.z);
+    const road = roadSideOf(st.model) ?? (st.meta.entrance ? sideOfOutward(st.meta.entrance.outward.x, st.meta.entrance.outward.z) : null);
+    return levelAtSide(lv, side, side === road);
+  }
+
   /** 画面上の点が航空写真のどこか（航空写真が無ければ null） */
   pickAerial(ndc: THREE.Vector2): THREE.Vector3 | null {
     const rc = new THREE.Raycaster();
@@ -1456,14 +1473,16 @@ export class SunContext {
       if (!this.isActive(b)) continue;
       const key = this.keyOf(b);
       const planned = b.planned ? this.currentPlanned(b as PlannedBuilding) : null;
-      // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く。地面は y=0（地盤の高低差は表現しない。計画建物・他の建物と同じ平面）
+      // 足元の高さ: 敷地の高低差の設定（その建物がある辺の路面・隣地の地盤）。無ければ y=0（計画建物と同じ平面）
+      const baseY = this.groundLevelOf(b);
+      // PLATEAU の実形状（mesh）: 押し出さずにそのまま置く
       // 屋根の仕様（手入力・点群の実測）がある建物は、国土地理院・OSM の建物でも仕様どおりに作る
       const shapedPa = !!b.mesh && !!b.plateau;
       const boxSpec = !planned && !shapedPa ? (this.edits.roofs.get(key) ?? this.estimatedRoofOf(b)) : null;
       const specOnly = boxSpec ? specMesh(b.ring, boxSpec) : null;
       const shaped = !planned && (shapedPa || !!specOnly);
       let geo: THREE.BufferGeometry;
-      if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY: 0 });
+      if (planned) geo = buildPlannedHouseGeometry(planned, { toWorld: (e, n, y) => this.toWorld(e, n, y), baseY });
       else if (shaped) {
         const pa = b.plateau && b.mesh ? b.plateau : null;
         const a = pa ? toLocal(pa.anchor.lat, pa.anchor.lon, origin.lat, origin.lon) : { e: 0, n: 0 };
@@ -1476,7 +1495,7 @@ export class SunContext {
         // 航空写真があれば屋根に平面投影の UV（勾配屋根にも貼れる）。写真の範囲は ring と同じピン基準の東・北
         const roofUV = ai ? { west: ai.west, east: ai.east, south: ai.south, north: ai.north, toEN: (x: number, z: number) => ({ e: a.e + x, n: a.n - z }) } : null;
         geo = buildPlateauGeometry(specM ?? b.mesh!, { heightScale, roofUV });
-        geo.applyMatrix4(new THREE.Matrix4().makeBasis(eastV, upV, southV).setPosition(this.toWorld(a.e, a.n, 0)));
+        geo.applyMatrix4(new THREE.Matrix4().makeBasis(eastV, upV, southV).setPosition(this.toWorld(a.e, a.n, baseY)));
       } else {
         const pts = b.ring.map((p) => this.toWorld(p.e, p.n));
         // ワールド XZ で Shape を作り、上方向へ押し出す（中庭などの穴があれば抜く）
@@ -1487,6 +1506,7 @@ export class SunContext {
         }
         geo = new THREE.ExtrudeGeometry(shape, { depth: this.heightOf(b), bevelEnabled: false });
         geo.rotateX(-Math.PI / 2);
+        if (baseY) geo.translate(0, baseY, 0);
       }
       if (b.hidden) {
         const mode = this.hideModeOf(b) ?? LEGACY_HIDE_RECORD.mode;

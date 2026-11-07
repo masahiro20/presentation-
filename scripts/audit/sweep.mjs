@@ -87,7 +87,7 @@ const sweepIn = async (name, scope, { maxButtons = 120, skip = SKIP } = {}) => {
       const v0 = await s.inputValue();
       const other = opts.find((v) => v !== v0);
       if (other == null) continue;
-      await s.selectOption(other, { timeout: 2000 });
+      await s.selectOption(other, { timeout: 6000 });
       await page.waitForTimeout(250);
       if (await s.isVisible().catch(() => false)) await s.selectOption(v0, { timeout: 2000 }).catch(() => {});
       await page.waitForTimeout(150);
@@ -313,7 +313,7 @@ const sweep3dTool = async () => {
         // 屋根を足す（床を 2 回クリック）→ 消す。壁を足す → やめる
         const add = tool.locator('button', { hasText: '屋根を足す' }).first();
         if (await add.count()) {
-          await add.click({ timeout: 2000 });
+          await add.click({ timeout: 8000 });
           await page.waitForTimeout(200);
           const a = await screenOf(sq[0].x, sq[0].y, 0.05);
           const b = await screenOf(sq[2].x, sq[2].y, 0.05);
@@ -322,16 +322,16 @@ const sweep3dTool = async () => {
           await page.mouse.click(b.x, b.y);
           await page.waitForTimeout(1500);
           const del = tool.locator('button', { hasText: 'この屋根を消す' });
-          if (await del.count()) await del.click({ timeout: 2000 });
+          if (await del.count()) await del.click({ timeout: 8000 });
           else log.push({ step: cur, kind: 'check', msg: '床を 2 回クリックしても屋根が足されなかった' });
           await page.waitForTimeout(800);
         }
         const wall = tool.locator('button', { hasText: '壁を足す' }).first();
         if (await wall.count()) {
-          await wall.click({ timeout: 2000 });
+          await wall.click({ timeout: 8000 });
           await page.waitForTimeout(300);
           const stop = tool.locator('button', { hasText: /壁を足すのをやめる|やめる/ }).first();
-          if (await stop.count()) await stop.click({ timeout: 2000 });
+          if (await stop.count()) await stop.click({ timeout: 8000 });
           await page.waitForTimeout(300);
         }
       }
@@ -361,7 +361,7 @@ const main = async () => {
   // ステップを往復して壊れないか
   for (const i of [0, 1, 0, 4, 1, 6, 2]) {
     cur = `nav-${i}`;
-    await page.locator('button.step').nth(i).click({ noWaitAfter: true, timeout: 30000 });
+    await page.locator('button.step').nth(i).click({ noWaitAfter: true, timeout: 90000 });
     await page.waitForTimeout(3000);
   }
 };

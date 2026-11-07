@@ -655,9 +655,11 @@ export class Viewer {
 
   /** 外構（敷地・道路・植栽・隣家・手で置いた物）を作って landscape のグループに入れる */
   private addLandscape(model: BuildingModel, meta: BuildingMeta, ext: ExteriorStyle, resolve: (k: string) => THREE.Material) {
-    const land = buildLandscape(meta, ext, model.site, planExteriorOf(model));
+    const land = buildLandscape(meta, ext, model.site, planExteriorOf(model), model.siteLevels);
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
+    // 擁壁・階段（敷地の高低差）は影を落とす
+    if (!land.walls.isEmpty()) this.groups.landscape.add(land.walls.build(resolve, { name: 'walls', castShadow: true }));
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
     this.town = [];
     for (const t of land.town) {

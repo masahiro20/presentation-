@@ -25,6 +25,8 @@ import { SYMBOL_DICT_SEED } from '../../parser/symbolDictSeed';
 import { ACCEPT_EXT } from '../../sunstudy/importModel';
 import { createExternal, installExternal, loadExternal, setExternalMounted } from '../externalBuilding';
 import { applyHeightsFromExternal } from '../externalHeights';
+import { siteLevelsPanel } from '../siteLevelsPanel';
+import { levelsSummary } from '../../core/siteLevels';
 
 /** 図面の種類（読み取りのパターン）: 迷ったら「自動」。種類を選ぶと縮尺・モジュール・画像解析・傾き補正の初期値が決まる */
 export type DrawingKind = 'auto' | 'scan' | 'detail' | 'architrend' | 'meter';
@@ -886,12 +888,21 @@ function roadSection(model: NonNullable<typeof state.model>, redraw: () => void)
       ),
       siteBox,
       h('p', { class: 'hint' }, '道路側に駐車スペース・アプローチを配置し、「道路側から見た外観パース」を作成します。'),
+      // 敷地と道路・隣地の高低差（パースの擁壁・階段、日照の隣家の足元に効く）
+      siteLevelsPanel(model, {
+        onChange: () => {
+          emit('model');
+          redraw();
+        },
+        estimateHint: '建設地（日照のステップで住所を決める）が分かると、国土地理院の標高から高低差を推定できます（日照のステップの「敷地と道路の高低差」）。',
+      }),
     ];
     box.append(...parts.filter((x): x is HTMLElement => !!x));
   };
   render();
   const roads = model.site?.roads ?? [];
-  return fold('接道・敷地', { meta: roads.length ? `道路 ${roads.length} 面` : '' }, box);
+  const lvLines = levelsSummary(model.siteLevels, model.northAngleDeg);
+  return fold('接道・敷地', { meta: [roads.length ? `道路 ${roads.length} 面` : '', lvLines.length ? `高低差あり` : ''].filter(Boolean).join('・') }, box);
 }
 
 /** 図面読込の結果画面で開いている方眼の修正（ステップを離れるときに外す） */

@@ -240,6 +240,33 @@ export interface SiteEdge {
   kind: 'road' | 'neighbor';
 }
 
+/** 道路・隣地との段差の処理 */
+export type RetainingKind = 'rc' | 'stone' | 'slope';
+export const RETAINING_LABEL: Record<RetainingKind, string> = { rc: 'RC 擁壁', stone: '石積み（間知ブロック）', slope: '法面（芝）' };
+/** 玄関アプローチの段差の処理 */
+export type ApproachKind = 'steps' | 'ramp';
+export const APPROACH_LABEL: Record<ApproachKind, string> = { steps: '階段', ramp: 'スロープ' };
+/**
+ * 敷地の高低差（設計 GL ＝ 0 とした mm。＋ は敷地より高い、− は低い）。
+ * パース（道路・隣家の地盤の高さ、擁壁、玄関の階段、道路レベルの駐車場）と日照（周辺建物の足元）に反映する
+ */
+export interface SiteLevels {
+  /** 前面道路の路面（−800 = 道路が 80 cm 低い＝敷地が高い） */
+  roadMm?: number;
+  /** 隣地の地盤（図面の上・右・下・左の辺ごと。無い辺は敷地と同じ） */
+  neighborMm?: Partial<Record<PlanSide, number>>;
+  /** 段差の処理。省略 = RC 擁壁 */
+  retaining?: RetainingKind;
+  /** 玄関アプローチ。省略 = 階段 */
+  approach?: ApproachKind;
+  /** 駐車スペースを道路の高さに下げる（敷地が道路より高いとき。車は道路からそのまま入れる） */
+  parkingAtRoad?: boolean;
+  /** 出典: 手入力／国土地理院の標高タイルからの推定 */
+  source?: 'manual' | 'dem';
+  /** 出典のメモ（推定に使ったデータ・精度） */
+  note?: string;
+}
+
 export interface SiteData {
   roads: RoadInfo[];
   /** 図面の「道路境界線」「隣地境界線」の文字が付いた線（斜めの境界も含む） */
@@ -443,6 +470,8 @@ export interface BuildingModel {
   roofPatches?: RoofPatch[];
   /** 手で足した庇（3D の「窓・戸」の道具で） */
   canopies?: Canopy[];
+  /** 敷地の高低差（道路・隣地との差、擁壁・階段・道路レベルの駐車場）。無ければ平ら */
+  siteLevels?: SiteLevels;
   /** 木造のモジュール（尺 910／メーター 1000）。読み取った壁芯を格子へ寄せた結果 */
   module?: ModuleInfo;
   /** 手で置き直した家具（階ごと）。無い階は自動配置 */

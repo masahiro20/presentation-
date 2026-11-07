@@ -181,6 +181,9 @@ export class MaterialRegistry {
     set('l.porch', M(L.approach));
     // 塀のブロックはグレーに塗る（施工写真）。木ルーバーは黄味を抑えた落ち着いた茶（ウリンや塗装のアコヤ）
     set('l.block', M({ pattern: 'plaster', color: '#a9a6a0', color2: '#9e9b95', roughness: 0.92, normalStrength: 0.2 }));
+    // 高低差の処理: RC 擁壁（打放しの明るいグレー）、石積み（間知ブロックの暗い灰褐色）
+    set('l.retain', M({ pattern: 'plaster', color: '#b6b3ab', color2: '#a7a49c', roughness: 0.9, normalStrength: 0.25 }));
+    set('l.stone', M({ pattern: 'plaster', color: '#8d877c', color2: '#7a756b', roughness: 0.95, normalStrength: 0.45, tile: 0.6 }));
     set('l.fenceWood', M({ pattern: 'wood', color: '#7a6350', color2: '#64503f', roughness: 0.75 }));
     set('l.trunk', color('#5a4636', 0.9));
     set('l.leaf', color('#4d7a33', 0.75));

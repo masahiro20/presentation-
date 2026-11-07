@@ -7,8 +7,10 @@ import { MeshBuilder, V } from './meshBuilder';
 import type { BuildingMeta } from './building';
 import type { ExteriorStyle } from '../styles/presets';
 import { mulberry32 } from '../styles/noise';
-import type { BuildingModel, ExteriorItem, ExteriorKind, PlanSide, RoadInfo, SiteData } from '../core/types';
+import type { BuildingModel, ExteriorItem, ExteriorKind, PlanSide, RoadInfo, SiteData, SiteLevels } from '../core/types';
 import { buildExteriorObject, exteriorFootprint } from './exteriorItems';
+import { PLAN_SIDES, levelAtSide, sideOfOutward, stepCount } from '../core/siteLevels';
+import { subtractIntervals } from '../core/geometry';
 
 export interface SiteInfo {
   /** 敷地の範囲（ワールド） */
@@ -71,8 +73,13 @@ export function planExteriorOf(model: BuildingModel): PlanExterior | undefined {
   };
 }
 
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior): { mb: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
+/**
+ * 外構を作る。levels（敷地の高低差）があれば、道路・縁石・隣家をその高さに、境界に擁壁（または法面）、
+ * 玄関アプローチに階段（またはスロープ）、駐車場を道路の高さに下げる。擁壁・階段は walls（影を落とす）に入れる
+ */
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior, levels?: SiteLevels): { mb: MeshBuilder; walls: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
   const mb = new MeshBuilder();
+  const walls = new MeshBuilder();
   const trees = new MeshBuilder();
   const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [], items: [] };
   const b = meta.bbox;
@@ -82,6 +89,13 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   let road = pr ? SIDE_WORLD[pr.side].clone() : ent ? ent.outward.clone() : V(0, 0, 1);
   if (Math.abs(road.x) > Math.abs(road.z)) road = V(Math.sign(road.x), 0, 0);
   else road = V(0, 0, Math.sign(road.z) || 1);
+  // 敷地の高低差（設計 GL = 0）。道路側の辺は路面、ほかの辺は隣地の地盤の高さ (m)
+  const roadSide = sideOfOutward(road.x, road.z);
+  const roadY = levelAtSide(levels, roadSide, true);
+  const nbY = (s: PlanSide) => levelAtSide(levels, s, s === roadSide);
+  const retain = levels?.retaining ?? 'rc';
+  const wallKey = retain === 'stone' ? 'l.stone' : 'l.retain';
+  const lowest = Math.min(0, roadY, ...PLAN_SIDES.map(nbY));
   const side = 1.6;
   const back = 2.2;
   const min = new THREE.Vector2(b.min.x - side, b.min.z - side);
@@ -99,19 +113,28 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   min.y = clampOut(b.min.z, bd.top, -1, road.z < 0 ? front : road.z > 0 ? back : side);
   max.y = clampOut(b.max.z, bd.bottom, 1, road.z > 0 ? front : road.z < 0 ? back : side);
 
-  // 敷地（芝・砂利など）: 少し高くして周囲の地面と区別
+  // 敷地（芝・砂利など）: 少し高くして周囲の地面と区別。道路の高さに下げた駐車場は穴にする（駐車場を決めた後に作る）
   const gy = 0.0;
   // 図面から敷地の形が読めた場合はその形（斜めの境界もそのまま）
   const poly = siteData?.polygon?.map((q) => V(q.x / 1000, gy, q.y / 1000));
-  if (poly && poly.length >= 3) mb.polygon('l.ground', poly, V(0, 1, 0), V(1, 0, 0), V(0, 0, 1));
-  else mb.quad('l.ground', V(min.x, gy, min.y), V(min.x, gy, max.y), V(max.x, gy, max.y), V(max.x, gy, min.y), V(1, 0, 0), V(0, 0, 1));
-  // 周辺の地面（広く）
+  const groundHoles: THREE.Vector3[][] = [];
+  // 周辺の地面（広く）: いちばん低い地盤に合わせ、道路・隣地が高い辺にはその高さの地面を重ねる
   const R = 120;
   const cx = (min.x + max.x) / 2;
   const cz = (min.y + max.y) / 2;
-  mb.quad('l.far', V(cx - R, -0.02, cz - R), V(cx - R, -0.02, cz + R), V(cx + R, -0.02, cz + R), V(cx + R, -0.02, cz - R), V(1, 0, 0), V(0, 0, 1));
+  const flat = (key: string, x0: number, x1: number, z0: number, z1: number, y: number) => mb.quad(key, V(x0, y, z0), V(x0, y, z1), V(x1, y, z1), V(x1, y, z0), V(1, 0, 0), V(0, 0, 1));
+  flat('l.far', cx - R, cx + R, cz - R, cz + R, lowest - 0.02);
+  PLAN_SIDES.forEach((s, i) => {
+    const y = nbY(s);
+    if (y <= lowest + 0.001) return;
+    const yy = y - 0.015 + i * 0.002;
+    if (s === 'right') flat('l.far', max.x, cx + R, cz - R, cz + R, yy);
+    else if (s === 'left') flat('l.far', cx - R, min.x, cz - R, cz + R, yy);
+    else if (s === 'bottom') flat('l.far', cx - R, cx + R, max.y, cz + R, yy);
+    else flat('l.far', cx - R, cx + R, cz - R, min.y, yy);
+  });
 
-  // 道路（図面の幅員。不明なら 6m）
+  // 道路（図面の幅員。不明なら 6m）。路面は roadY（敷地の高低差）
   const roadW = pr?.widthMm ? Math.max(3, Math.min(20, pr.widthMm / 1000)) : 6;
   let roadCenter: THREE.Vector3;
   const roadEdges = (siteData?.edges ?? []).filter((e) => e.kind === 'road');
@@ -119,7 +142,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     // 「道路境界線」の辺ごとに、その外側へ道路を敷く
     const sc = V((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
     let bestDot = -Infinity;
-    roadCenter = V(0, 0, 0);
+    roadCenter = V(0, roadY, 0);
     for (const e of roadEdges) {
       const A = V(e.a.x / 1000, 0, e.a.y / 1000);
       const B = V(e.b.x / 1000, 0, e.b.y / 1000);
@@ -129,28 +152,28 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       if (out.dot(mid.clone().sub(sc)) < 0) out = out.negate();
       const A2 = A.clone().addScaledVector(dir, -12);
       const B2 = B.clone().addScaledVector(dir, 12);
-      const p = [A2, B2, B2.clone().addScaledVector(out, roadW), A2.clone().addScaledVector(out, roadW)].map((q) => q.setY(0.005));
+      const p = [A2, B2, B2.clone().addScaledVector(out, roadW), A2.clone().addScaledVector(out, roadW)].map((q) => q.setY(roadY + 0.005));
       const n = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
       if (n.y < 0) mb.quad('l.road', p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
       else mb.quad('l.road', p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
-      mb.box('l.curb', mid.clone().addScaledVector(out, 0.1), dir, A.distanceTo(B) + 0.2, 0.12, 0.2);
+      mb.box('l.curb', mid.clone().addScaledVector(out, 0.1).setY(roadY), dir, A.distanceTo(B) + 0.2, 0.12, 0.2);
       const d = out.dot(road);
       if (d > bestDot) {
         bestDot = d;
-        roadCenter = mid.clone().addScaledVector(out, roadW / 2);
+        roadCenter = mid.clone().addScaledVector(out, roadW / 2).setY(roadY);
       }
     }
   } else if (road.x !== 0) {
     const x0 = road.x > 0 ? max.x + 0.2 : min.x - 0.2 - roadW;
-    mb.quad('l.road', V(x0, 0.005, cz - 60), V(x0, 0.005, cz + 60), V(x0 + roadW, 0.005, cz + 60), V(x0 + roadW, 0.005, cz - 60), V(1, 0, 0), V(0, 0, 1));
-    roadCenter = V(x0 + roadW / 2, 0, cz);
+    flat('l.road', x0, x0 + roadW, cz - 60, cz + 60, roadY + 0.005);
+    roadCenter = V(x0 + roadW / 2, roadY, cz);
     // 縁石
-    mb.aabb('l.curb', V(road.x > 0 ? max.x : min.x - 0.2, 0, cz - 60), V(road.x > 0 ? max.x + 0.2 : min.x, 0.12, cz + 60));
+    mb.aabb('l.curb', V(road.x > 0 ? max.x : min.x - 0.2, roadY, cz - 60), V(road.x > 0 ? max.x + 0.2 : min.x, roadY + 0.12, cz + 60));
   } else {
     const z0 = road.z > 0 ? max.y + 0.2 : min.y - 0.2 - roadW;
-    mb.quad('l.road', V(cx - 60, 0.005, z0), V(cx - 60, 0.005, z0 + roadW), V(cx + 60, 0.005, z0 + roadW), V(cx + 60, 0.005, z0), V(1, 0, 0), V(0, 0, 1));
-    roadCenter = V(cx, 0, z0 + roadW / 2);
-    mb.aabb('l.curb', V(cx - 60, 0, road.z > 0 ? max.y : min.y - 0.2), V(cx + 60, 0.12, road.z > 0 ? max.y + 0.2 : min.y));
+    flat('l.road', cx - 60, cx + 60, z0, z0 + roadW, roadY + 0.005);
+    roadCenter = V(cx, roadY, z0 + roadW / 2);
+    mb.aabb('l.curb', V(cx - 60, roadY, road.z > 0 ? max.y : min.y - 0.2), V(cx + 60, roadY + 0.12, road.z > 0 ? max.y + 0.2 : min.y));
   }
 
   // 駐車スペース（道路側の余白。玄関アプローチの横）
@@ -176,8 +199,32 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     if (n.y < 0) mb.quad(key, p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
     else mb.quad(key, p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
   };
-  rect('l.driveway', parkCenterAlong - parkW / 2, parkCenterAlong + parkW / 2, depthA - 0.3, depthB, 0.012);
-  const parking = { center: toWorld(parkCenterAlong, (depthA + depthB) / 2, 0), along };
+  // 道路との段差: 境界線（siteEdge）と建物の面（frontEdge）。境界 → 建物 の向きは −sgn
+  const sgn = road.x + road.z;
+  const dBoundary = siteEdge;
+  const dBuilding = frontEdge;
+  const span = (d0: number, d1: number): [number, number] => [Math.min(d0, d1), Math.max(d0, d1)];
+  const hasDiff = Math.abs(roadY) > 0.03;
+  const parkLow = hasDiff && roadY < 0 && !!levels?.parkingAtRoad;
+  const parkA: [number, number] = [parkCenterAlong - parkW / 2, parkCenterAlong + parkW / 2];
+  /** 四隅（along・depth）の軸平行の直方体を walls に */
+  const wallBox = (key: string, a0: number, a1: number, dd0: number, dd1: number, y0: number, y1: number) => {
+    const p0 = toWorld(a0, dd0, 0);
+    const p1 = toWorld(a1, dd1, 0);
+    walls.aabb(key, V(Math.min(p0.x, p1.x), y0, Math.min(p0.z, p1.z)), V(Math.max(p0.x, p1.x), y1, Math.max(p0.z, p1.z)));
+  };
+  if (parkLow) {
+    // 駐車場を道路の高さに: 建物の 1 m 手前までを路面の高さにし、3 方を擁壁で留める（車は道路からそのまま入る）
+    const dIn = dBuilding + sgn * 1.0;
+    const [d0, d1] = span(dIn, dBoundary);
+    rect('l.driveway', parkA[0], parkA[1], d0, d1, roadY + 0.012);
+    const [h0, h1] = span(dIn, dBoundary - sgn * 0.02);
+    groundHoles.push([toWorld(parkA[0], h0, gy), toWorld(parkA[1], h0, gy), toWorld(parkA[1], h1, gy), toWorld(parkA[0], h1, gy)]);
+    wallBox(wallKey, parkA[0] - 0.15, parkA[0], dIn, dBoundary, roadY - 0.02, 0.05);
+    wallBox(wallKey, parkA[1], parkA[1] + 0.15, dIn, dBoundary, roadY - 0.02, 0.05);
+    wallBox(wallKey, parkA[0] - 0.15, parkA[1] + 0.15, dIn, dIn - sgn * 0.15, roadY - 0.02, 0.05);
+  } else rect('l.driveway', parkA[0], parkA[1], depthA - 0.3, depthB, 0.012);
+  const parking = { center: toWorld(parkCenterAlong, (depthA + depthB) / 2, parkLow ? roadY : 0), along };
   // 図面に車が描かれていれば、その位置・向きに駐車場（舗装）を取る。車そのものは平面図にだけ描く（3D の外観パースは建物を主役に）
   if (planExt?.cars.length) {
     for (const c of planExt.cars) {
@@ -200,10 +247,70 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     }
   }
 
-  // アプローチ（玄関ポーチから道路まで）
+  // アプローチ（玄関ポーチから道路まで）。道路と段差があれば境界に階段（またはスロープ）を付け、平らな部分はその内側
+  const approachOpen: [number, number][] = [];
   if (ent) {
-    rect('l.approach', entAlong - 0.65, entAlong + 0.65, depthA + 1.2, depthB, 0.018);
+    const w0 = entAlong - 0.65;
+    const w1 = entAlong + 0.65;
+    if (!hasDiff) rect('l.approach', w0, w1, depthA + 1.2, depthB, 0.018);
+    else {
+      const sc = stepCount(roadY * 1000);
+      const ramp = levels?.approach === 'ramp';
+      const avail = Math.max(0.6, Math.abs(dBuilding - dBoundary) - 1.5);
+      // スロープは 1/8 勾配（高さの 8 倍の長さ）。奥行が足りなければ急にする
+      const run = Math.min(avail, ramp ? Math.max(1.0, Math.abs(roadY) * 8) : sc.runMm / 1000);
+      const dTop = dBoundary - sgn * run;
+      const [f0, f1] = span(dBuilding, dTop);
+      if (f1 - f0 > 0.2) rect('l.approach', w0, w1, f0, f1, 0.018);
+      approachOpen.push([w0 - 0.02, w1 + 0.02]);
+      const yLow = Math.min(roadY, 0) - 0.02;
+      if (ramp) {
+        const a = toWorld(w0, dBoundary, roadY + 0.02);
+        const bq = toWorld(w1, dBoundary, roadY + 0.02);
+        const c = toWorld(w1, dTop, 0.02);
+        const d = toWorld(w0, dTop, 0.02);
+        const n = new THREE.Vector3().subVectors(bq, a).cross(new THREE.Vector3().subVectors(c, a));
+        if (n.y < 0) walls.quad('l.approach', a, d, c, bq);
+        else walls.quad('l.approach', a, bq, c, d);
+        // 両脇の低い壁（斜面の側面を隠す）
+        wallBox(wallKey, w0 - 0.12, w0, dTop, dBoundary, yLow, Math.max(roadY, 0) + 0.05);
+        wallBox(wallKey, w1, w1 + 0.12, dTop, dBoundary, yLow, Math.max(roadY, 0) + 0.05);
+      } else {
+        // 階段: 蹴上 180 以下。道路側から 1 段ずつ（敷地が高ければ上る、低ければ下る）
+        const tread = sc.treadMm / 1000;
+        const riser = sc.riserMm / 1000;
+        for (let i = 0; i < sc.n; i++) {
+          const top = roadY < 0 ? roadY + riser * (i + 1) : roadY - riser * (i + 1);
+          const [s0, s1] = span(dBoundary - sgn * i * tread, dBoundary - sgn * (i + 1) * tread);
+          wallBox('l.approach', w0, w1, s0, s1, yLow, top);
+        }
+      }
+    }
   }
+  // 道路側の境界: 段差があれば擁壁（アプローチ・道路の高さの駐車場の口は空ける）。法面なら芝の斜面
+  if (hasDiff) {
+    const openings: [number, number][] = [...approachOpen];
+    if (parkLow) openings.push([parkA[0] - 0.15, parkA[1] + 0.15]);
+    const segs = subtractIntervals([alongMin, alongMax], openings);
+    const yLo = Math.min(roadY, 0);
+    const yHi = Math.max(roadY, 0);
+    for (const [s0, s1] of segs) {
+      if (s1 - s0 < 0.05) continue;
+      if (retain === 'slope') {
+        // 法面 1:1.5（高さの 1.5 倍の奥行）。路面の高さから GL へ芝の斜面
+        const L = Math.abs(roadY) * 1.5;
+        const a = toWorld(s0, dBoundary, roadY + 0.01);
+        const bq = toWorld(s1, dBoundary, roadY + 0.01);
+        const c = toWorld(s1, dBoundary - sgn * L, 0.01);
+        const d = toWorld(s0, dBoundary - sgn * L, 0.01);
+        const n = new THREE.Vector3().subVectors(bq, a).cross(new THREE.Vector3().subVectors(c, a));
+        if (n.y < 0) mb.quad('l.ground', a, d, c, bq, V(1, 0, 0), V(0, 0, 1));
+        else mb.quad('l.ground', a, bq, c, d, V(1, 0, 0), V(0, 0, 1));
+      } else wallBox(wallKey, s0, s1, dBoundary, dBoundary - sgn * 0.15, yLo - 0.02, yHi + 0.05);
+    }
+  }
+  // 敷地の地面（道路の高さに下げた駐車場は穴）
+  mb.polygon('l.ground', poly && poly.length >= 3 ? poly : [V(min.x, gy, min.y), V(min.x, gy, max.y), V(max.x, gy, max.y), V(max.x, gy, min.y)], V(0, 1, 0), V(1, 0, 0), V(0, 0, 1), groundHoles);
 
   function shrub(p: THREE.Vector3, s: number) {
     if (!spotOk(p, s * 0.5)) return;
@@ -251,6 +358,19 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     const out = mid.clone().sub(V(cx, 0, cz));
     const isRoadSide = out.normalize().dot(road) > 0.9;
     if (isRoadSide) continue;
+    // 隣地との段差: 隣地が低ければ自分の擁壁（上にフェンス）、高ければ隣地側の擁壁（その上に隣地のフェンス）
+    const nbLevel = nbY(sideOfOutward(out.x, out.z));
+    let baseY = 0;
+    if (Math.abs(nbLevel) > 0.05 && retain !== 'slope') {
+      const dirE = c.clone().sub(a);
+      const LE = dirE.length();
+      if (LE > 0.3) {
+        dirE.normalize();
+        const off = nbLevel < 0 ? -0.08 : 0.1;
+        walls.box(wallKey, mid.clone().addScaledVector(out, off).setY(Math.min(nbLevel, 0) - 0.02), dirE, LE + 0.16, Math.abs(nbLevel) + 0.07, 0.15);
+        if (nbLevel > 0) baseY = nbLevel;
+      }
+    }
     // 側面のフェンスは建物の正面より奥だけ（道路側は開放的に）
     const isSide = Math.abs(out.dot(road)) < 0.1;
     if (isSide) {
@@ -271,18 +391,18 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       if (fenceType === 'wood') {
         // ホームランディックの塀: グレーに塗ったブロックの基壇（高さ 0.5）の上に、木の縦ルーバー（幅 60・厚 30・隙間 30、高さ 1.2）。
         // 施工写真の「ブロック＋木の縦格子」。笠木と中段の胴縁で締める
-        mb.box('l.block', mid.clone(), dir, L, 0.5, 0.15);
+        mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.5, 0.15);
         const pitch = 0.09;
         const n = Math.max(1, Math.floor((L - 0.03) / pitch));
         const off = (L - n * pitch) / 2;
         for (let i = 0; i < n; i++) {
-          const p = a.clone().addScaledVector(dir, off + (i + 0.5) * pitch).setY(0.5);
+          const p = a.clone().addScaledVector(dir, off + (i + 0.5) * pitch).setY(baseY + 0.5);
           mb.box('l.fenceWood', p, dir, 0.06, 1.2, 0.03);
         }
         // 笠木（上）と胴縁（裏側、中段）
-        mb.box('l.fenceWood', mid.clone().setY(1.7), dir, L, 0.04, 0.09);
-        mb.box('l.fenceWood', mid.clone().setY(1.06), dir, L, 0.045, 0.03);
-      } else mb.box('l.block', mid.clone(), dir, L, 0.4, 0.12);
+        mb.box('l.fenceWood', mid.clone().setY(baseY + 1.7), dir, L, 0.04, 0.09);
+        mb.box('l.fenceWood', mid.clone().setY(baseY + 1.06), dir, L, 0.045, 0.03);
+      } else mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.4, 0.12);
     } else if (fenceType === 'hedge') {
       const n = Math.max(1, Math.floor(L / 0.9));
       for (let i = 0; i < n; i++) {
@@ -504,11 +624,11 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
         const hh = r2() > 0.3 ? 6.0 : 3.2;
         const gap = 2.2 + r2() * 1.8;
         if (t + w > span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) break;
-        const cA = (s.n.x !== 0 ? 0 : 1) * 0;
-        void cA;
-        const center = V(0, 0, 0);
-        if (s.n.x !== 0) center.set(edge + s.n.x * (gap + d / 2), 0, t + w / 2);
-        else center.set(t + w / 2, 0, edge + s.n.z * (gap + d / 2));
+        // 隣家はその辺の隣地の地盤の高さに立つ
+        const lvl = nbY(sideOfOutward(s.n.x, s.n.z));
+        const center = V(0, lvl, 0);
+        if (s.n.x !== 0) center.set(edge + s.n.x * (gap + d / 2), lvl, t + w / 2);
+        else center.set(t + w / 2, lvl, edge + s.n.z * (gap + d / 2));
         const dir = s.n.x !== 0 ? V(0, 0, 1) : V(1, 0, 0);
         const len = w;
         const depth = d;
@@ -516,10 +636,10 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
         const key = r2() > 0.66 ? 'l.nbWallB' : r2() > 0.4 ? 'l.nbWallA' : 'l.nbWallC';
         const one = new MeshBuilder();
         mb_box(one, key, center, dir, len, hh, depth);
-        mb_box(one, 'l.nbRoof', center.clone().setY(hh), dir, len + 0.5, 0.35, depth + 0.5);
+        mb_box(one, 'l.nbRoof', center.clone().setY(lvl + hh), dir, len + 0.5, 0.35, depth + 0.5);
         const ex = dir.x !== 0 ? len : depth;
         const ez = dir.x !== 0 ? depth : len;
-        town.push({ mb: one, box: new THREE.Box3(V(center.x - ex / 2, 0, center.z - ez / 2), V(center.x + ex / 2, hh + 0.4, center.z + ez / 2)) });
+        town.push({ mb: one, box: new THREE.Box3(V(center.x - ex / 2, lvl, center.z - ez / 2), V(center.x + ex / 2, lvl + hh + 0.4, center.z + ez / 2)) });
         t += w + 0.4 + r2() * 1.2;
         void alongV;
       }
@@ -528,6 +648,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
 
   return {
     mb,
+    walls,
     trees,
     town,
     site: { min, max, roadDir: road, roadCenter, parking },

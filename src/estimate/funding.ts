@@ -5,7 +5,8 @@
  * 建築請負工事費（税込）= ①＋②＋③、総合計 = ①＋②＋③＋④＋⑤＋⑥
  */
 import type { Grade } from './catalog';
-import type { BuildingModel } from '../core/types';
+import { RETAINING_LABEL, type BuildingModel } from '../core/types';
+import { retainingQuantities } from '../core/siteLevels';
 
 export interface FundRow {
   id: string;
@@ -70,6 +71,12 @@ export const ANNEX_UNIT = {
   deck: 35000,
   terrace: 30000,
   shed: 300000,
+  /** 敷地の高低差の処理（㎡ 単価は面積 = 長さ × 高さ）。RC 擁壁・石積み・法面（整形＋芝）、玄関の階段（段）・スロープ（式） */
+  retainRc: 60000,
+  retainStone: 45000,
+  slope: 8000,
+  step: 20000,
+  ramp: 150000,
 } as const;
 
 export function annexRows(model: BuildingModel | null | undefined): FundRow[] {
@@ -96,6 +103,16 @@ export function annexRows(model: BuildingModel | null | undefined): FundRow[] {
   line('annexTerrace', 'テラス（タイル）', 'terrace', ANNEX_UNIT.terrace);
   const sheds = f1.rooms.filter((r) => r.type === 'shed').length;
   if (sheds) rows.push({ id: 'annexShed', label: '物置・サイクルポート', amount: sheds * ANNEX_UNIT.shed, note: '※概算' });
+  // 敷地の高低差: 敷地の方が高い辺の擁壁（長さ × 高さ）と、玄関アプローチの階段・スロープ
+  const rq = model ? retainingQuantities(model) : null;
+  if (rq) {
+    if (rq.wallAreaM2 > 0) {
+      const unit = rq.kind === 'rc' ? ANNEX_UNIT.retainRc : rq.kind === 'stone' ? ANNEX_UNIT.retainStone : ANNEX_UNIT.slope;
+      rows.push({ id: 'annexRetain', label: `${RETAINING_LABEL[rq.kind]}（敷地の高低差）`, amount: round(rq.wallAreaM2 * unit), note: `※概算 ${rq.walls.map((w) => `${w.lengthM} m × H${w.heightM} m`).join('・')} ≒ ${rq.wallAreaM2} ㎡` });
+    }
+    if (rq.steps) rows.push({ id: 'annexSteps', label: '玄関アプローチ 階段', amount: rq.steps * ANNEX_UNIT.step, note: `※概算 ${rq.steps} 段` });
+    if (rq.ramp) rows.push({ id: 'annexRamp', label: '玄関アプローチ スロープ', amount: ANNEX_UNIT.ramp, note: '※概算' });
+  }
   return rows;
 }
 

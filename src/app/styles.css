@@ -1273,3 +1273,8 @@ body.text-lg aside, body.text-lg .pe-panel, body.text-lg .furn-tool, body.text-l
   .shot-toggle { height: 38px; }
   .step { padding: 9px 13px; }
 }
+
+/* 写真に仕上げる（AI）: 下絵との一致の印 */
+.aif-score { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12.5px; font-weight: 600; background: #e8efe6; color: #2f6b3a; }
+.aif-score.check { background: #fbefd9; color: #a3611a; }
+.aif-score.bad { background: #fde3e0; color: #b23a2f; }

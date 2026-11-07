@@ -173,8 +173,40 @@ const WET_PARTS: [string, string, string][] = [
   ['bath', '浴室', 'Bathroom'],
 ];
 
-/** 説明文に「お手本と同じ写りで」を入れるための、同梱したお手本（exportCuts が設定） */
+/** 説明文に「お手本と同じ写りで」を入れるための、同梱したお手本（exportCuts・AI 仕上げが設定） */
 let refsForPrompt: StyleRef[] | null = null;
+export function setRefsForPrompt(refs: StyleRef[] | null) {
+  refsForPrompt = refs;
+}
+
+/**
+ * 仕上げに添える画像: 素材ボード（コーディネートで選んだ商品の見本。実物写真があれば写真庫から）と、
+ * お手本の写真（御社の仕上げパース。外観・内観それぞれ最大 3 枚）。カット集（ZIP）と AI 仕上げで同じ物を使う
+ */
+export async function finishAssets(): Promise<{ board?: string; refs: StyleRef[] }> {
+  let board: string | undefined;
+  try {
+    const samples: Record<string, string> = { ...(state.coord.samples ?? {}) };
+    const entriesB = boardEntries(samples);
+    for (const e of entriesB)
+      if (!samples[e.product.id]) {
+        const s = await librarySample(e.product.id).catch(() => undefined);
+        if (s) samples[e.product.id] = s.url;
+      }
+    board = await renderMaterialBoard(boardEntries(samples));
+  } catch (e) {
+    console.warn('素材ボードを作れませんでした', e);
+  }
+  let refs: StyleRef[] = [];
+  try {
+    const all = await listRefs();
+    for (const kind of ['exterior', 'interior'] as RefKind[]) refs.push(...all.filter((r) => r.kind === kind).slice(-3));
+  } catch (e) {
+    refs = [];
+    console.warn('お手本の写真を読めませんでした', e);
+  }
+  return { board, refs };
+}
 
 export function cutPrompt(shot: Shot, index: number): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);

@@ -91,11 +91,11 @@ async function readImage(file: File, maxSide = 2400): Promise<string> {
 
 const kindOf = (s: Shot): GalleryItem['kind'] => (s.kind === 'section' || s.kind === 'cutaway' ? 'other' : s.kind);
 
-/** 仕上げた画像をギャラリーに入れる（同じカットの以前の仕上げは置き換える） */
-export function addFinished(url: string, shot: Shot | null, fileName: string): GalleryItem {
+/** 仕上げた画像をギャラリーに入れる（同じカットの以前の仕上げは置き換える）。ai = ツールの中で AI が仕上げたときの照合の点数とモデル */
+export function addFinished(url: string, shot: Shot | null, fileName: string, ai?: { score: number; model: string }): GalleryItem {
   const item: GalleryItem = shot
-    ? { id: uid('img'), title: `${shot.title}（写真仕上げ）`, caption: shot.caption, url, kind: kindOf(shot), quality: 'photoreal', shotId: `${shot.id}-ai` }
-    : { id: uid('img'), title: fileName.replace(/\.[a-z0-9]+$/i, ''), caption: '', url, kind: 'other', quality: 'photoreal' };
+    ? { id: uid('img'), title: `${shot.title}（写真仕上げ）`, caption: shot.caption, url, kind: kindOf(shot), quality: 'photoreal', shotId: `${shot.id}-ai`, ...(ai ? { aiScore: ai.score, aiModel: ai.model } : {}) }
+    : { id: uid('img'), title: fileName.replace(/\.[a-z0-9]+$/i, ''), caption: '', url, kind: 'other', quality: 'photoreal', ...(ai ? { aiScore: ai.score, aiModel: ai.model } : {}) };
   const idx = item.shotId ? state.gallery.findIndex((g) => g.shotId === item.shotId) : -1;
   if (idx >= 0) state.gallery.splice(idx, 1, item);
   else state.gallery.push(item);

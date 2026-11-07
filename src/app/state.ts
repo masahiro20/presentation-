@@ -19,6 +19,10 @@ export interface GalleryItem {
   kind: 'exterior' | 'interior' | 'aerial' | 'cutaway' | 'section' | 'sun' | 'other';
   quality: 'realtime' | 'photoreal';
   shotId?: string;
+  /** AI で仕上げたとき: 下絵の輪郭がどれだけ残っているか（0〜1。低いと窓・屋根が変わっている可能性） */
+  aiScore?: number;
+  /** AI で仕上げたモデル名 */
+  aiModel?: string;
 }
 
 export interface ProjectState {

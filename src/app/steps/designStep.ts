@@ -16,6 +16,7 @@ import type { Shot } from '../../scene/shots';
 import { exportCuts } from '../cuts';
 import { listRefs, addRef, deleteRef, REF_KIND_LABEL, type RefKind } from '../styleRefs';
 import { importFinishedImages, importFinishedVideos } from '../finishImport';
+import { aiFinishSection } from '../aiFinishPanel';
 import { exportRoomTour, exportTourVideo, previewRoomTour } from '../roomTour';
 import { startCinema } from '../cinema';
 import { progress, reconcileDecided } from '../../coordinate/decisions';
@@ -508,6 +509,8 @@ export const designStep: Step = {
       };
       void renderRefs();
       side.append(
+        // 写真の仕上げをツールの中で（Google AI Studio のキー。外部で仕上げる流れ①〜③はそのまま残す）
+        aiFinishSection(ctx, { shots: () => shots, currentAsShot, onDone: () => renderGallery() }),
         section(
           '仕上げ（外部）① パースのカット集',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころの構図を高解像度の下絵にして、Nano Banana Pro に貼る説明文（部屋・素材・品番の色・光）と一緒に ZIP で保存します。仕上げた写真は ③ で取り込むと、プレゼン資料の同じカットの下絵と入れ替わります。'),
@@ -566,7 +569,7 @@ export const designStep: Step = {
               'figure',
               null,
               h('img', { src: g.url, onclick: () => showImage(g), style: 'cursor:zoom-in' }),
-              h('span', { class: 'badge', style: g.quality === 'photoreal' ? 'background:#b8683a' : '' }, g.quality === 'photoreal' ? '仕上げ済み' : '下絵'),
+              h('span', { class: 'badge', style: g.quality === 'photoreal' ? 'background:#b8683a' : '' }, g.quality === 'photoreal' ? (g.aiScore != null ? `AI 仕上げ・一致 ${Math.round(g.aiScore * 100)}%` : '仕上げ済み') : '下絵'),
               h(
                 'button',
                 {
@@ -590,7 +593,7 @@ export const designStep: Step = {
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
         { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
-        { id: 'export', label: '仕上げ（外部）', match: /仕上げ（外部）|お手本の写真/ },
+        { id: 'export', label: '仕上げ', match: /仕上げ（外部）|写真に仕上げる|お手本の写真/ },
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));

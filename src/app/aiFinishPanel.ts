@@ -159,30 +159,50 @@ function reviewOne(ctx: StepCtx, item: FinishedCut, onDone: () => void) {
   );
 }
 
-/** まとめて仕上げたあとの一覧: 全部入れたうえで、点数の低いものに「作り直す」 */
-function reviewMany(ctx: StepCtx, items: FinishedCut[], failed: string[], onDone: () => void) {
-  const low = items.filter((x) => x.label.level !== 'ok');
-  const list = h(
-    'div',
-    { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;max-height:60vh;overflow:auto' },
-    ...items.map((x) =>
+/**
+ * まとめて仕上げたあとの一覧。
+ * 形がほぼそのまま／要確認のものは資料に入れてある。形が変わっている可能性が高いもの（一致 55% 未満）は入れずに保留し、
+ * 「作り直す」か、見たうえで「このまま入れる」を選んでもらう（お客様に出る資料に、形の違う家を黙って入れない）
+ */
+function reviewMany(ctx: StepCtx, items: FinishedCut[], held: FinishedCut[], failed: string[], onDone: () => void) {
+  const check = items.filter((x) => x.label.level === 'check');
+  const inserted = items.length - held.length;
+  const card = (x: FinishedCut) => {
+    const isHeld = held.includes(x);
+    const acceptBtn = isHeld
+      ? (h('button', { class: 'btn xs primary', style: 'margin-left:6px' }, 'このまま入れる') as HTMLButtonElement)
+      : null;
+    if (acceptBtn) {
+      acceptBtn.onclick = () => {
+        acceptBtn.disabled = true;
+        acceptBtn.textContent = '入れました';
+        void acceptFinished([x], true).then(() => { toast(`${x.shot.title} の写真を資料に入れました`, 'ok'); onDone(); });
+      };
+    }
+    return h(
+      'figure',
+      { style: 'margin:0' },
+      h('img', { src: x.url, style: 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;cursor:zoom-in', onclick: () => reviewOne(ctx, x, onDone) }),
       h(
-        'figure',
-        { style: 'margin:0' },
-        h('img', { src: x.url, style: 'width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:3px;cursor:zoom-in', onclick: () => reviewOne(ctx, x, onDone) }),
-        h('figcaption', { style: 'font-size:12.5px;line-height:1.5;margin-top:3px' }, x.shot.title, h('br'), h('span', { class: `aif-score ${x.label.level}` }, `一致 ${pct(x.score)}`), x.label.level === 'ok' ? null : h('button', { class: 'btn xs', style: 'margin-left:6px', onclick: () => void runAndReview(ctx, [x.shot], onDone) }, '作り直す')),
+        'figcaption',
+        { style: 'font-size:12.5px;line-height:1.5;margin-top:3px' },
+        x.shot.title,
+        isHeld ? h('span', { class: 'aif-held' }, '保留') : null,
+        h('br'),
+        h('span', { class: `aif-score ${x.label.level}` }, `一致 ${pct(x.score)}`),
+        x.label.level === 'ok' ? null : h('button', { class: 'btn xs', style: 'margin-left:6px', onclick: () => void runAndReview(ctx, [x.shot], onDone) }, '作り直す'),
+        acceptBtn,
       ),
-    ),
-  );
+    );
+  };
+  const list = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;max-height:60vh;overflow:auto' }, ...items.map(card));
+  const notes: HTMLElement[] = [];
+  if (held.length) notes.push(h('p', { class: 'warn', style: 'margin-top:0' }, `${held.length} 枚は下絵と形が違う可能性が高いので、資料に入れていません（一致 55% 未満・「保留」）。画像をクリックして「ずれた所」を確かめ、作り直すか、問題なければ「このまま入れる」を押してください。`));
+  if (check.length) notes.push(h('p', { class: 'warn', style: 'margin-top:0' }, `${check.length} 枚は下絵と形が少し違う可能性があります（一致 55〜72%）。資料には入れてあるので、「ずれた所」を確かめて、必要なら作り直してください。`));
+  if (!notes.length) notes.push(h('p', { class: 'hint keep', style: 'margin-top:0' }, 'どれも下絵の形をほぼ保っています。'));
   modal(
-    `${items.length} 枚を写真に仕上げて資料に入れました`,
-    h(
-      'div',
-      null,
-      low.length ? h('p', { class: 'warn', style: 'margin-top:0' }, `${low.length} 枚は下絵と形が少し違う可能性があります（一致 72% 未満）。画像をクリックして「ずれた所」を確かめ、必要なら作り直してください。`) : h('p', { class: 'hint', style: 'margin-top:0' }, 'どれも下絵の形をほぼ保っています。'),
-      list,
-      failed.length ? h('p', { class: 'warn' }, `仕上げられなかったカット: ${failed.join('／')}`) : null,
-    ),
+    held.length ? `${items.length} 枚を写真に仕上げました（${inserted} 枚を資料に入れ、${held.length} 枚は保留）` : `${items.length} 枚を写真に仕上げて資料に入れました`,
+    h('div', null, ...notes, list, failed.length ? h('p', { class: 'warn' }, `仕上げられなかったカット: ${failed.join('／')}`) : null),
     [{ label: '閉じる' }],
     true,
   );
@@ -214,9 +234,12 @@ export async function runAndReview(ctx: StepCtx, shots: Shot[], onDone: () => vo
     reviewOne(ctx, res.done[0], onDone);
     return;
   }
-  await acceptFinished(res.done, true);
+  // 形が変わっている可能性が高いもの（bad）は入れずに保留。それ以外は明るさ・色味をそろえて入れる
+  const held = res.done.filter((x) => x.label.level === 'bad');
+  const good = res.done.filter((x) => x.label.level !== 'bad');
+  if (good.length) await acceptFinished(good, true);
   onDone();
-  reviewMany(ctx, res.done, res.failed, onDone);
+  reviewMany(ctx, res.done, held, res.failed, onDone);
 }
 
 /** パースの右パネルの区画 */
@@ -225,7 +248,8 @@ export function aiFinishSection(ctx: StepCtx, deps: { shots: () => Shot[]; curre
   const eye = h('button', { class: 'btn sm ghost', type: 'button', title: 'キーを表示する／隠す', onclick: () => { input.type = input.type === 'password' ? 'text' : 'password'; eye.textContent = input.type === 'password' ? '表示' : '隠す'; } }, '表示') as HTMLButtonElement;
   const status = h('div', { class: 'gkey-status' });
   const modelSel = h('select', { style: 'width:100%', onchange: (e: Event) => { setImageModel((e.target as HTMLSelectElement).value); renderUsage(); } }) as HTMLSelectElement;
-  const usageEl = h('div', { class: 'hint', style: 'margin:4px 0 0' });
+  // 枚数と費用の目安は説明文ではなく数字なので、「説明」を消していても見せる（keep）
+  const usageEl = h('div', { class: 'hint keep', style: 'margin:4px 0 0' });
   let models: ImageModelInfo[] = [];
   const renderModels = () => {
     clear(modelSel);
@@ -247,7 +271,7 @@ export function aiFinishSection(ctx: StepCtx, deps: { shots: () => Shot[]; curre
     setGeminiKey(key);
     clear(status);
     if (!key) {
-      status.appendChild(h('p', { class: 'hint' }, 'キーを消しました。写真の仕上げは外部（カット集を保存して Nano Banana Pro で）に戻ります。'));
+      status.appendChild(h('p', { class: 'hint keep' }, 'キーを消しました。写真の仕上げは外部（カット集を保存して Nano Banana Pro で）に戻ります。'));
       return;
     }
     status.appendChild(row('wait', '確認しています…'));
@@ -298,7 +322,7 @@ export function aiFinishSection(ctx: StepCtx, deps: { shots: () => Shot[]; curre
       h('button', { class: 'btn sm dark', onclick: () => run(all()) }, `全カット（${all().length} 枚）`),
     ),
     usageEl,
-    h('p', { class: 'hint' }, 'こつ: 1 枚目を見て良ければ「全カット」。まとめて仕上げると明るさ・色味を自動でそろえます。下絵との一致が 72% 未満のものは一覧に印が付くので、見比べて作り直してください。'),
+    h('p', { class: 'hint' }, 'こつ: 1 枚目を見て良ければ「全カット」。まとめて仕上げると明るさ・色味を自動でそろえます。下絵との一致が 72% 未満のものは一覧に印が付き、55% 未満は資料に入れずに保留になるので、見比べて作り直してください。'),
     steps,
   );
   renderModels();

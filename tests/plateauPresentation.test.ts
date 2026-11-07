@@ -499,6 +499,29 @@ describe('sunStep.reloadSurroundings: 建設地を変えた後の読み直しは
     await reloadSurroundings(t.d, 'adjust');
     expect(t.log).toEqual(['rebuild', 'neighbors:gsi']);
   });
+  it('地形（標高）を出す設定なら、どちらの読み直しでも先に地形を取る（周辺建物の足元・遠くまで取るかに使う）。切っていれば取らない', async () => {
+    let t = deps(true, true);
+    t.d.terrainOn = () => true;
+    t.d.loadTerrain = async () => {
+      t.log.push('terrain');
+    };
+    await reloadSurroundings(t.d, 'newSite');
+    expect(t.log).toEqual(['rebuild', 'terrain', 'aerial', 'neighbors:plateau']);
+    t = deps(false, false);
+    t.d.terrainOn = () => true;
+    t.d.loadTerrain = async () => {
+      t.log.push('terrain');
+    };
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild', 'terrain']);
+    t = deps(true, true);
+    t.d.terrainOn = () => false;
+    t.d.loadTerrain = async () => {
+      t.log.push('terrain');
+    };
+    await reloadSurroundings(t.d, 'adjust');
+    expect(t.log).toEqual(['rebuild', 'aerial', 'neighbors:plateau']);
+  });
 });
 
 describe('SunContext.buildNeighbors: 実形状の配置・遮蔽物・隠し方・高さ', () => {

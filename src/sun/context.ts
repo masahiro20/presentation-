@@ -19,6 +19,25 @@ import type { SiteCloud } from './pointcloud/place';
 import { buildPlateauGeometry, fetchPlateauBuildings, normalizeSpec, specMesh, specTop, type RoofSpec, type PlateauBuilding, type PlateauDatasetInfo, type PlateauFetchResult, type PlateauProgress } from './plateau';
 import { estimateBoxRoof } from '../sunstudy/boxRoof';
 import { hasLevels, levelAtSide, roadSideOf, sideOfOutward } from '../core/siteLevels';
+import { buildTerrainMesh, fetchHeightGrid, fetchHorizonProfile, minHeightInRing, sampleHeight, type HorizonProfile } from '../sunstudy/terrain';
+import type { HeightGrid } from '../sunstudy/types';
+import {
+  FAR_NEIGHBOR_RADIUS_M,
+  SITE_LEVELS_PRIORITY_M,
+  TERRAIN_AERIAL_RADIUS_M,
+  TERRAIN_RADIUS_M,
+  cropGrid,
+  distanceOutsideConvex,
+  farNeighborRelevant,
+  farNeighborsNote,
+  flattenGrid,
+  groundElevOfRing,
+  grownRing,
+  terrainDisclosureLine,
+  terrainStatsOf,
+  wantsFarNeighbors,
+  type TerrainStats,
+} from './terrainContext';
 
 /** 想定の家（planned 付きの周辺建物） */
 export type PlannedBuilding = NeighborBuilding & { planned: PlannedHouse };
@@ -545,7 +564,30 @@ export interface ContextState {
   showSunPath: boolean;
   /** 道路・緑地・街路樹（OpenStreetMap） */
   showStreets: boolean;
+  /** 地形（国土地理院 標高タイル）: 3D に起伏を出し、影・解析の遮蔽物にも入れる。切ると平らな地面として計算 */
+  showTerrain: boolean;
   aerialLoaded: boolean;
+  terrainLoaded: boolean;
+}
+
+/** 読み込んだ地形（loadTerrain の結果。SunContext.terrain） */
+export interface TerrainData {
+  /** 標高の格子（ピンからの東・北 m。標高 T.P.） */
+  grid: HeightGrid;
+  /** 敷地のまわりを設計 GL に平らにならした格子（3D・足元・解析はこちら） */
+  flat: HeightGrid;
+  stats: TerrainStats;
+  /** 遠方（±10 km）の山並みによる地平線（方位ごとの仰角）。取れなければ null */
+  horizon: HorizonProfile | null;
+  /** 格子を取った地点（ピン）と、平らにした範囲（東・北） */
+  origin: LatLon;
+  flatRing: EN[];
+}
+
+/** SunContext.loadTerrain の結果 */
+export interface LoadTerrainResult {
+  stats: TerrainStats;
+  horizon: boolean;
 }
 
 export class SunContext {
@@ -605,11 +647,205 @@ export class SunContext {
     readonly viewer: Viewer,
     site: SiteLocation,
   ) {
-    this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, showStreets: true, aerialLoaded: false };
+    this.state = { site, neighbors: [], showAerial: true, showNeighbors: true, showSunPath: true, showStreets: true, showTerrain: true, aerialLoaded: false, terrainLoaded: false };
     this.ghostsG.name = 'neighbor-ghosts';
     this.streetsG.name = 'streets';
+    this.terrainG.name = 'terrain';
     this.group.add(this.aerial, this.neighborsG, this.ghostsG, this.streetsG, this.pathG, this.sunMarker, this.cloudLayer.group);
     viewer.groups.context.add(this.group);
+    // 地形は viewer.groups.terrain（解析の遮蔽物の種別 'terrain'）。無い viewer（テストの偽物）では周辺環境のグループに入れる
+    ((viewer.groups as Partial<Record<'terrain', THREE.Group>>).terrain ?? this.group).add(this.terrainG);
+  }
+
+  // ---------------------------------------------------------------- 地形（国土地理院 標高タイル）
+  private terrainG = new THREE.Group();
+  /** 読み込んだ地形（まだ無ければ null） */
+  terrain: TerrainData | null = null;
+  private terrainSeq = 0;
+  /** 地形メッシュを置いたときの向き・中心（変わったら平らにする範囲・メッシュを作り直す） */
+  private terrainPlaced: { north: number; cx: number; cz: number } | null = null;
+  private terrainMats: { photo: THREE.MeshStandardMaterial | null; plain: THREE.MeshStandardMaterial } | null = null;
+  /** 地形の読み込み・地平線の取得が終わった後に呼ぶ（右パネルの表示を合わせる。ステップを離れるときは null に戻す） */
+  onTerrainChange: (() => void) | null = null;
+
+  /** 地形のメッシュのグループ（メッシュは userData.terrain、BVH 付き） */
+  get terrainGroup(): THREE.Group {
+    return this.terrainG;
+  }
+
+  /** 地形を影・解析に入れているか（読み込み済みで表示している） */
+  get terrainActive(): boolean {
+    return !!this.terrain && this.state.showTerrain;
+  }
+
+  /** 平らにならす範囲（敷地。無ければ建物の外形）を 1.5 m 広げた輪郭（東・北） */
+  flatRing(): EN[] {
+    const ring = this.targetRing();
+    return ring ? grownRing(ring, 1.5) : [];
+  }
+
+  /**
+   * 地形（標高の格子 ±TERRAIN_RADIUS_M）と遠方の地平線（±10 km）を取る。敷地のまわりは設計 GL（y = 0）に平らにならし、
+   * 周辺建物の足元・街路の高さ・影の範囲を作り直す。中止（opts.signal）は例外、後から始まった取得があれば AbortError（supersededError）
+   */
+  async loadTerrain(opts: { signal?: AbortSignal; onProgress?: (msg: string) => void } = {}): Promise<LoadTerrainResult> {
+    const seq = ++this.terrainSeq;
+    const { lat, lon } = siteLatLon(this.state.site);
+    const raw = await fetchHeightGrid(lat, lon, TERRAIN_RADIUS_M, { signal: opts.signal, onProgress: opts.onProgress });
+    if (seq !== this.terrainSeq) throw supersededError();
+    // タイル単位の格子を航空写真の範囲（±TERRAIN_AERIAL_RADIUS_M）に切り、端に裾を付ける（端が宙に浮いて見えない）
+    const grid = cropGrid(raw, TERRAIN_AERIAL_RADIUS_M, 25);
+    const flatRing = this.flatRing();
+    const groundElev = groundElevOfRing(grid, flatRing);
+    const flat = flattenGrid(grid, flatRing, groundElev);
+    const stats = terrainStatsOf(grid, groundElev, TERRAIN_RADIUS_M);
+    this.terrain = { grid, flat, stats, horizon: null, origin: { lat, lon }, flatRing };
+    this.state.terrainLoaded = true;
+    this.terrainPlaced = null;
+    this.rebuildTerrain();
+    this.buildNeighbors();
+    this.rebuildStreets();
+    this.onTerrainChange?.();
+    // 遠方の山並み（冬の低い太陽を遮る）。失敗しても平らな地平線（null）で続ける
+    opts.onProgress?.('遠方の地形（±10 km）を調べています…');
+    const hz = await fetchHorizonProfile(lat, lon, groundElev, { signal: opts.signal, radiusKm: 10 });
+    if (seq !== this.terrainSeq) throw supersededError();
+    if (this.terrain) this.terrain.horizon = hz.source === 'none' ? null : hz;
+    this.publishTerrainHooks();
+    this.onTerrainChange?.();
+    return { stats, horizon: !!this.terrain?.horizon };
+  }
+
+  /** 地形を捨てる（平らな地面に戻す） */
+  clearTerrain() {
+    this.terrainSeq++;
+    this.terrain = null;
+    this.state.terrainLoaded = false;
+    clearGroup(this.terrainG);
+    this.publishTerrainHooks();
+    this.buildNeighbors();
+    this.rebuildStreets();
+    this.onTerrainChange?.();
+  }
+
+  /**
+   * 解析（analysis.ts）が viewer から読む地形の情報: 遠方の地平線（sunSamplesForDay が太陽を除く）と地面の高さ（日照時間マップの測定点）。
+   * 地形を切っている・無いときは外す（平らな地面として計算）
+   */
+  private publishTerrainHooks() {
+    const ud = this.viewer.userData as { sunHorizon?: HorizonProfile | null; terrainYWorld?: ((x: number, z: number) => number) | null };
+    const on = this.terrainActive;
+    ud.sunHorizon = on ? (this.terrain?.horizon ?? null) : null;
+    ud.terrainYWorld = on ? (x: number, z: number) => this.terrainYWorld(x, z) : null;
+    // 影の範囲: 地形（丘の影）が届くよう太陽を遠くに置く。平らな地面なら既定（80 m）に戻す
+    const v = this.viewer as Viewer & { setShadowReach?: (reach: number) => void };
+    v.setShadowReach?.(on && this.terrain && wantsFarNeighbors(this.terrain.stats) ? TERRAIN_RADIUS_M + 60 : 80);
+  }
+
+  /** 地形の高さ（ワールド y。設計 GL = 0）。地形が無い・切っているときは 0 */
+  terrainY(e: number, n: number): number {
+    const t = this.terrain;
+    if (!t || !this.state.showTerrain) return 0;
+    const h = sampleHeight(t.flat, e, n);
+    return h === h ? h - t.stats.groundElev : 0;
+  }
+
+  /** ワールド XZ での地形の高さ */
+  terrainYWorld(x: number, z: number): number {
+    if (!this.terrain || !this.state.showTerrain) return 0;
+    const en = this.fromWorld(new THREE.Vector3(x, 0, z));
+    return this.terrainY(en.e, en.n);
+  }
+
+  /** 周辺建物を取る半径 (m): 高台がある地形では遠く（FAR_NEIGHBOR_RADIUS_M）まで取り、高台の建物だけ残す */
+  neighborRadius(): number {
+    return this.terrainActive && wantsFarNeighbors(this.terrain!.stats) ? FAR_NEIGHBOR_RADIUS_M : NEIGHBOR_RADIUS_M;
+  }
+
+  /** 資料・解析結果の注記の行（地形を読み込んでいなければ null） */
+  terrainLine(): string | null {
+    return terrainDisclosureLine(this.terrain?.stats ?? null, this.terrainActive);
+  }
+
+  /**
+   * 地形のメッシュを作り直す（平らにならした格子 → 三角形の網。航空写真があれば貼る）。
+   * メッシュは東・北の局所座標（x = 東, y = 高さ, z = −北）で作り、向き（真北）・中心をメッシュの変換で合わせる（BVH はそのまま使える）
+   */
+  rebuildTerrain() {
+    clearGroup(this.terrainG);
+    this.terrainMats = null;
+    const t = this.terrain;
+    const st = this.viewer.state;
+    if (!t || !st) return;
+    const mesh = buildTerrainMesh(t.flat, t.stats.groundElev, { maxVertices: 160_000 });
+    const ai = this.aerialInfo;
+    const plain = new THREE.MeshStandardMaterial({ color: '#9a9d82', roughness: 0.95, metalness: 0 });
+    let photo: THREE.MeshStandardMaterial | null = null;
+    if (ai) {
+      // 航空写真の範囲（ピン基準の東・北）を UV に。写真の外は縁の色で伸びる
+      const pos = mesh.geometry.getAttribute('position');
+      const uv = new Float32Array(pos.count * 2);
+      const aw = ai.east - ai.west || 1;
+      const ah = ai.north - ai.south || 1;
+      for (let i = 0; i < pos.count; i++) {
+        const u = (pos.getX(i) - ai.west) / aw;
+        const v = (-pos.getZ(i) - ai.south) / ah;
+        uv[i * 2] = u < 0 ? 0 : u > 1 ? 1 : u;
+        uv[i * 2 + 1] = v < 0 ? 0 : v > 1 ? 1 : v;
+      }
+      mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      // 写真は撮影時の光を含むので少し暗い倍率で受ける（平らな航空写真と同じ）
+      photo = new THREE.MeshStandardMaterial({ map: ai.tex, color: new THREE.Color().setScalar(0.74), roughness: 0.95, metalness: 0 });
+    }
+    (mesh.material as THREE.Material).dispose();
+    this.terrainMats = { photo, plain };
+    mesh.material = plain;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.name = 'terrain';
+    this.terrainG.add(mesh);
+    this.terrainPlaced = null;
+    this.placeTerrain();
+    this.applyVisibility();
+  }
+
+  /**
+   * 地形のメッシュを今の向き（真北）・中心に置く。向き・中心が変わっていたら、平らにならす範囲（敷地は建物の座標）が
+   * 変わるので格子とメッシュを作り直す（buildNeighbors から毎回呼ばれるが、変わっていなければ変換を合わせるだけ）
+   */
+  private placeTerrain() {
+    const t = this.terrain;
+    const st = this.viewer.state;
+    const mesh = this.terrainG.children[0] as THREE.Mesh | undefined;
+    if (!t || !st) return;
+    const c = st.meta.bbox.getCenter(new THREE.Vector3());
+    const north = st.model.northAngleDeg;
+    const p = this.terrainPlaced;
+    if (mesh && p && (Math.abs(p.north - north) > 0.01 || Math.abs(p.cx - c.x) > 0.01 || Math.abs(p.cz - c.z) > 0.01)) {
+      // 平らにする範囲を今の敷地に合わせ直す
+      const flatRing = this.flatRing();
+      const groundElev = groundElevOfRing(t.grid, flatRing);
+      t.flat = flattenGrid(t.grid, flatRing, groundElev);
+      t.stats = terrainStatsOf(t.grid, groundElev, TERRAIN_RADIUS_M);
+      t.flatRing = flatRing;
+      this.rebuildTerrain();
+      return;
+    }
+    if (!mesh) {
+      this.rebuildTerrain();
+      return;
+    }
+    const a0 = (north * Math.PI) / 180;
+    const northV = new THREE.Vector3(Math.sin(a0), 0, -Math.cos(a0));
+    const eastV = new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0));
+    const m = new THREE.Matrix4().makeBasis(eastV, new THREE.Vector3(0, 1, 0), northV.clone().negate()).setPosition(this.toWorld(0, 0, 0));
+    mesh.matrix.identity();
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    mesh.scale.set(1, 1, 1);
+    mesh.applyMatrix4(m);
+    mesh.updateMatrixWorld(true);
+    this.terrainPlaced = { north, cx: c.x, cz: c.z };
   }
 
   // ---------------------------------------------------------------- 街路・緑地・樹木（OpenStreetMap）
@@ -680,7 +916,8 @@ export class SunContext {
       const en = this.fromWorld(p);
       return rings.some((r) => pointInRing(en, r));
     };
-    const built = buildStreets(data, { toWorld: (e, n, y) => this.toWorld(e, n, y), exclude, radius: NEIGHBOR_RADIUS_M + 30 });
+    // 地形があれば路面・木の足元を地形の高さに（丘の上の道路が地面の中に埋まらないように）
+    const built = buildStreets(data, { toWorld: (e, n, y) => this.toWorld(e, n, (y ?? 0) + this.terrainY(e, n)), exclude, radius: NEIGHBOR_RADIUS_M + 30 });
     const resolve = (k: string) => this.viewer.registry.get(k);
     const ground = built.mb.build(resolve, { name: 'streets-ground', castShadow: true, receiveShadow: true });
     // 路面・緑地は影を落とさない（木の幹・縁石だけ）
@@ -853,9 +1090,10 @@ export class SunContext {
   keyNeighbors(): { b: NeighborBuilding; hours: number }[] {
     const target = this.targetRing();
     const { lat, lon } = siteLatLon(this.state.site);
+    // 高台の建物は足元の高さの分だけ高い建物として影の時間を数える（丘の上の学校など）
     const cands = this.state.neighbors
       .filter((b) => this.isActive(b) && !b.planned && (!b.hidden || this.hideModeOf(b) === 'view'))
-      .map((b) => ({ ring: b.ring, height: this.heightOf(b), source: b.source as string, heightKind: b.heightKind, plateau: b.plateau, mesh: b.mesh, confirmed: this.isConfirmed(b), b }));
+      .map((b) => ({ ring: b.ring, height: this.heightOf(b) + Math.max(0, this.groundLevelOf(b)), source: b.source as string, heightKind: b.heightKind, plateau: b.plateau, mesh: b.mesh, confirmed: this.isConfirmed(b), b }));
     const ranked = rankShadowCasters(cands, target, lat, lon, new Date().getFullYear());
     return ranked.map((r) => ({ b: r.n.b, hours: r.hours })).sort((x, y) => Number(this.isConfirmed(x.b)) - Number(this.isConfirmed(y.b)) || y.hours - x.hours);
   }
@@ -1114,6 +1352,9 @@ export class SunContext {
     let aerial: ShareContext['aerial'];
     const am = this.aerial.children[0] as THREE.Mesh | undefined;
     const ai = this.aerialInfo;
+    // 地形を出しているときは、平らな 2 枚の三角形ではなく粗い地形の網（約 50×50）に写真を貼って持っていく（お客様の画面でも丘が見える）
+    const tm = this.terrainG.children[0] as THREE.Mesh | undefined;
+    const terrainGeo = tm && tm.visible && this.terrain ? this.shareTerrainGeometry(tm) : null;
     if (am && ai && this.state.showAerial) {
       const img = ai.tex.image as HTMLCanvasElement | HTMLImageElement | undefined;
       let dataUrl = '';
@@ -1129,11 +1370,37 @@ export class SunContext {
       } catch {
         dataUrl = '';
       }
-      if (dataUrl) aerial = { pos: [...(am.geometry.getAttribute('position').array as Float32Array)].map(r2), uv: [...(am.geometry.getAttribute('uv').array as Float32Array)], image: dataUrl, attribution: this.aerialAttribution || undefined };
+      if (dataUrl) {
+        const src = terrainGeo ?? am.geometry;
+        aerial = { pos: [...(src.getAttribute('position').array as Float32Array)].map(r2), uv: [...(src.getAttribute('uv').array as Float32Array)].map((v) => Math.round(v * 1e4) / 1e4), image: dataUrl, attribution: this.aerialAttribution || undefined };
+      }
     }
+    terrainGeo?.dispose();
     if (!neighbors.length && !aerial) return null;
     const streets = this.state.showStreets && this.streetsData ? this.exportStreets() : undefined;
     return { neighbors, aerial, ...(streets?.length ? { streets } : {}) };
+  }
+
+  /** 体験リンク用の粗い地形（非インデックスの三角形・ワールド座標・航空写真の UV）。表示中の地形メッシュと同じ向き・位置 */
+  private shareTerrainGeometry(shown: THREE.Mesh): THREE.BufferGeometry | null {
+    const t = this.terrain;
+    const ai = this.aerialInfo;
+    if (!t || !ai) return null;
+    const coarse = buildTerrainMesh(t.flat, t.stats.groundElev, { maxVertices: 2500 });
+    const pos = coarse.geometry.getAttribute('position');
+    const uv = new Float32Array(pos.count * 2);
+    const aw = ai.east - ai.west || 1;
+    const ah = ai.north - ai.south || 1;
+    for (let i = 0; i < pos.count; i++) {
+      uv[i * 2] = Math.min(1, Math.max(0, (pos.getX(i) - ai.west) / aw));
+      uv[i * 2 + 1] = Math.min(1, Math.max(0, (-pos.getZ(i) - ai.south) / ah));
+    }
+    coarse.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const geo = coarse.geometry.toNonIndexed();
+    geo.applyMatrix4(shown.matrix);
+    coarse.geometry.dispose();
+    (coarse.material as THREE.Material).dispose();
+    return geo;
   }
 
   private materials() {
@@ -1244,21 +1511,32 @@ export class SunContext {
    */
   groundLevelOf(b: Pick<NeighborBuilding, 'ring'>): number {
     const st = this.viewer.state;
-    const lv = st?.model.siteLevels;
-    if (!st || !hasLevels(lv) || b.ring.length < 3) return 0;
+    if (!st || b.ring.length < 3) return 0;
+    const lv = st.model.siteLevels;
     const c = ringCentroid(b.ring);
-    const w = this.toWorld(c.e, c.n);
-    const bc = st.meta.bbox.getCenter(new THREE.Vector3());
-    const side = sideOfOutward(w.x - bc.x, w.z - bc.z);
-    const road = roadSideOf(st.model) ?? (st.meta.entrance ? sideOfOutward(st.meta.entrance.outward.x, st.meta.entrance.outward.z) : null);
-    return levelAtSide(lv, side, side === road);
+    let fromLevels: number | null = null;
+    if (hasLevels(lv)) {
+      const w = this.toWorld(c.e, c.n);
+      const bc = st.meta.bbox.getCenter(new THREE.Vector3());
+      const side = sideOfOutward(w.x - bc.x, w.z - bc.z);
+      const road = roadSideOf(st.model) ?? (st.meta.entrance ? sideOfOutward(st.meta.entrance.outward.x, st.meta.entrance.outward.z) : null);
+      fromLevels = levelAtSide(lv, side, side === road);
+    }
+    const t = this.terrainActive ? this.terrain! : null;
+    if (!t) return fromLevels ?? 0;
+    // 敷地のすぐまわり（SITE_LEVELS_PRIORITY_M）は利用者が入れた（または標高から推定した）高低差の設定が勝つ。その先は地形の足元の最低標高
+    if (fromLevels != null && distanceOutsideConvex(c, t.flatRing) < SITE_LEVELS_PRIORITY_M) return fromLevels;
+    const h = minHeightInRing(t.flat, b.ring);
+    return Number.isFinite(h) ? Math.round((h - t.stats.groundElev) * 100) / 100 : (fromLevels ?? 0);
   }
 
   /** 画面上の点が航空写真のどこか（航空写真が無ければ null） */
   pickAerial(ndc: THREE.Vector2): THREE.Vector3 | null {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(ndc, this.viewer.camera);
-    const hit = rc.intersectObjects(this.aerial.children, true)[0];
+    // 地形を出しているときは写真を地形の面に貼っているので、地形の面で拾う（平らな写真は隠れている）
+    const targets = this.terrainG.visible && this.terrainG.children.some((o) => o.visible) ? [...this.aerial.children, ...this.terrainG.children] : this.aerial.children;
+    const hit = rc.intersectObjects(targets, true).find((x) => x.object.visible);
     return hit ? hit.point : null;
   }
 
@@ -1268,7 +1546,9 @@ export class SunContext {
 
   async loadAerial(kind: 'photo' | 'map' = 'photo') {
     const { lat, lon } = siteLatLon(this.state.site);
-    const img = await fetchAerial(lat, lon, 220, kind === 'photo' ? 18 : 17, kind);
+    // 地形を出すときは地形の端（±TERRAIN_RADIUS_M）まで写真を貼るので広く取る
+    const radius = this.state.showTerrain ? TERRAIN_AERIAL_RADIUS_M : 220;
+    const img = await fetchAerial(lat, lon, radius, kind === 'photo' ? 18 : 17, kind);
     clearGroup(this.aerial);
     const tex = new THREE.CanvasTexture(img.canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -1292,6 +1572,8 @@ export class SunContext {
     this.state.aerialLoaded = true;
     this.aerialInfo = { west: img.west, east: img.east, south: img.south, north: img.north, tex };
     this.aerialAttribution = img.attribution ?? '';
+    // 地形の面にも貼り直す
+    if (this.terrain) this.rebuildTerrain();
     this.buildNeighbors();
     this.applyVisibility();
     return img.attribution;
@@ -1322,7 +1604,8 @@ export class SunContext {
     const limitMs = opts.fillTimeoutMs ?? NEIGHBOR_FILL_TIMEOUT_MS;
     this.lastSource = source;
     const { lat, lon } = siteLatLon(this.state.site);
-    const R = NEIGHBOR_RADIUS_M;
+    // 高台のある地形では遠くまで取り、通常の半径の外は高台の建物（敷地から見上げる角度が大きい）だけ残す
+    const R = this.neighborRadius();
     const notes: string[] = [];
     const used: NeighborSourceChoice[] = [];
     let list: NeighborBuilding[] = [];
@@ -1393,6 +1676,21 @@ export class SunContext {
     // ここから先は待たない。後から始まった取得があれば、その方が今のピンの結果を書くのでこの結果は捨てる
     throwIfSuperseded();
     throwIfAborted();
+    if (R > NEIGHBOR_RADIUS_M) {
+      // 通常の半径の外: 高台にあって敷地から屋根を見上げる角度が大きい建物（丘の上の学校など）だけ残す。平地の遠い家は落とす
+      const t = this.terrain!;
+      const far = (b: NeighborBuilding) => {
+        const c = ringCentroid(b.ring);
+        const dist = Math.hypot(c.e, c.n);
+        if (dist <= NEIGHBOR_RADIUS_M) return 'near';
+        const base = minHeightInRing(t.flat, b.ring) - t.stats.groundElev;
+        return farNeighborRelevant(dist, base, b.height, NEIGHBOR_RADIUS_M) ? 'far' : 'drop';
+      };
+      const tagged = list.map((b) => [b, far(b)] as const);
+      list = tagged.filter(([, k]) => k !== 'drop').map(([b]) => b);
+      const farN = tagged.filter(([, k]) => k === 'far').length;
+      if (farN) notes.push(farNeighborsNote(farN, NEIGHBOR_RADIUS_M, R));
+    }
     // 新築の建物に重なる建物（建て替え前の既存建物など）は「敷地内の既存建物」として計算から除外して一覧に残す（戻せる）。
     // 以前は敷地の矩形に少しでも掛かる建物を一覧ごと消していたが、敷地が広め（道路側 6m・不明な辺は 20m まで）に取られると
     // 隣の家まで消えて、周辺を取り込んでも建物が立たない所ができていた。敷地に掛かるだけの建物は残す
@@ -1635,6 +1933,8 @@ export class SunContext {
     for (const k of [...this.highlightKeys]) if (!present.has(k)) this.highlightKeys.delete(k);
     if (this.previewKey && !present.has(this.previewKey)) this.previewKey = null;
     this.placeCloud();
+    // 地形を今の向き・中心に（向きが変わっていれば作り直す）
+    this.placeTerrain();
     this.applyGhosts();
     this.applyVisibility();
     this.viewer.invalidate();
@@ -1731,16 +2031,26 @@ export class SunContext {
   }
 
   applyVisibility() {
-    this.aerial.visible = this.state.showAerial && this.state.aerialLoaded;
+    // 地形: メッシュ自身の visible で出し入れする（解析の遮蔽物 buildOccluder はメッシュ自身の visible を見るので、切れば計算からも外れる）
+    const terrainOn = this.state.showTerrain && this.state.terrainLoaded && this.terrainG.children.length > 0;
+    for (const o of this.terrainG.children) {
+      o.visible = terrainOn;
+      const m = o as THREE.Mesh;
+      if (m.isMesh && this.terrainMats) m.material = this.state.showAerial && this.terrainMats.photo ? this.terrainMats.photo : this.terrainMats.plain;
+    }
+    // 地形を出しているときは航空写真を地形の面に貼るので、平らな写真は隠す
+    this.aerial.visible = this.state.showAerial && this.state.aerialLoaded && !terrainOn;
     this.neighborsG.visible = this.state.showNeighbors;
     this.ghostsG.visible = this.state.showNeighbors;
     this.streetsG.visible = this.state.showStreets;
     this.pathG.visible = this.state.showSunPath;
-    // 航空写真表示中は生成した道路・遠景の地面を隠す
+    // 航空写真・地形の表示中は生成した道路・遠景の地面を隠す
+    const groundShown = this.aerial.visible || terrainOn;
     this.viewer.groups.landscape.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.isMesh && (m.userData.matKey === 'l.far' || m.userData.matKey === 'l.road' || m.userData.matKey === 'l.curb')) m.visible = !this.aerial.visible;
+      if (m.isMesh && (m.userData.matKey === 'l.far' || m.userData.matKey === 'l.road' || m.userData.matKey === 'l.curb')) m.visible = !groundShown;
     });
+    this.publishTerrainHooks();
     this.viewer.invalidate();
   }
 
@@ -1827,13 +2137,3 @@ export class SunContext {
   }
 }
 
-/** 輪郭を重心から外へ m だけ広げる（長方形・凸に近い輪郭向けの簡易版） */
-function grownRing(ring: EN[], m: number): EN[] {
-  const c = ringCentroid(ring);
-  return ring.map((p) => {
-    const dx = p.e - c.e;
-    const dy = p.n - c.n;
-    const d = Math.hypot(dx, dy) || 1;
-    return { e: p.e + (dx / d) * m * Math.SQRT2, n: p.n + (dy / d) * m * Math.SQRT2 };
-  });
-}

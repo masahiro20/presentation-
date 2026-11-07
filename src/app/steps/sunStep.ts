@@ -3,13 +3,14 @@ import { h, clear, toast, progressModal, section, field, fold, modal, download, 
 import { state, emit, type ProjectState } from '../state';
 import { sightlineCheck, type NeighborWorld } from '../../core/sightlines';
 import type { Step, StepCtx } from '../app';
-import { SunContext, isAbortError, keysInRect, ringArea, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
+import { SunContext, isAbortError, keysInRect, ringArea, ringCentroid, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
 import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, DEFAULT_SITE, type NeighborBuilding } from '../../sun/geo';
 import { siteLevelsPanel } from '../siteLevelsPanel';
 import { estimateSiteLevelsFromDem } from '../siteLevelsDem';
 import { hasLevels, levelsSummary } from '../../core/siteLevels';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, formatHM, keyDates } from '../../sun/solar';
-import { analyzeRooms, groundSunHours, heatmapMesh, shadowDiagram, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
+import { analyzeRooms, buildOccluder, disposeOccluder, groundSunHours, heatmapMesh, shadowDiagram, sunSamplesForDay, SHADOW_REGULATION_PRESETS, SHADOW_REGION_HOURS, shadowRegulationPreset, type ShadowDiagramOptions, type ShadowDiagramSummary, type SunDay } from '../../sun/analysis';
+import { horizonFromGrid } from '../../sunstudy/terrain';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
 import { clearGroup } from '../../scene/viewer';
 import { normDeg180 } from '../../sun/align';
@@ -29,6 +30,7 @@ import { getGoogleKey, googleKeyPanel, onGoogleKeyChange } from '../googleKey';
 import { recordProgram } from '../../video/recorder';
 import { sunTimelapseProgram, streetProgram, type CameraProgram } from '../../video/paths';
 import { showBaseVideoDone, streetVideoPrompt } from '../roomTour';
+import { hasRelief, sunBehindHorizon, terrainMetaText, terrainStatusText } from '../../sun/terrainContext';
 
 export { NEIGHBOR_SOURCE_LABEL, neighborTitle, neighborWhere };
 
@@ -102,16 +104,22 @@ export interface SurroundingsDeps {
   rebuild: () => void;
   loadAerial: () => Promise<void>;
   loadNeighbors: (src: NeighborSourceChoice) => Promise<void>;
+  /** 地形（標高）を出す設定か（SunContext.state.showTerrain。無ければ出さない = 古い呼び出し） */
+  terrainOn?: () => boolean;
+  /** 地形（標高の格子・遠方の地平線）を取る。失敗は中で案内して平らな地面で続ける */
+  loadTerrain?: () => Promise<void>;
 }
 
 /**
  * 建設地を変えた後に周りを読み直す手順。
  *  - 'adjust'（微調整・敷地をクリック・2 点合わせ）: 航空写真は読み込み済みなら取り直し、自動取得の周辺建物があれば最後の取得元で取り直す
  *  - 'newSite'（住所検索の結果・座標の指定）: 航空写真は（まだ無ければ読み込んで）取り直し、周辺建物は有無にかかわらず最後の取得元で取り直す
+ * 地形（標高）を出す設定なら、どちらも先に地形を取る（周辺建物の足元・遠くまで取るかの判断に使う。ピンが動けば格子も動く）。
  * どちらも周辺建物の取得は 1 回だけ（'newSite' で 'adjust' の取り直しと重ねて 2 回走らせない: 進捗モーダル・トーストが 2 回出て待ち時間が 2 倍になる）
  */
 export async function reloadSurroundings(deps: SurroundingsDeps, mode: 'adjust' | 'newSite'): Promise<void> {
   deps.rebuild();
+  if (deps.terrainOn?.() && deps.loadTerrain) await deps.loadTerrain();
   if (mode === 'newSite' || deps.aerialLoaded()) await deps.loadAerial();
   // 最後に選んだ取得元で取り直す（PLATEAU は anchor 基準のキャッシュがあるので、微調整の 2 m 刻みでは通信・復号なし）
   if (mode === 'newSite' || deps.hasAutoNeighbors()) await deps.loadNeighbors(deps.lastSource());
@@ -547,6 +555,7 @@ export const sunStep: Step = {
     extPanel = null;
     cleanupEarth?.();
     cleanupEarth = null;
+    if (activeSc) activeSc.onTerrainChange = null;
   },
   async mount(ctx) {
     const v = ctx.app.viewer;
@@ -614,7 +623,9 @@ export const sunStep: Step = {
       const now = performance.now();
       const env = envNow || now - lastEnv > 400;
       if (env) lastEnv = now;
-      v.setSunDirection(dir, env);
+      // 遠くの山並み（地形 ±10 km の地平線）の陰: 太陽は出ているが敷地には届かない → 直射を消して空の光だけにする（印は本当の位置に出す）
+      const behindHill = sc.terrainActive && sunBehindHorizon(sc.terrain?.horizon, sp.azimuth, sp.elevation);
+      v.setSunDirection(behindHill ? dir.clone().setY(-0.02).normalize() : dir, env);
       sc.updateSunMarker(dir);
       const rs = sunriseSunset(ui.year, ui.month, ui.day, d.lat, d.lon);
       timeEl.textContent = formatHM(ui.hour);
@@ -623,7 +634,7 @@ export const sunStep: Step = {
       clear(badge);
       badge.append(
         h('div', null, h('b', null, `${ui.month}月${ui.day}日 ${formatHM(ui.hour)}`)),
-        h('div', null, sp.elevation > 0 ? `太陽高度 ${sp.elevation.toFixed(1)}°／方位 ${dirName(sp.azimuth)}（${sp.azimuth.toFixed(0)}°）` : '日没後・日の出前'),
+        h('div', null, sp.elevation > 0 ? `太陽高度 ${sp.elevation.toFixed(1)}°／方位 ${dirName(sp.azimuth)}（${sp.azimuth.toFixed(0)}°）${behindHill ? '　山の陰（遠くの地形に遮られています）' : ''}` : '日没後・日の出前'),
         h('div', { style: 'color:#8b9098' }, `日の出 ${formatHM(rs.sunrise)}／南中 ${formatHM(rs.noon)}／日の入 ${formatHM(rs.sunset)}`),
         h('div', { style: 'color:#8b9098' }, `昼の長さ ${formatHM(rs.sunset - rs.sunrise).replace(':', '時間')}分`),
       );
@@ -973,6 +984,8 @@ export const sunStep: Step = {
       },
       loadAerial: () => loadAerial(),
       loadNeighbors: (src) => loadNeighbors(src),
+      terrainOn: () => sc.state.showTerrain,
+      loadTerrain: () => loadTerrain(),
     };
     /** 微調整・敷地をクリック・2 点合わせの後の読み直し（周辺建物は自動取得の建物があるときだけ取り直す） */
     const reloadContext = () => reloadSurroundings(surroundingsDeps, 'adjust');
@@ -1301,6 +1314,54 @@ export const sunStep: Step = {
     );
 
     // 周辺環境
+    /**
+     * 地形（国土地理院の標高タイル ±320 m と遠方 ±10 km の地平線）。右パネルの地形の行に進み具合を出し、失敗したら案内して平らな地面で続ける。
+     * 前の取得が進行中なら中止して置き換える（建設地の変更・微調整の連打）
+     */
+    let terrainCurrent: AbortController | null = null;
+    const terrainNote = h('div', { class: 'sun-src-notes terrain-note' });
+    const renderTerrainNote = (progress?: string) => {
+      clear(terrainNote);
+      if (progress) {
+        terrainNote.appendChild(h('div', { class: 'hint' }, progress));
+        return;
+      }
+      const t = sc.terrain;
+      if (!t) {
+        if (sc.state.showTerrain) terrainNote.appendChild(h('div', { class: 'hint' }, '地形（標高）はまだ読み込んでいません。建設地を決めて「周辺建物を取得」すると国土地理院の標高データを読み込みます。'));
+        return;
+      }
+      terrainNote.appendChild(h('div', { class: 'src' }, terrainStatusText(t.stats) + (sc.state.showTerrain ? '' : '（今は切っています: 平らな地面として計算）')));
+      if (t.horizon && sc.state.showTerrain) {
+        const peak = Math.max(...Array.from(t.horizon.elevDeg));
+        if (peak >= 2) terrainNote.appendChild(h('div', null, `遠くの山並み（±${t.horizon.radiusKm} km）も見ています: 地平線の仰角は最大 ${peak.toFixed(1)}°。太陽がその下にある時刻は「山の陰」として日当たりから除きます。`));
+      }
+      if (hasRelief(t.stats) && sc.state.showTerrain) terrainNote.appendChild(h('div', null, '周辺建物は地形の足元の高さに置き、高台の建物は足元の分だけ高い建物として影を数えます。敷地のすぐまわり（30 m）は「敷地と道路の高低差」の設定が優先です。'));
+    };
+    const loadTerrain = async () => {
+      terrainCurrent?.abort(supersededError());
+      const ac = new AbortController();
+      terrainCurrent = ac;
+      renderTerrainNote('地形（標高）を取得しています…');
+      try {
+        const r = await sc.loadTerrain({ signal: ac.signal, onProgress: (m) => renderTerrainNote(m) });
+        invalidateResults();
+        apply(true);
+        if (hasRelief(r.stats)) toast(`地形を読み込みました: ${terrainMetaText(r.stats)}（${terrainStatusText(r.stats).replace(/^地形: /, '')}）`, 'info', 9000);
+      } catch (e) {
+        if (ac.signal.aborted || isAbortError(e)) return;
+        console.warn('地形の取得に失敗', e);
+        toast(`地形（標高）を取得できませんでした: ${(e as Error).message}。平らな地面として続けます`, 'info', 8000);
+      } finally {
+        if (terrainCurrent === ac) terrainCurrent = null;
+        renderTerrainNote();
+      }
+    };
+    /** 地形を出す設定で、まだ読み込んでいなければ読み込む（周辺建物を取る前に: 足元の高さ・遠くまで取るかの判断に使う） */
+    const ensureTerrain = async () => {
+      if (sc.state.showTerrain && !sc.state.terrainLoaded && state.site.address !== DEFAULT_SITE.address) await loadTerrain();
+    };
+    sc.onTerrainChange = () => renderTerrainNote();
     const loadAerial = async () => {
       try {
         attribution.textContent = await sc.loadAerial('photo');
@@ -1351,6 +1412,8 @@ export const sunStep: Step = {
      * 前の取得が進行中なら中止して置き換える（古いピンで始めた取得が後から終わって一覧を上書きしないように。置き換えの中止は案内を出さない）
      */
     const loadNeighbors = async (src: NeighborSourceChoice) => {
+      // 地形を出す設定なら先に地形（高台の建物を遠くまで取るか・足元の高さに使う）
+      await ensureTerrain();
       if (nbCurrent) {
         nbCurrent.pm.close();
         nbCurrent.ac.abort(supersededError());
@@ -1387,16 +1450,16 @@ export const sunStep: Step = {
     const dirSel = h('select', null, ['北', '北東', '東', '南東', '南', '南西', '西', '北西'].map((d, i) => h('option', { value: i * 45, selected: d === '南' }, d))) as HTMLSelectElement;
     const distIn = h('input', { type: 'number', value: 9, min: 2, max: 60 }) as HTMLInputElement;
     const hIn = h('input', { type: 'number', value: 7, min: 2, max: 60 }) as HTMLInputElement;
-    const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showStreets' | 'showSunPath', HTMLInputElement>> = {};
+    const toggleInputs: Partial<Record<'showAerial' | 'showNeighbors' | 'showStreets' | 'showSunPath' | 'showTerrain', HTMLInputElement>> = {};
     // 想定の家の区画の破線の表示を合わせる（実体は想定の家のブロックで入れる）
     let syncPlannedVisual: () => void = () => {};
     const toggles = h(
       'div',
       null,
-      ...(['showAerial', 'showNeighbors', 'showStreets', 'showSunPath'] as const).map((k) =>
+      ...(['showAerial', 'showNeighbors', 'showTerrain', 'showStreets', 'showSunPath'] as const).map((k) =>
         h(
           'label',
-          { class: 'check' },
+          { class: 'check', ...(k === 'showTerrain' ? { title: '国土地理院の標高データ（1〜10 m メッシュ。地域で最も細かいもの）で敷地のまわり 320 m の起伏を 3D に出し、丘・高台の影と遠くの山並み（±10 km）を部屋の日当たり・日照時間マップに入れます。切ると平らな地面として計算します' } : {}) },
           (toggleInputs[k] = h('input', {
             type: 'checkbox',
             checked: sc.state[k],
@@ -1405,10 +1468,22 @@ export const sunStep: Step = {
               sc.applyVisibility();
               // 想定の家の区画の破線は周辺の建物と一緒に出し入れする
               syncPlannedVisual();
+              if (k === 'showTerrain') {
+                // 地形は影・解析にも入るので前の結果は捨てる。まだ読んでいなければ読む。周辺建物の足元・街路の高さも変わる
+                invalidateResults();
+                if (sc.state.showTerrain && !sc.state.terrainLoaded) void ensureTerrain();
+                else {
+                  sc.buildNeighbors();
+                  sc.rebuildStreets();
+                }
+                // 地形に貼る写真は広め（±330 m）に取るので、平らな写真（±220 m）しか無ければ取り直す
+                if (sc.state.showTerrain && sc.state.aerialLoaded) void loadAerial();
+                renderTerrainNote();
+              }
               apply(true);
             },
           }) as HTMLInputElement),
-          { showAerial: '航空写真', showNeighbors: '周辺の建物', showStreets: '道路・緑地・街路樹（OpenStreetMap）', showSunPath: '太陽の通り道（冬至・春秋分・夏至）' }[k],
+          { showAerial: '航空写真', showNeighbors: '周辺の建物', showTerrain: '地形（国土地理院の標高）', showStreets: '道路・緑地・街路樹（OpenStreetMap）', showSunPath: '太陽の通り道（冬至・春秋分・夏至）' }[k],
         ),
       ),
     );
@@ -2706,6 +2781,48 @@ export const sunStep: Step = {
         streetCounts: () => sc.streetCounts,
         addManual: (dirDeg: number, dist: number, height: number) => { sc.addManualNeighbor(dirDeg, dist, 8, 8, height); invalidateResults(); apply(true); refreshSightlines(); },
         sightlines: () => state.sun.sightlines ?? [],
+        /** 建物ごとの足元の高さ（地形・高低差の設定）と敷地からの距離 */
+        bases: () => sc.state.neighbors.filter((b) => !b.planned).map((b) => { const c = ringCentroid(b.ring); return { id: b.id, dist: Math.round(Math.hypot(c.e, c.n)), base: sc.groundLevelOf(b), height: sc.heightOf(b), label: b.label }; }),
+      };
+    if (dbg)
+      dbg.terrain = {
+        info: () => (sc.terrain ? { ...sc.terrain.stats, horizon: !!sc.terrain.horizon, horizonMax: sc.terrain.horizon ? Math.max(...Array.from(sc.terrain.horizon.elevDeg)) : 0, active: sc.terrainActive, radius: sc.neighborRadius() } : null),
+        load: () => loadTerrain(),
+        line: () => sc.terrainLine(),
+        note: () => terrainNote.textContent,
+        /** 3D の地形メッシュ（頂点数・表示・ワールドの箱） */
+        mesh: () => {
+          const m = sc.terrainGroup.children[0] as THREE.Mesh | undefined;
+          if (!m) return null;
+          const box = new THREE.Box3().setFromObject(m);
+          return { vertices: m.geometry.getAttribute('position').count, visible: m.visible, min: box.min.toArray().map((x) => Math.round(x * 10) / 10), max: box.max.toArray().map((x) => Math.round(x * 10) / 10), photo: !!(m.material as THREE.MeshStandardMaterial).map };
+        },
+        /** ワールド XZ の地形の高さ */
+        yAt: (x: number, z: number) => sc.terrainYWorld(x, z),
+        /** 方位ごとの仰角（度）: 近くの地形（±320 m の格子）と遠方の地平線（±10 km） */
+        profile: (step = 15) => {
+          const t = sc.terrain;
+          if (!t) return null;
+          const near = horizonFromGrid(t.grid, t.stats.groundElev, 15);
+          const out: Record<string, [number, number]> = {};
+          for (let a = 0; a < 360; a += step) out[a] = [Math.round(near.elevDeg[a] * 10) / 10, t.horizon ? Math.round(t.horizon.elevDeg[a] * 10) / 10 : 0];
+          return out;
+        },
+        /** 表示中の日の太陽の時刻表のうち、山の陰（遠方の地平線）で除かれた時刻 */
+        blockedHours: () => {
+          const d = sunDay();
+          const all = sunSamplesForDay(d, { stepMin: 30, minElev: 0.5, centered: false });
+          const kept = new Set(sunSamplesForDay(d, { stepMin: 30, minElev: 0.5, centered: false, horizon: sc.terrainActive ? (sc.terrain?.horizon ?? null) : null }).map((s) => s.h));
+          return all.filter((s) => !kept.has(s.h)).map((s) => `${s.h}h ${s.elev.toFixed(1)}°/${s.az.toFixed(0)}°`);
+        },
+        /** 解析の遮蔽物に入る三角形の種別ごとの数（terrain が入っているか） */
+        occluder: () => {
+          const occ = buildOccluder(v, { context: true, trees: true });
+          const out: Record<string, number> = {};
+          for (const r of occ.ranges) out[r.kind] = (out[r.kind] ?? 0) + (r.end - r.start);
+          disposeOccluder(occ);
+          return out;
+        },
       };
     if (dbg)
       dbg.neighborHide = {
@@ -2729,6 +2846,9 @@ export const sunStep: Step = {
     renderBar();
     renderHiddenList();
     renderNbNotes();
+    renderTerrainNote();
+    // 保存した案件を開いた・ステップに戻ったとき: 周辺建物はあるのに地形がまだなら裏で読む（街路と同じ）
+    if (sc.state.neighbors.some((b) => !b.planned) && !sc.state.terrainLoaded && sc.state.showTerrain && state.site.address !== DEFAULT_SITE.address) setTimeout(() => void ensureTerrain(), 0);
     // 想定の家の一覧・区画の破線（ステップを出入りしても SunContext と viewer に残っている）
     refreshPlanned();
     /** 敷地と道路・隣地の高低差: 入力（図面読込の「接道・敷地」と同じ）と、建設地が決まっていれば国土地理院の標高からの推定 */
@@ -2785,6 +2905,7 @@ export const sunStep: Step = {
         ),
         nbNotes,
         toggles,
+        terrainNote,
         earthBlock,
         h(
           'details',
@@ -2917,7 +3038,8 @@ export const sunStep: Step = {
         const max = Math.max(1, rs.sunset - rs.sunrise);
         const b = v.state!.meta.bbox;
         const mask = extPoly && extPoly.length >= 3 ? (x: number, z: number) => !pointInPolygon({ x, y: z }, extPoly) : (x: number, z: number) => !(x > b.min.x && x < b.max.x && z > b.min.z && z < b.max.z);
-        heat = heatmapMesh(g, max, 0.08, mask);
+        // 地形があれば色の面を地面に沿わせる（丘の斜面に埋まらない）
+        heat = heatmapMesh(g, max, 0.08, mask, sc.terrainActive ? (x, z) => sc.terrainYWorld(x, z) : undefined);
         v.groups.overlay.add(heat);
         heatLegend.style.display = 'flex';
         heatMax.textContent = `${max.toFixed(1)}時間`;

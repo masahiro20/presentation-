@@ -94,6 +94,8 @@ export class Viewer {
     cut: new THREE.Group(),
     landscape: new THREE.Group(),
     context: new THREE.Group(),
+    /** 日照の地形（国土地理院の標高。src/sun/context.ts が置く。解析の遮蔽物の種別 'terrain'） */
+    terrain: new THREE.Group(),
     overlay: new THREE.Group(),
     lights: new THREE.Group(),
     /** 設計の 3D データ（3DS など）で置き換えた正確な建物。setModel では消さない（src/app/externalBuilding.ts が管理） */
@@ -461,6 +463,8 @@ export class Viewer {
     this.handleGroup.name = 'handles';
     this.scene.add(this.handleGroup);
     for (const g of Object.values(this.groups)) this.root.add(g);
+    // 地形は周辺環境（context）の子: 日照ステップ以外で context を隠すと一緒に隠れる。解析の遮蔽物は groups.terrain を別の種別で焼き込む
+    this.groups.context.add(this.groups.terrain);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     this.sun.shadow.bias = -0.0002;
@@ -1543,6 +1547,21 @@ export class Viewer {
     this.fitShadowTo(c, r);
   }
 
+  /**
+   * 影の届く距離 (m): 太陽（平行光源）を影の中心からこの距離に置き、奥行きは 2.5 倍まで描く。既定 80 m（敷地のまわりの建物）。
+   * 日照の地形（丘の影が 300 m 先から届く）では SunContext が伸ばす。横の広さ（radius）は変えない:
+   * 敷地に影を落とす物は太陽から見て敷地の後ろに並ぶので、横に広げなくても入る（影の解像度を落とさない）
+   */
+  private shadowReach = 80;
+
+  /** 影の届く距離を変える（fitShadow で使う。すぐ影の範囲を作り直す） */
+  setShadowReach(reach: number) {
+    const r = Math.max(40, Math.min(2000, reach));
+    if (Math.abs(r - this.shadowReach) < 0.5) return;
+    this.shadowReach = r;
+    this.fitShadow();
+  }
+
   /** 影の範囲を中心 center・半径 radius (m) の箱にする */
   fitShadowTo(center: THREE.Vector3, radius: number) {
     const r = Math.max(1, radius);
@@ -1554,7 +1573,7 @@ export class Viewer {
     cam.top = r;
     cam.bottom = -r;
     cam.near = 0.5;
-    cam.far = 200;
+    cam.far = this.shadowReach * 2.5;
     cam.updateProjectionMatrix();
     this.sun.target.position.copy(c);
     this.setSunDirection(this.sunDir);
@@ -1565,7 +1584,7 @@ export class Viewer {
     const b = this.state?.meta.bbox;
     const c = this.shadowCenter ? this.shadowCenter.clone() : b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3();
     this.sun.target.position.copy(c);
-    this.sun.position.copy(c).addScaledVector(this.sunDir, 80);
+    this.sun.position.copy(c).addScaledVector(this.sunDir, this.shadowReach);
     const elev = Math.asin(this.sunDir.y);
     const night = this.design.timeOfDay === 'night';
     const k = night ? 0 : Math.max(0, Math.min(1, elev / 0.12));

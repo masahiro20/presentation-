@@ -25,6 +25,7 @@ import { pointInPolygon, insideLoops } from '../core/geometry';
 import { sunPosition, sunDirectionWorld, localDate, sunriseSunset, trueSolarToLocal, formatHM, winterSolstice } from './solar';
 import { bboxOf, distanceToPolygon, marchingSegments, offsetRegion, rectPolygon, segmentsToPolylines, type Pt2, type Segment } from './offset';
 import { DEFAULT_SHADOW_LEVELS, type ShadowRegulation } from './shadowRegulation';
+import { horizonElevation, type HorizonProfile } from '../sunstudy/terrain';
 
 // ---------------------------------------------------------------------------
 // 遮蔽物（BVH）
@@ -128,7 +129,7 @@ function normalizeParts(roots: THREE.Object3D[] | OccluderPart[]): OccluderPart[
  *  - opts.opaqueGlass: 窓ガラス（isGlassMesh）も不透明として焼き込む（日影図: 建物は中身の詰まった塊として影を落とし、
  *    窓から窓へ抜ける光で影の中に日向の点ができないように）
  */
-export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean; opaqueGlass?: boolean } = {}): BakedTriangles {
+export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh, part: OccluderPart) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean; opaqueGlass?: boolean } = {}): BakedTriangles {
   const parts = normalizeParts(roots);
   const ancestors = opts.ancestors !== false && !opts.ignoreVisibility;
   const ignoreVis = !!opts.ignoreVisibility;
@@ -143,7 +144,7 @@ export function bakeWorldTriangles(roots: THREE.Object3D[] | OccluderPart[], fil
       if (ancestors && !visibleUpTo(m, part.root)) return;
       const glass = !!opts.opaqueGlass && isGlassMesh(m);
       if (m.userData.noShadow && !glass) return;
-      if (filter && !filter(m)) return;
+      if (filter && !filter(m, part)) return;
       if (excludedMatKey(m) && !glass) return;
       const n = triangleCount(m.geometry);
       if (!n) return;
@@ -185,7 +186,7 @@ export function occluderFromTriangles(b: BakedTriangles): Occluder {
  *  buildOccluderFrom([group1, group2]) — 種別は root の name
  *  buildOccluderFrom([{ root, kind: 'building' }, { root, kind: 'neighbor' }]) — 種別を指定
  */
-export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean; opaqueGlass?: boolean } = {}): Occluder {
+export function buildOccluderFrom(roots: THREE.Object3D[] | OccluderPart[], filter?: (m: THREE.Mesh, part: OccluderPart) => boolean, opts: { ancestors?: boolean; ignoreVisibility?: boolean; opaqueGlass?: boolean } = {}): Occluder {
   return occluderFromTriangles(bakeWorldTriangles(roots, filter, opts));
 }
 
@@ -231,25 +232,18 @@ export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?:
     if (opts.context !== false) {
       parts.push({ root: viewer.groups.context, kind: 'neighbor' });
       filters.set(viewer.groups.context, (m) => !!m.userData.neighbor);
+      // 地形（国土地理院の標高。日照ステップの SunContext が置く）。地形を切っているときはメッシュ自身が非表示なので入らない
+      const terrain = (viewer.groups as Partial<Record<'terrain', THREE.Object3D>>).terrain;
+      if (terrain) parts.push({ root: terrain, kind: 'terrain' });
     }
     if (opts.trees) {
       parts.push({ root: viewer.groups.landscape, kind: 'tree' });
       filters.set(viewer.groups.landscape, (m) => (m.userData.matKey ?? '').startsWith('l.leaf') || m.userData.matKey === 'l.trunk');
     }
   }
-  // root ごとに別のフィルタ: メッシュの祖先からどの root に属するかを調べる
-  const rootOf = (m: THREE.Object3D): THREE.Object3D | null => {
-    let p: THREE.Object3D | null = m;
-    while (p) {
-      if (filters.has(p)) return p;
-      p = p.parent;
-    }
-    return null;
-  };
-  const filter = filters.size ? (m: THREE.Mesh) => {
-    const r = rootOf(m);
-    return r ? filters.get(r)!(m) : true;
-  } : undefined;
+  // root ごとに別のフィルタ（焼き込み中の part で引く）。地形のグループは context の子なので、context の走査では
+  // userData.neighbor の無い地形は入らず、地形の part の走査でだけ入る（二重に焼き込まない）
+  const filter = filters.size ? (m: THREE.Mesh, part: OccluderPart) => filters.get(part.root)?.(m) ?? true : undefined;
   // 既存の挙動: 各メッシュ自身の visible だけを見る（グループの表示切替は影響しない）
   return buildOccluderFrom(parts, filter, { ancestors: false, opaqueGlass: opts.opaqueGlass });
 }
@@ -333,22 +327,39 @@ export interface SunSample {
 }
 
 /**
+ * 遠方の地形による地平線（方位ごとの仰角。日照ステップの SunContext が地形を読み込んだときに viewer.userData.sunHorizon に置く）。
+ * 部屋の日当たり・日照時間マップは、太陽がこの仰角より低い時刻を「山の陰」として除く。日影図（法規の計算）は使わない
+ */
+export function farHorizonOf(viewer: Viewer): HorizonProfile | null {
+  return (viewer.userData.sunHorizon as HorizonProfile | null | undefined) ?? null;
+}
+
+/** 地形の高さ（ワールド XZ → y。日照ステップの SunContext が置く）。無ければ 0（平らな地面） */
+export function terrainHeightAt(viewer: Viewer): (x: number, z: number) => number {
+  const f = viewer.userData.terrainYWorld as ((x: number, z: number) => number) | null | undefined;
+  return f ?? (() => 0);
+}
+
+/**
  * 1 日の太陽方向の時刻表。
  *  from/to: 範囲 (h)。省略時は日の出〜日の入
  *  centered: true なら from + step/2 から step ごと（格子の積算向け）。false なら step の倍数の時刻（from 以上 to 以下）
  *  minElev: この高度 (度) 以下の時刻は除く（既定 0.5）
+ *  horizon: 遠方の地形の地平線。太陽がその方位の仰角以下の時刻は除く（山の陰）
  */
-export function sunSamplesForDay(day: SunDay, opts: { from?: number; to?: number; stepMin: number; minElev?: number; centered?: boolean }): SunSample[] {
+export function sunSamplesForDay(day: SunDay, opts: { from?: number; to?: number; stepMin: number; minElev?: number; centered?: boolean; horizon?: HorizonProfile | null }): SunSample[] {
   const step = opts.stepMin / 60;
   const needRs = opts.from === undefined || opts.to === undefined;
   const rs = needRs ? sunriseSunset(day.year, day.month, day.day, day.lat, day.lon) : null;
   const from = opts.from ?? rs!.sunrise;
   const to = opts.to ?? rs!.sunset;
   const minElev = opts.minElev ?? 0.5;
+  const hz = opts.horizon ?? null;
   const out: SunSample[] = [];
   const push = (h: number) => {
     const sp = sunPosition(localDate(day.year, day.month, day.day, h), day.lat, day.lon);
     if (sp.elevation <= minElev) return;
+    if (hz && sp.elevation <= horizonElevation(hz, sp.azimuth)) return;
     out.push({ h, dir: sunDirectionWorld(sp.azimuth, sp.elevation, day.northAngleDeg), elev: sp.elevation, az: sp.azimuth });
   };
   if (opts.centered) {
@@ -399,7 +410,7 @@ export async function analyzeRooms(viewer: Viewer, day: SunDay, opts: { stepMin?
   const occ = buildOccluder(viewer, { context: true, trees: false, external: opts.external });
   const step = (opts.stepMin ?? 10) / 60;
   const spacing = opts.spacing ?? 0.35;
-  const times = sunSamplesForDay(day, { stepMin: opts.stepMin ?? 10, minElev: 0.5, centered: false });
+  const times = sunSamplesForDay(day, { stepMin: opts.stepMin ?? 10, minElev: 0.5, centered: false, horizon: farHorizonOf(viewer) });
   const out: RoomSunResult[] = [];
   const rooms = st.meta.rooms.filter((r) => isHabitable(r.room.type) || r.room.type === 'entrance' || r.room.type === 'hall');
   let done = 0;
@@ -518,15 +529,17 @@ export async function groundSunHours(viewer: Viewer, day: SunDay, opts: { from?:
   const nx = Math.ceil((half * 2) / cell);
   const nz = nx;
   const stepMin = opts.stepMin ?? 15;
-  const samples = sunSamplesForDay(day, { from: opts.from, to: opts.to, stepMin, minElev: 0.5, centered: true });
+  const samples = sunSamplesForDay(day, { from: opts.from, to: opts.to, stepMin, minElev: 0.5, centered: true, horizon: farHorizonOf(viewer) });
   const y = opts.height ?? 0.05;
-  const g = await sunHoursGrid(occ, samples, { x0: c.x - half, z0: c.z - half, cell, nx, nz }, () => y, { onProgress: opts.onProgress, stepHours: stepMin / 60 });
+  // 測定点は地形の面の少し上（敷地の外で地面が上がっていても、地形の中から測らない）
+  const ground = terrainHeightAt(viewer);
+  const g = await sunHoursGrid(occ, samples, { x0: c.x - half, z0: c.z - half, cell, nx, nz }, (x, z) => y + ground(x, z), { onProgress: opts.onProgress, stepHours: stepMin / 60 });
   disposeOccluder(occ);
   return g;
 }
 
 /** 日照時間マップをテクスチャ付きの面にする */
-export function heatmapMesh(g: GridResult, maxHours: number, y = 0.06, mask?: (x: number, z: number) => boolean): THREE.Mesh {
+export function heatmapMesh(g: GridResult, maxHours: number, y = 0.06, mask?: (x: number, z: number) => boolean, heightAt?: (x: number, z: number) => number): THREE.Mesh {
   const c = document.createElement('canvas');
   c.width = g.nx;
   c.height = g.nz;
@@ -552,8 +565,15 @@ export function heatmapMesh(g: GridResult, maxHours: number, y = 0.06, mask?: (x
   tex.flipY = false;
   const w = g.nx * g.cell;
   const h = g.nz * g.cell;
-  const geo = new THREE.PlaneGeometry(w, h);
+  // 地形があれば格子の頂点を地面の高さに沿わせる（セルごとの頂点）。無ければ平らな 1 枚
+  const geo = heightAt ? new THREE.PlaneGeometry(w, h, g.nx, g.nz) : new THREE.PlaneGeometry(w, h);
   geo.rotateX(-Math.PI / 2);
+  if (heightAt) {
+    const pos = geo.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) pos.setY(i, heightAt(pos.getX(i) + g.x0 + w / 2, pos.getZ(i) + g.z0 + h / 2));
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
   // PlaneGeometry の UV: v=1 が +Y(→ -Z)。flipY=false なので行0 = v0 = +Z 側…を合わせる
   const uv = geo.getAttribute('uv');
   for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));

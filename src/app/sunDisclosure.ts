@@ -151,6 +151,11 @@ export interface SunDisclosure {
    * PLATEAU があればその共通の開示文）。影・解析に入れた建物が無ければ省く（古い写しにも無い）
    */
   sources?: string[];
+  /**
+   * 地形（国土地理院の標高）の行: 影・解析に含めたか、まわりの高低差（「地形: 国土地理院 DEM5A（5m メッシュ）の起伏を影・解析に含めています（…）」）。
+   * 地形を読み込んでいなければ省く（古い写しにも無い）
+   */
+  terrain?: string;
 }
 
 /** 周辺建物が無い（日照ステップで読み込んでいない）ときの扱い */
@@ -167,6 +172,8 @@ export interface DisclosureSource {
   effective?(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean };
   /** 想定の家を影・解析に含めるか（SunContext.plannedEnabled。無ければ含める） */
   plannedEnabled?: boolean;
+  /** 地形の行（SunContext.terrainLine。読み込んでいなければ null） */
+  terrainLine?(): string | null;
 }
 
 /** 今の周辺建物の扱いを写す（null = 周辺建物を読み込んでいない） */
@@ -208,6 +215,8 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
   if (planned) out.planned = { count: planned, enabled: plannedOn };
   const sources = sourceLines(included);
   if (sources.length) out.sources = sources;
+  const terrain = sc.terrainLine?.();
+  if (terrain) out.terrain = terrain;
   return out;
 }
 
@@ -250,10 +259,12 @@ export type DisclosureTarget = 'rooms' | 'heatmap' | 'diagram' | 'deck';
 export function disclosureLines(d: SunDisclosure, target: DisclosureTarget): string[] {
   const hidden = d.excluded.length + d.viewOnly.length;
   const pl = plannedLine(d);
-  const rest = [...(d.sources ?? []), excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
+  // 日影図は計画建物だけの影（法規の計算）なので地形の行は出さない
+  const terrain = target === 'diagram' ? null : d.terrain;
+  const rest = [...(d.sources ?? []), terrain, excludedLine(d), viewOnlyLine(d), pl].filter((x): x is string => !!x);
   if (target === 'diagram') return [DIAGRAM_NEIGHBORS_NOTE, ...rest];
   const what = target === 'rooms' ? '部屋の日当たり' : target === 'heatmap' ? '日照時間マップ' : '日当たりの解析';
-  if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`, ...(pl ? [pl] : [])];
+  if (!d.included && !hidden) return [`※${what}は周辺建物を読み込まずに計算しています（計画建物の影のみ）`, ...(terrain ? [terrain] : []), ...(pl ? [pl] : [])];
   return [`※${what}は周辺建物 ${d.included} 棟の影を含めて計算しています`, ...rest];
 }
 

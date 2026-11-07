@@ -37,6 +37,8 @@ export interface ProjectState {
   autoRun?: 'draft' | 'photo';
   /** 提案資料に資金計画（概算）のページを入れる */
   deckFunding?: boolean;
+  /** 提案資料の出し方: 出すページの選び方と、建築概要の上書き（右のメモ） */
+  deck?: DeckOptions;
   /** 会社情報（見積書・資金計画書の発行者欄） */
   companyRep?: string;
   companyAddress?: string;
@@ -84,6 +86,19 @@ export interface ProjectState {
   estimate: EstimateState | null;
   /** コーディネートの段取り（部位ごとの候補・決定・お客様の選択） */
   coord: CoordState;
+}
+
+/**
+ * 提案資料の出し方。
+ * pages: 'all' = すべてのページ、'summary' = 表紙・理念・私たちのアプローチ・建築概要・締めだけ（会社紹介と概要の提出・記録用）、
+ * 'custom' = custom に入れた id のページだけ。
+ * overview: 建築概要の項目の上書き（項目名 → 値。空なら自動の値、「×」でその行を消す）。overviewExtra: 足す行（1 行に 1 項目「項目：値」）
+ */
+export interface DeckOptions {
+  pages?: 'all' | 'summary' | 'custom';
+  custom?: string[];
+  overview?: Record<string, string>;
+  overviewExtra?: string;
 }
 
 /** 図面シートの配置の手直し。offsets は図面のパネル（1 階・2 階 …）ごとの紙の上のずらし (mm) */

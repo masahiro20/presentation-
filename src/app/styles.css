@@ -366,6 +366,14 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .slide.hl-overview .ov dt { color: var(--ink-2); }
 .slide.hl-overview .ov dd { margin: 0; }
 .slide.hl-overview .ph { position: relative; }
+/* 建築概要の行が多いとき（右のメモで足したとき）は詰める */
+.slide.hl-overview .ov.many { row-gap: 0.9cqw; font-size: 1.1cqw; grid-template-columns: 12cqw 1fr; }
+.slide.hl-overview .ov.many dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 資料の「出すページ」の一覧（右パネル） */
+.page-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 0; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.page-list label { display: flex; gap: 8px; align-items: center; font-size: 12.5px; line-height: 1.6; }
+.page-list label.off { color: var(--ink2); }
+.page-list .no { width: 2em; color: var(--ink2); font-variant-numeric: tabular-nums; }
 .slide.hl-budget .ov { grid-template-columns: 16cqw 1fr; row-gap: 1.1cqw; }
 .slide.hl-budget .ov dd { font-variant-numeric: tabular-nums; text-align: right; padding-right: 2cqw; }
 .slide.hl-budget .ov dd.total { font-weight: 600; border-top: 1px solid var(--hair); padding-top: 0.6cqw; }
@@ -476,6 +484,7 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .slide video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .deck-tools { position: absolute; left: 0; right: 0; top: 14px; z-index: 5; display: flex; gap: 8px; justify-content: center; pointer-events: none; }
 .deck-tools .btn { pointer-events: auto; box-shadow: var(--shadow); }
+.deck-tools .deck-mode { align-self: center; font-size: 12px; color: #fff; background: rgba(0, 0, 0, 0.45); padding: 4px 10px; border-radius: 999px; }
 .deck { padding-top: 76px; }
 body.presenting .topbar, body.presenting .side { display: none; }
 body.presenting #app { grid-template-rows: 1fr; }

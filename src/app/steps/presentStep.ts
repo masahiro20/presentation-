@@ -26,6 +26,7 @@ import { siteLatLon } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
 import { activeSunContext } from './sunStep';
 import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine, type SunDisclosure } from '../sunDisclosure';
+import { SUMMARY_PAGES, applyOverviewMemo, selectedPageIds } from '../../core/deckOverview';
 
 /** 日当たりを設計の 3D データ（3DS）で解析しているときに資料に添える注記 */
 export const SUN_EXTERNAL_CAPTION = '日当たりは設計 3D データ（3DS）で解析';
@@ -205,6 +206,29 @@ function head(_no: number, en: string, ja: string) {
   return h('div', { class: 'hl-head' }, h('div', { class: 'en' }, en.toUpperCase()), h('h2', null, ja), h('div', { class: 'hl-rule' }));
 }
 
+/** 建築概要の自動の行（読み取った間取り・テイストから）。右のメモの上書きはこの上に当てる */
+export function overviewAutoRows(): [string, string][] {
+  const model = state.model;
+  if (!model) return [];
+  const { ext, int } = stylesFor(state.design);
+  const rooms = model.floors.flatMap((f) => f.rooms);
+  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0), 0);
+  const ldk = rooms.find((r) => r.type === 'ldk' || r.type === 'living');
+  const f1 = model.floors[0];
+  const buildArea = f1 ? f1.rooms.filter((r) => !['balcony', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0) : 0;
+  const ov: [string, string][] = [
+    ['敷地所在地', state.site.address && !/（仮）/.test(state.site.address) ? state.site.address : '—'],
+    ['建築面積', `${buildArea.toFixed(2)} ㎡`],
+    ['延床面積', `${totalArea.toFixed(2)} ㎡（約 ${(totalArea / 3.30579).toFixed(1)} 坪）`],
+    ['構造', 'ＳＥ構法'],
+    ['規模', `${model.floors.length}階建て`],
+    ['主要用途', '住宅'],
+  ];
+  if (ldk) ov.push([ldk.name.normalize('NFKC'), `${(ldk.labeledTatami ?? ldk.area / 1.62).toFixed(1)} 帖`]);
+  ov.push(['外観', ext.name], ['内観', int.name]);
+  return ov;
+}
+
 /** 外観・内観のテイストと間取りから、提案の言葉を組み立てる */
 function conceptCopy(extName: string, intName: string, hasCourt: boolean, hasVoid: boolean, floors: number) {
   const lead = hasVoid ? '光が降りそそぐ吹抜けと、\n余白を楽しむ住まい。' : hasCourt ? '中庭の光と緑を、\n暮らしの中心に。' : floors >= 2 ? '端正なかたちに、\nやわらかな光を纏う家。' : '水平にひろがる、\n穏やかでのびやかな平屋。';
@@ -218,9 +242,40 @@ function sunNote(d: SunDisclosure, target: 'deck' | 'diagram') {
 }
 
 /**
- * プレゼン資料のページ。opts.disclosure: 今の周辺建物の扱い（state.sun.disclosure が無いときに使う）
+ * プレゼン資料のページ（出すページの選択を当て、ページ番号を付けたもの）。
+ * opts.disclosure: 今の周辺建物の扱い（state.sun.disclosure が無いときに使う）
  */
 export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTMLElement[] {
+  return finishDeck(buildDeckAll(opts));
+}
+
+/** 出すページの選択（state.deck）を当てて、ページ番号と事務所名を付ける */
+export function finishDeck(all: HTMLElement[]): HTMLElement[] {
+  const ids = all.map((s) => s.dataset.page ?? '');
+  const keep = selectedPageIds(state.deck, ids);
+  const slides = keep ? all.filter((s) => keep.has(s.dataset.page ?? '')) : all;
+  const brand = state.company || '';
+  slides.forEach((s) => {
+    s.querySelectorAll(':scope > .pageno, :scope > .brandline').forEach((x) => x.remove());
+  });
+  slides.forEach((s, i) => {
+    const dark = s.classList.contains('cover') || s.classList.contains('full');
+    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover')) s.appendChild(h('div', { class: `pageno ${dark ? 'light' : ''}` }, `${String(i + 1).padStart(2, '0')} / ${String(slides.length).padStart(2, '0')}`));
+    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover') && brand && !s.classList.contains('full')) s.appendChild(h('div', { class: 'brandline' }, brand));
+  });
+  return slides;
+}
+
+/** 出すページの選び方の表示名 */
+export function deckModeLabel(): string {
+  const m = state.deck?.pages ?? 'all';
+  return m === 'summary' ? '概要版（表紙・理念・アプローチ・建築概要・締め）' : m === 'custom' ? '選んだページ' : 'すべてのページ';
+}
+
+/**
+ * プレゼン資料のすべてのページ（選択・番号付けの前）。各ページに data-page（id）と data-title（一覧用の名前）を付ける
+ */
+export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): HTMLElement[] {
   const model = state.model!;
   const { ext, int } = stylesFor(state.design);
   const extAll = pick('exterior');
@@ -230,12 +285,14 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   // 輪切りの模型・断面パースは資料に載せない（作りかけに見える。間取りは平面図のページで伝える）
   const hero = exts[0] ?? aerial ?? ints[0];
   const slides: HTMLElement[] = [];
-  const brand = state.company || '';
+  const add = (id: string, title: string, el: HTMLElement) => {
+    el.dataset.page = id;
+    el.dataset.title = title;
+    slides.push(el);
+  };
   const today = new Date();
   const dateStr = `${today.getFullYear()}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}`;
   const rooms = model.floors.flatMap((f) => f.rooms);
-  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0), 0);
-  const ldk = rooms.find((r) => r.type === 'ldk' || r.type === 'living');
   const tatami = (r: { labeledTatami?: number; area: number }) => (r.labeledTatami ?? r.area / 1.62).toFixed(1);
   const hasVoid = rooms.some((r) => r.type === 'void');
   const hasCourt = rooms.some((r) => /中庭/.test(r.name));
@@ -256,7 +313,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   const office = state.company || 'ホームランディック一級建築士事務所';
   const kind = state.gallery.length ? 'PRESENTATION' : 'FIRST PLAN';
   // 表紙（白地・中央に小さく。社内の提案書と同じ書式）
-  slides.push(
+  add(
+    'cover',
+    '表紙',
     slide(
       'hl hl-cover',
       h(
@@ -270,38 +329,35 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     ),
   );
   // 理念・アプローチ
-  slides.push(
+  add(
+    'philosophy',
+    '理念',
     slide('hl hl-text', head(0, 'Philosophy', '理念'), h('div', { class: 'body' }, h('p', null, '私たちは『ご家族の暮らしをデザインする』を信条に、'), h('p', null, '本当に住みたい家　性能とデザインを両立した住まいを提供します。'))),
   );
-  slides.push(
+  add(
+    'approach',
+    '私たちのアプローチ',
     slide(
       'hl hl-text',
       head(0, 'Our Approach', '私たちのアプローチ'),
       h('div', { class: 'body' }, h('p', null, '1.　性能の高い住まい（断熱・気密・耐震）'), h('p', null, '2.　意匠デザインで「器」ではなく「体験」を設計'), h('p', null, 'ご家族と共に、唯一無二の空間を共創します。')),
     ),
   );
-  // 建築概要（読み取った間取りから）
-  const f1 = model.floors[0];
-  const buildArea = f1 ? f1.rooms.filter((r) => !['balcony', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0) : 0;
-  const ov: [string, string][] = [
-    ['敷地所在地', state.site.address && !/（仮）/.test(state.site.address) ? state.site.address : '—'],
-    ['建築面積', `${buildArea.toFixed(2)} ㎡`],
-    ['延床面積', `${totalArea.toFixed(2)} ㎡（約 ${(totalArea / 3.30579).toFixed(1)} 坪）`],
-    ['構造', 'ＳＥ構法'],
-    ['規模', `${model.floors.length}階建て`],
-    ['主要用途', '住宅'],
-  ];
-  if (ldk) ov.push([ldk.name.normalize('NFKC'), `${tatami(ldk)} 帖`]);
-  ov.push(['外観', ext.name], ['内観', int.name]);
-  slides.push(
+  // 建築概要（読み取った間取りから。右のメモで項目ごとに上書き・追加できる）
+  const ov = applyOverviewMemo(overviewAutoRows(), state.deck?.overview, state.deck?.overviewExtra);
+  add(
+    'overview',
+    '建築概要',
     slide(
       'hl hl-overview',
-      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: 'ov' }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
+      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: `ov ${ov.length > 9 ? 'many' : ''}` }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
       h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
     ),
   );
   // 仕上げ・設備（コーディネート: メーカー・品番）
-  slides.push(
+  add(
+    'finish',
+    '仕上げ・設備',
     slide(
       'hl hl-finish',
       h(
@@ -328,15 +384,17 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   void chapters;
   // パース: 1 枚ずつ全面に、画だけで見せる（「道路側」「下絵」などの社内向けの文字は載せない）
   const full = (g: GalleryItem) => slide('hl full', photo(g));
-  for (const g of [...exts, ...(aerial ? [aerial] : [])]) slides.push(full(g));
-  for (const g of ints) slides.push(full(g));
+  [...exts, ...(aerial ? [aerial] : [])].forEach((g, i) => add(`photo-ext-${i}`, `外観パース: ${g.title}`, full(g)));
+  ints.forEach((g, i) => add(`photo-int-${i}`, `内観パース: ${g.title}`, full(g)));
   // 間取り: 1 階ずつ 1 枚に、図面を大きく。左に階の部屋と広さ
   if (state.plans.length) {
     const n = no('Floor Plan');
     model.floors.forEach((f, fi) => {
       const list = f.rooms.filter((r) => r.area > 2 && !['void', 'stairs'].includes(r.type)).sort((a, b) => b.area - a.area);
       const area = f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0);
-      slides.push(
+      add(
+        `plan-${f.level}`,
+        `${f.level}階 間取り`,
         slide(
           'drawing plan-one',
           h(
@@ -366,7 +424,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       const f = model.floors.find((x) => x.level === level) ?? model.floors[0];
       const svg = overlayRoutes(floorPlanSvg(model, f, { showLandscape: false, showRoad: false, showFurniture: true }), f.level, routes);
       const adj = state.wishes?.trim() ? checkWishes(model, parseWishes(state.wishes).filter((w) => w.kind === 'adjacent' || w.kind === 'corridor'), {}) : [];
-      slides.push(
+      add(
+        'routes',
+        '暮らしの動線',
         slide(
           'drawing plan-one routes-slide',
           h(
@@ -408,7 +468,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const f = model.floors.find((x) => x.level === level) ?? model.floors[0];
     const svg = overlaySightlines(floorPlanSvg(model, f, { showLandscape: false, showRoad: false, showFurniture: true }), f.level, sight);
     const others = [...new Set(sight.filter((i) => i.level !== f.level).map((i) => i.level))];
-    slides.push(
+    add(
+      'privacy',
+      '窓と隣家の視線',
       slide(
         'drawing plan-one sight-slide',
         h(
@@ -439,7 +501,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const changes = diffPlans(prev, planSummary(model, state.pdfName ?? '今回', estimateSummary()?.grand));
     if (changes.length) {
       chapters.push({ en: 'Changes', ja: '前回からの変更' });
-      slides.push(
+      add(
+        'changes',
+        '前回からの変更',
         slide(
           'hl hl-overview hl-wishes',
           h(
@@ -470,7 +534,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const notes = rs.filter((r) => r.status === 'na').slice(0, 5);
     if (shown.length || notes.length) {
       const mark = (st: WishResult['status']) => (st === 'ok' ? '✓' : st === 'check' ? '△' : st === 'ng' ? '－' : '…');
-      slides.push(
+      add(
+        'wishes',
+        'ご要望との照合',
         slide(
           'hl hl-overview hl-wishes',
           h(
@@ -491,14 +557,16 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
     const n = no('Drawings');
     const order = ['south', 'east', 'north', 'west'];
     const els = [...state.elevations].sort((a, b) => order.indexOf(a.dir) - order.indexOf(b.dir));
-    slides.push(slide('drawing elev-grid', h('div', { style: 'min-height:0;overflow:hidden' }, head(n, 'Elevation', '立面図'), h('p', null, '東西南北の 4 面です。屋根のかたち・窓の並び・高さの関係をご覧ください。')), h('div', { class: 'elev4' }, ...els.map((e) => h('div', { class: 'svgbox', html: e.svg })))));
+    add('elevations', '立面図', slide('drawing elev-grid', h('div', { style: 'min-height:0;overflow:hidden' }, head(n, 'Elevation', '立面図'), h('p', null, '東西南北の 4 面です。屋根のかたち・窓の並び・高さの関係をご覧ください。')), h('div', { class: 'elev4' }, ...els.map((e) => h('div', { class: 'svgbox', html: e.svg })))));
   }
   // 光と日当たり
   if (state.sun.seasons.length || state.sun.images.length) {
     const winter = state.sun.seasons.find((x) => x.id === 'winter') ?? state.sun.seasons[0];
     // 周辺建物の扱い（計算から除外した建物の理由ごとの棟数・表示だけ隠した建物の棟数）を日照のページすべてに添える
     const disc = deckDisclosure(state.sun.disclosure, opts.disclosure);
-    slides.push(
+    add(
+      'sun',
+      '光と日当たり',
       slide(
         'sun',
         h(
@@ -516,12 +584,14 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
             : null,
       ),
     );
-    if (state.sun.diagramSvg) slides.push(slide('sun', h('div', null, head(no('Sunlight'), 'Shadow Study', '日影図（冬至）'), h('p', null, '冬至の日に、建物がまわりへ落とす影の範囲を時刻ごとに示しています。'), sunNote(disc, 'diagram')), h('div', { class: 'svgfit', html: state.sun.diagramSvg })));
+    if (state.sun.diagramSvg) add('shadow', '日影図（冬至）', slide('sun', h('div', null, head(no('Sunlight'), 'Shadow Study', '日影図（冬至）'), h('p', null, '冬至の日に、建物がまわりへ落とす影の範囲を時刻ごとに示しています。'), sunNote(disc, 'diagram')), h('div', { class: 'svgfit', html: state.sun.diagramSvg })));
     // 計算から除外した周辺建物の表（出典・高さ・理由・方向と距離）
     const rows = excludedTableRows(disc);
     for (let i = 0; i < rows.length; i += EXCLUDED_ROWS_PER_SLIDE) {
       const part = rows.slice(i, i + EXCLUDED_ROWS_PER_SLIDE);
-      slides.push(
+      add(
+        `excluded-${i / EXCLUDED_ROWS_PER_SLIDE + 1}`,
+        `計算から除外した周辺建物${rows.length > EXCLUDED_ROWS_PER_SLIDE ? `（${i / EXCLUDED_ROWS_PER_SLIDE + 1}）` : ''}`,
         slide(
           'sun sun-excluded',
           h(
@@ -549,7 +619,7 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
   // 「上質を支える納まり」のページは載せない（お客様には仕上げ・パースで伝わる）
   // 動画
   if (state.videos.length) {
-    slides.push(slide('full', h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Movie'), h('h3', { class: 'serif' }, state.videos[0].title))));
+    add('video', '動画', slide('full', h('video', { src: state.videos[0].url, controls: true, muted: true, loop: true, poster: hero?.url }), h('div', { class: 'capbox' }, h('div', { class: 'latin' }, 'Movie'), h('h3', { class: 'serif' }, state.videos[0].title))));
   }
   // 締め（社内の提案書と同じ: 言葉・事務所・担当・連絡先）
   const contact: [string, string | undefined][] = [
@@ -573,7 +643,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
         ['⑥ ローン諸費用', yenJ(sm.sub6)],
         ['総合計', yenJ(sm.grand)],
       ];
-      slides.push(
+      add(
+        'budget',
+        '資金計画（概算）',
         slide(
           'hl hl-overview hl-budget',
           h(
@@ -588,7 +660,9 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       );
     }
   }
-  slides.push(
+  add(
+    'close',
+    '締め（事務所・担当・連絡先）',
     slide(
       'hl hl-cover hl-close',
       h(
@@ -601,11 +675,6 @@ export function buildDeck(opts: { disclosure?: SunDisclosure | null } = {}): HTM
       ),
     ),
   );
-  slides.forEach((s, i) => {
-    const dark = s.classList.contains('cover') || s.classList.contains('full');
-    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover')) s.appendChild(h('div', { class: `pageno ${dark ? 'light' : ''}` }, `${String(i + 1).padStart(2, '0')} / ${String(slides.length).padStart(2, '0')}`));
-    if (!s.classList.contains('cover') && !s.classList.contains('hl-cover') && brand && !s.classList.contains('full')) s.appendChild(h('div', { class: 'brandline' }, brand));
-  });
   return slides;
 }
 
@@ -660,7 +729,8 @@ async function exportHtml(slides: HTMLElement[]) {
   const body = slides.map((s) => s.outerHTML).join('\n');
   const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${state.name}</title><link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Shippori+Mincho:wght@400;500;600&family=Cormorant+Garamond:wght@300;400;500&display=swap" rel="stylesheet"><style>${css}\nbody{overflow:auto;background:#1b1c1e;padding:24px 0}</style></head><body>${body}</body></html>`;
   const blob = new Blob([html], { type: 'text/html' });
-  download(URL.createObjectURL(blob), `${state.name}_プレゼン.html`);
+  const mode = state.deck?.pages ?? 'all';
+  download(URL.createObjectURL(blob), `${state.name}_${mode === 'summary' ? '概要版' : mode === 'custom' ? '抜粋' : 'プレゼン'}.html`);
 }
 
 export const presentStep: Step = {
@@ -719,10 +789,99 @@ export const presentStep: Step = {
         h('p', { class: 'hint' }, '外部で仕上げて取り込んだ写真がある場合は優先して使われます。印刷は A4 横に最適化されています。')
       );
     };
+    // 出すページ: すべて／概要版（表紙・理念・アプローチ・建築概要・締め）／選んだページ。資料・全画面・印刷・HTML 保存のすべてに効く
+    const modeLine = h('span', { class: 'deck-mode' });
+    ctx.stage.querySelector('.deck-tools')?.appendChild(modeLine);
+    const pagesBox = section('出すページ');
+    const deck0 = () => (state.deck ??= {});
+    const paintPages = (all: HTMLElement[], shown: HTMLElement[]) => {
+      while (pagesBox.childElementCount > 1) pagesBox.lastElementChild!.remove();
+      const mode = state.deck?.pages ?? 'all';
+      const shownIds = new Set(shown.map((s) => s.dataset.page));
+      const setMode = (m: 'all' | 'summary' | 'custom') => {
+        deck0().pages = m;
+        if (m === 'custom' && !(state.deck?.custom?.length)) deck0().custom = shown.map((s) => s.dataset.page!).filter(Boolean);
+        render();
+      };
+      pagesBox.append(
+        h(
+          'div',
+          { class: 'segmented', style: 'margin-top:4px' },
+          h('button', { class: mode === 'all' ? 'on' : '', onclick: () => setMode('all') }, 'すべて'),
+          h('button', { class: mode === 'summary' ? 'on' : '', title: '表紙・理念・私たちのアプローチ・建築概要・締めの 5 ページ（会社紹介と概要の提出・記録用）', onclick: () => setMode('summary') }, '概要版'),
+          h('button', { class: mode === 'custom' ? 'on' : '', onclick: () => setMode('custom') }, '選ぶ'),
+        ),
+        h('p', { class: 'hint', style: 'margin:4px 0 0' }, mode === 'summary' ? '表紙・理念・私たちのアプローチ・建築概要・締めだけを出します（提出・記録用）。下の一覧で足し引きすると「選ぶ」になります。' : mode === 'custom' ? '✓ のページだけを出します。' : 'すべてのページを出します。✓ を外すと「選ぶ」になります。'),
+        h(
+          'div',
+          { class: 'page-list' },
+          ...all.map((s, i) => {
+            const id = s.dataset.page ?? '';
+            const on = shownIds.has(id);
+            return h(
+              'label',
+              { class: on ? '' : 'off' },
+              h('input', {
+                type: 'checkbox',
+                checked: on,
+                onchange: (e: Event) => {
+                  const want = (e.target as HTMLInputElement).checked;
+                  const next = all.map((x) => x.dataset.page!).filter((pid) => (pid === id ? want : shownIds.has(pid)));
+                  deck0().pages = 'custom';
+                  deck0().custom = next;
+                  render();
+                },
+              }),
+              h('span', { class: 'no' }, String(i + 1).padStart(2, '0')),
+              h('span', null, s.dataset.title ?? id),
+            );
+          }),
+        ),
+      );
+    };
+    // 建築概要: 項目ごとの上書き（空欄なら自動の値。× で行を消す）と、足す行
+    const ovBox = section('建築概要（右のメモで直す）');
+    const paintOverview = () => {
+      while (ovBox.childElementCount > 1) ovBox.lastElementChild!.remove();
+      const auto = overviewAutoRows();
+      const cur = state.deck?.overview ?? {};
+      ovBox.append(
+        h('p', { class: 'hint', style: 'margin:0 0 4px' }, '空欄なら読み取った値のまま。書けばその値に置き換わり、「×」でその行を消します。'),
+        ...auto.map(([k, v]) =>
+          h(
+            'label',
+            { class: 'field' },
+            h('span', { class: 'field-label' }, k),
+            h('input', {
+              type: 'text',
+              value: cur[k] ?? '',
+              placeholder: v,
+              onchange: (e: Event) => {
+                const val = (e.target as HTMLInputElement).value;
+                const ov = { ...(state.deck?.overview ?? {}) };
+                if (val.trim()) ov[k] = val;
+                else delete ov[k];
+                deck0().overview = ov;
+                render();
+              },
+            }),
+          ),
+        ),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '足す行（1 行に 1 項目「項目：値」）'), h('textarea', { rows: 4, placeholder: '工期：2026年4月〜9月\n用途地域：第一種低層住居専用地域\n設計：ホームランディック一級建築士事務所', onchange: (e: Event) => { deck0().overviewExtra = (e.target as HTMLTextAreaElement).value; render(); } }, state.deck?.overviewExtra ?? '')),
+        ...(Object.keys(cur).length || state.deck?.overviewExtra?.trim()
+          ? [h('button', { class: 'btn sm ghost', onclick: () => { deck0().overview = {}; deck0().overviewExtra = ''; render(); } }, '建築概要を自動の値に戻す')]
+          : []),
+      );
+    };
     const render = () => {
       clear(zp.content);
       paintContents();
-      zp.content.append(...buildDeck(deckOpts()));
+      const all = buildDeckAll(deckOpts());
+      const shown = finishDeck(all);
+      zp.content.append(...shown);
+      modeLine.textContent = `${deckModeLabel()}・${shown.length} ページ`;
+      paintPages(all, shown);
+      paintOverview();
     };
     render();
     // 読み込み直後の「提案一式をまとめて作る」から来たときは、そのまま自動作成を始める
@@ -755,6 +914,8 @@ export const presentStep: Step = {
         ).map(([k, label]) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'text', value: state[k] ?? '', onchange: (e: Event) => { state[k] = (e.target as HTMLInputElement).value; render(); } }))),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
       ),
+      pagesBox,
+      ovBox,
       contentsBox,
       section(
         '打合せの書類',

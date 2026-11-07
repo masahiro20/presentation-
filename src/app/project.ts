@@ -22,10 +22,15 @@ export interface ProjectFile {
   companyRep?: string;
   companyAddress?: string;
   tel?: string;
+  email?: string;
+  url?: string;
   designer?: string;
   license?: string;
   logo?: string;
   pdfName?: string;
+  /** 提案資料の出し方（出すページ・建築概要の上書き）と資金計画のページの有無 */
+  deck?: ProjectState['deck'];
+  deckFunding?: boolean;
   model: ProjectState['model'];
   design: ProjectState['design'];
   site: ProjectState['site'];
@@ -83,10 +88,14 @@ export async function serializeProject(): Promise<ProjectFile> {
     companyRep: state.companyRep,
     companyAddress: state.companyAddress,
     tel: state.tel,
+    email: state.email,
+    url: state.url,
     designer: state.designer,
     license: state.license,
     logo: state.logo,
     pdfName: state.pdfName,
+    deck: state.deck,
+    deckFunding: state.deckFunding,
     model: state.model,
     design: state.design,
     site: state.site,
@@ -115,6 +124,10 @@ export function applyProject(p: ProjectFile) {
   state.companyRep = p.companyRep ?? state.companyRep;
   state.companyAddress = p.companyAddress ?? state.companyAddress;
   state.tel = p.tel ?? state.tel;
+  state.email = p.email ?? state.email;
+  state.url = p.url ?? state.url;
+  state.deck = p.deck;
+  state.deckFunding = p.deckFunding;
   state.designer = p.designer ?? state.designer;
   state.license = p.license ?? state.license;
   state.logo = p.logo;

@@ -256,6 +256,8 @@ export class App {
       (globalThis as unknown as { __furnitureItems: typeof furnitureItems }).__furnitureItems = furnitureItems;
       (globalThis as unknown as { __furnitureDims: typeof furnitureDims }).__furnitureDims = furnitureDims;
       this.buildNavBar(this._viewer);
+      // 3D を見せないステップの中で作られたとき（資料の自動作成など）は、隠れたまま描き続けないように止めておく
+      if (this.current && !this.current.uses3d) this._viewer.pause(true);
     }
     return this._viewer;
   }
@@ -458,6 +460,9 @@ export class App {
     clear(this.stepHost);
     this.stepHost.style.pointerEvents = s.uses3d ? 'none' : 'auto';
     this.viewerHost.style.visibility = s.uses3d ? 'visible' : 'hidden';
+    // 3D を見せないステップでは描画ループを止める（隠れたまま毎コマ高品質で描き続けると、図面・見積・資料の画面が重くなる。
+    // 撮影（capture）は明示的に描くので止めていても動く）
+    this._viewer?.pause(!s.uses3d);
     if (s.uses3d) {
       this.ensureScene();
       // 日照の太陽の軌道・周辺建物・ヒートマップは日照ステップだけ（そのステップが自分で表示する）

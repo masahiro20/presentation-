@@ -14,7 +14,7 @@ import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 import { effectiveOpening, resolveSpec } from '../styles/spec';
 import { roofMasses, roofMassAt, patchLoop, type RoofMass } from '../scene/roof';
-import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
+import { SASH_MIN_CHECK, SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
@@ -176,11 +176,19 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       }
       if (which === 't0') hi = Math.min(hi, fixed - 300);
       else lo = Math.max(lo, fixed + 300);
-      // 半間（455）の格子に止める（Shift で自由）
+      // 窓は標準のサッシ幅（柱芯の割 − 130: 780・1,235・1,690・2,600…）に止める（7cm 以内）。それ以外は半間（455）の格子（Shift で自由）
       const grid = model()?.module?.grid ?? 455;
+      let std = false;
       if (!v.dragMods.shift) {
-        const g = Math.round(t / grid) * grid;
-        if (Math.abs(g - t) < 80) t = g;
+        const wantW = which === 't0' ? fixed - t : t - fixed;
+        const sw = op.kind === 'window' && wantW > SASH_MIN_CHECK ? nearestSashWidth(wantW) : null;
+        if (sw != null && Math.abs(sw - wantW) < 70) {
+          t = which === 't0' ? fixed - sw : fixed + sw;
+          std = true;
+        } else {
+          const g = Math.round(t / grid) * grid;
+          if (Math.abs(g - t) < 80) t = g;
+        }
       }
       t = Math.max(lo, Math.min(hi, Math.round(t)));
       const t0 = which === 't0' ? t : op.t0;
@@ -188,7 +196,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opEdge.preview = { t0, t1 };
       v.setSelection(openingFrame(f, w, t0, t1, op));
       v.setHandles(openingHandles(f, w, t0, t1, op));
-      v.setDragLabel(`幅 ${Math.round(t1 - t0).toLocaleString()} mm`);
+      v.setDragLabel(std ? `幅 ${sashWidthLabel(Math.round(t1 - t0))} 標準` : `幅 ${Math.round(t1 - t0).toLocaleString()} mm`);
       return;
     }
     if (!opDrag) return;

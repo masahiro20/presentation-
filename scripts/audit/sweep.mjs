@@ -225,8 +225,13 @@ const sweepPlanEditor = async () => {
         await page.waitForTimeout(250);
         await page.keyboard.press('Control+z');
         await page.waitForTimeout(250);
-        // 自動の塊をクリックして掛け方を切妻に → おまかせに戻す
-        const inA = await svgPoint(inside.x, inside.y);
+        // 自動の塊（この階の屋根）をクリックして掛け方を切妻に → おまかせに戻す
+        const massPt = await page.evaluate(() => {
+          const lv = document.querySelector('.pe-tabs .dark')?.textContent?.replace(/[^0-9]/g, '') ?? '1';
+          const g = document.querySelector(`.pe-roof[data-level="${lv}"]`) ?? document.querySelector('.pe-roof');
+          return g ? { x: +g.dataset.cx, y: +g.dataset.cy } : null;
+        });
+        const inA = await svgPoint(massPt?.x ?? inside.x, massPt?.y ?? inside.y);
         await page.mouse.click(inA.x, inA.y);
         await page.waitForTimeout(300);
         const gable = page.locator('.pe-panel .segmented button', { hasText: /^切妻$/ }).first();
@@ -264,7 +269,15 @@ const sweep3dTool = async () => {
     log.push({ step: cur, kind: 'check', msg: '窓・戸の道具のボタンが無い' });
     return;
   }
-  await nav.click({ timeout: 5000 });
+  // 3D の最初の描画が重い間はクリックが通らないことがあるので、構図が出て落ち着くまで待つ
+  await page.waitForFunction(() => !!window.__viewer && document.querySelectorAll('.shot-card').length > 0, null, { timeout: 60000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  try {
+    await nav.click({ timeout: 20000 });
+  } catch (e) {
+    log.push({ step: cur, kind: 'check', msg: `窓・戸の道具を開けなかった: ${String(e.message).split('\n')[0].slice(0, 100)}` });
+    return;
+  }
   await page.waitForTimeout(500);
   const tool = page.locator('.furn-tool.edit3d');
   // モードのボタン列（見出しのすぐ下: 窓・戸／天井高／シャッター／屋根）

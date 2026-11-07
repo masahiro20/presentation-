@@ -659,6 +659,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const finishRoofDraw = () => {
     const pts = roofDraw ?? [];
     roofDraw = null;
+    status.textContent = '';
     // 同じ所を続けて打った点・閉じる点の重なりを省く
     const loop: Vec2[] = [];
     for (const q of pts) if (!loop.length || Math.hypot(q.x - loop[loop.length - 1].x, q.y - loop[loop.length - 1].y) > 30) loop.push({ x: Math.round(q.x), y: Math.round(q.y) });
@@ -681,6 +682,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
   const cancelRoofDraw = () => {
     roofDraw = null;
+    status.textContent = '';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
   };
@@ -706,7 +708,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const loops = loop ? [loop] : rectsOutline(ms.rects);
       if (!loops.length) continue;
       const d = loops.map((l) => `M${l.map((q) => `${q.x} ${q.y}`).join('L')}Z`).join('');
-      const g = el('g', { class: 'pe-roof', 'pointer-events': cur ? 'auto' : 'none', opacity: cur ? 1 : 0.35 }, gRoof) as SVGGElement;
+      const g = el('g', { class: 'pe-roof', opacity: cur ? 1 : 0.35 }, gRoof) as SVGGElement;
       g.dataset.level = String(ms.level);
       g.dataset.cx = String(ms.center.x);
       g.dataset.cy = String(ms.center.y);
@@ -1539,7 +1541,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
           h('li', null, '屋根が抜けている所 → その範囲を点で囲んで「屋根を足す」。'),
           h('li', null, 'ポーチ・カーポート・物置にも屋根を描けます（建物の外に出た角には柱が立ちます）。'),
           h('li', null, '余分に出た下屋 → 「屋根なしの範囲」で囲む。'),
-          h('li', null, '薄い色は他の階の屋根（その階のタブで直せます）。文字は掛け方、矢印は水の流れる向き、太い線は棟。'),
+          h('li', null, '薄い色は他の階の屋根（クリックするとその階に切り替わります）。文字は掛け方、矢印は水の流れる向き、太い線は棟。'),
         ),
         ...(autoPatches.length
           ? [h('button', { class: 'btn sm ghost', onclick: () => { pushUndo(); model.roofPatches = (model.roofPatches ?? []).filter((x) => !autoPatches.includes(x)); dropEmptyRoofPatches(); roofCache = null; toast(`${f.level}階の塊ごとの手直しをおまかせに戻しました（手で描いた屋根は残します）`, 'ok'); markChanged(); draw(); } }, 'この階の手直しをすべておまかせに戻す')]
@@ -1877,7 +1879,17 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       }
       const g = t.closest('.pe-roof') as SVGGElement | null;
       if (g?.dataset.level) {
-        roofSel = { level: +g.dataset.level, at: { x: +(g.dataset.cx ?? 0), y: +(g.dataset.cy ?? 0) } };
+        // 他の階の屋根（薄い色）をクリックしたら、その階に切り替えて選ぶ（屋根伏せ図は全部の階の屋根が見えている）
+        const lv = +g.dataset.level;
+        if (lv !== W().floor.level) {
+          const i = works.findIndex((w) => w.floor.level === lv);
+          if (i >= 0) {
+            fi = i;
+            sel = null;
+            wallStart = null;
+          }
+        }
+        roofSel = { level: lv, at: { x: +(g.dataset.cx ?? 0), y: +(g.dataset.cy ?? 0) } };
         draw();
         return;
       }

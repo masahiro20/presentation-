@@ -12,7 +12,7 @@ import { exposureFor } from './draftCapture';
 import { cutPrompt, finishAssets, setRefsForPrompt } from './cuts';
 import { addFinished } from './finishImport';
 import { harmonizeBatch } from './photoHarmonize';
-import { checkGeminiKey, compareWithDraft, costPerImage, generateFinish, getGeminiKey, getImageModel, onAiFinishChange, readUsage, scoreLabel, setGeminiKey, setImageModel, toJpegDataUrl, usageSummary, type ImageModelInfo } from './aiFinish';
+import { checkGeminiKey, compareWithDraft, costPerImage, generateFinish, getGeminiKey, getImageModel, onAiFinishChange, readUsage, scoreLabel, setGeminiKey, setImageModel, toAttachment, toJpegDataUrl, usageSummary, type ImageModelInfo } from './aiFinish';
 
 export interface FinishedCut {
   shot: Shot;
@@ -45,13 +45,27 @@ export async function finishShots(ctx: StepCtx, shots: Shot[], opts: { signal?: 
   const failed: string[] = [];
   if (!key) return { done, failed: ['Google AI Studio の API キーが入っていません'] };
   const assets = await finishAssets();
-  setRefsForPrompt(assets.refs);
+  // 添付を送れる形（JPEG の data URL）にそろえる。事務所のお手本は https の URL なので取得して縮める。取れない物は外して続ける
+  const board = assets.board ? await toAttachment(assets.board, 1400).catch(() => undefined) : undefined;
+  const refUrls = new Map<string, string>();
+  for (const r of assets.refs) {
+    try {
+      refUrls.set(r.id, await toAttachment(r.url, 1200));
+    } catch (e) {
+      console.warn('お手本を添付できませんでした', r.name ?? r.id, e);
+    }
+  }
+  const refsLoaded = assets.refs.filter((r) => refUrls.has(r.id));
+  setRefsForPrompt(refsLoaded);
   const prev = v.currentView();
   const prevLabels = v.roomLabelsShown();
   v.setRoomLabels(false);
   v.setTownVisible(false);
-  const width = state.render.width || 1920;
-  const height = state.render.height || 1080;
+  // 下絵は AI に渡す用なので横 1,600 px まで（それ以上は送る前に縮めるだけ）。資料用のサイズ設定とは別
+  const baseW = state.render.width || 1920;
+  const baseH = state.render.height || 1080;
+  const width = Math.min(1600, baseW);
+  const height = Math.round((width * baseH) / baseW);
   const imageSize = getSize() === '2K' && /pro/i.test(model) ? '2K' : undefined;
   try {
     for (let i = 0; i < shots.length; i++) {
@@ -65,9 +79,9 @@ export async function finishShots(ctx: StepCtx, shots: Shot[], opts: { signal?: 
         const raw = await renderStudio(v, { width, height, interior: shot.kind === 'interior', exposure: exposureFor(shot.kind, tod) });
         const draft = await toJpegDataUrl(raw, 1600);
         const p = cutPrompt(shot, i);
-        const refs = assets.refs.filter((r) => r.kind === (shot.kind === 'interior' ? 'interior' : 'exterior')).slice(-3).map((r) => r.url);
+        const refs = refsLoaded.filter((r) => r.kind === (shot.kind === 'interior' ? 'interior' : 'exterior')).slice(-3).map((r) => refUrls.get(r.id)!);
         opts.onProgress?.(i, shots.length, `${shot.title}: 写真に仕上げています（${model}）`, draft);
-        const out = await generateFinish(key, model, { prompt: `${p.ja}\n\n${p.en}`, draft, board: assets.board, refs, aspectRatio: '16:9', imageSize }, { signal: opts.signal });
+        const out = await generateFinish(key, model, { prompt: `${p.ja}\n\n${p.en}`, draft, board, refs, aspectRatio: '16:9', imageSize }, { signal: opts.signal });
         const cmp = await compareWithDraft(draft, out.url);
         done.push({ shot, draft, url: out.url, score: cmp.score, label: cmp.label, overlay: cmp.overlayUrl, model });
         opts.onProgress?.(i + 1, shots.length, `${shot.title}: ${cmp.label.text}`, out.url);

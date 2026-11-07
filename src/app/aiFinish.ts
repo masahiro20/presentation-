@@ -392,6 +392,27 @@ export async function compareWithDraft(draftUrl: string, resultUrl: string, widt
   return { score, label: scoreLabel(score), overlayUrl: c.toDataURL('image/png') };
 }
 
+/**
+ * 添付にできる形（JPEG の data URL）にそろえる。
+ * 事務所のお手本（Vercel Blob の https URL）や blob: の URL は、いったん取得してから縮める
+ * （Image に直接読ませると canvas が汚染されて toDataURL が失敗するため、fetch → FileReader で data URL にする）
+ */
+export async function toAttachment(url: string, maxSide = 1600): Promise<string> {
+  let src = url;
+  if (!/^data:/i.test(url)) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`画像を取得できませんでした（${r.status}）`);
+    const blob = await r.blob();
+    src = await new Promise<string>((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result as string);
+      fr.onerror = () => rej(fr.error ?? new Error('画像を読めませんでした'));
+      fr.readAsDataURL(blob);
+    });
+  }
+  return toJpegDataUrl(src, maxSide);
+}
+
 /** 下絵（PNG の data URL など）を JPEG に縮めて送る大きさに（長辺 maxSide） */
 export async function toJpegDataUrl(url: string, maxSide = 1600, quality = 0.9): Promise<string> {
   const img = new Image();

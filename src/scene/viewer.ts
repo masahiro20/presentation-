@@ -308,6 +308,7 @@ export class Viewer {
       }
     });
     el.addEventListener('pointerdown', (e) => {
+      this.pressPt = { x: e.clientX, y: e.clientY };
       // 選んだ物を掴んで動かす（家具・外構の道具が受け取る）。カメラ操作より先に判定
       if (e.button === 0 && this.onDragStart && this.navMode !== 'walk') {
         const r = el.getBoundingClientRect();
@@ -354,6 +355,13 @@ export class Viewer {
           this.onDragMove?.(p, new THREE.Vector2(((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1, -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1));
         }
         return;
+      }
+      // カメラ操作が始まった（ボタンを押したまま 3px 以上動かした）ら、外観の 2 点透視のシフトを解く。
+      // 押しただけ（クリック）では解かない: クリックの当たり判定が見えている絵とずれないように（start で解いていた頃は外観で窓・屋根を選べなかった）
+      if (e.buttons !== 0 && this.pressPt && this.camera.shiftY && this.navMode !== 'walk' && Math.hypot(e.clientX - this.pressPt.x, e.clientY - this.pressPt.y) > 3) {
+        this.camera.shiftY = 0;
+        this.camera.updateProjectionMatrix();
+        this._dirty = true;
       }
       if (this.navMode === 'walk' || e.buttons !== 0) return;
       const now = performance.now();
@@ -411,6 +419,7 @@ export class Viewer {
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
     const endPtr = (e: PointerEvent) => {
+      this.pressPt = null;
       this.walkPtrs.delete(e.pointerId);
       if (this.walkPtrs.size < 2) this.walkPinch = null;
       if (this.navMode === 'pan') el.style.cursor = 'grab';
@@ -439,12 +448,11 @@ export class Viewer {
       },
       { passive: false, capture: true },
     );
+    // 操作を始めたら飛行中の構図移動は止める。外観の 2 点透視のシフト（shiftY）はここでは解かない:
+    // start は押した瞬間に来るので、クリックの当たり判定（pointerdown / pointerup）が見えている絵と上下にずれ、
+    // 外観で窓や屋根をクリックすると別の所（下の壁など）を選んでいた。シフトはカメラ操作で実際に動かし始めたときに解く（pointermove）
     this.controls.addEventListener('start', () => {
       this.anim = null;
-      if (this.camera.shiftY) {
-        this.camera.shiftY = 0;
-        this.camera.updateProjectionMatrix();
-      }
     });
 
     this.scene.add(this.root);
@@ -572,6 +580,8 @@ export class Viewer {
   private handles: Handle3D[] = [];
   private dragLabelEl: HTMLDivElement | null = null;
   private lastPtr = { x: 0, y: 0 };
+  /** ボタンを押した位置（カメラ操作が始まったかの判定: 3px 以上動いたら 2 点透視のシフトを解く） */
+  private pressPt: { x: number; y: number } | null = null;
 
   /** world の点 → キャンバス上の画素（左上原点） */
   toScreen(p: THREE.Vector3): { x: number; y: number } {

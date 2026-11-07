@@ -761,8 +761,14 @@ export const presentStep: Step = {
     const deckOpts = () => ({ disclosure: collectDisclosure(activeSunContext()) });
     // 収録内容（自動作成の後にも数が更新されるよう、資料と一緒に描き直す）
     const contentsBox = section('収録内容');
+    // 見出しだけ残して中身を一括で消す（1 つずつ消すと、フォーカス中の入力欄が外れて change が再入し、途中で子が入れ替わって例外になる）
+    const keepTitle = (box: HTMLElement) => {
+      const title = box.firstElementChild;
+      if (title) box.replaceChildren(title);
+      else box.replaceChildren();
+    };
     const paintContents = () => {
-      while (contentsBox.childElementCount > 1) contentsBox.lastElementChild!.remove();
+      keepTitle(contentsBox);
       contentsBox.append(
         h(
           'ul',
@@ -795,7 +801,7 @@ export const presentStep: Step = {
     const pagesBox = section('出すページ');
     const deck0 = () => (state.deck ??= {});
     const paintPages = (all: HTMLElement[], shown: HTMLElement[]) => {
-      while (pagesBox.childElementCount > 1) pagesBox.lastElementChild!.remove();
+      keepTitle(pagesBox);
       const mode = state.deck?.pages ?? 'all';
       const shownIds = new Set(shown.map((s) => s.dataset.page));
       const setMode = (m: 'all' | 'summary' | 'custom') => {
@@ -842,7 +848,7 @@ export const presentStep: Step = {
     // 建築概要: 項目ごとの上書き（空欄なら自動の値。× で行を消す）と、足す行
     const ovBox = section('建築概要（右のメモで直す）');
     const paintOverview = () => {
-      while (ovBox.childElementCount > 1) ovBox.lastElementChild!.remove();
+      keepTitle(ovBox);
       const auto = overviewAutoRows();
       const cur = state.deck?.overview ?? {};
       ovBox.append(
@@ -873,7 +879,7 @@ export const presentStep: Step = {
           : []),
       );
     };
-    const render = () => {
+    const paint = () => {
       clear(zp.content);
       paintContents();
       const all = buildDeckAll(deckOpts());
@@ -883,7 +889,16 @@ export const presentStep: Step = {
       paintPages(all, shown);
       paintOverview();
     };
-    render();
+    // 描き直しは次のコマにまとめる（入力欄の change の中から呼ばれ、描き直しで入力欄が外れてもう一度 change が来ても、重ねて描かない）
+    let rafId = 0;
+    const render = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        paint();
+      });
+    };
+    paint();
     // 読み込み直後の「提案一式をまとめて作る」から来たときは、そのまま自動作成を始める
     if (state.autoRun) {
       const mode = state.autoRun;

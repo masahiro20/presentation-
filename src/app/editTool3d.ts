@@ -13,24 +13,12 @@ import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, V
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
 import { effectiveOpening, resolveSpec } from '../styles/spec';
-import { roofMasses, roofMassAt, type RoofMass } from '../scene/roof';
+import { roofMasses, roofMassAt, patchLoop, type RoofMass } from '../scene/roof';
 import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
-
-/** 図面の辺（上下左右）に方位を添える: 「上（北）」 */
-function sideLabel(s: RoofHigh, northDeg: number): string {
-  const names: Record<RoofHigh, string> = { n: '上', s: '下', e: '右', w: '左' };
-  const a = (northDeg * Math.PI) / 180;
-  const nv = { x: Math.sin(a), y: -Math.cos(a) };
-  const ev = { x: -nv.y, y: nv.x };
-  const sv: Record<RoofHigh, { x: number; y: number }> = { n: { x: 0, y: -1 }, s: { x: 0, y: 1 }, e: { x: 1, y: 0 }, w: { x: -1, y: 0 } };
-  const dn = sv[s].x * nv.x + sv[s].y * nv.y;
-  const de = sv[s].x * ev.x + sv[s].y * ev.y;
-  const comp = Math.abs(dn) >= Math.abs(de) ? (dn > 0 ? '北' : '南') : de > 0 ? '東' : '西';
-  return `${names[s]}（${comp}）`;
-}
+import { massName, massState, roofPatchControls, segButtons } from './roofPatchPanel';
 
 export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool edit3d', hidden: true });
@@ -205,7 +193,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       v.setSelection(null);
       return;
     }
-    const y = (ms.patch?.rect && ms.patch.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000) + 0.1;
+    const y = (ms.manual && ms.patch?.topMm != null ? (f.elevation + ms.patch.topMm) / 1000 : wallTopOf(m, f) / 1000) + 0.1;
     const b = ms.bbox;
     v.setSelection([new THREE.Vector3(b.minX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.minY / 1000), new THREE.Vector3(b.maxX / 1000, y, b.maxY / 1000), new THREE.Vector3(b.minX / 1000, y, b.maxY / 1000)]);
   };
@@ -254,12 +242,11 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       list.push(p);
     }
     fn(p);
-    // 足した屋根（rect）は項目が空でも残す
-    if (!p.rect && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
+    // 手で描いた範囲（足した屋根・屋根なし）は項目が空でも残す
+    if (!patchLoop(p) && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
     if (msg) toast(msg, 'ok', 2500);
     commit();
   };
-  const massName = (ms: RoofMass) => `${ms.level}階${ms.manual ? 'に足した屋根' : ms.isTop ? 'の屋根' : 'の下屋'}（${((ms.bbox.maxX - ms.bbox.minX) / 1000).toFixed(1)} × ${((ms.bbox.maxY - ms.bbox.minY) / 1000).toFixed(1)} m）`;
 
   // ---- 壁を足す（床の 2 点をクリック。壁の端に吸着、無ければ半間の格子） ----
   const snapWallPoint = (f: Floor, p: { x: number; y: number }): { p: { x: number; y: number }; joined: boolean } => {
@@ -724,8 +711,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       v.setDesign(state.design);
       render();
     };
-    const seg = (items: { v: string; label: string; title?: string }[], cur: string, on: (val: string) => void) =>
-      h('div', { class: 'segmented' }, ...items.map((it) => h('button', { class: cur === it.v ? 'on' : '', title: it.title, onclick: () => on(it.v) }, it.label)));
+    const seg = segButtons;
     panel.append(
       h('p', { class: 'hint', style: 'margin:0 0 6px' }, '屋根をクリックして塊を選びます（橙の枠）。塊ごとに掛け方・向き・勾配・軒の出を変えられます。最上階の塊と下屋（下の階の、上の階が載らない所）は別の塊です。'),
       h('div', { class: 'field-label' }, `全体の屋根（${ROOF_KIND_LABEL[wholeKind]}${wholeKind === 'flat' ? '' : ` ${wholePitch} 寸`}・軒 ${state.design.eaves ?? ext.roof.eaves} mm）`),
@@ -757,125 +743,35 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     );
     if (!ms || !m) {
       const n = m?.roofPatches?.length ?? 0;
-      const added = m?.roofPatches?.filter((x) => x.rect).length ?? 0;
-      panel.append(addRow, h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n - added} か所${added ? `・足した屋根 ${added} か所` : ''}` : 'まだ塊を選んでいません'));
-      if (n)
+      const added = m?.roofPatches?.filter((x) => patchLoop(x)).length ?? 0;
+      panel.append(addRow, h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n - added} か所${added ? `・手で描いた屋根・屋根なし ${added} か所` : ''}` : 'まだ塊を選んでいません'));
+      if (n > added)
         panel.append(
-          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { if (m) m.roofPatches = m.roofPatches?.filter((x) => x.rect) ?? []; toast('屋根の手直しをすべておまかせに戻しました（足した屋根は残します）', 'ok'); commit(); } }, 'すべておまかせに戻す')),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { if (m) m.roofPatches = m.roofPatches?.filter((x) => patchLoop(x)) ?? []; toast('屋根の手直しをすべておまかせに戻しました（手で描いた屋根は残します）', 'ok'); commit(); } }, 'すべておまかせに戻す')),
         );
       return;
     }
     const p = ms.patch;
     const north = m.northAngleDeg;
-    const kindCur = p?.kind ?? 'auto';
     panel.append(
-      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms)), h('div', { class: 'hint' }, `今: ${ROOF_KIND_LABEL[ms.kind]}${ms.kind === 'shed' ? `・高い側 ${sideLabel(ms.high, north)}` : ''}${ms.attached.length ? `・上の階に接する辺 ${ms.attached.map((s) => sideLabel(s, north).replace(/（.*/, '')).join('・')}` : ''}${p && !ms.manual ? '（手直しあり）' : ''}`)),
-      h('div', { class: 'field-label' }, ms.manual ? 'この屋根の掛け方' : 'この塊の掛け方'),
-      seg(
-        [{ v: 'auto', label: 'おまかせ', title: ms.manual ? '緩い片流れ（全体が陸屋根なら陸屋根）' : ms.isTop ? '全体の屋根と同じ' : '緩い片流れの下屋（上の階に接する辺が高い）' }, ...(Object.keys(ROOF_KIND_LABEL) as RoofKind[]).map((k) => ({ v: k, label: ROOF_KIND_LABEL[k] }))],
-        kindCur,
-        (val) =>
-          patchRoof((q) => {
-            if (val === 'auto') delete q.kind;
-            else q.kind = val as RoofKind;
-            // 切妻・寄棟にしたのに勾配が緩い（片流れ用の 0.5 寸）ままでは平らに見えるので、4 寸にしておく（勾配を決めていないときだけ）
-            if ((val === 'gable' || val === 'hip') && q.pitch == null && wholePitch < 2.5) q.pitch = 4;
-          }, val === 'auto' ? 'おまかせに戻しました' : `${ROOF_KIND_LABEL[val as RoofKind]}にしました`),
-      ),
-    );
-    if (ms.kind === 'shed')
-      panel.append(
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, '高い側（水は反対へ流れます）'),
-        seg(
-          [{ v: 'auto', label: 'おまかせ' }, ...(['n', 's', 'e', 'w'] as RoofHigh[]).map((s) => ({ v: s, label: sideLabel(s, north) }))],
-          p?.high ?? 'auto',
-          (val) => patchRoof((q) => { if (val === 'auto') delete q.high; else q.high = val as RoofHigh; }, val === 'auto' ? '向きをおまかせに戻しました' : `${sideLabel(val as RoofHigh, north)}を高くしました`),
-        ),
-      );
-    if (ms.kind === 'gable' || ms.kind === 'hip')
-      panel.append(
-        h('div', { class: 'field-label', style: 'margin-top:8px' }, '棟の向き'),
-        seg(
-          [
-            { v: 'auto', label: '長い辺に沿う' },
-            { v: 'x', label: '横（図面の左右）', title: '棟が左右に通り、屋根は上下へ流れる' },
-            { v: 'z', label: '縦（図面の上下）', title: '棟が上下に通り、屋根は左右へ流れる' },
-          ],
-          p?.ridge ?? 'auto',
-          (val) => patchRoof((q) => { if (val === 'auto') delete q.ridge; else q.ridge = val as 'x' | 'z'; }, '棟の向きを変えました'),
-        ),
-      );
-    if (ms.kind !== 'flat') {
-      const pitches = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6];
-      panel.append(
-        h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px;margin-top:8px' },
-          h('label', { class: 'field' }, h('span', { class: 'field-label' }, '勾配（寸）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.pitch; else q.pitch = Number(val); }, val === '' ? '勾配をおまかせに戻しました' : `勾配を ${val} 寸にしました`); } }, h('option', { value: '', selected: p?.pitch == null }, `おまかせ（${ms.isTop ? wholePitch : '0.5〜1'}）`), ...pitches.map((x) => h('option', { value: String(x), selected: p?.pitch === x }, `${x} 寸`)))),
-          h('label', { class: 'field' }, h('span', { class: 'field-label' }, '軒の出 (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.eaves; else q.eaves = Number(val); }, val === '' ? '軒の出をおまかせに戻しました' : `軒の出を ${val} mm にしました`); } }, h('option', { value: '', selected: p?.eaves == null }, `おまかせ（${state.design.eaves ?? ext.roof.eaves}）`), ...[0, 150, 300, 450, 600, 750, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.eaves === x }, `${x}`)))),
-        ),
-      );
-      // 屋根を片側だけ伸ばす: 辺ごとの軒の出（寄棟は 4 辺同じ出でないと隅が合わないので対象外）
-      if (ms.kind !== 'hip') {
-        const sides: RoofHigh[] = ['n', 'e', 's', 'w'];
-        const baseEaves = p?.eaves ?? state.design.eaves ?? ext.roof.eaves;
-        panel.append(
-          h('div', { class: 'field-label', style: 'margin-top:8px' }, '屋根を伸ばす（辺ごとの軒の出 mm）'),
-          h(
-            'div',
-            { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 8px' },
-            ...sides.map((s) =>
-              h(
-                'label',
-                { class: 'field', style: 'margin:0' },
-                h('span', { class: 'field-label' }, sideLabel(s, north)),
-                h(
-                  'select',
-                  {
-                    onchange: (e: Event) => {
-                      const val = (e.target as HTMLSelectElement).value;
-                      patchRoof((q) => {
-                        const by = { ...(q.eavesBy ?? {}) };
-                        if (val === '') delete by[s];
-                        else by[s] = Number(val);
-                        if (Object.keys(by).length) q.eavesBy = by;
-                        else delete q.eavesBy;
-                      }, val === '' ? `${sideLabel(s, north)}の出をほかの辺と同じに戻しました` : `${sideLabel(s, north)}の屋根を ${val} mm 出しました`);
-                    },
-                  },
-                  h('option', { value: '', selected: p?.eavesBy?.[s] == null }, `同じ（${baseEaves}）`),
-                  ...[0, 150, 300, 450, 600, 900, 1200, 1500, 1820, 2730].map((x) => h('option', { value: String(x), selected: p?.eavesBy?.[s] === x }, `${x}`)),
-                ),
-              ),
-            ),
-          ),
-          h('p', { class: 'hint', style: 'margin:2px 0 0' }, '庭側だけ深い軒にする・窓の上に屋根を伸ばすときに。窓 1 か所だけなら「窓・戸」の道具で庇を付けます。'),
-        );
-      }
-    } else {
-      panel.append(
-        h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, 'パラペットの立ち上がり (mm)'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.parapet; else q.parapet = Number(val); }, val === '' ? 'パラペットを標準（550）に戻しました' : `パラペットを ${val} mm にしました`); } }, h('option', { value: '', selected: p?.parapet == null }, '標準（550）'), ...[300, 450, 700, 900, 1200].map((x) => h('option', { value: String(x), selected: p?.parapet === x }, `${x}`)))),
-      );
-    }
-    if (ms.manual && p) {
-      // 足した屋根: 軒の高さ（その階の床から）
-      const f = m.floors.find((x) => x.level === ms.level);
-      const autoTop = f ? wallTopOf(m, f) - f.elevation : 0;
-      panel.append(
-        h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '軒の高さ（この階の床から mm）'), h('select', { onchange: (e: Event) => { const val = (e.target as HTMLSelectElement).value; patchRoof((q) => { if (val === '') delete q.topMm; else q.topMm = Number(val); }, val === '' ? '高さを壁の天端に戻しました' : `屋根の高さを床から ${val} mm にしました`); } }, h('option', { value: '', selected: p.topMm == null }, `壁の天端（${Math.round(autoTop)}）`), ...[2000, 2200, 2400, 2700, 3000, 3300, 3600, 4000].map((x) => h('option', { value: String(x), selected: p.topMm === x }, `${x}`)))),
-      );
-    }
-    panel.append(
-      h(
-        'div',
-        { class: 'btn-row' },
-        ms.manual && p
-          ? h('button', { class: 'btn sm', onclick: () => { m.roofPatches = (m.roofPatches ?? []).filter((x) => x !== p); roofSel = null; v.setSelection(null); toast('足した屋根を消しました', 'ok'); commit(); } }, 'この屋根を消す')
-          : p
-            ? h('button', { class: 'btn sm', onclick: () => patchRoof((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.eavesBy; delete q.parapet; }, 'この屋根をおまかせに戻しました') }, 'この塊をおまかせに戻す')
-            : null,
-        h('button', { class: 'btn sm ghost', onclick: () => { roofSel = null; render(); } }, '選ぶのをやめる'),
-      ),
+      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms)), h('div', { class: 'hint' }, massState(ms, north))),
+      ...roofPatchControls({
+        model: m,
+        ms,
+        wholePitch,
+        wholeEaves: state.design.eaves ?? ext.roof.eaves,
+        edit: patchRoof,
+        remove: () => {
+          if (p) m.roofPatches = (m.roofPatches ?? []).filter((x) => x !== p);
+          roofSel = null;
+          v.setSelection(null);
+          toast(ms.omit ? '屋根なしの範囲を消しました' : '足した屋根を消しました', 'ok');
+          commit();
+        },
+        deselect: () => { roofSel = null; render(); },
+      }),
       addRow,
-      h('p', { class: 'hint' }, '屋根が抜けている所は「屋根を足す」で塞げます。外形（外壁）が欠けて屋根が出ないときは「壁を足す」か方眼の修正画面で外壁を直すと屋根も作り直されます。'),
+      h('p', { class: 'hint' }, '屋根が抜けている所は「屋根を足す」で塞げます。形を自由に描く・角を動かす・屋根なしの範囲は、図面読込の方眼の「屋根」の道具で。外形（外壁）が欠けて屋根が出ないときは「壁を足す」か方眼で外壁を直すと屋根も作り直されます。'),
     );
   };
 

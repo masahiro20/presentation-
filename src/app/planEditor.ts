@@ -25,8 +25,15 @@ import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabe
 import { siteSize, syncSiteFromPolygon } from '../parser/site';
 import { stairDrawing } from '../core/stairs';
 import { SOFA_SHAPES, LEG_SIDES, WASH_STYLES } from '../scene/furniture';
+import { roofMasses, roofMassAt, patchLoop, type RoofMass } from '../scene/roof';
+import { rectsOutline } from '../core/rects';
+import { interiorPoint, polygonArea } from '../core/geometry';
+import { ROOF_KIND_LABEL, type RoofPatch } from '../core/types';
+import { exteriorById } from '../styles/presets';
+import { state } from './state';
+import { massName, massState, roofPatchControls } from './roofPatchPanel';
 
-type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling';
+type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling' | 'roof';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
 
 interface FloorWork {
@@ -61,6 +68,8 @@ export interface PlanEditorHandle {
 export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: (changed: boolean) => void, pdfName = '', opts: PlanEditorOptions = {}): PlanEditorHandle {
   const embedded = !!opts.embedded;
   const autoFloors = clone(model.floors);
+  // 屋根の手直しは model に直接書く（階の壁のように作業用の写しを持たない）ので、「やめる」で戻せるように開いたときの物を取っておく
+  const roofPatches0 = clone(model.roofPatches ?? null);
   const works: FloorWork[] = model.floors.map((f) => ({
     floor: clone(f),
     labels: f.rooms.filter((r) => r.type !== 'stairs').map((r) => ({ name: r.name, x: r.labelPos.x, y: r.labelPos.y, ceilingHeight: r.ceilingHeight, floorOffset: r.floorOffset, voidGuard: r.voidGuard, floorFinish: r.floorFinish })),
@@ -121,12 +130,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let postKind: PostKind = 'kuda';
   let postSize = 105;
   let postRound = false;
+  // 屋根（屋根伏せ図風）: 選んだ塊（階と、その塊の中の点）、点を打って描いている途中の多角形、描いた範囲の角のドラッグ
+  let roofSel: { level: number; at: Vec2 } | null = null;
+  let roofDraw: Vec2[] | null = null;
+  /** 描いているのが「屋根なしの範囲」か */
+  let roofDrawOmit = false;
+  let roofDrag: { id: string; index: number; moved: boolean; start: Vec2 } | null = null;
+  let roofCache: RoofMass[] | null = null;
   const undo: string[] = [];
   const redo: string[] = [];
   let seq = 0;
 
   const W = () => works[fi];
-  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null, site: model.site ?? null });
+  const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null, site: model.site ?? null, roof: model.roofPatches ?? null });
   const pushUndo = () => {
     undo.push(`${fi}|${snapshot()}`);
     if (undo.length > 60) undo.shift();
@@ -144,9 +160,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       if (o.site) model.site = o.site;
       else delete model.site;
     }
+    if ('roof' in o) {
+      if (o.roof) model.roofPatches = o.roof;
+      else delete model.roofPatches;
+    }
     autoCache = null;
+    roofCache = null;
     sel = null;
     furnSel = null;
+    roofDraw = null;
     markChanged();
     draw();
   };
@@ -187,6 +209,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['stairs', '階段', '空いている所をドラッグして階段の範囲を描きます。既存の階段はクリックで選び、ドラッグで移動、R キーで昇り口を回転、Delete で削除'],
     ['ceiling', '天井高', '部屋をドラッグで囲む（またはクリック）と、その範囲の部屋だけ右の天井高になります（例: LDK と水まわりだけ 3,500）。同じ高さをもう一度当てると階の天井高に戻ります'],
     ['post', '柱', 'クリックで柱を置きます（方眼・壁の端に止まる。Alt でフリー）。柱をクリックで選んで種類・太さを変える、Delete で削除。柱はその階の床から立ちます: 2 階の張り出しの足元の柱は「1 階」に置きます（点線が上の階の外形）。通し柱は 1 階に置くと 2 階の上まで通ります'],
+    ['roof', '屋根', '屋根伏せ図のように上から見た屋根を直します。屋根をクリックして選ぶと右で掛け方・向き・勾配・軒の出を変えられます。何も無い所をクリックすると点を打って屋根の形を描き始めます（最初の点をクリック／Enter／ダブルクリックで閉じる、Backspace で 1 点戻す、Esc でやめる）。描いた屋根の角はドラッグで動かせ、「屋根なしの範囲」にもできます'],
   ];
   const tools = h(
     'div',
@@ -575,7 +598,180 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const gPreview = document.createElementNS(NS, 'g');
   const gPreviewStatic = document.createElementNS(NS, 'g');
   const gPosts = document.createElementNS(NS, 'g');
-  svg.append(gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gPreviewStatic, gPreview);
+  const gRoof = document.createElementNS(NS, 'g');
+  // 屋根なしの範囲の斜線
+  const defs = document.createElementNS(NS, 'defs');
+  defs.innerHTML = '<pattern id="pe-hatch" patternUnits="userSpaceOnUse" width="320" height="320" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="320" stroke="#c0392b" stroke-width="36" stroke-opacity="0.3"/></pattern>';
+  svg.append(defs, gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gPreviewStatic, gPreview);
+
+  // ---- 屋根（屋根伏せ図風） ----
+  /** いま直している階の壁で作った建物の、屋根の塊の一覧（手で描いた屋根・屋根なしの範囲も含む）。draw のたびに作り直す */
+  const roofMassList = (): RoofMass[] => {
+    if (roofCache) return roofCache;
+    const tmp: BuildingModel = { ...model, floors: works.map((w) => w.floor) };
+    try {
+      roofCache = roofMasses(tmp, exteriorById(state.design.exteriorId), state.design.roofOverride);
+    } catch (e) {
+      console.error(e);
+      roofCache = [];
+    }
+    return roofCache;
+  };
+  const selectedRoof = (masses: RoofMass[]): RoofMass | null => (roofSel ? roofMassAt(masses.filter((x) => x.level === roofSel!.level), roofSel.at, 0) : null);
+  const roofWhole = () => {
+    const ext = exteriorById(state.design.exteriorId);
+    return { pitch: state.design.roofPitch ?? ext.roof.pitch, eaves: state.design.eaves ?? ext.roof.eaves };
+  };
+  const dropEmptyRoofPatches = () => {
+    if (model.roofPatches && !model.roofPatches.length) delete model.roofPatches;
+  };
+  /** 選んだ塊の手直しに fn を当てる（手直しが無ければ作る。項目が空になれば消す） */
+  const editRoofPatch = (fn: (q: RoofPatch) => void, msg?: string) => {
+    const ms = selectedRoof(roofMassList());
+    if (!ms) return;
+    pushUndo();
+    const list = (model.roofPatches ??= []);
+    let p = ms.patch ?? null;
+    if (!p) {
+      p = { id: `R${ms.level}-${Date.now().toString(36)}`, level: ms.level, at: { ...ms.center } };
+      list.push(p);
+    }
+    fn(p);
+    // 手で描いた範囲（足した屋根・屋根なし）は項目が空でも残す
+    if (!patchLoop(p) && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) model.roofPatches = list.filter((x) => x !== p);
+    dropEmptyRoofPatches();
+    roofCache = null;
+    if (msg) toast(msg, 'ok', 2500);
+    markChanged();
+    draw();
+  };
+  const removeRoofPatch = (p: RoofPatch, msg: string) => {
+    pushUndo();
+    model.roofPatches = (model.roofPatches ?? []).filter((x) => x !== p);
+    dropEmptyRoofPatches();
+    roofCache = null;
+    roofSel = null;
+    toast(msg, 'ok');
+    markChanged();
+    draw();
+  };
+  /** 点を打ち終えた: 多角形の屋根（または屋根なしの範囲）をこの階に足す */
+  const finishRoofDraw = () => {
+    const pts = roofDraw ?? [];
+    roofDraw = null;
+    // 同じ所を続けて打った点・閉じる点の重なりを省く
+    const loop: Vec2[] = [];
+    for (const q of pts) if (!loop.length || Math.hypot(q.x - loop[loop.length - 1].x, q.y - loop[loop.length - 1].y) > 30) loop.push({ x: Math.round(q.x), y: Math.round(q.y) });
+    if (loop.length > 1 && Math.hypot(loop[0].x - loop[loop.length - 1].x, loop[0].y - loop[loop.length - 1].y) <= 30) loop.pop();
+    if (loop.length < 3 || Math.abs(polygonArea(loop)) < 300000) {
+      toast(loop.length < 3 ? '3 点以上を打ってください（Esc でやめる）' : '範囲が小さすぎます（0.3 ㎡ 以上にしてください）');
+      draw();
+      return;
+    }
+    pushUndo();
+    const f = W().floor;
+    const p: RoofPatch = { id: `R${f.level}-${Date.now().toString(36)}`, level: f.level, at: interiorPoint(loop), loop, ...(roofDrawOmit ? { omit: true } : {}) };
+    (model.roofPatches ??= []).push(p);
+    roofCache = null;
+    roofSel = { level: f.level, at: { ...p.at } };
+    markChanged();
+    draw();
+    const area = (Math.abs(polygonArea(loop)) / 1e6).toFixed(1);
+    toast(roofDrawOmit ? `${f.level}階に屋根なしの範囲を描きました（${area} ㎡）。自動の屋根からこの範囲を除きます` : `${f.level}階に屋根を足しました（${area} ㎡）。右で掛け方・向き・勾配・高さを直せます`, 'ok', 3500);
+  };
+  const cancelRoofDraw = () => {
+    roofDraw = null;
+    while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
+    draw();
+  };
+  /**
+   * 屋根伏せ図: 塊ごとの範囲を色で分け（最上階の屋根は青、下屋は灰青、手で描いた屋根は橙の破線、屋根なしは赤の斜線）、
+   * 掛け方の文字と、片流れは水の流れる向きの矢印、切妻・寄棟は棟の線を描く。他の階の屋根は薄く（その階のタブで直す）。
+   * 選んだ手描きの屋根には角のつまみ
+   */
+  const drawRoofs = (f: Floor, fs: number) => {
+    const px = mmPerPx();
+    const masses = roofMassList();
+    const selMs = selectedRoof(masses);
+    const drawnManual = new Set<string>();
+    const order = masses.slice().sort((a, b) => (a.level === f.level ? 1 : 0) - (b.level === f.level ? 1 : 0) || a.level - b.level);
+    for (const ms of order) {
+      const cur = ms.level === f.level;
+      const on = cur && selMs === ms;
+      const loop = ms.manual && ms.patch ? patchLoop(ms.patch) : undefined;
+      if (loop && ms.patch) {
+        if (drawnManual.has(ms.patch.id)) continue;
+        drawnManual.add(ms.patch.id);
+      }
+      const loops = loop ? [loop] : rectsOutline(ms.rects);
+      if (!loops.length) continue;
+      const d = loops.map((l) => `M${l.map((q) => `${q.x} ${q.y}`).join('L')}Z`).join('');
+      const g = el('g', { class: 'pe-roof', 'pointer-events': cur ? 'auto' : 'none', opacity: cur ? 1 : 0.35 }, gRoof) as SVGGElement;
+      g.dataset.level = String(ms.level);
+      g.dataset.cx = String(ms.center.x);
+      g.dataset.cy = String(ms.center.y);
+      const col = ms.omit ? '#c0392b' : ms.manual ? '#d9822b' : ms.isTop ? '#4f74a0' : '#7d93a8';
+      el('path', { d, 'fill-rule': 'evenodd', fill: ms.omit ? '#c0392b' : ms.manual ? '#f0b27a' : ms.isTop ? '#9db6d1' : '#c3d0dc', 'fill-opacity': ms.omit ? 0.08 : on ? 0.5 : 0.3, stroke: on ? '#d9822b' : col, 'stroke-width': (on ? 3 : 1.6) * px, 'stroke-dasharray': ms.manual ? `${9 * px} ${5 * px}` : 'none', 'stroke-linejoin': 'round', cursor: 'pointer' }, g);
+      if (ms.omit) el('path', { d, 'fill-rule': 'evenodd', fill: 'url(#pe-hatch)', 'pointer-events': 'none' }, g);
+      const c = ms.center;
+      const label = ms.omit ? '屋根なし' : `${ms.isTop || ms.manual ? '' : '下屋 '}${ROOF_KIND_LABEL[ms.kind]}${ms.kind !== 'flat' && ms.patch?.pitch != null ? ` ${ms.patch.pitch} 寸` : ''}`;
+      const t = el('text', { x: c.x, y: c.y - 6 * px, 'font-size': fs * 0.78, 'text-anchor': 'middle', fill: on ? '#b4621e' : ms.omit ? '#a93226' : '#2f4a66', 'font-weight': 600, stroke: '#fff', 'stroke-width': fs * 0.18, 'paint-order': 'stroke', 'pointer-events': 'none' }, g);
+      t.textContent = label;
+      const bw = ms.bbox.maxX - ms.bbox.minX;
+      const bh = ms.bbox.maxY - ms.bbox.minY;
+      const ink = on ? '#b4621e' : col;
+      if (!ms.omit && ms.kind === 'shed') {
+        // 水の流れる向き（高い側の反対）へ矢印
+        const dir = { n: { x: 0, y: 1 }, s: { x: 0, y: -1 }, e: { x: -1, y: 0 }, w: { x: 1, y: 0 } }[ms.high];
+        const L = Math.max(500, Math.min(1800, Math.min(bw, bh) * 0.3));
+        const o = { x: c.x, y: c.y + 14 * px };
+        const a = { x: o.x - (dir.x * L) / 2, y: o.y - (dir.y * L) / 2 };
+        const b = { x: o.x + (dir.x * L) / 2, y: o.y + (dir.y * L) / 2 };
+        el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: ink, 'stroke-width': 2.5 * px, 'pointer-events': 'none' }, g);
+        const s = 7 * px;
+        el('polygon', { points: `${b.x},${b.y} ${b.x - dir.x * s * 1.6 - dir.y * s},${b.y - dir.y * s * 1.6 + dir.x * s} ${b.x - dir.x * s * 1.6 + dir.y * s},${b.y - dir.y * s * 1.6 - dir.x * s}`, fill: ink, 'pointer-events': 'none' }, g);
+      } else if (!ms.omit && (ms.kind === 'gable' || ms.kind === 'hip')) {
+        // 棟の線（長い辺に沿う、または手直しの向き）
+        const horiz = (ms.patch?.ridge ?? (bw >= bh ? 'x' : 'z')) === 'x';
+        const L = (horiz ? bw : bh) * 0.55;
+        const o = { x: c.x, y: c.y + 14 * px };
+        el('line', { x1: horiz ? o.x - L / 2 : o.x, y1: horiz ? o.y : o.y - L / 2, x2: horiz ? o.x + L / 2 : o.x, y2: horiz ? o.y : o.y + L / 2, stroke: ink, 'stroke-width': 3.5 * px, 'stroke-linecap': 'round', 'pointer-events': 'none' }, g);
+        if (ms.kind === 'hip') {
+          // 隅棟: 棟の両端から 4 隅へ
+          const e0 = horiz ? { x: o.x - L / 2, y: o.y } : { x: o.x, y: o.y - L / 2 };
+          const e1 = horiz ? { x: o.x + L / 2, y: o.y } : { x: o.x, y: o.y + L / 2 };
+          const r = Math.min(bw, bh) * 0.22;
+          const corners = horiz ? [[e0, -1, -1], [e0, -1, 1], [e1, 1, -1], [e1, 1, 1]] : [[e0, -1, -1], [e0, 1, -1], [e1, -1, 1], [e1, 1, 1]];
+          for (const [e, sx, sy] of corners as [Vec2, number, number][]) el('line', { x1: e.x, y1: e.y, x2: e.x + sx * r, y2: e.y + sy * r, stroke: ink, 'stroke-width': 1.8 * px, 'pointer-events': 'none' }, g);
+        }
+      }
+      // 選んだ手描きの範囲: 角のつまみ
+      if (on && loop && ms.patch)
+        loop.forEach((q, i) => {
+          const hnd = el('circle', { cx: q.x, cy: q.y, r: 6.5 * px, fill: '#fff', stroke: '#d9822b', 'stroke-width': 2.5 * px, class: 'pe-roof-handle', cursor: 'move' }, gPreviewStatic) as SVGElement;
+          hnd.dataset.id = ms.patch!.id;
+          hnd.dataset.index = String(i);
+        });
+    }
+  };
+  /** 点を打っている途中の多角形のプレビュー（カーソルの吸着先まで） */
+  const drawRoofPreview = (cursor: Vec2 | null, closing: boolean) => {
+    if (!roofDraw) return;
+    const px = mmPerPx();
+    const pts = cursor ? [...roofDraw, closing ? roofDraw[0] : cursor] : roofDraw;
+    if (pts.length >= 3) el('polygon', { points: pts.map((q) => `${q.x},${q.y}`).join(' '), fill: roofDrawOmit ? '#c0392b' : '#f0b27a', 'fill-opacity': 0.22, stroke: 'none', 'pointer-events': 'none' }, gPreview);
+    el('polyline', { points: pts.map((q) => `${q.x},${q.y}`).join(' '), fill: 'none', stroke: roofDrawOmit ? '#c0392b' : '#d9822b', 'stroke-width': 2.5 * px, 'stroke-dasharray': `${9 * px} ${5 * px}`, 'pointer-events': 'none' }, gPreview);
+    for (const q of roofDraw) el('circle', { cx: q.x, cy: q.y, r: 4 * px, fill: '#d9822b', 'pointer-events': 'none' }, gPreview);
+    if (closing) el('circle', { cx: roofDraw[0].x, cy: roofDraw[0].y, r: 10 * px, fill: 'none', stroke: '#d9822b', 'stroke-width': 2 * px, 'pointer-events': 'none' }, gPreview);
+    if (cursor && roofDraw.length && !closing) {
+      const last = roofDraw[roofDraw.length - 1];
+      const L = Math.hypot(cursor.x - last.x, cursor.y - last.y);
+      if (L > 1) {
+        const t = el('text', { x: (last.x + cursor.x) / 2, y: (last.y + cursor.y) / 2 - 10 * px, 'font-size': 12 * px, 'text-anchor': 'middle', fill: '#d9822b', stroke: '#fff', 'stroke-width': 3 * px, 'paint-order': 'stroke', 'pointer-events': 'none' }, gPreview);
+        t.textContent = lenLabel(L);
+      }
+    }
+  };
 
   const wallPoly = (w: Wall) => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -585,7 +781,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    roofCache = null;
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
     // 敷地（1 階だけ）: 境界線を一点鎖線で。選択の道具では角の丸をドラッグして直せる
@@ -699,6 +896,11 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       t.textContent = l.name;
       (t as SVGElement).dataset.index = String(i);
     });
+    if (tool === 'roof') {
+      drawRoofs(f, fs);
+      if (roofDraw) drawRoofPreview(null, false);
+      svg.style.cursor = roofDraw ? 'crosshair' : 'default';
+    }
     renderPanel();
     renderTabs();
   };
@@ -856,11 +1058,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     if (embedded) {
       tipLine.textContent = tip;
       // 選んだ物の詳細と、家具・階段・柱の一覧があるときだけ浮かべる
-      panel.hidden = !sel && tool !== 'furniture' && tool !== 'stairs' && tool !== 'post' && tool !== 'ceiling';
+      panel.hidden = !sel && tool !== 'furniture' && tool !== 'stairs' && tool !== 'post' && tool !== 'ceiling' && tool !== 'roof';
       if (panel.hidden) return;
     } else {
       panel.append(h('h3', null, `${f.level}階の修正`));
       panel.append(h('p', { class: 'hint' }, tip));
+    }
+    if (tool === 'roof') {
+      renderRoofPanel(f);
+      return;
     }
     if (tool === 'post') renderPostPanel(f);
     if (tool === 'ceiling') {
@@ -1295,7 +1501,79 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     panel.append(h('p', { class: 'hint', style: 'margin-top:10px' }, `この階の柱: ${n} 本${n ? `（管柱 ${f.posts!.filter((x) => x.kind === 'kuda').length}・通し柱 ${f.posts!.filter((x) => x.kind === 'toshi').length}・独立柱 ${f.posts!.filter((x) => x.kind === 'free').length}）` : ''}。壁の中の柱は 3D では壁に隠れ、壁から離れた柱は 3D にも立ちます。`));
   };
 
+  /** 屋根の道具のパネル: 描いている途中／選んだ塊の手直し／この階の屋根の一覧と始め方 */
+  const renderRoofPanel = (f: Floor) => {
+    const masses = roofMassList();
+    if (roofDraw) {
+      const n = roofDraw.length;
+      panel.append(
+        h('div', { class: 'field-label' }, roofDrawOmit ? '屋根なしの範囲を描いています' : '屋根を描いています'),
+        h('p', { class: 'hint' }, `${n} 点${n ? '打ちました' : '目をクリック'}。点を打っていき、最初の点をクリック（または Enter・ダブルクリック）で閉じます。Backspace で 1 点戻す、Esc でやめる。壁の端・方眼に吸着し、縦横にそろいます（Shift で斜め、Alt でフリー）。`),
+        h('div', { class: 'field-label' }, '描いているもの'),
+        h(
+          'div',
+          { class: 'segmented' },
+          h('button', { class: roofDrawOmit ? '' : 'on', onclick: () => { roofDrawOmit = false; renderPanel(); } }, '足す屋根'),
+          h('button', { class: roofDrawOmit ? 'on' : '', title: 'この範囲には屋根を掛けず、自動の屋根からも除く（余分な下屋を消す）', onclick: () => { roofDrawOmit = true; renderPanel(); } }, '屋根なしの範囲'),
+        ),
+        h('div', { class: 'btn-row', style: 'margin-top:8px' }, h('button', { class: 'btn sm', disabled: n < 3, onclick: () => finishRoofDraw() }, '閉じて作る'), h('button', { class: 'btn sm ghost', onclick: () => cancelRoofDraw() }, 'やめる')),
+      );
+      return;
+    }
+    const ms = selectedRoof(masses);
+    const startRow = h(
+      'div',
+      { class: 'btn-row', style: 'margin-top:8px' },
+      h('button', { class: 'btn sm', title: '点を打って多角形の屋根を描きます（何も無い所をクリックしても始まります）', onclick: () => { roofSel = null; roofDrawOmit = false; roofDraw = []; draw(); } }, '点を打って屋根を足す'),
+      h('button', { class: 'btn sm ghost', title: '点で囲んだ範囲には屋根を掛けず、自動の屋根からも除きます（余分に出た下屋を消すときに）', onclick: () => { roofSel = null; roofDrawOmit = true; roofDraw = []; draw(); } }, '屋根なしの範囲を描く'),
+    );
+    if (!ms) {
+      const mine = masses.filter((x) => x.level === f.level);
+      const autoPatches = (model.roofPatches ?? []).filter((x) => x.level === f.level && !patchLoop(x));
+      panel.append(
+        h('p', { class: 'hint' }, `${f.level}階の屋根: ${mine.filter((x) => !x.omit).length} か所${mine.some((x) => x.manual) ? `（手で描いた屋根・屋根なし ${mine.filter((x) => x.manual).length}）` : ''}。屋根をクリックして選ぶと、掛け方・向き・勾配・軒の出を変えられます。`),
+        startRow,
+        h(
+          'ul',
+          { class: 'hint pe-howto' },
+          h('li', null, '屋根が抜けている所 → その範囲を点で囲んで「屋根を足す」。'),
+          h('li', null, 'ポーチ・カーポート・物置にも屋根を描けます（建物の外に出た角には柱が立ちます）。'),
+          h('li', null, '余分に出た下屋 → 「屋根なしの範囲」で囲む。'),
+          h('li', null, '薄い色は他の階の屋根（その階のタブで直せます）。文字は掛け方、矢印は水の流れる向き、太い線は棟。'),
+        ),
+        ...(autoPatches.length
+          ? [h('button', { class: 'btn sm ghost', onclick: () => { pushUndo(); model.roofPatches = (model.roofPatches ?? []).filter((x) => !autoPatches.includes(x)); dropEmptyRoofPatches(); roofCache = null; toast(`${f.level}階の塊ごとの手直しをおまかせに戻しました（手で描いた屋根は残します）`, 'ok'); markChanged(); draw(); } }, 'この階の手直しをすべておまかせに戻す')]
+          : []),
+      );
+      return;
+    }
+    const whole = roofWhole();
+    const tmp: BuildingModel = { ...model, floors: works.map((w) => w.floor) };
+    panel.append(
+      h('div', { class: 'field-label' }, massName(ms)),
+      h('p', { class: 'hint', style: 'margin:2px 0 6px' }, massState(ms, model.northAngleDeg)),
+      ...roofPatchControls({
+        model: tmp,
+        ms,
+        wholePitch: whole.pitch,
+        wholeEaves: whole.eaves,
+        edit: editRoofPatch,
+        remove: () => { if (ms.patch) removeRoofPatch(ms.patch, ms.omit ? '屋根なしの範囲を消しました' : '足した屋根を消しました'); },
+        deselect: () => { roofSel = null; draw(); },
+      }),
+      ms.manual ? h('p', { class: 'hint', style: 'margin-top:6px' }, '角の丸をドラッグすると形を直せます（方眼・壁の端に吸着、Alt でフリー）。Delete で消します。') : h('p', { class: 'hint', style: 'margin-top:6px' }, 'この塊の一部だけ違う掛け方にしたい・形を変えたいときは、その範囲を点で囲んで屋根を足します（囲んだ所は自動の屋根から除かれます）。'),
+      startRow,
+    );
+  };
+
   const deleteSel = () => {
+    if (tool === 'roof') {
+      const ms = selectedRoof(roofMassList());
+      if (!ms?.patch) return;
+      if (ms.manual) removeRoofPatch(ms.patch, ms.omit ? '屋根なしの範囲を消しました' : '足した屋根を消しました');
+      else editRoofPatch((q) => { delete q.kind; delete q.high; delete q.ridge; delete q.pitch; delete q.eaves; delete q.eavesBy; delete q.parapet; }, 'この塊をおまかせに戻しました');
+      return;
+    }
     if (tool === 'post') {
       if (!postSel) return;
       pushUndo();
@@ -1359,7 +1637,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     stairDrag = null;
     postSel = null;
     ceilDraw = null;
-    svg.style.cursor = t === 'select' || t === 'furniture' ? 'default' : 'crosshair';
+    roofSel = null;
+    roofDraw = null;
+    roofDrag = null;
+    svg.style.cursor = t === 'select' || t === 'furniture' || t === 'roof' ? 'default' : 'crosshair';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
   };
@@ -1540,6 +1821,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         stairDrag = null;
         stairDraw = null;
         ceilDraw = null;
+        roofDrag = null;
         while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
         try {
           svg.setPointerCapture(e.pointerId);
@@ -1555,11 +1837,57 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
         return;
       }
+      if (e.button === 2 && tool === 'roof' && roofDraw) {
+        // 右クリック: 3 点以上なら閉じる、それ未満ならやめる
+        if (roofDraw.length >= 3) finishRoofDraw();
+        else cancelRoofDraw();
+        return;
+      }
       pan = { x: e.clientX, y: e.clientY, vb: { ...vb } };
       svg.setPointerCapture(e.pointerId);
       return;
     }
     const p = toMm(e);
+    if (tool === 'roof') {
+      const t = e.target as SVGElement;
+      // 手で描いた範囲の角をつまむ
+      if (t.classList.contains('pe-roof-handle') && t.dataset.id) {
+        const rp = model.roofPatches?.find((x) => x.id === t.dataset.id);
+        const idx = +(t.dataset.index ?? -1);
+        if (rp?.loop?.[idx]) {
+          roofDrag = { id: rp.id, index: idx, moved: false, start: { ...rp.loop[idx] } };
+          svg.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+      if (roofDraw) {
+        // 点を打つ（最初の点に戻ったら閉じる）
+        const last = roofDraw[roofDraw.length - 1] ?? null;
+        const s = snap(p, last, e.shiftKey, e.altKey).p;
+        const first = roofDraw[0];
+        if (roofDraw.length >= 3 && first && Math.hypot(s.x - first.x, s.y - first.y) <= Math.min(14 * mmPerPx(), 300)) {
+          finishRoofDraw();
+          return;
+        }
+        if (!last || Math.hypot(s.x - last.x, s.y - last.y) > 30) roofDraw.push(s);
+        renderPanel();
+        while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
+        drawRoofPreview(null, false);
+        return;
+      }
+      const g = t.closest('.pe-roof') as SVGGElement | null;
+      if (g?.dataset.level) {
+        roofSel = { level: +g.dataset.level, at: { x: +(g.dataset.cx ?? 0), y: +(g.dataset.cy ?? 0) } };
+        draw();
+        return;
+      }
+      // 何も無い所: 点を打って屋根を描き始める
+      roofSel = null;
+      roofDrawOmit = false;
+      roofDraw = [snap(p, null, true, e.altKey).p];
+      draw();
+      return;
+    }
     if (tool === 'post') {
       const g = (e.target as SVGElement).closest('.pe-post') as SVGGElement | null;
       const f = W().floor;
@@ -1798,6 +2126,39 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       }
       return;
     }
+    if (roofDrag) {
+      const rp = model.roofPatches?.find((x) => x.id === roofDrag!.id);
+      if (!rp?.loop?.[roofDrag.index]) {
+        roofDrag = null;
+        return;
+      }
+      if (!roofDrag.moved && Math.hypot(p.x - roofDrag.start.x, p.y - roofDrag.start.y) < 3 * px) return;
+      if (!roofDrag.moved) {
+        pushUndo();
+        roofDrag.moved = true;
+      }
+      const s = snap(p, null, true, e.altKey);
+      rp.loop[roofDrag.index] = { ...s.p };
+      rp.at = interiorPoint(rp.loop);
+      if (roofSel) roofSel.at = { ...rp.at };
+      roofCache = null;
+      draw();
+      snapMark(s.p, s.hint, px);
+      status.textContent = `屋根の角を動かす${s.hint ? `・吸着: ${s.hint}` : ''}（Alt でフリー）`;
+      return;
+    }
+    if (tool === 'roof') {
+      if (roofDraw) {
+        const last = roofDraw[roofDraw.length - 1] ?? null;
+        const s = snap(p, last, e.shiftKey, e.altKey);
+        const first = roofDraw[0];
+        const closing = roofDraw.length >= 3 && !!first && Math.hypot(s.p.x - first.x, s.p.y - first.y) <= Math.min(14 * px, 300);
+        drawRoofPreview(s.p, closing);
+        if (!closing) snapMark(s.p, s.hint, px);
+        status.textContent = closing ? 'クリックで閉じて作ります' : `${roofDraw.length} 点目まで${s.hint ? `・吸着: ${s.hint}` : ''}（最初の点をクリック／Enter／ダブルクリックで閉じる、Backspace で 1 点戻す、Esc でやめる）`;
+      } else status.textContent = (e.target as SVGElement).closest?.('.pe-roof') ? 'クリックで選ぶ' : 'クリックで点を打って屋根を描き始めます';
+      return;
+    }
     if (ceilDraw) {
       ceilDraw.b = p;
       const x = Math.min(ceilDraw.a.x, ceilDraw.b.x);
@@ -1975,6 +2336,12 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     touches.delete(e.pointerId);
     if (touches.size < 2) pinch = null;
   });
+  // ダブルクリックで屋根の多角形を閉じる（2 回目のクリックで重なった点は finishRoofDraw が省く）
+  svg.addEventListener('dblclick', (e) => {
+    if (tool !== 'roof' || !roofDraw) return;
+    e.preventDefault();
+    if (roofDraw.length >= 3) finishRoofDraw();
+  });
   svg.addEventListener('pointerup', (e) => {
     if (e.pointerType === 'touch') {
       touches.delete(e.pointerId);
@@ -2015,6 +2382,13 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     pan = null;
     drag = null;
     stairDrag = null;
+    if (roofDrag) {
+      const d = roofDrag;
+      roofDrag = null;
+      if (d.moved) markChanged();
+      draw();
+      return;
+    }
     if (ceilDraw) {
       const { a, b } = ceilDraw;
       ceilDraw = null;
@@ -2110,7 +2484,30 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       status.textContent = lenBuf ? `長さ ${lenBuf} mm（Enter で確定・Esc で取り消し。向きはカーソルの方向）` : '';
       return;
     }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel) || (tool === 'post' && postSel))) {
+    // 屋根を描いている途中: Enter で閉じる、Backspace で 1 点戻す、Esc でやめる
+    if (tool === 'roof' && roofDraw) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finishRoofDraw();
+        return;
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        roofDraw.pop();
+        if (!roofDraw.length) cancelRoofDraw();
+        else {
+          renderPanel();
+          while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
+          drawRoofPreview(null, false);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        cancelRoofDraw();
+        return;
+      }
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel) || (tool === 'post' && postSel) || (tool === 'roof' && roofSel))) {
       e.preventDefault();
       deleteSel();
     } else if (e.key === 'Escape') {
@@ -2125,6 +2522,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       stairSel = null;
       stairDraw = null;
       postSel = null;
+      roofSel = null;
       draw();
     } else if (tool === 'stairs' && stairSel && e.key.toLowerCase() === 'r') {
       e.preventDefault();
@@ -2202,7 +2600,12 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       else delete model.furniture;
       learnSymbols(model, fl);
       onDone(true);
-    } else onDone(false);
+    } else {
+      // やめる: 屋根の手直しは model に直接書いているので開いたときの物に戻す
+      if (roofPatches0) model.roofPatches = roofPatches0;
+      else delete model.roofPatches;
+      onDone(false);
+    }
   };
 
   requestAnimationFrame(() => {

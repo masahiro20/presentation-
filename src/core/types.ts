@@ -408,6 +408,10 @@ export interface RoofPatch {
    * at はその中心。kind を省くと緩い片流れ（全体が陸屋根なら陸屋根）
    */
   rect?: { minX: number; minY: number; maxX: number; maxY: number };
+  /** 手で描いた屋根の範囲（多角形。図面座標 mm）。方眼の「屋根」の道具で点を打って描く。rect より優先 */
+  loop?: Vec2[];
+  /** true = この範囲には屋根を掛けない（自動の屋根から除く。余分な下屋を消すときに） */
+  omit?: boolean;
   /** 足した屋根の軒の高さ（その階の床からの mm）。省略 = その階の壁の天端 */
   topMm?: number;
 }

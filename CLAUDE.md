@@ -16,6 +16,7 @@
 
 ## 提出前の自己点検（毎回）
 - お客様の図面 10 件以上を読み込み、外観まで立ち上げて、住宅・建築としておかしい所とバグを点検してから出す（`scripts/audit/shoot.mjs`）。
+- 動作エラーの自動チェック `node scripts/audit/sweep.mjs <pdf> <outDir>`（各ステップのボタン・セレクト、方眼の道具ひとつずつ、3D の「窓・戸」の道具の各モードを触ってページのエラーを拾う）を 1〜2 件の図面で回し、issues 0 にしてから出す。
 - `npx tsc --noEmit`・`npx vitest run --exclude 'tests/tmp/**'`・`npm run build` が通ること。
 - 節目ごとに `PROGRESS.md` を更新し、コミットしたら必ずプッシュ（本番は Vercel が自動で更新）。
 - コミットメッセージにモデル名を書かない。

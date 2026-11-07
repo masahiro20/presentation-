@@ -148,6 +148,77 @@ export function rectsMinus(rs: Rect[], holes: Rect[]): Rect[] {
   return cur;
 }
 
+/**
+ * 重ならない矩形の集まりの輪郭（外周と穴。y 下向きの座標で見た目の時計回り）。屋根の塊を平面に描く線に使う。
+ * 矩形の辺を他の矩形の x／y で区切り、隣の矩形と共有する辺を打ち消して、残った辺をつなぐ
+ */
+export function rectsOutline(rects: Rect[]): Vec2[][] {
+  if (!rects.length) return [];
+  const xs = uniqSorted(rects.flatMap((r) => [r.minX, r.maxX]), 0.5);
+  const ys = uniqSorted(rects.flatMap((r) => [r.minY, r.maxY]), 0.5);
+  const near = (axis: number[], v: number) => axis.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
+  const between = (axis: number[], lo: number, hi: number) => axis.filter((v) => v >= lo - 0.5 && v <= hi + 0.5);
+  type E = { a: Vec2; b: Vec2 };
+  const edges = new Map<string, E>();
+  const key = (a: Vec2, b: Vec2) => `${a.x},${a.y}>${b.x},${b.y}`;
+  const put = (a: Vec2, b: Vec2) => {
+    const rev = key(b, a);
+    if (edges.has(rev)) edges.delete(rev);
+    else edges.set(key(a, b), { a, b });
+  };
+  for (const r0 of rects) {
+    const r = { minX: near(xs, r0.minX), maxX: near(xs, r0.maxX), minY: near(ys, r0.minY), maxY: near(ys, r0.maxY) };
+    if (r.maxX <= r.minX || r.maxY <= r.minY) continue;
+    const cx = between(xs, r.minX, r.maxX);
+    const cy = between(ys, r.minY, r.maxY);
+    for (let i = 0; i + 1 < cx.length; i++) {
+      put({ x: cx[i], y: r.minY }, { x: cx[i + 1], y: r.minY }); // 上辺 →
+      put({ x: cx[i + 1], y: r.maxY }, { x: cx[i], y: r.maxY }); // 下辺 ←
+    }
+    for (let j = 0; j + 1 < cy.length; j++) {
+      put({ x: r.maxX, y: cy[j] }, { x: r.maxX, y: cy[j + 1] }); // 右辺 ↓
+      put({ x: r.minX, y: cy[j + 1] }, { x: r.minX, y: cy[j] }); // 左辺 ↑
+    }
+  }
+  const byStart = new Map<string, E[]>();
+  for (const e of edges.values()) {
+    const k = `${e.a.x},${e.a.y}`;
+    const list = byStart.get(k);
+    if (list) list.push(e);
+    else byStart.set(k, [e]);
+  }
+  const used = new Set<E>();
+  const loops: Vec2[][] = [];
+  for (const e0 of edges.values()) {
+    if (used.has(e0)) continue;
+    const loop: Vec2[] = [];
+    let e: E | undefined = e0;
+    while (e && !used.has(e)) {
+      used.add(e);
+      loop.push(e.a);
+      const cand: E[] = (byStart.get(`${e.b.x},${e.b.y}`) ?? []).filter((n) => !used.has(n));
+      if (cand.length <= 1) e = cand[0];
+      else {
+        // 角で触れ合う所（辺が 2 本出る）: 進んできた向きから右へ曲がる辺を選び、外周を小さく閉じる
+        const d: Vec2 = { x: e.b.x - e.a.x, y: e.b.y - e.a.y };
+        const turn = (n: E): number => d.x * (n.b.y - n.a.y) - d.y * (n.b.x - n.a.x);
+        e = cand.sort((p, q) => turn(q) - turn(p))[0];
+      }
+    }
+    if (loop.length >= 4) {
+      const out: Vec2[] = [];
+      for (let i = 0; i < loop.length; i++) {
+        const p = loop[(i + loop.length - 1) % loop.length];
+        const c = loop[i];
+        const n = loop[(i + 1) % loop.length];
+        if (Math.abs((c.x - p.x) * (n.y - c.y) - (c.y - p.y) * (n.x - c.x)) > 1e-6) out.push(c);
+      }
+      if (out.length >= 3) loops.push(out);
+    }
+  }
+  return loops;
+}
+
 export function rectIntersects(a: Rect, b: Rect, tol = 0): boolean {
   return a.minX < b.maxX - tol && b.minX < a.maxX - tol && a.minY < b.maxY - tol && b.minY < a.maxY - tol;
 }

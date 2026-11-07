@@ -45,6 +45,37 @@ export function polygonCentroid(poly: Vec2[]): Vec2 {
   return { x: cx / (3 * a), y: cy / (3 * a) };
 }
 
+/**
+ * 多角形の中に必ず入る点。重心が中に入ればそれ、L 字・コの字など重心が外に出る形では、
+ * 高さの中ほどを横切る線と辺の交点を並べ、いちばん長い内側の区間の中点（屋根の範囲の目印・文字の位置に）
+ */
+export function interiorPoint(poly: Vec2[]): Vec2 {
+  if (poly.length < 3) return poly[0] ?? { x: 0, y: 0 };
+  const c = polygonCentroid(poly);
+  if (pointInPolygon(c, poly)) return c;
+  const ys = poly.map((p) => p.y);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  let best: { x: number; y: number; len: number } | null = null;
+  // 頂点の高さにちょうど乗らないよう、中ほどから少しずらした何本かで試す
+  for (const f of [0.5, 0.37, 0.63, 0.25, 0.75]) {
+    const y = minY + (maxY - minY) * f;
+    const xs: number[] = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      if (a.y > y !== b.y > y) xs.push(a.x + ((b.x - a.x) * (y - a.y)) / (b.y - a.y));
+    }
+    xs.sort((p, q) => p - q);
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const len = xs[i + 1] - xs[i];
+      if (!best || len > best.len) best = { x: (xs[i] + xs[i + 1]) / 2, y, len };
+    }
+    if (best) break;
+  }
+  return best ? { x: best.x, y: best.y } : c;
+}
+
 /** 外形（穴あり）の内側か: 点を囲む輪郭の数が奇数なら内側（中庭などの穴に対応） */
 export function insideLoops(p: Vec2, loops: Vec2[][]): boolean {
   let n = 0;

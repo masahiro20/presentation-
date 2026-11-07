@@ -67,13 +67,14 @@ const sweepIn = async (name, scope, { maxButtons = 120, skip = SKIP } = {}) => {
       label = (await b.innerText()).trim().slice(0, 30);
       if (!label || skip.test(label) || skip.test((await b.getAttribute('title')) ?? '')) continue;
       const before = log.length;
-      await b.click({ timeout: 3000, noWaitAfter: true });
+      await b.click({ timeout: 5000, noWaitAfter: true });
       clicked++;
       await page.waitForTimeout(220);
       await closeModals();
       if (log.length > before) log.push({ step: name, kind: 'after-click', msg: label });
     } catch (e) {
-      log.push({ step: name, kind: 'click-failed', msg: `${label}: ${String(e.message).split('\n')[0].slice(0, 120)}` });
+      // 押せなかった（ほかの要素に隠れている・途中で作り直された）: エラーとは分けて数える
+      log.push({ step: name, kind: /Timeout/.test(String(e.message)) ? 'unclickable' : 'click-failed', msg: `${label}: ${String(e.message).split('\n')[0].slice(0, 120)}` });
     }
   }
   const sels = scope.locator('select');
@@ -97,9 +98,10 @@ const sweepIn = async (name, scope, { maxButtons = 120, skip = SKIP } = {}) => {
   log.push({ step: name, kind: 'summary', msg: `buttons ${n}, clicked ${clicked}, selects ${sn}` });
   await page.evaluate(() => document.querySelectorAll('.modal-back').forEach((m) => m.remove()));
 };
+const shot = (file) => page.screenshot({ path: `${out}/${file}`, timeout: 60000 }).catch((e) => log.push({ step: cur, kind: 'screenshot-failed', msg: String(e.message).split('\n')[0].slice(0, 120) }));
 const sweepSide = async (name) => {
   await sweepIn(name, page.locator('aside, .side').first());
-  await page.screenshot({ path: `${out}/${name}.png` });
+  await shot(`${name}.png`);
 };
 
 /** 方眼の修正画面: 図面座標 mm → 画面座標 */
@@ -204,7 +206,7 @@ const sweepPlanEditor = async () => {
             await page.waitForTimeout(300);
           }
         } else log.push({ step: cur, kind: 'check', msg: '角のつまみが出ていない' });
-        await page.screenshot({ path: `${out}/方眼_屋根.png` });
+        await shot('方眼_屋根.png');
         // 屋根なしの範囲にして戻す
         const omitBtn = page.locator('.pe-panel button', { hasText: '屋根なしの範囲にする' });
         if (await omitBtn.count()) {
@@ -251,7 +253,7 @@ const sweepPlanEditor = async () => {
   }
   // 選択の道具に戻す
   await tools.first().click({ timeout: 3000 }).catch(() => {});
-  await page.screenshot({ path: `${out}/方眼.png` });
+  await shot('方眼.png');
 };
 
 /** 3. 3D の「窓・戸」の道具（各モード） */
@@ -265,8 +267,10 @@ const sweep3dTool = async () => {
   await nav.click({ timeout: 5000 });
   await page.waitForTimeout(500);
   const tool = page.locator('.furn-tool.edit3d');
-  const modes = tool.locator('.segmented').first().locator('button');
+  // モードのボタン列（見出しのすぐ下: 窓・戸／天井高／シャッター／屋根）
+  const modes = tool.locator('.furn-head + div > button');
   const mn = await modes.count();
+  if (!mn) log.push({ step: cur, kind: 'check', msg: '窓・戸の道具のモードのボタンが見つからない' });
   /** 3D 上の点（図面座標 mm, 高さ m）→ 画面座標 */
   const screenOf = (x, y, h) =>
     page.evaluate(([x, y, h]) => {
@@ -318,7 +322,7 @@ const sweep3dTool = async () => {
           await page.waitForTimeout(300);
         }
       }
-      await page.screenshot({ path: `${out}/3D道具_${label}.png` });
+      await shot(`3D道具_${label}.png`);
     } catch (e) {
       log.push({ step: cur, kind: 'tool-failed', msg: String(e.message).split('\n')[0].slice(0, 160) });
     }
@@ -354,8 +358,11 @@ try {
   log.push({ step: cur, kind: 'crash', msg: String(e.message).split('\n')[0].slice(0, 200) });
 }
 writeFileSync(`${out}/log.json`, JSON.stringify(log, null, 1));
-const bad = log.filter((l) => l.kind !== 'summary' && l.kind !== 'after-click' && l.kind !== 'after-tool');
+const bad = log.filter((l) => !['summary', 'after-click', 'after-tool', 'unclickable'].includes(l.kind));
+const unclickable = log.filter((l) => l.kind === 'unclickable');
 console.log('summary', log.filter((l) => l.kind === 'summary').map((l) => `${l.step}: ${l.msg}`).join(' | '));
-console.log('issues', bad.length);
+console.log('issues', bad.length, '(pageerror / console.error / check / crash)');
 for (const l of bad.slice(0, 80)) console.log(`[${l.step}] ${l.kind}: ${l.msg}`);
+console.log('unclickable', unclickable.length, '(押せなかったボタン。ほかの要素に隠れている・途中で作り直された。エラーではないが多ければ見直す)');
+for (const l of unclickable.slice(0, 40)) console.log(`  [${l.step}] ${l.msg.replace(/\s+/g, ' ').slice(0, 90)}`);
 await browser.close();

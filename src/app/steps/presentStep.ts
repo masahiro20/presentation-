@@ -733,7 +733,8 @@ export const presentStep: Step = {
     setPrintPage(null);
   },
   mount(ctx) {
-    setPrintPage('A4 landscape');
+    // 用紙は画面と同じ 16:9（styles.css の @page slide と同じ値）。A4 横に引き伸ばさない
+    setPrintPage('338.67mm 190.5mm');
     const deck = h('div', { class: 'deck view' });
     ctx.stage.appendChild(deck);
     // ページは拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）。操作のボタンはステージの上に固定（拡大・スクロールで動かない）

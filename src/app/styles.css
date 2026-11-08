@@ -498,7 +498,9 @@ body.presenting .main { grid-template-columns: 1fr; }
   /* 既定の用紙は A4 縦（見積・仕様決定書）。資料のスライドは名前付きの用紙で A4 横。
      既定を横にしていると、名前付きの用紙（見積）の間に既定の横向きが紛れ込むことがある（Chrome） */
   @page { size: A4 portrait; margin: 0; }
-  @page slide { size: A4 landscape; margin: 0; }
+  /* 資料のスライドは画面と同じ 16:9 の用紙（13.333 × 7.5 インチ＝PowerPoint のワイド）。A4 横（1.41:1）に引き伸ばすと
+     写真が上下に切れ・文字が左上に寄って下が空く・ページ番号が離れるので、用紙の方を合わせる。A4 に印刷するときは上下に余白が付くだけで形は崩れない */
+  @page slide { size: 338.67mm 190.5mm; margin: 0; }
   .slide { page: slide; }
   body { overflow: visible; background: #fff; }
   #app { display: block; height: auto; }
@@ -509,7 +511,9 @@ body.presenting .main { grid-template-columns: 1fr; }
   .stage > #viewer3d { display: none !important; }
   .stage > .view { position: static; }
   .deck { position: static; overflow: visible; background: #fff; padding: 0; }
-  .slide { width: 297mm; height: 210mm; aspect-ratio: auto; margin: 0; border-radius: 0; box-shadow: none; page-break-after: always; break-after: page; }
+  .slide { width: 338.67mm; height: 190.5mm; aspect-ratio: auto; margin: 0; border-radius: 0; box-shadow: none; page-break-after: always; break-after: page; }
+  /* 「背景のグラフィック」を切ったまま PDF にしても、色の塗り・仕上げの色見本・写真の上の帯が抜けないように */
+  .slide, .slide * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 @media (max-width: 900px) {

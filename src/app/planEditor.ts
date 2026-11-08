@@ -15,6 +15,7 @@ import type { Stair } from '../core/types';
 import { buildFurniture, furnitureDims, FURNITURE_LABEL, BUILTIN_VARIANTS, KITCHEN_TYPES } from '../scene/furniture';
 import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
+import { furnitureGaps, openingGaps, mmText } from '../core/dims';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../parser/symbolDict';
 import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
@@ -650,10 +651,13 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const gPreviewStatic = document.createElementNS(NS, 'g');
   const gPosts = document.createElementNS(NS, 'g');
   const gRoof = document.createElementNS(NS, 'g');
+  // 寸法線（選んだ窓・戸・家具・壁）。いちばん上に描き、クリックは下の物へ通す
+  const gDims = document.createElementNS(NS, 'g');
+  gDims.setAttribute('pointer-events', 'none');
   // 屋根なしの範囲の斜線
   const defs = document.createElementNS(NS, 'defs');
   defs.innerHTML = '<pattern id="pe-hatch" patternUnits="userSpaceOnUse" width="320" height="320" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="320" stroke="#c0392b" stroke-width="36" stroke-opacity="0.3"/></pattern>';
-  svg.append(defs, gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gPreviewStatic, gPreview);
+  svg.append(defs, gGrid, gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gDims, gPreviewStatic, gPreview);
 
   // ---- 屋根（屋根伏せ図風） ----
   /** いま直している階の壁で作った建物の、屋根の塊の一覧（手で描いた屋根・屋根なしの範囲も含む）。draw のたびに作り直す */
@@ -834,7 +838,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   };
 
   const draw = () => {
-    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
+    for (const g of [gGhost, gRooms, gStairs, gFurn, gWalls, gOps, gPosts, gLabels, gRoof, gDims, gPreviewStatic, gPreview]) while (g.firstChild) g.removeChild(g.firstChild);
     roofCache = null;
     const f = W().floor;
     const fs = Math.max(120, Math.min(320, 13 * mmPerPx()));
@@ -961,8 +965,95 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       if (roofDraw) drawRoofPreview(null, false);
       svg.style.cursor = roofDraw ? 'crosshair' : 'default';
     }
+    drawDims(f, fs);
     renderPanel();
     renderTabs();
+  };
+
+  /**
+   * 寸法線（CAD・ウォークインホームの「選ぶと寸法が出る」。3D の寸法表示と同じ計算 `core/dims`、数値は mm）:
+   *  - 選んだ窓・戸: 幅 W と、両端から隣の窓・戸（無ければ壁の端）までの空き（青）
+   *  - 家具の道具で選んだ家具: W・D と、背面・正面・左右の壁（仕上げ面の概算）までの距離（青）
+   *  - 選んだ壁: 芯々の長さ
+   */
+  const drawDims = (f: Floor, fs: number) => {
+    const px = mmPerPx();
+    const tick = 5 * px;
+    const size = Math.max(130, Math.min(300, fs * 0.8));
+    const line = (a: Vec2, b: Vec2, label: string, kind: 'size' | 'gap') => {
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      if (L < 1) return;
+      const ux = (b.x - a.x) / L;
+      const uy = (b.y - a.y) / L;
+      const nx = -uy;
+      const ny = ux;
+      const col = kind === 'gap' ? '#2d6cdf' : '#22252a';
+      const sw = Math.max(6, 1.2 * px);
+      el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: col, 'stroke-width': sw, class: 'pe-dim' }, gDims);
+      for (const q of [a, b]) el('line', { x1: q.x - nx * tick, y1: q.y - ny * tick, x2: q.x + nx * tick, y2: q.y + ny * tick, stroke: col, 'stroke-width': sw }, gDims);
+      const c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      // 文字は線に沿わせる（縦の線は 90° 回して線の左に）
+      const ang = Math.abs(ux) < 0.5 ? -90 : 0;
+      const t = el('text', { x: c.x, y: c.y - 3 * px, 'font-size': size, 'text-anchor': 'middle', fill: col, 'font-weight': 600, stroke: '#fff', 'stroke-width': size * 0.2, 'paint-order': 'stroke', class: `pe-dim-label ${kind}`, transform: `rotate(${ang} ${c.x} ${c.y})` }, gDims);
+      t.textContent = label;
+    };
+    // 窓・戸: 幅と両端の空き。種類の文字と同じ側（戸は開く側の反対）に、文字より外へ
+    if (sel?.kind === 'opening') {
+      const op = f.openings.find((o) => o.id === (sel as { id: string }).id);
+      const w = op ? f.walls.find((x) => x.id === op.wallId) : undefined;
+      if (op && w) {
+        const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+        const ux = (w.b.x - w.a.x) / L;
+        const uy = (w.b.y - w.a.y) / L;
+        const side = op.kind === 'door' || op.kind === 'entrance' ? -(op.swingSide ?? 1) : -1;
+        const off = (w.thickness / 2 + fs * 2.1) * side;
+        const P = (t: number) => ({ x: w.a.x + ux * t + -uy * off, y: w.a.y + uy * t + ux * off });
+        line(P(op.t0), P(op.t1), `W ${mmText(op.t1 - op.t0)}`, 'size');
+        const g = openingGaps(op, L, f.openings);
+        if (g.left >= 10) line(P(g.lo), P(op.t0), mmText(g.left), 'gap');
+        if (g.right >= 10) line(P(op.t1), P(g.hi), mmText(g.right), 'gap');
+      }
+    }
+    // 家具: W・D と壁までの距離
+    if (tool === 'furniture' && furnSel) {
+      const it = itemsOf(f.level).find((o) => o.id === furnSel);
+      if (it) {
+        const dims = furnitureDims(it);
+        const { w, d, v0 } = dims;
+        const r = (it.rot * Math.PI) / 180;
+        const uDir = { x: Math.cos(r), y: Math.sin(r) };
+        const vDir = { x: -Math.sin(r), y: Math.cos(r) };
+        const pt = (u: number, v: number) => ({ x: it.x + (uDir.x * u + vDir.x * v) * 1000, y: it.y + (uDir.y * u + vDir.y * v) * 1000 });
+        const m = 0.1 + (12 * px) / 1000;
+        line(pt(-w / 2, v0 + d + m), pt(w / 2, v0 + d + m), `W ${mmText(w * 1000)}`, 'size');
+        line(pt(w / 2 + m, v0), pt(w / 2 + m, v0 + d), `D ${mmText(d * 1000)}`, 'size');
+        const room = f.rooms.find((rm) => pointInPolygon({ x: it.x, y: it.y }, rm.polygon));
+        if (room) {
+          const g = furnitureGaps(it, dims, room.polygon, 60);
+          const gap = (val: number | null, a: Vec2, dir: Vec2) => {
+            if (val == null || val < 10 || val > 12000) return;
+            line(a, { x: a.x + dir.x * val, y: a.y + dir.y * val }, mmText(val), 'gap');
+          };
+          gap(g.back, pt(0, v0), { x: -vDir.x, y: -vDir.y });
+          gap(g.front, pt(0, v0 + d), vDir);
+          gap(g.sideA, pt(-w / 2, v0 + d / 2), { x: -uDir.x, y: -uDir.y });
+          gap(g.sideB, pt(w / 2, v0 + d / 2), uDir);
+        }
+      }
+    }
+    // 壁: 芯々の長さ
+    if (sel?.kind === 'wall') {
+      const w = f.walls.find((x) => x.id === (sel as { id: string }).id);
+      if (w) {
+        const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+        if (L > 1) {
+          const nx = -(w.b.y - w.a.y) / L;
+          const ny = (w.b.x - w.a.x) / L;
+          const off = w.thickness / 2 + 14 * px;
+          line({ x: w.a.x + nx * off, y: w.a.y + ny * off }, { x: w.b.x + nx * off, y: w.b.y + ny * off }, mmText(L), 'size');
+        }
+      }
+    }
   };
 
   /**

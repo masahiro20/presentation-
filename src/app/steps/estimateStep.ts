@@ -15,6 +15,7 @@ import { suggestOptions } from '../../estimate/suggest';
 import { computeEstimate, newChoice, defaultGroups, groupOptions, priceFromCost, yen, TAX_RATE, type EstimateChoice, type EstimateResult, type LineResult } from '../../estimate/calc';
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
 import { estimateGroupsFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
+import { documentAddress } from '../../sun/geo';
 
 export interface EstimateState {
   choice: EstimateChoice;
@@ -140,7 +141,7 @@ function compute(es: EstimateState): Computed {
   if (!es.funding) {
     es.funding = newFunding({
       series: es.choice.grade,
-      address: state.site.address,
+      address: documentAddress(state.site.address) ?? '',
       constArea: areas.constArea,
       floors: state.model!.floors.length,
       body: est.subtotal,
@@ -181,7 +182,7 @@ function quoteSheet(c: Computed): HTMLElement {
       'table',
       { class: 'est-summary-head' },
       h('tr', null, h('th', null, '工事名'), h('td', null, `${state.customer || '〇〇様'} 邸　新築工事（${est.categories.length ? areas.grade : ''}シリーズ）`)),
-      h('tr', null, h('th', null, '施工場所'), h('td', null, state.site.address || '')),
+      h('tr', null, h('th', null, '施工場所'), h('td', null, documentAddress(state.site.address) ?? '')),
       h('tr', null, h('th', null, '金額（税込）'), h('td', { class: 'big' }, `¥${yen(est.total)}`)),
       h('tr', null, h('th', null, '施工面積'), h('td', null, `${num(areas.constTsubo)} 坪（延床 ${num(areas.totalTsubo)} 坪）　坪単価 ¥${yen(Math.round(est.perTsubo))}`)),
     ),

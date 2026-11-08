@@ -4,7 +4,7 @@ import { state, emit, type ProjectState } from '../state';
 import { sightlineCheck, type NeighborWorld } from '../../core/sightlines';
 import type { Step, StepCtx } from '../app';
 import { SunContext, isAbortError, keysInRect, ringArea, ringCentroid, supersededError, type LoadNeighborsResult, type NeighborSourceChoice, type PlannedBuilding, HIDE_MODES, HIDE_MODE_NAME, HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, hideReasonText, type HideMode, type HideReason, type HideRecord } from '../../sun/context';
-import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, DEFAULT_SITE, type NeighborBuilding } from '../../sun/geo';
+import { geocode, siteLatLon, PRECISION_LABEL, parseDegrees, parseLatLonFields, formatDeg, formatDms, DEFAULT_SITE, coordAddress, isCoordAddress, type NeighborBuilding } from '../../sun/geo';
 import { siteLevelsPanel } from '../siteLevelsPanel';
 import { estimateSiteLevelsFromDem } from '../siteLevelsDem';
 import { hasLevels, levelsSummary } from '../../core/siteLevels';
@@ -500,14 +500,8 @@ function hideChoiceUI(): { el: HTMLElement; sync: () => void } {
   return { el: h('div', { class: 'sunnb-choice' }, modes, h('div', { class: 'sunnb-reason-row' }, h('span', null, '理由'), reasonSel, noteIn)), sync };
 }
 
-/** 座標で指定した建設地の住所文字列（住所検索の緯度経度貼り付け parsePoint の題名と同じ形に「付近」を添える） */
-export function coordAddress(lat: number, lon: number): string {
-  return `緯度 ${formatDeg(lat)}／経度 ${formatDeg(lon)} 付近`;
-}
-/** coordAddress で作った住所か（住所欄の初期値には出さない） */
-export function isCoordAddress(address: string): boolean {
-  return /^緯度 -?\d+(\.\d+)?／経度 -?\d+(\.\d+)?( 付近)?$/.test(address);
-}
+/** 座標で指定した建設地の住所文字列と、その判定（sun/geo に置き、資料・見積の「敷地所在地」の扱いと共通にしている） */
+export { coordAddress, isCoordAddress };
 /** 「コピー」で書き出す "緯度, 経度"（10 進 5 桁。住所欄にそのまま貼り付けても読める形） */
 export function coordClipText(lat: number, lon: number): string {
   return `${formatDeg(lat)}, ${formatDeg(lon)}`;

@@ -22,11 +22,11 @@ import { floorPlanSvg } from '../../drawings/plan';
 import { analyzeRooms } from '../../sun/analysis';
 import { externalController, externalSampleY, setExternalMounted } from '../externalBuilding';
 import { sunHighlights, sunTimelineSvg, type SeasonResult } from '../../sun/report';
-import { siteLatLon } from '../../sun/geo';
+import { siteLatLon, documentAddress, siteAddressFromInput } from '../../sun/geo';
 import { keyDates, sunPosition, sunDirectionWorld, localDate } from '../../sun/solar';
 import { activeSunContext } from './sunStep';
 import { NO_NEIGHBORS_DISCLOSURE, collectDisclosure, disclosureLines, excludedTableRows, plannedLine, type SunDisclosure } from '../sunDisclosure';
-import { SUMMARY_PAGES, applyOverviewMemo, selectedPageIds } from '../../core/deckOverview';
+import { SUMMARY_PAGES, applyOverviewMemo, buildOverviewRows, selectedPageIds } from '../../core/deckOverview';
 
 /** 日当たりを設計の 3D データ（3DS）で解析しているときに資料に添える注記 */
 export const SUN_EXTERNAL_CAPTION = '日当たりは設計 3D データ（3DS）で解析';
@@ -206,27 +206,17 @@ function head(_no: number, en: string, ja: string) {
   return h('div', { class: 'hl-head' }, h('div', { class: 'en' }, en.toUpperCase()), h('h2', null, ja), h('div', { class: 'hl-rule' }));
 }
 
-/** 建築概要の自動の行（読み取った間取り・テイストから）。右のメモの上書きはこの上に当てる */
+/**
+ * 建築概要の自動の行（読み取った間取りから: 敷地所在地・建築面積・延床面積（階ごと）・構造・規模・主要用途）。
+ * 右のメモの上書きはこの上に当てる。敷地所在地は住所を入れる欄なので、座標で決めた地点や（仮）は「—」にする
+ */
 export function overviewAutoRows(): [string, string][] {
   const model = state.model;
   if (!model) return [];
-  const { ext, int } = stylesFor(state.design);
-  const rooms = model.floors.flatMap((f) => f.rooms);
-  const totalArea = model.floors.reduce((s, f) => s + f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0), 0);
-  const ldk = rooms.find((r) => r.type === 'ldk' || r.type === 'living');
   const f1 = model.floors[0];
   const buildArea = f1 ? f1.rooms.filter((r) => !['balcony', 'void'].includes(r.type)).reduce((a, r) => a + r.area, 0) : 0;
-  const ov: [string, string][] = [
-    ['敷地所在地', state.site.address && !/（仮）/.test(state.site.address) ? state.site.address : '—'],
-    ['建築面積', `${buildArea.toFixed(2)} ㎡`],
-    ['延床面積', `${totalArea.toFixed(2)} ㎡（約 ${(totalArea / 3.30579).toFixed(1)} 坪）`],
-    ['構造', 'ＳＥ構法'],
-    ['規模', `${model.floors.length}階建て`],
-    ['主要用途', '住宅'],
-  ];
-  if (ldk) ov.push([ldk.name.normalize('NFKC'), `${(ldk.labeledTatami ?? ldk.area / 1.62).toFixed(1)} 帖`]);
-  ov.push(['外観', ext.name], ['内観', int.name]);
-  return ov;
+  const floorAreas = model.floors.map((f) => f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((a, r) => a + r.area, 0));
+  return buildOverviewRows({ address: documentAddress(state.site.address), buildArea, floorAreas });
 }
 
 /** 外観・内観のテイストと間取りから、提案の言葉を組み立てる */
@@ -350,7 +340,7 @@ export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): 
     '建築概要',
     slide(
       'hl hl-overview',
-      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: `ov ${ov.length > 9 ? 'many' : ''}` }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
+      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: `ov ${ov.length > 9 ? 'many' : ov.length <= 6 ? 'few' : ''}` }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
       h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
     ),
   );
@@ -927,7 +917,9 @@ export const presentStep: Step = {
             ['url', 'URL'],
           ] as const
         ).map(([k, label]) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'text', value: state[k] ?? '', onchange: (e: Event) => { state[k] = (e.target as HTMLInputElement).value; render(); } }))),
-        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（建築概要に記載）'), h('input', { type: 'text', value: state.site.address, onchange: (e: Event) => { state.site = { ...state.site, address: (e.target as HTMLInputElement).value }; render(); } })),
+        // 敷地所在地は住所を入れる欄。日照で座標から決めた地点（緯度／経度 付近）や既定の（仮）は資料・見積に出さず、空欄にして住所を書いてもらう
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, '敷地所在地（住所。建築概要・見積に記載）'), h('input', { type: 'text', value: documentAddress(state.site.address) ?? '', placeholder: '例: 岐阜県可児市坂戸1234-5', onchange: (e: Event) => { state.site = { ...state.site, address: siteAddressFromInput(state.site, (e.target as HTMLInputElement).value) }; render(); } })),
+        h('p', { class: 'hint', style: 'margin:-4px 0 6px' }, '住所（番地まで）を入れてください。日照で座標から建設地を決めたときは空欄になります（座標は資料に出しません）。'),
       ),
       pagesBox,
       ovBox,

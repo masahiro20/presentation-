@@ -366,7 +366,8 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .slide.hl-overview .ov dt { color: var(--ink-2); }
 .slide.hl-overview .ov dd { margin: 0; }
 .slide.hl-overview .ph { position: relative; }
-/* 建築概要の行が多いとき（右のメモで足したとき）は詰める */
+/* 建築概要の行が少ないとき（平屋など 6 行まで）は間を広げて縦に割り振る。多いとき（右のメモで足したとき）は詰める */
+.slide.hl-overview .ov.few { row-gap: 2.2cqw; }
 .slide.hl-overview .ov.many { row-gap: 0.9cqw; font-size: 1.1cqw; grid-template-columns: 12cqw 1fr; }
 .slide.hl-overview .ov.many dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 資料の「出すページ」の一覧（右パネル） */

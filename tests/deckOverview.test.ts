@@ -1,5 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_PAGES, applyOverviewMemo, parseOverviewExtra, selectedPageIds } from '../src/core/deckOverview';
+import { SUMMARY_PAGES, applyOverviewMemo, buildOverviewRows, parseOverviewExtra, selectedPageIds } from '../src/core/deckOverview';
+import { DEFAULT_SITE, coordAddress, documentAddress, siteAddressFromInput } from '../src/sun/geo';
+
+describe('建築概要の自動の行', () => {
+  it('2 階建て: 所在地 → 建築・延床（坪付き）→ 階ごとの床面積 → 構造・規模・用途。LDK・外観・内観は載せない', () => {
+    const rows = buildOverviewRows({ address: '岐阜県可児市坂戸1234-5', buildArea: 65.4, floorAreas: [62.1, 55.2] });
+    expect(rows.map(([k]) => k)).toEqual(['敷地所在地', '建築面積', '延床面積', '1階床面積', '2階床面積', '構造', '規模', '主要用途']);
+    expect(rows.map(([k]) => k)).not.toContain('外観');
+    expect(rows.map(([k]) => k)).not.toContain('内観');
+    expect(rows.find(([k]) => k === '敷地所在地')![1]).toBe('岐阜県可児市坂戸1234-5');
+    expect(rows.find(([k]) => k === '建築面積')![1]).toBe('65.40 ㎡（約 19.8 坪）');
+    expect(rows.find(([k]) => k === '延床面積')![1]).toBe('117.30 ㎡（約 35.5 坪）');
+    expect(rows.find(([k]) => k === '2階床面積')![1]).toBe('55.20 ㎡');
+    expect(rows.find(([k]) => k === '規模')![1]).toBe('2階建て');
+    expect(rows.find(([k]) => k === '構造')![1]).toBe('ＳＥ構法');
+  });
+  it('平屋: 階ごとの行は無く 6 行。住所が無ければ「—」', () => {
+    const rows = buildOverviewRows({ address: null, buildArea: 90, floorAreas: [88] });
+    expect(rows.map(([k]) => k)).toEqual(['敷地所在地', '建築面積', '延床面積', '構造', '規模', '主要用途']);
+    expect(rows[0][1]).toBe('—');
+    expect(rows.find(([k]) => k === '規模')![1]).toBe('1階建て');
+  });
+});
+
+describe('敷地所在地は住所を入れる欄', () => {
+  it('座標で決めた地点の「緯度／経度 付近」と既定の（仮）は書類に出さない（null）', () => {
+    expect(documentAddress(coordAddress(35.41618, 137.03985))).toBeNull();
+    expect(documentAddress('緯度 35.41618／経度 137.03985')).toBeNull();
+    expect(documentAddress(DEFAULT_SITE.address)).toBeNull();
+    expect(documentAddress('')).toBeNull();
+    expect(documentAddress(undefined)).toBeNull();
+    expect(documentAddress(' 岐阜県可児市坂戸1234-5 ')).toBe('岐阜県可児市坂戸1234-5');
+  });
+  it('住所欄を空にしたら、座標の地点は座標の住所、既定地は（仮）の住所に戻す（位置は保つ）', () => {
+    const site = { lat: 35.41618, lon: 137.03985, address: '岐阜県可児市坂戸1234-5', offsetE: 0, offsetN: 0 };
+    expect(siteAddressFromInput(site, '岐阜県可児市坂戸1234-6')).toBe('岐阜県可児市坂戸1234-6');
+    expect(siteAddressFromInput(site, '  ')).toBe(coordAddress(35.41618, 137.03985));
+    expect(siteAddressFromInput({ ...DEFAULT_SITE }, '')).toBe(DEFAULT_SITE.address);
+  });
+});
 
 describe('資料の出すページ', () => {
   const all = ['cover', 'philosophy', 'approach', 'overview', 'finish', 'photo-ext-0', 'plan-1', 'close'];

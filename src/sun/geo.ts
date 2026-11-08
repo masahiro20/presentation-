@@ -17,6 +17,33 @@ export interface SiteLocation {
 
 export const DEFAULT_SITE: SiteLocation = { lat: 35.681236, lon: 139.767125, address: '東京都千代田区丸の内（仮）', offsetE: 0, offsetN: 0 };
 
+/** 座標で指定した建設地の住所文字列（住所検索の緯度経度貼り付け parsePoint の題名と同じ形に「付近」を添える） */
+export function coordAddress(lat: number, lon: number): string {
+  return `緯度 ${formatDeg(lat)}／経度 ${formatDeg(lon)} 付近`;
+}
+/** coordAddress（または parsePoint の題名）で作った座標の住所か。住所欄の初期値・資料・見積には出さない */
+export function isCoordAddress(address: string): boolean {
+  return /^緯度 -?\d+(\.\d+)?[／,，、]\s*経度 -?\d+(\.\d+)?( 付近)?$/.test(address);
+}
+/**
+ * 書類（建築概要・見積の施工場所）に載せる敷地所在地。住所を入れる欄なので、
+ * 未入力・既定の「（仮）」・座標で決めた地点の「緯度／経度 付近」は null（＝未記入）にする
+ */
+export function documentAddress(address: string | null | undefined): string | null {
+  const a = (address ?? '').trim();
+  if (!a || /（仮）/.test(a) || isCoordAddress(a)) return null;
+  return a;
+}
+/**
+ * 住所欄の入力を建設地の住所にする。空にしたときは、既定地なら「（仮）」の住所、座標で決めた地点なら座標の住所に戻す
+ * （建設地の位置は保ち、日照の「建設地:」の表示が空にならないように）
+ */
+export function siteAddressFromInput(site: SiteLocation, typed: string): string {
+  const t = typed.trim();
+  if (t) return t;
+  return site.lat === DEFAULT_SITE.lat && site.lon === DEFAULT_SITE.lon ? DEFAULT_SITE.address : coordAddress(site.lat, site.lon);
+}
+
 export function siteLatLon(s: SiteLocation) {
   const { mLat, mLon } = metersPerDegree(s.lat);
   return { lat: s.lat + s.offsetN / mLat, lon: s.lon + s.offsetE / mLon };

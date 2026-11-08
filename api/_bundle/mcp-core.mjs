@@ -10945,6 +10945,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			...stepNote ? { steps: stepNote.n } : {}
 		});
 	}
+	dedupeStairs(stairs, level);
 	for (const st of stairs) {
 		const r = roomAt({
 			x: (st.minX + st.maxX) / 2,
@@ -11375,6 +11376,26 @@ function detectPlans(pages, warnings) {
 		p.siteTexts = p.siteTexts.filter((t) => !inOther(t));
 	}
 	return plans;
+}
+/**
+* 同じ階段を 2 つに読まない: コの字階段の 2 つの折り返しが別々の候補になり、壁まで広げた矩形が重なる
+* （吉田大仁様邸 1st-2: 2,275×1,820 の階段の中に 1,365 角の「階段」がもう 1 つでき、3D に二重の階段が出ていた）。
+* 小さいほうの 5 割以上が大きいほうに入っていれば、大きいほうだけ残す。id は F{階}-S{番号} で振り直す
+*/
+function dedupeStairs(stairs, level) {
+	for (let i = stairs.length - 1; i >= 0; i--) {
+		const a = stairs[i];
+		const areaA = (a.maxX - a.minX) * (a.maxY - a.minY);
+		if (stairs.some((b, j) => {
+			if (j === i) return false;
+			const areaB = (b.maxX - b.minX) * (b.maxY - b.minY);
+			if (areaB < areaA || areaB === areaA && j > i) return false;
+			const ix = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+			const iy = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+			return ix > 0 && iy > 0 && ix * iy / areaA >= .5;
+		})) stairs.splice(i, 1);
+	}
+	stairs.forEach((st, i) => st.id = `F${level}-S${i + 1}`);
 }
 /**
 * 「1階平面図」などの見出しを図面に1対1で割り当てる。

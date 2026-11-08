@@ -587,7 +587,7 @@ export class Viewer {
   private dragLabelEl: HTMLDivElement | null = null;
   /** 寸法線: 線は 3D（物の手前でも見える）、札は HTML で毎コマ位置を合わせる。撮影には写さない */
   private dimGroup = new THREE.Group();
-  private dimLabels: { el: HTMLDivElement; p: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+  private dimLabels: { el: HTMLDivElement; p: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3; gap: boolean }[] = [];
   /** 寸法の札で数値（mm）を打ったとき。道具（家具・窓戸）が設定する */
   onDimEdit: ((id: string, valueMm: number) => void) | null = null;
   private lastPtr = { x: 0, y: 0 };
@@ -705,7 +705,7 @@ export class Viewer {
           });
         }
         host.appendChild(el);
-        this.dimLabels.push({ el, p: l.a.clone().add(l.b).multiplyScalar(0.5), a: l.a.clone(), b: l.b.clone() });
+        this.dimLabels.push({ el, p: l.a.clone().add(l.b).multiplyScalar(0.5), a: l.a.clone(), b: l.b.clone(), gap: (l.kind ?? 'size') === 'gap' });
       }
       for (const kind of ['size', 'gap'] as const) {
         if (!byKind[kind].length) continue;
@@ -754,7 +754,10 @@ export class Viewer {
     input.focus();
     input.select();
   }
-  /** 札を 3D の位置に合わせる（毎コマ）。カメラの後ろ・画面の外と、遠くて線が 36px に満たない寸法（札が重なるだけ）は隠す */
+  /**
+   * 札を 3D の位置に合わせる（毎コマ）。カメラの後ろ・画面の外は隠す。
+   * 物の寸法（W・D・H）の札は、遠くて線が 36px に満たないとき（札どうしが重なるだけ）も隠す。壁までの距離（青）は数値を打つ札なので短くても出す
+   */
   private updateDimLabels() {
     if (!this.dimLabels.length) return;
     const r = this.renderer.domElement.getBoundingClientRect();
@@ -762,11 +765,11 @@ export class Viewer {
       const q = v.clone().project(this.camera);
       return { x: ((q.x + 1) / 2) * r.width, y: ((1 - q.y) / 2) * r.height, z: q.z };
     };
-    for (const { el, p, a, b } of this.dimLabels) {
+    for (const { el, p, a, b, gap } of this.dimLabels) {
       const q = toPx(p);
       const pa = toPx(a);
       const pb = toPx(b);
-      const long = Math.hypot(pa.x - pb.x, pa.y - pb.y) >= 36 || pa.z >= 1 || pb.z >= 1;
+      const long = gap || Math.hypot(pa.x - pb.x, pa.y - pb.y) >= 36 || pa.z >= 1 || pb.z >= 1;
       const vis = q.z < 1 && q.x >= -0.05 * r.width && q.x <= 1.05 * r.width && q.y >= -0.05 * r.height && q.y <= 1.05 * r.height && long;
       el.hidden = !vis;
       if (!vis) continue;

@@ -19,6 +19,7 @@ import { largestInnerRect } from '../core/rects';
 import { effectiveStair, effectiveStepCount, stairFrame } from '../core/stairs';
 import { classifyRoomName } from './labels';
 import { mustSeparate } from './roomKnowledge';
+import { livingCheck } from './livingCheck';
 
 /** 平面図に赤で示す位置（階ごと）。線は壁の区間、矩形は部屋・階段・内側の空間 */
 export interface WoodMark {
@@ -797,5 +798,7 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
       out.push({ id: `wc-up-${up.level}`, level: up.level, severity: 'info', title: `${up.level}階に寝室がありますがトイレがありません`, detail: '夜間や来客時のために、寝室のある階にトイレ（柱芯 910×1,365）を置くのが一般的です。1 階だけにする場合はお客様に確認を' });
     }
   }
+  // 住まいの成立（玄関からの動線・戸の向き先・階段の昇り口・部屋の間の窓・採光）
+  out.push(...livingCheck(model));
   return out;
 }

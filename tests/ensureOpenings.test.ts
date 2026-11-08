@@ -33,6 +33,22 @@ describe('ensureOpenings', () => {
     expect(notes.join(' ')).toMatch(/トイレ/);
   });
 
+  it('玄関とホールの間が壁で閉じていたら（上がり框の線が壁に読まれた）、框の位置に戸の無い開口を置く', () => {
+    // 玄関 (0..1820, 0..1365) の下にホール (0..1820, 1365..3640)。境の y=1365 に 130 の壁が読まれていて戸が無い
+    const walls = [wall(0, 0, 1820, 0, true), wall(0, 0, 0, 3640, true), wall(1820, 0, 1820, 3640, true), wall(0, 3640, 1820, 3640, true), wall(0, 1365, 1820, 1365)];
+    const rooms = [room('玄関', 'entrance', rect(0, 0, 1820, 1365)), room('ホール', 'hall', rect(0, 1365, 1820, 3640))];
+    const openings: Opening[] = [{ id: 'ent', wallId: walls[0].id, kind: 'entrance', t0: 450, t1: 1370, sill: 0, height: 2300 }];
+    const notes = ensureOpenings(walls, openings, rooms, 1);
+    const open = openings.find((o) => o.kind === 'open' && o.wallId === walls[4].id)!;
+    expect(open).toBeTruthy();
+    expect(open.t1 - open.t0).toBeGreaterThanOrEqual(1500);
+    expect(notes.some((t) => /上がり框/.test(t))).toBe(true);
+    // もう一度かけても増えない（開口があるので）
+    const before = openings.length;
+    ensureOpenings(walls, openings, rooms, 1);
+    expect(openings.length).toBe(before);
+  });
+
   it('戸がある部屋・壁なしでつながる部屋には足さない', () => {
     const walls = [wall(0, 0, 1820, 0, true), wall(0, 1820, 1820, 1820, true), wall(0, 0, 0, 1820, true), wall(1820, 0, 1820, 1820, true), wall(910, 0, 910, 1820)];
     const rooms = [room('ホール', 'hall', rect(0, 0, 910, 1820)), room('洋室', 'bedroom', rect(910, 0, 1820, 1820))];

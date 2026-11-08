@@ -98,13 +98,11 @@ export function roomGraph(model: BuildingModel): { nodes: Map<string, Node>; edg
         const ka = `${f.level}:${a.id}`;
         const kb = `${f.level}:${b.id}`;
         if (edges.get(ka)?.some((e) => e.to === kb)) continue;
-        const shared = sharedEdge(a.polygon, b.polygon);
-        if (!shared || shared.len < 600) continue;
-        // 壁があるか: 共有辺の中点の上に壁があれば行き来できない
-        const mid = { x: (shared.a.x + shared.b.x) / 2, y: (shared.a.y + shared.b.y) / 2 };
-        const walled = f.walls.some((w) => distToSeg(mid, w.a, w.b) < 120);
-        if (walled) continue;
-        add(ka, kb, mid, dist(nodes.get(ka)!.c, mid) + dist(mid, nodes.get(kb)!.c));
+        // 共有する辺を全部見て、壁の無い区間が半間（455）以上続く所があれば行き来できる
+        // （酒井様邸: 玄関とホールの長いほうの境界は 1,000 の壁、短いほうの境界は壁なし。長いほうの中点だけ見て「壁あり」になっていた）
+        const pass = openStretch(sharedEdges(a.polygon, b.polygon), f.walls);
+        if (!pass) continue;
+        add(ka, kb, pass, dist(nodes.get(ka)!.c, pass) + dist(pass, nodes.get(kb)!.c));
       }
   }
   // 階段: 下の階の階段の区画と、上の階で同じ位置にある階段の区画をつなぐ
@@ -131,8 +129,9 @@ export function roomGraph(model: BuildingModel): { nodes: Map<string, Node>; edg
   return { nodes, edges };
 }
 
-function sharedEdge(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number } | null {
-  let best: { a: Vec2; b: Vec2; len: number } | null = null;
+/** 2 つの部屋が共有する辺（同一直線上で重なる区間）を全部。300 mm 未満は除く */
+function sharedEdges(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number }[] {
+  const out: { a: Vec2; b: Vec2; len: number }[] = [];
   for (let i = 0; i < a.length; i++) {
     const p = a[i];
     const q = a[(i + 1) % a.length];
@@ -148,10 +147,29 @@ function sharedEdge(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number } | n
       if (off(r) > 60 || off(s) > 60) continue;
       const t0 = Math.max(0, Math.min((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
       const t1 = Math.min(L, Math.max((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
-      if (t1 - t0 > (best?.len ?? 0)) best = { a: { x: p.x + ux * t0, y: p.y + uy * t0 }, b: { x: p.x + ux * t1, y: p.y + uy * t1 }, len: t1 - t0 };
+      if (t1 - t0 >= 300) out.push({ a: { x: p.x + ux * t0, y: p.y + uy * t0 }, b: { x: p.x + ux * t1, y: p.y + uy * t1 }, len: t1 - t0 });
     }
   }
-  return best;
+  return out.sort((x, y) => y.len - x.len);
+}
+
+/** 共有辺のうち、壁の無い区間が 455 以上続く所の中点（通れる所）。無ければ null */
+function openStretch(edges: { a: Vec2; b: Vec2; len: number }[], walls: { a: Vec2; b: Vec2 }[]): Vec2 | null {
+  for (const e of edges) {
+    const n = Math.max(1, Math.round(e.len / 150));
+    const at = (t: number) => ({ x: e.a.x + (e.b.x - e.a.x) * t, y: e.a.y + (e.b.y - e.a.y) * t });
+    let run = 0;
+    for (let i = 0; i < n; i++) {
+      const p = at((i + 0.5) / n);
+      if (walls.some((w) => distToSeg(p, w.a, w.b) < 100)) {
+        run = 0;
+        continue;
+      }
+      run++;
+      if ((run * e.len) / n >= 455) return at((i + 1 - run / 2) / n);
+    }
+  }
+  return null;
 }
 
 function distToSeg(p: Vec2, a: Vec2, b: Vec2): number {

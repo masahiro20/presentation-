@@ -202,6 +202,28 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
     }
   }
 
+  // 5. 玄関とホールの境（上がり框）: 玄関の土間と家の床の境は框の線で、戸は無い。線が 2 本に読めると壁になり、玄関が閉じた箱になる
+  //    （田中様邸・吉田大仁様邸 1st: 玄関とホールの間に 130 の壁が 1 本読まれ、玄関からどこへも行けなかった）。
+  //    玄関から通路（ホール・廊下・階段・LDK）へ戸も開口も無く、壁の無い辺でもつながっていなければ、いちばん良い共有区間に開口（戸無し）を置く
+  for (const e of rooms) {
+    if (e.type !== 'entrance') continue;
+    const mine = segsOf(e);
+    const inner = mine
+      .map((s) => ({ s, o: other(s, e) }))
+      .filter((x): x is { s: Shared; o: Room } => !!x.o && x.o.type !== 'porch' && x.o.type !== 'entrance' && (isCirculation(x.o.type) || x.o.type === 'ldk' || x.o.type === 'living' || x.o.type === 'dining'));
+    if (!inner.length) continue;
+    if (inner.some(({ s }) => hasOpeningOn(s, openings))) continue;
+    if (inner.some(({ o }) => edgeFree(e, o, walls, rooms))) continue;
+    const rank = (o: Room) => (o.type === 'hall' ? 3 : o.type === 'stairs' ? 2 : 1);
+    const best = inner
+      .map(({ s, o }) => ({ s, o, span: freeSpans(s, openings)[0] }))
+      .filter((x): x is { s: Shared; o: Room; span: { t0: number; t1: number } } => !!x.span && x.span.t1 - x.span.t0 >= 800)
+      .sort((a, b) => rank(b.o) - rank(a.o) || b.span.t1 - b.span.t0 - (a.span.t1 - a.span.t0))[0];
+    if (!best) continue;
+    placeDoor(f, best.s, best.span, 'open', Math.min(best.span.t1 - best.span.t0 - MARGIN * 2, 2730), null, level);
+    notes.push(`${level}階 ${e.name}: ${best.o.name}との間が壁で閉じていたので、上がり框の位置に開口を置きました（違えば方眼で直せます）`);
+  }
+
   // 1. 戸の無い部屋 / 4. ガレージと玄関の間
   for (const r of rooms) {
     const builtinGarage = r.type === 'garage' && (!r.garageKind || r.garageKind === 'builtin');

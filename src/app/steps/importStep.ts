@@ -1439,13 +1439,14 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
   const issues = woodCheck(model);
   const shown = [...issues.filter((i) => i.severity === 'warn'), ...issues.filter((i) => i.severity === 'info')].slice(0, 6);
   if (!shown.length) {
-    rows.push({ ok: true, label: '木造', detail: '壁の端・直下率・梁のスパン・出入口・階段の位置に不自然な所はありません' });
+    rows.push({ ok: true, label: '木造', detail: '壁の端・直下率・梁のスパン・出入口・階段の位置、玄関からの動線・戸の向き先に不自然な所はありません' });
   }
   for (const it of shown) {
     const fix = it.fix;
     rows.push({
       ok: it.severity === 'warn' ? false : null,
-      label: '木造',
+      // live- は「住まいの成立」（動線・戸の向き先・階段の昇り口・窓）
+      label: it.id.startsWith('live-') ? '住まい' : '木造',
       detail: `${it.title} — ${it.detail}`,
       action: fix
         ? {

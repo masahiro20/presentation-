@@ -7,8 +7,9 @@
 import * as THREE from 'three';
 import { h, clear, toast } from './dom';
 import { state } from './state';
-import type { Handle3D, Viewer } from '../scene/viewer';
+import type { DimLine3D, Handle3D, Viewer } from '../scene/viewer';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
+import { mmText, openingGaps } from '../core/dims';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type Canopy, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
 import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
@@ -130,12 +131,104 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       { id: 'op:t1', kind: 'end', pos: P(t1), title },
     ];
   };
-  /** 選んだ窓・戸に橙の枠とハンドルを出す（無ければ消す） */
+  /**
+   * 窓・戸の寸法線（CAD の「選ぶと寸法が出る」）: 幅 W・高さ H・腰高 FL+（黒）と、
+   * 両端から隣の窓・戸（無ければ壁の端）までの空き（青。札をクリックして数値を打つと、その空きになる位置へ動く）
+   */
+  const opDimLines = (f: Floor, w: Wall, t0: number, t1: number, op: Opening): DimLine3D[] => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const fl = f.elevation / 1000;
+    const eff = effectiveOpening(op, f.ceilingHeight, resolveSpec(state.design.specId, state.design.specPatch));
+    const y0 = fl + eff.sill / 1000;
+    const y1 = fl + (eff.sill + eff.height) / 1000;
+    const ym = (y0 + y1) / 2;
+    const P = (t: number, y: number) => new THREE.Vector3((w.a.x + ux * t) / 1000, y, (w.a.y + uy * t) / 1000);
+    const yw = Math.max(fl + 0.1, y0 - 0.14);
+    const out: DimLine3D[] = [
+      { id: 'w', a: P(t0, yw), b: P(t1, yw), label: `W ${mmText(t1 - t0)}` },
+      { id: 'h', a: P(t1 + 140, y0), b: P(t1 + 140, y1), label: `H ${mmText(eff.height)}` },
+    ];
+    if (eff.sill > 0) out.push({ id: 'sill', a: P(t0 - 140, fl), b: P(t0 - 140, y0), label: `FL+${mmText(eff.sill)}` });
+    const g = openingGaps({ id: op.id, wallId: op.wallId, t0, t1 }, L, f.openings);
+    if (g.left >= 10) out.push({ id: 'gap:t0', a: P(g.lo, ym), b: P(t0, ym), label: mmText(g.left), kind: 'gap', editable: true });
+    if (g.right >= 10) out.push({ id: 'gap:t1', a: P(t1, ym), b: P(g.hi, ym), label: mmText(g.right), kind: 'gap', editable: true });
+    return out;
+  };
+  /** 窓・戸を壁に沿って動かせる範囲（隣の窓・戸の端から 20、壁の端から 40） */
+  const slideRange = (f: Floor, op: Opening, L: number) => {
+    const g = openingGaps(op, L, f.openings);
+    const width = op.t1 - op.t0;
+    return { lo: g.lo + (g.lo > 0 ? 20 : 40), hi: g.hi - width - (g.hi < L ? 20 : 40), g, width };
+  };
+  /** 青の札に数値を打ったとき: その空きになるように窓・戸を壁に沿って動かす（幅はそのまま） */
+  const applyOpGapEdit = (id: string, val: number) => {
+    const s = selectedOpening();
+    if (!s) return;
+    const { f, op, w } = s;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const { lo, hi, g, width } = slideRange(f, op, L);
+    const want = Math.max(0, Math.round(val));
+    const t0 = id === 'gap:t0' ? g.lo + want : id === 'gap:t1' ? g.hi - want - width : null;
+    if (t0 == null) return;
+    op.t0 = Math.round(Math.max(lo, Math.min(hi, t0)));
+    op.t1 = op.t0 + width;
+    toast(`${OPENING_LABEL[op.kind]}を動かしました（${id === 'gap:t0' ? '始点側' : '終点側'}の空き ${mmText(id === 'gap:t0' ? op.t0 - g.lo : g.hi - op.t1)} mm）`, 'ok', 2000);
+    commit();
+  };
+  /** 選んだ窓・戸に橙の枠・ハンドル・寸法線を出す（無ければ消す） */
   const showOpSel = () => {
     const s = selectedOpening();
     v.setSelection(s ? openingFrame(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
     v.setHandles(s && active && mode === 'opening' ? openingHandles(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
+    v.setDimLines(s && active && mode === 'opening' ? opDimLines(s.f, s.w, s.op.t0, s.op.t1, s.op) : null);
+    if (s && active && mode === 'opening') v.onDimEdit = applyOpGapEdit;
   };
+  /**
+   * 矢印キー: 選んだ窓・戸を壁に沿って 10 mm（Shift 100・Ctrl 半間）ずつ動かす（← →）、窓の腰高を 50 mm ずつ（↑ ↓）。
+   * Delete で消す、Esc で選ぶのをやめる（入力欄に文字を打っている間は効かせない）
+   */
+  const onKey = (e: KeyboardEvent) => {
+    if (!active || mode !== 'opening' || !opSel || canopySel || wallDraw.on) return;
+    const tg = e.target as HTMLElement | null;
+    if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'SELECT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+    const s = selectedOpening();
+    if (!s) return;
+    const { f, op, w } = s;
+    const handled = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+    const step = e.ctrlKey || e.metaKey ? (model()?.module?.grid ?? 455) : e.shiftKey ? 100 : 10;
+    const slide = (dt: number) => {
+      handled();
+      const { lo, hi, width } = slideRange(f, op, L);
+      const t0 = Math.max(lo, Math.min(hi, Math.round(op.t0 + dt)));
+      if (t0 === op.t0) return;
+      op.t0 = t0;
+      op.t1 = t0 + width;
+      commit();
+    };
+    if (e.key === 'ArrowLeft') slide(-step);
+    else if (e.key === 'ArrowRight') slide(step);
+    else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && op.kind === 'window') {
+      handled();
+      op.sill = Math.max(0, Math.min(f.ceilingHeight - op.height, op.sill + (e.key === 'ArrowUp' ? 50 : -50)));
+      commit();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      handled();
+      f.openings = f.openings.filter((o) => o.id !== op.id);
+      opSel = null;
+      commit();
+    } else if (e.key === 'Escape') {
+      handled();
+      opSel = null;
+      render();
+    }
+  };
+  window.addEventListener('keydown', onKey, true);
   /** 窓・戸の端を掴んで幅を変えている間の状態 */
   let opEdge: { f: Floor; op: Opening; w: Wall; L: number; which: 't0' | 't1'; preview: { t0: number; t1: number } | null } | null = null;
   /** 選んだ窓・戸の上で押したらドラッグ開始（壁に沿って動く）。端のハンドルなら幅を変える。それ以外はカメラ操作のまま */
@@ -196,6 +289,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opEdge.preview = { t0, t1 };
       v.setSelection(openingFrame(f, w, t0, t1, op));
       v.setHandles(openingHandles(f, w, t0, t1, op));
+      v.setDimLines(opDimLines(f, w, t0, t1, op));
       v.setDragLabel(std ? `幅 ${sashWidthLabel(Math.round(t1 - t0))} 標準` : `幅 ${Math.round(t1 - t0).toLocaleString()} mm`);
       return;
     }
@@ -223,6 +317,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     t0 = Math.max(lo, Math.min(hi, Math.round(t0)));
     opDrag.preview = t0;
     v.setSelection(openingFrame(f, w, t0, t0 + width, op));
+    v.setDimLines(opDimLines(f, w, t0, t0 + width, op));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
     if (roofHd) {
@@ -790,6 +885,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     clear(panel);
     panel.hidden = !active;
     if (!(active && ((mode === 'opening' && opSel && !canopySel && !wallDraw.on) || (mode === 'roof' && roofSel && !roofDraw.on)))) v.setHandles(null);
+    if (!(active && mode === 'opening' && opSel && !canopySel && !wallDraw.on)) {
+      v.setDimLines(null);
+      if (v.onDimEdit === applyOpGapEdit) v.onDimEdit = null;
+    }
     if (active && mode === 'opening' && wallDraw.on) showWallDrawMark();
     if (active && mode === 'opening' && canopySel) showCanopySel();
     else if (active && mode === 'opening') showOpSel();
@@ -1033,7 +1132,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       }
       canopySel = null;
     }
-    panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, opSel ? '橙の枠が選んだ窓・戸。そのまま掴んで壁に沿ってドラッグで動かせます（半間の格子に止まり、隣の窓・戸の手前で止まります）。' : '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
+    panel.append(h('p', { class: 'hint', style: 'margin:0 0 6px' }, opSel ? '橙の枠が選んだ窓・戸。そのまま掴んで壁に沿ってドラッグで動かせます（半間の格子に止まり、隣の窓・戸の手前で止まります）。黒の札は幅・高さ・腰高、青の札は隣の窓・戸や壁の端までの空きで、青をクリックして数値を打つとその位置に動きます。矢印キー ← → で 10 mm（Shift 100・Ctrl 半間）、窓は ↑ ↓ で腰高 50 mm ずつ。' : '窓・戸をクリックして選びます。パースを見ながら形（掃き出し／腰窓…）・幅・高さ・吊元を変えられます。何も無い壁をクリックすると、そこに置けます。'));
     if (op && f) {
       const wall = f.walls.find((x) => x.id === op.wallId);
       const wallLen = wall ? Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) : 10000;

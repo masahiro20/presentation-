@@ -11990,7 +11990,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 				planOf.set(nf, p);
 				floors[k] = nf;
 			}
-			warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ""}${best.d.x && best.d.y ? "・" : ""}${best.d.y ? `上下 ${best.d.y} mm` : ""} 動かしました（方眼で上下階の重なりを確認してください）`);
+			warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ""}${best.d.x && best.d.y ? "・" : ""}${best.d.y ? `上下 ${best.d.y} mm` : ""} 動かしました（方眼の「上下階」で重なりを確かめてください）`);
 			break;
 		}
 	}
@@ -14133,7 +14133,7 @@ function woodCheck(model) {
 				level: lo.level,
 				severity: "warn",
 				title: `${lo.level}階と ${up.level}階の階段の位置が合っていません`,
-				detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください`,
+				detail: `重なりが ${Math.round(best * 100)}% です。${up.level}階の重ね位置がずれているか、どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の「上下階」で ${up.level}階ごと合わせる（階段で合わせる）か、階段ツールで直してください`,
 				marks: [{
 					level: lo.level,
 					rects: [sRect],

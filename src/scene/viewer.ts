@@ -462,6 +462,8 @@ export class Viewer {
     this.scene.add(this.selGroup);
     this.handleGroup.name = 'handles';
     this.scene.add(this.handleGroup);
+    this.dimGroup.name = 'dims';
+    this.scene.add(this.dimGroup);
     for (const g of Object.values(this.groups)) this.root.add(g);
     // 地形は周辺環境（context）の子: 日照ステップ以外で context を隠すと一緒に隠れる。解析の遮蔽物は groups.terrain を別の種別で焼き込む
     this.groups.context.add(this.groups.terrain);
@@ -583,6 +585,11 @@ export class Viewer {
   private handleGroup = new THREE.Group();
   private handles: Handle3D[] = [];
   private dragLabelEl: HTMLDivElement | null = null;
+  /** 寸法線: 線は 3D（物の手前でも見える）、札は HTML で毎コマ位置を合わせる。撮影には写さない */
+  private dimGroup = new THREE.Group();
+  private dimLabels: { el: HTMLDivElement; p: THREE.Vector3; a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+  /** 寸法の札で数値（mm）を打ったとき。道具（家具・窓戸）が設定する */
+  onDimEdit: ((id: string, valueMm: number) => void) | null = null;
   private lastPtr = { x: 0, y: 0 };
   /** ボタンを押した位置（カメラ操作が始まったかの判定: 3px 以上動いたら 2 点透視のシフトを解く） */
   private pressPt: { x: number; y: number } | null = null;
@@ -662,6 +669,110 @@ export class Viewer {
     const r = host.getBoundingClientRect();
     el.style.left = `${this.lastPtr.x - r.left + 16}px`;
     el.style.top = `${this.lastPtr.y - r.top - 30}px`;
+  }
+
+  /** 寸法線を出す（null で消す）。選んだ物の枠・ハンドルとは別に管理 */
+  setDimLines(lines: DimLine3D[] | null) {
+    clearGroup(this.dimGroup);
+    for (const l of this.dimLabels) l.el.remove();
+    this.dimLabels = [];
+    const host = this.renderer.domElement.parentElement;
+    if (lines && lines.length && host) {
+      const up = new THREE.Vector3(0, 1, 0);
+      const byKind: Record<'size' | 'gap', number[]> = { size: [], gap: [] };
+      for (const l of lines) {
+        const dir = l.b.clone().sub(l.a);
+        const len = dir.length();
+        if (len < 1e-4) continue;
+        dir.divideScalar(len);
+        // 端の印は線と直交（水平の線は水平面の中、鉛直の線は x 向き）
+        const perp = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3().crossVectors(dir, up).normalize();
+        const t = 0.07;
+        const pos = byKind[l.kind ?? 'size'];
+        const push = (p: THREE.Vector3, q: THREE.Vector3) => pos.push(p.x, p.y, p.z, q.x, q.y, q.z);
+        push(l.a, l.b);
+        push(l.a.clone().addScaledVector(perp, -t), l.a.clone().addScaledVector(perp, t));
+        push(l.b.clone().addScaledVector(perp, -t), l.b.clone().addScaledVector(perp, t));
+        const el = document.createElement('div');
+        el.className = `dim-label${(l.kind ?? 'size') === 'gap' ? ' gap' : ''}${l.editable ? ' editable' : ''}`;
+        el.textContent = l.label;
+        if (l.editable) {
+          el.title = 'クリックして数値（mm）を打つと、その距離に動きます';
+          el.addEventListener('pointerdown', (e) => e.stopPropagation());
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.editDimLabel(el, l);
+          });
+        }
+        host.appendChild(el);
+        this.dimLabels.push({ el, p: l.a.clone().add(l.b).multiplyScalar(0.5), a: l.a.clone(), b: l.b.clone() });
+      }
+      for (const kind of ['size', 'gap'] as const) {
+        if (!byKind[kind].length) continue;
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(byKind[kind], 3));
+        const ln = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: kind === 'gap' ? 0x2d6cdf : 0x1f2326, depthTest: false, transparent: true, opacity: 0.92 }));
+        ln.renderOrder = 999;
+        ln.userData.noShadow = true;
+        this.dimGroup.add(ln);
+      }
+      this.updateDimLabels();
+    }
+    this.dirty = true;
+  }
+  /** 札の中で数値を打つ（Enter で確定・Esc／外をクリックでやめる） */
+  private editDimLabel(el: HTMLDivElement, l: DimLine3D) {
+    if (el.querySelector('input')) return;
+    const text = el.textContent ?? '';
+    const cur = parseInt((l.label.match(/[\d,]+/)?.[0] ?? '').replace(/,/g, ''), 10);
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.step = '10';
+    input.value = Number.isFinite(cur) ? String(cur) : '';
+    // Enter で確定・Esc／外をクリックでやめる。input を外すと Chrome は blur を同期で投げるので、二重に片付けない
+    let finished = false;
+    const done = (commit: boolean) => {
+      if (finished) return;
+      finished = true;
+      const val = +input.value;
+      try {
+        input.remove();
+      } catch {
+        /* blur の中で先に外れていた */
+      }
+      el.textContent = text;
+      if (commit && Number.isFinite(val)) this.onDimEdit?.(l.id, val);
+    };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') done(true);
+      else if (e.key === 'Escape') done(false);
+    });
+    input.addEventListener('blur', () => done(false));
+    el.textContent = '';
+    el.appendChild(input);
+    input.focus();
+    input.select();
+  }
+  /** 札を 3D の位置に合わせる（毎コマ）。カメラの後ろ・画面の外と、遠くて線が 36px に満たない寸法（札が重なるだけ）は隠す */
+  private updateDimLabels() {
+    if (!this.dimLabels.length) return;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const toPx = (v: THREE.Vector3) => {
+      const q = v.clone().project(this.camera);
+      return { x: ((q.x + 1) / 2) * r.width, y: ((1 - q.y) / 2) * r.height, z: q.z };
+    };
+    for (const { el, p, a, b } of this.dimLabels) {
+      const q = toPx(p);
+      const pa = toPx(a);
+      const pb = toPx(b);
+      const long = Math.hypot(pa.x - pb.x, pa.y - pb.y) >= 36 || pa.z >= 1 || pb.z >= 1;
+      const vis = q.z < 1 && q.x >= -0.05 * r.width && q.x <= 1.05 * r.width && q.y >= -0.05 * r.height && q.y <= 1.05 * r.height && long;
+      el.hidden = !vis;
+      if (!vis) continue;
+      el.style.left = `${q.x}px`;
+      el.style.top = `${q.y}px`;
+    }
   }
 
   /** 画面上の点の下に何があるか（扉・屋根・天井は透かさず、いちばん手前の面）。何も無ければ地面の点 */
@@ -1078,6 +1189,7 @@ export class Viewer {
       this.clampAboveFloor();
       this.camMoved();
     }
+    this.updateDimLabels();
     // 操作中（直近 0.2 秒以内にカメラが動いた）は後処理なし・低めの解像度で軽く描き、止まったら高品質で1枚描く
     // 操作中（直近 0.35 秒以内にカメラが動いた）は後処理なしで素早く描き、止まったら後処理込みで 1 枚描く。
     // 解像度は切り替えない（切り替えるたびに後処理のバッファを作り直してカクつくため）
@@ -1317,6 +1429,9 @@ export class Viewer {
 
   dispose() {
     cancelAnimationFrame(this.raf);
+    for (const l of this.dimLabels) l.el.remove();
+    this.dimLabels = [];
+    this.dragLabelEl?.remove();
     this.renderer.dispose();
   }
 
@@ -2074,9 +2189,11 @@ export class Viewer {
     const selVis = this.selGroup.visible;
     this.selGroup.visible = false;
     this.handleGroup.visible = false;
+    this.dimGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
     this.selGroup.visible = selVis;
     this.handleGroup.visible = selVis;
+    this.dimGroup.visible = selVis;
     const url = this.renderer.domElement.toDataURL('image/jpeg', 0.8);
     // 後処理のバッファ（composer）は触らない: 作り直すたびに GPU メモリを確保し直してカクつく
     this.renderer.setPixelRatio(prev.pr);
@@ -2136,6 +2253,18 @@ export interface Handle3D {
   on?: boolean;
   /** ホバーの説明 */
   title?: string;
+}
+
+/** 寸法線（CAD・ウォークインホームの「選ぶと寸法が出る」）: a→b の線に端の印、中ほどに札 */
+export interface DimLine3D {
+  id: string;
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  label: string;
+  /** size = 物の寸法（濃い線）、gap = 壁・隣の物までの距離（青い線） */
+  kind?: 'size' | 'gap';
+  /** 札をクリックして数値（mm）を打てる（onDimEdit に id と値が来る） */
+  editable?: boolean;
 }
 
 const handleTexCache = new Map<string, THREE.CanvasTexture>();

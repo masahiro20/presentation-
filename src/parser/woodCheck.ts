@@ -386,7 +386,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
           level: lo.level,
           severity: 'warn',
           title: `${lo.level}階と ${up.level}階の階段の位置が合っていません`,
-          detail: `重なりが ${Math.round(best * 100)}% です。どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の階段ツールで合わせてください`,
+          detail: `重なりが ${Math.round(best * 100)}% です。${up.level}階の重ね位置がずれているか、どちらかの階段の読み取り位置がずれているか、別の階段です。修正画面の「上下階」で ${up.level}階ごと合わせる（階段で合わせる）か、階段ツールで直してください`,
           marks: [
             { level: lo.level, rects: [sRect], label: `${lo.level}階の階段` },
             { level: up.level, rects: up.stairs.map((t) => ({ minX: t.minX, minY: t.minY, maxX: t.maxX, maxY: t.maxY })), label: `${up.level}階の階段（${lo.level}階とずれ）` },

@@ -3066,7 +3066,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
           planOf.set(nf, p);
           floors[k] = nf;
         }
-        warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ''}${best.d.x && best.d.y ? '・' : ''}${best.d.y ? `上下 ${best.d.y} mm` : ''} 動かしました（方眼で上下階の重なりを確認してください）`);
+        warnings.push(`${floors[i].level}階の重ね位置を面積表の建築面積（${build} ㎡）に合わせて ${best.d.x ? `左右 ${best.d.x} mm` : ''}${best.d.x && best.d.y ? '・' : ''}${best.d.y ? `上下 ${best.d.y} mm` : ''} 動かしました（方眼の「上下階」で重なりを確かめてください）`);
         break;
       }
     }

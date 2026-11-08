@@ -7,7 +7,8 @@ import * as THREE from 'three';
 import { FABRIC_COLORS, WOOD_TONES, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type FabricColor, type Floor, type FurnitureItem, type FurnitureKind, type Vec2 } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDES, WASH_STYLES, furnitureDims, furnitureItems } from '../scene/furniture';
-import type { Handle3D, Viewer } from '../scene/viewer';
+import { furnitureGaps, mmText } from '../core/dims';
+import type { DimLine3D, Handle3D, Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
 import { state } from './state';
 
@@ -166,12 +167,14 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     if (DEPTH_KINDS.has(it.kind) || (it.kind === 'kitchen' && it.kitchenType === 'l')) out.push({ id: 'd+', kind: 'size', pos: P(0, v0 + d), title: it.kind === 'kitchen' ? 'ドラッグで袖の長さを変える' : 'ドラッグで奥行を変える' });
     return out;
   };
-  /** 選んでいる家具に枠とハンドルを出す（無ければ消す） */
+  /** 選んでいる家具に枠・ハンドル・寸法線を出す（無ければ消す） */
   const showSel = () => {
     const it = selected();
     const f = it && sel ? floorOf(sel.level) : null;
     v.setSelection(it && f ? footprintWorld(it, f) : null);
     v.setHandles(it && f && active && !add ? handlesFor(it, f) : null);
+    v.setDimLines(it && f && active && !add ? dimLinesFor(it, f) : null);
+    if (it && f && active) v.onDimEdit = applyGapEdit;
   };
   /** ハンドルを掴んで回す・広げる間の状態 */
   let hdrag: { id: string; f: Floor; x0: number; y0: number; rot0: number; dims0: { w: number; d: number; v0: number }; preview: { x: number; y: number; rot: number; w: number; d: number } | null } | null = null;
@@ -226,6 +229,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     const dims = { w: pv.w, d: pv.d, v0: dims0.v0 };
     v.setSelection(footprintWorldDims(f, pv, dims));
     v.setHandles(handlesFor(it, f, pv, dims));
+    v.setDimLines(dimLinesFor(it, f, pv, dims));
     v.setDragLabel(label);
   };
   const handleDragEnd = (moved: boolean) => {
@@ -257,6 +261,103 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
     return [P(-w / 2, v0), P(w / 2, v0), P(w / 2, v0 + d), P(-w / 2, v0 + d)];
   };
+  /**
+   * 選んだ家具の寸法線（CAD・ウォークインホームの「選ぶと寸法が出る」）:
+   * 幅 W・奥行 D（黒）と、背面・正面・左右の壁までの距離（青。壁芯の多角形から壁の半分の厚さ 60 を引いた、仕上げ面までの概算）。
+   * 青の札はクリックして数値を打つと、その距離になるように家具が動く（applyGapEdit）
+   */
+  const dimLinesFor = (it: FurnitureItem, f: Floor, pos: { x: number; y: number; rot: number } = it, dims: { w: number; d: number; v0: number } = dimsOf(it)): DimLine3D[] => {
+    const { w, d, v0 } = dims;
+    const r = (pos.rot * Math.PI) / 180;
+    const cx = pos.x / 1000;
+    const cz = pos.y / 1000;
+    const room = f.rooms.find((rm) => pointInPolygon({ x: pos.x, y: pos.y }, rm.polygon));
+    const y = f.elevation / 1000 + (room ? roomFloorOffsetMm(room) / 1000 : 0) + 0.03;
+    const P = (u: number, vv: number) => new THREE.Vector3(cx + u * Math.cos(r) - vv * Math.sin(r), y, cz + u * Math.sin(r) + vv * Math.cos(r));
+    const out: DimLine3D[] = [
+      { id: 'w', a: P(-w / 2, v0 + d + 0.22), b: P(w / 2, v0 + d + 0.22), label: `W ${mmText(w * 1000)}` },
+      { id: 'd', a: P(w / 2 + 0.22, v0), b: P(w / 2 + 0.22, v0 + d), label: `D ${mmText(d * 1000)}` },
+    ];
+    if (room) {
+      const g = furnitureGaps(pos, dims, room.polygon, 60);
+      const uDir = new THREE.Vector3(Math.cos(r), 0, Math.sin(r));
+      const vDir = new THREE.Vector3(-Math.sin(r), 0, Math.cos(r));
+      const gap = (id: string, val: number | null, a: THREE.Vector3, dir: THREE.Vector3) => {
+        if (val == null || val < 10 || val > 12000) return;
+        out.push({ id, a, b: a.clone().addScaledVector(dir, val / 1000), label: mmText(val), kind: 'gap', editable: true });
+      };
+      gap('gap:back', g.back, P(0, v0), vDir.clone().negate());
+      gap('gap:front', g.front, P(0, v0 + d), vDir);
+      gap('gap:a', g.sideA, P(-w / 2, v0 + d / 2), uDir.clone().negate());
+      gap('gap:b', g.sideB, P(w / 2, v0 + d / 2), uDir);
+    }
+    return out;
+  };
+  /** 青の札（壁までの距離）に数値を打ったとき: その距離になるように家具を動かす */
+  const applyGapEdit = (id: string, val: number) => {
+    const it = selected();
+    const f = sel ? floorOf(sel.level) : null;
+    if (!it || !f) return;
+    const room = f.rooms.find((rm) => pointInPolygon({ x: it.x, y: it.y }, rm.polygon));
+    if (!room) return;
+    const g = furnitureGaps(it, dimsOf(it), room.polygon, 60);
+    const key = id === 'gap:back' ? 'back' : id === 'gap:front' ? 'front' : id === 'gap:a' ? 'sideA' : id === 'gap:b' ? 'sideB' : null;
+    if (!key) return;
+    const cur = g[key];
+    if (cur == null) return;
+    const want = Math.max(0, Math.round(val));
+    const delta = want - cur;
+    const r = (it.rot * Math.PI) / 180;
+    const u = { x: Math.cos(r), y: Math.sin(r) };
+    const vv = { x: -Math.sin(r), y: Math.cos(r) };
+    // 背面の空きを増やす = 部屋側（+v）へ、正面を増やす = 壁側（−v）へ、−u 側を増やす = +u へ、+u 側を増やす = −u へ
+    const dir = key === 'back' ? vv : key === 'front' ? { x: -vv.x, y: -vv.y } : key === 'sideA' ? u : { x: -u.x, y: -u.y };
+    editSel((x) => {
+      x.x = Math.round(x.x + dir.x * delta);
+      x.y = Math.round(x.y + dir.y * delta);
+    });
+    toast(`${labelOf(it)}を壁から ${mmText(want)} mm の位置にしました`, 'ok', 2000);
+  };
+  /** 矢印キーで 10 mm（Shift 100・Ctrl 半間）ずつ動かす。Delete で消す、Esc で選ぶのをやめる、R で 90° 回す（入力欄に文字を打っている間は効かせない） */
+  const onKey = (e: KeyboardEvent) => {
+    if (!active || !sel || add) return;
+    const tg = e.target as HTMLElement | null;
+    if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'SELECT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+    const step = e.ctrlKey || e.metaKey ? (model()?.module?.grid ?? 455) : e.shiftKey ? 100 : 10;
+    const handled = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const mv = (dx: number, dy: number) => {
+      handled();
+      editSel((x) => {
+        x.x += dx;
+        x.y += dy;
+      });
+    };
+    if (e.key === 'ArrowLeft') mv(-step, 0);
+    else if (e.key === 'ArrowRight') mv(step, 0);
+    else if (e.key === 'ArrowUp') mv(0, -step);
+    else if (e.key === 'ArrowDown') mv(0, step);
+    else if (e.key === 'Delete' || e.key === 'Backspace') {
+      handled();
+      const s = sel;
+      const list = explicit(s.level);
+      const i = list.findIndex((q) => q.id === s.id);
+      if (i >= 0) list.splice(i, 1);
+      sel = null;
+      commit();
+    } else if (e.key === 'Escape') {
+      handled();
+      sel = null;
+      moving = false;
+      render();
+    } else if (e.key.toLowerCase() === 'r') {
+      handled();
+      editSel((x) => (x.rot = ((x.rot + (e.shiftKey ? -90 : 90) + 540) % 360) - 180));
+    }
+  };
+  window.addEventListener('keydown', onKey, true);
   /** 選んだ家具の上で押したらドラッグ開始（道具を開いていて、その家具を選んでいるときだけ。それ以外はカメラ操作のまま）。先にハンドルを見る */
   /** 点（mm）から家具の足元の外形までの距離（m。中なら 0） */
   const itemDist = (it: FurnitureItem, p: Vec2): number => {
@@ -297,6 +398,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     drag.preview = snap ?? { x: Math.round(raw.x), y: Math.round(raw.y), rot: drag.rot0 };
     v.setSelection(footprintWorld(it, drag.f, drag.preview));
     v.setHandles(handlesFor(it, drag.f, drag.preview));
+    v.setDimLines(dimLinesFor(it, drag.f, drag.preview));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
     if (hdrag) {
@@ -380,7 +482,7 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     if (!active) return;
     panel.append(
       h('div', { class: 'furn-head' }, h('strong', null, '家具・造作'), h('button', { class: 'btn sm ghost', onclick: () => setActive(false) }, '閉じる')),
-      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : sel ? '橙の枠が選んだ家具。掴んでドラッグで動かし、前の丸で回し、辺の四角で広げます（壁ぎわの家具は壁に沿います。Shift で細かく）' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
+      h('p', { class: 'hint' }, add ? `「${add.kind === 'builtin' ? BUILTIN_VARIANTS[add.variant ?? 'wallShelf'].label : add.kind === 'kitchen' ? `キッチン（${KITCHEN_TYPES.find((k) => k[0] === add!.kitchenType)?.[1] ?? ''}）` : FURNITURE_LABEL[add.kind]}」: 置きたい壁ぎわの床をクリック` : moving ? '移す先の床をクリック（壁ぎわの家具は壁に付きます）' : sel ? '橙の枠が選んだ家具。掴んでドラッグで動かし、前の丸で回し、辺の四角で広げます（壁ぎわの家具は壁に沿います。Shift で細かく）。黒の札は幅・奥行、青の札は壁までの距離で、青をクリックして数値を打つとその位置に動きます。矢印キーで 10 mm（Shift 100・Ctrl 半間）ずつ動かせます' : '家具をクリックして選ぶ／下から選んで床をクリックで置く'),
     );
     const it = selected();
     if (it) {
@@ -467,6 +569,8 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
       moving = false;
       hdrag = null;
       v.setHandles(null);
+      v.setDimLines(null);
+      if (v.onDimEdit === applyGapEdit) v.onDimEdit = null;
     }
     render();
     btn.classList.toggle('on', on);

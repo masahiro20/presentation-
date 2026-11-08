@@ -575,6 +575,12 @@ body.presenting .main { grid-template-columns: 1fr; }
 .chip-x:hover { color: #fff; background: #b23a2f; }
 /* 3D のドラッグ中に出す寸法（幅 2.10 m・15° など） */
 .drag-label { position: absolute; z-index: 30; pointer-events: none; padding: 3px 8px; border-radius: 4px; background: rgba(20, 20, 20, 0.85); color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 3D の寸法線の札（選んだ物の幅・奥行は黒、壁までの距離は青。青はクリックで数値を打てる） */
+.dim-label { position: absolute; z-index: 29; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.94); color: #1f2326; border: 1px solid rgba(31, 35, 38, 0.28); font-size: 12.5px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.dim-label.gap { color: #2d6cdf; border-color: rgba(45, 108, 223, 0.4); }
+.dim-label.editable { pointer-events: auto; cursor: text; }
+.dim-label.editable:hover { background: #fff; border-color: #2d6cdf; }
+.dim-label input { width: 66px; font: inherit; border: 0; outline: 0; background: transparent; color: inherit; text-align: center; padding: 0; }
 .check-row .btn.sm { white-space: nowrap; padding: 3px 8px; font-size: 14px; }
 .edit-callout { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfaf7; }
 .edit-callout b { font-size: 15px; }

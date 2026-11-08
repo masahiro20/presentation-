@@ -32,8 +32,9 @@ import { ROOF_KIND_LABEL, type RoofPatch } from '../core/types';
 import { exteriorById } from '../styles/presets';
 import { state } from './state';
 import { massName, massState, roofPatchControls } from './roofPatchPanel';
+import { floorAlignReport, offsetText, stairAlignOffset, translateFloor, translateRoofPatches, translateXY, wallAlignOffset } from '../core/floorAlign';
 
-type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling' | 'roof';
+type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling' | 'roof' | 'align';
 type Sel = { kind: 'wall'; id: string } | { kind: 'opening'; id: string } | { kind: 'label'; index: number } | null;
 
 interface FloorWork {
@@ -125,6 +126,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let ceilDraw: { a: Vec2; b: Vec2 } | null = null;
   let ceilH = 3500;
   let stairDrag: { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null = null;
+  // 上下階: 階ごと動かす（ドラッグの開始点と、ここまで動かした量）・刻み・上の階も一緒に動かすか
+  let alignDrag: { sx: number; sy: number; acc: Vec2; moved: boolean } | null = null;
+  let alignStep = 455;
+  let alignTogether = true;
   // 柱
   let postSel: string | null = null;
   let postKind: PostKind = 'kuda';
@@ -188,6 +193,51 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     return null;
   };
   const isBaseFloor = () => W().floor.level === Math.min(...works.map((w) => w.floor.level));
+  /** この階のすぐ下の階（上下階の位置合わせの基準） */
+  const lowerWork = (): FloorWork | null => works.filter((o) => o.floor.level < W().floor.level).sort((a, b) => b.floor.level - a.floor.level)[0] ?? null;
+  /** 開いたときの位置からの移動量（同じ id の壁の始点の差） */
+  const alignOffsetSinceOpen = (w: FloorWork): Vec2 => {
+    const auto = autoFloors.find((f) => f.level === w.floor.level);
+    const a = auto?.walls[0];
+    const b = a ? w.floor.walls.find((x) => x.id === a.id) : null;
+    return a && b ? { x: Math.round(b.a.x - a.a.x), y: Math.round(b.a.y - a.a.y) } : { x: 0, y: 0 };
+  };
+  /**
+   * 階ごと動かす（壁・部屋・階段・外形・柱・部屋名・家具・屋根の手直し。窓・戸は壁と一緒に動く）。
+   * withUpper でその上の階も一緒に（読み取りでは上の階はすぐ下の階に合わせてあるので、ふつうは一緒に動かす）
+   */
+  const moveFloors = (d: Vec2, withUpper: boolean, withUndo = true) => {
+    if (!d.x && !d.y) return;
+    const cur = W();
+    const targets = [cur, ...(withUpper ? works.filter((o) => o.floor.level > cur.floor.level) : [])];
+    if (withUndo) {
+      // 元に戻すは階ごとの写し: 上の階から積み、この階を最後に積む（Ctrl+Z でまずこの階が戻る）
+      const fi0 = fi;
+      for (const w of [...targets].reverse()) {
+        fi = works.indexOf(w);
+        pushUndo();
+      }
+      fi = fi0;
+    }
+    for (const w of targets) {
+      translateFloor(w.floor, d);
+      translateXY(w.labels, d);
+      for (const r of w.removed) {
+        r.a = { x: r.a.x + d.x, y: r.a.y + d.y };
+        r.b = { x: r.b.x + d.x, y: r.b.y + d.y };
+      }
+      for (const r of w.original) {
+        r.polygon = r.polygon.map((p) => ({ x: p.x + d.x, y: p.y + d.y }));
+        r.labelPos = { x: r.labelPos.x + d.x, y: r.labelPos.y + d.y };
+      }
+      translateXY(furn.get(w.floor.level) ?? undefined, d);
+      translateRoofPatches(model.roofPatches, w.floor.level, d);
+    }
+    autoCache = null;
+    roofCache = null;
+    markChanged();
+    draw();
+  };
 
   // ---- 画面 ----
   const root = h('div', { class: `pe-root${embedded ? ' pe-embedded' : ''}` });
@@ -210,6 +260,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     ['ceiling', '天井高', '部屋をドラッグで囲む（またはクリック）と、その範囲の部屋だけ右の天井高になります（例: LDK と水まわりだけ 3,500）。同じ高さをもう一度当てると階の天井高に戻ります'],
     ['post', '柱', 'クリックで柱を置きます（方眼・壁の端に止まる。Alt でフリー）。柱をクリックで選んで種類・太さを変える、Delete で削除。柱はその階の床から立ちます: 2 階の張り出しの足元の柱は「1 階」に置きます（点線が上の階の外形）。通し柱は 1 階に置くと 2 階の上まで通ります'],
     ['roof', '屋根', '屋根伏せ図のように上から見た屋根を直します。屋根をクリックして選ぶと右で掛け方・向き・勾配・軒の出を変えられます。何も無い所をクリックすると点を打って屋根の形を描き始めます（最初の点をクリック／Enter／ダブルクリックで閉じる、Backspace で 1 点戻す、Esc でやめる）。描いた屋根の角はドラッグで動かせ、「屋根なしの範囲」にもできます'],
+    ['align', '上下階', '下の階（青）を透かして、この階ごと動かして重ね位置を直します。図面の上でドラッグ（半間の格子に止まる。Shift で 10 mm・Alt でフリー）、矢印キー、右の「階段で合わせる」「壁で合わせる」。いちばん下の階は基準なので動きません'],
   ];
   const tools = h(
     'div',
@@ -804,10 +855,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
           (c as SVGElement).dataset.index = String(i);
         });
     }
-    // 他の階（位置合わせの目安）
+    // 他の階（位置合わせの目安）。「上下階」の道具では、すぐ下の階だけを青く濃く重ね、外形を点線で出す
+    const lowerW = tool === 'align' ? lowerWork() : null;
     for (const o of works)
-      if (o !== W())
-        for (const w of o.floor.walls) el('polygon', { points: wallPoly(w), fill: '#c9cdd3', 'fill-opacity': 0.35 }, gGhost);
+      if (o !== W() && (tool !== 'align' || o === lowerW))
+        for (const w of o.floor.walls) el('polygon', { points: wallPoly(w), fill: o === lowerW ? '#5b84b8' : '#c9cdd3', 'fill-opacity': o === lowerW ? 0.5 : 0.35 }, gGhost);
+    if (lowerW) {
+      const px = mmPerPx();
+      for (const loop of lowerW.floor.outline) el('polygon', { points: loop.map((p) => `${p.x},${p.y}`).join(' '), fill: 'none', stroke: '#2d6cdf', 'stroke-width': 2 * px, 'stroke-dasharray': `${10 * px} ${6 * px}`, 'pointer-events': 'none' }, gGhost);
+    }
     for (const r of f.rooms) {
       el('polygon', { points: r.polygon.map((p) => `${p.x},${p.y}`).join(' '), fill: '#ffffff', 'fill-opacity': 0.55 }, gRooms);
       const a = el('text', { x: r.labelPos.x, y: r.labelPos.y + fs * 1.15, 'font-size': fs * 0.75, 'text-anchor': 'middle', fill: '#8b8f96' }, gRooms);
@@ -835,6 +891,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       t.textContent = dr.label.text;
     };
     for (const st of f.stairs) drawStair(st, gStairs, stairMode && stairSel === st.id);
+    // 上下階の道具: 下の階の階段を薄く重ねる（階段は上下階で必ず同じ位置に通る）
+    if (lowerW) for (const st of lowerW.floor.stairs) drawStair(st, gGhost, false, true);
     // 家具（家具の道具のときだけ操作できる）
     const furnMode = tool === 'furniture';
     for (const it of itemsOf(f.level)) {
@@ -1053,14 +1111,104 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     for (const [t, b] of toolBtns) b.className = `btn sm ${t === tool ? 'dark' : ''}`;
   };
 
+  /** 上下階の位置合わせのパネル: ずれの診断（階段・はみ出し・壁の乗り）と、合わせるボタン・矢印・刻み */
+  const renderAlignPanel = (f: Floor) => {
+    const lower = lowerWork();
+    if (!lower) {
+      panel.append(h('p', { class: 'hint' }, `${f.level}階はいちばん下の階なので基準です。上の階のタブに切り替えると、その階を ${f.level}階に合わせて動かせます。`));
+      return;
+    }
+    const lf = lower.floor;
+    const rep = floorAlignReport(lf, f);
+    const since = alignOffsetSinceOpen(W());
+    const uppers = works.filter((o) => o.floor.level > f.level);
+    const grid = model.module?.grid ?? 455;
+    const lines: string[] = [
+      rep.stair
+        ? `階段: ${lf.level}階の階段と${rep.stair.dx || rep.stair.dy ? ` ${offsetText({ x: rep.stair.dx, y: rep.stair.dy })} ずれ` : '同じ位置'}（重なり ${Math.round(rep.stair.iou * 100)}%）`
+        : `階段: ${lf.level}階と ${f.level}階で組になる階段が見つかりません`,
+      `${lf.level}階からのはみ出し: ${rep.overhangM2.toFixed(1)} ㎡${rep.upperM2 ? `（${f.level}階の ${Math.round((rep.overhangM2 / rep.upperM2) * 100)}%）` : ''}`,
+      `壁の乗り: ${f.level}階の壁の ${Math.round(rep.wallFit * 100)}% が ${lf.level}階の壁の上`,
+    ];
+    panel.append(
+      h('div', { class: 'field-label' }, `${f.level}階の重ね位置（${lf.level}階が基準）`),
+      h('div', { class: 'furn-sel' }, ...lines.map((t) => h('div', null, t)), since.x || since.y ? h('div', { class: 'hint' }, `開いたときから ${offsetText(since)} 動かしました`) : null),
+    );
+    const stairD = stairAlignOffset(lf, f);
+    panel.append(
+      h(
+        'div',
+        { class: 'btn-row' },
+        h(
+          'button',
+          {
+            class: 'btn sm primary',
+            disabled: !stairD || (!stairD.x && !stairD.y),
+            title: '階段の中心を下の階の階段に重ねます（階段は上下階で必ず同じ位置に通る）',
+            onclick: () => {
+              if (!stairD) return;
+              moveFloors(stairD, alignTogether);
+              toast(`${f.level}階を階段に合わせて ${offsetText(stairD)} 動かしました`, 'ok');
+              renderPanel();
+            },
+          },
+          '階段で合わせる',
+        ),
+        h(
+          'button',
+          {
+            class: 'btn sm',
+            title: '下の階の壁にいちばん多く乗る位置へ動かします（±2 間の範囲。910 の格子に乗った家は半間ずれた位置も同じくらい良く見えるので、階段と見比べてください）',
+            onclick: () => {
+              const r = wallAlignOffset(lf, f, grid);
+              if (!r.d.x && !r.d.y) {
+                toast('今の位置がいちばん壁の乗りが良い位置です', 'info');
+                return;
+              }
+              moveFloors(r.d, alignTogether);
+              toast(`${f.level}階を壁に合わせて ${offsetText(r.d)} 動かしました（壁の乗り ${Math.round(r.before * 100)}% → ${Math.round(r.after * 100)}%）`, 'ok');
+              renderPanel();
+            },
+          },
+          '壁で合わせる',
+        ),
+      ),
+    );
+    const stepBtn = (v: number, label: string) => h('button', { class: alignStep === v ? 'on' : '', onclick: () => { alignStep = v; renderPanel(); } }, label);
+    const arrow = (d: Vec2, label: string, title: string) => h('button', { class: 'btn sm', title, onclick: () => { moveFloors(d, alignTogether); renderPanel(); } }, label);
+    panel.append(
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '少しずつ動かす（矢印キーでも）'),
+      h('div', { class: 'segmented' }, stepBtn(grid, `半間 ${grid}`), stepBtn(Math.round(grid / 5), `${Math.round(grid / 5)}`), stepBtn(10, '10')),
+      h(
+        'div',
+        { style: 'display:grid;grid-template-columns:repeat(3,40px);gap:4px;justify-content:center;margin:6px 0' },
+        h('span', null),
+        arrow({ x: 0, y: -alignStep }, '↑', '図面の上へ'),
+        h('span', null),
+        arrow({ x: -alignStep, y: 0 }, '←', '左へ'),
+        h('span', { class: 'hint', style: 'text-align:center;line-height:30px' }, `${alignStep}`),
+        arrow({ x: alignStep, y: 0 }, '→', '右へ'),
+        h('span', null),
+        arrow({ x: 0, y: alignStep }, '↓', '図面の下へ'),
+        h('span', null),
+      ),
+    );
+    if (uppers.length)
+      panel.append(
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: alignTogether, onchange: (e: Event) => { alignTogether = (e.target as HTMLInputElement).checked; } }), `上の階（${uppers.map((o) => `${o.floor.level}階`).join('・')}）も一緒に動かす`),
+      );
+    if (since.x || since.y) panel.append(h('button', { class: 'btn sm ghost block', style: 'margin-top:6px', onclick: () => { moveFloors({ x: -since.x, y: -since.y }, alignTogether); renderPanel(); } }, '開いたときの位置に戻す'));
+    panel.append(h('p', { class: 'hint', style: 'margin-top:8px' }, '青が下の階の壁と外形（点線）、薄い階段が下の階の階段です。図面の上でドラッグしても動かせます（半間の格子に止まる。Shift で 10 mm・Alt でフリー）。窓・戸は壁と一緒に動きます。'));
+  };
+
   const renderPanel = () => {
     clear(panel);
     const f = W().floor;
     const tip = toolDefs.find((t) => t[0] === tool)![2];
     if (embedded) {
       tipLine.textContent = tip;
-      // 選んだ物の詳細と、家具・階段・柱の一覧があるときだけ浮かべる
-      panel.hidden = !sel && tool !== 'furniture' && tool !== 'stairs' && tool !== 'post' && tool !== 'ceiling' && tool !== 'roof';
+      // 選んだ物の詳細と、家具・階段・柱・上下階の一覧があるときだけ浮かべる
+      panel.hidden = !sel && tool !== 'furniture' && tool !== 'stairs' && tool !== 'post' && tool !== 'ceiling' && tool !== 'roof' && tool !== 'align';
       if (panel.hidden) return;
     } else {
       panel.append(h('h3', null, `${f.level}階の修正`));
@@ -1068,6 +1216,10 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     }
     if (tool === 'roof') {
       renderRoofPanel(f);
+      return;
+    }
+    if (tool === 'align') {
+      renderAlignPanel(f);
       return;
     }
     if (tool === 'post') renderPostPanel(f);
@@ -1642,7 +1794,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     roofSel = null;
     roofDraw = null;
     roofDrag = null;
-    svg.style.cursor = t === 'select' || t === 'furniture' || t === 'roof' ? 'default' : 'crosshair';
+    alignDrag = null;
+    svg.style.cursor = t === 'select' || t === 'furniture' || t === 'roof' ? 'default' : t === 'align' ? 'move' : 'crosshair';
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     draw();
   };
@@ -1850,6 +2003,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       return;
     }
     const p = toMm(e);
+    if (tool === 'align') {
+      if (isBaseFloor()) {
+        toast('いちばん下の階が基準です。上の階のタブに切り替えて動かしてください', 'info', 3000);
+        return;
+      }
+      alignDrag = { sx: p.x, sy: p.y, acc: { x: 0, y: 0 }, moved: false };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
     if (tool === 'roof') {
       const t = e.target as SVGElement;
       // 手で描いた範囲の角をつまむ
@@ -2058,6 +2220,20 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     while (gPreview.firstChild) gPreview.removeChild(gPreview.firstChild);
     const p = toMm(e);
     const px = mmPerPx();
+    if (alignDrag) {
+      // 階ごと動かす: 刻み（半間／Shift 10 mm／Alt フリー）に止めて、変わった分だけ動かす
+      const step = e.altKey ? 1 : e.shiftKey ? 10 : alignStep;
+      const dx = Math.round((p.x - alignDrag.sx) / step) * step;
+      const dy = Math.round((p.y - alignDrag.sy) / step) * step;
+      if (dx !== alignDrag.acc.x || dy !== alignDrag.acc.y) {
+        const first = !alignDrag.moved;
+        alignDrag.moved = true;
+        moveFloors({ x: dx - alignDrag.acc.x, y: dy - alignDrag.acc.y }, alignTogether, first);
+        alignDrag.acc = { x: dx, y: dy };
+      }
+      status.textContent = `${W().floor.level}階を動かす: ${offsetText(alignDrag.acc)}（Shift で 10 mm・Alt でフリー）`;
+      return;
+    }
     if (siteDrag && model.site?.polygon) {
       if (!siteDrag.moved && Math.hypot(p.x - siteDrag.start.x, p.y - siteDrag.start.y) < 3 * px) return;
       if (!siteDrag.moved) {
@@ -2363,6 +2539,14 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         return;
       }
     }
+    if (alignDrag) {
+      const d = alignDrag;
+      alignDrag = null;
+      if (d.moved) markChanged();
+      draw();
+      renderPanel();
+      return;
+    }
     if (siteDrag) {
       const d = siteDrag;
       siteDrag = null;
@@ -2518,6 +2702,15 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         cancelRoofDraw();
         return;
       }
+    }
+    // 上下階: 矢印キーで階ごと動かす（半間。Shift で 10 mm、Ctrl で 1 mm）
+    if (tool === 'align' && !isBaseFloor() && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : e.ctrlKey || e.metaKey ? 1 : alignStep;
+      const d = e.key === 'ArrowLeft' ? { x: -step, y: 0 } : e.key === 'ArrowRight' ? { x: step, y: 0 } : e.key === 'ArrowUp' ? { x: 0, y: -step } : { x: 0, y: step };
+      moveFloors(d, alignTogether);
+      renderPanel();
+      return;
     }
     if ((e.key === 'Delete' || e.key === 'Backspace') && (sel || (tool === 'furniture' && furnSel) || (tool === 'stairs' && stairSel) || (tool === 'post' && postSel) || (tool === 'roof' && roofSel))) {
       e.preventDefault();

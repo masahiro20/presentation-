@@ -12,14 +12,14 @@ import { distPointSegment, pointInPolygon } from '../core/geometry';
 import type { Seg } from './walls';
 import type { MmText } from './assemble';
 
-export type SymbolKind = 'car' | 'chair' | 'chairBack' | 'sofaModule' | 'sofa' | 'bed' | 'toilet' | 'bath' | 'sink' | 'counter' | 'plant';
+export type SymbolKind = 'car' | 'chair' | 'chairBack' | 'sofaModule' | 'sofa' | 'bed' | 'toilet' | 'bath' | 'sink' | 'counter' | 'plant' | 'xbox';
 
 export interface PlanSymbol {
   kind: SymbolKind;
   /** 中心 (mm) */
   x: number;
   y: number;
-  /** 外形 (mm) */
+  /** 外形 (mm)。rot があるときは、その角度だけ回した向きでの外形 */
   w: number;
   h: number;
   /** 線の数 */
@@ -30,6 +30,73 @@ export interface PlanSymbol {
   bump?: number;
   shortFrac?: number;
   longLen?: number;
+  /** 軸から回して置かれた記号の角度（rad、-45°〜45°）。45° の LDK の食卓・キッチンなど */
+  rot?: number;
+  /** L 字の記号（L 型ソファ）: 空いている角（記号を軸に戻した向きで、x: 幅方向の ±1、y: 高さ方向の ±1） */
+  lEmpty?: { x: 1 | -1; y: 1 | -1 };
+}
+
+/** 線のまとまりの主方向（長さ加重・90° 周期）。-45°〜45° の rad */
+function dominantAngle(segs: Seg[]): number {
+  let sx = 0;
+  let sy = 0;
+  for (const s of segs) {
+    const dx = s.b.x - s.a.x;
+    const dy = s.b.y - s.a.y;
+    const L = Math.hypot(dx, dy);
+    if (L < 20) continue;
+    const a = Math.atan2(dy, dx) * 4;
+    sx += L * Math.cos(a);
+    sy += L * Math.sin(a);
+  }
+  return Math.atan2(sy, sx) / 4;
+}
+
+function rotPt(p: Vec2, c: Vec2, ang: number): Vec2 {
+  const cs = Math.cos(ang);
+  const sn = Math.sin(ang);
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  return { x: c.x + dx * cs - dy * sn, y: c.y + dx * sn + dy * cs };
+}
+
+function bboxCluster(segs: Seg[]): Cluster {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of segs)
+    for (const q of [s.a, s.b]) {
+      if (q.x < minX) minX = q.x;
+      if (q.x > maxX) maxX = q.x;
+      if (q.y < minY) minY = q.y;
+      if (q.y > maxY) maxY = q.y;
+    }
+  return { segs, minX, minY, maxX, maxY };
+}
+
+/**
+ * L 字の記号か: 外接の箱の四隅（1/4 の大きさの升）のうち、ちょうど 1 つに線が無い（L 型ソファの空いた角）。
+ * 長方形の外形は四隅すべてを線が通る。空いている角を返す
+ */
+function lShapeOf(c: Cluster): { x: 1 | -1; y: 1 | -1 } | null {
+  const w = c.maxX - c.minX;
+  const h = c.maxY - c.minY;
+  const corner = [0, 0, 0, 0];
+  let total = 0;
+  for (const s of c.segs) {
+    const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+    total += L;
+    const mx = (s.a.x + s.b.x) / 2;
+    const my = (s.a.y + s.b.y) / 2;
+    const ix = mx < c.minX + w / 4 ? 0 : mx > c.maxX - w / 4 ? 1 : -1;
+    const iy = my < c.minY + h / 4 ? 0 : my > c.maxY - h / 4 ? 1 : -1;
+    if (ix < 0 || iy < 0) continue;
+    corner[ix + iy * 2] += L;
+  }
+  if (total <= 0) return null;
+  const empty = corner.map((v, i) => ({ v, i })).filter((o) => o.v < total * 0.015);
+  if (empty.length !== 1) return null;
+  if (corner.filter((v) => v >= total * 0.05).length !== 3) return null;
+  const i = empty[0].i;
+  return { x: i % 2 === 0 ? -1 : 1, y: i < 2 ? -1 : 1 };
 }
 
 interface Cluster {
@@ -44,20 +111,29 @@ interface Cluster {
 export function clusterSegments(segs: Seg[], maxLen = 2500, minN = 12): Cluster[] {
   const hatch = hatchSegments(segs);
   const use = segs.filter((s) => s.source !== 'fill' && !s.dashed && !hatch.has(s) && Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < maxLen);
-  const key = (q: Vec2) => `${Math.round(q.x / 4)},${Math.round(q.y / 4)}`;
+  // 端点が 4mm 以内なら同じまとまり。升目のハッシュは隣の升目も見る（升目の境目をまたぐ 1mm の隙間で、
+  // 丸い角の折れ線とまっすぐな辺が別のまとまりになり、L 型ソファの外形が途中で切れていた）
+  const CELL = 4;
+  const key = (cx: number, cy: number) => `${cx},${cy}`;
   const parent = use.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-  const at = new Map<string, number>();
+  const at = new Map<string, { i: number; q: Vec2 }[]>();
   use.forEach((s, i) => {
     for (const q of [s.a, s.b]) {
-      const k = key(q);
-      const j = at.get(k);
-      if (j == null) at.set(k, i);
-      else {
-        const ri = find(i);
-        const rj = find(j);
-        if (ri !== rj) parent[ri] = rj;
-      }
+      const cx = Math.round(q.x / CELL);
+      const cy = Math.round(q.y / CELL);
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const e of at.get(key(cx + dx, cy + dy)) ?? []) {
+            if (Math.abs(e.q.x - q.x) > CELL || Math.abs(e.q.y - q.y) > CELL) continue;
+            const ri = find(i);
+            const rj = find(e.i);
+            if (ri !== rj) parent[ri] = rj;
+          }
+        }
+      const k = key(cx, cy);
+      if (!at.has(k)) at.set(k, []);
+      at.get(k)!.push({ i, q });
     }
   });
   const groups = new Map<number, Seg[]>();
@@ -92,7 +168,14 @@ const within = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
 function assembleCars(clusters: Cluster[]): Cluster[] {
   const L = (c: Cluster) => Math.max(c.maxX - c.minX, c.maxY - c.minY);
   const S = (c: Cluster) => Math.min(c.maxX - c.minX, c.maxY - c.minY);
-  const seeds = clusters.filter((c) => within(L(c), 2500, 5600) && within(S(c), 500, 2400) && c.segs.length >= 20);
+  // 丸みのある閉じた記号（椅子・ソファ）は車の部品ではない。
+  // L 型ソファ（線 126 本）が車の種になって周りの食卓の椅子 3 脚を吸い込み、車の大きさに合わず全部捨てられていた
+  const closed = (c: Cluster) => {
+    const n = c.segs.length;
+    const short = c.segs.filter((s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) < 60).length / n;
+    return (n >= 55 && short > 0.55 && L(c) <= 760) || (n >= 100 && short > 0.75);
+  };
+  const seeds = clusters.filter((c) => within(L(c), 2500, 5600) && within(S(c), 500, 2400) && c.segs.length >= 20 && !closed(c));
   if (!seeds.length) return clusters;
   const used = new Set<Cluster>();
   const out: Cluster[] = [];
@@ -108,7 +191,7 @@ function assembleCars(clusters: Cluster[]): Cluster[] {
       const ex = longX ? 1300 : 150;
       const ey = longX ? 150 : 1300;
       for (const c of clusters) {
-        if (members.has(c) || used.has(c)) continue;
+        if (members.has(c) || used.has(c) || closed(c)) continue;
         if (L(c) > 5600 || (S(c) < 150 && c.segs.length < 20)) continue;
         const ix = Math.min(cur.maxX + ex, c.maxX) - Math.max(cur.minX - ex, c.minX);
         const iy = Math.min(cur.maxY + ey, c.maxY) - Math.max(cur.minY - ey, c.minY);
@@ -134,18 +217,167 @@ function assembleCars(clusters: Cluster[]): Cluster[] {
   return [...clusters.filter((c) => !used.has(c)), ...out];
 }
 
+/**
+ * 点線で描いた丸（植栽）: 15mm 以下の点が 60mm 以内で連なり、中心からの距離がそろう輪（半径 0.25〜1.3m）。
+ * 点どうしは端点がつながらないので clusterSegments では拾えない（吉田大仁様邸: 植栽 7 本のうち 1 本しか読めていなかった）
+ */
+export function dottedRings(segs: Seg[]): PlanSymbol[] {
+  const len = (s: Seg) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+  // 点 = 30mm 以下の短い線（1 つの点が小さな円・ひし形（数本の線）で描かれていることもある）
+  const tiny = segs.filter((s) => s.source !== 'fill' && len(s) <= 30);
+  if (tiny.length < 40) return [];
+  /** 近いもの同士をまとめる（升目ハッシュ） */
+  const group = (pts: Vec2[], tol: number): number[][] => {
+    const parent = pts.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const cells = new Map<string, number[]>();
+    const key = (p: Vec2) => `${Math.floor(p.x / tol)},${Math.floor(p.y / tol)}`;
+    pts.forEach((p, i) => {
+      const k = key(p);
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k)!.push(i);
+    });
+    pts.forEach((p, i) => {
+      const cx = Math.floor(p.x / tol);
+      const cy = Math.floor(p.y / tol);
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dy = -1; dy <= 1; dy++)
+          for (const j of cells.get(`${cx + dx},${cy + dy}`) ?? []) {
+            if (j <= i || Math.hypot(pts[j].x - p.x, pts[j].y - p.y) > tol) continue;
+            const ri = find(i);
+            const rj = find(j);
+            if (ri !== rj) parent[ri] = rj;
+          }
+    });
+    const groups = new Map<number, number[]>();
+    pts.forEach((_, i) => {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r)!.push(i);
+    });
+    return [...groups.values()];
+  };
+  // 1. 短い線を 8mm 以内でまとめて「点」に（1 点 = 60mm 以下）
+  const mids = tiny.map((s) => ({ x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 }));
+  const dots: Vec2[] = [];
+  for (const g of group(mids, 8)) {
+    const xs = g.map((i) => mids[i].x);
+    const ys = g.map((i) => mids[i].y);
+    if (Math.max(...xs) - Math.min(...xs) > 60 || Math.max(...ys) - Math.min(...ys) > 60) continue;
+    dots.push({ x: xs.reduce((a, v) => a + v, 0) / g.length, y: ys.reduce((a, v) => a + v, 0) / g.length });
+  }
+  if (dots.length < 20) return [];
+  const out: PlanSymbol[] = [];
+  const taken = (p: Vec2) => out.some((s) => Math.hypot(s.x - p.x, s.y - p.y) < s.w / 2);
+  /** 中心 c・半径 r の輪として、点が 16 個以上あり角度の抜けが 100° 以下か */
+  const ringAt = (c: Vec2, members: number[], r: number) => {
+    const angs = members.map((i) => Math.atan2(dots[i].y - c.y, dots[i].x - c.x)).sort((a, b) => a - b);
+    if (angs.length < 16) return false;
+    let gap = angs[0] + 2 * Math.PI - angs[angs.length - 1];
+    for (let i = 1; i < angs.length; i++) gap = Math.max(gap, angs[i] - angs[i - 1]);
+    return gap <= (100 * Math.PI) / 180 && r >= 250 && r <= 1300;
+  };
+  // 2. 中心の印（2〜8 個の点の固まり）から: 周りの点の距離が 1 つの半径にそろえば、その輪が植栽
+  //    （隣り合う植栽の輪が触れていても、中心ごとに見るので分けられる）
+  const centers = group(dots, 60).filter((g) => g.length >= 2 && g.length <= 8);
+  for (const g of centers) {
+    const c = { x: g.reduce((a, i) => a + dots[i].x, 0) / g.length, y: g.reduce((a, i) => a + dots[i].y, 0) / g.length };
+    if (taken(c)) continue;
+    const near = dots.map((p, i) => ({ i, r: Math.hypot(p.x - c.x, p.y - c.y) })).filter((o) => o.r > 150 && o.r <= 1400 && !g.includes(o.i));
+    if (near.length < 16) continue;
+    const bins = new Map<number, number[]>();
+    for (const o of near) {
+      const b = Math.round(o.r / 40);
+      if (!bins.has(b)) bins.set(b, []);
+      bins.get(b)!.push(o.i);
+    }
+    let best: { r: number; members: number[] } | null = null;
+    for (const [b] of bins) {
+      const members = [...(bins.get(b - 1) ?? []), ...(bins.get(b) ?? []), ...(bins.get(b + 1) ?? [])];
+      if (!best || members.length > best.members.length) best = { r: b * 40, members };
+    }
+    if (!best || !ringAt(c, best.members, best.r)) continue;
+    const r = best.members.reduce((a, i) => a + Math.hypot(dots[i].x - c.x, dots[i].y - c.y), 0) / best.members.length;
+    out.push({ kind: 'plant', x: c.x, y: c.y, w: r * 2, h: r * 2, n: best.members.length, bump: 0.3, shortFrac: 1, longLen: 0 });
+  }
+  // 3. 中心の印の無い輪: 点を 140mm 以内でつないだ固まりが 1 つの輪になっていれば植栽
+  for (const g of group(dots, 140)) {
+    if (g.length < 20) continue;
+    const cx = g.reduce((a, i) => a + dots[i].x, 0) / g.length;
+    const cy = g.reduce((a, i) => a + dots[i].y, 0) / g.length;
+    if (taken({ x: cx, y: cy })) continue;
+    const rs = g.map((i) => Math.hypot(dots[i].x - cx, dots[i].y - cy)).sort((a, b) => a - b);
+    const med = rs[Math.floor(rs.length / 2)];
+    if (med < 250 || med > 1300) continue;
+    // 輪: 8 割以上の点が中央値の ±12% に入る（四角や線は入らない。中心の数点は外れてよい）
+    const onRing = rs.filter((r) => Math.abs(r - med) <= med * 0.12).length / rs.length;
+    if (onRing < 0.8) continue;
+    out.push({ kind: 'plant', x: cx, y: cy, w: med * 2, h: med * 2, n: g.length, bump: 0.3, shortFrac: 1, longLen: 0 });
+  }
+  return out;
+}
+
 /** 線のまとまりを記号として分類する（部屋の情報は使わず形だけで） */
 export function detectSymbols(segs: Seg[]): PlanSymbol[] {
-  const clusters = assembleCars(clusterSegments(segs, 3400, 4));
+  // 線 3 本のまとまりも拾う（×印の小さな正方形の部品は、辺の 1 本がハッチ扱いで抜けて 3 本になることがある）
+  const clusters = assembleCars(clusterSegments(segs, 3400, 3));
   const out: PlanSymbol[] = [];
-  for (const c of clusters) {
+  /** ×印の小さな正方形（洗濯機を 2×2 の部品で描いたもの） */
+  const xparts: Cluster[] = [];
+  for (const c0 of clusters) {
+    // 45° などに回して置かれた記号（斜めの LDK の食卓・椅子・キッチン）は、軸に合わせて回してから形を見る
+    // （外接の箱が √2 倍に膨らんで、どの形にも当てはまらなかった）
+    let c = c0;
+    let rot = 0;
+    const pivot = { x: (c0.minX + c0.maxX) / 2, y: (c0.minY + c0.maxY) / 2 };
+    {
+      const dom = dominantAngle(c0.segs);
+      if (Math.abs(dom) > (12 * Math.PI) / 180) {
+        c = bboxCluster(c0.segs.map((s) => ({ ...s, a: rotPt(s.a, pivot, -dom), b: rotPt(s.b, pivot, -dom) })));
+        rot = dom;
+      }
+    }
     const w = c.maxX - c.minX;
     const h = c.maxY - c.minY;
     const L = Math.max(w, h);
     const S = Math.min(w, h);
     if (L < 40 || L > 6000) continue;
     const n = c.segs.length;
+    /** 回した向きでの中心を元の向きへ戻す */
+    const centerOf = () => rotPt({ x: (c.minX + c.maxX) / 2, y: (c.minY + c.maxY) / 2 }, pivot, rot);
+    const extra = rot ? { rot } : {};
     if (n < 12) {
+      // ×印の入った正方形（0.55〜0.85m）: 洗濯機（脱衣室）・冷蔵庫（LDK のキッチン脇）。対角線は中央で 2 本に分かれていることもある。
+      // 線が少ないまとまりは主方向が対角線に引かれて回ってしまうことがあるので、回した向きと元の向きの両方で見る
+      const dims = (cl: Cluster) => ({ w: cl.maxX - cl.minX, h: cl.maxY - cl.minY });
+      const diagOf = (cl: Cluster, minFrac: number) =>
+        cl.segs
+          .filter((s) => {
+            const dx = Math.abs(s.b.x - s.a.x);
+            const dy = Math.abs(s.b.y - s.a.y);
+            const { w: cw, h: ch } = dims(cl);
+            return Math.hypot(dx, dy) >= Math.hypot(cw, ch) * minFrac && Math.abs(dx - dy) < Math.max(dx, dy) * 0.25;
+          })
+          .reduce((a, s) => a + Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y), 0);
+      let done = false;
+      for (const cl of rot ? [c, c0] : [c]) {
+        const { w: cw, h: ch } = dims(cl);
+        const cL = Math.max(cw, ch);
+        const cS = Math.min(cw, ch);
+        if (n >= 6 && n <= 12 && within(cL, 500, 850) && cS / cL >= 0.85 && diagOf(cl, 0.35) >= Math.hypot(cw, ch) * 1.4) {
+          const ctr = cl === c ? centerOf() : { x: (c0.minX + c0.maxX) / 2, y: (c0.minY + c0.maxY) / 2 };
+          out.push({ kind: 'xbox', x: ctr.x, y: ctr.y, w: cw, h: ch, n, ...(cl === c ? extra : {}) });
+          done = true;
+          break;
+        }
+        // ×印を 4 つの小さな正方形（各 1 本の対角線）で描いた洗濯機: 小さな部品を覚えておき、後で 2×2 にまとめる
+        if (n >= 3 && n <= 8 && within(cL, 250, 450) && cS / cL >= 0.85 && diagOf(cl, 0.8) > 0) {
+          xparts.push(cl === c ? c : c0);
+          done = true;
+          break;
+        }
+      }
+      if (done) continue;
       // 線の少ないまとまり: キッチンのカウンター（2.0〜3.4m × 0.6〜1.05m の長方形）だけを見る
       if (n > 24 || !within(L, 1800, 3400) || !within(S, 550, 1050)) continue;
       let onBorder = 0;
@@ -158,12 +390,16 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
         if (horiz && (Math.abs(s.a.y - c.minY) < 20 || Math.abs(s.a.y - c.maxY) < 20)) onBorder += len;
         else if (vert && (Math.abs(s.a.x - c.minX) < 20 || Math.abs(s.a.x - c.maxX) < 20)) onBorder += len;
       }
-      if (total > 0 && onBorder / total >= 0.9 && onBorder >= (w + h) * 2 * 0.9) out.push({ kind: 'counter', x: (c.minX + c.maxX) / 2, y: (c.minY + c.maxY) / 2, w, h, n });
+      if (total > 0 && onBorder / total >= 0.9 && onBorder >= (w + h) * 2 * 0.9) {
+        const ctr = centerOf();
+        out.push({ kind: 'counter', x: ctr.x, y: ctr.y, w, h, n, ...extra });
+      }
       continue;
     }
     const lens = c.segs.map((s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y));
     const shortFrac = lens.filter((l) => l < 60).length / n;
-    const longest = c.segs[lens.indexOf(Math.max(...lens))];
+    const longestIdx = lens.indexOf(Math.max(...lens));
+    const longest = c0.segs[longestIdx];
     const longLen = Math.max(...lens);
     const longCount = lens.filter((l) => l >= L * 0.72).length;
     const cx = (c.minX + c.maxX) / 2;
@@ -172,12 +408,19 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
     const rs = c.segs.map((s) => Math.hypot(s.a.x - cx, s.a.y - cy));
     const rMean = rs.reduce((a, r) => a + r, 0) / rs.length;
     const bump = Math.sqrt(rs.reduce((a, r) => a + (r - rMean) ** 2, 0) / rs.length) / (rMean || 1);
-    const base = { x: cx, y: cy, w, h, n, flat: { a: longest.a, b: longest.b } };
+    const ctr = centerOf();
+    const base = { x: ctr.x, y: ctr.y, w, h, n, flat: { a: longest.a, b: longest.b }, ...extra };
+    // L 字（L 型ソファ: 外形 1.6〜4.6 × 1.2〜3.6m で四隅の 1 つが空いている）
+    const lEmpty = within(L, 1600, 4600) && within(S, 1200, 3600) && n >= 20 ? lShapeOf(c) : null;
     let kind: SymbolKind | null = null;
-    if (within(L, 4300, 5300) && within(S, 1600, 2350) && n >= 50) kind = 'car';
+    // 車: 普通車 4.3〜5.3m。線の多い詳しい記号なら軽自動車・コンパクト（3.3m〜）も
+    if ((within(L, 4300, 5300) || (within(L, 3300, 4300) && n >= 150)) && within(S, 1450, 2350) && n >= 50) kind = 'car';
     else if (within(L, 270, 310) && within(S, 40, 70) && n >= 14 && shortFrac > 0.8) kind = 'chairBack';
     else if (within(L, 400, 720) && within(S, 330, 720) && n >= 55 && shortFrac > 0.55 && bump > 0.08) kind = 'chair';
-    else if (within(L, 1900, 2150) && (within(S, 940, 1120) || within(S, 1350, 1800)) && n >= 16 && longLen >= L * 0.3) kind = 'bed';
+    else if (lEmpty && shortFrac > 0.5) {
+      out.push({ kind: 'sofa', ...base, lEmpty, bump: +bump.toFixed(3), shortFrac: +shortFrac.toFixed(2), longLen: Math.round(longLen) });
+      continue;
+    } else if (within(L, 1900, 2150) && (within(S, 940, 1120) || within(S, 1350, 1800)) && n >= 16 && longLen >= L * 0.3) kind = 'bed';
     else if (within(L, 1300, 1750) && within(S, 640, 860) && n >= 16 && n <= 60 && longLen >= L * 0.5) kind = 'bath';
     else if (within(L, 580, 740) && within(S, 350, 430) && n >= 16 && longLen >= S * 0.8) kind = 'toilet';
     else if (within(L, 540, 740) && within(S, 440, 560) && n >= 12 && n <= 60 && shortFrac > 0.3) kind = 'sink';
@@ -207,6 +450,40 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
   }
   // 「植物」に回したものは、ぎざぎざ（でこぼこ）が無ければ捨てる
   for (const s of out) if (s.kind === 'plant' && (s.bump ?? 0) < 0.03) s.kind = 'chairBack';
+  // ×印の小さな正方形を 2×2 にまとめて洗濯機・冷蔵庫の記号に（部品どうしの隙間 100mm 以内、全体 0.6〜0.9m 角）
+  {
+    const usedPart = new Set<Cluster>();
+    for (const p of xparts) {
+      if (usedPart.has(p)) continue;
+      const group = [p];
+      usedPart.add(p);
+      for (let i = 0; i < group.length; i++) {
+        for (const q of xparts) {
+          if (usedPart.has(q)) continue;
+          const gx = Math.max(group[i].minX - q.maxX, q.minX - group[i].maxX);
+          const gy = Math.max(group[i].minY - q.maxY, q.minY - group[i].maxY);
+          if (gx <= 100 && gy <= 100) {
+            usedPart.add(q);
+            group.push(q);
+          }
+        }
+      }
+      if (group.length < 3) continue;
+      const minX = Math.min(...group.map((g) => g.minX));
+      const maxX = Math.max(...group.map((g) => g.maxX));
+      const minY = Math.min(...group.map((g) => g.minY));
+      const maxY = Math.max(...group.map((g) => g.maxY));
+      const gw = maxX - minX;
+      const gh = maxY - minY;
+      if (!within(Math.max(gw, gh), 600, 900) || Math.min(gw, gh) / Math.max(gw, gh) < 0.85) continue;
+      out.push({ kind: 'xbox', x: (minX + maxX) / 2, y: (minY + maxY) / 2, w: gw, h: gh, n: group.reduce((a, g) => a + g.segs.length, 0) });
+    }
+  }
+  // 点線の丸（植栽）。実線で読めた植栽と重なるものは除く
+  for (const ring of dottedRings(segs)) {
+    if (out.some((s) => s.kind === 'plant' && Math.hypot(s.x - ring.x, s.y - ring.y) < Math.max(s.w, ring.w) / 2)) continue;
+    out.push(ring);
+  }
   // 車の外形の中にある部品（タイヤなど）は捨てる
   const cars = out.filter((s) => s.kind === 'car');
   return out.filter((s) => s.kind === 'car' || !cars.some((car) => Math.abs(s.x - car.x) < car.w / 2 && Math.abs(s.y - car.y) < car.h / 2));
@@ -250,13 +527,16 @@ export function hatchSegments(segs: Seg[]): Set<Seg> {
           if (m != null) members.push(m);
         }
         if (members.length < 5) continue;
-        // 並びの範囲（軸方向）が重なる線だけ
-        let lo = Infinity;
-        let hi = -Infinity;
-        for (const m of members) for (const e of byO.get(m)!) { lo = Math.min(lo, e.t0); hi = Math.max(hi, e.t1); }
-        for (const m of members) {
+        // 並びの範囲（軸方向）が重なる線だけ。隣の線（前後のピッチ）と軸方向に重なるものに限る
+        // （同じ位置にあるだけの離れた線（冷蔵庫の記号の十字・洗濯機の×印）までハッチにされ、記号のまとまりから抜けていた）
+        members.sort((a, b) => a - b);
+        const overlaps = (e: { t0: number; t1: number }, m: number) => (byO.get(m) ?? []).some((f) => Math.min(e.t1, f.t1) - Math.max(e.t0, f.t0) >= Math.min(e.t1 - e.t0, f.t1 - f.t0) * 0.5);
+        for (let k = 0; k < members.length; k++) {
+          const m = members[k];
           marked.add(m);
-          for (const e of byO.get(m)!) if (e.t1 > lo && e.t0 < hi) out.add(e.s);
+          for (const e of byO.get(m)!) {
+            if ((k > 0 && overlaps(e, members[k - 1])) || (k + 1 < members.length && overlaps(e, members[k + 1]))) out.add(e.s);
+          }
         }
         break;
       }
@@ -567,6 +847,8 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     sofa: ['ldk', 'living', 'dining', 'japanese', 'bedroom', 'study', 'other'],
     dining: ['ldk', 'living', 'dining', 'kitchen', 'japanese', 'study', 'other'],
     kitchen: ['ldk', 'kitchen', 'dining', 'living', 'japanese', 'study', 'storage', 'other'],
+    washer: ['washroom', 'toilet', 'hall', 'other'],
+    fridge: ['ldk', 'kitchen', 'dining', 'living', 'storage', 'other'],
   };
   const push = (kind: FurnitureKind, c: Vec2, along: Vec2, inward: Vec2, back: number, extra: Partial<FurnitureItem> = {}, roomPoint?: Vec2) => {
     const room = roomAt(roomPoint ?? c);
@@ -585,7 +867,11 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     return it;
   };
   const perp = (v: Vec2) => ({ x: -v.y, y: v.x });
-  const axisLong = (s: PlanSymbol) => (s.w >= s.h ? { x: 1, y: 0 } : { x: 0, y: 1 });
+  const rotV = (v: Vec2, a: number) => (a ? { x: v.x * Math.cos(a) - v.y * Math.sin(a), y: v.x * Math.sin(a) + v.y * Math.cos(a) } : v);
+  /** 長手の向き（回して置かれた記号はその角度で） */
+  const axisLong = (s: PlanSymbol) => rotV(s.w >= s.h ? { x: 1, y: 0 } : { x: 0, y: 1 }, s.rot ?? 0);
+  /** 軸に近い向きは軸にそろえる（斜めはそのまま） */
+  const snapAxis = (v: Vec2) => (Math.abs(v.x) > 0.94 ? { x: Math.sign(v.x), y: 0 } : Math.abs(v.y) > 0.94 ? { x: 0, y: Math.sign(v.y) } : v);
 
   // 車・植栽（建物の外）。部屋の中にある「車の大きさの丸い形」は L 型ソファ
   for (const s of symbols) {
@@ -610,7 +896,9 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
         if (level === 1) exterior.trees.push({ x: Math.round(c.x), y: Math.round(c.y), r });
       } else {
         const room = roomAt(c);
-        if (room && r <= 700) items.push({ id: id(), kind: 'plant', x: Math.round(c.x), y: Math.round(c.y), rot: 0, roomId: room.id, w: +Math.min(1.3, Math.max(0.5, r / 350)).toFixed(2) });
+        // 室内の観葉植物は居室・ホールだけ（水まわり・収納の丸い記号（洗濯機の槽・丸い手洗い）を植物にしない）
+        const NO_PLANT: RoomType[] = ['washroom', 'bath', 'toilet', 'closet', 'storage', 'kitchen', 'garage', 'stairs', 'void'];
+        if (room && r <= 700 && !NO_PLANT.includes(room.type)) items.push({ id: id(), kind: 'plant', x: Math.round(c.x), y: Math.round(c.y), rot: 0, roomId: room.id, w: +Math.min(1.3, Math.max(0.5, r / 350)).toFixed(2) });
       }
     }
   }
@@ -641,8 +929,9 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     for (const g of group) { sxx += (g.x - cx) ** 2; syy += (g.y - cy) ** 2; sxy += (g.x - cx) * (g.y - cy); }
     const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
     let along = unit(Math.cos(th), Math.sin(th));
-    // 椅子が 2 列（テーブルの両側）なら、列の方向が並び方向: 列と直交する方向の広がりが小さい
-    if (Math.abs(along.x) > Math.abs(along.y)) along = { x: 1, y: 0 }; else along = { x: 0, y: 1 };
+    // 椅子が 2 列（テーブルの両側）なら、列の方向が並び方向: 列と直交する方向の広がりが小さい。
+    // 軸に近ければ軸にそろえ、斜めに置かれた食卓（45° の LDK）はその向きのまま
+    along = snapAxis(along);
     const perSide = Math.max(2, Math.ceil(group.length / 2));
     push('dining', { x: cx, y: cy }, along, perp(along), 0, { w: +Math.min(2.4, Math.max(1.5, perSide * 0.65 + 0.3)).toFixed(2) });
   }
@@ -674,8 +963,37 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
           break;
         }
         const along = axisLong(s);
+        if (s.lEmpty) {
+          // L 型: 空いている角の側が部屋側。背は反対側、カウチは長手で空いている角と反対の端
+          const longX = s.w >= s.h;
+          const eLong = longX ? s.lEmpty.x : s.lEmpty.y;
+          const eAcross = longX ? s.lEmpty.y : s.lEmpty.x;
+          const acrossW = rotV(longX ? { x: 0, y: 1 } : { x: 1, y: 0 }, s.rot ?? 0);
+          const inward = { x: acrossW.x * eAcross, y: acrossW.y * eAcross };
+          const chaise = { x: -along.x * eLong, y: -along.y * eLong };
+          const cross = along.x * inward.y - along.y * inward.x;
+          const alongN = cross < 0 ? { x: -along.x, y: -along.y } : along;
+          const legSide: 'left' | 'right' = chaise.x * alongN.x + chaise.y * alongN.y > 0 ? 'right' : 'left';
+          const S = Math.min(s.w, s.h);
+          push('sofa', c, along, inward, S / 2, { w: +Math.min(3.6, Math.max(1.6, Math.max(s.w, s.h) / 1000)).toFixed(2), shape: 'l', legSide, leg: +Math.min(2.2, Math.max(1.2, S / 1000)).toFixed(2) });
+          break;
+        }
         const back = towardWall(c, perp(along), 450);
         push('sofa', c, along, { x: -back.x, y: -back.y }, 450, { w: +Math.min(3.6, Math.max(1.6, Math.max(s.w, s.h) / 1000)).toFixed(2) });
+        break;
+      }
+      case 'xbox': {
+        // ×印の正方形: 脱衣室なら洗濯機、LDK・キッチンなら冷蔵庫。壁にいちばん近い辺を背にする
+        const room = roomAt(c);
+        if (!room) break;
+        const kind: FurnitureKind | null = room.type === 'washroom' || room.type === 'toilet' || room.type === 'hall' ? 'washer' : ['ldk', 'kitchen', 'dining', 'living', 'storage', 'other'].includes(room.type) ? 'fridge' : null;
+        if (!kind) break;
+        const S = Math.min(s.w, s.h);
+        const ax = rotV({ x: 1, y: 0 }, s.rot ?? 0);
+        const dirs = [ax, { x: -ax.x, y: -ax.y }, perp(ax), { x: -perp(ax).x, y: -perp(ax).y }];
+        const backDir = dirs.map((d) => ({ d, dist: wallDist({ x: c.x + d.x * (S / 2 + 60), y: c.y + d.y * (S / 2 + 60) }) })).sort((a, b) => a.dist - b.dist)[0].d;
+        const inward = { x: -backDir.x, y: -backDir.y };
+        push(kind, c, { x: inward.y, y: -inward.x }, inward, S / 2, { w: +(S / 1000).toFixed(2) });
         break;
       }
       case 'bed': {
@@ -729,8 +1047,8 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     trace?.push(`sink@${Math.round(c.x)},${Math.round(c.y)} room=${room.name} walls=${nearWalls.map((o) => Math.round(o.d)).join('/')} onCounter=${onCounter ? `${Math.round(onCounter.w)}x${Math.round(onCounter.h)}` : 'no'}`);
     const plans = nearWalls.map((near) => {
       const w = near.w;
-      let along = unit(w.b.x - w.a.x, w.b.y - w.a.y);
-      if (Math.abs(along.x) > Math.abs(along.y)) along = { x: Math.sign(along.x), y: 0 }; else along = { x: 0, y: Math.sign(along.y) };
+      // 壁に沿う向き（斜めの壁ならそのまま）
+      const along = snapAxis(unit(w.b.x - w.a.x, w.b.y - w.a.y));
       const pn = perp(along);
       const side = (c.x - w.a.x) * pn.x + (c.y - w.a.y) * pn.y;
       let inward = side >= 0 ? pn : { x: -pn.x, y: -pn.y };
@@ -743,7 +1061,7 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
         const depth = Math.min(k.w, k.h);
         const length = Math.max(k.w, k.h);
         if (depth < 750 || depth > 1150 || length < 1600) return false;
-        const alongK = k.w >= k.h ? { x: 1, y: 0 } : { x: 0, y: 1 };
+        const alongK = axisLong(k);
         if (Math.abs(alongK.x * along.x + alongK.y * along.y) < 0.9) return false;
         const dv = (k.x - foot.x) * inward.x + (k.y - foot.y) * inward.y;
         const du = (k.x - foot.x) * along.x + (k.y - foot.y) * along.y;

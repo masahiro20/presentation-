@@ -9,7 +9,7 @@
  * 5. 壁端部を直交壁へ延長して接合
  */
 import type { Vec2 } from '../core/types';
-import { mergeIntervals, subtractIntervals, intervalsLength } from '../core/geometry';
+import { mergeIntervals, subtractIntervals, intervalsLength, pointInPolygon } from '../core/geometry';
 
 export interface Seg {
   a: Vec2;
@@ -75,7 +75,81 @@ export interface DetectedOpening {
   hingeAtStart?: boolean;
   /** 開き戸: 開く方向 (法線 n の符号) */
   swingSign?: 1 | -1;
+  /** 引込み戸（片引き戸）: 戸袋（開けた戸が収まる壁）が t1 側なら +1、t0 側なら -1 */
+  pocketSide?: 1 | -1;
   confidence: number;
+}
+
+/** 引込み戸の戸袋（白抜きの溝・戸の隠れ線の点線で分かる、開口ではなく壁のままにする区間） */
+interface Pocket {
+  g: number;
+  o: number;
+  t0: number;
+  t1: number;
+  /** 戸の通る溝が壁芯のどちら側か（法線 n の符号。0 = 芯上） */
+  sSign: number;
+}
+
+/**
+ * 白抜き（マスク）の多角形を壁の軸に沿って区切り、区間ごとに「壁厚のうち白く抜けている割合」を返す。
+ * ARCHITREND の引込み戸（片引き戸）は、壁の塗りの上に「開口部は全幅・戸袋は半幅（戸の通る溝）」の
+ * L 字／T 字の白抜きを重ねて描くので、全幅の区間が開口、半幅の区間が戸袋（壁のまま）になる。
+ * 吉田大仁様邸: トイレの戸（開口 840 + 戸袋 800）が 1,626 の引違い戸として読まれ、洗面の戸も戸袋ごと 1,528 になっていた
+ */
+function maskSpans(poly: Vec2[], grp: AngleGroup, o: number, d: number): { t0: number; t1: number; cover: number; sSign: number }[] {
+  const ts = poly.map((q) => q.x * grp.u.x + q.y * grp.u.y);
+  const ss = poly.map((q) => q.x * grp.n.x + q.y * grp.n.y - o);
+  // 壁の帯から大きくはみ出す白抜き（部屋の塗り・表の枠）は対象外
+  if (Math.min(...ss) < -d / 2 - 30 || Math.max(...ss) > d / 2 + 30) return [];
+  const brk = [...new Set(ts.map((t) => Math.round(t)))].sort((a, b) => a - b);
+  const out: { t0: number; t1: number; cover: number; sSign: number }[] = [];
+  const N = 9;
+  const cls = (c: number) => (c >= 0.75 ? 2 : c >= 0.25 ? 1 : 0);
+  for (let i = 0; i + 1 < brk.length; i++) {
+    const ta = brk[i];
+    const tb = brk[i + 1];
+    if (tb - ta < 8) continue;
+    const tm = (ta + tb) / 2;
+    let inside = 0;
+    let sSum = 0;
+    for (let k = 0; k < N; k++) {
+      const s = -d / 2 + (d * (k + 0.5)) / N;
+      const P = { x: grp.u.x * tm + grp.n.x * (o + s), y: grp.u.y * tm + grp.n.y * (o + s) };
+      if (pointInPolygon(P, poly)) {
+        inside++;
+        sSum += s;
+      }
+    }
+    const cover = inside / N;
+    const sSign = inside ? Math.sign(Math.round(sSum / inside)) : 0;
+    const last = out[out.length - 1];
+    if (last && last.t1 >= ta - 1 && cls(last.cover) === cls(cover) && last.sSign === sSign) {
+      last.t1 = tb;
+      last.cover = Math.max(last.cover, cover);
+    } else out.push({ t0: ta, t1: tb, cover, sSign });
+  }
+  return out;
+}
+
+/**
+ * 同じ位置に並ぶ短い線の列（点線を短い線分で描いたもの）。壁の帯の中にあれば、引込み戸の「開けたときの戸の位置」の隠れ線＝戸袋。
+ * 3 本以上、1 本 90mm 以下、間隔 90mm 以下の並びを 1 つの区間にまとめる
+ */
+function dashTrains(ls: Line[]): { o: number; t0: number; t1: number }[] {
+  const out: { o: number; t0: number; t1: number }[] = [];
+  const short = ls.filter((l) => !l.fill && l.t1 - l.t0 <= 90).sort((a, b) => a.o - b.o || a.t0 - b.t0);
+  let i = 0;
+  while (i < short.length) {
+    let j = i;
+    const chain = [short[i]];
+    while (j + 1 < short.length && Math.abs(short[j + 1].o - short[i].o) < 1.5 && short[j + 1].t0 - chain[chain.length - 1].t1 <= 90) {
+      j++;
+      if (short[j].t0 >= chain[chain.length - 1].t1 - 2) chain.push(short[j]);
+    }
+    if (chain.length >= 3) out.push({ o: short[i].o, t0: chain[0].t0, t1: chain[chain.length - 1].t1 });
+    i = j + 1;
+  }
+  return out;
 }
 
 export interface WallDetection {
@@ -363,6 +437,9 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     groupLines[gi].push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: s.source === 'fill' });
   }
   const lines = groupLines.map(mergeCollinear);
+  // 点線を短い線分で描いたもの（引込み戸の隠れ線など）の並び
+  const trains = lines.map(dashTrains);
+  const pockets: Pocket[] = [];
 
   // 壁が塗りつぶしで描かれている図面では、塗りの輪郭だけを壁候補にする（家具・サッシ等の線を除外できる）
   {
@@ -511,6 +588,46 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   const claimedPlus = new Map<string, [number, number][]>();
   const claimedMinus = new Map<string, [number, number][]>();
   const accepted = pairs.filter((p) => matchesPeak(p.d)).sort((a, b) => a.d - b.d);
+  // 引込み戸の戸袋: 帯の中に「戸の隠れ線の点線」か「白抜きの半幅の溝」がある区間は、開口（infill）ではなく壁のまま
+  const pocketsFor = (g: number, A: Line, B: Line, center: number, d: number, t0: number, t1: number): [number, number][] => {
+    const out: [number, number][] = [];
+    // 白抜きが全幅で抜けている区間（開口そのもの）
+    const fulls: [number, number][] = [];
+    for (const poly of masks) {
+      const spans = maskSpans(poly, groups[g], center, d);
+      if (!spans.length) continue;
+      const maxCover = Math.max(...spans.map((s) => s.cover));
+      const fullThr = Math.max(0.5, Math.min(0.75, maxCover));
+      for (const sp of spans) {
+        if (sp.t1 <= t0 || sp.t0 >= t1) continue;
+        if (sp.cover >= fullThr) {
+          fulls.push([sp.t0, sp.t1]);
+          continue;
+        }
+        if (sp.cover < 0.25 || sp.t1 - sp.t0 < 150) continue;
+        out.push([sp.t0, sp.t1]);
+        pockets.push({ g, o: center, t0: sp.t0, t1: sp.t1, sSign: sp.sSign });
+      }
+    }
+    for (const tr of trains[g]) {
+      if (tr.o <= A.o + 3 || tr.o >= B.o - 3 || tr.t1 <= t0 || tr.t0 >= t1) continue;
+      // 白抜きが全幅で抜けている所の点線は、開口の中で開けた戸が重なる位置（片引き窓の FIX の前など）であって戸袋ではない
+      const inOpen = intervalsLength(fulls.map(([a, b]) => [Math.max(a, tr.t0), Math.min(b, tr.t1)] as [number, number]).filter(([a, b]) => b > a));
+      if (inOpen > (tr.t1 - tr.t0) * 0.5) continue;
+      // 戸袋の裏付け: 戸の通る溝の線（壁芯から壁厚の 0.15〜0.45 倍の所に、点線の区間の 6 割以上に沿う線）があること
+      // （点線だけで戸袋とみなすと、折れ戸・破線の多い図面で開口が壁に変わった: 伊藤様邸の収納の前）
+      const slot = lines[g].some((l) => {
+        if (l.fill) return false;
+        const off = Math.abs(l.o - center);
+        if (off < d * 0.15 || off > d * 0.45) return false;
+        return Math.min(l.t1, tr.t1) - Math.max(l.t0, tr.t0) >= (tr.t1 - tr.t0) * 0.6;
+      });
+      if (!slot) continue;
+      out.push([tr.t0, tr.t1]);
+      pockets.push({ g, o: center, t0: tr.t0, t1: tr.t1, sSign: Math.sign(Math.round(tr.o - center)) });
+    }
+    return mergeIntervals(out);
+  };
   for (const p of accepted) {
     const kp = `${p.g}:${p.i}`;
     const km = `${p.g}:${p.j}`;
@@ -537,10 +654,12 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       const rel = betweenLines.filter((C) => Math.min(C.t1, e[1]) - Math.max(C.t0, e[0]) >= 150);
       const offs = new Set(rel.map((C) => Math.round(C.o)));
       if (offs.size >= 2) {
+        const pk = pocketsFor(p.g, A, B, center, p.d, e[0], e[1]);
         for (const bm of mergeIntervals(rel.map((C) => [C.t0, C.t1] as [number, number]), 30)) {
           const s0 = Math.max(e[0], bm[0]);
           const t = Math.min(e[1], bm[1]);
-          if (t - s0 >= 250) inf.push([s0, t]);
+          if (t - s0 < 250) continue;
+          for (const part of subtractIntervals([s0, t], pk)) if (part[1] - part[0] >= 250) inf.push(part);
         }
       }
       for (const [s0, t] of inf) infills.push({ g: p.g, o: center, d: p.d, t0: s0, t1: t, lines: rel.length });
@@ -590,6 +709,10 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   const pieceLen = pieces.reduce((s, p) => s + (p.t1 - p.t0), 0);
   const infillLen = infills.reduce((s, p) => s + (p.t1 - p.t0), 0);
   const useInfill = infillLen < (pieceLen + infillLen) * 0.4;
+  if ((globalThis as any).__WALLDBG) {
+    console.log('INFILL', Math.round(infillLen), 'PIECES', Math.round(pieceLen), 'useInfill', useInfill, 'pockets', pockets.length);
+    for (const pk of pockets) console.log('POCKET', pk.g, Math.round(pk.o), Math.round(pk.t0), Math.round(pk.t1), 'sSign', pk.sSign);
+  }
   if (!useInfill) {
     for (const f of infills) pieces.push({ g: f.g, o: f.o, d: f.d, t0: f.t0, t1: f.t1 });
     infills.length = 0;
@@ -604,6 +727,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   // ---- 開き戸（円弧記号）を先に確定 ----
   const openings: DetectedOpening[] = [];
   const doors = detectDoorSymbols(arcs, allSegs, groups);
+  if ((globalThis as any).__WALLDBG) for (const dr of doors) console.log('DOOR', dr.g, Math.round(dr.o), Math.round(dr.t0), Math.round(dr.t1), 'curvedUsed', curved.used.size, 'arcsLeft', arcs.length);
   for (const dr of doors) {
     const span = (a: Axis) => {
       const all = [...a.pieces.map((p) => [p.t0, p.t1]), ...a.openings.map((p) => [p.t0, p.t1])];
@@ -626,29 +750,33 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   }
 
   // ---- 白い塗りで抜かれた部分（窓）----
-  // 壁の塗りの上に白い長方形を重ねてガラス部分を表す描き方。壁から除き、窓とする
+  // 壁の塗りの上に白い長方形を重ねてガラス部分を表す描き方。壁から除き、窓とする。
+  // 白抜きが壁厚の全幅に及ぶ区間だけを開口にし、半幅の区間（引込み戸の戸袋の溝）は壁のまま（戸袋として覚える）
   for (const poly of masks) {
     for (const ax of axes) {
       const grp = groups[ax.g];
-      const ts = poly.map((q) => q.x * grp.u.x + q.y * grp.u.y);
-      const os = poly.map((q) => q.x * grp.n.x + q.y * grp.n.y);
-      const t0 = Math.min(...ts);
-      const t1 = Math.max(...ts);
-      const o0 = Math.min(...os);
-      const o1 = Math.max(...os);
-      // 壁の帯を厚み方向におおむね覆い、帯からはみ出さない細長い長方形
-      if (o1 - o0 < ax.d * 0.5 || o0 < ax.o - ax.d / 2 - 30 || o1 > ax.o + ax.d / 2 + 30) continue;
-      if (t1 - t0 < 250 || t1 - t0 > 4600) continue;
-      if (!ax.pieces.some((p) => p.t0 < t0 + 10 && p.t1 > t1 - 10)) continue;
-      if (ax.openings.some((o) => o.t0 < t1 && o.t1 > t0)) continue;
-      ax.pieces = ax.pieces.flatMap((p) =>
-        subtractIntervals([p.t0, p.t1], [[t0, t1]])
-          .filter(([a, b]) => b - a >= 20)
-          .map(([a, b]) => ({ ...p, t0: a, t1: b })),
-      );
-      const op: DetectedOpening = { g: ax.g, o: ax.o, d: ax.d, t0, t1, kind: 'window', confidence: 0.75 };
-      ax.openings.push(op);
-      openings.push(op);
+      const spans = maskSpans(poly, grp, ax.o, ax.d);
+      if (!spans.length) continue;
+      const maxCover = Math.max(...spans.map((s) => s.cover));
+      const fullThr = Math.max(0.5, Math.min(0.75, maxCover));
+      for (const sp of spans) {
+        const { t0, t1 } = sp;
+        if (sp.cover < fullThr) {
+          if (sp.cover >= 0.25 && t1 - t0 >= 150) pockets.push({ g: ax.g, o: ax.o, t0, t1, sSign: sp.sSign });
+          continue;
+        }
+        if (t1 - t0 < 250 || t1 - t0 > 4600) continue;
+        if (!ax.pieces.some((p) => p.t0 < t0 + 10 && p.t1 > t1 - 10)) continue;
+        if (ax.openings.some((o) => o.t0 < t1 && o.t1 > t0)) continue;
+        ax.pieces = ax.pieces.flatMap((p) =>
+          subtractIntervals([p.t0, p.t1], [[t0, t1]])
+            .filter(([a, b]) => b - a >= 20)
+            .map(([a, b]) => ({ ...p, t0: a, t1: b })),
+        );
+        const op: DetectedOpening = { g: ax.g, o: ax.o, d: ax.d, t0, t1, kind: 'window', confidence: 0.75 };
+        ax.openings.push(op);
+        openings.push(op);
+      }
     }
   }
 
@@ -678,6 +806,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       const ge = occ[k + 1].t0;
       const gap = ge - gs;
       if (gap < 250 || gap > 6000) continue;
+      // 両側が柱の塗り（壁厚の正方形）だけで、2m を超えて離れている隙間は開口ではない。窓と窓の間の柱と直交する壁の柱が
+      // 並ぶと、その間が「隙間＝引戸」に分類されて部屋を横切る壁が生まれていた（吉田大仁様邸 2 階の洋室 5.3 帖がベッドの所で 2 つに割れた）
       const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills);
       if ((globalThis as any).__WALLDBG) console.log('GAP', Math.round(ax.o), Math.round(gs), Math.round(ge), op.kind, 'opEnds', occ[k].op, occ[k + 1].op, 'joined', endJoined(ax, gs), endJoined(ax, ge));
       // 住宅の窓は最大でも 4.5m 程度。それより広い隙間は別の図（隣の階の図面・屋根の斜線など）
@@ -746,6 +876,17 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       op.o = ax.o;
       op.d = ax.d;
     }
+  }
+  // 引込み戸: 開口のすぐ隣に戸袋（白抜きの溝・隠れ線の点線）が戸の幅の半分以上あれば、引き込む側と戸の面を付ける
+  for (const op of openings) {
+    if (op.kind !== 'window') continue;
+    const w = op.t1 - op.t0;
+    const pk = pockets.find(
+      (q) => q.g === op.g && Math.abs(q.o - op.o) <= 20 && q.t1 - q.t0 >= w * 0.4 && (Math.abs(q.t0 - op.t1) <= 60 || Math.abs(q.t1 - op.t0) <= 60),
+    );
+    if (!pk) continue;
+    op.pocketSide = Math.abs(pk.t0 - op.t1) <= 60 ? 1 : -1;
+    if (pk.sSign && op.swingSign == null) op.swingSign = pk.sSign > 0 ? 1 : -1;
   }
   let heavyLen = 0;
   for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;
@@ -1187,6 +1328,7 @@ function classifyGap(
   const bandCover = intervalsLength(bandIv);
   const offs = [...new Set(inBand.map((l) => Math.round(l.o - o)))];
   const spread = offs.length ? Math.max(...offs) - Math.min(...offs) : 0;
+  // 帯の中の平行線だけが根拠のものは確信度 0.7（柱と柱の間に家具の縁が入っただけのこともある → assemble の「弱い壁」で部屋と照合）
   if (infCover > gap * 0.5 || (bandCover > gap * 0.6 && offs.length >= 2 && spread >= 10)) {
     return { g, o, d, t0: gs, t1: ge, kind: 'window', confidence: infCover > gap * 0.5 ? 0.85 : 0.7 };
   }

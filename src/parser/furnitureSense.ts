@@ -75,6 +75,20 @@ export function senseFurniture(items: FurnitureItem[], rooms: Room[]): SenseResu
     const room = roomById.get(rid);
     const type = room?.type;
     const name = room?.name ?? '（部屋なし）';
+    // 0. 同じ所に同じ種類が二重（入れ子の長方形で描いたベッド（外枠とマットレス）を 2 台と読んだもの）: 大きい方を残す
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        if (a.kind !== b.kind || drop.has(a) || drop.has(b) || d(a, b) > 300) continue;
+        const dr = (((a.rot - b.rot) % 180) + 180) % 180;
+        if (Math.min(dr, 180 - dr) > 10) continue;
+        const sizeOf = (it: FurnitureItem) => it.w ?? it.len ?? 0;
+        const loser = sizeOf(a) >= sizeOf(b) ? b : a;
+        drop.add(loser);
+        removed.push(`${name}の${furnitureKindJa(a.kind)}（同じ所に二重）`);
+      }
+    }
     // 1. その部屋には無いはずのもの
     const banned = type ? NOT_IN[type] ?? [] : [];
     for (const it of list) {

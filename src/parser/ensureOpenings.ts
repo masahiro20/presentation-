@@ -212,8 +212,8 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
     // 既に戸・引戸・開口がある、または壁なしで通路・隣室につながっている部屋はそのまま
     if (mine.some((s) => hasOpeningOn(s, openings))) {
       if (!builtinGarage) continue;
-      // ガレージ: シャッター以外（玄関・ホールへの戸）があるか
-      if (mine.some((s) => openings.some((o) => o.wallId === s.wall.id && (o.kind === 'door' || o.kind === 'sliding' || o.kind === 'open') && o.t1 > s.t0 && o.t0 < s.t1))) continue;
+      // ガレージ: シャッター以外（玄関・ホールへの戸。外壁扱いの壁の開き戸は 'entrance' になっている）があるか
+      if (mine.some((s) => openings.some((o) => o.wallId === s.wall.id && (o.kind === 'door' || o.kind === 'sliding' || o.kind === 'open' || o.kind === 'entrance') && o.t1 > s.t0 && o.t0 < s.t1))) continue;
     }
     const partners = mine.map((s) => ({ s, o: other(s, r) })).filter(({ o }) => !!o) as { s: Shared; o: Room }[];
     if (!builtinGarage && partners.some(({ o }) => edgeFree(r, o, walls, rooms) && (isCirculation(o.type) || ROOM_KNOWLEDGE[r.type].adjacent.includes(o.type)))) continue;

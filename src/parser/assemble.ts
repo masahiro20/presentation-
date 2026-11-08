@@ -57,7 +57,8 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     arcs: curves.length < 8 ? [...curves, ...polylineArcs(segs.filter((s) => s.source !== 'fill'))] : curves,
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
-    masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 8).map((f) => f.polygon.map(sc)),
+    // 引込み戸の白抜きは L 字（6 点）・T 字（8 点）＋閉じる点なので 12 点まで
+    masks: p.fills.filter((f) => /^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.polygon.length >= 4 && f.polygon.length <= 12).map((f) => f.polygon.map(sc)),
     colorFills: p.fills
       .filter((f) => f.polygon.length >= 3 && !/^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.color.toLowerCase() !== '#000000')
       .map((f) => ({ poly: f.polygon.map(sc), color: f.color.toLowerCase() })),
@@ -144,6 +145,12 @@ interface WWall {
   openings: DetectedOpening[];
   joinedA: boolean;
   joinedB: boolean;
+  /**
+   * 弱い壁: 壁片は柱の塗り（壁厚の正方形）だけで、残りは帯の中の線だけを根拠にした「窓」（確信度 0.7）が 2m 超。
+   * 窓と窓の間の柱と直交する壁の柱が一直線に並び、その間にベッドの縁が入ると生まれる（吉田大仁様邸 2 階の洋室 5.3 帖が 2 つに割れた）。
+   * 室名の無い断片を作っているだけなら部屋に戻す（収納の前の引戸のように部屋を分けているなら残す）
+   */
+  weak?: boolean;
 }
 
 function makeWalls(det: WallDetection): WWall[] {
@@ -168,7 +175,7 @@ function makeWalls(det: WallDetection): WWall[] {
   for (const ax of axes) {
     const grp = det.groups[ax.g];
     ax.items.sort((a, b) => a.t0 - b.t0);
-    const runs: { t0: number; t1: number; ops: DetectedOpening[]; dsum: number; lsum: number }[] = [];
+    const runs: { t0: number; t1: number; ops: DetectedOpening[]; dsum: number; lsum: number; maxPiece: number }[] = [];
     for (const it of ax.items) {
       const last = runs[runs.length - 1];
       const L = it.t1 - it.t0;
@@ -178,16 +185,20 @@ function makeWalls(det: WallDetection): WWall[] {
         else {
           last.dsum += it.d * L;
           last.lsum += L;
+          last.maxPiece = Math.max(last.maxPiece, L);
         }
       } else {
-        runs.push({ t0: it.t0, t1: it.t1, ops: it.op ? [it.op] : [], dsum: it.op ? 0 : it.d * L, lsum: it.op ? 0 : L });
+        runs.push({ t0: it.t0, t1: it.t1, ops: it.op ? [it.op] : [], dsum: it.op ? 0 : it.d * L, lsum: it.op ? 0 : L, maxPiece: it.op ? 0 : L });
       }
     }
     for (const r of runs) {
       const d = r.lsum > 0 ? r.dsum / r.lsum : r.ops[0]?.d || 120;
       const a = { x: grp.u.x * r.t0 + grp.n.x * ax.o, y: grp.u.y * r.t0 + grp.n.y * ax.o };
       const b = { x: grp.u.x * r.t1 + grp.n.x * ax.o, y: grp.u.y * r.t1 + grp.n.y * ax.o };
-      walls.push({ a, b, u: grp.u, n: grp.n, d, t0: r.t0, t1: r.t1, o: ax.o, g: ax.g, openings: r.ops, joinedA: false, joinedB: false });
+      const L = r.t1 - r.t0;
+      const opLen = r.ops.reduce((s0, op) => s0 + (op.t1 - op.t0), 0);
+      const weak = r.ops.length > 0 && L > 2000 && opLen >= L * 0.8 && r.maxPiece <= d * 1.3 && r.ops.every((op) => op.kind === 'window' && op.confidence <= 0.7);
+      walls.push({ a, b, u: grp.u, n: grp.n, d, t0: r.t0, t1: r.t1, o: ax.o, g: ax.g, openings: r.ops, joinedA: false, joinedB: false, ...(weak ? { weak } : {}) });
     }
   }
   return walls;
@@ -1252,6 +1263,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const dashed = segsU.length ? dashedOutlines(segsU) : [];
   const solidSymbols = segsU.length ? detectSymbols(segsU) : [];
   const symbols = [...solidSymbols, ...dashedCarSymbols(dashed, solidSymbols)];
+  if ((globalThis as any).__DBG_PLANS) {
+    ((globalThis as any).__DBG_SYMBOLS ??= []).push({ level, symbols });
+    ((globalThis as any).__DBG_SEGSU ??= []).push({ level, segs: segsU });
+  }
   if (!plan.loose && !(globalThis as { __noLongClosers?: boolean }).__noLongClosers) {
     const thin = plan.segs.filter((sg) => sg.source === 'stroke' && !sg.dashed);
     /** 線分 a-b の上（±60mm）にある細線が、その長さの何割を覆うか */
@@ -1386,6 +1401,18 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   // 室名の入った色塗り（カラー平面図）の輪郭: 内外の判定の後、建物の内側でだけ部屋の区切りにする
   const fillCells: number[] = [];
+  // 弱い壁（柱と柱の間の「窓」だけの壁）も同じ扱い: 室名の無い断片を作っているだけなら、下で隣の部屋に戻す
+  const weakWalls = walls.filter((w) => w.weak);
+  const weakCells = new Set<number>();
+  if (weakWalls.length) {
+    const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
+    for (const w of weakWalls) tmp.fillThickSegment(w.a, w.b, w.d, WALL);
+    for (let i = 0; i < tmp.data.length; i++)
+      if (tmp.data[i] === WALL && grid.data[i] === WALL) {
+        fillCells.push(i);
+        weakCells.add(i);
+      }
+  }
   if (plan.roomFills.length) {
     const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
     for (const poly of plan.roomFills) for (let i = 0; i < poly.length; i++) tmp.fillThickSegment(poly[i], poly[(i + 1) % poly.length], 30, WALL);
@@ -1417,12 +1444,19 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       for (let i = 0; i < lb.length; i++) if (lb[i] && sz[lb[i]] < sliverCells && touchesFill.has(lb[i])) grid.data[i] = WALL;
     }
     for (let iter = 0; iter < 3; iter++) {
-      const { labels: lb } = grid.labelComponents();
+      const { labels: lb, sizes: szIter } = grid.labelComponents();
       const hasName = new Set<number>();
       for (const t of named) {
         const l = labelNear(grid, lb, t);
         if (l) hasName.add(l);
       }
+      // 弱い壁を挟んで戻してよい断片: 文字が 1 つも無く 2㎡ 以上（通路・玄関収納のような小さな室は、室名が壁に掛かって拾えなくても戻さない）
+      const hasAnyText = new Set<number>();
+      for (const t of plan.texts) {
+        const l = labelNear(grid, lb, t);
+        if (l) hasAnyText.add(l);
+      }
+      const weakMergeOk = (u: number) => !hasAnyText.has(u) && (szIter[u] ?? 0) >= (2 * 1e6) / (grid.res * grid.res);
       // 塗りの線の両側の区画（線の太さ分だけ離れて見る）
       const sides = (i: number): number[] => {
         const x = i % grid.w;
@@ -1441,6 +1475,16 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         }
         return [...out];
       };
+      // 中庭・バルコニー・吹抜など屋外扱いの区画: 弱い壁（中庭のガラス壁のこともある）を挟んでは戻さない
+      const outdoorLabels = new Set<number>();
+      for (const t of named) {
+        const nm = cleanRoomName(t.str);
+        const ty = nm ? classifyRoomName(nm) : null;
+        if (ty && (OUTDOOR_TYPES.includes(ty) || ty === 'void')) {
+          const l = labelNear(grid, lb, t);
+          if (l) outdoorLabels.add(l);
+        }
+      }
       // 名前の無い断片ごとに、塗りの線を挟んで接する長さが最も長い隣の区画を選ぶ
       const contact = new Map<number, Map<number, number>>();
       const cellSides = new Map<number, number[]>();
@@ -1448,9 +1492,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         if (grid.data[i] !== WALL) continue;
         const sd = sides(i);
         if (sd.length !== 2) continue;
+        if (weakCells.has(i) && (outdoorLabels.has(sd[0]) || outdoorLabels.has(sd[1]))) continue;
         cellSides.set(i, sd);
         for (const [u, v] of [sd, [sd[1], sd[0]]]) {
           if (hasName.has(u)) continue;
+          if (weakCells.has(i) && !weakMergeOk(u)) continue;
           const m = contact.get(u) ?? new Map<number, number>();
           m.set(v, (m.get(v) ?? 0) + 1);
           contact.set(u, m);
@@ -1483,6 +1529,15 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       }
       if (!changedAny) break;
     }
+  }
+  // 部屋に戻した弱い壁（真ん中の升が通れるようになったもの）は、壁・建具ごと無かったことにする
+  for (const w of weakWalls) {
+    const mid = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
+    const [cx, cy] = grid.cellOf(mid);
+    if (grid.get(cx, cy) !== FREE) continue;
+    const k = walls.indexOf(w);
+    if (k >= 0) walls.splice(k, 1);
+    warnings.push(`${level}階: 柱と柱の間の線を引戸と読んでいた壁（${Math.round(Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)).toLocaleString()}mm）を外しました（家具の縁）`);
   }
   const { labels, sizes } = grid.labelComponents();
   (globalThis as any).__DBG_GRID?.(grid, plan, level, labels);
@@ -1910,7 +1965,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       // 外壁扱いの壁でも、両側が室内（中庭に面する壁の、ホール側の区間など）なら室内の建具として扱う
       const outdoorType = (t: RoomType | undefined) => !t || OUTDOOR_TYPES.includes(t);
       const bothInside = !!inRoom && !!otherRoom && !outdoorType(inRoom.type) && !outdoorType(otherRoom.type);
-      if (exterior && !bothInside) {
+      // ビルトインガレージと玄関・ホールの間の戸は家の中の戸（玄関ドアにすると外開き＋庇・ポーチが付いてしまう）
+      const garageSide = inRoom?.type === 'garage' || otherRoom?.type === 'garage';
+      const garageInner = garageSide && !!inRoom && !!otherRoom && (inRoom.type === 'garage' ? !outdoorType(otherRoom.type) : !outdoorType(inRoom.type));
+      if (exterior && !bothInside && !garageInner) {
         if (level === 1 && (op.kind === 'door' || (inRoom?.type === 'entrance' && op.kind !== 'window'))) {
           kind = 'entrance';
           height = 2200;
@@ -1963,7 +2021,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         sill,
         height,
         windowStyle,
-        hingeAtStart: op.hingeAtStart,
+        // 引戸は「引き込む側」を hingeAtStart に持つ（false = 始点側へ、true = 終点側へ）。図面の戸袋が読めたらその側
+        hingeAtStart: kind === 'sliding' && op.pocketSide != null ? op.pocketSide > 0 : op.hingeAtStart,
         // 開く向きが読めない戸は、両側の部屋の種類から（個室・浴室はその部屋の中へ、トイレ・収納は外へ、通路からは部屋の中へ）
         swingSide:
           op.swingSign ??
@@ -2093,8 +2152,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const labelSize = labelSizes.length ? labelSizes[Math.floor(labelSizes.length / 2)] : 280;
   const nearTexts = plan.siteTexts.filter((t) => t.x > plan.bbox.minX - 3000 && t.x < plan.bbox.maxX + 3000 && t.y > plan.bbox.minY - 3000 && t.y < plan.bbox.maxY + 3000 && !plan.texts.some((u) => u.x === t.x && u.y === t.y));
   const notes = plan.scan ? [] : detectNotes([...plan.texts, ...nearTexts], labelSize, rooms);
-  // 家具・設備・車・植栽の記号（スキャン図面には無い）
-  const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(symbols, rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
+  // 家具・設備・車・植栽の記号（スキャン図面には無い）。階段の範囲の線（段・手すり）は家具の記号ではない
+  // （コの字階段の段の線が「ソファ＋丸テーブル」として読まれ、本物の L 型ソファが「LDK にソファは 1 つ」で落ちていた）
+  const inStair = (p: Vec2) => stairs.some((st) => p.x > st.minX - 100 && p.x < st.maxX + 100 && p.y > st.minY - 100 && p.y < st.maxY + 100);
+  const symbolsOut = symbols.filter((s) => s.kind === 'car' || !inStair({ x: s.x, y: s.y }));
+  const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(symbolsOut, rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
   // 文脈読み（部屋の種類・大きさ・壁からの位置・隣の物との関係）。同じ部屋で同じ種類を読めたら、形の決め打ちの結果より優先する
   const g = globalThis as { __symbolDict?: SymbolSignature[]; __ctxTrace?: string[]; __dashTrace?: string[] };
   const dashRects = dashed
@@ -2106,6 +2168,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     .map((o) => ({ minX: o.minX, minY: o.minY, maxX: o.maxX, maxY: o.maxY, inner: 0, innerRects: 0, arcs: 0, width: 0, dashed: true }));
   if (g.__dashTrace) for (const o of dashed) g.__dashTrace.push(`${level}F 破線の輪郭 ${Math.round(o.maxX - o.minX)}x${Math.round(o.maxY - o.minY)} n=${o.n} @${Math.round((o.minX + o.maxX) / 2)},${Math.round((o.minY + o.maxY) / 2)}`);
   const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects);
+  if (ctx) {
+    ctx.items = ctx.items.filter((it) => !inStair({ x: it.x, y: it.y }));
+    ctx.candidates = ctx.candidates.filter((cd) => !inStair({ x: cd.cx, y: cd.cy }));
+  }
   if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
   // 同じ部屋で同じ種類を文脈読みが読めたら、形の決め打ちの方は外す（食卓はキッチンと兼ねて読むことがあるので、キッチンを読んだ部屋の食卓も）
   const taken = new Set((ctx?.items ?? []).flatMap((it) => (it.kind === 'kitchen' ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`])));
@@ -2329,6 +2395,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       }
     }
     if ((globalThis as any).__DBG_PLANS) {
+      ((globalThis as any).__DBG_PAGES ??= []).push(page);
       ((globalThis as any).__DBG_CLUSTERS ??= []).push(...groups.map((g) => ({ page: page.pageIndex, walls: g })));
       ((globalThis as any).__DBG_WALLS ??= []).push({ page: page.pageIndex, walls: ww.map((w) => ({ a: w.a, b: w.b, d: w.d })), ext: pageExt, texts: page.texts.filter((t) => /階|平面|プラン|提案/.test(t.str)).map((t) => ({ x: Math.round(t.x), y: Math.round(t.y), s: t.str })) });
       const lens = ww.map((w) => w.t1 - w.t0);
@@ -2645,6 +2712,11 @@ export function translatePlan(p: PlanData, d: Vec2) {
       op.o += dO;
     }
   }
+  if ((globalThis as any).__DBG_PLANS) {
+    console.log('translate page', p.pageIndex, 'floorHint', p.floorHint, 'by', Math.round(d.x), Math.round(d.y));
+    const q = p as PlanData & { __dbgShift?: Vec2 };
+    q.__dbgShift = { x: (q.__dbgShift?.x ?? 0) + d.x, y: (q.__dbgShift?.y ?? 0) + d.y };
+  }
   p.texts = p.texts.map((t) => ({ ...t, x: t.x + d.x, y: t.y + d.y }));
   p.segs = p.segs.map((s) => ({ ...s, a: tr(s.a), b: tr(s.b) }));
   p.arcs = p.arcs.map((a) => ({ ...a, p0: tr(a.p0), p1: tr(a.p1), p2: tr(a.p2), p3: tr(a.p3) }));
@@ -2900,6 +2972,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     }
     // 原点を1階の左上へ
     const o = { x: -base.bbox.minX, y: -base.bbox.minY };
+    if ((globalThis as any).__DBG_PLANS) console.log('origin(page→model)', Math.round(base.bbox.minX), Math.round(base.bbox.minY));
     for (const p of sorted) translatePlan(p, o);
   }
   // 木造のモジュール: 全階の壁芯から格子（半間 455 / 500）の位相を求め、乗っている図面は壁芯を格子へ寄せる（柱は上下階で通るので位相は共通）
@@ -2929,6 +3002,12 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     elev += f.height;
     f.walls.forEach((w) => thicknesses.add(w.thickness));
     floors.push(f);
+  }
+  if ((globalThis as any).__DBG_PLANS) {
+    (globalThis as any).__DBG_PLANOF = floors.map((f) => {
+      const p = planOf.get(f) as (PlanData & { __dbgShift?: Vec2 }) | undefined;
+      return { level: f.level, pageIndex: p?.pageIndex, shift: p?.__dbgShift ?? { x: 0, y: 0 } };
+    });
   }
   if (samePageUnhinted && floors.length > 1) {
     // 同じ敷地の上の離れた区画（車庫・離れ・物置）: 階段が無く、母屋より小さいものは「上の階」ではなく 1 階の一部

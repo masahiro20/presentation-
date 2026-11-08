@@ -2534,7 +2534,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
  * 「1階平面図」などの見出しを図面に1対1で割り当てる。
  * 見出しは図面の真下（または真上）に置かれることが多いので、横方向のずれを重く評価する。
  */
-function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
+export function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
   const cands: { plan: PlanData; title: MmText; floor: number; score: number }[] = [];
   for (const page of pages) {
     const onPage = plans.filter((p) => p.pageIndex === page.pageIndex);
@@ -2559,10 +2559,14 @@ function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
         const dy = Math.max(0, b.minY - t.y, t.y - b.maxY);
         const h = b.maxY - b.minY;
         const w = b.maxX - b.minX;
-        if (onPage.length > 1 && (dy > h * 0.9 || dx > w * 0.6)) continue;
+        // 見出しと図の間に面積表・注記が入ると図の高さの 0.9 倍より離れる（吉田大仁様邸 1st-2: 5.6 m 角の 2 階の 6.6 m 下に「2階 平面図」）
+        if (onPage.length > 1 && (dy > Math.max(h * 0.9, 7000) || dx > w * 0.6)) continue;
+        // 図面名は図の「下」に書くのが決まり。上下に図が並ぶ図面では、上の図の見出しが下の図の真上に来るので、
+        // 「図の上にある見出し」は図の高さ分だけ遠いものとして扱う（田中様邸: 3 階の見出しが 2 階の図に付き、2 階と 3 階が入れ替わっていた）
+        const above = t.y < b.minY;
         // 図と見出しの間に描かれた小さな図（変更案・部分図）が見出しを取らないように、小さな図は最後の候補にする
         const small = lenOf(p) < maxLen * 0.4;
-        cands.push({ plan: p, title: t, floor: f, score: dx * 3 + dy + (small ? 100000 : 0) });
+        cands.push({ plan: p, title: t, floor: f, score: dx * 3 + dy + (above ? h : 0) + (small ? 100000 : 0) });
       }
     }
   }

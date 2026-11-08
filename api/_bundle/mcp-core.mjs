@@ -11403,13 +11403,14 @@ function assignFloorTitles(plans, pages) {
 				const dy = Math.max(0, b.minY - t.y, t.y - b.maxY);
 				const h = b.maxY - b.minY;
 				const w = b.maxX - b.minX;
-				if (onPage.length > 1 && (dy > h * .9 || dx > w * .6)) continue;
+				if (onPage.length > 1 && (dy > Math.max(h * .9, 7e3) || dx > w * .6)) continue;
+				const above = t.y < b.minY;
 				const small = lenOf(p) < maxLen * .4;
 				cands.push({
 					plan: p,
 					title: t,
 					floor: f,
-					score: dx * 3 + dy + (small ? 1e5 : 0)
+					score: dx * 3 + dy + (above ? h : 0) + (small ? 1e5 : 0)
 				});
 			}
 		}

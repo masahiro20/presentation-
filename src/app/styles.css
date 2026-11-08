@@ -901,6 +901,23 @@ body.cinema .main { grid-template-columns: 1fr; }
   .est-title { margin: 0 0 7mm; }
 }
 
+/* 契約前チェック（社内用）と 月々の支払い試算（スタッフ用） */
+.precheck .pc-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: start; padding: 7px 0; border-top: 1px solid var(--line); }
+.precheck .pc-row:first-of-type { border-top: 0; }
+.precheck .pc-mark { font-size: 15px; line-height: 1.3; text-align: center; }
+.precheck .pc-row.ok .pc-mark { color: #3f7a55; }
+.precheck .pc-row.warn .pc-mark { color: #b4621e; }
+.precheck .pc-row.na { opacity: 0.55; }
+.precheck .pc-label { font-size: 13.5px; }
+.precheck .pc-amt { margin-left: 6px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.loan-sim .loan-result { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #f1f6ef; }
+.loan-sim .loan-result .big { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.loan-sim .loan-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; margin: 6px 0 8px; }
+.loan-sim .loan-table th, .loan-sim .loan-table td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.loan-sim .loan-table th:first-child { text-align: left; color: var(--ink2); font-weight: 500; }
+.loan-sim .loan-table thead th { color: var(--ink2); font-weight: 500; }
+.loan-sim .loan-table tr.cur td { background: #fff6e8; font-weight: 600; }
+
 /* ---- コーディネート ---- */
 .coord-part { margin-bottom: 10px; }
 .coord-part-title { font-size: 13.5px; letter-spacing: 0.12em; color: var(--ink3); margin: 8px 0 6px; }

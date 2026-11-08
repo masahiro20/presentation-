@@ -16,11 +16,17 @@ import { computeEstimate, newChoice, defaultGroups, groupOptions, priceFromCost,
 import { annexRows, computeFunding, newFunding, STANDARD_SPEC, type FundingInput, type FundRow } from '../../estimate/funding';
 import { estimateGroupsFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 import { documentAddress } from '../../sun/geo';
+import { contractPrecheck, precheckSummary } from '../../estimate/precheck';
+import { loanPlan, loanTable } from '../../estimate/loanSim';
 
 export interface EstimateState {
   choice: EstimateChoice;
   areasOverride: Partial<Areas>;
   funding: FundingInput | null;
+  /** 契約前チェックで「対象外（お客様手配・不要）」にした項目 */
+  precheckNa?: Record<string, boolean>;
+  /** 月々の支払い試算（スタッフ用）の入力 */
+  loanSim?: { downMan: number; ratePct: number; years: number; bonusMan: number; incomeMan: number };
   /** 内訳書に 0 円の行も出す（編集用） */
   showAll?: boolean;
   /** お客様向け: 数量・単位・単価の列を出さない（既定 true） */
@@ -826,6 +832,88 @@ export const estimateStep: Step = {
         field('備考（区分）', h('select', { onchange: (e: Event) => { funding.stage = (e.target as HTMLSelectElement).value; render(); } }, ...['初回提案', '再提案', '契約時', '変更後'].map((v) => h('option', { value: v, selected: v === (funding.stage ?? '初回提案') }, v)))),
         h('div', { class: 'row2' }, field('排水', h('select', { onchange: (e: Event) => { funding.site.sewer = (e.target as HTMLSelectElement).value; render(); } }, ...['下水', '浄化槽', '汲み取り'].map((v) => h('option', { value: v, selected: v === funding.site.sewer }, v)))), field('準防火地域', h('select', { onchange: (e: Event) => { funding.site.fireZone = (e.target as HTMLSelectElement).value === '1'; render(); } }, h('option', { value: '0', selected: !funding.site.fireZone }, '非該当'), h('option', { value: '1', selected: funding.site.fireZone }, '該当')))),
       );
+      // 契約前チェック（社内用。台帳 S10）: 見積の選択中の行と資金計画から「抜け」を探す
+      const pcLines = est.categories.flatMap((cat) => cat.lines.map((l) => ({ desc: l.desc, spec: l.spec, selected: l.selected, amount: l.amount })));
+      const pcItems = contractPrecheck(pcLines, funding, es.precheckNa ?? {});
+      const pcSum = precheckSummary(pcItems);
+      const pcBody = h(
+        'div',
+        { class: 'precheck' },
+        h('p', { class: 'hint', style: 'margin-top:0' }, '契約前に、見積と資金計画の「抜け」を社内で確かめる一覧です（資料・見積書には出ません）。お客様手配・不要の項目は「対象外」にすると件数から外れます。'),
+        ...pcItems.map((it) =>
+          h(
+            'div',
+            { class: `pc-row ${it.status}` },
+            h('span', { class: 'pc-mark' }, it.status === 'ok' ? '✓' : it.status === 'warn' ? '⚠' : '－'),
+            h('div', { class: 'pc-main' }, h('div', { class: 'pc-label' }, it.label, it.amount ? h('span', { class: 'pc-amt' }, `¥${yen(it.amount)}`) : null), h('div', { class: 'hint' }, it.note)),
+            h(
+              'button',
+              {
+                class: 'btn xs ghost',
+                title: it.status === 'na' ? 'チェックの対象に戻す' : 'お客様手配・不要として件数から外す',
+                onclick: () => {
+                  const na = { ...(es.precheckNa ?? {}) };
+                  if (na[it.id]) delete na[it.id];
+                  else na[it.id] = true;
+                  es.precheckNa = na;
+                  render();
+                },
+              },
+              it.status === 'na' ? '戻す' : '対象外',
+            ),
+          ),
+        ),
+      );
+      // 月々の支払い試算（スタッフ用。台帳 S3）: 資金計画書の総合計から
+      const grand = computeFunding(funding).grand;
+      const sim = es.loanSim ?? (es.loanSim = { downMan: 0, ratePct: 1.0, years: 35, bonusMan: 0, incomeMan: 0 });
+      const plan = loanPlan({ grand, ...sim });
+      const simNum = (label: string, key: keyof typeof sim, step: number, min: number, max: number, hint?: string) =>
+        field(label, h('input', { type: 'number', step, min, max, value: sim[key], onchange: (e: Event) => { sim[key] = Math.max(min, Math.min(max, Number((e.target as HTMLInputElement).value) || 0)); render(); } }), hint);
+      const table = loanTable({ grand, ...sim });
+      const ratioNote = plan.ratio == null ? '' : `・返済負担率 ${plan.ratio}%${plan.ratio > 35 ? '（35% 超: 審査の目安を超える）' : plan.ratio > 25 ? '（25% 超: 余裕を見たい）' : ''}`;
+      const loanBody = h(
+        'div',
+        { class: 'loan-sim' },
+        h('p', { class: 'hint', style: 'margin-top:0' }, `資金計画書の総合計 ¥${yen(grand)} から。元利均等・ボーナス払いは年 2 回。スタッフの目安用で、資料・体験リンクには出ません。`),
+        h('div', { class: 'row2' }, simNum('頭金（万円）', 'downMan', 10, 0, 100000), simNum('金利（%）', 'ratePct', 0.05, 0, 10)),
+        h('div', { class: 'row2' }, simNum('返済年数', 'years', 1, 1, 50), simNum('ボーナス払い（万円／回）', 'bonusMan', 1, 0, 1000)),
+        simNum('年収（万円・任意）', 'incomeMan', 10, 0, 100000, '入れると返済負担率（年間返済 ÷ 年収）を出します'),
+        h(
+          'div',
+          { class: 'loan-result' },
+          h('div', { class: 'big' }, `月々 ¥${yen(plan.monthly)}`, plan.bonus ? h('span', { class: 'hint' }, `　＋ボーナス月 ¥${yen(plan.bonus)}`) : null),
+          h('div', { class: 'hint' }, `借入 ¥${yen(plan.principal)}・年間 ¥${yen(plan.yearly)}・総返済 ¥${yen(plan.total)}（利息 ¥${yen(plan.interest)}）${ratioNote}`),
+        ),
+        h(
+          'table',
+          { class: 'loan-table' },
+          h('thead', null, h('tr', null, h('th', null, '金利 ＼ 年数'), ...table[0].cells.map((c) => h('th', null, `${c.years} 年`)))),
+          h('tbody', null, ...table.map((r) => h('tr', { class: Math.abs(r.rate - sim.ratePct) < 0.001 ? 'cur' : '' }, h('th', null, `${r.rate.toFixed(1)}%`), ...r.cells.map((c) => h('td', null, `¥${yen(c.monthly)}`))))),
+        ),
+        h(
+          'div',
+          { class: 'btn-row' },
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              title: '資金計画書の「変動金利：銀行ローンの場合」の行に、借入額・年数・金利を入れます',
+              onclick: () => {
+                const l = funding.loans[0];
+                if (l) {
+                  l.amountMan = Math.round(plan.principal / 10000);
+                  l.years = sim.years;
+                  l.rate = sim.ratePct;
+                }
+                toast('資金計画書のローン欄（変動金利の行）に入れました', 'ok');
+                render();
+              },
+            },
+            '資金計画書のローン欄に入れる',
+          ),
+        ),
+      );
       panel.append(
         h('h2', null, '見積・資金計画'),
         section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g, baseAreas(g)); render(); })),
@@ -842,6 +930,8 @@ export const estimateStep: Step = {
         fold('仕様の選択', { open: true, meta: `${Object.keys(GROUP_LABEL).length} 項目` }, groupBody),
         fold('任意の項目', { open: false }, optBody),
         fold('資金計画書の入力', { open: which === 'funding', meta: `総合計 ¥${yen(computeFunding(funding).grand)}` }, fundBody),
+        fold('契約前チェック（社内用）', { open: pcSum.warn > 0 && which === 'funding', meta: pcSum.text }, pcBody),
+        fold('月々の支払い試算（スタッフ用）', { open: false, meta: `月々 ¥${yen(plan.monthly)}` }, loanBody),
       );
     };
     ctx.side.appendChild(panel);

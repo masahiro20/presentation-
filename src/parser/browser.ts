@@ -88,3 +88,28 @@ export async function extractPdfText(data: Uint8Array): Promise<string> {
 }
 
 export { pdfjs };
+
+/**
+ * PDF の 1 ページを JPEG（data URL）に描く（AI 設計士に図面の画像を渡す用）。長辺 maxSide px、白地
+ */
+export async function renderPdfPageJpeg(data: Uint8Array, pageIndex = 0, maxSide = 1600, quality = 0.85): Promise<string> {
+  const base = assetBase();
+  // pdf.js はバッファをワーカーへ渡して空にすることがあるので写しを渡す
+  const doc = await pdfjs.getDocument({ data: data.slice(), cMapUrl: `${base}pdfjs/cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}pdfjs/standard_fonts/`, useSystemFonts: false } as Parameters<typeof pdfjs.getDocument>[0]).promise;
+  try {
+    const page = await doc.getPage(Math.min(doc.numPages, pageIndex + 1));
+    const vp0 = page.getViewport({ scale: 1 });
+    const scale = maxSide / Math.max(vp0.width, vp0.height);
+    const vp = page.getViewport({ scale });
+    const c = document.createElement('canvas');
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp } as Parameters<typeof page.render>[0]).promise;
+    return c.toDataURL('image/jpeg', quality);
+  } finally {
+    await doc.destroy();
+  }
+}

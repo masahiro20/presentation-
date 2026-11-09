@@ -4,7 +4,9 @@ import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
-import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser } from '../../parser/browser';
+import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser, renderPdfPageJpeg } from '../../parser/browser';
+import { buildDigest, getDesignRules, getReviewModel, REVIEW_MODELS, ruleFromFinding, runDesignReview, setDesignRules, setReviewModel, type ReviewResult } from '../aiDesigner';
+import { getGeminiKey } from '../aiFinish';
 import { parseDxf, type ModuleMode } from '../../parser';
 import { applyElevationHeights, describeElevationHeights, type ElevationHeights } from '../../parser/elevationText';
 import { decodeDxf } from '../../parser/dxf';
@@ -1507,7 +1509,95 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       ),
     ),
   );
-  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 || rs.score < 80 }, head, h('div', { class: 'score-box' }, scoreEl, parts), fixList, list);
+  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 || rs.score < 80 }, head, h('div', { class: 'score-box' }, scoreEl, parts), fixList, list, aiDesignerSection(model, issues, openEditor));
+}
+
+// ---- AI 設計士（Gemini）: 図面の画像と読み取りの要約を設計の目で見てもらう（docs/AI_DESIGNER.md） ----
+let lastReview: { name: string; result: ReviewResult; at: number } | null = null;
+let reviewBusy = false;
+
+function aiDesignerSection(model: BuildingModel, issues: WoodIssue[], openEditor: () => void): HTMLElement {
+  const wrap = h('div', { class: 'ai-designer' });
+  const render = () => {
+    clear(wrap);
+    wrap.append(h('div', { class: 'field-label' }, 'AI 設計士（Gemini）', h('span', { class: 'hint' }, '　図面の画像と読み取り結果を設計の目で見て、読み取りの間違い・設計の違和感・お客様への要点を返します')));
+    const key = getGeminiKey();
+    // 説明文（.hint）は既定で隠れるので、使い方と状態は見える文字（.ai-note / .ai-status）で出す
+    if (!key) {
+      wrap.append(h('div', { class: 'ai-note' }, 'パースの「写真仕上げ」で Google AI Studio のキーを入れると使えます（同じキー。費用は 1 回 1〜10 円）'));
+      return;
+    }
+    // 社内の設計ルール帳（先に作る: 指摘の「違う」で下書きを入れる）
+    const rulesTa = h('textarea', { rows: 3, placeholder: '社内の設計ルール帳（1 行 1 ルール）。例: トイレの戸は引戸にする／浴室は 1 坪以上。AI の指摘に納得できないときは「違う（ルールに加える）」で下書きが入ります' }) as HTMLTextAreaElement;
+    rulesTa.value = getDesignRules();
+    const sel = h('select', { class: 'sm', onchange: () => setReviewModel(sel.value) }, ...REVIEW_MODELS.map((m) => h('option', { value: m.id, selected: m.id === getReviewModel() }, m.label))) as HTMLSelectElement;
+    const status = h('span', { class: 'ai-status' }, lastReview?.name === model.name ? `前回 ${new Date(lastReview.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}` : '');
+    const btn = h(
+      'button',
+      {
+        class: 'btn sm',
+        disabled: reviewBusy,
+        onclick: async () => {
+          if (reviewBusy) return;
+          reviewBusy = true;
+          btn.disabled = true;
+          status.textContent = '図面を見ています…（10〜30 秒）';
+          try {
+            let image: string | undefined;
+            if (lastPdf?.kind === 'pdf') {
+              try {
+                image = await renderPdfPageJpeg(lastPdf.data, 0, 1600);
+              } catch {
+                image = undefined;
+              }
+            }
+            const result = await runDesignReview(key, sel.value, { image, digest: buildDigest(model, issues), customRules: getDesignRules(), pdfName: lastPdf?.name ?? model.name });
+            lastReview = { name: model.name, result, at: Date.now() };
+            reviewBusy = false;
+            render();
+          } catch (e) {
+            reviewBusy = false;
+            btn.disabled = false;
+            status.textContent = `できませんでした: ${(e as Error).message}`;
+          }
+        },
+      },
+      lastReview?.name === model.name ? 'もう一度見てもらう' : 'AI 設計士に見てもらう',
+    ) as HTMLButtonElement;
+    wrap.append(h('div', { class: 'ai-row' }, btn, sel, status));
+    const rv = lastReview?.name === model.name ? lastReview.result : null;
+    if (rv) {
+      const row = (cls: string, ic: string, lb: string, text: string, actions?: HTMLElement[]) =>
+        h('div', { class: `check-row ${cls} long` }, h('span', { class: 'ic' }, ic), h('span', { class: 'lb' }, lb), h('span', { class: 'dt' }, text), actions?.length ? h('div', { class: 'check-actions' }, ...actions) : null);
+      if (rv.raw) wrap.append(row('info', 'ℹ', 'AI設計士', rv.raw));
+      if (!rv.findings.length && !rv.raw) wrap.append(row('ok', '✓', 'AI設計士', '読み取りと設計に気になる所はありませんでした'));
+      for (const f of rv.findings) {
+        const text = `${f.level ? `${f.level}階 ` : ''}${f.room ? `${f.room}: ` : ''}${f.title}（${f.kind}） — ${f.detail}${f.fix ? `　→ ${f.fix}` : ''}`;
+        const disagree = h(
+          'button',
+          {
+            class: 'btn sm ghost',
+            onclick: () => {
+              rulesTa.value = (rulesTa.value.trim() ? rulesTa.value.replace(/\s*$/, '\n') : '') + ruleFromFinding(f);
+              (wrap.querySelector('details.ai-rules') as HTMLDetailsElement | null)?.setAttribute('open', '');
+              rulesTa.focus();
+              rulesTa.setSelectionRange(rulesTa.value.length, rulesTa.value.length);
+            },
+          },
+          '違う（ルールに加える）',
+        );
+        wrap.append(row(f.severity === 'warn' ? 'ng' : 'info', f.severity === 'warn' ? '⚠' : 'ℹ', 'AI設計士', text, [h('button', { class: 'btn sm', onclick: openEditor }, '方眼で確認'), disagree]));
+      }
+      if (rv.good.length) wrap.append(row('ok', '✓', 'AI設計士', `良い所: ${rv.good.join('／')}`));
+      if (rv.summary) wrap.append(row('info', '💬', 'お客様へ', rv.summary));
+      if (rv.usage) wrap.append(h('div', { class: 'hint' }, `モデル ${rv.model}・入力 ${rv.usage.promptTokens.toLocaleString()} トークン・出力 ${rv.usage.outputTokens.toLocaleString()} トークン`));
+    }
+    const save = h('button', { class: 'btn sm', onclick: () => { setDesignRules(rulesTa.value); toast('ルール帳を保存しました（次回から AI 設計士が守ります）', 'ok'); render(); } }, 'ルール帳を保存');
+    const n = getDesignRules().split('\n').filter((s) => s.trim()).length;
+    wrap.append(h('details', { class: 'ai-rules' }, h('summary', null, `社内の設計ルール帳（${n} 行）: 設計士・コーディネーターの経験則を書くと、AI 設計士はそれを前提に見ます`), rulesTa, save));
+  };
+  render();
+  return wrap;
 }
 
 

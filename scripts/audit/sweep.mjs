@@ -168,10 +168,12 @@ const yardSquare = () =>
     return cands.find((c) => c.every(onScreen)) ?? cands[0];
   });
 /**
- * 3D で見えている庭の 1.5m 角の四角（図面座標 mm）。画面を格子状に指して地面（芝・土間・道路）に当たる所を探し、
- * そこを角にして、4 つの角がどれも建物（外形の 600 mm 外まで）に掛からず、パネルに隠れず、指すと地面に当たる四角を返す。
+ * 3D で見えている庭の、対角の 2 点（図面座標 mm と地面の高さ m）。画面を格子状に指して地面（芝・土間・道路）に当たった点から、
+ * 縦横とも 1.5 m 以上離れた 2 点を選ぶ。2 点で張る四角は建物（外形の 600 mm 外まで）に掛からない。
  * 道路側の低い視点では建物の裏の庭が隠れていて、クリックが建物の床に当たり「小さすぎます」になっていた（第 36〜40 巡の点検で毎回出ていた 1 件）。
- * 建物のまわりに決め打ちの四角を置く方法は、カメラ・パネルの位置しだいで全部隠れることがあった（第 41 巡）
+ * 建物のまわりに決め打ちの四角を置く方法は、カメラ・パネルの位置しだいで全部隠れることがあった（第 41 巡）。
+ * 角を「高さ 5 cm の点」として画面に写して確かめる方法は、低い視点だと 5 cm の差で数十 cm ずれて全部落ちた（第 42 巡: 吉田様 1st）
+ * → 実際に指して当たった地面の点（高さ付き）だけを使う。
  */
 const yardSquare3d = () =>
   page.evaluate(() => {
@@ -183,7 +185,6 @@ const yardSquare3d = () =>
     const box = { minX: Math.min(...pts.map((p) => p.x)) - M, maxX: Math.max(...pts.map((p) => p.x)) + M, minY: Math.min(...pts.map((p) => p.y)) - M, maxY: Math.max(...pts.map((p) => p.y)) + M };
     const nearHouse = (p) => p.x > box.minX && p.x < box.maxX && p.y > box.minY && p.y < box.maxY;
     const r = v.renderer.domElement.getBoundingClientRect();
-    const V3 = v.camera.position.constructor;
     // 画面の点 → 地面の点（パネル・帯に隠れている所、地面より上の物に当たる所は null）
     const groundAt = (sx, sy) => {
       if (!(sx > r.left + 12 && sx < r.right - 12 && sy > r.top + 12 && sy < r.bottom - 12)) return null;
@@ -191,24 +192,24 @@ const yardSquare3d = () =>
       const hit = v.pickHit({ x: ((sx - r.left) / r.width) * 2 - 1, y: -((sy - r.top) / r.height) * 2 + 1 });
       // 芝・土間・道路は外構（landscape）の面。木・フェンスなど地面より上の物に当たったら地面ではない
       if (!hit || !['ground', 'building', 'landscape'].includes(hit.group) || hit.point.y > 0.6) return null;
-      return { x: hit.point.x * 1000, y: hit.point.z * 1000 };
+      return { x: Math.round(hit.point.x * 1000), y: Math.round(hit.point.z * 1000), h: hit.point.y };
     };
-    const visible = (p) => {
-      const q = new V3(p.x / 1000, 0.05, p.y / 1000).project(v.camera);
-      if (q.z > 1 || q.z < -1) return false;
-      const g = groundAt(r.left + ((q.x + 1) / 2) * r.width, r.top + ((1 - q.y) / 2) * r.height);
-      return !!g && Math.hypot(g.x - p.x, g.y - p.y) < 300;
-    };
-    const S = 1500;
-    for (let fy = 0.3; fy < 0.95; fy += 0.05)
-      for (let fx = 0.35; fx < 0.92; fx += 0.05) {
+    const hits = [];
+    for (let fy = 0.3; fy < 0.95; fy += 0.04)
+      for (let fx = 0.35; fx < 0.92; fx += 0.04) {
         const g = groundAt(r.left + r.width * fx, r.top + r.height * fy);
-        if (!g || nearHouse(g)) continue;
-        for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
-          const sq = [g, { x: g.x + dx * S, y: g.y }, { x: g.x + dx * S, y: g.y + dy * S }, { x: g.x, y: g.y + dy * S }].map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
-          if (sq.some(nearHouse)) continue;
-          if (sq.every(visible)) return sq;
-        }
+        if (g && !nearHouse(g)) hits.push(g);
+      }
+    // 2 点で張る四角が建物に掛からない（四角の 4 つの角と中心が外形の外。建物をまたぐ大きな四角は使わない）
+    const S = 1500;
+    for (const a of hits)
+      for (const c of hits) {
+        const dx = Math.abs(c.x - a.x);
+        const dy = Math.abs(c.y - a.y);
+        if (dx < S || dy < S || dx > 4000 || dy > 4000) continue;
+        const corners = [a, { x: c.x, y: a.y }, c, { x: a.x, y: c.y }, { x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 }];
+        if (corners.some(nearHouse)) continue;
+        return [a, { x: c.x, y: a.y, h: a.h }, c, { x: a.x, y: c.y, h: c.h }];
       }
     return null;
   });
@@ -399,7 +400,17 @@ const sweep3dTool = async () => {
           const bird = page.locator('button', { hasText: /^鳥瞰$/ }).first();
           if (await bird.count()) {
             await bird.click({ timeout: 5000 }).catch(() => {});
-            await page.waitForTimeout(1500);
+            // 視点の切り替えが終わるまで待つ（描画の遅い環境では 1.5 秒で終わらず、低い視点のまま探していた）
+            let prev = '';
+            for (let k = 0; k < 20; k++) {
+              await page.waitForTimeout(500);
+              const cur2 = await page.evaluate(() => {
+                const c = window.__viewer?.camera;
+                return c ? [c.position.x, c.position.y, c.position.z].map((n) => n.toFixed(2)).join(',') : '';
+              });
+              if (cur2 && cur2 === prev) break;
+              prev = cur2;
+            }
             ysq = await yardSquare3d();
           }
         }
@@ -407,8 +418,8 @@ const sweep3dTool = async () => {
         if (ysq && (await add.count())) {
           await add.click({ timeout: 8000 });
           await page.waitForTimeout(200);
-          const a = await screenOf(ysq[0].x, ysq[0].y, 0.05);
-          const b = await screenOf(ysq[2].x, ysq[2].y, 0.05);
+          const a = await screenOf(ysq[0].x, ysq[0].y, ysq[0].h ?? 0.05);
+          const b = await screenOf(ysq[2].x, ysq[2].y, ysq[2].h ?? 0.05);
           await page.mouse.click(a.x, a.y);
           await page.waitForTimeout(400);
           await page.mouse.click(b.x, b.y);

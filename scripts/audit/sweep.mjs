@@ -20,7 +20,11 @@ const log = [];
 let cur = 'start';
 page.on('pageerror', (e) => log.push({ step: cur, kind: 'pageerror', msg: e.message.slice(0, 300) }));
 page.on('console', (m) => {
-  if (m.type() === 'error' && !/404|favicon|ERR_|net::|CERT/.test(m.text())) log.push({ step: cur, kind: 'console', msg: m.text().slice(0, 300) });
+  if (m.type() !== 'error' || /404|favicon|ERR_|net::|CERT/.test(m.text())) return;
+  // 外部サービス（地図・周辺建物・標高）の混雑（429）・一時停止（502〜504）は、こちらの画面の不具合ではない。別枠で数えて知らせる
+  // （同じ日に点検を何度も回すと、日照の周辺データの取得で 429 が返ることがある）
+  const external = /Failed to load resource: the server responded with a status of (429|502|503|504)/.test(m.text());
+  log.push({ step: cur, kind: external ? 'external' : 'console', msg: m.text().slice(0, 300) });
 });
 page.on('dialog', (d) => d.dismiss().catch(() => {}));
 // 新しいタブ（印刷用）は閉じる
@@ -476,12 +480,14 @@ try {
   log.push({ step: cur, kind: 'crash', msg: String(e.message).split('\n')[0].slice(0, 200) });
 }
 writeFileSync(`${out}/log.json`, JSON.stringify(log, null, 1));
-const bad = log.filter((l) => !['summary', 'after-click', 'after-tool', 'unclickable', 'progress'].includes(l.kind));
+const bad = log.filter((l) => !['summary', 'after-click', 'after-tool', 'unclickable', 'progress', 'external'].includes(l.kind));
+const external = log.filter((l) => l.kind === 'external');
 for (const l of log.filter((l) => l.kind === 'progress')) console.log(`[${l.step}] progress: ${l.msg}`);
 const unclickable = log.filter((l) => l.kind === 'unclickable');
 console.log('summary', log.filter((l) => l.kind === 'summary').map((l) => `${l.step}: ${l.msg}`).join(' | '));
 console.log('issues', bad.length, '(pageerror / console.error / check / crash)');
 for (const l of bad.slice(0, 80)) console.log(`[${l.step}] ${l.kind}: ${l.msg}`);
+if (external.length) console.log('external', external.length, `(外部サービスの混雑・一時停止。画面の不具合ではない): ${[...new Set(external.map((l) => `[${l.step}] ${l.msg.replace(/^.*status of /, '').replace(/\s*\(\)$/, '')}`))].join(' ')}`);
 console.log('unclickable', unclickable.length, '(押せなかったボタン。ほかの要素に隠れている・途中で作り直された。エラーではないが多ければ見直す)');
 for (const l of unclickable.slice(0, 40)) console.log(`  [${l.step}] ${l.msg.replace(/\s+/g, ' ').slice(0, 90)}`);
 await browser.close();

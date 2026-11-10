@@ -4086,6 +4086,149 @@ function marksCrossing(marks, a, b, t0, t1, tol = 120) {
 	return count;
 }
 //#endregion
+//#region src/parser/stairRooms.ts
+/**
+* ラベル l の区画から、階段の範囲 box の中を新しい区画として切り出す。labels・sizes を書き換える。
+* 分けないとき（階段の範囲の半分以上がこの区画に無い・残りが狭い）は null
+*/
+function carveStairRegion(grid, labels, sizes, l, box, opts) {
+	const { w, h, res } = grid;
+	const cellM2 = res * res / 1e6;
+	const [bx0, by0] = grid.cellOf({
+		x: box.minX + res / 2,
+		y: box.minY + res / 2
+	});
+	const [bx1, by1] = grid.cellOf({
+		x: box.maxX - res / 2,
+		y: box.maxY - res / 2
+	});
+	let x0 = Math.max(0, bx0);
+	let y0 = Math.max(0, by0);
+	let x1 = Math.min(w - 1, bx1);
+	let y1 = Math.min(h - 1, by1);
+	if (x1 < x0 || y1 < y0) return null;
+	{
+		const MAX = Math.round(240 / res);
+		const reach = (line) => {
+			let last = 0;
+			for (let d = 1; d <= MAX; d++) {
+				const cells = line(d);
+				if (!cells || !cells.length) break;
+				let wall = 0;
+				let own = 0;
+				for (const i of cells) if (grid.data[i] !== 0) wall++;
+				else if (labels[i] === l) own++;
+				if (wall + own < cells.length * .95) break;
+				if (wall >= cells.length * .8) last = d;
+			}
+			return Math.max(0, last - 1);
+		};
+		const row = (y, xa, xb) => {
+			if (y < 0 || y >= h) return null;
+			const out = [];
+			for (let x = xa; x <= xb; x++) out.push(y * w + x);
+			return out;
+		};
+		const col = (x, ya, yb) => {
+			if (x < 0 || x >= w) return null;
+			const out = [];
+			for (let y = ya; y <= yb; y++) out.push(y * w + x);
+			return out;
+		};
+		const top = reach((d) => row(y0 - d, x0, x1));
+		const bottom = reach((d) => row(y1 + d, x0, x1));
+		const left = reach((d) => col(x0 - d, y0, y1));
+		const right = reach((d) => col(x1 + d, y0, y1));
+		y0 -= top;
+		y1 += bottom;
+		x0 -= left;
+		x1 += right;
+	}
+	const inBox = [];
+	for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (labels[y * w + x] === l) inBox.push(y * w + x);
+	const boxCells = (x1 - x0 + 1) * (y1 - y0 + 1);
+	if (inBox.length < boxCells * .5) return null;
+	const rest = (sizes[l] ?? 0) - inBox.length;
+	if (rest * cellM2 < (opts.minRestM2 ?? 1.5)) return null;
+	const stairLabel = sizes.length;
+	for (const i of inBox) labels[i] = stairLabel;
+	sizes.push(inBox.length);
+	sizes[l] = rest;
+	const comp = new Int32Array(w * h);
+	const comps = [];
+	const queue = [];
+	for (let s = 0; s < labels.length; s++) {
+		if (labels[s] !== l || comp[s]) continue;
+		const id = comps.length + 1;
+		const cells = [];
+		comp[s] = id;
+		queue.length = 0;
+		queue.push(s);
+		while (queue.length) {
+			const i = queue.pop();
+			cells.push(i);
+			const x = i % w;
+			const y = i / w | 0;
+			if (x > 0 && labels[i - 1] === l && !comp[i - 1]) comp[i - 1] = id, queue.push(i - 1);
+			if (x < w - 1 && labels[i + 1] === l && !comp[i + 1]) comp[i + 1] = id, queue.push(i + 1);
+			if (y > 0 && labels[i - w] === l && !comp[i - w]) comp[i - w] = id, queue.push(i - w);
+			if (y < h - 1 && labels[i + w] === l && !comp[i + w]) comp[i + w] = id, queue.push(i + w);
+		}
+		comps.push({
+			cells,
+			named: false,
+			main: false
+		});
+	}
+	if (comps.length <= 1) return {
+		stairLabel,
+		extraLabels: [],
+		joinedCells: 0
+	};
+	const compAt = (p) => {
+		const [cx, cy] = grid.cellOf(p);
+		for (let r = 0; r <= 8; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+			if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+			const x = cx + dx;
+			const y = cy + dy;
+			if (x < 0 || y < 0 || x >= w || y >= h) continue;
+			const c = comp[y * w + x];
+			if (c) return c;
+		}
+		return 0;
+	};
+	for (const p of opts.namedPoints) {
+		const c = compAt(p);
+		if (c) comps[c - 1].named = true;
+	}
+	const mainId = opts.mainPoint ? compAt(opts.mainPoint) : 0;
+	let main = mainId ? comps[mainId - 1] : null;
+	if (!main) main = comps.filter((c) => c.named).sort((a, b) => b.cells.length - a.cells.length)[0] ?? comps.slice().sort((a, b) => b.cells.length - a.cells.length)[0];
+	main.main = true;
+	const extraLabels = [];
+	let joinedCells = 0;
+	const joinMax = (opts.joinMaxM2 ?? 2.5) / cellM2;
+	for (const c of comps) {
+		if (c.main) continue;
+		if (!c.named && c.cells.length < joinMax) {
+			for (const i of c.cells) labels[i] = stairLabel;
+			sizes[stairLabel] += c.cells.length;
+			joinedCells += c.cells.length;
+		} else {
+			const nl = sizes.length;
+			for (const i of c.cells) labels[i] = nl;
+			sizes.push(c.cells.length);
+			extraLabels.push(nl);
+		}
+		sizes[l] -= c.cells.length;
+	}
+	return {
+		stairLabel,
+		extraLabels,
+		joinedCells
+	};
+}
+//#endregion
 //#region src/parser/walls.ts
 /**
 * 白抜き（マスク）の多角形を壁の軸に沿って区切り、区間ごとに「壁厚のうち白く抜けている割合」を返す。
@@ -12256,7 +12399,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			unmarkedCellOp.set(i, tmp.data[i] - 2);
 		}
 	}
-	if (plan.roomFills.length) {
+	if (plan.roomFills.length && !globalThis.__NO_ROOM_FILLS) {
 		const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
 		for (const poly of plan.roomFills) for (let i = 0; i < poly.length; i++) tmp.fillThickSegment(poly[i], poly[(i + 1) % poly.length], 30, 1);
 		for (let i = 0; i < tmp.data.length; i++) if (tmp.data[i] === 1 && grid.data[i] === 0) {
@@ -12302,6 +12445,26 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			}
 			const weakMergeOk = (u) => !hasAnyText.has(u) && (szIter[u] ?? 0) >= 2e6 / (grid.res * grid.res);
 			let unmarkedMergeOk = () => false;
+			let overTatami = () => false;
+			{
+				const cellM2 = grid.res * grid.res / 1e6;
+				const tats = /* @__PURE__ */ new Map();
+				for (const t of named) {
+					const ar = parseAreaLabel(t.str);
+					const tat = ar?.tatami ?? (ar?.m2 ? ar.m2 / 1.62 : void 0);
+					if (!tat) continue;
+					const l = labelNear(grid, lb, t);
+					if (l) (tats.get(l) ?? tats.set(l, []).get(l)).push(tat);
+				}
+				overTatami = (u, v) => {
+					const ts = tats.get(v) ?? [];
+					if (ts.length !== 1) return false;
+					const T = ts[0] * 1.62 * .93;
+					const au = (szIter[u] ?? 0) * cellM2;
+					const av = (szIter[v] ?? 0) * cellM2;
+					return av + au > T * 1.06 && Math.abs(av + au - T) > Math.abs(av - T);
+				};
+			}
 			if (unmarkedCellOp.size) {
 				const cellM2 = grid.res * grid.res / 1e6;
 				const box = /* @__PURE__ */ new Map();
@@ -12393,6 +12556,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				for (const [u, v] of [sd, [sd[1], sd[0]]]) {
 					if (hasName.has(u)) continue;
 					if (weakCells.has(i) && !(unmarkedCellOp.has(i) && unmarkedMergeOk(u, v)) && !(weakWallCells.has(i) && weakMergeOk(u))) continue;
+					if (!weakCells.has(i) && overTatami(u, v)) continue;
 					const m = contact.get(u) ?? /* @__PURE__ */ new Map();
 					m.set(v, (m.get(v) ?? 0) + 1);
 					contact.set(u, m);
@@ -12470,49 +12634,54 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		}
 		return 0;
 	};
-	for (const t of plan.texts) {
-		const l = labelAt({
-			x: t.x,
-			y: t.y
-		});
-		if (!l) continue;
-		if (!acc.has(l)) acc.set(l, {
-			id: l,
-			names: [],
-			others: [],
-			areas: []
-		});
-		const a = acc.get(l);
-		const area = parseAreaLabel(t.str);
-		const tatami = area?.tatami ?? (area?.m2 ? area.m2 / 1.62 : void 0);
-		if (tatami) a.areas.push({
-			tatami,
-			x: t.x,
-			y: t.y
-		});
-		const st = parseStairMark(t.str);
-		if (st) a.stair = st;
-		const nm = cleanRoomName(t.str);
-		const type = nm ? classifyRoomName(nm) : null;
-		if (type) a.names.push({
-			str: nm,
-			type,
-			size: t.size,
-			x: t.x,
-			y: t.y
-		});
-		else if (nm && !area && !st && looksLikeRoomName(nm)) a.others.push({
-			str: nm,
-			size: t.size,
-			x: t.x,
-			y: t.y
-		});
-	}
-	for (const a of acc.values()) {
-		if (!a.areas.length) continue;
-		const ref = mainName(a.names) ?? a.others[0];
-		a.tatami = (ref ? a.areas.slice().sort((p, q) => Math.hypot(p.x - ref.x, p.y - ref.y) - Math.hypot(q.x - ref.x, q.y - ref.y))[0] : a.areas[0]).tatami;
-	}
+	/** 文字を区画に割り当てる（only を渡すと、その区画に入る文字だけをやり直す: 階段を別の区画に分けた後） */
+	const collectTexts = (only) => {
+		if (only) for (const l of only) acc.delete(l);
+		for (const t of plan.texts) {
+			const l = labelAt({
+				x: t.x,
+				y: t.y
+			});
+			if (!l || only && !only.has(l)) continue;
+			if (!acc.has(l)) acc.set(l, {
+				id: l,
+				names: [],
+				others: [],
+				areas: []
+			});
+			const a = acc.get(l);
+			const area = parseAreaLabel(t.str);
+			const tatami = area?.tatami ?? (area?.m2 ? area.m2 / 1.62 : void 0);
+			if (tatami) a.areas.push({
+				tatami,
+				x: t.x,
+				y: t.y
+			});
+			const st = /^[↑↓]$/.test(t.str.trim()) ? null : parseStairMark(t.str);
+			if (st) a.stair = st;
+			const nm = cleanRoomName(t.str);
+			const type = nm ? classifyRoomName(nm) : null;
+			if (type) a.names.push({
+				str: nm,
+				type,
+				size: t.size,
+				x: t.x,
+				y: t.y
+			});
+			else if (nm && !area && !st && looksLikeRoomName(nm)) a.others.push({
+				str: nm,
+				size: t.size,
+				x: t.x,
+				y: t.y
+			});
+		}
+		for (const a of acc.values()) {
+			if (!a.areas.length || only && !only.has(a.id)) continue;
+			const ref = mainName(a.names) ?? a.others[0];
+			a.tatami = (ref ? a.areas.slice().sort((p, q) => Math.hypot(p.x - ref.x, p.y - ref.y) - Math.hypot(q.x - ref.x, q.y - ref.y))[0] : a.areas[0]).tatami;
+		}
+	};
+	collectTexts();
 	/** 中庭など、壁に囲まれていても屋外の領域（外形・屋根から除く） */
 	const courtLabels = /* @__PURE__ */ new Set();
 	const labelOfRoom = /* @__PURE__ */ new Map();
@@ -12523,14 +12692,26 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	/** 室名が無く、仮の名前（収納・室）にした区画 */
 	const autoNamed = /* @__PURE__ */ new Set();
 	const minCells = 1e3;
+	/**
+	* 区画（ラベル l）の輪郭: 升を壁の芯まで広げてなぞる。
+	* extra = 区画に含める升（階段の中の中壁・手すりの線）、blocked = 広げない升（分けた階段の範囲）
+	*/
+	const traceLabel = (l, extra, blocked) => {
+		const mask = new Uint8Array(grid.w * grid.h);
+		for (let i = 0; i < mask.length; i++) if (labels[i] === l || extra && extra[i]) mask[i] = 1;
+		const loops = traceMask(dilateMask(mask, grid.w, grid.h, k, (i) => grid.data[i] === 1 && !(blocked && blocked[i])), grid);
+		if (!loops.length) return null;
+		return {
+			poly: loops[0],
+			area: Math.abs(polygonArea$1(loops[0])) / 1e6,
+			mask
+		};
+	};
 	for (let l = 1; l < sizes.length; l++) {
 		if (sizes[l] < minCells) continue;
-		const mask = new Uint8Array(grid.w * grid.h);
-		for (let i = 0; i < mask.length; i++) if (labels[i] === l) mask[i] = 1;
-		const loops = traceMask(dilateMask(mask, grid.w, grid.h, k, (i) => grid.data[i] === 1), grid);
-		if (!loops.length) continue;
-		const poly = loops[0];
-		const area = Math.abs(polygonArea$1(poly)) / 1e6;
+		const traced = traceLabel(l);
+		if (!traced) continue;
+		const { poly, area, mask } = traced;
 		const a = acc.get(l);
 		let name = "";
 		let type = "other";
@@ -12740,6 +12921,48 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		rm.name = "ホール";
 		rm.type = "hall";
 		rm.inferred = true;
+	}
+	if (level >= 2) for (const idx of autoNamed) {
+		const rm = rooms[idx];
+		if (rm.name !== "室" && rm.name !== "収納") continue;
+		const l = labelOfRoom.get(idx);
+		if (l == null || courtLabels.has(l)) continue;
+		let gx0 = Infinity;
+		let gy0 = Infinity;
+		let gx1 = -Infinity;
+		let gy1 = -Infinity;
+		let rx0 = Infinity;
+		let ry0 = Infinity;
+		let rx1 = -Infinity;
+		let ry1 = -Infinity;
+		let gapCells = 0;
+		for (let i = 0; i < labels.length; i++) {
+			if (labels[i] !== l) continue;
+			const x = i % grid.w;
+			const y = i / grid.w | 0;
+			if (x < rx0) rx0 = x;
+			if (x > rx1) rx1 = x;
+			if (y < ry0) ry0 = y;
+			if (y > ry1) ry1 = y;
+			if (!gapMask[i]) continue;
+			gapCells++;
+			if (x < gx0) gx0 = x;
+			if (x > gx1) gx1 = x;
+			if (y < gy0) gy0 = y;
+			if (y > gy1) gy1 = y;
+		}
+		if (!gapCells) continue;
+		const gw = (gx1 - gx0 + 1) * res;
+		const gh = (gy1 - gy0 + 1) * res;
+		const horiz = gw >= gh;
+		const gapLen = horiz ? gw : gh;
+		const sideLen = (horiz ? rx1 - rx0 + 1 : ry1 - ry0 + 1) * res;
+		const atEdge = horiz ? gy0 - ry0 <= 6 || ry1 - gy1 <= 6 : gx0 - rx0 <= 6 || rx1 - gx1 <= 6;
+		if (gapLen < 1500 || gapLen < sideLen * .6 || !atEdge) continue;
+		rm.name = "バルコニー";
+		rm.type = "balcony";
+		rm.inferred = true;
+		courtLabels.add(l);
 	}
 	for (const idx of autoNamed) {
 		const rm = rooms[idx];
@@ -13180,6 +13403,40 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const d = wallAhead(sd, 400);
 			if (d != null && d > 0) growBy(sd, d);
 		}
+		for (const sd of [
+			"e",
+			"w",
+			"s",
+			"n"
+		]) {
+			const d = wallAhead(sd, 1200);
+			if (d == null || d < 500) continue;
+			const horiz = sd === "e" || sd === "w";
+			const s0 = sd === "e" ? r.maxX : sd === "w" ? r.minX - d : sd === "s" ? r.maxY : r.minY - d;
+			const s1 = s0 + d;
+			const lo = horiz ? r.minY : r.minX;
+			const hi = horiz ? r.maxY : r.maxX;
+			const pos = /* @__PURE__ */ new Set();
+			for (const sg of nonWallSegs) {
+				if (sg.dashed) continue;
+				const a0 = horiz ? Math.min(sg.a.x, sg.b.x) : Math.min(sg.a.y, sg.b.y);
+				const a1 = horiz ? Math.max(sg.a.x, sg.b.x) : Math.max(sg.a.y, sg.b.y);
+				const p0 = horiz ? sg.a.y : sg.a.x;
+				const p1 = horiz ? sg.b.y : sg.b.x;
+				if (Math.abs(p0 - p1) > 10 || a1 - a0 < 450) continue;
+				if (p0 < lo + 100 || p0 > hi - 100) continue;
+				if (Math.min(a1, s1) - Math.max(a0, s0) < d * .8) continue;
+				pos.add(Math.round(p0 / 150));
+			}
+			if (pos.size < 2) continue;
+			const bx0 = horiz ? s0 : lo;
+			const bx1 = horiz ? s1 : hi;
+			const by0 = horiz ? lo : s0;
+			const by1 = horiz ? hi : s1;
+			if (plan.texts.some((t) => t.x > bx0 && t.x < bx1 && t.y > by0 && t.y < by1 && parseStairMark(t.str) == null && !/階段/.test(t.str) && cleanRoomName(t.str) != null && (classifyRoomName(cleanRoomName(t.str)) != null || parseAreaLabel(t.str) != null))) continue;
+			growBy(sd, d);
+			globalThis.__stairTrace?.push(`${level}F grow(${sd}) +${Math.round(d)} 切断線の先の列`);
+		}
 		for (const rm of rooms) {
 			if (rm.type !== "stairs" && !(rm.type === "void" && level > 1)) continue;
 			if (rm.area > 5.5) continue;
@@ -13399,6 +13656,294 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			r.name = "階段";
 		}
 	}
+	{
+		const linked = /* @__PURE__ */ new Map();
+		for (const o of openings) {
+			if (o.kind === "window" || o.kind === "shutter") continue;
+			const w = outWalls.find((x) => x.id === o.wallId);
+			if (!w) continue;
+			const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+			const ux = (w.b.x - w.a.x) / L;
+			const uy = (w.b.y - w.a.y) / L;
+			const c = {
+				x: w.a.x + ux * ((o.t0 + o.t1) / 2),
+				y: w.a.y + uy * ((o.t0 + o.t1) / 2)
+			};
+			const off = w.thickness / 2 + 150;
+			const ra = roomAt({
+				x: c.x - uy * off,
+				y: c.y + ux * off
+			});
+			const rb = roomAt({
+				x: c.x + uy * off,
+				y: c.y - ux * off
+			});
+			if (!ra || !rb || ra === rb) continue;
+			(linked.get(ra) ?? linked.set(ra, /* @__PURE__ */ new Set()).get(ra)).add(rb);
+			(linked.get(rb) ?? linked.set(rb, /* @__PURE__ */ new Set()).get(rb)).add(ra);
+		}
+		for (const idx of autoNamed) {
+			const rm = rooms[idx];
+			if (rm.name !== "室" || rm.inferred || rm.area > 16) continue;
+			if ([...linked.get(rm) ?? []].length < 3) continue;
+			rm.name = "ホール";
+			rm.type = "hall";
+			rm.inferred = true;
+		}
+	}
+	const splitStairs = (stairsNow) => {
+		if (plan.scan || plan.loose || globalThis.__NO_STAIR_ROOMS) return;
+		const trace = globalThis.__stairTrace;
+		const uniqStr = (xs) => [...new Set(xs)];
+		/** 区画の中の点（名前を置く位置）: 升の重心にいちばん近い升 */
+		const insidePoint = (l) => {
+			let sx = 0;
+			let sy = 0;
+			let n = 0;
+			for (let i = 0; i < labels.length; i++) if (labels[i] === l) {
+				sx += i % grid.w;
+				sy += i / grid.w | 0;
+				n++;
+			}
+			if (!n) return null;
+			const gx = sx / n;
+			const gy = sy / n;
+			let best = -1;
+			let bd = Infinity;
+			for (let i = 0; i < labels.length; i++) if (labels[i] === l) {
+				const d = (i % grid.w - gx) ** 2 + ((i / grid.w | 0) - gy) ** 2;
+				if (d < bd) {
+					bd = d;
+					best = i;
+				}
+			}
+			return grid.centerOf(best % grid.w, best / grid.w | 0);
+		};
+		/** 分けた階段の範囲の升（残りの部屋の輪郭を、ここへは広げない） */
+		const carvedBox = new Uint8Array(grid.w * grid.h);
+		for (const st of stairsNow) {
+			const boxM2 = (st.maxX - st.minX) * (st.maxY - st.minY) / 1e6;
+			if (boxM2 < 1.2 || boxM2 > 10) continue;
+			const count = /* @__PURE__ */ new Map();
+			{
+				const [x0, y0] = grid.cellOf({
+					x: st.minX,
+					y: st.minY
+				});
+				const [x1, y1] = grid.cellOf({
+					x: st.maxX,
+					y: st.maxY
+				});
+				for (let y = Math.max(0, y0); y <= Math.min(grid.h - 1, y1); y += 2) for (let x = Math.max(0, x0); x <= Math.min(grid.w - 1, x1); x += 2) {
+					const l = labels[y * grid.w + x];
+					if (l) count.set(l, (count.get(l) ?? 0) + 1);
+				}
+			}
+			const l = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+			if (!l) continue;
+			const rm = roomByLabel.get(l);
+			const a0 = acc.get(l);
+			if (!rm || !a0) continue;
+			if (OUTDOOR_TYPES.includes(rm.type) || rm.type === "void" || courtLabels.has(l)) continue;
+			const inBox = (p) => p.x > st.minX - 30 && p.x < st.maxX + 30 && p.y > st.minY - 30 && p.y < st.maxY + 30;
+			const outNames = a0.names.filter((n) => n.type !== "stairs" && !inBox(n));
+			const outOthers = a0.names.length ? [] : a0.others.filter((o) => !inBox(o));
+			if (!outNames.length && !outOthers.length) continue;
+			const before = new Set(a0.names.length ? a0.names.map((n) => n.str) : a0.others.map((o) => o.str));
+			const parts = rm.name.split("・");
+			const untouched = parts.every((q) => before.has(q));
+			const mainOut = mainName(outNames) ?? outOthers.slice().sort((p, q) => q.size - p.size)[0];
+			const mainPoint = !inBox(rm.labelPos) ? rm.labelPos : mainOut ? {
+				x: mainOut.x,
+				y: mainOut.y
+			} : null;
+			const carved = carveStairRegion(grid, labels, sizes, l, st, {
+				namedPoints: [...outNames, ...outOthers],
+				mainPoint
+			});
+			trace?.push(`${level}F 階段の区画: ${rm.name}（${(rm.area / 1.62).toFixed(1)} 帖） 範囲 ${Math.round(st.minX)},${Math.round(st.minY)}-${Math.round(st.maxX)},${Math.round(st.maxY)} 外の名前 ${[...outNames, ...outOthers].map((n) => `${n.str}@${Math.round(n.x)},${Math.round(n.y)}`).join(" ")} 全部の名前 ${a0.names.map((n) => `${n.str}:${n.type}@${Math.round(n.x)},${Math.round(n.y)}`).join(" ")} → ${carved ? "分ける" : "分けない"}`);
+			if (!carved) continue;
+			const affected = /* @__PURE__ */ new Set([
+				l,
+				carved.stairLabel,
+				...carved.extraLabels
+			]);
+			{
+				const probe = traceLabel(l, null, null);
+				if (!probe || pointInPolygon({
+					x: (st.minX + st.maxX) / 2,
+					y: (st.minY + st.maxY) / 2
+				}, probe.poly)) {
+					for (let i = 0; i < labels.length; i++) if (labels[i] !== l && affected.has(labels[i])) labels[i] = l;
+					for (const q of affected) if (q !== l) sizes[l] += sizes[q] ?? 0;
+					sizes.length = carved.stairLabel;
+					trace?.push(`${level}F 階段の区画: 残りが階段を囲むので分けない`);
+					continue;
+				}
+			}
+			collectTexts(affected);
+			const stairInner = new Uint8Array(grid.w * grid.h);
+			{
+				const [x0, y0] = grid.cellOf({
+					x: st.minX + res / 2,
+					y: st.minY + res / 2
+				});
+				const [x1, y1] = grid.cellOf({
+					x: st.maxX - res / 2,
+					y: st.maxY - res / 2
+				});
+				for (let y = Math.max(0, y0); y <= Math.min(grid.h - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(grid.w - 1, x1); x++) {
+					const i = y * grid.w + x;
+					carvedBox[i] = 1;
+					if (grid.data[i] !== 1) continue;
+					let foreign = false;
+					for (const [dx, dy] of [
+						[1, 0],
+						[-1, 0],
+						[0, 1],
+						[0, -1]
+					]) {
+						for (let q = 1; q <= 8; q++) {
+							const xx = x + dx * q;
+							const yy = y + dy * q;
+							if (xx < 0 || yy < 0 || xx >= grid.w || yy >= grid.h) break;
+							const j = yy * grid.w + xx;
+							if (grid.data[j] === 1) continue;
+							if (grid.data[j] === 2 || labels[j] && !affected.has(labels[j])) foreign = true;
+							break;
+						}
+						if (foreign) break;
+					}
+					if (!foreign) stairInner[i] = 1;
+				}
+			}
+			const aS = acc.get(carved.stairLabel);
+			const isStairName = (n) => n.type === "stairs" || /階段/.test(n.str) && !/収納|物入|クローゼット|倉庫|トイレ/.test(n.str);
+			const stairNames = (aS?.names ?? []).filter(isStairName);
+			const strayNames = (aS?.names ?? []).filter((n) => !isStairName(n)).map((n) => n.str);
+			const tS = traceLabel(carved.stairLabel, stairInner);
+			if (tS) {
+				const lp = stairNames[0] ? {
+					x: stairNames[0].x,
+					y: stairNames[0].y
+				} : insidePoint(carved.stairLabel) ?? {
+					x: (st.minX + st.maxX) / 2,
+					y: (st.minY + st.maxY) / 2
+				};
+				const sr = {
+					id: `F${level}-R${rooms.length + 1}`,
+					name: stairNames.length ? uniqStr(stairNames.map((n) => n.str)).join("・") : "階段",
+					type: "stairs",
+					polygon: tS.poly,
+					area: tS.area,
+					labelPos: lp,
+					labeledTatami: stairNames.length && !strayNames.length ? aS?.tatami : void 0,
+					stairDir: aS?.stair ?? (st.goesUp ? "up" : "down")
+				};
+				labelOfRoom.set(rooms.length, carved.stairLabel);
+				roomByLabel.set(carved.stairLabel, sr);
+				rooms.push(sr);
+			}
+			const t0 = traceLabel(l, null, carvedBox);
+			if (t0) {
+				rm.polygon = t0.poly;
+				rm.area = t0.area;
+			}
+			const a1 = acc.get(l);
+			if (untouched && a1 && (a1.names.length || a1.others.length)) {
+				const real = a1.names.filter((n) => !isStairName(n));
+				if (real.length) {
+					const main = mainName(real, rm.area);
+					rm.name = uniqStr([
+						main.str,
+						...real.map((n) => n.str),
+						...strayNames
+					]).join("・");
+					rm.type = level >= 2 && (main.type === "deck" || main.type === "terrace" || main.type === "carport" || main.type === "parking") ? "balcony" : main.type;
+					rm.labelPos = {
+						x: main.x,
+						y: main.y
+					};
+				} else if (!a1.names.length && a1.others.length) {
+					const main = a1.others.slice().sort((p, q) => q.size - p.size)[0];
+					rm.name = uniqStr(a1.others.map((n) => n.str)).slice(0, 2).join("・");
+					rm.type = "other";
+					rm.labelPos = {
+						x: main.x,
+						y: main.y
+					};
+				}
+				rm.labeledTatami = a1.tatami;
+				delete rm.stairDir;
+			} else {
+				const stripped = parts.filter((q) => classifyRoomName(q) !== "stairs");
+				if (stripped.length && stripped.length < parts.length) rm.name = stripped.join("・");
+				if (rm.type === "stairs" && stripped.length) rm.type = classifyRoomName(stripped[0]) ?? "other";
+				if (!stripped.length) {
+					rm.name = "ホール";
+					rm.type = "hall";
+					rm.inferred = true;
+				}
+				delete rm.stairDir;
+			}
+			if (labelAt(rm.labelPos) !== l) {
+				const p = insidePoint(l);
+				if (p) rm.labelPos = p;
+			}
+			roomByLabel.set(l, rm);
+			for (const el of carved.extraLabels) {
+				if ((sizes[el] ?? 0) < minCells) continue;
+				const tE = traceLabel(el, null, carvedBox);
+				if (!tE) continue;
+				const aE = acc.get(el);
+				const real = (aE?.names ?? []).filter((n) => n.type !== "stairs");
+				let er;
+				if (real.length) {
+					const main = mainName(real, tE.area);
+					er = {
+						id: "",
+						name: uniqStr([main.str, ...real.map((n) => n.str)]).join("・"),
+						type: main.type,
+						polygon: tE.poly,
+						area: tE.area,
+						labelPos: {
+							x: main.x,
+							y: main.y
+						},
+						labeledTatami: aE?.tatami
+					};
+				} else if (aE?.others.length) {
+					const main = aE.others.slice().sort((p, q) => q.size - p.size)[0];
+					er = {
+						id: "",
+						name: uniqStr(aE.others.map((n) => n.str)).slice(0, 2).join("・"),
+						type: "other",
+						polygon: tE.poly,
+						area: tE.area,
+						labelPos: {
+							x: main.x,
+							y: main.y
+						},
+						labeledTatami: aE.tatami
+					};
+				} else er = {
+					id: "",
+					name: "ホール",
+					type: "hall",
+					polygon: tE.poly,
+					area: tE.area,
+					labelPos: insidePoint(el) ?? tE.poly[0],
+					inferred: true
+				};
+				if (labelAt(er.labelPos) !== el) er.labelPos = insidePoint(el) ?? er.labelPos;
+				er.id = `F${level}-R${rooms.length + 1}`;
+				labelOfRoom.set(rooms.length, el);
+				roomByLabel.set(el, er);
+				rooms.push(er);
+			}
+			trace?.push(`${level}F 階段の区画を分けた: ${parts.join("・")} → ${rm.name}（${(rm.area / 1.62).toFixed(1)} 帖）＋階段（${tS ? (tS.area / 1.62).toFixed(1) : "-"} 帖）${carved.extraLabels.length ? ` ＋別の区画 ${carved.extraLabels.length}` : ""}${carved.joinedCells ? ` 階段に含めた残り ${(carved.joinedCells * res * res / 1e6).toFixed(1)}㎡` : ""}`);
+		}
+	};
 	if (!rooms.length) warnings.push(`${level}階: 部屋を検出できませんでした`);
 	const labelSizes = rooms.map((r) => plan.texts.find((t) => Math.abs(t.x - r.labelPos.x) < 50 && Math.abs(t.y - r.labelPos.y) < 50)?.size ?? 0).filter((s) => s > 0).sort((a, b) => a - b);
 	const labelSize = labelSizes.length ? labelSizes[Math.floor(labelSizes.length / 2)] : 280;
@@ -13495,7 +14040,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			roomId: rm.id
 		});
 	}
-	return {
+	const floorOut = {
 		level,
 		elevation: 0,
 		height: 2900,
@@ -13510,6 +14055,22 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		exterior: sym.exterior.cars.length || sym.exterior.trees.length ? sym.exterior : void 0,
 		notes: notes.length ? notes : void 0
 	};
+	stairRoomSplitters.set(floorOut, () => {
+		if (floorOut.rooms === rooms) splitStairs(floorOut.stairs);
+	});
+	return floorOut;
+}
+/** 階ごとの「階段を隣の部屋から分ける」処理（buildFloor が登録する。升目を持っているので、座標を動かす前に呼ぶ） */
+var stairRoomSplitters = /* @__PURE__ */ new WeakMap();
+/**
+* LDK・ホール・パントリーと一続きに読めた階段を、「階段」という別の部屋に分ける（その階の rooms を書き換える）。
+* 上下階で階段の範囲をそろえた後・格子へ寄せる前に 1 回だけ呼ぶ
+*/
+function splitStairRooms(f) {
+	const run = stairRoomSplitters.get(f);
+	if (!run) return;
+	stairRoomSplitters.delete(f);
+	run();
 }
 function detectNorth(pages) {
 	const c = pickNorth(pages);
@@ -13922,6 +14483,7 @@ function reconcileStairs(floors) {
 				up.minY = lo.minY;
 				up.maxX = lo.maxX;
 				up.maxY = lo.maxY;
+				fixTopEntry(floors[i + 1], up, lo);
 			}
 			continue;
 		}
@@ -13945,6 +14507,93 @@ function reconcileStairs(floors) {
 			else lo.maxX += d;
 		}
 	}
+}
+/** 階段の辺 side の、辺に沿った位置 frac（0〜1。辺の左／上の端から）から外へ出られるか（400mm 先までに壁が無いか、そこに戸・開口がある） */
+function stairSideOpen(f, st, side, frac = .5) {
+	const horiz = side === "n" || side === "s";
+	const along = horiz ? st.minX + (st.maxX - st.minX) * frac : st.minY + (st.maxY - st.minY) * frac;
+	const edge = horiz ? {
+		x: along,
+		y: side === "n" ? st.minY : st.maxY
+	} : {
+		x: side === "w" ? st.minX : st.maxX,
+		y: along
+	};
+	const dir = side === "n" ? {
+		x: 0,
+		y: -1
+	} : side === "s" ? {
+		x: 0,
+		y: 1
+	} : side === "e" ? {
+		x: 1,
+		y: 0
+	} : {
+		x: -1,
+		y: 0
+	};
+	const from = {
+		x: edge.x - dir.x * 200,
+		y: edge.y - dir.y * 200
+	};
+	const to = {
+		x: edge.x + dir.x * 400,
+		y: edge.y + dir.y * 400
+	};
+	const cross = (a, b, c, d) => {
+		const o = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+		return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+	};
+	return !f.walls.some((w) => {
+		if (!cross(from, to, w.a, w.b)) return false;
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		const t = ((edge.x - w.a.x) * (w.b.x - w.a.x) + (edge.y - w.a.y) * (w.b.y - w.a.y)) / L;
+		return !f.openings.some((o) => o.wallId === w.id && o.kind !== "window" && t >= o.t0 - 300 && t <= o.t1 + 300);
+	});
+}
+/**
+* 上の階の階段（降りる階段）の範囲を下の階に合わせたあと、降り口が壁を向いていたら決め直す。
+* 下の階の階段の「上の端」（最後の列の先）から降りる: まっすぐ出られればその辺、壁なら上の端の横（開いている側）から入って曲がる
+* （堀様邸 FUKUI 2 階: 東の端の踊り場へ北から入り、西へ降りる。範囲を 4,550 に広げると東の壁向きの降り口になっていた）
+*/
+function fixTopEntry(fUp, up, lo) {
+	if (stairSideOpen(fUp, up, up.entry)) return;
+	const opposite = {
+		n: "s",
+		s: "n",
+		e: "w",
+		w: "e"
+	};
+	/** 昇る人の右手側の辺（stairFrame と同じ向き） */
+	const rightOf = {
+		n: "w",
+		s: "e",
+		w: "s",
+		e: "n"
+	};
+	let top;
+	if (lo.kind === "straight") top = opposite[lo.entry];
+	else if (lo.kind === "l") top = (lo.turn ?? "right") === "right" ? rightOf[lo.entry] : opposite[rightOf[lo.entry]];
+	else top = lo.entry;
+	if (stairSideOpen(fUp, up, top)) {
+		up.entry = top;
+		if (lo.kind !== "l") up.kind = lo.kind;
+		return;
+	}
+	if (lo.kind === "u" || lo.kind === "uOpen") return;
+	const horizTop = top === "e" || top === "w";
+	const frac = (() => {
+		const len = horizTop ? up.maxX - up.minX : up.maxY - up.minY;
+		const f = Math.min(.5, 455 / Math.max(1, len));
+		return top === "e" || top === "s" ? 1 - f : f;
+	})();
+	const open = (horizTop ? ["n", "s"] : ["w", "e"]).filter((sd) => stairSideOpen(fUp, up, sd, frac));
+	if (open.length !== 1) return;
+	const entry = open[0];
+	const runTo = opposite[top];
+	up.kind = "l";
+	up.entry = entry;
+	up.turn = rightOf[entry] === runTo ? "right" : "left";
 }
 /**
 * 同じ階段を 2 つに読まない: コの字階段の 2 つの折り返しが別々の候補になり、壁まで広げた矩形が重なる
@@ -14666,6 +15315,9 @@ function assembleModel(pages, name, warnings, opts = {}) {
 			}];
 		});
 	}
+	finishTopFloorStairs(floors);
+	reconcileStairs(floors);
+	for (const f of floors) splitStairRooms(f);
 	if (mfit && moduleInfo) {
 		thicknesses.clear();
 		for (const f of floors) {

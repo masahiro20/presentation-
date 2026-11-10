@@ -12,6 +12,7 @@
 import type { BuildingModel, Floor, Opening, Vec2 } from '../core/types';
 import type { RoofType } from '../styles/presets';
 import { pointInPolygon } from '../core/geometry';
+import { translateFloor } from '../core/floorAlign';
 
 const MM = 0.001;
 
@@ -219,6 +220,12 @@ export interface HeightChanges {
   model: BuildingModel;
   /** 足した窓の数 */
   windowsAdded?: number;
+  /** 幅・位置を 3D のガラスに合わせて直した窓の数 */
+  windowsResized?: number;
+  /** 3D データにガラスが見当たらない図面の窓（読み違いか、ガラスでない建具） */
+  windowsUnmatched?: { level: number; id: string; width: number }[];
+  /** 3D のガラスの並びで重ね位置を直した階（mm。図面座標） */
+  floorShifts?: { level: number; dx: number; dy: number }[];
   roof: { type: RoofType; pitch: number } | null;
   notes: string[];
   windowsMatched: number;
@@ -271,9 +278,52 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
     const h = floors[i + 1].elevation - floors[i].elevation;
     if (h > 2200 && h !== floors[i].height) floors[i].height = h;
   }
+  // 上の階の重ね位置: 3D データは 1 つの立体なので、階ごとのガラスの並びは正しい位置にある。
+  // 上の階の窓が、半間・1 間ずらすとガラスにずっと良く合うなら、平面図の重ね位置がずれている → その階（とその上の階）を動かす
+  const floorShifts: { level: number; dx: number; dy: number }[] = [];
+  {
+    const yOf = (i: number) => fy[i] ?? floorWorldY[i] ?? floors[i].elevation * MM;
+    for (let i = 1; i < floors.length; i++) {
+      const f = floors[i];
+      const y0 = yOf(i);
+      const y1 = i + 1 < floors.length ? yOf(i + 1) : y0 + 3.2;
+      const panes = m.glass.filter((g) => g.yMin >= y0 - 0.2 && g.yMin < y1 - 0.3);
+      const wins = f.openings.filter((o) => o.kind === 'window').map((o) => openingCenter(f, o)).filter((c): c is NonNullable<typeof c> => !!c);
+      if (wins.length < 3 || panes.length < 3) continue;
+      const count = (dx: number, dy: number) => {
+        const usedP = new Set<GlassPanel>();
+        let n = 0;
+        for (const c of wins) {
+          const hit = panes.find((g) => !usedP.has(g) && g.alongX === c.alongX && Math.hypot(g.cx - (c.x + dx * MM), g.cz - (c.z + dy * MM)) < 0.22 && Math.abs(g.width - c.len) < Math.max(0.3, c.len * 0.5));
+          if (hit) {
+            usedP.add(hit);
+            n++;
+          }
+        }
+        return n;
+      };
+      const zero = count(0, 0);
+      let best = { dx: 0, dy: 0, n: zero };
+      for (const dx of [-1820, -1365, -910, -455, 0, 455, 910, 1365, 1820])
+        for (const dy of [-1820, -1365, -910, -455, 0, 455, 910, 1365, 1820]) {
+          if (!dx && !dy) continue;
+          const n = count(dx, dy);
+          if (n > best.n) best = { dx, dy, n };
+        }
+      // はっきり良くなるときだけ: 2 か所以上増え、窓の 6 割以上が合う
+      if ((best.dx || best.dy) && best.n >= zero + 2 && best.n >= Math.ceil(wins.length * 0.6)) {
+        for (let k = i; k < floors.length; k++) translateFloor(floors[k], { x: best.dx, y: best.dy });
+        floorShifts.push({ level: f.level, dx: best.dx, dy: best.dy });
+        const dir = `${best.dx ? `${best.dx > 0 ? '右' : '左'}へ ${Math.abs(best.dx)}mm` : ''}${best.dx && best.dy ? '・' : ''}${best.dy ? `${best.dy > 0 ? '下' : '上'}へ ${Math.abs(best.dy)}mm` : ''}`;
+        notes.push(`${f.level} 階の重ね位置を 3D データの窓の並びに合わせて ${dir} 直しました（合う窓 ${zero} → ${best.n} / ${wins.length} か所）`);
+      }
+    }
+  }
   // 窓: 開口の中心に一番近い、同じ向きのガラス（中心のずれ 0.35m 以内、幅の差 60% 以内）
   let matched = 0;
   let total = 0;
+  let resized = 0;
+  const unmatched: { level: number; id: string; width: number }[] = [];
   const used = new Set<GlassPanel>();
   floors.forEach((f, i) => {
     const fwy = floorWorldY[i] ?? f.elevation * MM;
@@ -295,7 +345,11 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
           best = g;
         }
       }
-      if (!best) continue;
+      if (!best) {
+        const w = f.walls.find((x) => x.id === o.wallId);
+        if (w?.exterior) unmatched.push({ level: f.level, id: o.id, width: Math.round(o.t1 - o.t0) });
+        continue;
+      }
       used.add(best);
       matched++;
       const sill = Math.max(0, Math.round(((best.yMin - floorY) / MM - FRAME) / 10) * 10);
@@ -305,9 +359,35 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
         o.height = height;
       }
       o.heightFrom = '3d';
+      // 幅と位置も 3D のガラスに合わせる（図面の線の読み取りは柱芯・枠の取り方で 5〜20 cm ずれることがある。3D は実寸）
+      const w = f.walls.find((x) => x.id === o.wallId);
+      if (w) {
+        const dx = w.b.x - w.a.x;
+        const dy = w.b.y - w.a.y;
+        const L = Math.hypot(dx, dy);
+        const tc = ((best.cx / MM - w.a.x) * dx + (best.cz / MM - w.a.y) * dy) / L;
+        const half = best.width / MM / 2 + FRAME;
+        let t0 = Math.max(0, Math.round(tc - half));
+        let t1 = Math.min(L, Math.round(tc + half));
+        // 隣の開口には重ねない
+        for (const q of f.openings) {
+          if (q === o || q.wallId !== o.wallId) continue;
+          if (q.t1 <= (o.t0 + o.t1) / 2) t0 = Math.max(t0, q.t1 + 50);
+          if (q.t0 >= (o.t0 + o.t1) / 2) t1 = Math.min(t1, q.t0 - 50);
+        }
+        if (t1 - t0 >= 200 && (Math.abs(t0 - o.t0) >= 60 || Math.abs(t1 - o.t1) >= 60)) {
+          o.t0 = t0;
+          o.t1 = t1;
+          resized++;
+        }
+      }
     }
   });
   if (total) notes.push(`窓の高さ: ${matched} / ${total} か所を 3D データのガラスに合わせました`);
+  if (resized) notes.push(`窓の幅・位置: ${resized} か所を 3D データのガラスに合わせて直しました`);
+  // 大半の窓が合っているのに合わない外壁の窓 = 図面の読み違い（壁の線を窓と読んだ）か、ガラスでない建具（勝手口・シャッター付き）
+  const reliable = total >= 4 && matched / total >= 0.7;
+  if (reliable && unmatched.length) notes.push(`3D データにガラスが見当たらない窓 ${unmatched.length} か所（${unmatched.slice(0, 4).map((u) => `${u.level}階 幅${u.width}`).join('・')}${unmatched.length > 4 ? '…' : ''}）。図面の読み違いか、ガラスでない建具です。方眼で確かめてください`);
   // 図面から読めなかった窓: 外壁の上にあるのに、どの開口とも重ならないガラスは窓として足す
   let added = 0;
   for (const g of m.glass) {
@@ -352,5 +432,5 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
     notes.push(m.roof.type === 'flat' ? '屋根: 陸屋根（傾いた屋根面なし）' : `屋根: ${{ shed: '片流れ', gable: '切妻', hip: '寄棟', flat: '陸屋根' }[m.roof.type]} ${m.roof.pitch} 寸`);
   }
   if (base != null) notes.push(`最高高さ GL+${Math.round((m.topY - base) / MM / 10) * 10}`);
-  return { model: out, roof, notes, windowsMatched: matched, windowsTotal: total, windowsAdded: added };
+  return { model: out, roof, notes, windowsMatched: matched, windowsTotal: total, windowsAdded: added, windowsResized: resized, windowsUnmatched: reliable ? unmatched : [], floorShifts };
 }

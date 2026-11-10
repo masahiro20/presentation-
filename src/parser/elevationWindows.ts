@@ -759,6 +759,8 @@ export interface ElevationWindowResult {
   total: number;
   /** 立面図から足した窓 */
   added: number;
+  /** 並びの合った面で、立面図に相手の無い平面図の窓（読み違いの疑い） */
+  unmatched: { level: number; facing: Facing; id: string; width: number }[];
   /** 当てた面（「南面 4 か所」など） */
   facades: string[];
   notes: string[];
@@ -784,7 +786,7 @@ export function styleFor(prev: WindowStyle | undefined, sill: number, height: nu
  */
 export function applyElevationWindows(floorsIn: Floor[], views: ElevationView[], northDeg: number): ElevationWindowResult {
   const floors = [...floorsIn].sort((a, b) => a.level - b.level);
-  const res: ElevationWindowResult = { matched: 0, changed: 0, total: 0, added: 0, facades: [], notes: [] };
+  const res: ElevationWindowResult = { matched: 0, changed: 0, total: 0, added: 0, unmatched: [], facades: [], notes: [] };
   const log = (globalThis as { __ELEV_LOG?: boolean }).__ELEV_LOG ? (globalThis as { console: Console }).console : null;
   const { axes, rotated } = chooseAxes(floors, views, northDeg);
   if (rotated) res.notes.push(`立面図の東西南北と方位記号の向きが ${rotated}° 違うため、窓の並びが合う向きで当てました（方位をご確認ください）`);
@@ -837,7 +839,19 @@ export function applyElevationWindows(floorsIn: Floor[], views: ElevationView[],
     });
     res.added += added;
     res.facades.push(`${FACING_JA[v.facing]}面 ${matchedHere} か所${added ? `＋${added}` : ''}`);
+    // 立面図に見当たらない平面図の窓: 並びが確かに合っている面・階（2 か所以上・平均の重なり 0.6 以上）で、相手の無い窓
+    // = 図面の読み違い（壁の線・庇の線を窓と読んだ）の疑い。消さずに知らせる
+    const pairedOps = new Set(pairs.map((p) => p.pw.op));
+    floors.forEach((f, fi) => {
+      const pf = pairs.filter((p) => p.pw.fi === fi);
+      if (pf.length < 2 || pf.reduce((s0, p) => s0 + p.iou, 0) / pf.length < 0.6) return;
+      for (const pw of facadeWindows(floors, fit.axis, ['window'])) {
+        if (pw.fi !== fi || pairedOps.has(pw.op) || pw.op.heightFrom === 'elevation') continue;
+        res.unmatched.push({ level: f.level, facing: v.facing, id: pw.op.id, width: Math.round(pw.op.t1 - pw.op.t0) });
+      }
+    });
   }
+  if (res.unmatched.length) res.notes.push(`立面図に見当たらない窓 ${res.unmatched.length} か所（${res.unmatched.slice(0, 4).map((u) => `${u.level}階 ${FACING_JA[u.facing]}面 幅${u.width}`).join('・')}${res.unmatched.length > 4 ? '…' : ''}）。図面の読み違いの疑いがあります。方眼で確かめてください`);
   if (res.matched) res.notes.push(`立面図から窓の高さを読みました: ${res.matched} か所（うち腰高・高さを直した窓 ${res.changed}）・${res.facades.join('／')}`);
   if (res.added) res.notes.push(`平面図で読めなかった窓 ${res.added} か所を立面図から足しました（方眼で確認してください）`);
   return res;

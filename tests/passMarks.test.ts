@@ -43,7 +43,7 @@ describe('通り口の印の検出', () => {
     expect(marks).toHaveLength(1);
   });
 
-  it('長すぎる線（2,958 mm の物干し金物）や、線の延長上から外れた丸は印ではない', () => {
+  it('長すぎる線（両端に丸の付いた 2,958 mm の金物の線）や、線の延長上から外れた丸は印ではない', () => {
     const bar = [seg(1000, 500, 3958, 500), ...circle(1000 - 29.5, 500), ...circle(3958 + 29.5, 500)];
     const off = [seg(1000, 900, 1404, 900), ...circle(1000 - 29.5, 925), ...circle(1404 + 29.5, 925)];
     expect(detectPassMarks([...bar, ...off])).toHaveLength(0);
@@ -120,5 +120,29 @@ describe('壁の区間の切り取り', () => {
       [3000, 5000],
       [7000, 9000],
     ]);
+  });
+});
+
+describe('壁の角の結び直しで開口の位置を保つ', () => {
+  // 右から左へ引かれた壁（斜めの壁に多い）でも、開口は壁の始点からの距離のまま = 図面の同じ場所に残る
+  const worldCenter = (w: { a: { x: number; y: number }; b: { x: number; y: number } }, o: { t0: number; t1: number }) => {
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const t = (o.t0 + o.t1) / 2;
+    return { x: w.a.x + ((w.b.x - w.a.x) * t) / L, y: w.a.y + ((w.b.y - w.a.y) * t) / L };
+  };
+  it('斜めの壁（右上 → 左下）の始点寄りの窓が、反対の端へ押しやられない（吉田大仁様邸 1st のテラス窓）', async () => {
+    const { rejoinFloorWalls } = await import('../src/parser/assemble');
+    const k = Math.SQRT1_2;
+    // 斜めの壁: 右上 (5000, 1000) から左下へ 3600。始点の先（右上）に横の壁があり、角を結ぶと始点が少し伸びる
+    const diag = { id: 'W1', a: { x: 5000, y: 1000 }, b: { x: 5000 - 3600 * k, y: 1000 + 3600 * k }, thickness: 120, exterior: true, joinedA: false, joinedB: false };
+    const top = { id: 'W2', a: { x: 5000, y: 960 }, b: { x: 9000, y: 960 }, thickness: 120, exterior: true, joinedA: false, joinedB: false };
+    const win = { id: 'W1-O1', wallId: 'W1', kind: 'window' as const, t0: 200, t1: 1800, sill: 0, height: 2000 };
+    const f = { level: 1, walls: [diag, top], openings: [win], rooms: [], stairs: [], outline: [], height: 2800, elevation: 500 } as never;
+    const before = worldCenter(diag, win);
+    rejoinFloorWalls(f);
+    const after = worldCenter(diag, win);
+    expect(win.t1 - win.t0).toBeCloseTo(1600, 0);
+    // 窓は図面の同じ場所（±80 mm。以前は壁の反対の端まで 1.8 m 動いていた）
+    expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThan(80);
   });
 });

@@ -2335,6 +2335,78 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   });
 
+  // 印が壁を横切っているのに開口が読めていない所 = 読み落とした建具（壁の脇に描かれたアウトセット引戸・斜めの壁のテラスドアなど）。
+  // 印の位置に建具を足す。幅は、壁に沿って印の位置を通る細い線（戸・サッシの線）の長さ。無ければ標準の幅
+  if (usesMarks) {
+    const thin = plan.segs.filter((sg) => sg.source === 'stroke' && !sg.dashed);
+    walls.forEach((w, wi) => {
+      const ow = outWalls[wi];
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      if (L < 700) return;
+      for (const k of passMarks) {
+        if (k.len < 350) continue;
+        if (marksCrossing([k], w.a, w.b, 0, L, 0) === 0) continue;
+        const t = ((k.a.x + k.b.x) / 2 - w.a.x) * w.u.x + ((k.a.y + k.b.y) / 2 - w.a.y) * w.u.y;
+        if (t < 150 || t > L - 150) continue;
+        const mine = openings.filter((o) => o.wallId === ow.id);
+        // すでに開口がある（少し離れていても同じ建具の印）
+        if (mine.some((o) => t > o.t0 - 250 && t < o.t1 + 250)) continue;
+        // 壁に沿って印の位置を通る細い線（壁芯から 160 mm 以内、長さ 500〜2,800 mm）
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const sg of thin) {
+          const len = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+          if (len < 500 || len > 2800) continue;
+          const oa = (sg.a.x - w.a.x) * w.n.x + (sg.a.y - w.a.y) * w.n.y;
+          const ob = (sg.b.x - w.a.x) * w.n.x + (sg.b.y - w.a.y) * w.n.y;
+          if (Math.abs(oa) > 160 || Math.abs(ob) > 160 || Math.abs(oa - ob) > 20) continue;
+          const ta = (sg.a.x - w.a.x) * w.u.x + (sg.a.y - w.a.y) * w.u.y;
+          const tb = (sg.b.x - w.a.x) * w.u.x + (sg.b.y - w.a.y) * w.u.y;
+          const s0 = Math.min(ta, tb);
+          const s1 = Math.max(ta, tb);
+          if (t < s0 + 60 || t > s1 - 60) continue;
+          lo = Math.min(lo, s0);
+          hi = Math.max(hi, s1);
+        }
+        const off = w.d / 2 + res * 3;
+        const c0 = { x: w.a.x + w.u.x * t, y: w.a.y + w.u.y * t };
+        const sp = sideState({ x: c0.x + w.n.x * off, y: c0.y + w.n.y * off });
+        const sm = sideState({ x: c0.x - w.n.x * off, y: c0.y - w.n.y * off });
+        const out: 1 | -1 | undefined = sp === OUTSIDE && sm !== OUTSIDE ? 1 : sm === OUTSIDE && sp !== OUTSIDE ? -1 : undefined;
+        if (sp === OUTSIDE && sm === OUTSIDE) continue;
+        // 印は建具の真ん中を横切る。線が片側へ長く伸びていれば（アウトセット引戸のレール・戸袋）、短い側に合わせて左右対称に取る
+        const std = out != null ? 1650 : 780;
+        const half = Math.min(t - lo, hi - t);
+        if (half >= 275 && half <= 1400) {
+          lo = t - half;
+          hi = t + half;
+        } else {
+          lo = t - std / 2;
+          hi = t + std / 2;
+        }
+        // 壁の中・隣の開口の手前に収める
+        let t0 = Math.max(60, lo);
+        let t1 = Math.min(L - 60, hi);
+        for (const o of mine) {
+          if (o.t1 <= t) t0 = Math.max(t0, o.t1 + 100);
+          if (o.t0 >= t) t1 = Math.min(t1, o.t0 - 100);
+        }
+        if (t1 - t0 < 550 || t < t0 || t > t1) continue;
+        const inSign = out != null ? -out : 1;
+        const inRoom = roomAt({ x: c0.x + w.n.x * inSign * (w.d / 2 + 60), y: c0.y + w.n.y * inSign * (w.d / 2 + 60) });
+        if (out != null) {
+          const outN = { x: w.n.x * out, y: w.n.y * out };
+          winInfo.set(openings.length, { room: inRoom?.type ?? null, south: Math.max(0, outN.x * southVec.x + outN.y * southVec.y), drawn: true, marked: true });
+          openings.push({ id: `${ow.id}-O${openings.length + 1}`, wallId: ow.id, kind: 'window', t0, t1, sill: 0, height: 2000, windowStyle: 'hakidashi', confidence: 0.6 });
+          warnings.push(`${level}階: 通り口の印がある外壁に、出入りできる窓（幅 ${Math.round(t1 - t0).toLocaleString()}mm）を置きました（図面の線では窓が読めなかった所。方眼で確かめてください）`);
+        } else {
+          openings.push({ id: `${ow.id}-O${openings.length + 1}`, wallId: ow.id, kind: 'sliding', t0, t1, sill: 0, height: 2000, confidence: 0.6 });
+          warnings.push(`${level}階: 通り口の印がある壁に、引戸（幅 ${Math.round(t1 - t0).toLocaleString()}mm）を置きました（壁の脇に描かれた戸。方眼で確かめてください）`);
+        }
+      }
+    });
+  }
+
   applyWindowVocabulary(openings, winInfo);
   // 玄関ドアは 1 つ: 残りの外壁の開き戸は勝手口（ガレージの通用口を含む）、塀・袖壁の戸は開口にする
   if (level === 1) chooseEntrance({ walls: outWalls, openings, rooms, outline });
@@ -3453,7 +3525,7 @@ function cleanPolygon(out: Vec2[], fallback: Vec2[]): Vec2[] {
 }
 
 /** 階の壁を軸線の形に直して角の接合をやり直し、壁の端点・開口の位置・接合フラグを書き戻す */
-function rejoinFloorWalls(f: Floor) {
+export function rejoinFloorWalls(f: Floor) {
   const groups: { u: Vec2 }[] = [];
   const groupOf = (u: Vec2) => {
     let gi = groups.findIndex((g) => Math.abs(g.u.x * u.y - g.u.y * u.x) < 0.02 && g.u.x * u.x + g.u.y * u.y > 0);
@@ -3482,20 +3554,19 @@ function rejoinFloorWalls(f: Floor) {
   }
   joinWalls(ww.map((q) => q.ax));
   for (const { w, ax, swapped } of ww) {
-    const oldA = swapped ? w.b : w.a;
-    const oldL = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
     const na = swapped ? ax.b : ax.a;
     const nb = swapped ? ax.a : ax.b;
     const newL = Math.hypot(nb.x - na.x, nb.y - na.y);
-    // a 側（元の向きでの a）がどれだけ手前へ伸びたか
-    const ext0 = swapped ? Math.hypot(ax.b.x - oldA.x, ax.b.y - oldA.y) : Math.hypot(ax.a.x - oldA.x, ax.a.y - oldA.y);
+    // a 側（元の向きでの a）がどれだけ手前へ伸びたか。向きを入れ替えて計算した壁（右から左へ・下から上へ引かれた壁。斜めの壁に多い）も、
+    // 元の a からの距離で測る（以前は入れ替えた壁で元の b から測っていて、開口が壁の反対の端まで押しやられていた:
+    // 吉田大仁様邸 1st の斜めの壁のテラス窓が 1.8 m ずれ、印のある出入口の位置が壁になっていた）
+    const ext0 = Math.hypot(na.x - w.a.x, na.y - w.a.y);
     for (const op of f.openings) {
       if (op.wallId !== w.id) continue;
       const wd = op.t1 - op.t0;
       op.t0 = Math.max(0, Math.min(newL - wd, op.t0 + ext0));
       op.t1 = Math.min(newL, op.t0 + wd);
     }
-    void oldL;
     w.a = { x: Math.round(na.x * 10) / 10, y: Math.round(na.y * 10) / 10 };
     w.b = { x: Math.round(nb.x * 10) / 10, y: Math.round(nb.y * 10) / 10 };
     w.joinedA = w.joinedA || (swapped ? ax.joinedB : ax.joinedA);

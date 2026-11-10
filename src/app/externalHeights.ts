@@ -8,6 +8,7 @@ import type { Viewer } from '../scene/viewer';
 import { pivotLocalTriangles } from './externalFit';
 import { isGlassMesh, type ExternalController } from './externalBuilding';
 import { measure3d, applyMeasured, type HeightChanges } from '../parser/heightsFrom3d';
+import { translateFloor } from '../core/floorAlign';
 
 const MM = 0.001;
 
@@ -57,9 +58,15 @@ export function applyHeightsFromExternal(viewer: Viewer, ctrl: ExternalControlle
       if (no) {
         o.sill = no.sill;
         o.height = no.height;
+        // 幅・位置も 3D のガラスに合わせたもの
+        o.t0 = no.t0;
+        o.t1 = no.t1;
+        if (no.heightFrom) o.heightFrom = no.heightFrom;
       }
     }
   }
+  // 3D の窓の並びで直した上の階の重ね位置（その階と、その上の階を一緒に動かす）
+  for (const sh of ch.floorShifts ?? []) for (const f of model.floors) if (f.level >= sh.level) translateFloor(f, { x: sh.dx, y: sh.dy });
   const fl = [...model.floors].sort((a, b) => a.level - b.level);
   model.heights = { source: '3d', floor1: fl[0]?.elevation, storyHeights: fl.slice(0, -1).map((f) => f.height), roofPitch: ch.roof?.pitch, maxHeight: measured.groundY != null ? Math.round((measured.topY - measured.groundY) / MM) : undefined };
   if (ch.roof) state.design = { ...state.design, roofOverride: ch.roof.type, roofPitch: ch.roof.type === 'flat' ? undefined : ch.roof.pitch };

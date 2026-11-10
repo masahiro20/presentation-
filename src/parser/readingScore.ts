@@ -122,7 +122,10 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     if (floors.length >= 2) {
       let widerIssue = false;
       for (let i = 1; i < floors.length; i++) {
-        const lo = floorArea(floors[i - 1], floors);
+        // 下の階のビルトインガレージ（床面積には入れない）は、上の階が載る広さには入れる。
+        // 間口の狭い 3 階建て（1 階が車庫＋玄関、2 階が LDK）で「2 階が 1 階より広い」と誤って減点していた（市岡様邸）
+        const garage = floors[i - 1].rooms.filter((r) => r.type === 'garage').reduce((a, r) => a + r.area, 0);
+        const lo = floorArea(floors[i - 1], floors) + garage;
         const hi = floorArea(floors[i], floors);
         const byDesign = table[floors[i].level] > 0 && table[floors[i - 1].level] > 0 && table[floors[i].level] > table[floors[i - 1].level];
         if (lo > 0 && hi > lo * 1.1 && !byDesign) {
@@ -157,6 +160,11 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
         fixes.push({ lost, level: stairIssue.level, title: stairIssue.title, detail: stairIssue.detail, issue: stairIssue });
       }
       if (!notes.length) notes.push(`${floors.length} 階の広さと階段の位置が合っています`);
+    } else if (readable && floors.length === 1 && floors[0].level > 1) {
+      // 読めたのが 2 階以上だけ = 下の階が読めていない（平屋ではない）
+      got = 0;
+      notes.push(`${floors[0].level - 1}階が読めていません（読めたのは ${floors[0].level}階だけ）`);
+      fixes.push({ lost: 15, title: `${floors[0].level - 1}階の平面図が読めていません`, detail: '下の階のページ・区画が平面図として読めていません（縮尺の違う詳細図・画像の図面など）。提案用の平面図（1/100）の PDF を読み込むか、方眼で下の階を描いてください' });
     } else notes.push(readable ? '平屋（1 階のみ）' : '階が読めていません');
     parts.push({ id: 'floors', label: '上下階', max: 15, got: r1(Math.max(0, got)), note: notes.join('、') });
   }
@@ -201,7 +209,10 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
 
   // 6. 階と部屋名（10）: 各階に 3 室以上（5）、用途の分からない部屋が無い（3）、LDK がある（2）
   {
-    const thin = floors.filter((f) => f.rooms.filter((r) => r.type !== 'void').length < 3);
+    // 最上階が塔屋（階段と踊り場だけの小さな階。屋上へ出る）なら、部屋が少なくて当たり前
+    const top = floors.length ? Math.max(...floors.map((f) => f.level)) : 0;
+    const isPenthouse = (f: Floor) => floors.length >= 2 && f.level === top && f.stairs.length > 0 && f.rooms.reduce((a, r) => a + r.area, 0) <= 12;
+    const thin = floors.filter((f) => f.rooms.filter((r) => r.type !== 'void').length < 3 && !isPenthouse(f));
     // EV（エレベーター）は用途が分かっている（部屋の種類は other のまま）
     const unnamed = rooms.filter((r) => (r.type === 'other' && !/^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, ''))) || /^室$|^部屋$/.test(r.name.trim()));
     const got = readable ? (floors.length && !thin.length ? 5 : 0) + (unnamed.length ? Math.max(0, 3 - unnamed.length) : 3) + (hasLdk ? 2 : 0) : 0;

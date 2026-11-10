@@ -1379,12 +1379,12 @@ function renderResult(ctx: StepCtx) {
       h(
         'div',
         { class: 'btn-row', style: 'margin-top:0' },
-        h('button', { class: 'btn sm', title: '平面図と別ファイルの立面図 PDF から、1 階床・階高・屋根勾配・窓の高さ・外部仕上表を読みます（上下階のずれも確かめます）', onclick: () => elevIn.click() }, '立面図の PDF を足す'),
+        h('button', { class: 'btn sm', title: '平面図と別ファイルの立面図 PDF から、1 階床・階高・屋根勾配・窓の高さ・外部仕上表を読みます（上下階のずれを確かめ、平面図で読めなかった窓を足し、立面図に無い窓を知らせます）', onclick: () => elevIn.click() }, '立面図の PDF を足す'),
         elevIn,
-        h('button', { class: 'btn sm', title: 'ARCHITREND の 3DS など。床・窓の腰高と高さ・屋根を 3D のとおりに直します', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
+        h('button', { class: 'btn sm', title: 'ARCHITREND の 3DS など。床・窓の腰高と高さ・窓の幅と位置・屋根を 3D のとおりに直し、上の階の重ね位置を窓の並びで確かめます（3D にガラスの無い窓も知らせます）', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
         ext3dIn,
       ),
-      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、屋根の形まで 3D のとおりになります。'),
+      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の幅と位置・上の階の重ね位置・屋根の形まで 3D のとおりになります。平面図だけでは決められない所（床までの FIX か腰窓か・半間ずれても壁が重なる 2 階の位置）が、どちらかがあれば決まります。'),
     ),
     fold(
       '読み込みのやり直し・保存',

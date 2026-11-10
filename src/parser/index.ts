@@ -3,6 +3,7 @@
  */
 import { autoOverhangPosts } from '../core/posts';
 import { repairEnvelope, mergeStackedWalls } from './envelope';
+import { clearStairWalls } from './stairWalls';
 import { readElevationHeights, applyElevationHeights, type ElevationHeights } from './elevationText';
 import { readElevationViews, applyElevationWindows, floorShiftsFromElevation, planScaleFromElevation, type ElevationView } from './elevationWindows';
 import { translateFloor, stairIoU } from '../core/floorAlign';
@@ -334,6 +335,9 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   for (const f of res.floors) {
     const stacked = mergeStackedWalls(f);
     if (stacked) warnings.push(`${f.level}階: 平面詳細図の仕上げの線を壁として重ねて読んだ所を ${stacked} 本まとめました（詳細図より提案用の平面図 1/100 の方が正確に立ち上がります）`);
+    // 階段の中を通る壁（踊り場まで通った中壁・段を横切る壁）を整理する
+    const sw = clearStairWalls(f);
+    if (sw.landings + sw.crossings) warnings.push(`${f.level}階: 階段の中を通っていた壁を ${sw.landings + sw.crossings} か所切りました（${[sw.landings ? `踊り場をふさぐ中壁 ${sw.landings}` : '', sw.crossings ? `段を横切る壁 ${sw.crossings}` : ''].filter(Boolean).join('・')}）`);
     const r = repairEnvelope(f);
     if (r.added) warnings.push(`${f.level}階: 外形に沿って壁が読めなかった ${r.added} か所（計 ${(r.addedLen / 1000).toFixed(1)} m）に外壁を補いました${r.glazed ? `（うち LDK の ${r.glazed} か所は掃き出し窓）` : ''}。修正画面で確認してください`);
   }

@@ -40,6 +40,32 @@ function model(): BuildingModel {
 }
 
 describe('readingScore', () => {
+  it('下の階のビルトインガレージは、上の階が載る広さに数える（1 階が車庫＋玄関の家で「2 階の方が広い」と減点しない）', () => {
+    const m = model();
+    // 1 階の LDK（32 ㎡）を車庫に変える → 床面積は 60.8 → 28.8 ㎡、2 階は 32 ㎡
+    m.floors[0].rooms[0] = { ...m.floors[0].rooms[0], name: '車庫', type: 'garage', labeledTatami: undefined };
+    delete m.report.areaTable;
+    const rs = readingScore(m);
+    expect(rs.parts.find((p) => p.id === 'floors')!.note).not.toMatch(/より広い/);
+  });
+  it('読めたのが 2 階だけなら平屋扱いにしない（1 階が読めていない）', () => {
+    const m = model();
+    m.floors = [{ ...m.floors[0], level: 2 }];
+    delete m.report.areaTable;
+    const rs = readingScore(m);
+    const fl = rs.parts.find((p) => p.id === 'floors')!;
+    expect(fl.got).toBe(0);
+    expect(fl.note).toMatch(/1階が読めていません/);
+    expect(rs.fixes.some((f) => /1階の平面図が読めていません/.test(f.title))).toBe(true);
+  });
+  it('最上階が塔屋（階段と踊り場だけ）でも「部屋がほとんど読めていない」にしない', () => {
+    const m = model();
+    const ph: Floor = { level: 3, elevation: 6300, height: 2600, ceilingHeight: 2300, outline: [rect(4000, 4000, 6000, 7600)], rooms: [room('階段', 'stairs', rect(4000, 4000, 6000, 5800)), room('通路', 'hall', rect(4000, 5800, 6000, 7600))], walls: [], openings: [], stairs: [{ id: 'st3', minX: 4000, minY: 4000, maxX: 6000, maxY: 5800, goesUp: false, kind: 'straight', entry: 's', steps: 14 }] };
+    m.floors.push(ph);
+    const rs = readingScore(m);
+    // 2 階（洋室 2 室だけ）は元から「少ない」と出る。塔屋の 3 階は数えない
+    expect(rs.parts.find((p) => p.id === 'rooms')!.note).not.toMatch(/3階/);
+  });
   it('帖数・面積表・上下階・戸と窓が揃った間取りは高得点で、まず直す所は少ない', () => {
     const rs = readingScore(model());
     expect(rs.score).toBeGreaterThanOrEqual(85);

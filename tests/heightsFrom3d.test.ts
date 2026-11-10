@@ -96,3 +96,78 @@ describe('adds windows missing from the plan', () => {
     expect(add.height).toBe(2080);
   });
 });
+
+describe('3D のガラスで平面図の読み取りを確かめて直す', () => {
+  /** 南面（y=0 の壁、x 方向）に窓を並べた階。windows は [t0, t1]（mm） */
+  function floorWith(level: number, elevation: number, windows: [number, number][], shiftX = 0): Floor {
+    return {
+      level,
+      elevation,
+      height: 2900,
+      ceilingHeight: 2400,
+      walls: [{ id: `w${level}`, a: { x: shiftX, y: 0 }, b: { x: 9100 + shiftX, y: 0 }, thickness: 120, exterior: true }],
+      openings: windows.map(([t0, t1], k) => ({ id: `o${level}-${k}`, wallId: `w${level}`, kind: 'window' as const, t0, t1, sill: 900, height: 1100, confidence: 0.7 })),
+      rooms: [{ id: `r${level}`, name: '洋室', type: 'bedroom', polygon: [{ x: shiftX, y: 0 }, { x: 9100 + shiftX, y: 0 }, { x: 9100 + shiftX, y: 6370 }, { x: shiftX, y: 6370 }], area: 58, labelPos: { x: 4550 + shiftX, y: 3185 } }],
+      stairs: [],
+      outline: [[{ x: shiftX, y: 0 }, { x: 9100 + shiftX, y: 0 }, { x: 9100 + shiftX, y: 6370 }, { x: shiftX, y: 6370 }]],
+    } as unknown as Floor;
+  }
+  /** ガラス（x0〜x1 m、床 floorY から sill〜top m）を南面 z=0 に置く */
+  const pane = (g: number[], x0: number, x1: number, floorY: number, sill = 0.95, top = 2.0) => quad(g, [[x0, floorY + sill, 0], [x1, floorY + sill, 0], [x1, floorY + top, 0], [x0, floorY + top, 0]]);
+
+  it('幅・位置のずれた窓を 3D のガラスに合わせる（高さだけでなく）', () => {
+    const m2 = { name: 't', northAngleDeg: 0, floors: [floorWith(1, 500, [[2000, 3690]]), floorWith(2, 3400, [])], report: {} } as unknown as BuildingModel;
+    const { solid } = house('gable');
+    const g: number[] = [];
+    // 図面の窓は 2000〜3690。3D のガラスは 2.24〜4.76（幅 2.52 m、中心が 0.65 m ずれている → 中心は 0.35 m 以内でないと合わせない）
+    pane(g, 2.24, 3.86, 0.6);
+    const ch = applyMeasured(m2, measure3d(m2, solid, new Float32Array(g), [0.5, 3.4]), [0.5, 3.4]);
+    const o = ch.model.floors[0].openings[0];
+    expect(ch.windowsResized).toBe(1);
+    expect(o.t0).toBe(2200);
+    expect(o.t1).toBe(3900);
+  });
+
+  it('大半の窓が合っているとき、ガラスの無い外壁の窓を知らせる', () => {
+    const wins: [number, number][] = [[500, 1300], [2000, 2800], [3500, 4300], [5000, 5800], [7000, 7800]];
+    const m2 = { name: 't', northAngleDeg: 0, floors: [floorWith(1, 500, wins), floorWith(2, 3400, [])], report: {} } as unknown as BuildingModel;
+    const { solid } = house('gable');
+    const g: number[] = [];
+    // 5 つのうち 4 つにだけガラスがある（7000〜7800 の所は壁）
+    for (const [t0, t1] of wins.slice(0, 4)) pane(g, t0 / 1000 + 0.04, t1 / 1000 - 0.04, 0.6);
+    const ch = applyMeasured(m2, measure3d(m2, solid, new Float32Array(g), [0.5, 3.4]), [0.5, 3.4]);
+    expect(ch.windowsMatched).toBe(4);
+    expect(ch.windowsUnmatched).toEqual([{ level: 1, id: 'o1-4', width: 800 }]);
+    expect(ch.notes.some((n) => /ガラスが見当たらない窓 1 か所/.test(n))).toBe(true);
+  });
+
+  it('上の階の窓の並びが半間ずれていれば、3D のガラスに合わせて階ごと動かす', () => {
+    const wins: [number, number][] = [[500, 1300], [2500, 3300], [5000, 5800], [7000, 7800]];
+    // 平面図の 2 階は右へ 910 ずれて重ねてある（壁ごと +910）
+    const m2 = { name: 't', northAngleDeg: 0, floors: [floorWith(1, 500, [[2000, 3690]]), floorWith(2, 3400, wins, 910)], report: {} } as unknown as BuildingModel;
+    const { solid } = house('gable');
+    const g: number[] = [];
+    pane(g, 2.06, 3.63, 0.6);
+    // 3D の 2 階のガラスは正しい位置（ずれなし）
+    for (const [t0, t1] of wins) pane(g, t0 / 1000 + 0.04, t1 / 1000 - 0.04, 3.5);
+    const ch = applyMeasured(m2, measure3d(m2, solid, new Float32Array(g), [0.5, 3.4]), [0.5, 3.4]);
+    expect(ch.floorShifts).toEqual([{ level: 2, dx: -910, dy: 0 }]);
+    const f2 = ch.model.floors[1];
+    expect(f2.walls[0].a.x).toBe(0);
+    expect(f2.outline[0][0].x).toBe(0);
+    expect(ch.windowsMatched).toBe(5);
+    // 元のモデルは変えない
+    expect(m2.floors[1].walls[0].a.x).toBe(910);
+  });
+
+  it('ずれていない上の階は動かさない', () => {
+    const wins: [number, number][] = [[500, 1300], [2500, 3300], [5000, 5800], [7000, 7800]];
+    const m2 = { name: 't', northAngleDeg: 0, floors: [floorWith(1, 500, [[2000, 3690]]), floorWith(2, 3400, wins)], report: {} } as unknown as BuildingModel;
+    const { solid } = house('gable');
+    const g: number[] = [];
+    pane(g, 2.06, 3.63, 0.6);
+    for (const [t0, t1] of wins) pane(g, t0 / 1000 + 0.04, t1 / 1000 - 0.04, 3.5);
+    const ch = applyMeasured(m2, measure3d(m2, solid, new Float32Array(g), [0.5, 3.4]), [0.5, 3.4]);
+    expect(ch.floorShifts).toEqual([]);
+  });
+});

@@ -128,22 +128,44 @@ const svgPoint = (x, y) =>
     const q = pt.matrixTransform(svg.getScreenCTM());
     return { x: q.x, y: q.y };
   }, [x, y]);
-/** 1 階の外形の外（右の庭）に取った四角の 4 点（図面座標 mm） */
+/**
+ * 建物の外（庭）に取った 3m 角の四角の 4 点（図面座標 mm）。全部の階の外形の外で、方眼の画面に見えている所
+ * （1 階の右だけを見ていたら、2・3 階が 1 階より大きい家（田中様邸）では点が画面の外に出て、屋根の道具の確認が空振りしていた）
+ */
 const yardSquare = () =>
   page.evaluate(() => {
     const m = window.__state.model;
-    const f = m.floors[0];
-    const pts = f.outline.flat().length ? f.outline.flat() : f.walls.flatMap((w) => [w.a, w.b]);
+    const pts = m.floors.flatMap((f) => (f.outline.flat().length ? f.outline.flat() : f.walls.flatMap((w) => [w.a, w.b])));
+    const minX = Math.min(...pts.map((p) => p.x));
     const maxX = Math.max(...pts.map((p) => p.x));
     const minY = Math.min(...pts.map((p) => p.y));
     const maxY = Math.max(...pts.map((p) => p.y));
+    const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    return [
-      { x: maxX + 1000, y: cy - 1500 },
-      { x: maxX + 4000, y: cy - 1500 },
-      { x: maxX + 4000, y: cy + 1500 },
-      { x: maxX + 1000, y: cy + 1500 },
+    const S = 1500;
+    const sq = (x0, y0) => [
+      { x: x0, y: y0 },
+      { x: x0 + S, y: y0 },
+      { x: x0 + S, y: y0 + S },
+      { x: x0, y: y0 + S },
     ];
+    const cands = [];
+    for (const g of [600, 400]) cands.push(sq(maxX + g, cy - S / 2), sq(minX - g - S, cy - S / 2), sq(cx - S / 2, maxY + g), sq(cx - S / 2, minY - g - S), sq(maxX + g, maxY + g), sq(minX - g - S, maxY + g));
+    const svg = document.querySelector('.pe-svg');
+    if (!svg) return cands[0];
+    const r = svg.getBoundingClientRect();
+    const ctm = svg.getScreenCTM();
+    // 方眼の上に重なるパネル・説明の帯に隠れる所は使わない
+    const covers = [...document.querySelectorAll('.pe-panel, .pe-tip')].filter((e) => e.offsetParent).map((e) => e.getBoundingClientRect());
+    const onScreen = (p) => {
+      const pt = svg.createSVGPoint();
+      pt.x = p.x;
+      pt.y = p.y;
+      const q = pt.matrixTransform(ctm);
+      if (!(q.x > r.left + 10 && q.x < r.right - 10 && q.y > r.top + 10 && q.y < r.bottom - 10)) return false;
+      return !covers.some((c) => q.x > c.left - 6 && q.x < c.right + 6 && q.y > c.top - 6 && q.y < c.bottom + 6);
+    };
+    return cands.find((c) => c.every(onScreen)) ?? cands[0];
   });
 /** 建物の中の点（1 階のいちばん大きい部屋の文字の位置） */
 const insidePoint = () =>
@@ -314,7 +336,7 @@ const sweep3dTool = async () => {
     cur = `3D道具:${label}`;
     const before = log.length;
     try {
-      await modes.nth(i).click({ timeout: 3000 });
+      await modes.nth(i).click({ timeout: 10000 });
       await page.waitForTimeout(300);
       // 3D をクリック（建物の中の床・庭・屋根の高さ）
       for (const [pt, hgt] of [[inside, 0.6], [sq[0], 0.1], [inside, 3.2]]) {

@@ -26,6 +26,8 @@ export function applyWindowShape(op: Opening, style: Exclude<WindowStyle, 'none'
   const sh = WINDOW_SHAPES[style];
   op.kind = 'window';
   op.windowStyle = style;
+  // 形を選び直したら標準の高さ（立面図・3D データの高さの印は外す）
+  delete op.heightFrom;
   op.sill = sh.sill(ceilingHeight);
   op.height = sh.height(ceilingHeight);
   if (sh.width && op.t1 - op.t0 > sh.width * 1.5) {
@@ -55,8 +57,9 @@ export function setExteriorDoorRole(op: Opening, role: 'entrance' | 'service', c
 export function applyOpeningKind(op: Opening, kind: Opening['kind'], ceilingHeight: number) {
   if (kind === op.kind) return;
   op.kind = kind;
-  // 勝手口の印は開き戸のときだけ
+  // 勝手口の印は開き戸のときだけ。種類を変えたら高さは標準（立面図・3D データの高さの印は外す）
   delete op.service;
+  delete op.heightFrom;
   if (kind === 'window') {
     if (op.sill === 0 && op.height > 2000) applyWindowShape(op, 'hakidashi', ceilingHeight);
     else applyWindowShape(op, op.windowStyle && op.windowStyle !== 'none' ? op.windowStyle : 'koshi', ceilingHeight);

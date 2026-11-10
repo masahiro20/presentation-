@@ -1,7 +1,7 @@
 /** ブラウザ用の pdf.js 読み込み */
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import { parseFloorPlanPdf, readElevationPdf, type ParseOptions } from './index';
+import { parseFloorPlanPdf, readElevationPdf, readElevationSheet, type ParseOptions } from './index';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -53,6 +53,18 @@ export async function readElevationPdfInBrowser(data: Uint8Array) {
     standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
     wasmUrl: `${base}pdfjs/wasm/`,
     BinaryDataFactory: FallbackBinaryDataFactory,
+  });
+}
+
+/** 立面図だけの PDF（別ファイル）から、高さの寸法・4 面の窓・外部仕上表を読む */
+export async function readElevationSheetInBrowser(data: Uint8Array, mmHint?: number) {
+  const base = assetBase();
+  return readElevationSheet(data, pdfjs as any, {
+    cMapUrl: `${base}pdfjs/cmaps/`,
+    standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
+    wasmUrl: `${base}pdfjs/wasm/`,
+    BinaryDataFactory: FallbackBinaryDataFactory,
+    mmHint,
   });
 }
 

@@ -4,6 +4,10 @@
 import { autoOverhangPosts } from '../core/posts';
 import { repairEnvelope, mergeStackedWalls } from './envelope';
 import { readElevationHeights, applyElevationHeights, type ElevationHeights } from './elevationText';
+import { readElevationViews, applyElevationWindows, floorShiftsFromElevation, planScaleFromElevation, type ElevationView } from './elevationWindows';
+import { translateFloor, stairIoU } from '../core/floorAlign';
+import { classifyPage, type PageInfo } from './pageMap';
+import { readExteriorFinishTable } from './finishTable';
 import type { BuildingModel } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
@@ -181,7 +185,10 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       warnings.push(`図面が ${Math.abs(tilt).toFixed(1)}° 傾いていたため、水平に戻して読み取りました`);
       return rotatePageMm(p, -tilt);
     });
+  const floorShifted: { level: number; dx: number; dy: number }[] = [];
   let mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
+  // 読み直すときは、前の読み取りのメモ（帖数の食い違いなど）を捨てる
+  let wAsm = warnings.length;
   let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
   if (scanned && res.floors.length) {
     warnings.push('スキャン画像の図面のため、画像から壁を読み取りました。室名は読み取れないため、下の一覧で部屋名と用途を指定してください');
@@ -195,6 +202,11 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
         scaleSource = 'module';
         warnings.push(`壁の間隔（910mm モジュール）から縮尺を推定しました（約1/${Math.round(sc.mmPerPt / PT_TO_MM)}）`);
         mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
+        // 前の読み取りのメモを捨てる（スキャンの断り書きと縮尺の推定の説明は残す）
+        const keep = warnings.splice(-2);
+        warnings.splice(wAsm);
+        warnings.push(...keep);
+        wAsm = warnings.length;
         res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
       }
     }
@@ -228,9 +240,40 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
           : `図面の縮尺表記と帖数が合わないため、帖数から縮尺を補正しました（縮小印刷の可能性・約1/${shown}）`,
       );
       mmPages = pages.map((p) => pageToMm(p, sc.mmPerPt));
+      const note = warnings.pop()!;
+      warnings.splice(wAsm);
+      warnings.push(note);
+      wAsm = warnings.length;
       res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
     } else if (Math.abs(med - 1) > 0.15) {
       warnings.push('図面の帖数と解析した面積に差があります。縮尺をご確認ください');
+    }
+  }
+  // 立面図の建物の幅で平面図の縮尺を確かめる（立面図の縮尺は「1階FL」「2階FL」の間隔と階高の数字から分かる）。
+  // 3 面以上で同じ比だけ平面図が小さい／大きいときは、平面図の縮尺の判定違い（1/50 と 1/60 など）なので読み直す
+  if (!scanned && !opts.scaleDenominator && !opts.mmPerPt && res.floors.length) {
+    try {
+      const elev0 = readElevationHeights(pages);
+      const v0 = readElevationViews(pages, sc.mmPerPt, elev0);
+      const chk = planScaleFromElevation(res.floors, v0, res.northAngleDeg);
+      if (chk && Math.abs(chk.k - 1) > 0.08) {
+        const den0 = sc.mmPerPt / PT_TO_MM;
+        const raw = den0 * chk.k;
+        const cands = [...STANDARD, 60, 75, 80];
+        if (sc.denominator) for (const f of [Math.SQRT2, Math.SQRT1_2, 2, 0.5]) cands.push(sc.denominator * f);
+        const snap = cands.find((c) => Math.abs(c / raw - 1) < 0.04);
+        if (snap) {
+          sc = { ...sc, mmPerPt: snap * PT_TO_MM, denominator: Number.isInteger(snap) ? snap : null };
+          scaleSource = 'elevation';
+          warnings.splice(wAsm);
+          warnings.push(`立面図の建物の幅（${chk.n} 面）が平面図の ${chk.k.toFixed(2)} 倍だったため、平面図の縮尺を 約1/${Math.round(den0)} → 1/${Math.round(snap)} に直しました`);
+          wAsm = warnings.length;
+          mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
+          res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
+        }
+      }
+    } catch {
+      // 立面図が読めなくても平面図の読み取りはそのまま
     }
   }
   // 画像の線の太さは実際の壁厚と違う（内壁は太線1本など）ので、3D 用に 90〜200mm に収める
@@ -240,6 +283,52 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     warnings.push('室名の文字を読み取れませんでした（PDF にフォントが埋め込まれていない・文字が図形化されている可能性）。部屋名と用途を下の一覧で指定してください');
   }
   if (sc.source === 'default' && scaleSource === 'default' && !scanned) warnings.push('縮尺を特定できなかったため 1/100 として解析しました');
+
+  // 立面図のページがあれば、そこに書かれた高さ（GL から 1 階床・階高・最高高さ・屋根勾配）を使う（無ければ標準値）
+  const elev = readElevationHeights(pages);
+  let heights: BuildingModel['heights'];
+  if (elev) {
+    const summary = applyElevationHeights(res.floors, elev);
+    heights = { source: 'elevation', ...elev };
+    warnings.push(`立面図の寸法から高さを読みました（${summary}）`);
+  }
+  // 立面図の 4 面（窓の並び）: 上下階の重ね位置を確かめる（1 枚の立面図の中では 1 階と 2 階の窓の位置関係が正しい）
+  let views: ElevationView[] = [];
+  try {
+    views = res.floors.length ? readElevationViews(pages, sc.mmPerPt, elev) : [];
+    if (views.length && res.floors.length >= 2 && !(globalThis as { __NO_ELEV_SHIFT?: boolean }).__NO_ELEV_SHIFT) {
+      const grid = res.module ? res.module.size / 2 : undefined;
+      const shifts = floorShiftsFromElevation(res.floors, views, res.northAngleDeg, grid);
+      // 階ごとの直す量は 1 階に対するもの。根拠の無い上の階は、すぐ下の階と一緒に動かす（上の階は下の階に順に重ねてある）
+      let carry = { x: 0, y: 0 };
+      for (const f of [...res.floors].sort((a, b) => a.level - b.level)) {
+        if (f.level === Math.min(...res.floors.map((x) => x.level))) continue;
+        const sh = shifts.find((x) => x.level === f.level);
+        const below = res.floors.find((x) => x.level === f.level - 1);
+        let d = carry;
+        if (sh && below) {
+          d = { x: sh.dx, y: sh.dy };
+          // 階段の重なりが悪くなる動かし方はしない（階段は上下階で同じ位置に通る）
+          const before = bestStairOverlap(below, f);
+          translateFloor(f, d);
+          const after = bestStairOverlap(below, f);
+          translateFloor(f, { x: -d.x, y: -d.y });
+          if (before != null && after != null && after < before - 0.15) {
+            warnings.push(`立面図の窓の位置からは ${f.level}階が ${describeShift(d.x, d.y)} ずれて見えますが、階段の重なりが悪くなるため動かしていません（方眼の「上下階」で確かめてください）`);
+            d = carry;
+          } else {
+            warnings.push(`立面図の窓の位置と比べて、${f.level}階の重ね位置を ${describeShift(d.x, d.y)} 直しました（根拠: ${sh.evidence.join('・')}）`);
+            floorShifted.push({ level: f.level, dx: d.x, dy: d.y });
+          }
+        }
+        if (d.x || d.y) translateFloor(f, d);
+        carry = d;
+      }
+    }
+  } catch (e) {
+    warnings.push(`立面図の窓を読めませんでした（${(e as Error).message}）`);
+    views = [];
+  }
 
   // 外皮の後処理: 一部だけ外に面する内壁を分け、外形に沿って壁の無い区間を外壁で補う（3D で家に穴が開かないように）
   for (const f of res.floors) {
@@ -259,16 +348,33 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     warnings.push(`${up.level}階の 1 間を超える張り出しの足元に、${lo.level}階の柱を ${add.length} 本立てました（修正画面の「柱」で変更・削除できます）`);
   }
 
-  // 立面図のページがあれば、そこに書かれた高さ（GL から 1 階床・階高・最高高さ・屋根勾配）を使う（無ければ標準値）
-  const elev = readElevationHeights(pages);
-  let heights: BuildingModel['heights'];
-  if (elev) {
-    const summary = applyElevationHeights(res.floors, elev);
-    heights = { source: 'elevation', ...elev };
-    warnings.push(`立面図の寸法から高さを読みました（${summary}）`);
+  // 立面図の窓の線から、窓ごとの腰高・高さ（平面図の同じ面の外壁の窓と横の位置で対応させる）
+  let elevationWindows: BuildingModel['report']['elevationWindows'];
+  try {
+    if (views.length) {
+      const r = applyElevationWindows(res.floors, views, res.northAngleDeg);
+      warnings.push(...r.notes);
+      elevationWindows = { views: views.length, facades: r.facades, matched: r.matched, changed: r.changed, added: r.added, total: r.total };
+    }
+  } catch (e) {
+    warnings.push(`立面図の窓を読めませんでした（${(e as Error).message}）`);
+  }
+  const pageMap = buildPageMap(pages, res.floorPages, views, elevationWindows, !!elev);
+  // 立面図のページの外部仕上表（屋根・外壁・サッシ・玄関ドアの材料と色）
+  let finishTable: BuildingModel['report']['finishTable'];
+  try {
+    const rows = readExteriorFinishTable(pages);
+    if (rows.length) {
+      finishTable = rows.map(({ part, text, color }) => ({ part, text, ...(color ? { color } : {}) }));
+      const pg = rows[0].pageIndex;
+      const info = pageMap.find((p) => p.page === pg);
+      if (info) info.used = [info.used, '外部仕上表'].filter(Boolean).join('・');
+    }
+  } catch {
+    // 仕上表が読めなくても読み取りはそのまま
   }
 
-  const { thicknesses, areaTable, ...model } = res;
+  const { thicknesses, areaTable, floorPages: _fp, ...model } = res;
   return {
     ...model,
     ...(heights ? { heights } : {}),
@@ -282,8 +388,44 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       timingsMs: { analyze: Math.round(performance.now() - t0) },
       northDetected: res.northDetected,
       ...(Object.keys(areaTable).length ? { areaTable } : {}),
+      ...(pageMap.length ? { pageMap } : {}),
+      ...(elevationWindows ? { elevationWindows } : {}),
+      ...(finishTable ? { finishTable } : {}),
+      ...(floorShifted.length ? { floorShifts: floorShifted } : {}),
     },
   };
+}
+
+/** 上下階の階段の重なり（いちばん重なる組の IoU）。どちらかに階段が無ければ null */
+function bestStairOverlap(lo: BuildingModel['floors'][number], up: BuildingModel['floors'][number]): number | null {
+  if (!lo.stairs.length || !up.stairs.length) return null;
+  let best = 0;
+  for (const a of lo.stairs) for (const b of up.stairs) best = Math.max(best, stairIoU(a, b));
+  return best;
+}
+
+/** 「東へ 910mm」「北へ 455mm・東へ 910mm」（図面の上 = 北として） */
+function describeShift(dx: number, dy: number): string {
+  return [dy ? `${dy < 0 ? '上（北）' : '下（南）'}へ ${Math.abs(dy)}mm` : '', dx ? `${dx > 0 ? '右（東）' : '左（西）'}へ ${Math.abs(dx)}mm` : ''].filter(Boolean).join('・');
+}
+
+/** 各ページの中身と、読み取りに使ったこと（何階の平面図・高さの寸法・窓の高さ） */
+function buildPageMap(pages: PageVectors[], floorPages: Record<number, number>, views: ElevationView[], ew: BuildingModel['report']['elevationWindows'], heightsRead: boolean): PageInfo[] {
+  return pages.map((p) => {
+    const floors = Object.entries(floorPages)
+      .filter(([, pg]) => pg === p.pageIndex)
+      .map(([lv]) => Number(lv))
+      .sort((a, b) => a - b);
+    const { kind, title } = classifyPage(p.texts, p.segments.length, floors);
+    let used: string | undefined;
+    if (floors.length) used = `${floors.join('・')}階の間取り`;
+    else if (kind === 'elevation') {
+      const onPage = views.filter((v) => v.pageIndex === p.pageIndex);
+      const parts = [heightsRead ? '床・階高・屋根勾配' : '', onPage.length && ew?.matched ? `窓の高さ ${ew.matched} か所` : ''].filter(Boolean);
+      used = parts.length ? parts.join('・') : undefined;
+    }
+    return { page: p.pageIndex, kind, title, ...(used ? { used } : {}) };
+  });
 }
 
 /**
@@ -293,6 +435,36 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
 export async function readElevationPdf(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<ElevationHeights | null> {
   const pages = await loadPdfVectors(data, pdfjs, opts);
   return readElevationHeights(pages);
+}
+
+/** 別ファイルの立面図から読めるもの一式（高さの寸法・4 面の窓・外部仕上表） */
+export interface ElevationSheet {
+  heights: ElevationHeights | null;
+  views: ElevationView[];
+  finishTable: { part: string; text: string; color?: string }[];
+}
+
+/**
+ * 立面図だけの PDF から、高さの寸法・4 面の窓・外部仕上表を読む（平面図と別に保存されているとき）。
+ * @param mmHint 平面図の縮尺（立面図に「N階FL」が無いときに使う）
+ */
+export async function readElevationSheet(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions & { mmHint?: number } = {}): Promise<ElevationSheet> {
+  const pages = await loadPdfVectors(data, pdfjs, opts);
+  const heights = readElevationHeights(pages);
+  const mm = opts.mmHint ?? detectScale(pages).mmPerPt;
+  let views: ElevationView[] = [];
+  try {
+    views = readElevationViews(pages, mm, heights);
+  } catch {
+    views = [];
+  }
+  let finishTable: ElevationSheet['finishTable'] = [];
+  try {
+    finishTable = readExteriorFinishTable(pages).map(({ part, text, color }) => ({ part, text, ...(color ? { color } : {}) }));
+  } catch {
+    finishTable = [];
+  }
+  return { heights, views, finishTable };
 }
 
 export async function parseFloorPlanPdf(data: Uint8Array, pdfjs: PdfjsLike, opts: ParseOptions = {}): Promise<BuildingModel> {

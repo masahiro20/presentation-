@@ -4,7 +4,10 @@ import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
 import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
-import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser, renderPdfPageJpeg } from '../../parser/browser';
+import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser, readElevationSheetInBrowser, renderPdfPageJpeg } from '../../parser/browser';
+import { applyElevationWindows, floorShiftsFromElevation } from '../../parser/elevationWindows';
+import { finishesFromTable } from '../../coordinate/fromFinishTable';
+import { translateFloor } from '../../core/floorAlign';
 import { buildDigest, getDesignRules, getReviewModel, REVIEW_MODELS, ruleFromFinding, runDesignReview, setDesignRules, setReviewModel, type ReviewResult } from '../aiDesigner';
 import { getGeminiKey } from '../aiFinish';
 import { parseDxf, type ModuleMode } from '../../parser';
@@ -81,9 +84,12 @@ async function loadPdf(ctx: StepCtx, data: Uint8Array, name: string, scaleDenomi
       (state.revisions ??= []).push(prevSummary);
       if (state.revisions.length > 10) state.revisions.splice(0, state.revisions.length - 10);
     }
+    const freshPdf = !state.model || state.pdfName !== name;
     state.model = model;
     // 立面図の屋根勾配が読めたら、外観の屋根に使う（形は外観テイストのまま）
     if (model.heights?.roofPitch != null) state.design = { ...state.design, roofPitch: model.heights.roofPitch };
+    // 立面図の外部仕上表: 屋根・外壁・サッシ・玄関ドアをコーディネートの初期値に（同じ図面の再解析では、手で選び直したものを消さない）
+    if (freshPdf && model.report.finishTable?.length) applyFinishTable(model.report.finishTable);
     state.pdfName = name;
     lastPdf = { data, name, kind, moduleMode, drawing };
     emit('model');
@@ -164,22 +170,55 @@ function applyElevationToModel(elev: ElevationHeights): string {
   return summary;
 }
 
+/** 外部仕上表をコーディネートの選択と品番メモに当てる。反映した部位の名前を返す */
+function applyFinishTable(rows: { part: string; text: string; color?: string }[]): string[] {
+  const ft = finishesFromTable(rows);
+  if (!ft.applied.length) return [];
+  state.design = {
+    ...state.design,
+    finishes: { ...(state.design.finishes ?? {}), ...ft.finishes },
+    finishNotes: { ...(state.design.finishNotes ?? {}), ...ft.notes },
+    ...(ft.wallColor ? { wallColorOverride: ft.wallColor } : {}),
+  };
+  return ft.applied;
+}
+
 /**
- * 別ファイルの立面図 PDF から高さ・屋根勾配を読んで間取りに当てる（平面図と立面図が別々に保存されているとき）。
- * 読めるのは CAD から出力した立面図（「1階FL」「2,800（階高）」「最高高さ」の文字があるもの）
+ * 別ファイルの立面図 PDF から、高さの寸法・4 面の窓（窓の高さ・上下階のずれ）・外部仕上表を読んで間取りに当てる（平面図と立面図が別々に保存されているとき）。
+ * 読めるのは CAD から出力した立面図（「1階FL」「2,800（階高）」「最高高さ」の文字・窓の線があるもの）
  */
 async function heightsFromElevationPdf(f: File): Promise<boolean> {
   if (!state.model) return false;
-  const pm = progressModal('立面図から高さを読んでいます', false);
+  const model = state.model;
+  const pm = progressModal('立面図を読んでいます', false);
   try {
     const data = new Uint8Array(await f.arrayBuffer());
-    const elev = await readElevationPdfInBrowser(data);
-    if (!elev) {
-      toast(`${f.name} に立面図の寸法（「1階FL」「階高」「最高高さ」の文字）が見つかりませんでした。CAD から出力したベクター PDF の立面図をお試しください`, 'error', 9000);
+    const sheet = await readElevationSheetInBrowser(data, model.report.mmPerPt);
+    const done: string[] = [];
+    if (sheet.heights) done.push(`高さ（${applyElevationToModel(sheet.heights)}）`);
+    if (sheet.views.length) {
+      // 上下階の重ね位置のずれは、手で直した間取りを勝手に動かさず、確かめてから直す
+      const grid = model.module ? model.module.size / 2 : undefined;
+      const shifts = floorShiftsFromElevation(model.floors, sheet.views, model.northAngleDeg, grid);
+      const r = applyElevationWindows(model.floors, sheet.views, model.northAngleDeg);
+      if (r.matched) {
+        model.report.elevationWindows = { views: sheet.views.length, facades: r.facades, matched: r.matched, changed: r.changed, added: r.added, total: r.total };
+        done.push(`窓の高さ ${r.matched} か所${r.added ? `・読めなかった窓 ${r.added} か所を追加` : ''}`);
+      }
+      if (shifts.length) setTimeout(() => askFloorShift(shifts), 300);
+    }
+    if (sheet.finishTable.length) {
+      model.report.finishTable = sheet.finishTable;
+      const applied = applyFinishTable(sheet.finishTable);
+      if (applied.length) done.push(`外部仕上表（${applied.join('・')}）`);
+    }
+    if (!done.length) {
+      toast(`${f.name} に立面図の寸法・窓が見つかりませんでした。CAD から出力したベクター PDF の立面図をお試しください`, 'error', 9000);
       return false;
     }
-    const summary = applyElevationToModel(elev);
-    toast(`${f.name} の立面図から高さを反映しました（${summary}）`, 'ok', 9000);
+    model.heights = model.heights ?? (sheet.heights ? { source: 'elevation', ...sheet.heights } : undefined);
+    emit('model');
+    toast(`${f.name} の立面図から反映しました: ${done.join('／')}`, 'ok', 10000);
     return true;
   } catch (e) {
     toast(`立面図を読めませんでした: ${(e as Error).message}`, 'error', 8000);
@@ -187,6 +226,42 @@ async function heightsFromElevationPdf(f: File): Promise<boolean> {
   } finally {
     pm.close();
   }
+}
+
+/** 立面図で見つかった上下階の重ね位置のずれを、確かめてから直す */
+function askFloorShift(shifts: { level: number; dx: number; dy: number; evidence: string[] }[]) {
+  const model = state.model;
+  if (!model) return;
+  const desc = (dx: number, dy: number) => [dy ? `${dy < 0 ? '上（北）' : '下（南）'}へ ${Math.abs(dy)}mm` : '', dx ? `${dx > 0 ? '右（東）' : '左（西）'}へ ${Math.abs(dx)}mm` : ''].filter(Boolean).join('・');
+  modal(
+    '上下階の重ね位置を直しますか',
+    h(
+      'div',
+      null,
+      h('p', null, '立面図の窓の並びと比べると、平面図の重ね位置がずれているようです。'),
+      h('ul', null, ...shifts.map((s) => h('li', null, `${s.level}階を ${desc(s.dx, s.dy)}（根拠: ${s.evidence.join('・')}）`))),
+      h('p', { class: 'hint keep' }, '上の階も一緒に動きます。あとから方眼の「上下階」でも直せます。'),
+    ),
+    [
+      { label: 'そのまま' },
+      {
+        label: '直す',
+        primary: true,
+        onClick: () => {
+          let carry = { x: 0, y: 0 };
+          for (const f of [...model.floors].sort((a, b) => a.level - b.level)) {
+            const sh = shifts.find((x) => x.level === f.level);
+            const d = sh ? { x: sh.dx, y: sh.dy } : carry;
+            if (d.x || d.y) translateFloor(f, d);
+            carry = d;
+          }
+          model.report.floorShifts = shifts.map(({ level, dx, dy }) => ({ level, dx, dy }));
+          emit('model');
+          toast('上下階の重ね位置を直しました', 'ok');
+        },
+      },
+    ],
+  );
 }
 
 /** 高さの出どころの表示（補助データの欄） */
@@ -317,7 +392,7 @@ function dropScreen(ctx: StepCtx) {
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
     h('b', null, '平面図の PDF をここに置く'),
-    h('span', null, '立面図が同じ PDF に入っていれば高さも読みます（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、床・窓・屋根の高さも 3D のとおりに'),
+    h('span', null, '立面図が同じ PDF にあれば、床の高さ・窓の高さ・外部仕上げまで読み、上下階のずれや縮尺の間違いも立面図で直します（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、屋根の形まで 3D のとおりに'),
     h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
     input,
   );
@@ -1054,11 +1129,13 @@ function renderResult(ctx: StepCtx) {
 
   const rep = model.report;
   const scaleLabel = rep.scaleDenominator ? `1/${rep.scaleDenominator}` : `約1/${Math.round(rep.mmPerPt / 0.3528)}`;
-  const srcLabel: Record<string, string> = { dimension: '寸法線から判定', text: '縮尺表記から判定', area: '帖数から推定', module: '壁の間隔から推定', default: '既定値', manual: '手動指定' };
+  const srcLabel: Record<string, string> = { dimension: '寸法線から判定', text: '縮尺表記から判定', area: '帖数から推定', module: '壁の間隔から推定', default: '既定値', manual: '手動指定', elevation: '立面図の建物の幅から補正' };
 
   // 要点（直すたびに更新）: 階・部屋・窓とドア・延床と、読み取りチェック
   const summary = h('div', { class: 'imp-summary' });
   const checkHost = h('div');
+  // 使った図面と、精度を上げる次の一手（立面図・3D データ・DXF の入れ口は下の「補助データ」で作るので、あとで中身を入れる）
+  const guideHost = h('div');
   function refreshSummary() {
     const rooms = model.floors.reduce((s, f) => s + f.rooms.length, 0);
     const openings = model.floors.reduce((s, f) => s + f.openings.length, 0);
@@ -1115,6 +1192,7 @@ function renderResult(ctx: StepCtx) {
       ),
     ),
     checkHost,
+    guideHost,
   );
   if (rep.warnings.length)
     side.append(
@@ -1272,6 +1350,24 @@ function renderResult(ctx: StepCtx) {
     await heightsFromElevationPdf(f);
     void ctx.app.go('import');
   });
+  // DXF（線のデータ）で読み直す
+  const dxfIn = h('input', { type: 'file', accept: '.dxf', style: 'display:none' }) as HTMLInputElement;
+  dxfIn.addEventListener('change', async () => {
+    const f = dxfIn.files?.[0];
+    dxfIn.value = '';
+    if (!f) return;
+    resultCleanup?.();
+    await loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name, undefined, 'dxf', lastPdf?.moduleMode ?? 'auto');
+  });
+  guideHost.append(
+    sourcesCard(model, {
+      addElevation: () => elevIn.click(),
+      add3d: () => ext3dIn.click(),
+      addDxf: () => dxfIn.click(),
+      openCoord: () => ctx.app.go('coord'),
+    }),
+    dxfIn,
+  );
   side.append(
     fold(
       '補助データ（読み取りの精度を上げる）',
@@ -1280,12 +1376,12 @@ function renderResult(ctx: StepCtx) {
       h(
         'div',
         { class: 'btn-row', style: 'margin-top:0' },
-        h('button', { class: 'btn sm', title: '平面図と別ファイルの立面図 PDF から、1 階床・階高・最高高さ・屋根勾配を読みます', onclick: () => elevIn.click() }, '立面図の PDF を足す'),
+        h('button', { class: 'btn sm', title: '平面図と別ファイルの立面図 PDF から、1 階床・階高・屋根勾配・窓の高さ・外部仕上表を読みます（上下階のずれも確かめます）', onclick: () => elevIn.click() }, '立面図の PDF を足す'),
         elevIn,
         h('button', { class: 'btn sm', title: 'ARCHITREND の 3DS など。床・窓の腰高と高さ・屋根を 3D のとおりに直します', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
         ext3dIn,
       ),
-      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の高さ・屋根の形まで 3D のとおりになります。'),
+      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、屋根の形まで 3D のとおりになります。'),
     ),
     fold(
       '読み込みのやり直し・保存',
@@ -1308,6 +1404,76 @@ function renderResult(ctx: StepCtx) {
     ),
   );
   refreshSummary();
+}
+
+/**
+ * 使った図面と、精度を上げる次の一手。
+ * 使う人（設計士・コーディネーター）が「どのページの何を使ったか」「何を足せばもっと正確になるか」を 1 か所で分かるように。
+ * - PDF の中身: ページごとの図面の種類と、読み取りに使ったこと
+ * - 図面から合わせたもの: 立面図の高さ・窓の高さ・上下階の重ね位置・縮尺、外部仕上表
+ * - 次の一手: 立面図（無いとき）・3D データ（3DS）・DXF（読み取りの点数が低いとき）を、効き目とボタンで
+ */
+function sourcesCard(model: BuildingModel, act: { addElevation: () => void; add3d: () => void; addDxf: () => void; openCoord: () => void }): HTMLElement {
+  const rep = model.report;
+  const pages = rep.pageMap ?? [];
+  const hasElevPage = pages.some((p) => p.kind === 'elevation');
+  const ew = rep.elevationWindows;
+  const done: (string | HTMLElement)[] = [];
+  const hs = model.heights;
+  if (hs?.source === 'elevation') done.push(`立面図の寸法: ${describeElevationHeights({ storyHeights: hs.storyHeights ?? [], floor1: hs.floor1, maxHeight: hs.maxHeight, maxEave: hs.maxEave, roofPitch: hs.roofPitch })}`);
+  if (hs?.source === '3d') done.push('設計の 3D データ: 床・窓・屋根の高さ');
+  if (ew?.matched) done.push(`立面図の窓: ${ew.matched} か所の腰高・高さ（${ew.facades.join('・')}）${ew.added ? `・読めなかった窓 ${ew.added} か所を追加` : ''}`);
+  for (const sh of rep.floorShifts ?? []) {
+    const d = [sh.dy ? `${sh.dy < 0 ? '北' : '南'}へ ${Math.abs(sh.dy)}mm` : '', sh.dx ? `${sh.dx > 0 ? '東' : '西'}へ ${Math.abs(sh.dx)}mm` : ''].filter(Boolean).join('・');
+    done.push(`立面図で直した: ${sh.level}階の重ね位置（${d}）`);
+  }
+  if (rep.scaleSource === 'elevation') done.push(`立面図で直した: 平面図の縮尺（1/${rep.scaleDenominator ?? Math.round(rep.mmPerPt / 0.3528)}）`);
+  if (rep.finishTable?.length) {
+    const ft = finishesFromTable(rep.finishTable);
+    if (ft.applied.length) done.push(h('span', null, `外部仕上表: ${ft.applied.join('・')}をコーディネートに反映 `, h('button', { class: 'btn sm ghost', onclick: act.openCoord }, 'コーデで見る')));
+  }
+  // 次の一手
+  const next: HTMLElement[] = [];
+  const item = (title: string, why: string, btn: string, fn: () => void) =>
+    h('div', { class: 'src-next' }, h('div', null, h('b', null, title), h('span', { class: 'hint keep' }, why)), h('button', { class: 'btn sm', onclick: fn }, btn));
+  if (!hasElevPage && hs?.source !== 'elevation' && hs?.source !== '3d')
+    next.push(item('立面図を足す', '窓の高さ・床の高さ・屋根勾配が図面どおりになり、上下階の重ね位置のずれや縮尺の間違いも立面図で見つけて直します。外部仕上表があれば外観の仕上げも。', '立面図の PDF を足す', act.addElevation));
+  if (hs?.source !== '3d') {
+    const complex = model.floors.length >= 3 || model.floors.some((f) => f.rooms.some((r) => r.floorOffset)) || (model.roofPatches?.length ?? 0) > 0;
+    next.push(item('3D データ（ARCHITREND の 3DS）', `${complex ? 'この家は形が込み入っているので、' : ''}屋根の形・窓の高さまで設計どおりの外観になります（ZERO の 3D 画面から 3DS で書き出したファイル）。`, '3DS を入れる', act.add3d));
+  }
+  let score: number | null = null;
+  try {
+    score = Math.round(readingScore(model).score);
+  } catch {
+    score = null;
+  }
+  if (score != null && score < 80 && !/\.dxf$/i.test(state.pdfName ?? ''))
+    next.push(item('DXF で読み直す', `読み取りの点数が ${score} 点です。ARCHITREND の図面を DXF で書き出して読み込むと、壁・窓・戸の位置が線のとおりに読めます。`, 'DXF を読み込む', act.addDxf));
+  const pageLine = pages.length
+    ? h(
+        'div',
+        { class: 'src-pages' },
+        ...pages.map((p) =>
+          h(
+            'span',
+            { class: `src-page ${p.used ? 'used' : ''}`, title: p.used ? `${p.page + 1} ページ目（${p.title}）から使ったもの: ${p.used}` : `${p.page + 1} ページ目（${p.title}）: 読み取りには使っていません` },
+            h('span', { class: 'n' }, `${p.page + 1}`),
+            h('small', null, p.title),
+            // 平面図は名前で分かるので、使ったことは色だけ。立面図などは何を使ったかを短く
+            p.used && p.kind !== 'plan' ? h('em', null, p.used.replace(/床・階高・屋根勾配/, '高さ').replace(/窓の高さ (\d+) か所/, '窓 $1').replace(/外部仕上表/, '仕上表')) : null,
+          ),
+        ),
+      )
+    : null;
+  return h(
+    'div',
+    { class: 'card src-card' },
+    h('div', { class: 'src-head' }, h('b', null, '使った図面と、精度を上げる次の一手'), pages.length ? h('span', { class: 'hint keep' }, `PDF ${pages.length} ページ`) : null),
+    pageLine,
+    done.length ? h('ul', { class: 'src-done' }, ...done.map((d) => h('li', null, d))) : h('p', { class: 'hint keep', style: 'margin:4px 0' }, '平面図だけから読みました（高さ・窓の高さは標準値の推定）。'),
+    next.length ? h('div', { class: 'src-next-list' }, ...next) : null,
+  );
 }
 
 function numInput(v: number, onChange: (v: number) => void) {

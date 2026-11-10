@@ -1,6 +1,7 @@
 /**
  * 解析結果（壁片・開口・文字）から建物モデルを組み立てる
  */
+import { titleBlockKind, PAGE_KIND_LABEL } from './pageMap';
 import { ensureGarageShutters } from './garageShutter';
 import { ensureOpenings, relocateAutoShutters } from './ensureOpenings';
 import { chooseEntrance } from './entranceChoice';
@@ -1732,6 +1733,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     } else if (a?.names.length) {
       // 複数の室名が1つの領域に入った場合（LDK＋パントリーなど）は主な部屋を代表にする
       let main = mainName(a.names, area)!;
+      // 吹抜の区画に居室・ホールの名前は入らない。吹抜と居室の名前が一緒に入ったのは内壁が読めずにまとまった区画なので、
+      // 吹抜にしない（田添様邸の 2 階: 内壁が読めず 2 階全体が「吹抜・子供室①・ホール②・トイレ②・子供室②」になり、3D で 2 階の床が抜けていた）
+      if (main.type === 'void') {
+        const rooms2 = a.names.filter((n) => !['void', 'stairs', 'balcony', 'porch'].includes(n.type));
+        if (rooms2.length) main = mainName(rooms2)!;
+      }
       // 「外部物置」と「庇」が同じ区画に入った軒下のテラス: 物置が 15㎡ を超えることは無いので屋外（庇・ポーチ）を代表にする
       if ((main.type === 'storage' || main.type === 'closet') && area > 15) {
         const outdoor = a.names.find((n) => n.type === 'porch' || n.type === 'balcony');
@@ -2600,7 +2607,17 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
   const plans: PlanData[] = [];
   const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
   const docHasRooms = pages.some((pg) => pg.texts.some(isRoomText));
+  // 図面枠の「図面名」が平面図以外（配置図・求積図・立面図・断面図・展開図・仕上表…）のページは、他に平面図のページがあれば読まない
+  // （意匠図一式で、建物の形と室名の入った配置図が「3 階」として読まれていた）
+  const tbKind = pages.map((pg) => titleBlockKind(pg.texts));
+  const NOT_PLAN = new Set(['site', 'area', 'elevation', 'section', 'interior', 'finish', 'fixture', 'location', 'index', 'roof', 'structure']);
+  const hasPlanPage = pages.some((pg, i) => tbKind[i] === 'plan' || (tbKind[i] == null && pg.texts.some(isRoomText)));
   for (const page of pages) {
+    const tk = tbKind[pages.indexOf(page)];
+    if (tk && NOT_PLAN.has(tk) && hasPlanPage && pages.length > 1) {
+      warnings.push(`${page.pageIndex + 1}ページ目: 図面名が「${PAGE_KIND_LABEL[tk as keyof typeof PAGE_KIND_LABEL]}」のページなので平面図としては読みません`);
+      continue;
+    }
     const kind = pageDrawingKind(page.texts, { raster: !!page.rasterMask, docHasRooms, multiPage: pages.length > 1 });
     if (kind === 'elevation') {
       warnings.push(`${page.pageIndex + 1}ページ目: 立面図・断面図のページなので平面図としては読みません（高さの寸法は使います）`);
@@ -3304,7 +3321,7 @@ export interface AssembleOptions {
   module?: ModuleMode;
 }
 
-export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number> } {
+export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number>; floorPages: Record<number, number> } {
   let plans = detectPlans(pages, warnings);
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
@@ -3594,7 +3611,13 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       });
     }
   }
-  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null, areaTable };
+  // 階ごとの元のページ（読み込み結果の「PDF の中身」で、どのページを何階として読んだかを見せる）
+  const floorPages: Record<number, number> = {};
+  for (const f of floors) {
+    const pg = planOf.get(f)?.pageIndex;
+    if (pg != null) floorPages[f.level] = pg;
+  }
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null, areaTable, floorPages };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

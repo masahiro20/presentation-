@@ -304,6 +304,7 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
         o.sill = sill;
         o.height = height;
       }
+      o.heightFrom = '3d';
     }
   });
   if (total) notes.push(`窓の高さ: ${matched} / ${total} か所を 3D データのガラスに合わせました`);
@@ -342,7 +343,7 @@ export function applyMeasured(model: BuildingModel, m: Measured3d, floorWorldY: 
     if (f.openings.some((o) => o.wallId === best!.w.id && o.t0 < t1 + 50 && o.t1 > t0 - 50)) continue;
     const sill = Math.max(0, Math.round(((g.yMin - floorY) / MM - FRAME) / 10) * 10);
     const height = Math.round(((g.yMax - g.yMin) / MM + FRAME * 2) / 10) * 10;
-    f.openings.push({ id: `o3d-${f.level}-${++added}`, wallId: best.w.id, kind: 'window', t0, t1, sill, height, windowStyle: height >= 1800 && sill < 200 ? 'hakidashi' : height <= 700 ? (sill >= 1300 ? 'high' : 'small') : 'koshi', confidence: 0.9 });
+    f.openings.push({ id: `o3d-${f.level}-${++added}`, wallId: best.w.id, kind: 'window', t0, t1, sill, height, windowStyle: height >= 1800 && sill < 200 ? 'hakidashi' : height <= 700 ? (sill >= 1300 ? 'high' : 'small') : 'koshi', confidence: 0.9, heightFrom: '3d' });
   }
   if (added) notes.push(`図面から読めなかった窓 ${added} か所を 3D データから足しました`);
   let roof: HeightChanges['roof'] = null;

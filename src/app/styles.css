@@ -1145,6 +1145,24 @@ body.cinema .main { grid-template-columns: 1fr; }
 .imp-summary b { font-size: 16.5px; font-weight: 600; }
 .imp-summary span { font-size: 13.5px; color: var(--ink2); }
 .imp-mode { margin-bottom: 6px; }
+/* 使った図面と、精度を上げる次の一手 */
+.src-card { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fbfaf7; display: flex; flex-direction: column; gap: 8px; }
+.src-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.src-head b { font-size: 14.5px; font-weight: 600; text-wrap: balance; }
+.src-head .hint { white-space: nowrap; margin: 0; }
+.src-pages { display: flex; flex-wrap: wrap; gap: 4px; }
+.src-page { display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: #8b8d91; background: #fff; max-width: 100%; }
+.src-page .n { font-variant-numeric: tabular-nums; }
+.src-page small { font-size: 12px; color: inherit; white-space: nowrap; }
+.src-page em { font-style: normal; font-size: 11.5px; color: var(--accent); }
+.src-page.used { color: var(--ink); border-color: #cdb894; background: #fffaf0; }
+.src-done { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; color: var(--ink); }
+.src-done li::marker { content: '✓  '; color: #3f8f5a; }
+.src-done .btn { margin-left: 4px; }
+.src-next-list { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--line2); padding-top: 8px; }
+.src-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.src-next > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 13px; }
+.src-next .hint { font-size: 12.5px; line-height: 1.55; margin: 0; }
 .imp-hint { margin: 0 0 4px; }
 details.check-card > summary { list-style: none; cursor: pointer; }
 details.check-card > summary::-webkit-details-marker { display: none; }

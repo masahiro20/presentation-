@@ -95,6 +95,11 @@ export interface Opening {
    * 3D では庇・ポーチを付けず、外開きの勝手口ドア（上半分ガラス）と踏み段だけにする
    */
   service?: boolean;
+  /**
+   * 腰高・高さの出どころ: 立面図の窓の線から読んだ／設計の 3D データで測った。
+   * 図面どおりの高さなので、仕様の「サッシ上端＝天井」でそろえ直さない
+   */
+  heightFrom?: 'elevation' | '3d';
 }
 
 export interface Room {
@@ -216,7 +221,7 @@ export interface ParseReport {
   pages: number;
   scaleDenominator: number | null;
   mmPerPt: number;
-  scaleSource: 'dimension' | 'text' | 'area' | 'module' | 'default' | 'manual';
+  scaleSource: 'dimension' | 'text' | 'area' | 'module' | 'default' | 'manual' | 'elevation';
   wallThicknesses: number[];
   warnings: string[];
   timingsMs: Record<string, number>;
@@ -224,6 +229,14 @@ export interface ParseReport {
   northDetected?: boolean;
   /** 図面の面積表（階 → ㎡。build = 建築面積、total = 延床面積）。読み取りの点数で階の広さ・上下階の重なりの検算に使う */
   areaTable?: Record<number, number> & { build?: number; total?: number };
+  /** PDF の各ページの中身（kind: plan・elevation・section・site・area など。parser/pageMap の PageKind）と、読み取りに使ったこと */
+  pageMap?: { page: number; kind: string; title: string; used?: string }[];
+  /** 立面図のページの外部仕上表（欄の名前・中の文言・色）。読み込み時にコーディネートの初期値にする */
+  finishTable?: { part: string; text: string; color?: string }[];
+  /** 立面図で直した上下階の重ね位置（mm。図面の右・下が +） */
+  floorShifts?: { level: number; dx: number; dy: number }[];
+  /** 立面図の窓の線から窓の高さを当てた結果（当てた面・確かめた窓・腰高と高さを直した窓・足した窓・面の外壁の窓） */
+  elevationWindows?: { views: number; facades: string[]; matched: number; changed: number; added: number; total: number };
 }
 
 /** 図面上の辺（図面の上 = top） */

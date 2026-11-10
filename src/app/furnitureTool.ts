@@ -577,5 +577,10 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
   }
 
   const btn = h('button', { class: 'nav-btn', title: '家具・造作（パースを見ながら造作本棚を置く、キッチンの型を変える）\n床をクリックで置く、家具をクリックで選ぶ、選んだ家具はドラッグで動かす', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '▦'), '家具');
-  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
+  /** 元に戻した後: 消えた家具の選択を外して、枠・つまみ・パネルを今のモデルに合わせる */
+  const refresh = () => {
+    if (sel && !selected()) sel = null;
+    render();
+  };
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd, refresh };
 }

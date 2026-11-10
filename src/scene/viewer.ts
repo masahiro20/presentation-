@@ -378,7 +378,7 @@ export class Viewer {
       }
       const hit = this.pickHit(ndc);
       const k = hit?.matKey ?? '';
-      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || (!this.cut && /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k)));
+      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || k === 'int.stairs' || (!this.cut && /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k)));
       const want = touchable ? 'pointer' : this.navMode === 'pan' ? 'grab' : '';
       if (el.style.cursor !== want) el.style.cursor = want;
     });

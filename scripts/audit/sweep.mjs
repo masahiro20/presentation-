@@ -167,6 +167,51 @@ const yardSquare = () =>
     };
     return cands.find((c) => c.every(onScreen)) ?? cands[0];
   });
+/**
+ * 3D で見えている庭の 1.5m 角の四角（図面座標 mm）。画面を格子状に指して地面（芝・土間・道路）に当たる所を探し、
+ * そこを角にして、4 つの角がどれも建物（外形の 600 mm 外まで）に掛からず、パネルに隠れず、指すと地面に当たる四角を返す。
+ * 道路側の低い視点では建物の裏の庭が隠れていて、クリックが建物の床に当たり「小さすぎます」になっていた（第 36〜40 巡の点検で毎回出ていた 1 件）。
+ * 建物のまわりに決め打ちの四角を置く方法は、カメラ・パネルの位置しだいで全部隠れることがあった（第 41 巡）
+ */
+const yardSquare3d = () =>
+  page.evaluate(() => {
+    const v = window.__viewer;
+    const m = window.__state.model;
+    if (!v || !m) return null;
+    const pts = m.floors.flatMap((f) => (f.outline.flat().length ? f.outline.flat() : f.walls.flatMap((w) => [w.a, w.b])));
+    const M = 600;
+    const box = { minX: Math.min(...pts.map((p) => p.x)) - M, maxX: Math.max(...pts.map((p) => p.x)) + M, minY: Math.min(...pts.map((p) => p.y)) - M, maxY: Math.max(...pts.map((p) => p.y)) + M };
+    const nearHouse = (p) => p.x > box.minX && p.x < box.maxX && p.y > box.minY && p.y < box.maxY;
+    const r = v.renderer.domElement.getBoundingClientRect();
+    const V3 = v.camera.position.constructor;
+    // 画面の点 → 地面の点（パネル・帯に隠れている所、地面より上の物に当たる所は null）
+    const groundAt = (sx, sy) => {
+      if (!(sx > r.left + 12 && sx < r.right - 12 && sy > r.top + 12 && sy < r.bottom - 12)) return null;
+      if (document.elementFromPoint(sx, sy) !== v.renderer.domElement) return null;
+      const hit = v.pickHit({ x: ((sx - r.left) / r.width) * 2 - 1, y: -((sy - r.top) / r.height) * 2 + 1 });
+      // 芝・土間・道路は外構（landscape）の面。木・フェンスなど地面より上の物に当たったら地面ではない
+      if (!hit || !['ground', 'building', 'landscape'].includes(hit.group) || hit.point.y > 0.6) return null;
+      return { x: hit.point.x * 1000, y: hit.point.z * 1000 };
+    };
+    const visible = (p) => {
+      const q = new V3(p.x / 1000, 0.05, p.y / 1000).project(v.camera);
+      if (q.z > 1 || q.z < -1) return false;
+      const g = groundAt(r.left + ((q.x + 1) / 2) * r.width, r.top + ((1 - q.y) / 2) * r.height);
+      return !!g && Math.hypot(g.x - p.x, g.y - p.y) < 300;
+    };
+    const S = 1500;
+    for (let fy = 0.3; fy < 0.95; fy += 0.05)
+      for (let fx = 0.35; fx < 0.92; fx += 0.05) {
+        const g = groundAt(r.left + r.width * fx, r.top + r.height * fy);
+        if (!g || nearHouse(g)) continue;
+        for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+          const sq = [g, { x: g.x + dx * S, y: g.y }, { x: g.x + dx * S, y: g.y + dy * S }, { x: g.x, y: g.y + dy * S }].map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+          if (sq.some(nearHouse)) continue;
+          if (sq.every(visible)) return sq;
+        }
+      }
+    return null;
+  });
 /** 建物の中の点（1 階のいちばん大きい部屋の文字の位置） */
 const insidePoint = () =>
   page.evaluate(() => {
@@ -348,11 +393,22 @@ const sweep3dTool = async () => {
       if (label === '屋根') {
         // 屋根を足す（床を 2 回クリック）→ 消す。壁を足す → やめる
         const add = tool.locator('button', { hasText: '屋根を足す' }).first();
-        if (await add.count()) {
+        // 見えている庭を探す。今の視点で見えなければ鳥瞰に切り替えて探し直す
+        let ysq = await yardSquare3d();
+        if (!ysq) {
+          const bird = page.locator('button', { hasText: /^鳥瞰$/ }).first();
+          if (await bird.count()) {
+            await bird.click({ timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            ysq = await yardSquare3d();
+          }
+        }
+        if (!ysq) log.push({ step: cur, kind: 'note', msg: '3D で見えている庭が見つからず、屋根を足す確認を省いた' });
+        if (ysq && (await add.count())) {
           await add.click({ timeout: 8000 });
           await page.waitForTimeout(200);
-          const a = await screenOf(sq[0].x, sq[0].y, 0.05);
-          const b = await screenOf(sq[2].x, sq[2].y, 0.05);
+          const a = await screenOf(ysq[0].x, ysq[0].y, 0.05);
+          const b = await screenOf(ysq[2].x, ysq[2].y, 0.05);
           await page.mouse.click(a.x, a.y);
           await page.waitForTimeout(400);
           await page.mouse.click(b.x, b.y);

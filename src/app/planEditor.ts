@@ -21,7 +21,7 @@ import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
-import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall } from '../core/openings';
+import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall, dragOpeningEnd } from '../core/openings';
 import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { siteSize, syncSiteFromPolygon } from '../parser/site';
 import { stairDrawing } from '../core/stairs';
@@ -249,7 +249,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   const floorTabs = h('div', { class: 'pe-tabs' });
   const toolBtns = new Map<Tool, HTMLButtonElement>();
   const toolDefs: [Tool, string, string][] = [
-    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）。選んだ壁の両端の丸をドラッグすると伸ばせます（方眼の格子に止まる。Alt でフリー）。1 階では敷地の角（緑の丸）をドラッグして敷地の形を直せます'],
+    ['select', '選択', '壁・窓・部屋名をクリックして選ぶ（Delete で削除）。選んだ壁の両端の丸で伸縮、選んだ窓・戸の両端の四角で幅を変えられます（標準の幅・方眼の格子に止まる。Alt でフリー）。1 階では敷地の角（緑の丸）をドラッグして敷地の形を直せます'],
     ['wall', '壁を描く', 'クリックで始点、もう一度クリックで終点。続けて描けます。方眼の格子（半間 455）に止まります（Esc / 右クリックで終了、Shift で斜め、Alt を押している間はフリー）'],
     ['window', '窓', '壁をクリックすると窓を置きます'],
     ['door', '開き戸', '壁をクリックすると開き戸を置きます'],
@@ -945,6 +945,25 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       const w = f.walls.find((x) => x.id === op.wallId);
       if (!w) continue;
       drawOpening(f, w, op, sel?.kind === 'opening' && sel.id === op.id, fs);
+    }
+    // 選んだ窓・戸の両端のつまみ（四角。ドラッグで反対の端を止めたまま幅を変える）
+    const selOp = sel?.kind === 'opening' && tool === 'select' ? f.openings.find((o) => o.id === (sel as { id: string }).id) : undefined;
+    const selOpWall = selOp ? f.walls.find((x) => x.id === selOp.wallId) : undefined;
+    if (selOp && selOpWall) {
+      const w = selOpWall;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      const s = 5.5 * mmPerPx();
+      const ang = (Math.atan2(uy, ux) * 180) / Math.PI;
+      const cursor = Math.abs(uy) < 0.3 ? 'ew-resize' : Math.abs(ux) < 0.3 ? 'ns-resize' : 'move';
+      for (const end of ['t0', 't1'] as const) {
+        const q = { x: w.a.x + ux * selOp[end], y: w.a.y + uy * selOp[end] };
+        const r = el('rect', { x: q.x - s, y: q.y - s, width: 2 * s, height: 2 * s, fill: '#fff', stroke: '#d9822b', 'stroke-width': 2.5 * mmPerPx(), class: 'pe-op-end', cursor, transform: `rotate(${ang} ${q.x} ${q.y})` }, gPreviewStatic);
+        (r as SVGElement).dataset.end = end;
+        const tip = el('title', {}, r);
+        tip.textContent = 'ドラッグで幅を変える（反対の端はそのまま。標準の幅・方眼に止まる、Alt でフリー）';
+      }
     }
     drawPosts(f);
     W().labels.forEach((l, i) => {
@@ -2021,6 +2040,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
   let endDrag: { moved: boolean; start: Vec2; ends: { w: Wall; end: 'a' | 'b' }[]; ops: { op: Opening; c0: Vec2; c1: Vec2 }[]; anchor: Vec2 } | null = null;
   /** 窓・戸を壁に沿って動かす（st = 掴んだ時の壁上の位置、ot0 = 元の t0） */
   let opDrag: { op: Opening; w: Wall; st: number; ot0: number; moved: boolean } | null = null;
+  /** 窓・戸の端のつまみのドラッグ（end = 動かす端） */
+  let opEndDrag: { op: Opening; w: Wall; end: 't0' | 't1'; start: Vec2; moved: boolean } | null = null;
   /** 敷地の角のドラッグ（1 階の選択の道具） */
   let siteDrag: { index: number; moved: boolean; start: Vec2 } | null = null;
   /** 壁を描く途中の数字入力（長さ mm）と、最後のカーソル位置（向きに使う） */
@@ -2075,6 +2096,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         drag = null;
         endDrag = null;
         opDrag = null;
+        opEndDrag = null;
         siteDrag = null;
         stairDrag = null;
         stairDraw = null;
@@ -2260,6 +2282,16 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
             });
           const other = end === 'a' ? sw.b : sw.a;
           endDrag = { moved: false, start, ends, ops, anchor: { ...other } };
+          svg.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+      if (t.classList.contains('pe-op-end') && sel?.kind === 'opening') {
+        // 窓・戸の端のつまみ: 幅を変える
+        const op = W().floor.openings.find((o) => o.id === (sel as { id: string }).id);
+        const w = op && W().floor.walls.find((x) => x.id === op.wallId);
+        if (op && w) {
+          opEndDrag = { op, w, end: t.dataset.end === 't0' ? 't0' : 't1', start: { ...p }, moved: false };
           svg.setPointerCapture(e.pointerId);
           return;
         }
@@ -2473,6 +2505,38 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       status.textContent = s2.hint ? `吸着: ${s2.hint}` : '';
       return;
     }
+    if (opEndDrag) {
+      // 窓・戸の端のつまみ: 反対の端を止めたまま幅を変える（標準の幅・方眼に止まる、Alt でフリー）
+      const { op, w, end } = opEndDrag;
+      if (!opEndDrag.moved && Math.hypot(p.x - opEndDrag.start.x, p.y - opEndDrag.start.y) < 3 * px) return;
+      if (!opEndDrag.moved) {
+        pushUndo();
+        opEndDrag.moved = true;
+      }
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const ux = (w.b.x - w.a.x) / L;
+      const uy = (w.b.y - w.a.y) / L;
+      const t = (p.x - w.a.x) * ux + (p.y - w.a.y) * uy;
+      const step = e.altKey ? null : snapStep();
+      const along = Math.abs(uy) < 0.01 ? 'x' : Math.abs(ux) < 0.01 ? 'y' : null;
+      let gridT: ((t: number) => number) | undefined;
+      if (step && along) {
+        const base = along === 'x' ? w.a.x : w.a.y;
+        const phase = along === 'x' ? gridBase.phaseX : gridBase.phaseY;
+        const sgn = along === 'x' ? ux : uy;
+        gridT = (tt) => (onGrid(base + sgn * tt, phase, step) - base) * sgn;
+      }
+      const others = W().floor.openings.filter((o) => o.wallId === w.id && o.id !== op.id);
+      const r = dragOpeningEnd(op, end, t, L, others, e.altKey ? -1 : Math.min(14 * px, 300), gridT);
+      op.t0 = r.t0;
+      op.t1 = r.t1;
+      markChanged();
+      draw();
+      const q = { x: w.a.x + ux * op[end], y: w.a.y + uy * op[end] };
+      snapMark(q, r.hint ? (r.hint.startsWith('標準') ? '標準の幅' : '方眼') : '', px);
+      status.textContent = `${OPENING_LABEL[op.kind]}の幅 ${mmText(op.t1 - op.t0)}${r.hint ? `・${r.hint}` : ''}（Alt を押している間はフリー）`;
+      return;
+    }
     if (opDrag) {
       // 窓・戸を壁に沿って動かす: 端が方眼の線に止まる（Alt でフリー）
       const { op, w } = opDrag;
@@ -2662,6 +2726,16 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       if (d.moved) {
         markChanged();
         rebuild();
+      }
+      draw();
+    }
+    if (opEndDrag) {
+      const d = opEndDrag;
+      opEndDrag = null;
+      if (d.moved) {
+        markChanged();
+        rebuild();
+        renderPanel();
       }
       draw();
     }

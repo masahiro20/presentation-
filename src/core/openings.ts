@@ -6,6 +6,7 @@
  * - 開き戸の吊元（hingeAtStart）と開く側（swingSide）、引戸の引き込む側（hingeAtStart = false で t0 側へ引き込む）と戸の面（swingSide）
  */
 import type { Opening, WindowStyle } from './types';
+import { sashWidthLabel, standardSashWidths } from './sash';
 
 export const OPENING_LABEL: Record<Opening['kind'], string> = { window: '窓', door: '開き戸', sliding: '引戸', entrance: '玄関ドア', open: '開口（戸なし）', shutter: 'シャッター' };
 export const OPENING_KINDS: Opening['kind'][] = ['window', 'door', 'sliding', 'entrance', 'open', 'shutter'];
@@ -79,6 +80,58 @@ export function setOpeningWidth(op: Opening, widthMm: number, wallLen: number) {
   op.t0 = c - half;
   op.t1 = c + half;
   clampToWall(op, wallLen);
+}
+
+/** 片方の端をドラッグしたときの新しい範囲と、吸着した理由（「標準の幅 1,690（柱芯 1,820）」「端が方眼」。吸着なしは空） */
+export interface OpeningEndDrag {
+  t0: number;
+  t1: number;
+  hint: string;
+}
+
+/**
+ * 窓・戸の片方の端をドラッグして幅を変える（CAD のつまみ。反対の端は止めたまま）。
+ *  - 吸着: 標準の幅（柱芯の割 − 130 など。シャッター以外）と、動く端が方眼の線に来る位置のうち、指の位置にいちばん近いもの（snapTol 以内）
+ *  - 隣の窓・戸と壁の端（20 mm）を越えない。幅は窓 150・戸 400・シャッター 1,500 mm 以上
+ * @param t 指の位置（壁の始点からの距離 mm）
+ * @param gridT 壁上の位置 → いちばん近い方眼の線の位置（方眼に吸着しないとき・斜めの壁は undefined）
+ */
+export function dragOpeningEnd(op: Pick<Opening, 't0' | 't1' | 'kind'>, end: 't0' | 't1', t: number, wallLen: number, others: Pick<Opening, 't0' | 't1'>[], snapTol: number, gridT?: (t: number) => number): OpeningEndDrag {
+  const minW = op.kind === 'window' ? 150 : op.kind === 'shutter' ? 1500 : 400;
+  const mid = (op.t0 + op.t1) / 2;
+  const fixed = end === 't1' ? op.t0 : op.t1;
+  const dir = end === 't1' ? 1 : -1;
+  // 動かせる範囲（隣の窓・戸の手前・壁の端から 20 mm まで、幅は minW 以上）
+  let lo: number;
+  let hi: number;
+  // 隣の窓・戸とは 20 mm あける（3D の「窓・戸」の道具と同じ）
+  if (end === 't1') {
+    lo = fixed + minW;
+    hi = wallLen - 20;
+    for (const o of others) if ((o.t0 + o.t1) / 2 > mid) hi = Math.min(hi, o.t0 - 20);
+  } else {
+    lo = 20;
+    hi = fixed - minW;
+    for (const o of others) if ((o.t0 + o.t1) / 2 < mid) lo = Math.max(lo, o.t1 + 20);
+  }
+  if (hi < lo) return { t0: op.t0, t1: op.t1, hint: '' };
+  const std: { e: number; hint: string }[] = op.kind === 'shutter' ? [] : standardSashWidths().map((w) => ({ e: fixed + dir * w, hint: `標準の幅 ${sashWidthLabel(w)}` }));
+  const grid = gridT ? [{ e: gridT(t), hint: '端が方眼' }] : [];
+  const nearest = (cands: { e: number; hint: string }[]) => {
+    let best: { e: number; hint: string; d: number } | null = null;
+    for (const c of cands) {
+      if (c.e < lo - 0.5 || c.e > hi + 0.5) continue;
+      const d = Math.abs(c.e - t);
+      if (d <= snapTol && (!best || d < best.d)) best = { ...c, d };
+    }
+    return best;
+  };
+  // 窓は標準の幅を優先（割に合わない幅はパネルで注意が出る）。戸は近い方
+  const hit = op.kind === 'window' ? (nearest(std) ?? nearest(grid)) : nearest([...std, ...grid]);
+  let e = hit ? hit.e : Math.round(t / 5) * 5;
+  const hint = hit ? hit.hint : '';
+  e = Math.max(lo, Math.min(hi, e));
+  return end === 't1' ? { t0: fixed, t1: e, hint } : { t0: e, t1: fixed, hint };
 }
 
 export function clampToWall(op: Opening, wallLen: number) {

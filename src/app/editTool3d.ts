@@ -20,12 +20,22 @@ import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
 import { massName, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
+import type { Stair } from '../core/types';
+import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL } from '../core/stairs';
+import { keepInsideFloor, linkedStairs, movedCorner, placeStair, rotateStair, stairAtPoint, wallsThroughStair, type StairGrid, type StairRef } from '../core/stairEdit';
+
+/** 階段の短い名前（トースト・パネルの見出し） */
+const STAIR_SHORT: Record<Stair['kind'], string> = { straight: '直階段', u: '折り返し階段', uOpen: 'コの字階段', l: 'かね折れ階段' };
 
 export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: () => void, onActivate?: () => void) {
   const panel = h('div', { class: 'furn-tool edit3d', hidden: true });
   host.appendChild(panel);
   let active = false;
-  let mode: 'ceiling' | 'shutter' | 'opening' | 'roof' = 'opening';
+  let mode: 'ceiling' | 'shutter' | 'opening' | 'roof' | 'stairs' = 'opening';
+  /** 階段: 選んだ階段（3D でクリック）。掴んで動かす・回すハンドルで回している間の状態（linked = 上下の階の同じ階段） */
+  let stairSel: { level: number; id: string } | null = null;
+  let stairDrag: (StairRef & { linked: StairRef[]; press: { x: number; y: number }; o: { minX: number; minY: number }; preview: { minX: number; minY: number } | null }) | null = null;
+  let stairRot: (StairRef & { linked: StairRef[]; a0: number; q: number }) | null = null;
   let ceilH = 3500;
   /** 屋根: 選んだ塊（階と、その塊の中の点） */
   let roofSel: { level: number; at: { x: number; y: number } } | null = null;
@@ -116,6 +126,140 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const w = f && op ? f.walls.find((x) => x.id === op.wallId) ?? null : null;
     return f && op && w ? { f, op, w } : null;
   };
+  // ---- 階段（3D でクリックして選ぶ → ドラッグで移動・回すハンドルで 90°。上下の階の同じ階段も一緒に） ----
+  const selectedStair = (): StairRef | null => {
+    const m = model();
+    const f = m && stairSel ? m.floors.find((x) => x.level === stairSel!.level) : null;
+    const st = f?.stairs.find((s) => s.id === stairSel!.id) ?? null;
+    return f && st ? { f, st } : null;
+  };
+  /** 3D の点（world m）にある階段。その階の床から上の階の床までの高さの間で外形の中（段の途中をクリックしても、その階の階段になる） */
+  const stairAt3d = (pt: THREE.Vector3, matKey = 'int.stairs'): StairRef | null => {
+    const m = model();
+    if (!m) return null;
+    const fs = m.floors.slice().sort((a, b) => a.elevation - b.elevation);
+    const p = { x: pt.x * 1000, y: pt.z * 1000 };
+    for (let i = fs.length - 1; i >= 0; i--) {
+      const f = fs[i];
+      const y0 = f.elevation / 1000;
+      const y1 = (fs[i + 1]?.elevation ?? f.elevation + f.height) / 1000;
+      if (pt.y < y0 - 0.15 || pt.y > y1 + 0.15) continue;
+      // 3D に立ち上がっているのは上の階へ昇る階段だけ。段は外形 ± 60 mm、鉄骨・手すりは外形の 15 mm 内側だけ
+      // （窓の枠（ext.frame）・吹抜の手すり（f.metal）が階段の脇の壁にあっても、階段を選ばないように）
+      const st = stairAtPoint({ stairs: f.stairs.filter((s) => s.goesUp) }, p, matKey === 'int.stairs' ? 60 : -15);
+      if (st) return { f, st };
+    }
+    return null;
+  };
+  /** 階段をそろえる格子（通り芯の位相・半間）。Shift で格子なし */
+  const stairGrid = (free: boolean): StairGrid | null => {
+    if (free) return null;
+    const mod = model()?.module;
+    return { step: mod?.grid ?? 455, phaseX: mod?.phaseX ?? 0, phaseY: mod?.phaseY ?? 0 };
+  };
+  type Rect = { minX: number; minY: number; maxX: number; maxY: number };
+  const stairOutline = (f: Floor, r: Rect) => {
+    const y = f.elevation / 1000 + 0.04;
+    return [new THREE.Vector3(r.minX / 1000, y, r.minY / 1000), new THREE.Vector3(r.maxX / 1000, y, r.minY / 1000), new THREE.Vector3(r.maxX / 1000, y, r.maxY / 1000), new THREE.Vector3(r.minX / 1000, y, r.maxY / 1000)];
+  };
+  /** 回すハンドル: 昇り口の辺の外（ホール側。たいてい開けていて見える）、床から 0.1 m */
+  const stairHandles = (f: Floor, st: Stair): Handle3D[] => {
+    const y = f.elevation / 1000 + 0.1;
+    const cx = (st.minX + st.maxX) / 2;
+    const cy = (st.minY + st.maxY) / 2;
+    const off = 420;
+    const q = st.entry === 'n' ? { x: cx, y: st.minY - off } : st.entry === 's' ? { x: cx, y: st.maxY + off } : st.entry === 'e' ? { x: st.maxX + off, y: cy } : { x: st.minX - off, y: cy };
+    return [{ id: 'st:rot', kind: 'rotate', pos: new THREE.Vector3(q.x / 1000, y, q.y / 1000), title: 'ドラッグで 90° ずつ回す（クリック・R キーで右へ 90°）' }];
+  };
+  /** 階段の幅 W・奥行 D（床の高さに） */
+  const stairDims = (f: Floor, r: Rect): DimLine3D[] => {
+    const y = f.elevation / 1000 + 0.06;
+    const P = (x: number, z: number) => new THREE.Vector3(x / 1000, y, z / 1000);
+    return [
+      { id: 'st:w', a: P(r.minX, r.minY - 220), b: P(r.maxX, r.minY - 220), label: `W ${mmText(r.maxX - r.minX)}` },
+      { id: 'st:d', a: P(r.minX - 220, r.minY), b: P(r.minX - 220, r.maxY), label: `D ${mmText(r.maxY - r.minY)}` },
+    ];
+  };
+  /** 選んだ階段に橙の枠・回すハンドル・寸法（preview = ドラッグ中の下見せの外形） */
+  const showStairSel = (preview?: Rect) => {
+    const s = selectedStair();
+    if (!s || !active || mode !== 'stairs') {
+      if (active && mode === 'stairs') v.setSelection(null);
+      return;
+    }
+    const r = preview ?? s.st;
+    v.setSelection(stairOutline(s.f, r));
+    v.setHandles(preview ? null : stairHandles(s.f, s.st));
+    v.setDimLines(stairDims(s.f, r));
+  };
+  /** 階段を選んで「階段」の道具にする */
+  const selectStair = (sr: StairRef) => {
+    if (!active) setActive(true);
+    mode = 'stairs';
+    stairSel = { level: sr.f.level, id: sr.st.id };
+    selected.clear();
+    paintOverlay();
+    opSel = null;
+    opSpot = null;
+    canopySel = null;
+    render();
+    toast(`${sr.f.level}階の${STAIR_SHORT[sr.st.kind]}を選びました（ドラッグで移動・R で 90° 回す）`, 'ok', 2500);
+  };
+  /** 動かした・回した後: 階段の中を通る壁があれば知らせる */
+  const afterStairEdit = (s: StairRef, msg: string) => {
+    const through = wallsThroughStair(s.f, s.st);
+    toast(through.length ? `${msg}。壁 ${through.length} か所と重なっています（位置を直すか、方眼で壁を直してください）` : msg, through.length ? 'info' : 'ok', 3500);
+    commit();
+  };
+  /** 右（dir = 1）・左へ 90° 回す。上下の階の同じ階段も同じだけ回して、角の位置をそろえる */
+  const turnStair = (s: StairRef, linked: StairRef[], q: number) => {
+    const g = stairGrid(false);
+    for (let i = 0; i < Math.abs(q); i++) {
+      const dir = q > 0 ? 1 : -1;
+      const before = { minX: s.st.minX, minY: s.st.minY };
+      rotateStair(s.st, dir, g);
+      // 外壁沿いの長い階段を中心で回すと外へ出る: 外形の中へ寄せる
+      keepInsideFloor(s.f, s.st);
+      for (const l of linked) {
+        const ox = l.st.minX - before.minX;
+        const oy = l.st.minY - before.minY;
+        rotateStair(l.st, dir, null);
+        placeStair(l.st, s.st.minX + ox, s.st.minY + oy);
+      }
+    }
+    afterStairEdit(s, `階段を${q > 0 ? '右' : '左'}へ ${Math.abs(q) * 90}° 回しました（昇り口: ${STAIR_ENTRY_LABEL[s.st.entry]}）`);
+  };
+  /** 選んだ階段の上で押したら移動、回すハンドルなら回す。それ以外はカメラ操作のまま */
+  const stairDragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
+    const s = selectedStair();
+    const m = model();
+    if (!s || !m) return false;
+    const linked = linkedStairs(m, s.f.level, s.st);
+    const hd = ndc ? v.pickHandle(ndc) : null;
+    if (hd?.id === 'st:rot') {
+      const cx = (s.st.minX + s.st.maxX) / 2000;
+      const cz = (s.st.minY + s.st.maxY) / 2000;
+      stairRot = { ...s, linked, a0: Math.atan2(p.z - cz, p.x - cx), q: 0 };
+      return true;
+    }
+    const x = p.x * 1000;
+    const y = p.z * 1000;
+    if (x < s.st.minX - 150 || x > s.st.maxX + 150 || y < s.st.minY - 150 || y > s.st.maxY + 150) return false;
+    // 高さも階段の範囲（その階の床〜上の階の床）。上の階の床の上で押したときは掴まない
+    const upper = m.floors.find((f) => f.level === s.f.level + 1);
+    if (p.y < s.f.elevation / 1000 - 0.2 || p.y > (upper ? upper.elevation : s.f.elevation + s.f.height) / 1000 + 0.2) return false;
+    stairDrag = { ...s, linked, press: { x, y }, o: { minX: s.st.minX, minY: s.st.minY }, preview: null };
+    return true;
+  };
+  /** 階段の種類・曲がる向きなどを変える（上下の階の同じ階段にも同じ変更） */
+  const editStair = (fn: (st: Stair) => void, msg: string) => {
+    const s = selectedStair();
+    if (!s) return;
+    const linked = linkedStairs(model()!, s.f.level, s.st);
+    fn(s.st);
+    for (const l of linked) fn(l.st);
+    afterStairEdit(s, msg);
+  };
   /** 窓・戸の両端のハンドル（高さの中ほど）。端を引っ張ると幅が変わる */
   const openingHandles = (f: Floor, w: Wall, t0: number, t1: number, op: Opening): Handle3D[] => {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -190,6 +334,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
    * Delete で消す、Esc で選ぶのをやめる（入力欄に文字を打っている間は効かせない）
    */
   const onKey = (e: KeyboardEvent) => {
+    if (active && mode === 'stairs' && stairSel) {
+      onStairKey(e);
+      return;
+    }
     if (!active || mode !== 'opening' || !opSel || canopySel || wallDraw.on) return;
     const tg = e.target as HTMLElement | null;
     if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'SELECT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
@@ -228,11 +376,56 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       render();
     }
   };
+  /** 階段: 矢印キーで 10 mm（Shift 100・Ctrl 半間）ずつ動かす、R で右へ 90°（Shift+R で左）、Delete で消す、Esc で選ぶのをやめる */
+  const onStairKey = (e: KeyboardEvent) => {
+    const tg = e.target as HTMLElement | null;
+    if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'SELECT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+    const s = selectedStair();
+    if (!s) return;
+    const handled = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const linked = linkedStairs(model()!, s.f.level, s.st);
+    const step = e.ctrlKey || e.metaKey ? (model()?.module?.grid ?? 455) : e.shiftKey ? 100 : 10;
+    const mv = (dx: number, dy: number) => {
+      handled();
+      for (const x of [s, ...linked]) placeStair(x.st, x.st.minX + dx, x.st.minY + dy);
+      commit();
+    };
+    if (e.key === 'ArrowLeft') mv(-step, 0);
+    else if (e.key === 'ArrowRight') mv(step, 0);
+    else if (e.key === 'ArrowUp') mv(0, -step);
+    else if (e.key === 'ArrowDown') mv(0, step);
+    else if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey) {
+      handled();
+      turnStair(s, linked, e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      handled();
+      removeStair();
+    } else if (e.key === 'Escape') {
+      handled();
+      stairSel = null;
+      render();
+    }
+  };
+  /** 選んだ階段を消す（上下の階の同じ階段も） */
+  const removeStair = () => {
+    const s = selectedStair();
+    if (!s) return;
+    const linked = linkedStairs(model()!, s.f.level, s.st);
+    s.f.stairs = s.f.stairs.filter((x) => x.id !== s.st.id);
+    for (const l of linked) l.f.stairs = l.f.stairs.filter((x) => x.id !== l.st.id);
+    stairSel = null;
+    toast(`${s.f.level}階の${STAIR_SHORT[s.st.kind]}を消しました${linked.length ? `（${linked.map((l) => `${l.f.level}階`).join('・')}の同じ階段も）` : ''}`, 'ok', 3000);
+    commit();
+  };
   window.addEventListener('keydown', onKey, true);
   /** 窓・戸の端を掴んで幅を変えている間の状態 */
   let opEdge: { f: Floor; op: Opening; w: Wall; L: number; which: 't0' | 't1'; preview: { t0: number; t1: number } | null } | null = null;
   /** 選んだ窓・戸の上で押したらドラッグ開始（壁に沿って動く）。端のハンドルなら幅を変える。それ以外はカメラ操作のまま */
   const dragStart = (p: THREE.Vector3, ndc?: THREE.Vector2): boolean => {
+    if (active && mode === 'stairs') return stairDragStart(p, ndc);
     if (active && mode === 'roof') return roofHandleStart(ndc);
     if (!active || mode !== 'opening' || !opSel) return false;
     const s = selectedOpening();
@@ -251,6 +444,33 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     return true;
   };
   const dragMove = (p: THREE.Vector3, ndc?: THREE.Vector2) => {
+    if (stairDrag) {
+      // 階段を動かす: 左上の角を通り芯の半間の格子に（Shift で自由）
+      const d = stairDrag;
+      const c = movedCorner(d.o, p.x * 1000 - d.press.x, p.z * 1000 - d.press.y, stairGrid(v.dragMods.shift));
+      d.preview = c;
+      showStairSel({ minX: c.minX, minY: c.minY, maxX: c.minX + (d.st.maxX - d.st.minX), maxY: c.minY + (d.st.maxY - d.st.minY) });
+      const dx = c.minX - d.o.minX;
+      const dy = c.minY - d.o.minY;
+      const sg = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : '±'}${mmText(Math.abs(n))}`;
+      v.setDragLabel(`移動 X ${sg(dx)}・Y ${sg(dy)} mm${v.dragMods.shift ? '' : '（半間の格子。Shift で自由）'}`);
+      return;
+    }
+    if (stairRot) {
+      // 回すハンドル: 階段の中心のまわりの角度を 90° 刻みに
+      const s = stairRot;
+      const cx = (s.st.minX + s.st.maxX) / 2000;
+      const cz = (s.st.minY + s.st.maxY) / 2000;
+      let da = Math.atan2(p.z - cz, p.x - cx) - s.a0;
+      while (da > Math.PI) da -= 2 * Math.PI;
+      while (da < -Math.PI) da += 2 * Math.PI;
+      s.q = Math.round(da / (Math.PI / 2));
+      const tmp: Stair = { ...s.st };
+      for (let i = 0; i < Math.abs(s.q); i++) rotateStair(tmp, s.q > 0 ? 1 : -1, stairGrid(false));
+      showStairSel(tmp);
+      v.setDragLabel(s.q ? `${s.q > 0 ? '右' : '左'}へ ${Math.abs(s.q) * 90}°（昇り口: ${STAIR_ENTRY_LABEL[tmp.entry]}）` : '回す（90° ずつ）');
+      return;
+    }
     if (roofHd) {
       roofHandleMove(p, ndc);
       return;
@@ -320,6 +540,32 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     v.setDimLines(opDimLines(f, w, t0, t0 + width, op));
   };
   const dragEnd = (_p: THREE.Vector3, moved: boolean) => {
+    if (stairDrag) {
+      const d = stairDrag;
+      stairDrag = null;
+      if (!moved || !d.preview || (d.preview.minX === d.o.minX && d.preview.minY === d.o.minY)) {
+        showStairSel();
+        return;
+      }
+      const dx = d.preview.minX - d.o.minX;
+      const dy = d.preview.minY - d.o.minY;
+      placeStair(d.st, d.preview.minX, d.preview.minY);
+      for (const l of d.linked) placeStair(l.st, l.st.minX + dx, l.st.minY + dy);
+      afterStairEdit(d, `階段を動かしました${d.linked.length ? `（${d.linked.map((l) => `${l.f.level}階`).join('・')}の同じ階段も）` : ''}`);
+      return;
+    }
+    if (stairRot) {
+      const s = stairRot;
+      stairRot = null;
+      // クリックだけなら右へ 90°
+      const q = moved ? s.q : 1;
+      if (!q) {
+        showStairSel();
+        return;
+      }
+      turnStair(s, s.linked, q);
+      return;
+    }
     if (roofHd) {
       roofHandleEnd(moved);
       return;
@@ -354,6 +600,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const FLOOR_KEYS = /^int\.(floor|wetFloor|entranceFloor|tatami|slab)$|^ext\.(balcony|terrace|concrete)$/;
   const WALL_KEYS = /^(ext\.(wall|accent|glass\w*|frame|door|shutter|sash\w*)|int\.(wall|accent|bathWall|wallTop|door\w*|frame\w*|glass\w*)|f\.metal)$/;
   const ROOF_KEYS = /^ext\.(roof|soffit|fascia|gutter)$/;
+  /** 階段の部材（段・ささら桁・受け材・手すり）。手すり・鉄骨は階段の外形の中と高さの範囲で当たったものだけを階段とみなす */
+  const STAIR_KEYS = /^(int\.stairs|ext\.frame|f\.metal)$/;
 
   // ---- 屋根: 塊（上の階が載らない範囲のつながった所）を選んで、掛け方・向き・勾配・軒の出を塊ごとに変える ----
   const masses = (): RoofMass[] => {
@@ -736,9 +984,25 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       render();
       return;
     }
+    // 階段の回すハンドルをクリックした: 回すのはドラッグの終わり（dragEnd）。ここで選び直すと、回した直後に選択が外れる
+    if (mode === 'stairs' && ndc && v.pickHandle(ndc)) return;
     // 見ている物を優先: 家具・外構の物ならその道具へ。床なら部屋（天井高・床）、壁・窓・戸なら窓・戸、屋根なら屋根。シャッターの道具のときは従来どおり外壁
     if (mode !== 'shutter' && ndc) {
       const hit = v.pickHit(ndc);
+      // 階段（段・手すり）をクリック: どのモードでも階段を選ぶ
+      if (hit && (hit.group === 'building' || hit.group === 'cut') && STAIR_KEYS.test(hit.matKey)) {
+        const sr = stairAt3d(hit.point, hit.matKey);
+        if (sr) {
+          selectStair(sr);
+          return;
+        }
+      }
+      if (hit && mode === 'stairs') {
+        stairSel = null;
+        render();
+        toast('階段の段をクリックして選びます');
+        return;
+      }
       if (hit) {
         if (hit.group === 'furniture' || hit.group === 'landscape') {
           if (v.onPickIdle?.(hit, ndc)) return;
@@ -762,6 +1026,12 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         if (mode === 'opening' && FLOOR_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
         if (mode === 'ceiling' && WALL_KEYS.test(hit.matKey) && pickHere(hit, ndc)) return;
       }
+    }
+    if (mode === 'stairs') {
+      // 階段の道具: 階段以外の所（何も無い所）をクリックしたら選ぶのをやめる（下のシャッターの処理へ進ませない）
+      stairSel = null;
+      render();
+      return;
     }
     // 天井高: 屋根越しに見ているときは、その下の床の点を使う（屋根の点では隣の部屋になる）
     let pt = mode === 'ceiling' && ndc ? (v.pickFloorPoint(ndc) ?? pt0) : pt0;
@@ -884,7 +1154,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const render = () => {
     clear(panel);
     panel.hidden = !active;
-    if (!(active && ((mode === 'opening' && opSel && !canopySel && !wallDraw.on) || (mode === 'roof' && roofSel && !roofDraw.on)))) v.setHandles(null);
+    if (!(active && ((mode === 'opening' && opSel && !canopySel && !wallDraw.on) || (mode === 'roof' && roofSel && !roofDraw.on) || (mode === 'stairs' && stairSel)))) v.setHandles(null);
     if (!(active && mode === 'opening' && opSel && !canopySel && !wallDraw.on)) {
       v.setDimLines(null);
       if (v.onDimEdit === applyOpGapEdit) v.onDimEdit = null;
@@ -896,6 +1166,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       if (roofDraw.on && roofDraw.a) showRoofDrawMark();
       else showRoofSel();
     }
+    else if (active && mode === 'stairs') showStairSel();
     else if (active) v.setSelection(null);
     if (!active) return;
     const m = model();
@@ -913,9 +1184,13 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         },
         label,
       );
-    panel.append(h('div', { class: 'furn-head' }, h('span', null, '3D で直す'), h('button', { class: 'btn xs ghost', onclick: () => setActive(false) }, '閉じる')), h('div', { style: 'display:flex;gap:6px;margin:4px 0 8px;flex-wrap:wrap' }, modeBtn('opening', '窓・戸'), modeBtn('ceiling', '天井高'), modeBtn('shutter', 'シャッター'), modeBtn('roof', '屋根')));
+    panel.append(h('div', { class: 'furn-head' }, h('span', null, '3D で直す'), h('button', { class: 'btn xs ghost', onclick: () => setActive(false) }, '閉じる')), h('div', { style: 'display:flex;gap:6px;margin:4px 0 8px;flex-wrap:wrap' }, modeBtn('opening', '窓・戸'), modeBtn('ceiling', '天井高'), modeBtn('shutter', 'シャッター'), modeBtn('roof', '屋根'), modeBtn('stairs', '階段')));
     if (mode === 'opening') {
       renderOpening(m);
+      return;
+    }
+    if (mode === 'stairs') {
+      renderStairs(m);
       return;
     }
     if (mode === 'roof') {
@@ -1015,6 +1290,47 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     }
   };
 
+  /** 階段のパネル: 選んだ階段の向き・種類・曲がる向き・上る/下る・寸法。未選択なら階段の一覧（押すと選ぶ） */
+  const renderStairs = (m: BuildingModel | null) => {
+    const s = selectedStair();
+    if (!s || !m) {
+      const all = m ? m.floors.flatMap((f) => f.stairs.filter((x) => x.goesUp).map((st) => ({ f, st }))) : [];
+      panel.append(
+        h('p', { class: 'hint', style: 'margin:0 0 6px' }, '階段の段をクリックして選びます。選んだ階段はドラッグで移動、回すハンドル（または R キー）で 90° ずつ回せます。上の階の同じ位置の階段（DN）も一緒に動きます。'),
+        all.length
+          ? h('div', { class: 'btn-row' }, ...all.map(({ f, st }) => h('button', { class: 'btn sm', onclick: () => selectStair({ f, st }) }, `${f.level}階 ${STAIR_SHORT[st.kind]}`)))
+          : h('p', { class: 'hint' }, '上の階へ上る階段がありません（方眼の「階段」で描けます）'),
+      );
+      return;
+    }
+    const { f, st } = s;
+    const linked = linkedStairs(m, f.level, st);
+    const w = st.maxX - st.minX;
+    const d = st.maxY - st.minY;
+    const num = (label: string, get: () => number, set: (val: number) => void) =>
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'number', step: 5, value: Math.round(get()), onchange: (e: Event) => { const val = Number((e.target as HTMLInputElement).value); if (val > 0) set(val); } }));
+    panel.append(
+      h('div', { class: 'furn-sel' }, h('div', null, h('b', null, `${f.level}階 ${STAIR_SHORT[st.kind]}`), `（${w.toLocaleString()} × ${d.toLocaleString()}・昇り口: ${STAIR_ENTRY_LABEL[st.entry]}）`), linked.length ? h('div', { class: 'hint', style: 'margin:2px 0 0' }, `${linked.map((l) => `${l.f.level}階`).join('・')}の同じ位置の階段（${linked[0].st.goesUp ? 'UP' : 'DN'}）も一緒に動きます`) : null),
+      h('div', { class: 'field-label', style: 'margin-top:6px' }, '向き'),
+      h(
+        'div',
+        { class: 'btn-row' },
+        h('button', { class: 'btn sm', title: 'Shift+R', onclick: () => turnStair(s, linked, -1) }, '⟲ 左へ 90°'),
+        h('button', { class: 'btn sm', title: 'R', onclick: () => turnStair(s, linked, 1) }, '⟳ 右へ 90°'),
+        st.kind !== 'straight' ? h('button', { class: 'btn sm', onclick: () => editStair((x) => { x.turn = (x.turn ?? (x.kind === 'l' ? 'right' : 'left')) === 'left' ? 'right' : 'left'; }, '曲がる向きを反対にしました') }, '曲がる向きを反対に') : null,
+      ),
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '種類'),
+      segButtons(
+        (Object.keys(STAIR_SHORT) as Stair['kind'][]).map((k) => ({ v: k, label: STAIR_SHORT[k].replace('階段', ''), title: STAIR_KIND_LABEL[k] })),
+        st.kind,
+        (val) => editStair((x) => { x.kind = val as Stair['kind']; }, `${STAIR_SHORT[val as Stair['kind']]}にしました`),
+      ),
+      ...(st.kind === 'uOpen' && w < 2100 && d < 2100 ? [h('p', { class: 'warn' }, 'コの字階段は幅 2,100 以上（段 910 × 2 ＋ 吹抜 300）が要ります。狭いので折り返しとして描いています')] : []),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px;margin-top:6px' }, num('幅 W (mm)', () => w, (val) => editStair((x) => { x.maxX = x.minX + Math.max(600, val); }, `幅を ${mmText(Math.max(600, val))} mm にしました`)), num('奥行 D (mm)', () => d, (val) => editStair((x) => { x.maxY = x.minY + Math.max(600, val); }, `奥行を ${mmText(Math.max(600, val))} mm にしました`))),
+      h('p', { class: 'hint' }, 'ドラッグで移動（半間の格子に止まる。Shift で自由）、矢印キーで 10 mm（Shift 100・Ctrl 半間）。上の階の床の穴（吹抜）も一緒に動きます。'),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => removeStair() }, 'この階段を消す（Delete）'), h('button', { class: 'btn sm ghost', onclick: () => { stairSel = null; render(); } }, '選ぶのをやめる（Esc）')),
+    );
+  };
   /** 屋根のパネル: 全体の掛け方と、選んだ塊の掛け方・向き・勾配・軒の出・パラペット */
   const renderRoof = (m: BuildingModel | null) => {
     const ext = exteriorById(state.design.exteriorId);
@@ -1270,6 +1586,9 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       opEdge = null;
       roofHd = null;
       roofSel = null;
+      stairSel = null;
+      stairDrag = null;
+      stairRot = null;
       wallDraw = { on: false, level: null, a: null };
       roofDraw = { on: false, level: null, a: null };
       paintOverlay();
@@ -1282,6 +1601,14 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
 
   /** 道具を開いていないときのクリック: 床なら部屋（天井高・床の仕上げ）、壁・窓・戸なら窓・戸、屋根なら屋根の道具を開いて選ぶ。該当すれば true */
   function pickHere(hit: { matKey: string; point: THREE.Vector3; group?: string }, ndc?: THREE.Vector2): boolean {
+    // 階段の段・ささら桁・手すり: 階段を選ぶ（移動・回す）
+    if (STAIR_KEYS.test(hit.matKey)) {
+      const sr = stairAt3d(hit.point, hit.matKey);
+      if (sr) {
+        selectStair(sr);
+        return true;
+      }
+    }
     if (hit.group === 'roof' || ROOF_KEYS.test(hit.matKey)) {
       const ms = selectMassAt({ x: hit.point.x * 1000, y: hit.point.z * 1000 });
       if (!ms) return false;
@@ -1320,5 +1647,15 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   }
 
   const btn = h('button', { class: 'nav-btn', title: '窓・戸・壁・天井高・シャッター・屋根（3D を見ながら、窓や壁・部屋の床・屋根をクリックして直す。選んだ窓・戸はドラッグで動かす）', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '⌂'), '窓・戸');
-  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
+  /** 元に戻した後: 消えた窓・戸・階段・庇の選択を外して、枠・つまみ・パネルを今のモデルに合わせる */
+  const refresh = () => {
+    if (opSel && !selectedOpening()) opSel = null;
+    if (stairSel && !selectedStair()) stairSel = null;
+    const m = model();
+    if (canopySel && !m?.canopies?.some((c) => c.id === canopySel!.id)) canopySel = null;
+    opSpot = null;
+    paintOverlay();
+    render();
+  };
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd, refresh };
 }

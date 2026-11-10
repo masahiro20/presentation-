@@ -45,6 +45,17 @@ export class App {
   private editTool: ReturnType<typeof createEditTool3d> | null = null;
   private extTool: ReturnType<typeof createExteriorTool> | null = null;
   builtVersion = -1;
+  /**
+   * 3D の道具（家具・外構・窓・戸・階段・屋根・天井高…）の「元に戻す／やり直す」（Ctrl+Z／Ctrl+Shift+Z・Ctrl+Y）。
+   * 道具で直すたびに、直す前のモデルの写し（JSON）を積む。ほかの画面（方眼など）でモデルが変わったら積んだ写しは捨てる
+   * （古い写しに戻して方眼の修正まで消さないように）
+   */
+  private undo3d: string[] = [];
+  private redo3d: string[] = [];
+  /** 今のモデルの写し（直す前の状態として次に積む）。null = まだ取っていない */
+  private snap3d: string | null = null;
+  /** 3D の道具が出した・元に戻したモデルの変更の間は true（積んだ写しを捨てない） */
+  private own3dEmit = false;
 
   constructor(
     root: HTMLElement,
@@ -136,6 +147,12 @@ export class App {
     this.renderSteps();
     on('model', () => {
       this.modelVersion++;
+      // 3D の道具以外（方眼・読み込み・開く）でモデルが変わった: 3D の元に戻す履歴は捨てる
+      if (!this.own3dEmit) {
+        this.undo3d = [];
+        this.redo3d = [];
+        this.snap3d = null;
+      }
       this.renderSteps();
     });
     // 保存したプロジェクトを開いたら、3D のテイストも反映して外観・内観パースへ
@@ -306,7 +323,7 @@ export class App {
       v,
       this.viewerHost,
       () => {
-        emit('model');
+        this.edited3d();
         this.builtVersion = this.modelVersion;
       },
       () => {
@@ -319,7 +336,7 @@ export class App {
       v,
       this.viewerHost,
       () => {
-        emit('model');
+        this.edited3d();
         this.ensureScene();
       },
       () => {
@@ -332,7 +349,7 @@ export class App {
       v,
       this.viewerHost,
       () => {
-        emit('model');
+        this.edited3d();
         this.builtVersion = this.modelVersion;
       },
       () => {
@@ -396,6 +413,14 @@ export class App {
       setMode(held);
       held = null;
     });
+    // 3D の道具の操作を元に戻す（Ctrl+Z）・やり直す（Ctrl+Shift+Z／Ctrl+Y）。方眼の画面には方眼の元に戻すがある
+    window.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || typing(e) || this.viewerHost.style.visibility === 'hidden' || !this.current?.uses3d) return;
+      const k = e.key.toLowerCase();
+      if (k !== 'z' && k !== 'y') return;
+      e.preventDefault();
+      this.undo3dStep(k === 'y' || e.shiftKey);
+    });
   }
 
   /** モデルが更新されていれば 3D を作り直す */
@@ -407,6 +432,53 @@ export class App {
       this.builtVersion = this.modelVersion;
       this.selfCheck(v);
     }
+    // 3D で直す前の状態（元に戻す先）を取っておく
+    if (!this.snap3d) this.snap3d = JSON.stringify(state.model);
+  }
+
+  /** 3D の道具で直した: 直す前の写しを積み、今の状態を写し直してから知らせる */
+  private edited3d() {
+    const now = state.model ? JSON.stringify(state.model) : null;
+    // 中身が変わっていない「直した」（選び直しただけ等）は積まない（Ctrl+Z が何も起きない 1 回にならないように）
+    if (this.snap3d && now !== this.snap3d) {
+      this.undo3d.push(this.snap3d);
+      if (this.undo3d.length > 30) this.undo3d.shift();
+      this.redo3d = [];
+    }
+    this.snap3d = now;
+    this.own3dEmit = true;
+    try {
+      emit('model');
+    } finally {
+      this.own3dEmit = false;
+    }
+  }
+
+  /** 3D の道具の操作を 1 つ元に戻す（redo = やり直す）。モデルは同じ物のまま中身を入れ替える（ほかの画面が持つ参照を切らない） */
+  undo3dStep(redo = false) {
+    const from = redo ? this.redo3d : this.undo3d;
+    const to = redo ? this.undo3d : this.redo3d;
+    const json = from.pop();
+    if (!json || !state.model) {
+      toast(redo ? 'やり直す操作がありません' : '元に戻す操作がありません（3D の道具で直したものを戻せます）', 'info', 2500);
+      return;
+    }
+    if (this.snap3d) to.push(this.snap3d);
+    this.snap3d = json;
+    const m = state.model as unknown as Record<string, unknown>;
+    const next = JSON.parse(json) as Record<string, unknown>;
+    for (const k of Object.keys(m)) if (!(k in next)) delete m[k];
+    Object.assign(m, next);
+    this.own3dEmit = true;
+    try {
+      emit('model');
+    } finally {
+      this.own3dEmit = false;
+    }
+    // 開いている道具の選択・つまみを今のモデルに合わせ直す（閉じている道具は触らない: 窓・戸の道具の描き直しは、閉じていてもつまみ・寸法を消すため）
+    [this.furnTool, this.extTool, this.editTool].find((t) => t?.isActive())?.refresh();
+    this.ensureScene();
+    toast(redo ? 'やり直しました（Ctrl+Shift+Z）' : '元に戻しました（Ctrl+Z）', 'ok', 1500);
   }
 
   /**

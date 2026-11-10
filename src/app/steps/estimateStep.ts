@@ -18,6 +18,7 @@ import { estimateGroupsFor, FINISH_CATEGORIES, selectedProduct } from '../../coo
 import { documentAddress } from '../../sun/geo';
 import { contractPrecheck, precheckSummary } from '../../estimate/precheck';
 import { loanPlan, loanTable } from '../../estimate/loanSim';
+import { costDiff, type PlanCost } from '../../core/planDiff';
 
 export interface EstimateState {
   choice: EstimateChoice;
@@ -79,6 +80,47 @@ export function estimateSummary(): { grade: Grade; constArea: number; tsubo: num
   const t = computeFunding(c.funding);
   const tsubo = c.areas.constArea / 3.30579;
   return { grade: es.choice.grade, constArea: c.areas.constArea, tsubo, body: t.body, sub2: t.sub2, tax: t.tax, contract: t.contract, sub4: t.sub4, sub5: t.sub5, sub6: t.sub6, grand: t.grand, tsuboPrice: tsubo > 0 ? t.contract / tsubo : 0 };
+}
+
+/**
+ * プラン変更の増減表（E10）: 前回のプラン（読み直す前）の工事種別ごとの金額と、今の見積を並べる。
+ * 前回の金額が残っていない（増減表を入れる前に読み直した・初めてのプラン）ときは出さない
+ */
+function planChangeFold(c: Computed): HTMLElement[] {
+  const prev = state.revisions?.[state.revisions.length - 1];
+  if (!prev?.costs?.length) return [];
+  const cur: PlanCost[] = c.est.categories.map((k) => ({ id: k.def.id, name: k.def.name, amount: Math.round(k.amount) }));
+  const d = costDiff(prev.costs, cur);
+  const total = d.curTotal - d.prevTotal;
+  // 側パネルは狭いので万円（小数 1 桁 = 千円の位まで）で並べる。円のままだと工事名が 3〜4 行に折れる
+  const man = (v: number) => (v / 10000).toLocaleString('ja-JP', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const sign = (v: number) => (v > 0 ? `＋${man(v)}` : v < 0 ? `△${man(-v)}` : '±0');
+  const body = h(
+    'div',
+    null,
+    h('p', { class: 'hint', style: 'margin:0 0 6px' }, `前回のプラン（${prev.name.replace(/\.pdf$/i, '')}）の見積と、今のプランの見積の工事ごとの差（税抜・万円。端数調整の前）。仕様・オプションの選び方も今のものです。`),
+    d.rows.length
+      ? h(
+          'table',
+          { class: 'est-diff' },
+          h('thead', null, h('tr', null, h('th', null, '工事（万円）'), h('th', null, '前回'), h('th', null, '今回'), h('th', null, '増減'))),
+          h(
+            'tbody',
+            null,
+            ...d.rows.map((r) => h('tr', null, h('td', null, r.name), h('td', { class: 'num' }, man(r.prev)), h('td', { class: 'num' }, man(r.cur)), h('td', { class: `num ${r.delta > 0 ? 'up' : 'down'}` }, sign(r.delta)))),
+            h('tr', { class: 'sum' }, h('td', null, '合計'), h('td', { class: 'num' }, man(d.prevTotal)), h('td', { class: 'num' }, man(d.curTotal)), h('td', { class: `num ${total > 0 ? 'up' : total < 0 ? 'down' : ''}` }, sign(total))),
+          ),
+        )
+      : h('p', { class: 'hint' }, '工事ごとの金額に変わりはありません。'),
+  );
+  return [fold('前回プランとの増減表', { open: d.rows.length > 0, meta: d.rows.length ? `${sign(total)} 万円` : '変更なし' }, body)];
+}
+
+/** 工事種別ごとの金額（税抜・円）。プランを読み直すときに前回の分として残し、増減表に使う */
+export function estimateCosts(): PlanCost[] | null {
+  if (!state.model) return null;
+  const c = compute(ensure());
+  return c.est.categories.map((k) => ({ id: k.def.id, name: k.def.name, amount: Math.round(k.amount) }));
 }
 
 /** コーディネートで選んだ商品を見積の行（group の選択）に反映する */
@@ -923,6 +965,7 @@ export const estimateStep: Step = {
         field('端数調整', segmented([{ value: '10000', label: '万円単位' }, { value: '1000', label: '千円単位' }, { value: '0', label: 'なし' }], String(es.choice.roundUnit ?? 10000), (v) => { es.choice.roundUnit = Number(v); render(); }), est.adjust ? `税抜 ¥${yen(est.rawSubtotal)} → △${yen(-est.adjust)} 切り捨て` : '切り捨てなし'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: es.customerView !== false, onchange: (e: Event) => { es.customerView = (e.target as HTMLInputElement).checked; render(); } }), 'お客様向け（内訳書の数量・単位・単価を隠す）'),
         fold('追加・増減（概算で入れる）', { open: true, meta: es.choice.extras.length ? `${es.choice.extras.length} 行` : '' }, quickAddForm(es, render)),
+        ...planChangeFold(c),
         fold('会社情報・担当', { open: false, meta: companyInfo().designer || companyInfo().name }, companyForm(render)),
         fold('数量の根拠（図面で確かめる）', { open: which === 'basis' || Object.keys(es.areasOverride).length === 0, meta: '4 枚' }, h('p', { class: 'hint', style: 'margin-top:0' }, '平面図・立面図に色を塗って、どこを拾ってその数量になったかを示します。数字の見比べではなく、図面で確かめるための社内用のシートです（印刷は A3 横）。'), basisNav),
         fold('面積・数量（図面から自動）', { open: false, meta: `延床 ${num(areas.totalTsubo)} 坪 ／ 施工 ${num(areas.constTsubo)} 坪` }, h('div', { class: 'btn-row', style: 'margin-bottom:6px' }, h('button', { class: 'btn sm', onclick: () => goBasis('area') }, '図面で根拠を見る'), h('span', { class: 'hint' }, '各行の「根拠」でその項目のシートへ')), areaBody, h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => { es.areasOverride = {}; render(); } }, 'すべて図面の値に戻す'))),

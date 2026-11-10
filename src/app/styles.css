@@ -828,6 +828,14 @@ body.cinema .main { grid-template-columns: 1fr; }
 .fp-sign { display: flex; gap: 0; margin-top: 5mm; justify-content: flex-end; }
 .fp-sign span { border: 1px solid #9a968e; width: 22mm; height: 22mm; display: grid; place-items: start center; padding-top: 1.5mm; font-size: 8pt; color: #666; margin-left: -1px; }
 /* パネル */
+/* プラン変更の増減表（見積の側パネル） */
+.est-diff { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.est-diff th { text-align: left; font-weight: 600; color: #6d7178; border-bottom: 1px solid #ddd; padding: 4px 4px; font-size: 12px; }
+.est-diff td { border-bottom: 1px solid #eee; padding: 4px 4px; }
+.est-diff td.num, .est-diff th:not(:first-child) { text-align: right; white-space: nowrap; }
+.est-diff td.up { color: #b4462f; }
+.est-diff td.down { color: #2d6cdf; }
+.est-diff tr.sum td { font-weight: 600; border-top: 1px solid #bbb; border-bottom: none; }
 .est-total-card { background: #1f1f1f; color: #fff; border-radius: 10px; padding: 14px 16px; margin: 6px 0 12px; }
 .est-total-card .k { font-size: 13.5px; letter-spacing: 0.1em; opacity: 0.75; }
 .est-total-card .v { font-size: 28px; font-weight: 600; letter-spacing: 0.02em; margin: 2px 0; font-variant-numeric: tabular-nums; }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planSummary, diffPlans } from '../src/core/planDiff';
+import { planSummary, diffPlans, costDiff } from '../src/core/planDiff';
 import { parseSample } from './pdfNode';
 
 describe('プランの差分', () => {
@@ -18,4 +18,25 @@ describe('プランの差分', () => {
     expect(ch.some((x) => x.kind === 'room-size' && x.delta === 1.5)).toBe(true);
     expect(ch.find((x) => x.kind === 'cost')?.text).toContain('3,250 万円');
   });
+
+  it('増減表: 工事ごとの差（今回 − 前回）、端数の揺れは省く、前回だけの工事は最後、工事の金額も要約に残る', () => {
+    const prev = [
+      { id: 'temp', name: '仮設工事', amount: 500_000 },
+      { id: 'wood', name: '木工事', amount: 6_000_000 },
+      { id: 'roof', name: '屋根工事', amount: 900_000 },
+      { id: 'old', name: '解体工事', amount: 300_000 },
+    ];
+    const cur = [
+      { id: 'temp', name: '仮設工事', amount: 500_400 },
+      { id: 'wood', name: '木工事', amount: 6_450_000 },
+      { id: 'roof', name: '屋根工事', amount: 820_000 },
+    ];
+    const d = costDiff(prev, cur);
+    expect(d.rows.map((r) => r.id)).toEqual(['wood', 'roof', 'old']);
+    expect(d.rows[0].delta).toBe(450_000);
+    expect(d.rows[1].delta).toBe(-80_000);
+    expect(d.rows[2]).toMatchObject({ prev: 300_000, cur: 0, delta: -300_000 });
+    expect(d.curTotal - d.prevTotal).toBe(500_400 + 6_450_000 + 820_000 - 7_700_000);
+  });
 });
+

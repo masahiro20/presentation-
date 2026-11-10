@@ -23,8 +23,8 @@ import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { GRADE_LABEL, readingScore } from '../../parser/readingScore';
 import { ENTRANCE_VIA_LABEL, entranceDoorOf } from '../../core/entrance';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
-import { planSummary, diffPlans, type PlanSummary } from '../../core/planDiff';
-import { estimateSummary } from './estimateStep';
+import { planSummary, diffPlans, type PlanCost, type PlanSummary } from '../../core/planDiff';
+import { estimateCosts, estimateSummary } from './estimateStep';
 import { receiveCustomerInbox, inboxSummary } from '../customerInbox';
 import { openSiteStudy, siteStudyCheck, rowsEl } from '../siteStudyDialog';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf, countDict, exportDict, importDict, type SymbolSignature } from '../../parser/symbolDict';
@@ -110,12 +110,15 @@ let pendingRevision: PlanSummary | null = null;
 function summarizeCurrent(): PlanSummary | null {
   if (!state.model) return null;
   let grand: number | undefined;
+  let costs: PlanCost[] | undefined;
   try {
     grand = estimateSummary()?.grand;
+    // 工事種別ごとの金額も残す（見積の「前回プランとの増減表」に使う）
+    costs = estimateCosts() ?? undefined;
   } catch {
     grand = undefined;
   }
-  return planSummary(state.model, state.pdfName ?? '前回', grand);
+  return planSummary(state.model, state.pdfName ?? '前回', grand, costs);
 }
 
 /** 設計の 3D データ（ARCHITREND の 3DS など） */

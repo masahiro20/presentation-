@@ -34,6 +34,42 @@ export interface PlanSummary {
   totalArea: number;
   /** 概算の総額（税込・円）。無ければ undefined */
   grand?: number;
+  /** 工事種別ごとの金額（税抜・円。見積の内訳書の工事ごとの合計）。プラン変更の増減表に使う */
+  costs?: PlanCost[];
+}
+
+/** 工事種別ごとの金額（見積の内訳書の「1. 仮設工事」…の合計） */
+export interface PlanCost {
+  id: string;
+  name: string;
+  amount: number;
+}
+
+/** 増減表の 1 行（前回・今回・増減。税抜・円） */
+export interface CostDiffRow {
+  id: string;
+  name: string;
+  prev: number;
+  cur: number;
+  delta: number;
+}
+
+/**
+ * プラン変更の増減表: 前回のプランの工事種別ごとの金額と今回の金額を並べ、差（今回 − 前回）を出す。
+ * 差が minDelta 円未満の工事は省く（端数の揺れを並べない）。並びは今回の内訳書の順、前回だけの工事は最後
+ */
+export function costDiff(prev: PlanCost[], cur: PlanCost[], minDelta = 1000): { rows: CostDiffRow[]; prevTotal: number; curTotal: number } {
+  const ids = [...cur.map((c) => c.id), ...prev.map((p) => p.id).filter((id) => !cur.some((c) => c.id === id))];
+  const rows: CostDiffRow[] = [];
+  for (const id of ids) {
+    const a = prev.find((p) => p.id === id);
+    const b = cur.find((c) => c.id === id);
+    const pv = a?.amount ?? 0;
+    const cv = b?.amount ?? 0;
+    if (Math.abs(cv - pv) < minDelta) continue;
+    rows.push({ id, name: b?.name ?? a?.name ?? id, prev: pv, cur: cv, delta: cv - pv });
+  }
+  return { rows, prevTotal: prev.reduce((s, p) => s + p.amount, 0), curTotal: cur.reduce((s, c) => s + c.amount, 0) };
 }
 
 export interface PlanChange {
@@ -47,7 +83,7 @@ export interface PlanChange {
 
 const tatamiOf = (r: { labeledTatami?: number; area: number }) => r.labeledTatami ?? r.area / 1.62;
 
-export function planSummary(model: BuildingModel, name: string, grand?: number): PlanSummary {
+export function planSummary(model: BuildingModel, name: string, grand?: number, costs?: PlanCost[]): PlanSummary {
   const floors: PlanSummaryFloor[] = model.floors.map((f) => ({
     level: f.level,
     area: f.rooms.filter((r) => !excludedFromFloorArea(r.type)).reduce((s, r) => s + r.area, 0),
@@ -58,7 +94,7 @@ export function planSummary(model: BuildingModel, name: string, grand?: number):
     doors: f.openings.filter((o) => o.kind === 'door' || o.kind === 'sliding' || o.kind === 'entrance').length,
     stairs: f.stairs.length,
   }));
-  return { name, at: new Date().toISOString(), floors, totalArea: floors.reduce((s, f) => s + f.area, 0), grand };
+  return { name, at: new Date().toISOString(), floors, totalArea: floors.reduce((s, f) => s + f.area, 0), grand, ...(costs?.length ? { costs } : {}) };
 }
 
 const norm = (s: string) => s.normalize('NFKC').replace(/\s/g, '').replace(/[①-⑳]/g, '');

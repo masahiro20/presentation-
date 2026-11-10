@@ -314,5 +314,10 @@ export function createExteriorTool(v: Viewer, host: HTMLElement, onModelEdited: 
   }
 
   const btn = h('button', { class: 'nav-btn', title: '外構に置く（植栽・フェンス・車・BBQ・ベンチ・自転車・物置・ポスト・庭園灯）\n地面をクリックで置く、物をクリックで選ぶ', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '🌳'), '外構');
-  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd };
+  /** 元に戻した後: 消えた物の選択を外して、枠・つまみ・パネルを今のモデルに合わせる */
+  const refresh = () => {
+    if (sel && !selected()) sel = null;
+    render();
+  };
+  return { button: btn, setActive, isActive: () => active, pickHere, dragStart, dragMove, dragEnd, refresh };
 }

@@ -12,7 +12,7 @@ import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { mmText, openingGaps } from '../core/dims';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type Canopy, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
-import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
+import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall } from '../core/openings';
 import { effectiveOpening, resolveSpec } from '../styles/spec';
 import { roofMasses, roofMassAt, patchLoop, type RoofMass } from '../scene/roof';
 import { SASH_MIN_CHECK, SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
@@ -1143,7 +1143,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       };
       const numField = (label: string, get: () => number, set: (v: number) => void, step = 10) => h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'number', value: Math.round(get()), step, onchange: (e: Event) => change(() => set(+(e.target as HTMLInputElement).value)) }));
       panel.append(
-        h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${f.level}階 ${OPENING_LABEL[op.kind]}`), h('div', { class: 'hint' }, openingSummary(op))),
+        h('div', { class: 'furn-sel' }, h('div', { class: 'field-label' }, `${f.level}階 ${openingLabel(op)}`), h('div', { class: 'hint' }, openingSummary(op))),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, '種類'), h('select', { onchange: (e: Event) => change(() => applyOpeningKind(op, (e.target as HTMLSelectElement).value as Opening['kind'], f.ceilingHeight)) }, OPENING_KINDS.map((k) => h('option', { value: k, selected: k === op.kind }, OPENING_LABEL[k])))),
       );
       if (op.kind === 'window') {
@@ -1158,10 +1158,22 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           h('div', { class: 'segmented' }, ...SASH_QUICK_WIDTHS.map((x) => h('button', { class: Math.abs(width - x) <= 70 ? 'on' : '', title: sashWidthLabel(x), disabled: x > wallLen - 40, onclick: () => change(() => setOpeningWidth(op, x, wallLen)) }, x.toLocaleString()))),
         );
       }
-      if (op.kind === 'door' || op.kind === 'entrance')
+      if (op.kind === 'door' || op.kind === 'entrance') {
         panel.append(
-          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => change(() => flipHinge(op)) }, '吊元を左右入れ替え'), op.kind === 'door' ? h('button', { class: 'btn sm', onclick: () => change(() => flipSwing(op)) }, '開く向きを反対側へ') : null),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', onclick: () => change(() => flipHinge(op)) }, '吊元を左右入れ替え'), op.kind === 'door' && !op.service ? h('button', { class: 'btn sm', onclick: () => change(() => flipSwing(op)) }, '開く向きを反対側へ') : null),
         );
+        // 1 階の外壁の開き戸: 玄関ドア（庇・ポーチ付き）か勝手口（庇・ポーチなし。ガレージの通用口も）か
+        if (wall?.exterior && f.level === 1)
+          panel.append(
+            h('div', { class: 'field-label' }, '外へ出る戸の役割'),
+            h(
+              'div',
+              { class: 'segmented' },
+              h('button', { class: op.kind === 'entrance' || !op.service ? 'on' : '', title: '庇とポーチが付きます', onclick: () => change(() => setExteriorDoorRole(op, 'entrance', f.ceilingHeight)) }, '玄関ドア'),
+              h('button', { class: op.kind === 'door' && op.service ? 'on' : '', title: '庇・ポーチなしの外部ドア（ガレージの通用口もこちら）', onclick: () => change(() => setExteriorDoorRole(op, 'service', f.ceilingHeight)) }, '勝手口'),
+            ),
+          );
+      }
       if (op.kind === 'sliding')
         panel.append(
           h('div', { class: 'btn-row' }, op.t1 - op.t0 < 1200 ? h('button', { class: 'btn sm', onclick: () => change(() => flipHinge(op)) }, '引き込む側を入れ替え') : null, h('button', { class: 'btn sm', onclick: () => change(() => flipSwing(op)) }, '戸の面を反対側へ')),

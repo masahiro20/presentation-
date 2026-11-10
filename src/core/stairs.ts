@@ -164,6 +164,26 @@ export function stairLayout(s0: Stair, n = 14): StairLayout {
   return { n, pieces };
 }
 
+/**
+ * 階段が実際に占める範囲（上の階の床にあける穴）。直階段・折り返しは矩形そのもの。
+ * かね折れは L 字なので、最初の列の帯と、奥の辺に沿う帯の 2 つ（矩形の残りの角は上の階の床が残る）
+ */
+export function stairFootprint(s0: Stair): { minX: number; minY: number; maxX: number; maxY: number }[] {
+  const s = effectiveStair(s0);
+  if (s.kind !== 'l') return [{ minX: s.minX, minY: s.minY, maxX: s.maxX, maxY: s.maxY }];
+  const F = stairFrame(s);
+  const { Ls, Lt } = F;
+  const P = (sv: number, tv: number) => ({ x: F.o.x + F.u.x * sv + F.r.x * tv, y: F.o.y + F.u.y * sv + F.r.y * tv });
+  const rect = (a0: number, a1: number, t0: number, t1: number) => {
+    const a = P(a0, t0);
+    const b = P(a1, t1);
+    return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
+  };
+  const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  const strip: [number, number] = (s.turn ?? 'right') === 'right' ? [0, fw] : [Lt - fw, Lt];
+  return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];
+}
+
 // ---------------------------------------------------------------------------
 // 平面図の階段の表記（ARCHITREND などの CAD の描き方に寄せる）
 // ---------------------------------------------------------------------------

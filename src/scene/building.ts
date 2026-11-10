@@ -8,7 +8,7 @@ import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, roomFloorO
 import { pointInPolygon, isHoleLoop } from '../core/geometry';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
-import { stairLayout, effectiveStepCount } from '../core/stairs';
+import { stairLayout, effectiveStepCount, stairFootprint } from '../core/stairs';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
@@ -267,10 +267,11 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
   const idx = model.floors.indexOf(f);
   const below = model.floors[idx - 1];
   const out: Rect[] = [];
-  if (below) for (const s of below.stairs) if (s.goesUp) out.push(s);
+  // かね折れ階段は L 字の範囲だけ（矩形いっぱいに穴をあけると、角の所の床まで抜ける）
+  if (below) for (const s of below.stairs) if (s.goesUp) out.push(...stairFootprint(s));
   // 上階に DN 階段があり、下階に対応する階段がない場合も穴を開ける
   for (const s of f.stairs) {
-    if (!s.goesUp && below && !below.stairs.some((b) => Math.abs(b.minX - s.minX) < 300 && Math.abs(b.minY - s.minY) < 300)) out.push(s);
+    if (!s.goesUp && below && !below.stairs.some((b) => Math.abs(b.minX - s.minX) < 300 && Math.abs(b.minY - s.minY) < 300)) out.push(...stairFootprint(s));
   }
   // 吹抜
   for (const r of f.rooms) if (r.type === 'void') {
@@ -1350,6 +1351,17 @@ function buildCanopies(mb: MeshBuilder, model: BuildingModel, f: Floor, fl: numb
   }
 }
 
+/** ガレージ（土間）の通用口か: 勝手口（service）で、戸のどちらかの側がビルトインガレージ。戸はガレージの土間から立ち上げる */
+function isGarageServiceDoor(f: Floor, w: Wall, o: Opening): boolean {
+  if (o.kind !== 'door' || !o.service || !w.exterior || f.level !== 1) return false;
+  const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+  const ux = (w.b.x - w.a.x) / L;
+  const uy = (w.b.y - w.a.y) / L;
+  const c = { x: w.a.x + ux * ((o.t0 + o.t1) / 2), y: w.a.y + uy * ((o.t0 + o.t1) / 2) };
+  const off = w.thickness / 2 + 300;
+  return [1, -1].some((sg) => isBuiltinGarage(roomAt(f, c.x - uy * sg * off, c.y + ux * sg * off)));
+}
+
 function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: number, top: number, extKey: string, isTop: boolean, spec: BuilderSpec) {
   const A = V(w.a.x * MM, 0, w.a.y * MM);
   const B = V(w.b.x * MM, 0, w.b.y * MM);
@@ -1446,7 +1458,7 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     const s1 = Math.min(L, o.t1 * MM);
     seg(cursor, s0, bottom, wallTop, cursor === 0 ? firstCap : jambKey, jambKey);
     // シャッターは土間（GL+40）から立ち上がる（家の床の高さに合わせると、車の乗り入れ口に段差ができる）
-    const base = o.kind === 'shutter' && f.level === 1 ? GARAGE_FLOOR_Y : fl;
+    const base = (o.kind === 'shutter' && f.level === 1) || isGarageServiceDoor(f, w, o) ? GARAGE_FLOOR_Y : fl;
     const sill = base + o.sill * MM;
     const head = Math.min(wallTop, base + (o.sill + o.height) * MM);
     if (o.sill > 0) seg(s0, s1, bottom, sill, null, null);
@@ -1469,17 +1481,21 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   let outSign = w.exterior ? (w.outsideSign ?? 1) : 1;
   // 1 階の外壁に置いた「開き戸」で、外側に部屋が無い（または外構・ポーチ）ものは玄関ドア扱い（外開き・庇付き）。
   // 室内の開き戸として作ると、玄関なのに内開きで庇の無い戸になっていた（吉田様邸）
-  if (o.kind === 'door' && w.exterior && f.level === 1) {
+  // 勝手口・ガレージの通用口（service）は玄関にしない（庇・ポーチなしの外部の開き戸として作る）
+  const serviceDoor = o.kind === 'door' && !!o.service && w.exterior;
+  if (o.kind === 'door' && w.exterior && f.level === 1 && !serviceDoor) {
     const q = mid.clone().addScaledVector(nW, outSign * (t / 2 + 0.3));
     const outsideRoom = roomAt(f, q.x / MM, q.z / MM);
     if (!outsideRoom || (outdoorRoom(outsideRoom) && outsideRoom.type !== 'balcony')) o = { ...o, kind: 'entrance', height: Math.max(o.height, 2200) };
   }
   // 開口の基準の高さ: シャッターはガレージの土間、玄関ドアは玄関の土間（FL − 180）、ほかは家の床
   let base = o.kind === 'shutter' && f.level === 1 ? GARAGE_FLOOR_Y : fl;
-  if (o.kind === 'entrance') {
+  if (o.kind === 'entrance' || serviceDoor) {
     const qi = mid.clone().addScaledVector(nW, -outSign * (t / 2 + 0.3));
     const offIn = roomFloorOffsetMm(roomAt(f, qi.x / MM, qi.z / MM));
-    if (offIn < 0) base = fl + offIn * MM;
+    // ガレージの通用口はガレージの土間から（家の床の高さに付けると、土間から 50cm 浮いた戸になる）
+    if (isGarageServiceDoor(f, w, o)) base = GARAGE_FLOOR_Y;
+    else if (offIn < 0) base = fl + offIn * MM;
   }
   const sill = base + o.sill * MM;
   const head = base + (o.sill + o.height) * MM;
@@ -1653,7 +1669,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     return;
   }
 
-  if (o.kind === 'entrance') {
+  if (o.kind === 'entrance' || serviceDoor) {
     const plane = mid.clone().addScaledVector(outN, t / 2 - 0.06);
     const fw = 0.05;
     mb.box('ext.frame', plane.clone().setY(head - fw), dir, width, fw, 0.08);
@@ -1668,9 +1684,18 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     dmb.clip = localClip(hinge, Math.atan2(-closedDir.z, closedDir.x));
     dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
     const zOut = outN.dot(nW); // 局所 +Z = nW
-    // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
-    dmb.box('f.metal', V(dw - 0.12, sill + 0.75, zOut * 0.05), V(1, 0, 0), 0.02, 0.8, 0.02);
-    dmb.box('ext.glassFrosted', V(0.12, sill + 0.3, zOut * 0.024), V(1, 0, 0), 0.08, H - 0.6, 0.004);
+    if (serviceDoor) {
+      // 勝手口ドア: 上半分が型ガラス（採光・採風）、レバーハンドル
+      const gw = Math.max(0.2, dw - 0.24);
+      dmb.box('ext.glassFrosted', V(dw / 2, sill + H * 0.45, zOut * 0.024), V(1, 0, 0), gw, H * 0.42, 0.004);
+      dmb.box('ext.glassFrosted', V(dw / 2, sill + H * 0.45, -zOut * 0.024), V(1, 0, 0), gw, H * 0.42, 0.004);
+      dmb.box('f.metal', V(dw - 0.1, sill + 1.0, zOut * 0.04), V(1, 0, 0), 0.12, 0.02, 0.02);
+      dmb.box('f.metal', V(dw - 0.1, sill + 1.0, -zOut * 0.04), V(1, 0, 0), 0.12, 0.02, 0.02);
+    } else {
+      // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
+      dmb.box('f.metal', V(dw - 0.12, sill + 0.75, zOut * 0.05), V(1, 0, 0), 0.02, 0.8, 0.02);
+      dmb.box('ext.glassFrosted', V(0.12, sill + 0.3, zOut * 0.024), V(1, 0, 0), 0.08, H - 0.6, 0.004);
+    }
     // 玄関ドアは外開き（日本の玄関は靴を脱ぐ土間に扉が来ないように外へ開く。以前は内開きになっていた）
     const outward = outN.clone();
     meta.doors.push({
@@ -1686,11 +1711,19 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       mb: dmb,
       width: dw,
     });
+    const outPt = mid.clone().addScaledVector(outN, t / 2 + 0.6);
+    const outRoom = roomAt(f, outPt.x / MM, outPt.z / MM);
+    if (serviceDoor) {
+      // 勝手口は踏み段だけ（庇・ポーチは付けない）。戸の下端が地面から 15cm 以上あるとき
+      if (!outRoom && base > 0.15) {
+        const sc = mid.clone().addScaledVector(outN, t / 2 + 0.2);
+        mb.box('l.porch', sc.clone().setY(0), dir, Math.max(0.6, width), Math.max(0.1, base - 0.18), 0.4);
+      }
+      return;
+    }
     // ポーチと庇。外側がポーチの区画なら床は区画のものを使い、上階・下屋・ポーチの天井の下なら庇は付けない
     const porchW = Math.max(1.6, width + 0.8);
     const porchD = 1.3;
-    const outPt = mid.clone().addScaledVector(outN, t / 2 + 0.6);
-    const outRoom = roomAt(f, outPt.x / MM, outPt.z / MM);
     if (!outRoom) {
       // ポーチは土間（玄関ドアの基準）より 30 下。その先に半分の高さの段
       const porchTop = Math.max(0.1, base - 0.03);

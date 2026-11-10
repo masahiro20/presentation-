@@ -21,7 +21,7 @@ import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
-import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, isSlidingWindow, clampToWall } from '../core/openings';
+import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall } from '../core/openings';
 import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { siteSize, syncSiteFromPolygon } from '../parser/site';
 import { stairDrawing } from '../core/stairs';
@@ -1104,7 +1104,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     } else if (op.kind === 'door' || op.kind === 'entrance') {
       const hingeAtStart = op.hingeAtStart !== false;
       // 玄関ドアは外開き（外壁の外側へ）
-      const side = op.kind === 'entrance' && w.exterior ? (w.outsideSign ?? 1) : (op.swingSide ?? 1);
+      const side = (op.kind === 'entrance' || op.service) && w.exterior ? (w.outsideSign ?? 1) : (op.swingSide ?? 1);
       const ht = hingeAtStart ? 0 : len;
       const dirU = hingeAtStart ? 1 : -1;
       const hinge = P(ht, hh * side);
@@ -1529,7 +1529,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         const numField = (label: string, get: () => number, set: (v: number) => void, step = 10, hint?: string) =>
           h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), h('input', { type: 'number', value: Math.round(get()), step, onchange: (e: Event) => change(() => set(+(e.target as HTMLInputElement).value)) }), hint ? h('span', { class: 'hint' }, hint) : null);
         panel.append(
-          h('div', { class: 'field-label' }, OPENING_LABEL[op.kind]),
+          h('div', { class: 'field-label' }, openingLabel(op)),
           h('p', { class: 'hint', style: 'margin:0 0 6px' }, openingSummary(op)),
           h(
             'label',
@@ -1556,9 +1556,21 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
                   'div',
                   { class: 'btn-row' },
                   h('button', { class: 'btn sm', title: '吊元（丁番）を反対の端へ。記号の●が吊元、弧が戸先の軌跡', onclick: () => change(() => flipHinge(op)) }, '吊元を左右入れ替え'),
-                  op.kind === 'door' ? h('button', { class: 'btn sm', title: '壁のどちらの面へ開くか', onclick: () => change(() => flipSwing(op)) }, '開く向きを反対側へ') : null,
+                  op.kind === 'door' && !op.service ? h('button', { class: 'btn sm', title: '壁のどちらの面へ開くか', onclick: () => change(() => flipSwing(op)) }, '開く向きを反対側へ') : null,
                 ),
-                h('span', { class: 'hint' }, op.kind === 'entrance' ? '玄関ドアは外開き（土間に扉が来ないように）。3D では庇とポーチが付きます' : '個室・浴室は部屋の中へ、トイレ・収納は外へ開くのが普通です'),
+                // 1 階の外壁の開き戸: 玄関ドアか勝手口か（勝手口は庇・ポーチを付けない。ガレージの通用口もこちら）
+                ...(wall?.exterior && f.level === 1
+                  ? [
+                      h('div', { class: 'field-label' }, '外へ出る戸の役割'),
+                      h(
+                        'div',
+                        { class: 'segmented' },
+                        h('button', { class: op.kind === 'entrance' || !op.service ? 'on' : '', title: '3D で庇とポーチが付きます', onclick: () => change(() => setExteriorDoorRole(op, 'entrance', f.ceilingHeight)) }, '玄関ドア'),
+                        h('button', { class: op.kind === 'door' && op.service ? 'on' : '', title: '庇・ポーチなしの外部ドア（ガレージの通用口もこちら）', onclick: () => change(() => setExteriorDoorRole(op, 'service', f.ceilingHeight)) }, '勝手口'),
+                      ),
+                    ]
+                  : []),
+                h('span', { class: 'hint' }, op.kind === 'entrance' ? '玄関ドアは外開き（土間に扉が来ないように）。3D では庇とポーチが付きます' : op.service ? '勝手口は外開き。3D では庇・ポーチを付けず、踏み段だけ置きます' : '個室・浴室は部屋の中へ、トイレ・収納は外へ開くのが普通です'),
               ]
             : []),
           ...(op.kind === 'sliding'

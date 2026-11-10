@@ -169,6 +169,7 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
         if (door!.kind === 'door' && (!o || o.type === 'porch' || o.type === 'carport')) {
           door!.kind = 'entrance';
           door!.height = Math.max(door!.height, 2200);
+          delete door!.service;
         }
         continue;
       }

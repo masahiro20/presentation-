@@ -90,6 +90,11 @@ export interface Opening {
   swingSide?: 1 | -1;
   /** 解析の確信度 0..1 */
   confidence?: number;
+  /**
+   * 勝手口・ガレージの通用口（玄関ではない、外へ出る開き戸）。kind は 'door'。
+   * 3D では庇・ポーチを付けず、外開きの勝手口ドア（上半分ガラス）と踏み段だけにする
+   */
+  service?: boolean;
 }
 
 export interface Room {

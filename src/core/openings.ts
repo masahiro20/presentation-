@@ -36,10 +36,27 @@ export function applyWindowShape(op: Opening, style: Exclude<WindowStyle, 'none'
   if (wallLen != null) clampToWall(op, wallLen);
 }
 
+/** 表示用の名前（勝手口は開き戸の一種だが、名前は分ける） */
+export function openingLabel(op: Opening): string {
+  return op.kind === 'door' && op.service ? '勝手口' : OPENING_LABEL[op.kind];
+}
+
+/** 外壁の開き戸の役割を切り替える: 玄関ドア（3D で庇・ポーチが付く）⇄ 勝手口（庇・ポーチなし。ガレージの通用口もこれ） */
+export function setExteriorDoorRole(op: Opening, role: 'entrance' | 'service', ceilingHeight: number) {
+  if (role === 'entrance') {
+    applyOpeningKind(op, 'entrance', ceilingHeight);
+    return;
+  }
+  applyOpeningKind(op, 'door', ceilingHeight);
+  op.service = true;
+}
+
 /** 種類を変える（腰高・高さを種類の標準に。窓→窓以外は床まで、窓以外→窓は腰窓） */
 export function applyOpeningKind(op: Opening, kind: Opening['kind'], ceilingHeight: number) {
   if (kind === op.kind) return;
   op.kind = kind;
+  // 勝手口の印は開き戸のときだけ
+  delete op.service;
   if (kind === 'window') {
     if (op.sill === 0 && op.height > 2000) applyWindowShape(op, 'hakidashi', ceilingHeight);
     else applyWindowShape(op, op.windowStyle && op.windowStyle !== 'none' ? op.windowStyle : 'koshi', ceilingHeight);
@@ -97,7 +114,7 @@ export function openingSummary(op: Opening): string {
     const how = isSlidingWindow(op) ? '引違い' : op.windowStyle === 'small' || op.windowStyle === 'slit' ? (op.windowStyle === 'slit' ? 'FIX' : '縦すべり出し') : 'FIX';
     return `${st}（${how}）W${w}　腰 ${op.sill}　高さ ${op.height}`;
   }
-  if (op.kind === 'door' || op.kind === 'entrance') return `${OPENING_LABEL[op.kind]} W${w}　${op.hingeAtStart !== false ? '始点側' : '終点側'}吊元・${op.kind === 'entrance' ? '外開き' : (op.swingSide ?? 1) === 1 ? '表側へ開く' : '裏側へ開く'}`;
+  if (op.kind === 'door' || op.kind === 'entrance') return `${openingLabel(op)} W${w}　${op.hingeAtStart !== false ? '始点側' : '終点側'}吊元・${op.kind === 'entrance' || op.service ? '外開き' : (op.swingSide ?? 1) === 1 ? '表側へ開く' : '裏側へ開く'}`;
   if (op.kind === 'sliding') return `${op.t1 - op.t0 >= 1200 ? '引違い戸' : '片引き戸'} W${w}${op.t1 - op.t0 < 1200 ? `　${op.hingeAtStart === false ? '始点側' : '終点側'}へ引き込む` : ''}`;
   return `${OPENING_LABEL[op.kind]} W${w}`;
 }

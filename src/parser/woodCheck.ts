@@ -445,7 +445,10 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       return storages.some((r) => r.polygon.some((p, i) => distPointSegment(c, p, r.polygon[(i + 1) % r.polygon.length]) <= 250));
     };
     const narrow = f.openings.filter((o) => {
-      if (o.kind === 'window' || o.kind === 'open' || o.t1 - o.t0 >= 550) return false;
+      // 円弧と戸の板がはっきり描かれた開き戸（確信度 0.9 以上）は、戸の板の幅＝円弧の半径なので 500 まで認める
+      // （狭小 3 階建てのトイレの戸は板 540〜550・枠 600: 市岡様邸）
+      const min = o.kind === 'door' && (o.confidence ?? 0) >= 0.9 ? 500 : 550;
+      if (o.kind === 'window' || o.kind === 'open' || o.t1 - o.t0 >= min) return false;
       const seg = segOf(o);
       return !!seg && !intoStorage(seg);
     });
@@ -455,7 +458,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       id: `door-${f.level}`,
       level: f.level,
       severity: 'warn',
-      title: `${f.level}階: 幅 0.55 m 未満の戸が ${narrow.length} か所`,
+      title: `${f.level}階: 幅の狭すぎる戸が ${narrow.length} か所`,
       detail: `${narrow.map((o) => `${Math.round(o.t1 - o.t0)}`).join('・')} mm の戸があります。戸は便所でも 650 以上、居室は 750〜800 が標準です。戸の記号（円弧・引戸の線）を小さく読んだ可能性があります。修正画面で戸を置き直してください`,
       marks: [{ level: f.level, lines, label: '狭い戸' }],
     });

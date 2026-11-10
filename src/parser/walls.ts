@@ -436,6 +436,19 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     const heavy = s.source === 'fill' || heavyT == null || s.width >= heavyT;
     groupLines[gi].push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: s.source === 'fill' });
   }
+  // 塗りの輪郭だけの線（壁の塗りが続いている所を知るため。mergeCollinear は配列を並べ替えるので写しで）
+  const fillLines = groupLines.map((ls) => mergeCollinear(ls.filter((l) => l.fill).map((l) => ({ ...l }))));
+  /** 軸 g の位置 o（±6mm）で、区間 [t0,t1] のうち壁の塗りの輪郭が通っている長さ */
+  const fillCover = (g: number, o: number, t0: number, t1: number) =>
+    intervalsLength(
+      mergeIntervals(
+        fillLines[g]
+          .filter((l) => Math.abs(l.o - o) <= 6)
+          .map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)] as [number, number])
+          .filter(([a, b]) => b > a),
+        20,
+      ),
+    );
   const lines = groupLines.map(mergeCollinear);
   // 点線を短い線分で描いたもの（引込み戸の隠れ線など）の並び
   const trains = lines.map(dashTrains);
@@ -659,6 +672,12 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
           const s0 = Math.max(e[0], bm[0]);
           const t = Math.min(e[1], bm[1]);
           if (t - s0 < 250) continue;
+          // 区間の中の線が 1 本だけで、壁の塗り（グレーの塗り）が両面とも続いている所は、窓・引戸ではなく壁の芯線
+          // （田中様 1 階: 芯線だけの 2.9m の壁が引戸になっていた）。
+          // 塗りだけでは決めない: 塗りの上にサッシを描く図面（池本様邸）では、窓の所も塗りが続いている
+          const here = new Set(rel.filter((C) => Math.min(C.t1, t) - Math.max(C.t0, s0) >= 150).map((C) => Math.round(C.o)));
+          const fc = (oo: number) => fillCover(p.g, oo, s0, t);
+          if (here.size < 2 && fc(A.o) >= (t - s0) * 0.8 && fc(B.o) >= (t - s0) * 0.8) continue;
           for (const part of subtractIntervals([s0, t], pk)) if (part[1] - part[0] >= 250) inf.push(part);
         }
       }
@@ -1206,19 +1225,46 @@ export function detectDoorSymbols(arcs: Arc[], segs: Seg[], groups: AngleGroup[]
     const cosang = (v0.x * v1.x + v0.y * v1.y) / (Math.hypot(v0.x, v0.y) * Math.hypot(v1.x, v1.y));
     if (Math.abs(cosang) > 0.26) continue; // 約90度
     // 扉の線（吊元→戸先）がある端点を T とする
-    const hasLeaf = (e: Vec2) =>
-      segs.some(
-        (s) =>
-          (Math.hypot(s.a.x - p.c.x, s.a.y - p.c.y) < 40 && Math.hypot(s.b.x - e.x, s.b.y - e.y) < 60) ||
-          (Math.hypot(s.b.x - p.c.x, s.b.y - p.c.y) < 40 && Math.hypot(s.a.x - e.x, s.a.y - e.y) < 60),
-      );
+    // 折れ線から復元した円弧は端が数度手前で終わることがあり（83° など）、戸の板は厚み 30〜40 の長方形で描かれる。
+    // 端点どうしの距離だけで見ると 60mm を超えて「板なし」になる（田中様の玄関ドア・勝手口）ので、
+    // 「吊元から出て、長さが半径とほぼ同じで、弧の端の方向（±12°）を向く線」も板とみなす
+    const eAng = (e: Vec2) => Math.atan2(e.y - p.c.y, e.x - p.c.x);
+    const leafLike = (near: Vec2, far: Vec2, e: Vec2) => {
+      if (Math.hypot(near.x - p.c.x, near.y - p.c.y) >= 45) return false;
+      const d = Math.hypot(far.x - p.c.x, far.y - p.c.y);
+      if (Math.abs(d - p.r) > Math.max(60, p.r * 0.08)) return false;
+      let da = Math.abs(Math.atan2(far.y - p.c.y, far.x - p.c.x) - eAng(e));
+      if (da > Math.PI) da = 2 * Math.PI - da;
+      return da < ((p.poly ? 12 : 5) * Math.PI) / 180;
+    };
+    /** 弧の端 e の側にある戸の板の、戸先側の端点（無ければ null） */
+    const leafEnd = (e: Vec2): Vec2 | null => {
+      for (const s of segs) {
+        if ((Math.hypot(s.a.x - p.c.x, s.a.y - p.c.y) < 40 && Math.hypot(s.b.x - e.x, s.b.y - e.y) < 60) || leafLike(s.a, s.b, e)) return s.b;
+        if ((Math.hypot(s.b.x - p.c.x, s.b.y - p.c.y) < 40 && Math.hypot(s.a.x - e.x, s.a.y - e.y) < 60) || leafLike(s.b, s.a, e)) return s.a;
+      }
+      return null;
+    };
     if (wallArc(p)) continue;
-    const l0 = hasLeaf(p.e0);
-    const l1 = hasLeaf(p.e1);
+    const le0 = leafEnd(p.e0);
+    const le1 = leafEnd(p.e1);
+    const l0 = !!le0;
+    const l1 = !!le1;
     // 折れ線の円弧は家具・設備の曲線も多いので、扉の線（吊元→戸先）があるものだけ
     if (p.poly && !l0 && !l1) continue;
     const candidates: [Vec2, Vec2][] = l0 && !l1 ? [[p.e1, p.e0]] : l1 && !l0 ? [[p.e0, p.e1]] : [[p.e0, p.e1], [p.e1, p.e0]];
-    for (const [S, T] of candidates) {
+    for (const [S0, T] of candidates) {
+      // 板（吊元→戸先 T）が分かっているときは、閉じた位置 S は板に直角の向き。
+      // 折れ線の弧は端が手前で終わる（83° など）ので、弧の端そのものを使うと壁の向きから 7° ずれて落ちていた
+      let S = S0;
+      const tip = l0 !== l1 ? (T === p.e0 ? le0 : le1) : null;
+      if (tip) {
+        const tl = Math.hypot(tip.x - p.c.x, tip.y - p.c.y) || 1;
+        const vx = (tip.x - p.c.x) / tl;
+        const vy = (tip.y - p.c.y) / tl;
+        const sg = -vy * (S0.x - p.c.x) + vx * (S0.y - p.c.y) >= 0 ? 1 : -1;
+        S = { x: p.c.x - vy * sg * p.r, y: p.c.y + vx * sg * p.r };
+      }
       const dir = Math.atan2(S.y - p.c.y, S.x - p.c.x);
       let th = dir < 0 ? dir + Math.PI : dir;
       if (th >= Math.PI) th -= Math.PI;

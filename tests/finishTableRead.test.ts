@@ -1,8 +1,10 @@
 // 立面図の外部仕上表を読み、コーディネートの初期値にする（parser/finishTable・coordinate/fromFinishTable）・PDF のページの中身（parser/pageMap）
 import { describe, expect, it } from 'vitest';
 import { readExteriorFinishTable } from '../src/parser/finishTable';
-import { finishesFromTable } from '../src/coordinate/fromFinishTable';
+import { finishesFromTable, shortText } from '../src/coordinate/fromFinishTable';
 import { classifyPage, titleBlockName } from '../src/parser/pageMap';
+import { exteriorFinishRows, noteColor } from '../src/drawings/finishTable';
+import { DEFAULT_DESIGN } from '../src/styles/presets';
 import type { PageVectors, RawText } from '../src/parser/pdfExtract';
 
 const t = (str: string, cx: number, cy: number, size = 7.1, width?: number): RawText => ({ str, cx, cy, size, width: width ?? str.length * size, angle: 0 });
@@ -42,6 +44,9 @@ describe('外部仕上表', () => {
     expect(ft.finishes.entDoor).toBe('door.venato.grey');
     expect(ft.notes.roof).toContain('立平葺');
     expect(ft.notes.roof).not.toContain('防火');
+    // 半角カナは全角に（お客様に出る仕上表に載る）
+    expect(ft.notes.roof).toContain('カラーガルバリウム鋼板');
+    expect(shortText('ガルバリウム鋼板張り 4Kスパン 色：スターゴールド（K055） ガルバリウム鋼板+PB12.5張り+屋内側PB厚12.5張り')).toBe('ガルバリウム鋼板張り 4Kスパン 色：スターゴールド（K055）');
     const undecided = finishesFromTable([{ part: '屋根', text: 'ｶﾗｰｶﾞﾙﾊﾞﾘｳﾑ鋼板 立平葺 色：〇〇〇〇' }]);
     expect(undecided.finishes.roof).toBeUndefined();
     expect(undecided.notes.roof).toContain('立平葺');
@@ -62,5 +67,17 @@ describe('PDF のページの中身', () => {
   });
   it('図面名の欄が無くても「南 側」「北 側」の見出しが 2 つあれば立面図', () => {
     expect(classifyPage([t('南 側', 332, 372), t('立 面 図', 376, 372), t('北 側', 330, 662), t('立 面 図', 374, 662)], 4000, []).kind).toBe('elevation');
+  });
+});
+
+describe('取り込んだ仕上げの色を表に出す', () => {
+  it('品番メモの「色：〇〇」を色の欄に優先する（サッシは外・内）', () => {
+    const ft = finishesFromTable(readExteriorFinishTable([page()]));
+    const d = { ...DEFAULT_DESIGN, finishes: ft.finishes, finishNotes: ft.notes };
+    expect(noteColor(d, 'roof')).toBe('コゲチャ');
+    expect(noteColor(d, 'sash')).toBe('外シャイングレー');
+    const rows = exteriorFinishRows(d).flat();
+    expect(rows.find((r) => r.label === '屋根')?.cell.ar).toBe('色：コゲチャ');
+    expect(rows.find((r) => r.label === '玄関ドア')?.cell.br).toBe('色：プラチナステン');
   });
 });

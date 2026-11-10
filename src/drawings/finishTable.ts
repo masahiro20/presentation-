@@ -33,6 +33,20 @@ const product = (design: DesignOptions, catId: string) => {
   return cat && id ? cat.products.find((x) => x.id === id) : undefined;
 };
 const note = (design: DesignOptions, catId: string) => (design.finishNotes?.[catId] ?? '').trim();
+/**
+ * 品番メモに書かれた色（図面の外部仕上表から取り込んだ「色：コゲチャ」など）。サッシは「外〇〇／内〇〇」。
+ * カタログに同じ色が無いときは近い商品を選んでいるので、表の色の欄はメモの色を優先する（色の欄と品番の欄で色が食い違わないように）
+ */
+export function noteColor(design: DesignOptions, catId: string): string | undefined {
+  const t = note(design, catId);
+  if (!t) return undefined;
+  const pick = (re: RegExp) => re.exec(t)?.[1];
+  const out = pick(/色[:：]\s*外\s*([^\s（(、,／/]+)/);
+  const inn = pick(/色[:：]\s*内\s*([^\s（(、,／/]+)/);
+  if (out || inn) return [out ? `外${out}` : '', inn ? `内${inn}` : ''].filter(Boolean).join('／');
+  const c = pick(/色[:：]\s*([^\s、,]+)/);
+  return c && !/[〇○□]/.test(c) ? c : undefined;
+}
 
 /** 御社の標準仕様（コーディネートの選択で置き換わる部分以外は固定の文言） */
 export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
@@ -70,7 +84,7 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
     const m = /(オフホワイト|ホワイト|ライトグレー|グレージュ|グレー|ベージュ|チャコール|ブラック|墨色|白|黒)/.exec(name.split('×')[0]);
     return m ? m[1] : '';
   };
-  const wallColor = wallP?.color ?? (design.wallColorOverride ? `指定色 ${design.wallColorOverride}` : colorWord(st.name));
+  const wallColor = noteColor(design, 'extWall') ?? wallP?.color ?? (design.wallColorOverride ? `指定色 ${design.wallColorOverride}` : colorWord(st.name));
   const wallSub = note(design, 'extWall') || (isPlaster || /塗り壁/.test(wallMain) ? '外壁側 窯業系サイディング 厚15＋屋内側 PB 厚12.5 張り' : '外壁側 構造用合板 9mm＋屋内側 PB 厚12.5 張り');
   const accMain = accP
     ? /SOLIDO/.test(accP.name)
@@ -93,7 +107,7 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
         ? { a: `${soffitP.name}`, ar: `色：${soffitP.color ?? ''}` }
         : { a: 'ケイ酸カルシウム板 t10（塗装軒天ボード）', ar: `色：${soffitP.color ?? ''}` }
     : { a: 'ケイ酸カルシウム板 t10（塗装軒天ボード）', ar: '色：N-25 合わせ' };
-  const roofColor = roofP?.color ?? (st.roof.material.pattern === 'standingSeam' ? 'ブラック' : '');
+  const roofColor = noteColor(design, 'roof') ?? roofP?.color ?? (st.roof.material.pattern === 'standingSeam' ? 'ブラック' : '');
   const frameDark = /ブラック|黒/.test(sashP?.color ?? '') || (!sashP && parseInt(st.frame.color.slice(1, 3), 16) < 80);
   const gutter = st.roof.gutter;
   const roofRows: FinishRow[] = [
@@ -106,7 +120,7 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
     { label: '軒樋', cell: gutter ? { a: '塩ビ製軒樋', b: '【Panasonic】グランスケア PGR60', br: '色：ブラック' } : { a: '軒樋なし（軒ゼロ納まり）' } },
     { label: '縦樋', cell: gutter ? { a: '塩ビ製縦樋', b: '【Panasonic】グランスケア PGR60', br: '色：ブラック' } : { a: '縦樋なし' } },
     { label: `外壁${WALL_MARKS.wall}`, cell: { a: wallMain, ar: wallColor ? `色：${wallColor}` : '', b: wallSub, br: isPlaster || /塗り壁/.test(wallMain) ? '防火：PC030BE-9201' : '' } },
-    { label: `外壁${WALL_MARKS.accent}`, cell: accMain ? { a: accMain, ar: `色：${accP?.color ?? ''}`, b: accSub, br: /SOLIDO/.test(accSub) ? '防火：PC030BE-4146(1)' : '' } : { a: '' } },
+    { label: `外壁${WALL_MARKS.accent}`, cell: accMain ? { a: accMain, ar: `色：${noteColor(design, 'accent') ?? accP?.color ?? ''}`, b: accSub, br: /SOLIDO/.test(accSub) ? '防火：PC030BE-4146(1)' : '' } : { a: '' } },
   ];
   const baseRows: FinishRow[] = [
     { label: '外壁下地', cell: { a: '構造用合板 9mm＋透湿・防水シート t0.17＋通気胴縁張り', ar: '（外壁通気工法）' } },
@@ -115,8 +129,8 @@ export function exteriorFinishRows(design: DesignOptions): FinishRow[][] {
     { label: '基礎巾木', cell: { a: 'コンクリート立ち上がりの上、モルタル刷毛引き専用 塗装仕上げ', b: '外壁仕上げ塗り合わせ' } },
   ];
   const doorRows: FinishRow[] = [
-    { label: '玄関ドア', cell: { a: doorP && /引き戸|コンコード/.test(doorP.name) ? '断熱玄関引き戸 ハンドル手動錠' : '断熱玄関片開きドア ハンドル手動錠', b: note(design, 'entDoor') || (doorP ? `【${doorP.maker.replace(/ AP$/, '')}】${doorP.name.replace(/ 片開き$/, '')} D2仕様` : '【YKK】ヴェナート D30 D2仕様'), br: `色：${doorP?.color ?? 'ディープグレイ'}` } },
-    { label: '外建具', cell: { a: '樹脂アルミ複合サッシ＋16＋3 Low-E クリア＋網戸', b: note(design, 'sash') || (sashP ? `【${sashP.maker}】${sashP.name.replace(/（.*）$/, '')}` : '【LIXIL】TW'), br: frameDark ? '色：外ブラック／内ブラック' : `色：${sashP?.color ?? 'シルバー'}` } },
+    { label: '玄関ドア', cell: { a: doorP && /引き戸|コンコード/.test(doorP.name) ? '断熱玄関引き戸 ハンドル手動錠' : '断熱玄関片開きドア ハンドル手動錠', b: note(design, 'entDoor') || (doorP ? `【${doorP.maker.replace(/ AP$/, '')}】${doorP.name.replace(/ 片開き$/, '')} D2仕様` : '【YKK】ヴェナート D30 D2仕様'), br: `色：${noteColor(design, 'entDoor') ?? doorP?.color ?? 'ディープグレイ'}` } },
+    { label: '外建具', cell: { a: '樹脂アルミ複合サッシ＋16＋3 Low-E クリア＋網戸', b: note(design, 'sash') || (sashP ? `【${sashP.maker}】${sashP.name.replace(/（.*）$/, '')}` : '【LIXIL】TW'), br: noteColor(design, 'sash') ? `色：${noteColor(design, 'sash')}` : frameDark ? '色：外ブラック／内ブラック' : `色：${sashP?.color ?? 'シルバー'}` } },
     { label: '断熱材', cell: { a: '屋根：高性能グラスウール t200', b: '壁：高性能グラスウール t105' } },
     { label: '断熱材', cell: { a: '基礎：カネライトフォーム（押出法ポリスチレンフォーム）t50', b: '（基礎内断熱 立ち上がり）' } },
   ];

@@ -34,12 +34,20 @@ const WALL_COLOR: [RegExp, string][] = [
   [/ネイビー|ブルー/, '#2f3a4a'],
 ];
 
-/** 図面の文言を品番メモ向けに短くする（下葺材・防火の告示・断熱の行は外す） */
-function shortText(t: string): string {
+/**
+ * 図面の文言を品番メモ向けに整える（お客様に出る仕上表・仕様決定書に載るので読みやすく）。
+ * 半角カナ・全角英数は普通の文字に、下葺材・防火の告示・下地の構成（PB・構造用合板）・断熱の行は外す
+ */
+export function shortText(t: string): string {
   return t
+    .normalize('NFKC')
     .replace(/下葺材\S*/g, '')
     .replace(/防火[:：]\S*/g, '')
+    .replace(/\S*(PB|告示|構造用合板|屋内側)\S*/g, '')
     .replace(/屋根[:：].*$/, '')
+    // 日本語の書類らしく「色：」「（K055）」は全角に戻す
+    .replace(/色:/g, '色：')
+    .replace(/\(([^()]*)\)/g, '（$1）')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);

@@ -6,6 +6,7 @@ import { ensureGarageShutters } from './garageShutter';
 import { ensureOpenings, relocateAutoShutters } from './ensureOpenings';
 import { chooseEntrance } from './entranceChoice';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
+import { detectPassMarks, marksCrossing } from './passMarks';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
@@ -431,15 +432,17 @@ function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boo
  * ホームランディックの窓の語彙: 掃き出し窓は LDK（庭側）に 1 ヵ所だけ。残りの大きな窓は天井付けの横長 FIX、細い窓は縦すべり出しにする。
  * 図面にサッシ記号・FL 注記で寸法が書かれた窓はそのまま。
  */
-function applyWindowVocabulary(openings: Opening[], info: Map<number, { room: RoomType | null; south: number; drawn: boolean }>) {
+function applyWindowVocabulary(openings: Opening[], info: Map<number, { room: RoomType | null; south: number; drawn: boolean; marked?: boolean }>) {
   const living = new Set<RoomType | null>(['ldk', 'living', 'dining', 'japanese']);
   const cands = openings
     .map((o, i) => ({ o, i, inf: info.get(i) }))
     .filter((x) => x.o.kind === 'window' && x.o.windowStyle === 'hakidashi' && x.inf && !x.inf.drawn && living.has(x.inf.room));
-  if (cands.length <= 1) return;
+  // 通り口の印で「出入りする窓」が分かっている図面: 居間に印のある窓があれば、印の無い窓は掃き出しにしない
+  const hasMarked = [...info.entries()].some(([i, inf]) => inf.marked && living.has(inf.room) && openings[i]?.kind === 'window');
+  if (cands.length <= (hasMarked ? 0 : 1)) return;
   // 庭側（南）に面した幅の広い窓を掃き出しに残す
   cands.sort((a, b) => b.o.t1 - b.o.t0 + b.inf!.south * 1500 - (a.o.t1 - a.o.t0 + a.inf!.south * 1500));
-  for (const x of cands.slice(1)) {
+  for (const x of cands.slice(hasMarked ? 0 : 1)) {
     const w = x.o.t1 - x.o.t0;
     if (w >= 1400) {
       x.o.windowStyle = 'high';
@@ -1116,6 +1119,46 @@ export function cutGarageRails(walls: WWall[], nearGarage: (a: Vec2, b: Vec2) =>
   return cut;
 }
 
+/**
+ * 壁の一部の区間（壁に沿った位置 t の範囲）を切り取り、残りを別々の壁にする。切り取った区間に掛かる開口は捨てる。
+ * 柱 1 本ぶんにも満たない端（80 mm 未満）は残さない
+ */
+export function cutWallSpans(walls: WWall[], w: WWall, spans: [number, number][]): void {
+  const idx = walls.indexOf(w);
+  if (idx < 0 || !spans.length) return;
+  const P = (t: number): Vec2 => ({ x: w.u.x * t + w.n.x * w.o, y: w.u.y * t + w.n.y * w.o });
+  const sorted = spans.map(([a, b]) => [Math.max(w.t0, Math.min(a, b)), Math.min(w.t1, Math.max(a, b))] as [number, number]).sort((p, q) => p[0] - q[0]);
+  const keep: [number, number][] = [];
+  let cur = w.t0;
+  for (const [a, b] of sorted) {
+    if (a - cur >= 80) keep.push([cur, a]);
+    cur = Math.max(cur, b);
+  }
+  if (w.t1 - cur >= 80) keep.push([cur, w.t1]);
+  const aLow = w.a.x * w.u.x + w.a.y * w.u.y <= w.b.x * w.u.x + w.b.y * w.u.y;
+  const parts: WWall[] = keep.map(([lo, hi]) => {
+    const nw: WWall = { ...w, t0: lo, t1: hi, openings: w.openings.filter((op) => op.t0 >= lo - 1 && op.t1 <= hi + 1) };
+    const cutLo = lo > w.t0 + 1;
+    const cutHi = hi < w.t1 - 1;
+    const pLo = cutLo ? P(lo) : aLow ? w.a : w.b;
+    const pHi = cutHi ? P(hi) : aLow ? w.b : w.a;
+    if (aLow) {
+      nw.a = pLo;
+      nw.b = pHi;
+      if (cutLo) nw.joinedA = false;
+      if (cutHi) nw.joinedB = false;
+    } else {
+      nw.b = pLo;
+      nw.a = pHi;
+      if (cutLo) nw.joinedB = false;
+      if (cutHi) nw.joinedA = false;
+    }
+    delete nw.weak;
+    return nw;
+  });
+  walls.splice(idx, 1, ...parts);
+}
+
 /** 1つの図面（階）から部屋・外形などを作る */
 export interface FloorHints {
   /** この点を含む区画は中庭（上階の床が無く、ガラス戸に囲まれた室名の無い区画） */
@@ -1312,6 +1355,20 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 図面の壁の配列は写して使う（車庫のレール外し・弱い壁の除去で図面のデータを書き換えないように。同じ図面から階を組み立て直すことがある）
   const walls = [...plan.walls, ...curved];
   if (curved.length) (globalThis as { __curvedTrace?: number[] }).__curvedTrace = [...((globalThis as { __curvedTrace?: number[] }).__curvedTrace ?? []), curved.length];
+  // 通り口の印（ARCHITREND の提案図: 人が通る建具に付く、両端に丸の付いた短い線。passMarks.ts）
+  const passMarks = plan.scan || plan.loose || (globalThis as { __NO_PASS_MARKS?: boolean }).__NO_PASS_MARKS ? [] : detectPassMarks(plan.segs, plan.arcs);
+  /** 印を使う図面か（4 個以上あれば、印の有無を建具の判断に使う） */
+  const usesMarks = passMarks.length >= 4;
+  const wallPoint = (w: WWall, t: number): Vec2 => ({ x: w.u.x * t + w.n.x * w.o, y: w.u.y * t + w.n.y * w.o });
+  const opMarked = (w: WWall, op: { t0: number; t1: number }) => marksCrossing(passMarks, wallPoint(w, op.t0), wallPoint(w, op.t1), 0, op.t1 - op.t0) > 0;
+  /**
+   * 印の無い「弱い開口」: 壁の切れ目に細い線が通っているだけ（確信度 0.7 以下）で、印が横切らないもの。
+   * 室内なら建具ではなく、棚・ハンガーパイプ・浴槽の縁・上がり框・手すりの線（外壁なら、通れない窓）
+   */
+  const unmarkedOps: { w: WWall; op: DetectedOpening }[] = [];
+  if (usesMarks) for (const w of walls) for (const op of w.openings) if (op.kind === 'window' && op.confidence <= 0.7 && !opMarked(w, op)) unmarkedOps.push({ w, op });
+  const unmarkedSet = new Set(unmarkedOps.map((x) => x.op));
+  (globalThis as { __markTrace?: string[] }).__markTrace?.push(`L${level} marks=${passMarks.length} unmarked=${unmarkedOps.map((x) => Math.round(x.op.t1 - x.op.t0)).join('/')}`);
   const res = 20;
   const grid = Grid.around(plan.bbox.minX, plan.bbox.minY, plan.bbox.maxX, plan.bbox.maxY, res, 1200);
   // 家具・車の記号（実線のまとまり・破線の輪郭）。車庫の出入口を塞ぐ判定にも使うので先に読む
@@ -1507,7 +1564,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 室名の入った色塗り（カラー平面図）の輪郭: 内外の判定の後、建物の内側でだけ部屋の区切りにする
   const fillCells: number[] = [];
   // 弱い壁（柱と柱の間の「窓」だけの壁）も同じ扱い: 室名の無い断片を作っているだけなら、下で隣の部屋に戻す
-  const weakWalls = walls.filter((w) => w.weak);
+  // 印（通り口の印）が横切る壁は本物の建具なので、弱い壁として外さない
+  const weakWalls = walls.filter((w) => w.weak && !(usesMarks && w.openings.some((op) => opMarked(w, op))));
   const weakCells = new Set<number>();
   if (weakWalls.length) {
     const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
@@ -1516,6 +1574,20 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       if (tmp.data[i] === WALL && grid.data[i] === WALL) {
         fillCells.push(i);
         weakCells.add(i);
+      }
+  }
+  /** 弱い壁（壁ごと）の升。印の無い弱い開口の升は unmarkedCellOp（両方に入る升もある） */
+  const weakWallCells = new Set(weakCells);
+  // 印の無い弱い開口の区間も「戻せる区切り」に入れる（升 → どの開口か）
+  const unmarkedCellOp = new Map<number, number>();
+  if (unmarkedOps.length) {
+    const tmp = new Grid(grid.w, grid.h, grid.res, grid.ox, grid.oy);
+    unmarkedOps.slice(0, 250).forEach((uo, k) => tmp.fillThickSegment(wallPoint(uo.w, uo.op.t0), wallPoint(uo.w, uo.op.t1), uo.w.d, k + 2));
+    for (let i = 0; i < tmp.data.length; i++)
+      if (tmp.data[i] >= 2 && grid.data[i] === WALL) {
+        if (!weakCells.has(i)) fillCells.push(i);
+        weakCells.add(i);
+        unmarkedCellOp.set(i, tmp.data[i] - 2);
       }
   }
   if (plan.roomFills.length) {
@@ -1543,6 +1615,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const sliverCells = (0.3 * 1e6) / (grid.res * grid.res);
       const touchesFill = new Set<number>();
       for (const i of fillCells) {
+        // 印の無い弱い開口のそばの細い断片は、埋めずに下で隣の部屋へ戻す
+        if (unmarkedCellOp.has(i)) continue;
         const x = i % grid.w;
         for (const j of [x > 0 ? i - 1 : -1, x < grid.w - 1 ? i + 1 : -1, i - grid.w, i + grid.w]) if (j >= 0 && j < lb.length && lb[j]) touchesFill.add(lb[j]);
       }
@@ -1562,12 +1636,67 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         if (l) hasAnyText.add(l);
       }
       const weakMergeOk = (u: number) => !hasAnyText.has(u) && (szIter[u] ?? 0) >= (2 * 1e6) / (grid.res * grid.res);
+      // 印の無い弱い開口（細い線だけの「引戸」）を挟んで、名前の無い断片 u を隣 v に戻してよいか:
+      //  (a) u が奥行 800 mm 以下の細い帯（ハンガーパイプ・棚・壁付けの造作の線と壁の間）
+      //  (b) v に帖数が書いてあり、いまは足りず、u を足すと帖数に近づく（オープンクローゼット・パントリーの棚の線）
+      //  (c) v が浴室で、ユニットバスとして小さすぎる（浴槽の縁の線で 2 つに割れている）
+      // どれでもなければ戻さない（木の描かれた坪庭のような、印の無い窓に囲まれた区画を部屋に混ぜない）
+      let unmarkedMergeOk: (u: number, v: number) => boolean = () => false;
+      if (unmarkedCellOp.size) {
+        const cellM2 = (grid.res * grid.res) / 1e6;
+        const box = new Map<number, [number, number, number, number]>();
+        for (let i = 0; i < lb.length; i++) {
+          const l = lb[i];
+          if (!l) continue;
+          const x = i % grid.w;
+          const y = (i / grid.w) | 0;
+          const b = box.get(l);
+          if (!b) box.set(l, [x, y, x, y]);
+          else {
+            if (x < b[0]) b[0] = x;
+            if (y < b[1]) b[1] = y;
+            if (x > b[2]) b[2] = x;
+            if (y > b[3]) b[3] = y;
+          }
+        }
+        const typesIn = new Map<number, Set<RoomType>>();
+        const tatamiIn = new Map<number, number[]>();
+        for (const t of named) {
+          const l = labelNear(grid, lb, t);
+          if (!l) continue;
+          const nm = cleanRoomName(t.str);
+          const ty = nm ? classifyRoomName(nm) : null;
+          if (ty) (typesIn.get(l) ?? typesIn.set(l, new Set()).get(l)!).add(ty);
+          const ar = parseAreaLabel(t.str);
+          const tat = ar?.tatami ?? (ar?.m2 ? ar.m2 / 1.62 : undefined);
+          if (tat) (tatamiIn.get(l) ?? tatamiIn.set(l, []).get(l)!).push(tat);
+        }
+        unmarkedMergeOk = (u, v) => {
+          const b = box.get(u);
+          if (!b) return false;
+          const depth = Math.min(b[2] - b[0] + 1, b[3] - b[1] + 1) * grid.res;
+          const au = (szIter[u] ?? 0) * cellM2;
+          const av = (szIter[v] ?? 0) * cellM2;
+          const tats = tatamiIn.get(v) ?? [];
+          // 升の面積は壁の厚みぶん小さい（壁芯の面積の 0.93 倍ほど）
+          const T = tats.length === 1 ? tats[0] * 1.62 * 0.93 : null;
+          // v の帖数が、u を足すと合わなくなる（6% 超の超過で、今より遠ざかる）なら別の区画（戸の付いた収納など）
+          if (T != null && av + au > T * 1.06 && Math.abs(av + au - T) > Math.abs(av - T)) return false;
+          if (depth <= 800) return true;
+          if (T != null && av < T * 0.97 && av + au <= T * 1.1 && Math.abs(av + au - T) < Math.abs(av - T)) return true;
+          const ty = typesIn.get(v);
+          if (ty?.has('bath') && ty.size === 1 && av < 1.9 && av + au <= 3.4) return true;
+          return false;
+        };
+      }
       // 塗りの線の両側の区画（線の太さ分だけ離れて見る）
       const sides = (i: number): number[] => {
         const x = i % grid.w;
         const out = new Set<number>();
+        // 壁の帯（弱い壁・印の無い開口）は壁厚ぶん（〜120 mm = 6 升）先まで見る。色塗りの線は細いので 3 升
+        const reach = weakCells.has(i) ? 6 : 3;
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          for (let k = 1; k <= 3; k++) {
+          for (let k = 1; k <= reach; k++) {
             const xx = x + dx * k;
             const j = i + dx * k + dy * k * grid.w;
             if (xx < 0 || xx >= grid.w || j < 0 || j >= lb.length) break;
@@ -1601,7 +1730,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         cellSides.set(i, sd);
         for (const [u, v] of [sd, [sd[1], sd[0]]]) {
           if (hasName.has(u)) continue;
-          if (weakCells.has(i) && !weakMergeOk(u)) continue;
+          if (weakCells.has(i) && !(unmarkedCellOp.has(i) && unmarkedMergeOk(u, v)) && !(weakWallCells.has(i) && weakMergeOk(u))) continue;
           const m = contact.get(u) ?? new Map<number, number>();
           m.set(v, (m.get(v) ?? 0) + 1);
           contact.set(u, m);
@@ -1643,6 +1772,26 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const k = walls.indexOf(w);
     if (k >= 0) walls.splice(k, 1);
     warnings.push(`${level}階: 柱と柱の間の線を引戸と読んでいた壁（${Math.round(Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)).toLocaleString()}mm）を外しました（家具の縁）`);
+  }
+  // 部屋に戻した「印の無い弱い開口」: その区間を壁から切り取る（残りの壁・建具はそのまま）
+  if (unmarkedOps.length) {
+    const cuts = new Map<WWall, DetectedOpening[]>();
+    for (const { w, op } of unmarkedOps) {
+      if (!walls.includes(w)) continue;
+      // 区間に沿って見て、半分以上が通れるようになっていたら戻したとみなす（真ん中は直交する壁が横切っていることがある）
+      let free = 0;
+      const N = 11;
+      for (let k = 0; k < N; k++) {
+        const [cx, cy] = grid.cellOf(wallPoint(w, op.t0 + ((op.t1 - op.t0) * (k + 0.5)) / N));
+        if (grid.get(cx, cy) === FREE) free++;
+      }
+      if (free < N / 2) continue;
+      (cuts.get(w) ?? cuts.set(w, []).get(w)!).push(op);
+    }
+    for (const [w, ops] of cuts) {
+      cutWallSpans(walls, w, ops.map((op) => [op.t0, op.t1] as [number, number]));
+      for (const op of ops) warnings.push(`${level}階: 細い線だけの「引戸」（${Math.round(op.t1 - op.t0).toLocaleString()}mm）は通り口の印が無いので、棚・パイプなどの線として外しました`);
+    }
   }
   const { labels, sizes } = grid.labelComponents();
   (globalThis as any).__DBG_GRID?.(grid, plan, level, labels);
@@ -1976,7 +2125,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   const outWalls: Wall[] = [];
   const openings: Opening[] = [];
   // 窓ごとの補助情報（部屋・南向き度・図面に寸法が書かれていたか）: 窓の語彙の後処理に使う
-  const winInfo = new Map<number, { room: RoomType | null; south: number; drawn: boolean }>();
+  const winInfo = new Map<number, { room: RoomType | null; south: number; drawn: boolean; marked?: boolean }>();
   const roomAt = (p: Vec2): Room | null => {
     const [x, y] = grid.cellOf(p);
     const l = x >= 0 && y >= 0 && x < grid.w && y < grid.h ? labels[y * grid.w + x] : 0;
@@ -2065,9 +2214,31 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const noteFl = notes.map((q) => parseFlOffset(q.t.str)).find((v) => v != null) ?? null;
       const noteOpen = notes.some((q) => isOpenMark(q.t.str));
       const noteKind = notes.map((q) => parseSashKind(q.t.str)).find((v) => v != null) ?? null;
-      const inSign = exterior ? -(outsideSign ?? 1) : 1;
-      const inRoom = roomAt({ x: center.x + w.n.x * inSign * (w.d / 2 + 60), y: center.y + w.n.y * inSign * (w.d / 2 + 60) });
-      const otherRoom = roomAt({ x: center.x - w.n.x * inSign * (w.d / 2 + 60), y: center.y - w.n.y * inSign * (w.d / 2 + 60) });
+      // 開口ごとの内外: 壁全体は内壁扱いでも、この窓の片側だけが屋外（入隅・坪庭）なら外壁の窓として扱う
+      let opOut: 1 | -1 | undefined = exterior ? outsideSign : undefined;
+      if (!exterior && op.kind === 'window') {
+        const offS = w.d / 2 + res * 3;
+        const sp = sideState({ x: center.x + w.n.x * offS, y: center.y + w.n.y * offS });
+        const sm = sideState({ x: center.x - w.n.x * offS, y: center.y - w.n.y * offS });
+        if (sp === OUTSIDE && sm !== OUTSIDE) opOut = 1;
+        else if (sm === OUTSIDE && sp !== OUTSIDE) opOut = -1;
+      }
+      let inSign = opOut != null ? -opOut : 1;
+      let inRoom = roomAt({ x: center.x + w.n.x * inSign * (w.d / 2 + 60), y: center.y + w.n.y * inSign * (w.d / 2 + 60) });
+      let otherRoom = roomAt({ x: center.x - w.n.x * inSign * (w.d / 2 + 60), y: center.y - w.n.y * inSign * (w.d / 2 + 60) });
+      // サッシの記号が、室内と屋外の区画（中庭・バルコニー・ポーチ・デッキ）の間にある → ガラスの建具（窓）。車庫との間は家の中の戸のまま
+      if (opOut == null && op.kind === 'window' && inRoom && otherRoom && inRoom.type !== 'garage' && otherRoom.type !== 'garage') {
+        const oi = OUTDOOR_TYPES.includes(inRoom.type);
+        const oo = OUTDOOR_TYPES.includes(otherRoom.type);
+        if (oi !== oo) {
+          if (oi) {
+            inSign = -inSign;
+            [inRoom, otherRoom] = [otherRoom, inRoom];
+          }
+          opOut = -inSign as 1 | -1;
+        }
+      }
+      const opExterior = opOut != null;
       const width = t1 - t0;
       let kind: Opening['kind'];
       let sill = 0;
@@ -2079,7 +2250,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       // ビルトインガレージと玄関・ホールの間の戸は家の中の戸（玄関ドアにすると外開き＋庇・ポーチが付いてしまう）
       const garageSide = inRoom?.type === 'garage' || otherRoom?.type === 'garage';
       const garageInner = garageSide && !!inRoom && !!otherRoom && (inRoom.type === 'garage' ? !outdoorType(otherRoom.type) : !outdoorType(inRoom.type));
-      if (exterior && !bothInside && !garageInner) {
+      if (opExterior && !bothInside && !garageInner) {
         if (level === 1 && (op.kind === 'door' || (inRoom?.type === 'entrance' && op.kind !== 'window'))) {
           kind = 'entrance';
           height = 2200;
@@ -2089,7 +2260,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
           height = 2000;
         } else {
           kind = 'window';
-          const outN = { x: w.n.x * (outsideSign ?? 1), y: w.n.y * (outsideSign ?? 1) };
+          const outN = { x: w.n.x * (opOut ?? 1), y: w.n.y * (opOut ?? 1) };
           const southDot = outN.x * southVec.x + outN.y * southVec.y;
           const facingSouth = southDot > 0.7;
           const ws = windowStyleFor(inRoom?.type ?? null, width, facingSouth);
@@ -2110,18 +2281,34 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
             height = Math.min(height, 2000 - sill);
             windowStyle = sill === 0 ? 'hakidashi' : sill >= 1300 ? 'high' : 'koshi';
           }
+          // 通り口の印が横切る窓 = 人が出入りする窓（掃き出し・テラスドア・勝手口）。床までの高さにする
+          if (usesMarks && opMarked(w, op)) {
+            windowStyle = 'hakidashi';
+            sill = 0;
+            if (height < 1800) height = 2000;
+            const inf = winInfo.get(openings.length);
+            if (inf) {
+              inf.drawn = true;
+              inf.marked = true;
+            }
+          }
           void noteKind;
         }
       } else {
         if (op.kind === 'door') kind = 'door';
         else if (op.kind === 'window') kind = 'sliding';
         else kind = 'open';
+        // 印を使う図面で、印が無く細い線だけが根拠の「引戸」は建具ではない（上がり框・手すり・通り抜けの境）。
+        // 両側とも室名のある部屋なら、区切りは残して建具なしの開口にする
+        if (kind === 'sliding' && unmarkedSet.has(op) && inRoom && otherRoom && !inRoom.inferred && !otherRoom.inferred && inRoom.name !== '室' && otherRoom.name !== '室') kind = 'open';
         // 「開口」の注記 = 建具なしの開口部。「引違」「FIX」の注記があれば引戸／固定として扱う
         if (noteOpen) kind = 'open';
         else if (noteKind === 'sliding' && kind !== 'door') kind = 'sliding';
         height = 2000;
         if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) height = noteSash.height >= 1800 ? noteSash.height : 2000;
         void otherRoom;
+        // 幅 500 mm 未満の「引戸」は人が通れない（引込み戸の戸袋の端などの線）→ 建具にしない
+        if (kind === 'sliding' && width < 500) continue;
       }
       openings.push({
         id: `${id}-O${openings.length + 1}`,
@@ -3533,6 +3720,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       const p = planOf.get(f1)!;
       const nf = buildFloor(p, f1.level, north, warnings, areaTable[f1.level], { courtyards: pts, singleStorey });
       nf.elevation = f1.elevation;
+      planOf.set(nf, p);
       floors[0] = nf;
     }
   }

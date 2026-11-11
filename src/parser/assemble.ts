@@ -1382,6 +1382,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   if ((globalThis as any).__DBG_PLANS) {
     ((globalThis as any).__DBG_SYMBOLS ??= []).push({ level, symbols });
     ((globalThis as any).__DBG_SEGSU ??= []).push({ level, segs: segsU });
+    ((globalThis as any).__DBG_WOPS ??= []).push({ level, walls: walls.map((w) => ({ a: w.a, b: w.b, d: w.d, weak: !!w.weak, ops: w.openings.map((op) => ({ a: wallPoint(w, op.t0), b: wallPoint(w, op.t1), kind: op.kind, conf: op.confidence, unmarked: unmarkedSet.has(op), marked: opMarked(w, op) })) })) });
   }
   // オーバースライダー（ガレージのドア）のレールを壁から外す（車庫の室名か車の記号が近くにある出入口だけ）
   if (!plan.scan && !plan.loose) {
@@ -2452,9 +2453,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         if (op.kind === 'door') kind = 'door';
         else if (op.kind === 'window') kind = 'sliding';
         else kind = 'open';
-        // 印を使う図面で、印が無く細い線だけが根拠の「引戸」は建具ではない（上がり框・手すり・通り抜けの境）。
-        // 両側とも室名のある部屋なら、区切りは残して建具なしの開口にする
-        if (kind === 'sliding' && unmarkedSet.has(op) && inRoom && otherRoom && !inRoom.inferred && !otherRoom.inferred && inRoom.name !== '室' && otherRoom.name !== '室') kind = 'open';
+        // 印を使う図面で、印が無く細い線だけが根拠の「引戸」は建具ではない（上がり框・手すり・通り抜けの境・棚の前の線・
+        // タイルの目地）。区切りは残して建具なしの開口にする。室名の無い区画（造作の棚・土間の奥）との間でも同じ:
+        // 池本様邸 1 階の土間収納の中に 1.7m、パントリーの冷蔵庫置場の前に 1.3m、服部様邸のペット室の棚の前に 2.2m の「引戸」ができていた
+        if (kind === 'sliding' && unmarkedSet.has(op) && inRoom && otherRoom) kind = 'open';
         // 「開口」の注記 = 建具なしの開口部。「引違」「FIX」の注記があれば引戸／固定として扱う
         if (noteOpen) kind = 'open';
         else if (noteKind === 'sliding' && kind !== 'door') kind = 'sliding';

@@ -39,6 +39,10 @@ describe('室名の判定', () => {
     ['勉強コーナー', 'study'],
     ['ロッカー', 'closet'],
     ['茶室', 'japanese'],
+    // 第 42 巡 ⑨: 趣味の部屋（池本様邸 2 階の「漫画部屋」）
+    ['漫画部屋', 'study'],
+    ['ゲームコーナー', 'study'],
+    ['図書コーナー', 'study'],
   ];
   for (const [s, t] of cases) it(`${s} → ${t}`, () => expect(classifyRoomName(s)).toBe(t));
   it('用途は分かるが種類を当てはめない部屋（ペット室・ジム・音楽室・EV）は、名前で見分ける', () => {

@@ -434,6 +434,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
 
   // グループごとの線
   const groupLines: Line[][] = groups.map(() => []);
+  /** 塗りの輪郭の線を、塗りの色ごとに（軸の向きごと）。壁の色の塗りだけを見分けるため */
+  const fillByColor: Map<string, Line[]>[] = groups.map(() => new Map<string, Line[]>());
   for (const s of segs) {
     const gi = assignGroup(s, groups, (1.2 * Math.PI) / 180);
     if (gi < 0) continue;
@@ -446,6 +448,10 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     const isFill = s.source === 'fill' && !soft;
     const heavy = !soft && (isFill || heavyT == null || s.width >= heavyT);
     groupLines[gi].push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: isFill });
+    if (isFill && s.color) {
+      const m = fillByColor[gi];
+      (m.get(s.color) ?? m.set(s.color, []).get(s.color)!).push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: true });
+    }
   }
   // 塗りの輪郭だけの線（壁の塗りが続いている所を知るため。mergeCollinear は配列を並べ替えるので写しで）
   const fillLines = groupLines.map((ls) => mergeCollinear(ls.filter((l) => l.fill).map((l) => ({ ...l }))));
@@ -454,6 +460,40 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     intervalsLength(
       mergeIntervals(
         fillLines[g]
+          .filter((l) => Math.abs(l.o - o) <= 6)
+          .map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)] as [number, number])
+          .filter(([a, b]) => b > a),
+        20,
+      ),
+    );
+  // 壁の色の塗り: 壁厚の間隔（60〜300mm）で向かい合う 40cm 以上の辺の長さが最も長い色（同じくらい長い色があればそれも）。
+  // 階段の段・手すり壁の色の塗りは、輪郭が壁の面に重なっていても「壁の塗り」ではない
+  // （段の色の帯が向かい合う長さは、多い図面で壁の 65%: 有元様邸。割合の低い線引きでは分けられない）
+  const wallFillLines: Line[][] = groups.map(() => []);
+  {
+    const merged = fillByColor.map((m) => new Map([...m].map(([c, ls]) => [c, mergeCollinear(ls)] as const)));
+    const pairLen = new Map<string, number>();
+    for (const m of merged)
+      for (const [c, ls] of m) {
+        const fl = ls.filter((l) => l.t1 - l.t0 >= 400);
+        let sum = 0;
+        for (let i = 0; i < fl.length; i++)
+          for (let j = i + 1; j < fl.length; j++) {
+            const d = fl[j].o - fl[i].o;
+            if (d > 300) break;
+            if (d < 60) continue;
+            sum += Math.max(0, Math.min(fl[i].t1, fl[j].t1) - Math.max(fl[i].t0, fl[j].t0));
+          }
+        pairLen.set(c, (pairLen.get(c) ?? 0) + sum);
+      }
+    const top = Math.max(0, ...pairLen.values());
+    if (top > 0) merged.forEach((m, g) => { for (const [c, ls] of m) if ((pairLen.get(c) ?? 0) >= top * 0.8) wallFillLines[g].push(...ls); });
+  }
+  /** 軸 g の位置 o（±6mm）で、区間 [t0,t1] のうち「壁の色の塗り」の輪郭が通っている長さ */
+  const wallFillCover = (g: number, o: number, t0: number, t1: number) =>
+    intervalsLength(
+      mergeIntervals(
+        wallFillLines[g]
           .filter((l) => Math.abs(l.o - o) <= 6)
           .map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)] as [number, number])
           .filter(([a, b]) => b > a),
@@ -609,6 +649,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   const pieces: WallPiece[] = [];
   const pieceLines: [number, number][] = [];
   const infills: Infill[] = [];
+  const infillLines: [number, number][] = [];
   const claimedPlus = new Map<string, [number, number][]>();
   const claimedMinus = new Map<string, [number, number][]>();
   const accepted = pairs.filter((p) => matchesPeak(p.d)).sort((a, b) => a.d - b.d);
@@ -692,13 +733,74 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
           for (const part of subtractIntervals([s0, t], pk)) if (part[1] - part[0] >= 250) inf.push(part);
         }
       }
-      for (const [s0, t] of inf) infills.push({ g: p.g, o: center, d: p.d, t0: s0, t1: t, lines: rel.length });
+      for (const [s0, t] of inf) {
+        infills.push({ g: p.g, o: center, d: p.d, t0: s0, t1: t, lines: rel.length });
+        infillLines.push([p.i, p.j]);
+      }
       for (const part of subtractIntervals(e, inf)) {
         if (part[1] - part[0] >= 40) {
           pieces.push({ g: p.g, o: center, d: p.d, t0: part[0], t1: part[1] });
           pieceLines.push([p.i, p.j]);
         }
       }
+    }
+  }
+  // 壁の塗りの上に白抜きで開口を描く図面（ARCHITREND のカラー・グレーの平面図）では、窓も戸も必ず白抜きになっている。
+  // 壁の塗りが両面とも続いていて白抜きの無い区間にある平行線は、窓・引戸の記号ではなく壁の中を通る線
+  // （土間のタイルの見切り・壁芯の線・壁付けの造作の縁）なので、壁に戻す。開口は白抜きの幅どおりになる。
+  // 林様邸 1 階: 玄関と土間収納の間の柱と壁 52cm が「引戸」、土間収納の外壁 1.8m が「窓」に。
+  // 吉田大仁様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」に。坂井様邸・伊藤様邸: 窓の無い外壁に 6m・2.8m の「窓」。
+  // 窓の幅も、隣の壁の中の線まで延びて 2,180・2,780・5,010 などになっていた（白抜きは 1,690・2,600＋1,235）
+  if (masks.length && infills.length && !(globalThis as { __NO_FILLWALL?: boolean }).__NO_FILLWALL) {
+    const filled = (f: Infill, a: number, b: number) =>
+      wallFillCover(f.g, f.o - f.d / 2, a, b) >= (b - a) * 0.8 && wallFillCover(f.g, f.o + f.d / 2, a, b) >= (b - a) * 0.8;
+    // 白抜きが壁厚の全幅で抜けている区間
+    const fullOf = (f: Infill): [number, number][] =>
+      mergeIntervals(
+        masks.flatMap((poly) => {
+          const spans = maskSpans(poly, groups[f.g], f.o, f.d);
+          if (!spans.length) return [];
+          const fullThr = Math.max(0.5, Math.min(0.75, Math.max(...spans.map((sp) => sp.cover))));
+          return spans
+            .filter((sp) => sp.cover >= fullThr && sp.t1 > f.t0 && sp.t0 < f.t1)
+            .map((sp) => [Math.max(f.t0, sp.t0), Math.min(f.t1, sp.t1)] as [number, number]);
+        }),
+      );
+    const fulls = infills.map(fullOf);
+    // この図面が「塗り＋白抜き」の描き方か: 塗りの壁の中の infill の半分以上（3 か所以上）が白抜きになっている
+    const onFill = infills.map((f, k) => (filled(f, f.t0, f.t1) ? k : -1)).filter((k) => k >= 0);
+    const masked = onFill.filter((k) => intervalsLength(fulls[k]) >= (infills[k].t1 - infills[k].t0) * 0.5);
+    if (masked.length >= 3 && masked.length >= onFill.length * 0.5) {
+      const keepInf: Infill[] = [];
+      const keepLines: [number, number][] = [];
+      infills.forEach((f, k) => {
+        const back = subtractIntervals([f.t0, f.t1], fulls[k]).filter(([a, b]) => b - a >= 40 && filled(f, a, b));
+        if (!back.length) {
+          keepInf.push(f);
+          keepLines.push(infillLines[k]);
+          return;
+        }
+        for (const [a, b] of back) {
+          pieces.push({ g: f.g, o: f.o, d: f.d, t0: a, t1: b });
+          pieceLines.push(infillLines[k]);
+        }
+        for (const [a, b] of subtractIntervals([f.t0, f.t1], back)) {
+          if (b - a < 250) {
+            // 残りが短い（25cm 未満）ときは開口の候補にしない
+            if (b - a >= 40) {
+              pieces.push({ g: f.g, o: f.o, d: f.d, t0: a, t1: b });
+              pieceLines.push(infillLines[k]);
+            }
+            continue;
+          }
+          keepInf.push({ ...f, t0: a, t1: b });
+          keepLines.push(infillLines[k]);
+        }
+      });
+      infills.length = 0;
+      infills.push(...keepInf);
+      infillLines.length = 0;
+      infillLines.push(...keepLines);
     }
   }
   // 階段の踏面のような「はしご状」の繰り返し（線を両側で共有する4組以上の並び）を除外

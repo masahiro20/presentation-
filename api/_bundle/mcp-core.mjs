@@ -5489,6 +5489,8 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		for (const g of findAngleGroups(fillSegs, .006)) if (groups.every((q) => angleDiff(q.theta, g.theta) > .8 * Math.PI / 180)) groups.push(g);
 	}
 	const groupLines = groups.map(() => []);
+	/** 塗りの輪郭の線を、塗りの色ごとに（軸の向きごと）。壁の色の塗りだけを見分けるため */
+	const fillByColor = groups.map(() => /* @__PURE__ */ new Map());
 	for (const s of segs) {
 		const gi = assignGroup(s, groups, 1.2 * Math.PI / 180);
 		if (gi < 0) continue;
@@ -5508,10 +5510,44 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 			width: s.width,
 			fill: isFill
 		});
+		if (isFill && s.color) {
+			const m = fillByColor[gi];
+			(m.get(s.color) ?? m.set(s.color, []).get(s.color)).push({
+				o,
+				t0: Math.min(ta, tb),
+				t1: Math.max(ta, tb),
+				heavy,
+				eligible: heavy,
+				width: s.width,
+				fill: true
+			});
+		}
 	}
 	const fillLines = groupLines.map((ls) => mergeCollinear$1(ls.filter((l) => l.fill).map((l) => ({ ...l }))));
 	/** 軸 g の位置 o（±6mm）で、区間 [t0,t1] のうち壁の塗りの輪郭が通っている長さ */
 	const fillCover = (g, o, t0, t1) => intervalsLength(mergeIntervals(fillLines[g].filter((l) => Math.abs(l.o - o) <= 6).map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)]).filter(([a, b]) => b > a), 20));
+	const wallFillLines = groups.map(() => []);
+	{
+		const merged = fillByColor.map((m) => new Map([...m].map(([c, ls]) => [c, mergeCollinear$1(ls)])));
+		const pairLen = /* @__PURE__ */ new Map();
+		for (const m of merged) for (const [c, ls] of m) {
+			const fl = ls.filter((l) => l.t1 - l.t0 >= 400);
+			let sum = 0;
+			for (let i = 0; i < fl.length; i++) for (let j = i + 1; j < fl.length; j++) {
+				const d = fl[j].o - fl[i].o;
+				if (d > 300) break;
+				if (d < 60) continue;
+				sum += Math.max(0, Math.min(fl[i].t1, fl[j].t1) - Math.max(fl[i].t0, fl[j].t0));
+			}
+			pairLen.set(c, (pairLen.get(c) ?? 0) + sum);
+		}
+		const top = Math.max(0, ...pairLen.values());
+		if (top > 0) merged.forEach((m, g) => {
+			for (const [c, ls] of m) if ((pairLen.get(c) ?? 0) >= top * .8) wallFillLines[g].push(...ls);
+		});
+	}
+	/** 軸 g の位置 o（±6mm）で、区間 [t0,t1] のうち「壁の色の塗り」の輪郭が通っている長さ */
+	const wallFillCover = (g, o, t0, t1) => intervalsLength(mergeIntervals(wallFillLines[g].filter((l) => Math.abs(l.o - o) <= 6).map((l) => [Math.max(t0, l.t0), Math.min(t1, l.t1)]).filter(([a, b]) => b > a), 20));
 	const lines = groupLines.map(mergeCollinear$1);
 	const trains = lines.map(dashTrains);
 	const pockets = [];
@@ -5673,6 +5709,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 	const pieces = [];
 	const pieceLines = [];
 	const infills = [];
+	const infillLines = [];
 	const claimedPlus = /* @__PURE__ */ new Map();
 	const claimedMinus = /* @__PURE__ */ new Map();
 	const accepted = pairs.filter((p) => matchesPeak(p.d)).sort((a, b) => a.d - b.d);
@@ -5756,14 +5793,17 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 					for (const part of subtractIntervals([s0, t], pk)) if (part[1] - part[0] >= 250) inf.push(part);
 				}
 			}
-			for (const [s0, t] of inf) infills.push({
-				g: p.g,
-				o: center,
-				d: p.d,
-				t0: s0,
-				t1: t,
-				lines: rel.length
-			});
+			for (const [s0, t] of inf) {
+				infills.push({
+					g: p.g,
+					o: center,
+					d: p.d,
+					t0: s0,
+					t1: t,
+					lines: rel.length
+				});
+				infillLines.push([p.i, p.j]);
+			}
 			for (const part of subtractIntervals(e, inf)) if (part[1] - part[0] >= 40) {
 				pieces.push({
 					g: p.g,
@@ -5774,6 +5814,65 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 				});
 				pieceLines.push([p.i, p.j]);
 			}
+		}
+	}
+	if (masks.length && infills.length && !globalThis.__NO_FILLWALL) {
+		const filled = (f, a, b) => wallFillCover(f.g, f.o - f.d / 2, a, b) >= (b - a) * .8 && wallFillCover(f.g, f.o + f.d / 2, a, b) >= (b - a) * .8;
+		const fullOf = (f) => mergeIntervals(masks.flatMap((poly) => {
+			const spans = maskSpans(poly, groups[f.g], f.o, f.d);
+			if (!spans.length) return [];
+			const fullThr = Math.max(.5, Math.min(.75, Math.max(...spans.map((sp) => sp.cover))));
+			return spans.filter((sp) => sp.cover >= fullThr && sp.t1 > f.t0 && sp.t0 < f.t1).map((sp) => [Math.max(f.t0, sp.t0), Math.min(f.t1, sp.t1)]);
+		}));
+		const fulls = infills.map(fullOf);
+		const onFill = infills.map((f, k) => filled(f, f.t0, f.t1) ? k : -1).filter((k) => k >= 0);
+		const masked = onFill.filter((k) => intervalsLength(fulls[k]) >= (infills[k].t1 - infills[k].t0) * .5);
+		if (masked.length >= 3 && masked.length >= onFill.length * .5) {
+			const keepInf = [];
+			const keepLines = [];
+			infills.forEach((f, k) => {
+				const back = subtractIntervals([f.t0, f.t1], fulls[k]).filter(([a, b]) => b - a >= 40 && filled(f, a, b));
+				if (!back.length) {
+					keepInf.push(f);
+					keepLines.push(infillLines[k]);
+					return;
+				}
+				for (const [a, b] of back) {
+					pieces.push({
+						g: f.g,
+						o: f.o,
+						d: f.d,
+						t0: a,
+						t1: b
+					});
+					pieceLines.push(infillLines[k]);
+				}
+				for (const [a, b] of subtractIntervals([f.t0, f.t1], back)) {
+					if (b - a < 250) {
+						if (b - a >= 40) {
+							pieces.push({
+								g: f.g,
+								o: f.o,
+								d: f.d,
+								t0: a,
+								t1: b
+							});
+							pieceLines.push(infillLines[k]);
+						}
+						continue;
+					}
+					keepInf.push({
+						...f,
+						t0: a,
+						t1: b
+					});
+					keepLines.push(infillLines[k]);
+				}
+			});
+			infills.length = 0;
+			infills.push(...keepInf);
+			infillLines.length = 0;
+			infillLines.push(...keepLines);
 		}
 	}
 	{
@@ -6859,7 +6958,7 @@ var RULES = [
 	[/パウダー|サンルーム|ランドリールーム/, "washroom"],
 	[/ウォークスルー|W\.?T\.?C/, "closet"],
 	[/クローク|ワインセラー|備蓄|(ホール|廊下|通路|階段下|洗面|トイレ)収納/, "storage"],
-	[/リモステ|リモート|ワークスペース|仕事(部屋|場|室|スペース|コーナー)|オフィス|事務(室|所|スペース)|SOHO|勉強|学習|自習|ミシン|裁縫/, "study"],
+	[/リモステ|リモート|ワークスペース|仕事(部屋|場|室|スペース|コーナー)|オフィス|事務(室|所|スペース)|SOHO|勉強|学習|自習|ミシン|裁縫|漫画|マンガ|コミック|読書|図書|ゲーム|ホビー|プラモ|模型|コレクション/, "study"],
 	[/シャワー/, "bath"],
 	[/浴室|バスルーム|^バス$|風呂|^UB$|^U\.?B$|ユニットバス|BATH|^浴$/, "bath"],
 	[/洗面|脱衣|ランドリー|家事室|サニタリー|UTILITY|ユーティリティ|^UT$|^U\.?T$|洗濯|^洗$|LAUNDRY|ドレッサー|身支度/, "washroom"],
@@ -12863,6 +12962,23 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			level,
 			segs: segsU
 		});
+		(globalThis.__DBG_WOPS ??= []).push({
+			level,
+			walls: walls.map((w) => ({
+				a: w.a,
+				b: w.b,
+				d: w.d,
+				weak: !!w.weak,
+				ops: w.openings.map((op) => ({
+					a: wallPoint(w, op.t0),
+					b: wallPoint(w, op.t1),
+					kind: op.kind,
+					conf: op.confidence,
+					unmarked: unmarkedSet.has(op),
+					marked: opMarked(w, op)
+				}))
+			}))
+		});
 	}
 	if (!plan.scan && !plan.loose) {
 		const marks = [...plan.texts.filter((t) => {
@@ -13957,7 +14073,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				if (op.kind === "door") kind = "door";
 				else if (op.kind === "window") kind = "sliding";
 				else kind = "open";
-				if (kind === "sliding" && unmarkedSet.has(op) && inRoom && otherRoom && !inRoom.inferred && !otherRoom.inferred && inRoom.name !== "室" && otherRoom.name !== "室") kind = "open";
+				if (kind === "sliding" && unmarkedSet.has(op) && inRoom && otherRoom) kind = "open";
 				if (noteOpen) kind = "open";
 				else if (noteKind === "sliding" && kind !== "door") kind = "sliding";
 				height = 2e3;

@@ -32,7 +32,7 @@ import { interiorPoint, polygonArea } from '../core/geometry';
 import { ROOF_KIND_LABEL, type RoofPatch } from '../core/types';
 import { exteriorById } from '../styles/presets';
 import { state } from './state';
-import { massName, massState, roofPatchControls } from './roofPatchPanel';
+import { massName, massSourceTag, massState, roofPatchControls } from './roofPatchPanel';
 import { floorAlignReport, offsetText, stairAlignOffset, translateFloor, translateRoofPatches, translateXY, wallAlignOffset } from '../core/floorAlign';
 
 type Tool = 'select' | 'wall' | 'window' | 'door' | 'sliding' | 'shutter' | 'label' | 'furniture' | 'stairs' | 'post' | 'ceiling' | 'roof' | 'align';
@@ -692,6 +692,8 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
       list.push(p);
     }
     fn(p);
+    // 手で直した塊は、立面図を読み直しても上書きしない（「立面図から」の印を外す）
+    delete p.source;
     // 手で描いた範囲（足した屋根・屋根なし）は項目が空でも残す
     if (!patchLoop(p) && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) model.roofPatches = list.filter((x) => x !== p);
     dropEmptyRoofPatches();
@@ -1838,7 +1840,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     const whole = roofWhole();
     const tmp: BuildingModel = { ...model, floors: works.map((w) => w.floor) };
     panel.append(
-      h('div', { class: 'field-label' }, massName(ms)),
+      h('div', { class: 'field-label' }, massName(ms), massSourceTag(ms)),
       h('p', { class: 'hint', style: 'margin:2px 0 6px' }, massState(ms, model.northAngleDeg)),
       ...roofPatchControls({
         model: tmp,

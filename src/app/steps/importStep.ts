@@ -6,8 +6,9 @@ import { rememberOffice, forgetOfficeLogo } from '../office';
 import type { Step, StepCtx } from '../app';
 import { parsePdfInBrowser, extractPdfText, readElevationPdfInBrowser, readElevationSheetInBrowser, renderPdfPageJpeg } from '../../parser/browser';
 import { applyElevationWindows, floorShiftsFromElevation } from '../../parser/elevationWindows';
+import { applyRoofHints, describeRoofHints, roofHintsFromElevation } from '../../parser/elevationRoof';
 import { finishesFromTable } from '../../coordinate/fromFinishTable';
-import { translateFloor } from '../../core/floorAlign';
+import { translateFloor, translateRoofPatches } from '../../core/floorAlign';
 import { buildDigest, getDesignRules, getReviewModel, REVIEW_MODELS, ruleFromFinding, runDesignReview, setDesignRules, setReviewModel, type ReviewResult } from '../aiDesigner';
 import { getGeminiKey } from '../aiFinish';
 import { parseDxf, type ModuleMode } from '../../parser';
@@ -209,6 +210,13 @@ async function heightsFromElevationPdf(f: File): Promise<boolean> {
         model.report.elevationWindows = { views: sheet.views.length, facades: r.facades, matched: r.matched, changed: r.changed, added: r.added, total: r.total };
         done.push(`窓の高さ ${r.matched} か所${r.added ? `・読めなかった窓 ${r.added} か所を追加` : ''}`);
       }
+      // 屋根の線から、塊ごとの掛け方（手で直した塊・手で描いた屋根はそのまま）
+      const hints = roofHintsFromElevation(model.floors, sheet.views, model.northAngleDeg, !!(sheet.heights ?? model.heights)?.storyHeights?.length);
+      const nRoof = hints.length ? applyRoofHints(model, hints) : 0;
+      if (nRoof) {
+        model.report.elevationRoof = { masses: nRoof, summary: describeRoofHints(hints, model.northAngleDeg) };
+        done.push(`屋根の形 ${nRoof} か所`);
+      }
       if (shifts.length) setTimeout(() => askFloorShift(shifts), 300);
     }
     if (sheet.finishTable.length) {
@@ -256,7 +264,10 @@ function askFloorShift(shifts: { level: number; dx: number; dy: number; evidence
           for (const f of [...model.floors].sort((a, b) => a.level - b.level)) {
             const sh = shifts.find((x) => x.level === f.level);
             const d = sh ? { x: sh.dx, y: sh.dy } : carry;
-            if (d.x || d.y) translateFloor(f, d);
+            if (d.x || d.y) {
+              translateFloor(f, d);
+              translateRoofPatches(model.roofPatches, f.level, d);
+            }
             carry = d;
           }
           model.report.floorShifts = shifts.map(({ level, dx, dy }) => ({ level, dx, dy }));
@@ -396,7 +407,7 @@ function dropScreen(ctx: StepCtx) {
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
     h('b', null, '平面図の PDF をここに置く'),
-    h('span', null, '立面図が同じ PDF にあれば、床の高さ・窓の高さ・外部仕上げまで読み、上下階のずれや縮尺の間違いも立面図で直します（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、屋根の形まで 3D のとおりに'),
+    h('span', null, '立面図が同じ PDF にあれば、床の高さ・窓の高さ・屋根の形・外部仕上げまで読み、上下階のずれや縮尺の間違いも立面図で直します（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、込み入った屋根まで 3D のとおりに'),
     h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
     input,
   );
@@ -1385,7 +1396,7 @@ function renderResult(ctx: StepCtx) {
         h('button', { class: 'btn sm', title: 'ARCHITREND の 3DS など。床・窓の腰高と高さ・窓の幅と位置・屋根を 3D のとおりに直し、上の階の重ね位置を窓の並びで確かめます（3D にガラスの無い窓も知らせます）', onclick: () => ext3dIn.click() }, '3D データ（3DS）で高さを合わせる'),
         ext3dIn,
       ),
-      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の幅と位置・上の階の重ね位置・屋根の形まで 3D のとおりになります。平面図だけでは決められない所（床までの FIX か腰窓か・半間ずれても壁が重なる 2 階の位置）が、どちらかがあれば決まります。'),
+      h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・屋根の形（片流れの向き・切妻・寄棟）・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の幅と位置・上の階の重ね位置・込み入った屋根の形まで 3D のとおりになります。平面図だけでは決められない所（床までの FIX か腰窓か・半間ずれても壁が重なる 2 階の位置）が、どちらかがあれば決まります。'),
     ),
     fold(
       '読み込みのやり直し・保存',
@@ -1427,6 +1438,7 @@ function sourcesCard(model: BuildingModel, act: { addElevation: () => void; add3
   if (hs?.source === 'elevation') done.push(`立面図の寸法: ${describeElevationHeights({ storyHeights: hs.storyHeights ?? [], floor1: hs.floor1, maxHeight: hs.maxHeight, maxEave: hs.maxEave, roofPitch: hs.roofPitch })}`);
   if (hs?.source === '3d') done.push('設計の 3D データ: 床・窓・屋根の高さ');
   if (ew?.matched) done.push(`立面図の窓: ${ew.matched} か所の腰高・高さ（${ew.facades.join('・')}）${ew.added ? `・読めなかった窓 ${ew.added} か所を追加` : ''}`);
+  if (rep.elevationRoof?.masses && model.roofPatches?.some((p) => p.source === 'elevation')) done.push(`立面図の屋根: ${rep.elevationRoof.summary}`);
   for (const sh of rep.floorShifts ?? []) {
     const d = [sh.dy ? `${sh.dy < 0 ? '北' : '南'}へ ${Math.abs(sh.dy)}mm` : '', sh.dx ? `${sh.dx > 0 ? '東' : '西'}へ ${Math.abs(sh.dx)}mm` : ''].filter(Boolean).join('・');
     done.push(`立面図で直した: ${sh.level}階の重ね位置（${d}）`);
@@ -1441,9 +1453,10 @@ function sourcesCard(model: BuildingModel, act: { addElevation: () => void; add3
   const item = (title: string, why: string, btn: string, fn: () => void) =>
     h('div', { class: 'src-next' }, h('div', null, h('b', null, title), h('span', { class: 'hint keep' }, why)), h('button', { class: 'btn sm', onclick: fn }, btn));
   if (!hasElevPage && hs?.source !== 'elevation' && hs?.source !== '3d')
-    next.push(item('立面図を足す', '窓の高さ・床の高さ・屋根勾配が図面どおりになり、上下階の重ね位置のずれや縮尺の間違いも立面図で見つけて直します。外部仕上表があれば外観の仕上げも。', '立面図の PDF を足す', act.addElevation));
+    next.push(item('立面図を足す', '窓の高さ・床の高さ・屋根の形（片流れの向き・切妻・寄棟）と勾配が図面どおりになり、上下階の重ね位置のずれや縮尺の間違いも立面図で見つけて直します。外部仕上表があれば外観の仕上げも。', '立面図の PDF を足す', act.addElevation));
   if (hs?.source !== '3d') {
-    const complex = model.floors.length >= 3 || model.floors.some((f) => f.rooms.some((r) => r.floorOffset)) || (model.roofPatches?.length ?? 0) > 0;
+    // 屋根を手で直してある家（立面図から読んだ掛け方は数えない）
+    const complex = model.floors.length >= 3 || model.floors.some((f) => f.rooms.some((r) => r.floorOffset)) || (model.roofPatches ?? []).some((p) => p.source !== 'elevation');
     next.push(item('3D データ（ARCHITREND の 3DS）', `${complex ? 'この家は形が込み入っているので、' : ''}屋根の形・窓の高さまで設計どおりの外観になります（ZERO の 3D 画面から 3DS で書き出したファイル）。`, '3DS を入れる', act.add3d));
   }
   let score: number | null = null;

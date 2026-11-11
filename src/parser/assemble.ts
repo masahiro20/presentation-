@@ -4656,6 +4656,7 @@ export function cleanPolygon(out: Vec2[], fallback: Vec2[]): Vec2[] {
   while (dedup.length > 1 && Math.abs(dedup[0].x - dedup[dedup.length - 1].x) < 1 && Math.abs(dedup[0].y - dedup[dedup.length - 1].y) < 1) dedup.pop();
   // 行って戻るだけのとげ（a → p → a の側へ戻る。面積 0）を除く。格子へ寄せると、数 cm の欠けの両端が同じ線に乗ってとげになる
   // （有元様邸 2 階の階段: 5005,1820 → 4827,1820 → 5005,1820）
+  const noWhisker = !!(globalThis as { __NO_POLY_WHISKER?: boolean }).__NO_POLY_WHISKER;
   for (let guard = 0; guard < 8 && dedup.length > 3; guard++) {
     let removed = false;
     for (let i = 0; i < dedup.length && dedup.length > 3; i++) {
@@ -4664,7 +4665,13 @@ export function cleanPolygon(out: Vec2[], fallback: Vec2[]): Vec2[] {
       const b = dedup[(i + 1) % dedup.length];
       const cross = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
       const dot = (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y);
-      if (Math.abs(cross) < 1 && dot < 0) {
+      // 細いひげ: 行って、ほぼ同じ所（根元の幅 25mm 以下）へ戻る 20cm までの出っ張り。面積 0 のとげが、升目の端数で数 mm 開いたもの
+      // （伊藤様邸の玄関: 5005,7735 → 5005,7688 → 5008,7735。框の上に読めていた壁を外した端）
+      const la = Math.hypot(p.x - a.x, p.y - a.y);
+      const lb = Math.hypot(b.x - p.x, b.y - p.y);
+      const base = Math.hypot(b.x - a.x, b.y - a.y);
+      const whisker = !noWhisker && dot < 0 && base <= 25 && Math.min(la, lb) >= base * 2 && Math.max(la, lb) <= 200;
+      if ((Math.abs(cross) < 1 && dot < 0) || whisker) {
         dedup.splice(i, 1);
         // 戻った先が a と同じ点なら、それも 1 つにする
         const j = i % dedup.length;

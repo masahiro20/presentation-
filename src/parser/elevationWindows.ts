@@ -33,6 +33,14 @@ export interface ElevWindow {
   panes: number;
 }
 
+/** 立面図の屋根の線 1 本（屋根の端を横から見た斜めの線）。u は外形の左端から、z は GL から (mm)。u0 < u1 */
+export interface RoofLine {
+  u0: number;
+  z0: number;
+  u1: number;
+  z1: number;
+}
+
 export interface ElevationView {
   facing: Facing;
   pageIndex: number;
@@ -40,6 +48,8 @@ export interface ElevationView {
   /** 外形の幅 (mm) */
   width: number;
   windows: ElevWindow[];
+  /** 屋根の端の斜めの線（屋根の形を読む: parser/elevationRoof） */
+  roofLines?: RoofLine[];
   /** 縮尺を立面図の「1階FL」「2階FL」の間隔と階高の数字から求めた（平面図の縮尺を借りていない） */
   scaleFromLabels: boolean;
   /** 確かめ用（ページの pt）: GL の線の y、外形の左右 */
@@ -100,22 +110,61 @@ export function findElevationTitles(texts: RawText[]): ElevationTitle[] {
   return [...best.values()];
 }
 
-/** 見出しごとの図の範囲: 同じ段の隣の見出しとの中間まで、上の段の見出しの下から自分の見出しの上まで */
-function regionsOf(titles: ElevationTitle[], page: { width: number; height: number }): Map<ElevationTitle, Box> {
+/**
+ * 見出しごとの図の範囲: 上の段の見出しの下から自分の見出しの上まで。同じ段の隣の図との境は、図と図の間の空き（線の無い縦の帯）の真ん中。
+ *
+ * 以前は見出しどうしの中間で切っていたが、見出しは図の真下にあるとは限らず、幅の違う図が並ぶと広い方の図の端が隣の範囲に入る
+ * （吉田大仁様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
+ * 東面は窓の位置が 1.9m ずれて照合できず、南面も端が欠けていた）。空きが見つからないときだけ見出しの中間を使う
+ */
+function regionsOf(titles: ElevationTitle[], page: { width: number; height: number; segments?: RawSegment[] }): Map<ElevationTitle, Box> {
   const rows: ElevationTitle[][] = [];
   for (const t of [...titles].sort((a, b) => a.cy - b.cy)) {
     const row = rows.find((r) => Math.abs(r[0].cy - t.cy) < 60);
     if (row) row.push(t);
     else rows.push([t]);
   }
+  const byGap = !(globalThis as { __NO_ELEV_GAP_SPLIT?: boolean }).__NO_ELEV_GAP_SPLIT;
   const out = new Map<ElevationTitle, Box>();
   rows.forEach((row, ri) => {
     row.sort((a, b) => a.cx - b.cx);
     const above = ri > 0 ? Math.max(...rows[ri - 1].map((t) => t.cy + t.size)) : 0;
+    /** 隣り合う 2 つの見出しの間の境 */
+    const splitX = (a: ElevationTitle, b: ElevationTitle): number => {
+      const mid = (a.cx + b.cx) / 2;
+      const segs = page.segments;
+      if (!byGap || !segs?.length || b.cx - a.cx < 20) return mid;
+      const y1 = Math.min(a.cy - a.size * 0.7, b.cy - b.size * 0.7);
+      // 2 つの見出しの間で、線のある横の範囲を集める（段を通して引かれた横線 = 2 つの図をまたぐ GL の線・枠は、切れ目を埋めてしまうので数えない）
+      const spans: [number, number][] = [];
+      for (const s of segs) {
+        const sy0 = Math.min(s.a.y, s.b.y);
+        const sy1 = Math.max(s.a.y, s.b.y);
+        if (sy1 < above || sy0 > y1) continue;
+        const sx0 = Math.max(a.cx, Math.min(s.a.x, s.b.x));
+        const sx1 = Math.min(b.cx, Math.max(s.a.x, s.b.x));
+        if (sx1 < sx0) continue;
+        if (sy1 - sy0 < 0.25 && sx1 - sx0 >= (b.cx - a.cx) * 0.8) continue;
+        spans.push([sx0, sx1]);
+      }
+      spans.sort((p, q) => p[0] - q[0]);
+      // いちばん広い空き（同じ広さなら見出しの中間に近い方）。4pt に満たなければ図がつながっているので中間で切る
+      let best: [number, number] | null = null;
+      let reach = a.cx;
+      const consider = (g0: number, g1: number) => {
+        if (g1 - g0 < 4) return;
+        if (!best || g1 - g0 > best[1] - best[0] + 0.5 || (Math.abs(g1 - g0 - (best[1] - best[0])) <= 0.5 && Math.abs((g0 + g1) / 2 - mid) < Math.abs((best[0] + best[1]) / 2 - mid))) best = [g0, g1];
+      };
+      for (const [s0, s1] of spans) {
+        if (s0 > reach) consider(reach, s0);
+        reach = Math.max(reach, s1);
+      }
+      if (b.cx > reach) consider(reach, b.cx);
+      return best ? ((best as [number, number])[0] + (best as [number, number])[1]) / 2 : mid;
+    };
+    const cuts = row.map((t, i) => (i + 1 < row.length ? splitX(t, row[i + 1]) : page.width));
     row.forEach((t, i) => {
-      const x0 = i > 0 ? (row[i - 1].cx + t.cx) / 2 : 0;
-      const x1 = i + 1 < row.length ? (t.cx + row[i + 1].cx) / 2 : page.width;
-      out.set(t, { x0, x1, y0: above, y1: t.cy - t.size * 0.7 });
+      out.set(t, { x0: i > 0 ? cuts[i - 1] : 0, x1: cuts[i], y0: above, y1: t.cy - t.size * 0.7 });
     });
   });
   return out;
@@ -311,6 +360,71 @@ export function windowUnits(rects: Box[], mm: number): (Box & { panes: number })
 }
 
 /**
+ * 1 面の線から、屋根の端の斜めの線を拾う（屋根を横から見ると、屋根の上面が端から端まで 1 本の斜めの線になる）。
+ *  - 勾配 0.2〜7.5 寸・GL から 1.8m より上の実線。同じ直線の上で切れた線はつなぎ、長さ 900mm 以上のものだけ
+ *  - 屋根面の目地（少しずつ横にずれた平行線の束。振れた棟の屋根を斜めから見た面に出る）は除く
+ *  - 屋根の厚みの 2〜3 本線（上面・下面・鼻隠し）は、いちばん上の 1 本にまとめる
+ */
+export function roofLinesOf(segs: RawSegment[], glY: number, bx0: number, bx1: number, mm: number): RoofLine[] {
+  const width = (bx1 - bx0) * mm;
+  type L = RoofLine & { k: number };
+  const at = (l: L, u: number) => l.z0 + l.k * (u - l.u0);
+  let lines: L[] = [];
+  for (const s of segs) {
+    if (s.dashed) continue;
+    let u0 = (s.a.x - bx0) * mm;
+    let z0 = (glY - s.a.y) * mm;
+    let u1 = (s.b.x - bx0) * mm;
+    let z1 = (glY - s.b.y) * mm;
+    if (u0 > u1) [u0, z0, u1, z1] = [u1, z1, u0, z0];
+    const du = u1 - u0;
+    if (du < 120) continue;
+    const k = (z1 - z0) / du;
+    if (Math.abs(k) < 0.02 || Math.abs(k) > 0.75) continue;
+    // 外形の左右 1.5m まで（軒・けらばの出）。それより外は隣の図・引出線
+    if (Math.min(z0, z1) < 1800 || u0 < -1500 || u1 > width + 1500) continue;
+    lines.push({ u0, z0, u1, z1, k });
+  }
+  if (lines.length > 1500) return [];
+  // 同じ直線の上で切れた線をつなぐ（重なりは 30mm まで・すき間は 200mm まで・高さのずれ 10mm まで）
+  for (let merged = true; merged; ) {
+    merged = false;
+    outer: for (let i = 0; i < lines.length; i++)
+      for (let j = 0; j < lines.length; j++) {
+        if (i === j) continue;
+        const a = lines[i];
+        const b = lines[j];
+        const gap = b.u0 - a.u1;
+        if (gap < -30 || gap > 200 || Math.abs(a.k - b.k) > 0.004 || Math.abs(at(a, b.u0) - b.z0) > 10) continue;
+        lines[i] = { u0: a.u0, z0: a.z0, u1: b.u1, z1: b.z1, k: (b.z1 - a.z0) / (b.u1 - a.u0) };
+        lines.splice(j, 1);
+        merged = true;
+        break outer;
+      }
+  }
+  lines = lines.filter((l) => l.u1 - l.u0 >= 900);
+  // 平行で近い線（勾配の差 0.06 寸・重なりが短い方の 3 割以上・高さの差 350mm まで）
+  const mate = (a: L, b: L) => {
+    if (Math.abs(a.k - b.k) > 0.006) return false;
+    const lo = Math.max(a.u0, b.u0);
+    const hi = Math.min(a.u1, b.u1);
+    if (hi - lo < Math.min(a.u1 - a.u0, b.u1 - b.u0) * 0.3) return false;
+    return Math.abs(at(a, (lo + hi) / 2) - at(b, (lo + hi) / 2)) <= 350;
+  };
+  // 目地: 両端とも同じ向きに 100mm 以上ずれた写しが 2 本以上ある線
+  const shifted = (a: L, b: L) => (b.u0 - a.u0 > 100 && b.u1 - a.u1 > 100) || (a.u0 - b.u0 > 100 && a.u1 - b.u1 > 100);
+  const hatch = lines.map((a, i) => lines.filter((b, j) => i !== j && mate(a, b) && shifted(a, b)).length >= 2);
+  lines = lines.filter((_, i) => !hatch[i]);
+  // 屋根の厚み: ほぼ同じ範囲（両端 400mm 以内）の平行線は、いちばん上の 1 本
+  const out: L[] = [];
+  for (const l of [...lines].sort((a, b) => at(b, (b.u0 + b.u1) / 2) - at(a, (a.u0 + a.u1) / 2))) {
+    if (out.some((o) => mate(o, l) && Math.abs(o.u0 - l.u0) <= 400 && Math.abs(o.u1 - l.u1) <= 400)) continue;
+    out.push(l);
+  }
+  return out.sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0).map((l) => ({ u0: Math.round(l.u0), z0: Math.round(l.z0), u1: Math.round(l.u1), z1: Math.round(l.z1) }));
+}
+
+/**
  * 立面図のページから 4 面の図を読む。
  * @param mmHint 平面図から求めた 1pt あたりの mm（立面図に「N階FL」が無いときの縮尺）
  */
@@ -462,6 +576,7 @@ function readView(page: PageVectors, title: ElevationTitle, box: Box, mm: number
     windows: units
       .map((u) => ({ u0: Math.round((u.x0 - bx0) * mm), u1: Math.round((u.x1 - bx0) * mm), z0: Math.round((glY - u.y1) * mm), z1: Math.round((glY - u.y0) * mm), panes: u.panes }))
       .sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0),
+    roofLines: roofLinesOf(grayShare < 0.5 ? segs.filter((sg) => !isGray(sg.color)) : segs, glY, bx0, bx1, mm),
     glInfo: { byText: !hinted && byText.length > 0, cands: cands.map((h) => h.y) },
   };
 }
@@ -478,7 +593,7 @@ interface FacadeWin {
 }
 
 /** 面の外向きの法線（平面図の座標: x 右・y 下）と、その面を外から見たときの右手の向き */
-const AXES: { n: Vec2; r: Vec2 }[] = [
+export const AXES: { n: Vec2; r: Vec2 }[] = [
   { n: { x: 0, y: 1 }, r: { x: 1, y: 0 } }, // 下の面（図面上の南）: 右手は東
   { n: { x: 0, y: -1 }, r: { x: -1, y: 0 } }, // 上の面（北）: 右手は西
   { n: { x: 1, y: 0 }, r: { x: 0, y: -1 } }, // 右の面（東）: 右手は北
@@ -515,7 +630,7 @@ function wallNormal(w: Floor['walls'][number]): Vec2 | null {
 }
 
 /** 面の左右の端（外壁の外面の、右手方向の最小・最大） */
-function facadeExtent(floors: Floor[], r: Vec2): [number, number] {
+export function facadeExtent(floors: Floor[], r: Vec2): [number, number] {
   let lo = Infinity;
   let hi = -Infinity;
   for (const f of floors)
@@ -575,7 +690,7 @@ interface Pair {
   iou: number;
 }
 
-interface Fit {
+export interface Fit {
   axis: number;
   off: number;
   score: number;
@@ -659,7 +774,7 @@ function fitView(floors: Floor[], v: ElevationView, axis: number, onlyFloor?: nu
  * 各面を平面図のどの面に当てるか。見出しの向き（真北のずれを考えた面）を使う。
  * 方位記号の読み違いで全体が 90°・180° 回っているときだけ、4 面まとめて回した当て方に乗り換える（1 面だけ別の面に乗り換えない）
  */
-function chooseAxes(floors: Floor[], views: ElevationView[], northDeg: number): { axes: Map<ElevationView, Fit>; rotated: number } {
+export function chooseAxes(floors: Floor[], views: ElevationView[], northDeg: number): { axes: Map<ElevationView, Fit>; rotated: number } {
   const cand = [0, 1, 2, 3].map((k) => {
     const axes = new Map<ElevationView, Fit>();
     let total = 0;

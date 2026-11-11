@@ -189,3 +189,50 @@ describe('立面図の GL（地盤面の線）', () => {
     }
   });
 });
+
+describe('立面図の図と図の境', () => {
+  /**
+   * 1 段に、幅の広い南面（x 150..660 = 18.0m）と狭い東面（x 720..1000 = 9.9m）。見出しは 355 と 900 にあり、
+   * その中間（627.5）は南面の中（右端の壁 660 より左）。図と図の間の空き（670..710）で切れば、どちらの外形も正しく読める
+   */
+  const page = (): PageVectors => {
+    const one = (x0: number, x1: number): RawSegment[] => [
+      seg(x0 - 10, 331, x1 - 60, 331), seg(x1 - 60, 331, x1 + 10, 331), // GL（壁の所で切れた 2 本）
+      seg(x0, 331, x0, 150), seg(x1, 331, x1, 150), seg((x0 + x1) / 2, 331, (x0 + x1) / 2, 150), // 壁
+      seg(x0, 150, x1, 150), // 軒
+      ...box(x0 + 60, 230, x0 + 100, 260), ...box(x0 + 61, 231, x0 + 99, 259), // 窓（枠＋障子）
+      ...Array.from({ length: 8 }, (_, i) => seg(x0 + 5, 160 + i * 4, x0 + 30, 160 + i * 4, 0.12)), // 目地
+    ];
+    return {
+      pageIndex: 0,
+      width: 1191,
+      height: 842,
+      segments: [...one(150, 660), ...one(720, 1000)],
+      curves: [],
+      fills: [],
+      texts: [txt('南側立面図', 355, 372, 11.3, 60), txt('東側立面図', 900, 372, 11.3, 60), txt('GL', 97, 328, 6, 10)],
+    };
+  };
+  const widths = () => {
+    const views = readElevationViews([page()], 35.28, null);
+    return { s: views.find((v) => v.facing === 'S')?.width ?? 0, e: views.find((v) => v.facing === 'E')?.width ?? 0 };
+  };
+
+  it('幅の違う図が並んでも、図と図の間の空きで切る（広い方の図の端を隣の図に入れない）', () => {
+    const w = widths();
+    expect(Math.abs(w.s - 510 * 35.28)).toBeLessThan(40);
+    expect(Math.abs(w.e - 280 * 35.28)).toBeLessThan(40);
+  });
+
+  it('切り替えを切ると、見出しの中間で切って南面の右端の壁が東面に入る（東面が 2.1m 広く・南面が半分に読める）', () => {
+    const g = globalThis as { __NO_ELEV_GAP_SPLIT?: boolean };
+    g.__NO_ELEV_GAP_SPLIT = true;
+    try {
+      const w = widths();
+      expect(w.e).toBeGreaterThan(280 * 35.28 + 1800);
+      expect(w.s).toBeLessThan(510 * 35.28 - 1800);
+    } finally {
+      delete g.__NO_ELEV_GAP_SPLIT;
+    }
+  });
+});

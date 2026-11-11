@@ -122,4 +122,22 @@ describe('格子へ寄せた後の輪郭の掃除', () => {
     const poly = [P(0, 0), P(1000, 0), P(2000, 0), P(2000, 1000), P(0, 1000)];
     expect(cleanPolygon(poly, poly)).toEqual([P(0, 0), P(2000, 0), P(2000, 1000), P(0, 1000)]);
   });
+  it('細いひげ（根元の幅 3mm・長さ 47mm）を除く。切り替えを切ると残る', () => {
+    // 伊藤様邸の玄関: 框の上に読めていた壁を外した端に残ったひげ
+    const poly = [P(4550, 7735), P(4550, 9100), P(6825, 9100), P(6825, 7735), P(5005, 7735), P(5005, 7688), P(5008, 7735)];
+    expect(cleanPolygon(poly, poly)).toEqual([P(4550, 7735), P(4550, 9100), P(6825, 9100), P(6825, 7735)]);
+    const g = globalThis as { __NO_POLY_WHISKER?: boolean };
+    g.__NO_POLY_WHISKER = true;
+    try {
+      expect(cleanPolygon(poly, poly).length).toBe(7);
+    } finally {
+      delete g.__NO_POLY_WHISKER;
+    }
+  });
+  it('幅のある欠け・出っ張り（柱形 105mm 角）や、鋭い角でも辺の長い部屋の角は残す', () => {
+    const notch = [P(0, 0), P(2000, 0), P(2000, 1000), P(1105, 1000), P(1105, 895), P(1000, 895), P(1000, 1000), P(0, 1000)];
+    expect(cleanPolygon(notch, notch)).toEqual(notch);
+    const sharp = [P(0, 0), P(3000, 0), P(3000, 20), P(0, 1000)];
+    expect(cleanPolygon(sharp, sharp)).toEqual(sharp);
+  });
 });

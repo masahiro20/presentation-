@@ -366,6 +366,33 @@ export const designStep: Step = {
             (val) => update({ roofOverride: val === 'auto' ? undefined : val }),
           ),
           (() => {
+            // 立面図の屋根の線から読んだ掛け方は、ここの「屋根の形」より優先（図面どおりのまま）。何が効いているかを見せ、やめる手段も置く
+            const fromElev = state.model?.roofPatches?.filter((p) => p.source === 'elevation') ?? [];
+            if (!fromElev.length) return null;
+            return h(
+              'p',
+              { class: 'hint keep', style: 'margin:6px 0 0' },
+              `立面図から読んだ屋根が ${fromElev.length} か所あります。その屋根は図面どおりの形のままです（ここの「屋根の形」は残りの屋根に効きます）。1 か所ずつ変えるときは 3D の「屋根」の道具で。 `,
+              h(
+                'button',
+                {
+                  class: 'btn sm ghost',
+                  onclick: () => {
+                    const m = state.model;
+                    if (!m) return;
+                    m.roofPatches = (m.roofPatches ?? []).filter((p) => p.source !== 'elevation');
+                    if (!m.roofPatches.length) delete m.roofPatches;
+                    emit('model');
+                    ctx.app.ensureScene();
+                    toast('立面図から読んだ屋根の形をやめて、ここの設定にしました', 'ok');
+                    renderSide();
+                  },
+                },
+                '立面図の屋根をやめる',
+              ),
+            );
+          })(),
+          (() => {
             const ext = exteriorById(state.design.exteriorId);
             const type = state.design.roofOverride ?? ext.roof.type;
             if (type === 'flat') return null;

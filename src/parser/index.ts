@@ -6,10 +6,11 @@ import { repairEnvelope, mergeStackedWalls } from './envelope';
 import { clearStairWalls } from './stairWalls';
 import { readElevationHeights, applyElevationHeights, type ElevationHeights } from './elevationText';
 import { readElevationViews, applyElevationWindows, floorShiftsFromElevation, planScaleFromElevation, type ElevationView } from './elevationWindows';
+import { applyRoofHints, describeRoofHints, roofHintsFromElevation } from './elevationRoof';
 import { translateFloor, stairIoU } from '../core/floorAlign';
 import { classifyPage, type PageInfo } from './pageMap';
 import { readExteriorFinishTable } from './finishTable';
-import type { BuildingModel } from '../core/types';
+import type { BuildingModel, RoofPatch } from '../core/types';
 import { extractPageVectors, type PageVectors, type PdfPageLike } from './pdfExtract';
 import { detectScale, PT_TO_MM, STANDARD } from './scale';
 import { assembleModel, pageToMm, moduleScaleFromWalls, dominantTilt, rotatePageMm, type PageMm } from './assemble';
@@ -363,6 +364,22 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   } catch (e) {
     warnings.push(`立面図の窓を読めませんでした（${(e as Error).message}）`);
   }
+  // 立面図の屋根の線から、屋根の塊ごとの掛け方（片流れの高い側・切妻の棟の向き・寄棟・勾配）。
+  // 平面図には屋根の形が無く、これまでは外観テイストの掛け方（最上階）と「上の階に接する側が高い片流れ」（下屋）の推定だった
+  const roofHolder: { floors: typeof res.floors; roofPatches?: RoofPatch[] } = { floors: res.floors };
+  let elevationRoof: BuildingModel['report']['elevationRoof'];
+  try {
+    if (views.length) {
+      const hints = roofHintsFromElevation(res.floors, views, res.northAngleDeg, !!elev?.storyHeights.length);
+      if (hints.length && applyRoofHints(roofHolder, hints)) {
+        const summary = describeRoofHints(hints, res.northAngleDeg);
+        elevationRoof = { masses: roofHolder.roofPatches?.length ?? 0, summary };
+        warnings.push(`立面図の屋根の線から屋根の形を読みました: ${summary}（3D・方眼の「屋根」の道具で直せます）`);
+      }
+    }
+  } catch (e) {
+    warnings.push(`立面図の屋根を読めませんでした（${(e as Error).message}）`);
+  }
   const pageMap = buildPageMap(pages, res.floorPages, views, elevationWindows, !!elev);
   // 立面図のページの外部仕上表（屋根・外壁・サッシ・玄関ドアの材料と色）
   let finishTable: BuildingModel['report']['finishTable'];
@@ -382,6 +399,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   return {
     ...model,
     ...(heights ? { heights } : {}),
+    ...(roofHolder.roofPatches?.length ? { roofPatches: roofHolder.roofPatches } : {}),
     report: {
       pages: pages.length,
       scaleDenominator: sc.denominator,
@@ -394,6 +412,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       ...(Object.keys(areaTable).length ? { areaTable } : {}),
       ...(pageMap.length ? { pageMap } : {}),
       ...(elevationWindows ? { elevationWindows } : {}),
+      ...(elevationRoof ? { elevationRoof } : {}),
       ...(finishTable ? { finishTable } : {}),
       ...(floorShifted.length ? { floorShifts: floorShifted } : {}),
       ...(maskLevels.length ? { openingsByMask: maskLevels } : {}),

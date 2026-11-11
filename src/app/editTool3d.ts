@@ -19,7 +19,7 @@ import { SASH_MIN_CHECK, SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidt
 import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
-import { massName, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
+import { massName, massSourceTag, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
 import type { Stair } from '../core/types';
 import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL } from '../core/stairs';
 import { keepInsideFloor, linkedStairs, movedCorner, placeStair, rotateStair, stairAtPoint, wallsThroughStair, type StairGrid, type StairRef } from '../core/stairEdit';
@@ -794,6 +794,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       list.push(p);
     }
     fn(p);
+    // 手で直した塊は、立面図を読み直しても上書きしない（「立面図から」の印を外す）
+    delete p.source;
     // 手で描いた範囲（足した屋根・屋根なし）は項目が空でも残す
     if (!patchLoop(p) && !p.kind && !p.high && !p.ridge && p.pitch == null && p.eaves == null && !p.eavesBy && p.parapet == null) m.roofPatches = list.filter((x) => x !== p);
     if (msg) toast(msg, 'ok', 2500);
@@ -1375,7 +1377,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     if (!ms || !m) {
       const n = m?.roofPatches?.length ?? 0;
       const added = m?.roofPatches?.filter((x) => patchLoop(x)).length ?? 0;
-      panel.append(addRow, h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n - added} か所${added ? `・手で描いた屋根・屋根なし ${added} か所` : ''}` : 'まだ塊を選んでいません'));
+      const fromElev = m?.roofPatches?.filter((x) => x.source === 'elevation').length ?? 0;
+      panel.append(addRow, h('p', { class: 'hint', style: 'margin-top:8px' }, n ? `塊ごとの手直し ${n - added} か所${fromElev ? `（うち立面図から読んだ掛け方 ${fromElev} か所）` : ''}${added ? `・手で描いた屋根・屋根なし ${added} か所` : ''}` : 'まだ塊を選んでいません'));
       if (n > added)
         panel.append(
           h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => { if (m) m.roofPatches = m.roofPatches?.filter((x) => patchLoop(x)) ?? []; toast('屋根の手直しをすべておまかせに戻しました（手で描いた屋根は残します）', 'ok'); commit(); } }, 'すべておまかせに戻す')),
@@ -1385,7 +1388,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     const p = ms.patch;
     const north = m.northAngleDeg;
     panel.append(
-      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms)), h('div', { class: 'hint' }, massState(ms, north))),
+      h('div', { class: 'furn-sel', style: 'margin-top:8px' }, h('div', { class: 'field-label' }, massName(ms), massSourceTag(ms)), h('div', { class: 'hint' }, massState(ms, north))),
       ...roofPatchControls({
         model: m,
         ms,

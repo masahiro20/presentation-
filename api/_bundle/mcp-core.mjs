@@ -1034,7 +1034,13 @@ function findElevationTitles(texts) {
 	}
 	return [...best.values()];
 }
-/** 見出しごとの図の範囲: 同じ段の隣の見出しとの中間まで、上の段の見出しの下から自分の見出しの上まで */
+/**
+* 見出しごとの図の範囲: 上の段の見出しの下から自分の見出しの上まで。同じ段の隣の図との境は、図と図の間の空き（線の無い縦の帯）の真ん中。
+*
+* 以前は見出しどうしの中間で切っていたが、見出しは図の真下にあるとは限らず、幅の違う図が並ぶと広い方の図の端が隣の範囲に入る
+* （吉田大仁様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
+* 東面は窓の位置が 1.9m ずれて照合できず、南面も端が欠けていた）。空きが見つからないときだけ見出しの中間を使う
+*/
 function regionsOf(titles, page) {
 	const rows = [];
 	for (const t of [...titles].sort((a, b) => a.cy - b.cy)) {
@@ -1042,16 +1048,47 @@ function regionsOf(titles, page) {
 		if (row) row.push(t);
 		else rows.push([t]);
 	}
+	const byGap = !globalThis.__NO_ELEV_GAP_SPLIT;
 	const out = /* @__PURE__ */ new Map();
 	rows.forEach((row, ri) => {
 		row.sort((a, b) => a.cx - b.cx);
 		const above = ri > 0 ? Math.max(...rows[ri - 1].map((t) => t.cy + t.size)) : 0;
+		/** 隣り合う 2 つの見出しの間の境 */
+		const splitX = (a, b) => {
+			const mid = (a.cx + b.cx) / 2;
+			const segs = page.segments;
+			if (!byGap || !segs?.length || b.cx - a.cx < 20) return mid;
+			const y1 = Math.min(a.cy - a.size * .7, b.cy - b.size * .7);
+			const spans = [];
+			for (const s of segs) {
+				const sy0 = Math.min(s.a.y, s.b.y);
+				const sy1 = Math.max(s.a.y, s.b.y);
+				if (sy1 < above || sy0 > y1) continue;
+				const sx0 = Math.max(a.cx, Math.min(s.a.x, s.b.x));
+				const sx1 = Math.min(b.cx, Math.max(s.a.x, s.b.x));
+				if (sx1 < sx0) continue;
+				if (sy1 - sy0 < .25 && sx1 - sx0 >= (b.cx - a.cx) * .8) continue;
+				spans.push([sx0, sx1]);
+			}
+			spans.sort((p, q) => p[0] - q[0]);
+			let best = null;
+			let reach = a.cx;
+			const consider = (g0, g1) => {
+				if (g1 - g0 < 4) return;
+				if (!best || g1 - g0 > best[1] - best[0] + .5 || Math.abs(g1 - g0 - (best[1] - best[0])) <= .5 && Math.abs((g0 + g1) / 2 - mid) < Math.abs((best[0] + best[1]) / 2 - mid)) best = [g0, g1];
+			};
+			for (const [s0, s1] of spans) {
+				if (s0 > reach) consider(reach, s0);
+				reach = Math.max(reach, s1);
+			}
+			if (b.cx > reach) consider(reach, b.cx);
+			return best ? (best[0] + best[1]) / 2 : mid;
+		};
+		const cuts = row.map((t, i) => i + 1 < row.length ? splitX(t, row[i + 1]) : page.width);
 		row.forEach((t, i) => {
-			const x0 = i > 0 ? (row[i - 1].cx + t.cx) / 2 : 0;
-			const x1 = i + 1 < row.length ? (t.cx + row[i + 1].cx) / 2 : page.width;
 			out.set(t, {
-				x0,
-				x1,
+				x0: i > 0 ? cuts[i - 1] : 0,
+				x1: cuts[i],
 				y0: above,
 				y1: t.cy - t.size * .7
 			});
@@ -1274,6 +1311,85 @@ function windowUnits(rects, mm) {
 	return list.map(({ framed: _f, ...r }) => r);
 }
 /**
+* 1 面の線から、屋根の端の斜めの線を拾う（屋根を横から見ると、屋根の上面が端から端まで 1 本の斜めの線になる）。
+*  - 勾配 0.2〜7.5 寸・GL から 1.8m より上の実線。同じ直線の上で切れた線はつなぎ、長さ 900mm 以上のものだけ
+*  - 屋根面の目地（少しずつ横にずれた平行線の束。振れた棟の屋根を斜めから見た面に出る）は除く
+*  - 屋根の厚みの 2〜3 本線（上面・下面・鼻隠し）は、いちばん上の 1 本にまとめる
+*/
+function roofLinesOf(segs, glY, bx0, bx1, mm) {
+	const width = (bx1 - bx0) * mm;
+	const at = (l, u) => l.z0 + l.k * (u - l.u0);
+	let lines = [];
+	for (const s of segs) {
+		if (s.dashed) continue;
+		let u0 = (s.a.x - bx0) * mm;
+		let z0 = (glY - s.a.y) * mm;
+		let u1 = (s.b.x - bx0) * mm;
+		let z1 = (glY - s.b.y) * mm;
+		if (u0 > u1) [u0, z0, u1, z1] = [
+			u1,
+			z1,
+			u0,
+			z0
+		];
+		const du = u1 - u0;
+		if (du < 120) continue;
+		const k = (z1 - z0) / du;
+		if (Math.abs(k) < .02 || Math.abs(k) > .75) continue;
+		if (Math.min(z0, z1) < 1800 || u0 < -1500 || u1 > width + 1500) continue;
+		lines.push({
+			u0,
+			z0,
+			u1,
+			z1,
+			k
+		});
+	}
+	if (lines.length > 1500) return [];
+	for (let merged = true; merged;) {
+		merged = false;
+		outer: for (let i = 0; i < lines.length; i++) for (let j = 0; j < lines.length; j++) {
+			if (i === j) continue;
+			const a = lines[i];
+			const b = lines[j];
+			const gap = b.u0 - a.u1;
+			if (gap < -30 || gap > 200 || Math.abs(a.k - b.k) > .004 || Math.abs(at(a, b.u0) - b.z0) > 10) continue;
+			lines[i] = {
+				u0: a.u0,
+				z0: a.z0,
+				u1: b.u1,
+				z1: b.z1,
+				k: (b.z1 - a.z0) / (b.u1 - a.u0)
+			};
+			lines.splice(j, 1);
+			merged = true;
+			break outer;
+		}
+	}
+	lines = lines.filter((l) => l.u1 - l.u0 >= 900);
+	const mate = (a, b) => {
+		if (Math.abs(a.k - b.k) > .006) return false;
+		const lo = Math.max(a.u0, b.u0);
+		const hi = Math.min(a.u1, b.u1);
+		if (hi - lo < Math.min(a.u1 - a.u0, b.u1 - b.u0) * .3) return false;
+		return Math.abs(at(a, (lo + hi) / 2) - at(b, (lo + hi) / 2)) <= 350;
+	};
+	const shifted = (a, b) => b.u0 - a.u0 > 100 && b.u1 - a.u1 > 100 || a.u0 - b.u0 > 100 && a.u1 - b.u1 > 100;
+	const hatch = lines.map((a, i) => lines.filter((b, j) => i !== j && mate(a, b) && shifted(a, b)).length >= 2);
+	lines = lines.filter((_, i) => !hatch[i]);
+	const out = [];
+	for (const l of [...lines].sort((a, b) => at(b, (b.u0 + b.u1) / 2) - at(a, (a.u0 + a.u1) / 2))) {
+		if (out.some((o) => mate(o, l) && Math.abs(o.u0 - l.u0) <= 400 && Math.abs(o.u1 - l.u1) <= 400)) continue;
+		out.push(l);
+	}
+	return out.sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0).map((l) => ({
+		u0: Math.round(l.u0),
+		z0: Math.round(l.z0),
+		u1: Math.round(l.u1),
+		z1: Math.round(l.z1)
+	}));
+}
+/**
 * 立面図のページから 4 面の図を読む。
 * @param mmHint 平面図から求めた 1pt あたりの mm（立面図に「N階FL」が無いときの縮尺）
 */
@@ -1392,7 +1508,8 @@ function readView(page, title, box, mm, heights, glHint) {
 		const ys = [s.a.y, s.b.y];
 		return Math.min(...xs) >= bx0 - .5 && Math.max(...xs) <= bx1 + .5 && Math.max(...ys) <= glY + .5 && (glY - Math.min(...ys)) * mm <= zTop;
 	});
-	const rects = findRects(inBuilding.filter((sg) => isGray(sg.color)).length / Math.max(1, inBuilding.length) < .5 ? inBuilding.filter((sg) => !isGray(sg.color)) : inBuilding, 150 / mm, 100 / mm).filter((r) => {
+	const grayShare = inBuilding.filter((sg) => isGray(sg.color)).length / Math.max(1, inBuilding.length);
+	const rects = findRects(grayShare < .5 ? inBuilding.filter((sg) => !isGray(sg.color)) : inBuilding, 150 / mm, 100 / mm).filter((r) => {
 		const w = (r.x1 - r.x0) * mm;
 		const hgt = (r.y1 - r.y0) * mm;
 		return w >= 200 && hgt >= 150 && w <= 7e3 && hgt <= 3200 && (glY - r.y1) * mm >= -50;
@@ -1432,6 +1549,7 @@ function readView(page, title, box, mm, heights, glHint) {
 			z1: Math.round((glY - u.y0) * mm),
 			panes: u.panes
 		})).sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0),
+		roofLines: roofLinesOf(grayShare < .5 ? segs.filter((sg) => !isGray(sg.color)) : segs, glY, bx0, bx1, mm),
 		glInfo: {
 			byText: !hinted && byText.length > 0,
 			cands: cands.map((h) => h.y)
@@ -1985,6 +2103,515 @@ function addMissing(floors, v, axis, off, onlyFi, matched) {
 		added++;
 	}
 	return added;
+}
+//#endregion
+//#region src/core/balcony.ts
+/**
+* バルコニーの上が空に開いているか（屋根・軒天を掛けないか）
+*
+* 屋根は「その階の外形のうち、上の階が載らない所」に掛ける。バルコニーも外形の内なので、
+* そのままではルーフバルコニー・上の階を欠いて作ったバルコニーの上にも屋根が掛かり、屋根付きの箱に見える
+* （市岡様邸 4 階のルーフバルコニー、田中様邸 2 階の三角のバルコニー）。
+*/
+/**
+* 空に開いたバルコニーか。floors は下の階から順、k はその階の番号（floors の添字）。
+* - 中庭（1 階の光庭）は外形の外なので対象外。インナーバルコニーは屋根の下
+* - 名前がルーフバルコニー・屋上 → 開いている
+* - 2 階以上で、いちばん上の階でなければ開いている（上の階が載る所は屋根の升目で「上の階の下」として別に除かれる。
+*   上の階をわざわざ欠いてあるバルコニーに、下屋の屋根は掛けない）
+* - いちばん上の階: 屋内の広さの半分より広ければ屋上（塔屋の横のルーフバルコニー）。それ以外は大屋根の下のバルコニー
+*/
+function isOpenSkyBalcony(floors, k, r) {
+	if (r.type !== "balcony" || r.polygon.length < 3) return false;
+	if (/庭|COURT/i.test(r.name) || /インナー/.test(r.name)) return false;
+	if (/ルーフ|屋上|スカイ|ROOF/i.test(r.name)) return true;
+	const f = floors[k];
+	if (!f || f.level < 2) return false;
+	if (k < floors.length - 1) return true;
+	const indoor = f.rooms.filter((q) => !OUTDOOR_TYPES.includes(q.type) && q.type !== "void").reduce((s, q) => s + q.area, 0);
+	return r.area > indoor * .5;
+}
+//#endregion
+//#region src/core/roofGrid.ts
+/**
+* 屋根の塊の分け方（three 非依存）。
+*
+* 屋根は「階の外形のうち、上の階が載らない範囲のつながった所（塊）」ごとに掛ける。
+* 3D の屋根（scene/roof.ts）と、立面図の屋根の線から塊ごとの掛け方を読む処理（parser/elevationRoof.ts）が
+* 同じ分け方を使えるよう、格子と塊の計算だけをここに置く。
+*/
+/**
+* 屋根を架ける範囲の輪郭。外形が読めていない階（壁に隙間があって外形が追えなかった・画像の図面）は、
+* 屋根が丸ごと出ない（「屋根が表示されない」）ので、屋内の部屋の区画を代わりに使う
+*/
+function roofLoops(f) {
+	const loops = f.outline.filter((l) => l.length >= 3);
+	if (loops.length) return loops;
+	return f.rooms.filter((r) => r.polygon.length >= 3 && !OUTDOOR_TYPES.includes(r.type)).map((r) => r.polygon);
+}
+/** 手で描いた屋根の範囲（足した屋根・屋根なし）: 多角形（loop）か四角形（rect）。無ければ自動の塊の手直し */
+function patchLoop(p) {
+	if (p.loop && p.loop.length >= 3) return p.loop;
+	if (p.rect) {
+		const r = p.rect;
+		return [
+			{
+				x: r.minX,
+				y: r.minY
+			},
+			{
+				x: r.maxX,
+				y: r.minY
+			},
+			{
+				x: r.maxX,
+				y: r.maxY
+			},
+			{
+				x: r.minX,
+				y: r.maxY
+			}
+		];
+	}
+}
+/** この階の手で描いた範囲（足した屋根・屋根なし）。自動の屋根からはこの範囲を除く */
+var manualLoopsOf = (patches, level) => (patches ?? []).filter((p) => p.level === level).map(patchLoop).filter((l) => !!l);
+/**
+* 屋根の格子: 輪郭の頂点で座標を圧縮し、この範囲（上の範囲が載らず、除く範囲にも入らない所）と上の範囲をマスクにする。
+* 格子の目が範囲に入るかは、中心 1 点ではなく 3 × 3 の点で見る（斜めの外壁の目は中心がちょうど辺の上に乗り、
+* 入らない扱いになって屋根に穴が開いていた: 吉田大仁様邸の隅切りの LDK）。3 点以上入れば屋根を掛け、斜めの辺で切り落とす
+*/
+function gridOfLoops(polys, higher, exclude = [], open = []) {
+	const all = [
+		...polys,
+		...higher.flat(),
+		...exclude,
+		...open
+	].flat();
+	const uniq = (vals) => {
+		const s = vals.slice().sort((a, b) => a - b);
+		const out = [];
+		for (const v of s) if (!out.length || v - out[out.length - 1] > 20) out.push(v);
+		return out;
+	};
+	const xs = uniq(all.map((p) => p.x));
+	const zs = uniq(all.map((p) => p.y));
+	const nx = xs.length - 1;
+	const nz = zs.length - 1;
+	const mask = new Uint8Array(Math.max(0, nx * nz));
+	const maskUpper = new Uint8Array(Math.max(0, nx * nz));
+	const inside = (loops, i, j) => {
+		let n = 0;
+		for (const fx of [
+			.2,
+			.5,
+			.8
+		]) for (const fy of [
+			.2,
+			.5,
+			.8
+		]) if (insideLoops({
+			x: xs[i] + (xs[i + 1] - xs[i]) * fx,
+			y: zs[j] + (zs[j + 1] - zs[j]) * fy
+		}, loops)) n++;
+		return n;
+	};
+	for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+		const nIn = inside(polys, i, j);
+		const nOpen = open.length && nIn >= 3 ? inside(open, i, j) : 0;
+		const inThis = nIn >= 3 && !(exclude.length && inside(exclude, i, j) >= 5) && !(nOpen >= 3 && nOpen >= nIn * .6);
+		const inUpper = higher.some((h) => inside(h, i, j) >= 5);
+		mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
+		maskUpper[j * nx + i] = inUpper ? 1 : 0;
+	}
+	return {
+		polys,
+		xs,
+		zs,
+		nx,
+		nz,
+		mask,
+		maskUpper
+	};
+}
+/** 階 k の屋根の格子: この階の外形（上の階が載らない所。手で描いた範囲は除く）と上の階の範囲 */
+function floorGrid(floors, k, exclude = []) {
+	const f = floors[k];
+	const higher = floors.slice(k + 1).map((h) => roofLoops(h));
+	const open = f.rooms.filter((r) => isOpenSkyBalcony(floors, k, r)).map((r) => r.polygon);
+	return {
+		f,
+		...gridOfLoops(roofLoops(f), higher, exclude, open)
+	};
+}
+/** 格子の座標 v が入る区間の番号（無ければ -1） */
+function cellIndex(axis, v) {
+	for (let i = 0; i + 1 < axis.length; i++) if (v >= axis[i] && v < axis[i + 1]) return i;
+	return -1;
+}
+/** この塊に当たる手直し（at がその塊の格子の中にある物） */
+function patchFor(patches, level, comp, xs, zs, nx) {
+	if (!patches) return void 0;
+	for (const p of patches) {
+		if (p.level !== level || patchLoop(p)) continue;
+		const i = cellIndex(xs, p.at.x);
+		const j = cellIndex(zs, p.at.y);
+		if (i >= 0 && j >= 0 && comp.cells.has(j * nx + i)) return p;
+	}
+}
+/** マスク（格子）のつながった範囲（4 近傍）。rects は重ならない四角形（行ごとの連続区間を、同じ区間が続く行でまとめたもの） */
+function maskComponents(xs, zs, mask) {
+	const nx = xs.length - 1;
+	const nz = zs.length - 1;
+	const seen = new Uint8Array(nx * nz);
+	const out = [];
+	for (let start = 0; start < nx * nz; start++) {
+		if (!mask[start] || seen[start]) continue;
+		const cells = /* @__PURE__ */ new Set();
+		const stack = [start];
+		seen[start] = 1;
+		while (stack.length) {
+			const c = stack.pop();
+			cells.add(c);
+			const i = c % nx;
+			const j = (c - i) / nx;
+			for (const [di, dj] of [
+				[1, 0],
+				[-1, 0],
+				[0, 1],
+				[0, -1]
+			]) {
+				const ii = i + di;
+				const jj = j + dj;
+				if (ii < 0 || jj < 0 || ii >= nx || jj >= nz) continue;
+				const k = jj * nx + ii;
+				if (mask[k] && !seen[k]) {
+					seen[k] = 1;
+					stack.push(k);
+				}
+			}
+		}
+		const runs = [];
+		for (let j = 0; j < nz; j++) {
+			let i = 0;
+			while (i < nx) {
+				if (!cells.has(j * nx + i)) {
+					i++;
+					continue;
+				}
+				let k = i;
+				while (k + 1 < nx && cells.has(j * nx + k + 1)) k++;
+				const prev = runs.find((r) => r.j1 === j - 1 && r.i0 === i && r.i1 === k);
+				if (prev) prev.j1 = j;
+				else runs.push({
+					j0: j,
+					j1: j,
+					i0: i,
+					i1: k
+				});
+				i = k + 1;
+			}
+		}
+		const rects = runs.map((r) => ({
+			minX: xs[r.i0],
+			maxX: xs[r.i1 + 1],
+			minY: zs[r.j0],
+			maxY: zs[r.j1 + 1]
+		}));
+		const bbox = {
+			minX: Math.min(...rects.map((r) => r.minX)),
+			maxX: Math.max(...rects.map((r) => r.maxX)),
+			minY: Math.min(...rects.map((r) => r.minY)),
+			maxY: Math.max(...rects.map((r) => r.maxY))
+		};
+		out.push({
+			cells,
+			rects,
+			bbox
+		});
+	}
+	return out;
+}
+/** 塊の目印の点: いちばん大きい四角形の中心（手直しの at に使う。3D の「屋根」の道具と同じ決め方） */
+function compCenter(comp) {
+	const big = comp.rects.slice().sort((a, b) => (b.maxX - b.minX) * (b.maxY - b.minY) - (a.maxX - a.minX) * (a.maxY - a.minY))[0];
+	return {
+		x: (big.minX + big.maxX) / 2,
+		y: (big.minY + big.maxY) / 2
+	};
+}
+//#endregion
+//#region src/parser/elevationRoof.ts
+/**
+* 塊の端から屋根の線の端までのずれの許容: 内側へ 450mm（読み取りのずれ）、外側へ 1.5m（軒・けらばの出）。
+* 幅の狭い塊（塔屋・小さな下屋）は幅に合わせて狭める（幅の 1/4・幅の 1/2。外側は 600mm を下回らない）
+*/
+var tolIn = (span) => Math.min(450, span * .25);
+var tolOut = (span) => Math.min(1500, Math.max(600, span * .5));
+/** 屋根の塊（3D の屋根と同じ分け方）。3㎡ に満たない細い残りは見ない */
+function massesOf(floors) {
+	const out = [];
+	floors.forEach((f, k) => {
+		const g = floorGrid(floors, k);
+		if (g.nx <= 0 || g.nz <= 0) return;
+		const isTop = k === floors.length - 1;
+		const wallTop = isTop ? f.elevation + (f.height > 0 ? f.height : 2750) : floors[k + 1].elevation;
+		for (const comp of maskComponents(g.xs, g.zs, g.mask)) {
+			if (comp.rects.reduce((s, r) => s + (r.maxX - r.minX) * (r.maxY - r.minY), 0) < 3e6) continue;
+			out.push({
+				level: f.level,
+				isTop,
+				comp,
+				wallTop,
+				at: compCenter(comp)
+			});
+		}
+	});
+	return out;
+}
+/** 面の右手の向き r に沿って上がる・下がるときの、高い側の辺 */
+function highSide(r, up) {
+	const d = up ? r : {
+		x: -r.x,
+		y: -r.y
+	};
+	return Math.abs(d.x) >= Math.abs(d.y) ? d.x > 0 ? "e" : "w" : d.y < 0 ? "n" : "s";
+}
+/**
+* 立面図の屋根の線から、屋根の塊ごとの掛け方を読む。
+* 向きを窓の並びで確かめられた面が 1 つも無いとき（立面図と平面図が合っていない）は何も返さない。
+* @param heightsKnown 階の高さを立面図の寸法から読めているか。読めていなければ（標準値の推定）、屋根の線の高さの照合を緩める
+*/
+function roofHintsFromElevation(floorsIn, views, northDeg, heightsKnown = true) {
+	if (globalThis.__NO_ELEV_ROOF) return [];
+	const floors = [...floorsIn].sort((a, b) => a.level - b.level);
+	if (!floors.length || !views.some((v) => v.roofLines?.length)) return [];
+	const { axes, rotated } = chooseAxes(floors, views, northDeg);
+	if (!axes.size) return [];
+	const placed = [];
+	const used = /* @__PURE__ */ new Set();
+	for (const [v, fit] of axes) {
+		used.add(fit.axis);
+		if (v.roofLines?.length) placed.push({
+			v,
+			axis: fit.axis,
+			off: fit.off
+		});
+	}
+	for (const v of views) {
+		if (axes.has(v) || !v.roofLines?.length) continue;
+		const axis = axisForFacing(v.facing, northDeg + rotated);
+		if (used.has(axis)) continue;
+		const [lo, hi] = facadeExtent(floors, AXES[axis].r);
+		if (Math.abs(v.width / Math.max(1, hi - lo) - 1) > .06) continue;
+		used.add(axis);
+		placed.push({
+			v,
+			axis,
+			off: 0
+		});
+	}
+	const masses = massesOf(floors);
+	if (!masses.length || !placed.length) return [];
+	/** 確かめ用の記録（globalThis.__ELEV_ROOF_LOG に配列を置くと、面の当て方・塊・当たった線が入る） */
+	const trace = globalThis.__ELEV_ROOF_LOG;
+	if (trace) for (const m of masses) trace.push(`塊 ${m.level}F${m.isTop ? "(最上)" : ""} x ${Math.round(m.comp.bbox.minX)}..${Math.round(m.comp.bbox.maxX)} y ${Math.round(m.comp.bbox.minY)}..${Math.round(m.comp.bbox.maxY)} 壁の天端 ${Math.round(m.wallTop)}`);
+	const evs = [];
+	for (const p of placed) {
+		const { r } = AXES[p.axis];
+		const base = facadeExtent(floors, r)[0] + p.off;
+		const along = Math.abs(r.x) > .5 ? "x" : "y";
+		const lines = p.v.roofLines.map((l) => ({
+			...l,
+			s0: base + l.u0,
+			s1: base + l.u1,
+			k: (l.z1 - l.z0) / Math.max(1, l.u1 - l.u0)
+		}));
+		trace?.push(`${FACING_JA[p.v.facing]}面: 軸 ${p.axis} ずれ ${p.off} 左端 ${Math.round(base)} 線 ${lines.map((l) => `[${Math.round(l.s0)}..${Math.round(l.s1)} z ${l.z0}→${l.z1}]`).join(" ")}`);
+		const found = [];
+		for (const m of masses) {
+			let s0 = Infinity;
+			let s1 = -Infinity;
+			for (const rc of m.comp.rects) for (const c of [{
+				x: rc.minX,
+				y: rc.minY
+			}, {
+				x: rc.maxX,
+				y: rc.maxY
+			}]) {
+				const s = c.x * r.x + c.y * r.y;
+				s0 = Math.min(s0, s);
+				s1 = Math.max(s1, s);
+			}
+			if (s1 - s0 < 800) continue;
+			const IN = tolIn(s1 - s0);
+			const OUT = tolOut(s1 - s0);
+			const zOk = (z) => heightsKnown ? z >= m.wallTop - 700 && z <= m.wallTop + 1e3 : Math.abs(z - m.wallTop) <= 1400;
+			const nearLo = (s) => s >= s0 - OUT && s <= s0 + IN;
+			const nearHi = (s) => s >= s1 - IN && s <= s1 + OUT;
+			for (const l of lines) if (zOk(Math.min(l.z0, l.z1)) && nearLo(l.s0) && nearHi(l.s1)) found.push({
+				m,
+				kind: "shed",
+				lines: [l],
+				high: highSide(r, l.k > 0),
+				k: Math.abs(l.k)
+			});
+			for (const a of lines) {
+				if (a.k <= 0 || !nearLo(a.s0) || !zOk(a.z0)) continue;
+				for (const b of lines) {
+					if (b.k >= 0 || !nearHi(b.s1) || !zOk(b.z1)) continue;
+					if (b.s0 < a.s1 - 300 || Math.abs(a.z1 - b.z0) > 250) continue;
+					const ka = Math.abs(a.k);
+					const kb = Math.abs(b.k);
+					if (Math.abs(ka - kb) > Math.max(.03, .25 * Math.max(ka, kb))) continue;
+					found.push({
+						m,
+						kind: b.s0 - a.s1 <= 400 ? "gable" : "trap",
+						lines: [a, b],
+						k: (ka + kb) / 2
+					});
+				}
+			}
+		}
+		const owners = /* @__PURE__ */ new Map();
+		for (const f of found) for (const l of f.lines) {
+			if (!owners.has(l)) owners.set(l, /* @__PURE__ */ new Set());
+			owners.get(l).add(f.m);
+		}
+		for (const f of found) {
+			const shared = f.lines.some((l) => owners.get(l).size > 1);
+			trace?.push(`  ${FACING_JA[p.v.facing]}面 → ${f.m.level}F の塊（x ${Math.round(f.m.comp.bbox.minX)}..）: ${f.kind}${f.high ? ` 高い側 ${f.high}` : ""} 勾配 ${(f.k * 10).toFixed(2)} 寸${shared ? "（ほかの塊にも当たるので使わない）" : ""}`);
+			if (shared) continue;
+			evs.push({
+				m: f.m,
+				facing: p.v.facing,
+				along,
+				kind: f.kind,
+				high: f.high,
+				k: f.k
+			});
+		}
+	}
+	const out = [];
+	for (const m of masses) {
+		const es = evs.filter((e) => e.m === m);
+		if (!es.length) continue;
+		const ks = es.map((e) => e.k).sort((a, b) => a - b);
+		const pitch = Math.min(10, Math.max(.5, Math.round(ks[Math.floor(ks.length / 2)] * 20) / 2));
+		const base = {
+			level: m.level,
+			isTop: m.isTop,
+			at: m.at,
+			bbox: m.comp.bbox,
+			pitch,
+			facings: [...new Set(es.map((e) => e.facing))]
+		};
+		const kinds = new Set(es.map((e) => e.kind));
+		if (kinds.has("shed")) {
+			const highs = new Set(es.map((e) => e.high));
+			if (kinds.size === 1 && highs.size === 1) out.push({
+				...base,
+				kind: "shed",
+				high: es[0].high
+			});
+			continue;
+		}
+		const alongs = new Set(es.map((e) => e.along));
+		if (kinds.has("trap") || alongs.size === 2) out.push({
+			...base,
+			kind: "hip"
+		});
+		else out.push({
+			...base,
+			kind: "gable",
+			ridge: es[0].along === "x" ? "z" : "x"
+		});
+	}
+	return out;
+}
+/**
+* 読めた掛け方を、屋根の塊ごとの手直し（model.roofPatches。source = 'elevation'）として入れる。
+* 前に立面図から入れた分は入れ直し、手で直した塊（同じ塊に手直しがある）と手で描いた屋根はそのまま残す。入れた数を返す
+*/
+function applyRoofHints(model, hints) {
+	const floors = [...model.floors].sort((a, b) => a.level - b.level);
+	const keep = (model.roofPatches ?? []).filter((p) => p.source !== "elevation");
+	const added = [];
+	for (const h of hints) {
+		const k = floors.findIndex((f) => f.level === h.level);
+		if (k < 0) continue;
+		const g = floorGrid(floors, k, manualLoopsOf(keep, h.level));
+		const i = cellIndex(g.xs, h.at.x);
+		const j = cellIndex(g.zs, h.at.y);
+		const comp = i >= 0 && j >= 0 ? maskComponents(g.xs, g.zs, g.mask).find((c) => c.cells.has(j * g.nx + i)) : void 0;
+		if (!comp || patchFor(keep, h.level, comp, g.xs, g.zs, g.nx)) continue;
+		added.push({
+			id: `E${h.level}-${added.length + 1}`,
+			level: h.level,
+			at: { ...h.at },
+			kind: h.kind,
+			...h.high ? { high: h.high } : {},
+			...h.ridge ? { ridge: h.ridge } : {},
+			pitch: h.pitch,
+			source: "elevation"
+		});
+	}
+	const next = [...keep, ...added];
+	if (next.length) model.roofPatches = next;
+	else delete model.roofPatches;
+	return added.length;
+}
+var KIND_JA$1 = {
+	gable: "切妻",
+	hip: "寄棟",
+	shed: "片流れ",
+	flat: "陸屋根"
+};
+/** 図面の辺（上下左右）の方位（真北が図面の上から時計回りに northDeg） */
+function compassOf(side, northDeg) {
+	const a = northDeg * Math.PI / 180;
+	const nv = {
+		x: Math.sin(a),
+		y: -Math.cos(a)
+	};
+	const ev = {
+		x: -nv.y,
+		y: nv.x
+	};
+	const sv = {
+		n: {
+			x: 0,
+			y: -1
+		},
+		s: {
+			x: 0,
+			y: 1
+		},
+		e: {
+			x: 1,
+			y: 0
+		},
+		w: {
+			x: -1,
+			y: 0
+		}
+	}[side];
+	const dn = sv.x * nv.x + sv.y * nv.y;
+	const de = sv.x * ev.x + sv.y * ev.y;
+	return Math.abs(dn) >= Math.abs(de) ? dn > 0 ? "北" : "南" : de > 0 ? "東" : "西";
+}
+/** 人に見せる要約: 「2階の屋根 片流れ（北が高い・0.5 寸）／1階の下屋（3.6 × 5.5 m）片流れ（西が高い・0.5 寸）」 */
+function describeRoofHints(hints, northDeg) {
+	return hints.map((h) => {
+		const size = `${((h.bbox.maxX - h.bbox.minX) / 1e3).toFixed(1)} × ${((h.bbox.maxY - h.bbox.minY) / 1e3).toFixed(1)} m`;
+		const name = h.isTop ? `${h.level}階の屋根` : `${h.level}階の下屋（${size}）`;
+		const detail = [
+			h.kind === "shed" && h.high ? `${compassOf(h.high, northDeg)}が高い` : "",
+			h.kind === "gable" && h.ridge ? `棟は図面の${h.ridge === "x" ? "左右" : "上下"}` : "",
+			`${h.pitch} 寸`
+		].filter(Boolean).join("・");
+		return `${name} ${KIND_JA$1[h.kind]}（${detail}・${h.facings.map((f) => FACING_JA[f]).join("")}面）`;
+	}).join("／");
 }
 //#endregion
 //#region src/core/floorAlign.ts
@@ -16974,6 +17601,7 @@ function cleanPolygon(out, fallback) {
 		dedup.push(p);
 	}
 	while (dedup.length > 1 && Math.abs(dedup[0].x - dedup[dedup.length - 1].x) < 1 && Math.abs(dedup[0].y - dedup[dedup.length - 1].y) < 1) dedup.pop();
+	const noWhisker = !!globalThis.__NO_POLY_WHISKER;
 	for (let guard = 0; guard < 8 && dedup.length > 3; guard++) {
 		let removed = false;
 		for (let i = 0; i < dedup.length && dedup.length > 3; i++) {
@@ -16982,7 +17610,11 @@ function cleanPolygon(out, fallback) {
 			const b = dedup[(i + 1) % dedup.length];
 			const cross = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
 			const dot = (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y);
-			if (Math.abs(cross) < 1 && dot < 0) {
+			const la = Math.hypot(p.x - a.x, p.y - a.y);
+			const lb = Math.hypot(b.x - p.x, b.y - p.y);
+			const base = Math.hypot(b.x - a.x, b.y - a.y);
+			const whisker = !noWhisker && dot < 0 && base <= 25 && Math.min(la, lb) >= base * 2 && Math.max(la, lb) <= 200;
+			if (Math.abs(cross) < 1 && dot < 0 || whisker) {
 				dedup.splice(i, 1);
 				const j = i % dedup.length;
 				const q = dedup[(j + dedup.length - 1) % dedup.length];
@@ -18251,6 +18883,23 @@ function modelFromVectors(pages, opts = {}) {
 	} catch (e) {
 		warnings.push(`立面図の窓を読めませんでした（${e.message}）`);
 	}
+	const roofHolder = { floors: res.floors };
+	let elevationRoof;
+	try {
+		if (views.length) {
+			const hints = roofHintsFromElevation(res.floors, views, res.northAngleDeg, !!elev?.storyHeights.length);
+			if (hints.length && applyRoofHints(roofHolder, hints)) {
+				const summary = describeRoofHints(hints, res.northAngleDeg);
+				elevationRoof = {
+					masses: roofHolder.roofPatches?.length ?? 0,
+					summary
+				};
+				warnings.push(`立面図の屋根の線から屋根の形を読みました: ${summary}（3D・方眼の「屋根」の道具で直せます）`);
+			}
+		}
+	} catch (e) {
+		warnings.push(`立面図の屋根を読めませんでした（${e.message}）`);
+	}
 	const pageMap = buildPageMap(pages, res.floorPages, views, elevationWindows, !!elev);
 	let finishTable;
 	try {
@@ -18270,6 +18919,7 @@ function modelFromVectors(pages, opts = {}) {
 	return {
 		...model,
 		...heights ? { heights } : {},
+		...roofHolder.roofPatches?.length ? { roofPatches: roofHolder.roofPatches } : {},
 		report: {
 			pages: pages.length,
 			scaleDenominator: sc.denominator,
@@ -18282,6 +18932,7 @@ function modelFromVectors(pages, opts = {}) {
 			...Object.keys(areaTable).length ? { areaTable } : {},
 			...pageMap.length ? { pageMap } : {},
 			...elevationWindows ? { elevationWindows } : {},
+			...elevationRoof ? { elevationRoof } : {},
 			...finishTable ? { finishTable } : {},
 			...floorShifted.length ? { floorShifts: floorShifted } : {},
 			...maskLevels.length ? { openingsByMask: maskLevels } : {}
@@ -20932,33 +21583,6 @@ function livabilityChecks(model) {
 	}
 	out.push(...livingCheck(model));
 	return out;
-}
-//#endregion
-//#region src/core/balcony.ts
-/**
-* バルコニーの上が空に開いているか（屋根・軒天を掛けないか）
-*
-* 屋根は「その階の外形のうち、上の階が載らない所」に掛ける。バルコニーも外形の内なので、
-* そのままではルーフバルコニー・上の階を欠いて作ったバルコニーの上にも屋根が掛かり、屋根付きの箱に見える
-* （市岡様邸 4 階のルーフバルコニー、田中様邸 2 階の三角のバルコニー）。
-*/
-/**
-* 空に開いたバルコニーか。floors は下の階から順、k はその階の番号（floors の添字）。
-* - 中庭（1 階の光庭）は外形の外なので対象外。インナーバルコニーは屋根の下
-* - 名前がルーフバルコニー・屋上 → 開いている
-* - 2 階以上で、いちばん上の階でなければ開いている（上の階が載る所は屋根の升目で「上の階の下」として別に除かれる。
-*   上の階をわざわざ欠いてあるバルコニーに、下屋の屋根は掛けない）
-* - いちばん上の階: 屋内の広さの半分より広ければ屋上（塔屋の横のルーフバルコニー）。それ以外は大屋根の下のバルコニー
-*/
-function isOpenSkyBalcony(floors, k, r) {
-	if (r.type !== "balcony" || r.polygon.length < 3) return false;
-	if (/庭|COURT/i.test(r.name) || /インナー/.test(r.name)) return false;
-	if (/ルーフ|屋上|スカイ|ROOF/i.test(r.name)) return true;
-	const f = floors[k];
-	if (!f || f.level < 2) return false;
-	if (k < floors.length - 1) return true;
-	const indoor = f.rooms.filter((q) => !OUTDOOR_TYPES.includes(q.type) && q.type !== "void").reduce((s, q) => s + q.area, 0);
-	return r.area > indoor * .5;
 }
 //#endregion
 //#region src/estimate/areas.ts

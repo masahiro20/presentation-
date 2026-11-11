@@ -31,11 +31,20 @@ export const segButtons = (items: { v: string; label: string; title?: string }[]
 export const massName = (ms: RoofMass) =>
   `${ms.level}階${ms.omit ? 'の屋根なしの範囲' : ms.manual ? 'に足した屋根' : ms.isTop ? 'の屋根' : 'の下屋'}（${((ms.bbox.maxX - ms.bbox.minX) / 1000).toFixed(1)} × ${((ms.bbox.maxY - ms.bbox.minY) / 1000).toFixed(1)} m）`;
 
+/**
+ * 塊の出どころの印: 立面図の屋根の線から読んだ掛け方なら「立面図から」（名前の横に常に出す。状態の行は説明文で、既定では隠れるため）。
+ * それ以外は null
+ */
+export const massSourceTag = (ms: RoofMass): HTMLElement | null =>
+  ms.patch?.source === 'elevation' && !ms.manual
+    ? h('span', { title: '立面図の屋根の線から読んだ掛け方です。ここで変えると、その内容が優先されます', style: 'margin-left:6px;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-size:11px;opacity:.8;white-space:nowrap' }, '立面図から')
+    : null;
+
 /** 塊の今の状態を 1 行で */
 export const massState = (ms: RoofMass, north: number) =>
   ms.omit
     ? 'この範囲には屋根を掛けません（自動の屋根からも除いています）'
-    : `今: ${ROOF_KIND_LABEL[ms.kind]}${ms.kind === 'shed' ? `・高い側 ${sideLabel(ms.high, north)}` : ''}${ms.attached.length ? `・上の階に接する辺 ${ms.attached.map((s) => sideLabel(s, north).replace(/（.*/, '')).join('・')}` : ''}${ms.patch && !ms.manual ? '（手直しあり）' : ''}`;
+    : `今: ${ROOF_KIND_LABEL[ms.kind]}${ms.kind === 'shed' ? `・高い側 ${sideLabel(ms.high, north)}` : ''}${ms.attached.length ? `・上の階に接する辺 ${ms.attached.map((s) => sideLabel(s, north).replace(/（.*/, '')).join('・')}` : ''}${ms.patch && !ms.manual ? (ms.patch.source === 'elevation' ? '（立面図から読んだ掛け方）' : '（手直しあり）') : ''}`;
 
 export interface RoofPanelCtx {
   model: BuildingModel;

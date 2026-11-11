@@ -19811,6 +19811,33 @@ function livabilityChecks(model) {
 	return out;
 }
 //#endregion
+//#region src/core/balcony.ts
+/**
+* バルコニーの上が空に開いているか（屋根・軒天を掛けないか）
+*
+* 屋根は「その階の外形のうち、上の階が載らない所」に掛ける。バルコニーも外形の内なので、
+* そのままではルーフバルコニー・上の階を欠いて作ったバルコニーの上にも屋根が掛かり、屋根付きの箱に見える
+* （市岡様邸 4 階のルーフバルコニー、田中様邸 2 階の三角のバルコニー）。
+*/
+/**
+* 空に開いたバルコニーか。floors は下の階から順、k はその階の番号（floors の添字）。
+* - 中庭（1 階の光庭）は外形の外なので対象外。インナーバルコニーは屋根の下
+* - 名前がルーフバルコニー・屋上 → 開いている
+* - 2 階以上で、いちばん上の階でなければ開いている（上の階が載る所は屋根の升目で「上の階の下」として別に除かれる。
+*   上の階をわざわざ欠いてあるバルコニーに、下屋の屋根は掛けない）
+* - いちばん上の階: 屋内の広さの半分より広ければ屋上（塔屋の横のルーフバルコニー）。それ以外は大屋根の下のバルコニー
+*/
+function isOpenSkyBalcony(floors, k, r) {
+	if (r.type !== "balcony" || r.polygon.length < 3) return false;
+	if (/庭|COURT/i.test(r.name) || /インナー/.test(r.name)) return false;
+	if (/ルーフ|屋上|スカイ|ROOF/i.test(r.name)) return true;
+	const f = floors[k];
+	if (!f || f.level < 2) return false;
+	if (k < floors.length - 1) return true;
+	const indoor = f.rooms.filter((q) => !OUTDOOR_TYPES.includes(q.type) && q.type !== "void").reduce((s, q) => s + q.area, 0);
+	return r.area > indoor * .5;
+}
+//#endregion
 //#region src/estimate/areas.ts
 /**
 * 積算の「面」シートにあたる数量: 読み込んだ間取り（部屋・外形・開口）と屋根・軒の設定から自動で拾う。
@@ -20158,7 +20185,8 @@ function centroid(poly) {
 }
 /**
 * 各階の外形を 50mm 格子で重ね合わせて面積を数える（㎡）。
-*  union: どれかの階の外形に入る（建築面積・屋根の平面）
+*  union: どれかの階の外形に入る（建築面積）
+*  openSky: そのうち、いちばん上に来る階が「空に開いたバルコニー」（ルーフバルコニーなど。屋根を掛けない。core/balcony.ts）の所
 *  exposedBelow[i]: i 階の外形のうち、すぐ下の階の外形の外にある所（ピロティ・オーバーハング・張り出しの床下）
 */
 function overlay(floors, step = 50) {
@@ -20167,18 +20195,31 @@ function overlay(floors, step = 50) {
 	const ys = loops.flat().map((p) => p.y);
 	const exposedBelow = floors.map(() => 0);
 	let union = 0;
+	let openSky = 0;
 	if (!xs.length) return {
 		union,
+		openSky,
 		exposedBelow
 	};
+	const open = floors.map((f, k) => f.rooms.filter((r) => isOpenSkyBalcony(floors, k, r)).map((r) => r.polygon));
+	const hasOpen = open.some((o) => o.length > 0);
 	const cell = step * step / 1e6;
 	for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step) for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step) {
 		const ins = floors.map((f) => inFloor(f, x, y));
-		if (ins.some(Boolean)) union += cell;
+		if (ins.some(Boolean)) {
+			union += cell;
+			if (hasOpen) {
+				if (open[ins.lastIndexOf(true)].some((poly) => pointInPolygon({
+					x,
+					y
+				}, poly))) openSky += cell;
+			}
+		}
 		for (let i = 1; i < floors.length; i++) if (ins[i] && !ins[i - 1]) exposedBelow[i] += cell;
 	}
 	return {
 		union,
+		openSky,
 		exposedBelow
 	};
 }
@@ -20374,7 +20415,7 @@ function takeoff(model, opts) {
 	else if (opts.roofType === "gable" && top) extWall += 2 * gableTriangleArea(top, opts.pitch);
 	extWall = r2$1(Math.max(0, extWall));
 	const eaveOut = opts.roofType === "flat" ? 0 : opts.eavesMm / 1e3;
-	const roofPlan = ov.union;
+	const roofPlan = Math.max(0, ov.union - ov.openSky);
 	const slope = opts.roofType === "flat" ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
 	const roofArea = r2$1((roofPlan + (topPerim + lowerEdges) * eaveOut) * slope);
 	const overhang = exposedFloors;
@@ -21639,6 +21680,17 @@ function buildBuilding(model, opts) {
 			}
 			if (r.type === "balcony" || r.type === "porch") {
 				if (/庭|COURT/i.test(r.name)) continue;
+				if (isOpenSkyBalcony(model.floors, model.floors.indexOf(f), r)) {
+					const above = polygonToRects(model.floors.slice(model.floors.indexOf(f) + 1).flatMap((h) => h.outline.filter((l) => !isHoleLoop(l, h.outline))));
+					const bb = bboxOf$2(r.polygon);
+					if (above.some((a) => Math.min(a.maxX, bb.maxX) - Math.max(a.minX, bb.minX) > 50 && Math.min(a.maxY, bb.maxY) - Math.max(a.minY, bb.minY) > 50)) emitFlat(mb, "ext.soffit", r.polygon, rectsMinus([{
+						minX: bb.minX,
+						minY: bb.minY,
+						maxX: bb.maxX,
+						maxY: bb.maxY
+					}], above), top - .25, false);
+					continue;
+				}
 				emitFlat(mb, "ext.soffit", r.polygon, [], top - (upper ? .25 : .02), false);
 				continue;
 			}

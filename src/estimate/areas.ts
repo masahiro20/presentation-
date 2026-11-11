@@ -3,7 +3,8 @@
  * 設計士が直せるように、すべての値は上書きできる（areasOverride）。
  */
 import { excludedFromFloorArea, isSeparateGarage, type BuildingModel, type Floor, type Room, type RoomType, type Vec2 } from '../core/types';
-import { polygonArea } from '../core/geometry';
+import { pointInPolygon, polygonArea } from '../core/geometry';
+import { isOpenSkyBalcony } from '../core/balcony';
 import { isStairwellVoid } from '../core/floorArea';
 import type { Grade } from './catalog';
 
@@ -254,7 +255,8 @@ export function centroid(poly: Vec2[]): Vec2 {
 
 /**
  * 各階の外形を 50mm 格子で重ね合わせて面積を数える（㎡）。
- *  union: どれかの階の外形に入る（建築面積・屋根の平面）
+ *  union: どれかの階の外形に入る（建築面積）
+ *  openSky: そのうち、いちばん上に来る階が「空に開いたバルコニー」（ルーフバルコニーなど。屋根を掛けない。core/balcony.ts）の所
  *  exposedBelow[i]: i 階の外形のうち、すぐ下の階の外形の外にある所（ピロティ・オーバーハング・張り出しの床下）
  */
 export function overlay(floors: Floor[], step = 50) {
@@ -263,16 +265,25 @@ export function overlay(floors: Floor[], step = 50) {
   const ys = loops.flat().map((p) => p.y);
   const exposedBelow = floors.map(() => 0);
   let union = 0;
-  if (!xs.length) return { union, exposedBelow };
+  let openSky = 0;
+  if (!xs.length) return { union, openSky, exposedBelow };
+  const open = floors.map((f, k) => f.rooms.filter((r) => isOpenSkyBalcony(floors, k, r)).map((r) => r.polygon));
+  const hasOpen = open.some((o) => o.length > 0);
   const cell = (step * step) / 1e6;
   for (let x = Math.min(...xs) + step / 2; x < Math.max(...xs); x += step) {
     for (let y = Math.min(...ys) + step / 2; y < Math.max(...ys); y += step) {
       const ins = floors.map((f) => inFloor(f, x, y));
-      if (ins.some(Boolean)) union += cell;
+      if (ins.some(Boolean)) {
+        union += cell;
+        if (hasOpen) {
+          const ti = ins.lastIndexOf(true);
+          if (open[ti].some((poly) => pointInPolygon({ x, y }, poly))) openSky += cell;
+        }
+      }
       for (let i = 1; i < floors.length; i++) if (ins[i] && !ins[i - 1]) exposedBelow[i] += cell;
     }
   }
-  return { union, exposedBelow };
+  return { union, openSky, exposedBelow };
 }
 
 /** i 階の外周のうち、上の階の外形の下に入っていない長さ（m）: 下屋の屋根の縁（パラペット・軒先になる） */
@@ -467,8 +478,9 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   }
   extWall = r2(Math.max(0, extWall));
   const eaveOut = opts.roofType === 'flat' ? 0 : opts.eavesMm / 1000;
-  // 屋根の平面: 各階の外形を真上から重ねた面積（吹抜の上にも屋根はある。下屋も入る）
-  const roofPlan = ov.union;
+  // 屋根の平面: 各階の外形を真上から重ねた面積（吹抜の上にも屋根はある。下屋も入る）から、空に開いたバルコニー（ルーフバルコニーなど。
+  // 屋根を掛けず、防水のバルコニーとして拾う）を除く
+  const roofPlan = Math.max(0, ov.union - ov.openSky);
   const slope = opts.roofType === 'flat' ? 1 : Math.sqrt(1 + (opts.pitch / 10) ** 2);
   const roofArea = r2((roofPlan + (topPerim + lowerEdges) * eaveOut) * slope);
   const overhang = exposedFloors;

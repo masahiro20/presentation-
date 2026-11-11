@@ -389,7 +389,8 @@ export function roofBasis(model: BuildingModel, opts: TakeoffOptions): RoofBasis
   const roofName = opts.roofType === 'flat' ? '陸屋根' : opts.roofType === 'shed' ? `片流れ ${opts.pitch} 寸` : opts.roofType === 'gable' ? `切妻 ${opts.pitch} 寸` : `寄棟 ${opts.pitch} 寸`;
   return {
     areas,
-    union: r2(ov.union),
+    // 屋根の平面（空に開いたバルコニーは屋根を掛けないので除く。takeoff の roofArea と同じ）
+    union: r2(Math.max(0, ov.union - ov.openSky)),
     loops: floors.flatMap((f) => f.outline.map((loop) => ({ level: f.level, loop }))),
     topLevel: top?.level ?? 1,
     eavesM,

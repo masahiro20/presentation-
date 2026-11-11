@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import { OUTDOOR_TYPES, type BuildingModel, type RoofHigh, type RoofKind, type RoofPatch, type Vec2 } from '../core/types';
 import { insideLoops } from '../core/geometry';
+import { isOpenSkyBalcony } from '../core/balcony';
 import { maximalRectCoverMask, type Rect } from '../core/rects';
 import { MeshBuilder, type ClipPlane, V } from './meshBuilder';
 import { MM, wallTopOf } from './building';
@@ -69,8 +70,8 @@ const manualLoopsOf = (patches: RoofPatch[] | undefined, level: number): Vec2[][
  * 格子の目が範囲に入るかは、中心 1 点ではなく 3 × 3 の点で見る（斜めの外壁の目は中心がちょうど辺の上に乗り、
  * 入らない扱いになって屋根に穴が開いていた: 吉田大仁様邸の隅切りの LDK）。3 点以上入れば屋根を掛け、斜めの辺で切り落とす
  */
-function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[][] = []) {
-  const all = [...polys, ...higher.flat(), ...exclude].flat();
+function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[][] = [], open: Vec2[][] = []) {
+  const all = [...polys, ...higher.flat(), ...exclude, ...open].flat();
   const uniq = (vals: number[]) => {
     const s = vals.slice().sort((a, b) => a - b);
     const out: number[] = [];
@@ -90,7 +91,11 @@ function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[][] = []
   };
   for (let j = 0; j < nz; j++)
     for (let i = 0; i < nx; i++) {
-      const inThis = inside(polys, i, j) >= 3 && !(exclude.length && inside(exclude, i, j) >= 5);
+      const nIn = inside(polys, i, j);
+      // 空に開いたバルコニー（ルーフバルコニー・上の階を欠いて作ったバルコニー）には屋根を掛けない。
+      // 斜めの辺のバルコニーは升目の半分しか占めないので、外形に入る点の 6 割以上がバルコニーなら、その升目はバルコニー
+      const nOpen = open.length && nIn >= 3 ? inside(open, i, j) : 0;
+      const inThis = nIn >= 3 && !(exclude.length && inside(exclude, i, j) >= 5) && !(nOpen >= 3 && nOpen >= nIn * 0.6);
       const inUpper = higher.some((h) => inside(h, i, j) >= 5);
       mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
       maskUpper[j * nx + i] = inUpper ? 1 : 0;
@@ -101,7 +106,8 @@ function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[][] = []
 function floorGrid(floors: BuildingModel['floors'], k: number, exclude: Vec2[][] = []) {
   const f = floors[k];
   const higher = floors.slice(k + 1).map((h) => roofLoops(h));
-  return { f, ...gridOfLoops(roofLoops(f), higher, exclude) };
+  const open = f.rooms.filter((r) => isOpenSkyBalcony(floors, k, r)).map((r) => r.polygon);
+  return { f, ...gridOfLoops(roofLoops(f), higher, exclude, open) };
 }
 
 /** 格子の座標 v が入る区間の番号（無ければ -1） */

@@ -5,7 +5,8 @@
 import * as THREE from 'three';
 import { postInWall, postSpan } from '../core/posts';
 import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, roomFloorOffsetMm, type BuildingModel, type Floor, type Opening, type Room, type Stair, type Vec2, type VoidGuard, type Wall } from '../core/types';
-import { pointInPolygon, isHoleLoop } from '../core/geometry';
+import { pointInPolygon, isHoleLoop, bboxOf } from '../core/geometry';
+import { isOpenSkyBalcony } from '../core/balcony';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
 import { stairLayout, effectiveStepCount, stairFootprint } from '../core/stairs';
@@ -597,6 +598,14 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (r.type === 'balcony' || r.type === 'porch') {
         // 屋根・上階の下に入るバルコニー・ポーチの天井は軒天（木目など）。中庭は空に開く
         if (/庭|COURT/i.test(r.name)) continue;
+        // 空に開いたバルコニー（ルーフバルコニー・上の階を欠いて作ったバルコニー）は、上の階が載る所にだけ軒天を張る
+        if (isOpenSkyBalcony(model.floors, model.floors.indexOf(f), r)) {
+          const above = polygonToRects(model.floors.slice(model.floors.indexOf(f) + 1).flatMap((h) => h.outline.filter((l) => !isHoleLoop(l, h.outline))));
+          const bb = bboxOf(r.polygon);
+          const covered = above.some((a) => Math.min(a.maxX, bb.maxX) - Math.max(a.minX, bb.minX) > 50 && Math.min(a.maxY, bb.maxY) - Math.max(a.minY, bb.minY) > 50);
+          if (covered) emitFlat(mb, 'ext.soffit', r.polygon, rectsMinus([{ minX: bb.minX, minY: bb.minY, maxX: bb.maxX, maxY: bb.maxY }], above), top - 0.25, false);
+          continue;
+        }
         emitFlat(mb, 'ext.soffit', r.polygon, [], top - (upper ? 0.25 : 0.02), false);
         continue;
       }

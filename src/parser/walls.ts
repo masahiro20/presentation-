@@ -427,6 +427,37 @@ function thicknessPeaks(hist: Float64Array, binSize: number, minT: number): numb
   return merged;
 }
 
+/**
+ * 同じ壁の同じ所に二重に読めた窓の候補のうち、落とすもの。同じ向き（g）で芯のずれが 60mm 以内の候補どうしだけを見る。
+ * ① 範囲がほぼ同じ（重なりが長い方の 9 割以上）: 同じ開口を、壁の帯のとなりの軸でも読んだもの（端部の infill の窓が、となりの軸の窓と
+ *    同じ所に出る など）。確信度の低い方（同じなら後に読めた方）を落とす。
+ * ② 片引戸の戸袋: 壁の間の線で確かめた開口（確信度 0.85 以上）と片方の端がそろい、そこから戸 1 枚分（0.7〜1.4 倍）だけ長い、
+ *    確信度の低い候補は「開口＋戸袋（壁が半分の厚さになる所）」を半分ずれた軸で読んだもの。長い方を落とす。
+ * 広い開口の中の小さい候補（どちらが本物か決められない）や、戸と窓の重なり（別の処理が決める）は触らない
+ */
+export function duplicateWindowCandidates(openings: DetectedOpening[]): Set<DetectedOpening> {
+  const drop = new Set<DetectedOpening>();
+  for (let i = 0; i < openings.length; i++)
+    for (let j = i + 1; j < openings.length; j++) {
+      const a = openings[i];
+      const b = openings[j];
+      if (drop.has(a) || drop.has(b) || a.kind !== 'window' || b.kind !== 'window' || a.g !== b.g || Math.abs(a.o - b.o) > 60) continue;
+      const ov = Math.min(a.t1, b.t1) - Math.max(a.t0, b.t0);
+      const wa = a.t1 - a.t0;
+      const wb = b.t1 - b.t0;
+      if (ov >= Math.max(wa, wb) * 0.9) {
+        drop.add(b.confidence > a.confidence ? a : b);
+        continue;
+      }
+      const [short, long] = wa <= wb ? [a, b] : [b, a];
+      const ws = Math.min(wa, wb);
+      const extra = Math.max(wa, wb) - ws;
+      const sameEnd = Math.abs(short.t0 - long.t0) <= 60 || Math.abs(short.t1 - long.t1) <= 60;
+      if (ov >= ws * 0.9 && sameEnd && short.confidence >= 0.85 && long.confidence < short.confidence && extra >= ws * 0.7 && extra <= ws * 1.4) drop.add(long);
+    }
+  return drop;
+}
+
 export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetectOptions> = {}, masks: Vec2[][] = []): WallDetection {
   const O = { ...DEFAULTS, ...opts };
   const segs = allSegs.filter((s) => !s.dashed && segLen(s) >= O.minSegment);
@@ -1032,6 +1063,14 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     if (ax) {
       op.o = ax.o;
       op.d = ax.d;
+    }
+  }
+  // 同じ壁の同じ所に重なった窓の候補は 1 つにする（田中様邸 3 階: 東の窓が二重になっていた）
+  if (!(globalThis as { __NO_OPENING_DEDUPE?: boolean }).__NO_OPENING_DEDUPE) {
+    const drop = duplicateWindowCandidates(openings);
+    if (drop.size) {
+      for (const ax of axes) ax.openings = ax.openings.filter((o) => !drop.has(o));
+      for (let i = openings.length - 1; i >= 0; i--) if (drop.has(openings[i])) openings.splice(i, 1);
     }
   }
   // 引込み戸: 開口のすぐ隣に戸袋（白抜きの溝・隠れ線の点線）が戸の幅の半分以上あれば、引き込む側と戸の面を付ける

@@ -1,6 +1,6 @@
 // 階段の区画を分ける: LDK・ホール・パントリーと一続きに読めた階段を、升目のラベルの上で別の区画にする
 import { describe, expect, it } from 'vitest';
-import { absorbStairRing, carveStairRegion } from '../src/parser/stairRooms';
+import { absorbStairRing, carveStairRegion, stairPartsInOtherRegions } from '../src/parser/stairRooms';
 import { Grid, WALL } from '../src/parser/raster';
 
 const RES = 20;
@@ -412,5 +412,45 @@ describe('外壁のそろいで上下階の重ね位置を検算する', () => {
     const up = upper(455);
     up.walls.push(wall('U3', 2730, 0, 2730, 5460), wall('U4', 1365, 0, 1365, 5460), wall('U5', 4095, 2275, 4095, 5460));
     expect(flushAlignShift(lo, up)).toBeNull();
+  });
+});
+
+describe('階段の範囲の中にある、ほかの区画の部分', () => {
+  // 外周 6,000 × 4,000。左上に折り返し階段 1,820 角（中壁 x=910）。階段の右半分は右の玄関に開いている（x=1,820 に壁なし）。
+  // 下は y=1,820 の壁（戸の線）で LDK と分かれる
+  const g = makeGrid(6000, 4000, [
+    [0, 0, 6000, 0],
+    [6000, 0, 6000, 4000],
+    [6000, 4000, 0, 4000],
+    [0, 4000, 0, 0],
+    [0, 1820, 3640, 1820],
+    [3640, 0, 3640, 1820],
+    [910, 0, 910, 1820],
+  ]);
+  const { labels } = g.labelComponents();
+  const stair = labelAt(g, labels, 450, 900);
+  const entrance = labelAt(g, labels, 2700, 900);
+  const box = { minX: 0, minY: 0, maxX: 1820, maxY: 1820 };
+
+  it('階段の右半分は玄関の区画に入っている: その部分と、口の辺に接している長さが分かる', () => {
+    expect(labelAt(g, labels, 1400, 900)).toBe(entrance);
+    const parts = stairPartsInOtherRegions(g, labels, new Set([stair]), box, 's');
+    expect(parts).toHaveLength(1);
+    expect(parts[0].label).toBe(entrance);
+    // 右半分 850 × 1,700 ≒ 1.45 ㎡（壁の厚みを除く）
+    expect(m2(parts[0].cells.length)).toBeGreaterThan(1.3);
+    expect(m2(parts[0].cells.length)).toBeLessThan(1.6);
+    expect(parts[0].bbox.minX).toBeGreaterThanOrEqual(960);
+    expect(parts[0].bbox.maxX).toBeLessThanOrEqual(1820);
+    expect(parts[0].mouthLen).toBeGreaterThanOrEqual(800);
+  });
+
+  it('口の辺に接していない部分は mouthLen = 0（昇り口が左の辺なら、右半分は口に接しない）', () => {
+    const parts = stairPartsInOtherRegions(g, labels, new Set([stair]), box, 'w');
+    expect(parts[0].mouthLen).toBe(0);
+  });
+
+  it('階段の区画そのもの（own）と壁は数えない', () => {
+    expect(stairPartsInOtherRegions(g, labels, new Set([stair, entrance]), box, 's')).toHaveLength(0);
   });
 });

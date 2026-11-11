@@ -80,16 +80,47 @@ export function roomGraph(model: BuildingModel): { nodes: Map<string, Node>; edg
       const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
       const ux = (w.b.x - w.a.x) / L;
       const uy = (w.b.y - w.a.y) / L;
-      const t = (o.t0 + o.t1) / 2;
-      const at = { x: w.a.x + ux * t, y: w.a.y + uy * t };
       const off = w.thickness / 2 + 250;
-      const ra = roomAt(f, { x: at.x - uy * off, y: at.y + ux * off });
-      const rb = roomAt(f, { x: at.x + uy * off, y: at.y - ux * off });
-      if (!ra || !rb || ra === rb) continue;
-      const ka = `${f.level}:${ra.id}`;
-      const kb = `${f.level}:${rb.id}`;
-      if (!nodes.has(ka) || !nodes.has(kb)) continue;
-      add(ka, kb, at, dist(nodes.get(ka)!.c, at) + dist(at, nodes.get(kb)!.c));
+      /** 開口の、壁に沿った位置 t の両側の部屋 */
+      const pairAt = (t: number) => {
+        const at = { x: w.a.x + ux * t, y: w.a.y + uy * t };
+        const ra = roomAt(f, { x: at.x - uy * off, y: at.y + ux * off });
+        const rb = roomAt(f, { x: at.x + uy * off, y: at.y - ux * off });
+        if (!ra || !rb || ra === rb) return null;
+        const ka = `${f.level}:${ra.id}`;
+        const kb = `${f.level}:${rb.id}`;
+        if (!nodes.has(ka) || !nodes.has(kb)) return null;
+        return { ka, kb, at, key: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}` };
+      };
+      const link = (p: NonNullable<ReturnType<typeof pairAt>>) => add(p.ka, p.kb, p.at, dist(nodes.get(p.ka)!.c, p.at) + dist(p.at, nodes.get(p.kb)!.c));
+      const mid = pairAt((o.t0 + o.t1) / 2);
+      if (mid) link(mid);
+      // 幅の広い建具なしの開口（1.2m 以上）は、2 つ以上の部屋にまたがることがある（階段の昇り口とホールが並んで玄関に面する、など）。
+      // 真ん中の両側だけを結ぶと、端の部屋へは真ん中の部屋を通る経路になる（舟橋様邸: 玄関 → 階段 → ホール）。
+      // 開口に沿って 10cm ごとに両側の部屋を見て、50cm 以上続く組はすべて結ぶ
+      if (o.kind === 'open' && o.t1 - o.t0 >= 1200 && !(globalThis as { __NO_WIDE_OPEN_LINKS?: boolean }).__NO_WIDE_OPEN_LINKS) {
+        const done = new Set<string>(mid ? [mid.key] : []);
+        let run: { key: string; t0: number; t1: number } | null = null;
+        const flush = () => {
+          if (run && run.t1 - run.t0 >= 500 && !done.has(run.key)) {
+            const p = pairAt((run.t0 + run.t1) / 2);
+            if (p && p.key === run.key) {
+              link(p);
+              done.add(run.key);
+            }
+          }
+          run = null;
+        };
+        for (let t = o.t0 + 50; t <= o.t1 - 50 + 1e-6; t += 100) {
+          const p = pairAt(t);
+          if (run && p && p.key === run.key) run.t1 = t;
+          else {
+            flush();
+            if (p) run = { key: p.key, t0: t, t1: t };
+          }
+        }
+        flush();
+      }
     }
     // 壁の無い開き（LDK と階段ホールが一続きなど）: 隣接して辺を共有する部屋は、間に戸が無くても行き来できる扱いにする
     for (const a of f.rooms)
@@ -117,21 +148,37 @@ export function roomGraph(model: BuildingModel): { nodes: Map<string, Node>; edg
       if (!up) continue;
       add(`${lo.level}:${s.id}`, `${hi.level}:${up.id}`, c, 4000, true);
     }
-    // 階段の区画が無い図面: 階段の矩形の位置で代用
-    if (!stairsLo.length)
-      for (const st of lo.stairs) {
-        const c = { x: (st.minX + st.maxX) / 2, y: (st.minY + st.maxY) / 2 };
-        const a = roomAt(lo, c);
-        const b = roomAt(hi, c) ?? hi.rooms.filter((r) => r.type === 'hall').sort((p, q) => dist(centroid(p.polygon), c) - dist(centroid(q.polygon), c))[0];
-        if (a && b) add(`${lo.level}:${a.id}`, `${hi.level}:${b.id}`, c, 4000, true);
-      }
+    // 階段の区画が無い階段（階段下の物入の名前が付いた区画・LDK の中の階段）: 階段の矩形の位置で代用
+    for (const st of lo.stairs) {
+      const c = { x: (st.minX + st.maxX) / 2, y: (st.minY + st.maxY) / 2 };
+      if (stairsLo.some((r) => pointInPolygon(c, r.polygon))) continue;
+      if (stairsLo.length && st.goesUp === false) continue;
+      // 同じ位置が吹抜（階段の上の吹抜の名前が付いた区画。舟橋様邸 2 階）・区画なしなら、階段の先はいちばん近い階段・ホール
+      const landing = (f: Floor): Room | undefined => {
+        const r = roomAt(f, c);
+        if (r && r.type !== 'void') return r;
+        return f.rooms.filter((q) => q.type === 'stairs' || q.type === 'hall').sort((p, q) => dist(centroid(p.polygon), c) - dist(centroid(q.polygon), c))[0];
+      };
+      const a = landing(lo);
+      const b = landing(hi);
+      if (!a || !b) continue;
+      const ka = `${lo.level}:${a.id}`;
+      const kb = `${hi.level}:${b.id}`;
+      if (edges.get(ka)?.some((e) => e.to === kb && e.stairs)) continue;
+      add(ka, kb, c, 4000, true);
+    }
   }
   return { nodes, edges };
 }
 
-/** 2 つの部屋が共有する辺（同一直線上で重なる区間）を全部。300 mm 未満は除く */
-function sharedEdges(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number }[] {
-  const out: { a: Vec2; b: Vec2; len: number }[] = [];
+/**
+ * 2 つの部屋が共有する辺（同一直線上で重なる区間）を全部。300 mm 未満は除く。
+ * 細い線（階段の手すり・框の線）で区切られた区画どうしは、輪郭がその線の幅だけ重なり、向かい合う辺が平行に最大 12cm ほどずれる
+ * （市岡様邸 1 階: 階段の昇り口と玄関ホール）。140mm までのずれは同じ辺として扱い、区間は 2 本の辺の真ん中の線で返す（gap = ずれ）
+ */
+function sharedEdges(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number; gap: number }[] {
+  const out: { a: Vec2; b: Vec2; len: number; gap: number }[] = [];
+  const noGap = !!(globalThis as { __NO_GAP_EDGES?: boolean }).__NO_GAP_EDGES;
   for (let i = 0; i < a.length; i++) {
     const p = a[i];
     const q = a[(i + 1) % a.length];
@@ -143,25 +190,34 @@ function sharedEdges(a: Vec2[], b: Vec2[]): { a: Vec2; b: Vec2; len: number }[] 
       if (L < 1) continue;
       const ux = (q.x - p.x) / L;
       const uy = (q.y - p.y) / L;
-      const off = (v: Vec2) => Math.abs((v.x - p.x) * -uy + (v.y - p.y) * ux);
-      if (off(r) > 60 || off(s) > 60) continue;
+      const off = (v: Vec2) => (v.x - p.x) * -uy + (v.y - p.y) * ux;
+      const or = off(r);
+      const os = off(s);
+      // ずれが 60 以内（今までどおり）か、平行で（両端のずれの差が 60 以内）ずれが 140 以内
+      const exact = Math.abs(or) <= 60 && Math.abs(os) <= 60;
+      if (!exact && (noGap || Math.abs(or) > 140 || Math.abs(os) > 140 || Math.abs(or - os) > 60)) continue;
       const t0 = Math.max(0, Math.min((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
       const t1 = Math.min(L, Math.max((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
-      if (t1 - t0 >= 300) out.push({ a: { x: p.x + ux * t0, y: p.y + uy * t0 }, b: { x: p.x + ux * t1, y: p.y + uy * t1 }, len: t1 - t0 });
+      if (t1 - t0 < 300) continue;
+      const gap = (or + os) / 2;
+      // ずれが 60 以内なら今までどおり a の辺の上、それより離れていれば 2 本の辺の真ん中の線
+      const h = Math.abs(gap) > 60 ? gap / 2 : 0;
+      out.push({ a: { x: p.x + ux * t0 - uy * h, y: p.y + uy * t0 + ux * h }, b: { x: p.x + ux * t1 - uy * h, y: p.y + uy * t1 + ux * h }, len: t1 - t0, gap: Math.abs(gap) > 60 ? Math.abs(gap) : 0 });
     }
   }
   return out.sort((x, y) => y.len - x.len);
 }
 
-/** 共有辺のうち、壁の無い区間が 455 以上続く所の中点（通れる所）。無ければ null */
-function openStretch(edges: { a: Vec2; b: Vec2; len: number }[], walls: { a: Vec2; b: Vec2 }[]): Vec2 | null {
+/** 共有辺のうち、壁の無い区間が 455 以上続く所の中点（通れる所）。無ければ null。ずれた辺（gap）は、2 本の辺の間のどこかに壁があれば壁あり */
+function openStretch(edges: { a: Vec2; b: Vec2; len: number; gap?: number }[], walls: { a: Vec2; b: Vec2 }[]): Vec2 | null {
   for (const e of edges) {
     const n = Math.max(1, Math.round(e.len / 150));
     const at = (t: number) => ({ x: e.a.x + (e.b.x - e.a.x) * t, y: e.a.y + (e.b.y - e.a.y) * t });
+    const near = 100 + (e.gap ?? 0) / 2;
     let run = 0;
     for (let i = 0; i < n; i++) {
       const p = at((i + 0.5) / n);
-      if (walls.some((w) => distToSeg(p, w.a, w.b) < 100)) {
+      if (walls.some((w) => distToSeg(p, w.a, w.b) < near)) {
         run = 0;
         continue;
       }

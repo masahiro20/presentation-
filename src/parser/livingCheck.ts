@@ -149,30 +149,50 @@ function doorIssues(model: BuildingModel): WoodIssue[] {
   return out;
 }
 
-/** (3) 階段の昇り口・降り口の向き先 */
+/**
+ * (3) 階段の昇り口・降り口の向き先。
+ * 折り返し・かね折れの階段の口は、辺の一部（片方の段の幅）だけで、残りは手すり壁でふさがっている。
+ * 辺の真ん中だけを見ると、口が開いていても「壁に向いている」になる（吉田様邸・伊藤様邸・林様邸・大崎様邸の 5 か所で誤報）。
+ * 辺を 100mm ごとに見て、人の通れる所（壁が無いか戸・開口があり、先が通れる部屋）が 50cm 以上続けば、口は開いている
+ */
 function stairIssues(model: BuildingModel): WoodIssue[] {
   const out: WoodIssue[] = [];
   for (const f of model.floors) {
     for (const st of f.stairs) {
-      const cx = (st.minX + st.maxX) / 2;
-      const cy = (st.minY + st.maxY) / 2;
       const dir = st.entry === 'n' ? { x: 0, y: -1 } : st.entry === 's' ? { x: 0, y: 1 } : st.entry === 'e' ? { x: 1, y: 0 } : { x: -1, y: 0 };
-      const edge = st.entry === 'n' ? { x: cx, y: st.minY } : st.entry === 's' ? { x: cx, y: st.maxY } : st.entry === 'e' ? { x: st.maxX, y: cy } : { x: st.minX, y: cy };
-      const p = { x: edge.x + dir.x * 400, y: edge.y + dir.y * 400 };
-      const from = { x: edge.x - dir.x * 30, y: edge.y - dir.y * 30 };
-      // 昇り口の前に壁があるか（辺の中心から 400 先までを横切る壁。その壁に戸・開口があれば通れる）
-      const blocked = f.walls.some((w) => {
-        if (!segCross(from, p, w.a, w.b)) return false;
-        const L = len(w) || 1;
-        const t = ((edge.x - w.a.x) * (w.b.x - w.a.x) + (edge.y - w.a.y) * (w.b.y - w.a.y)) / L;
-        return !f.openings.some((o) => o.wallId === w.id && o.kind !== 'window' && t >= o.t0 - 300 && t <= o.t1 + 300);
-      });
-      const r = roomAt(f, p);
-      let what: string | null = null;
-      if (blocked) what = '壁';
-      else if (!r) what = '外';
-      else if (['closet', 'storage', 'toilet', 'bath', 'shed'].includes(r.type)) what = r.name;
+      const horizEdge = st.entry === 'n' || st.entry === 's';
+      const W = horizEdge ? st.maxX - st.minX : st.maxY - st.minY;
+      /** 口の辺の上の点（s = 辺の始点からの距離） */
+      const edgeAt = (s: number): Vec2 => (horizEdge ? { x: st.minX + s, y: st.entry === 'n' ? st.minY : st.maxY } : { x: st.entry === 'e' ? st.maxX : st.minX, y: st.minY + s });
+      /** その位置から出た先: null = 通れる、文字 = ふさいでいるもの */
+      const stateAt = (s: number, tolT: number): string | null => {
+        const edge = edgeAt(s);
+        const p = { x: edge.x + dir.x * 400, y: edge.y + dir.y * 400 };
+        const from = { x: edge.x - dir.x * 30, y: edge.y - dir.y * 30 };
+        // 口の前に壁があるか（辺から 400 先までを横切る壁。その壁に戸・開口があれば通れる）
+        const blocked = f.walls.some((w) => {
+          if (!segCross(from, p, w.a, w.b)) return false;
+          const L = len(w) || 1;
+          const t = ((edge.x - w.a.x) * (w.b.x - w.a.x) + (edge.y - w.a.y) * (w.b.y - w.a.y)) / L;
+          return !f.openings.some((o) => o.wallId === w.id && o.kind !== 'window' && t >= o.t0 - tolT && t <= o.t1 + tolT);
+        });
+        if (blocked) return '壁';
+        const r = roomAt(f, p);
+        if (!r) return '外';
+        if (['closet', 'storage', 'toilet', 'bath', 'shed'].includes(r.type)) return r.name;
+        return null;
+      };
+      // 辺の真ん中が通れるなら問題なし（戸のそばは少し広めに見る）
+      const what = stateAt(W / 2, 300);
       if (!what) continue;
+      // 真ん中がふさがっていても、辺の端から 100mm 内側を 100mm ごとに見て、通れる所が 6 点（50cm）以上続けば口は開いている
+      let run = 0;
+      let best = 0;
+      for (let s = 100; s <= W - 100 + 1e-6; s += 100) {
+        if (stateAt(s, 50) == null) best = Math.max(best, ++run);
+        else run = 0;
+      }
+      if (best >= 6) continue;
       const mouth = st.goesUp ? '昇り口' : '降り口';
       out.push({
         id: `live-stair-${f.level}-${st.id}`,

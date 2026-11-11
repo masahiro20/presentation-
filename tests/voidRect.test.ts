@@ -28,7 +28,8 @@ describe('voidRectangles（×印の無い吹抜）', () => {
     const p = plan();
     const out = voidRectangles(p, p.level);
     expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ minX: 2270, maxX: 7730, minY: 0, maxY: 3640 });
+    // ×印が無く、文字のまわりの線から決めた範囲には byText の印が付く
+    expect(out[0]).toEqual({ minX: 2270, maxX: 7730, minY: 0, maxY: 3640, byText: true });
   });
   it('一辺が 8 割以上囲まれていなければ吹抜にしない', () => {
     const p = plan({ openBottom: true });

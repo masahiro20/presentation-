@@ -3596,6 +3596,21 @@ function ensureOpenings(walls, openings, rooms, level) {
 			o: other(s, r)
 		})).filter(({ o }) => !!o);
 		if (!builtinGarage && partners.some(({ o }) => edgeFree(r, o, walls, rooms) && (isCirculation(o.type) || ROOM_KNOWLEDGE[r.type].adjacent.includes(o.type)))) continue;
+		if (!builtinGarage && !globalThis.__NO_OPEN_EDGE_ACCESS) {
+			const isStore = r.type === "closet" || r.type === "storage";
+			if (rooms.filter((o) => o !== r && o.type !== "void" && !partners.some((p) => p.o === o) && edgeFree(r, o, walls, rooms)).some((o) => isCirculation(o.type) || ROOM_KNOWLEDGE[r.type].adjacent.includes(o.type) || isStore && [
+				"bedroom",
+				"kids",
+				"japanese",
+				"study",
+				"ldk",
+				"living",
+				"dining",
+				"kitchen",
+				"washroom",
+				"entrance"
+			].includes(o.type))) continue;
+		}
 		const want = builtinGarage ? [
 			"entrance",
 			"hall",
@@ -4389,6 +4404,63 @@ function absorbStairRing(grid, labels, sizes, l, box, canTake = () => true) {
 	}
 	sizes[l] = (sizes[l] ?? 0) + take.length;
 	return [...touched];
+}
+/**
+* 階段の範囲 box の中にある、階段以外の区画（own に無いラベル）の升を、区画ごとに集める（広い順）。
+*
+* 折り返し階段の昇り始めの段は、玄関・ホールに開いていて壁が無い。段の間の中壁（手すり壁）で区画が切れると、
+* 昇り始めの側は玄関・ホールの区画の一部になり、「階段」は奥の半分だけになる（大崎様邸 1 階: 玄関 3.1 帖の半分が段だった）。
+* 階段に含めるかどうか（相手が玄関・ホールか、口の辺に接しているか、段の線・UP の文字があるか）は呼ぶ側が決める
+*/
+function stairPartsInOtherRegions(grid, labels, own, box, entry) {
+	const { w, h, res } = grid;
+	const [bx0, by0] = grid.cellOf({
+		x: box.minX + res / 2,
+		y: box.minY + res / 2
+	});
+	const [bx1, by1] = grid.cellOf({
+		x: box.maxX - res / 2,
+		y: box.maxY - res / 2
+	});
+	const x0 = Math.max(0, bx0);
+	const y0 = Math.max(0, by0);
+	const x1 = Math.min(w - 1, bx1);
+	const y1 = Math.min(h - 1, by1);
+	if (x1 < x0 || y1 < y0) return [];
+	const band = Math.max(2, Math.round(200 / res));
+	const acc = /* @__PURE__ */ new Map();
+	for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+		const i = y * w + x;
+		if (grid.data[i] !== 0) continue;
+		const fl = labels[i];
+		if (!fl || own.has(fl)) continue;
+		let a = acc.get(fl);
+		if (!a) acc.set(fl, a = {
+			cells: [],
+			minX: x,
+			minY: y,
+			maxX: x,
+			maxY: y,
+			mouth: /* @__PURE__ */ new Set()
+		});
+		a.cells.push(i);
+		if (x < a.minX) a.minX = x;
+		if (x > a.maxX) a.maxX = x;
+		if (y < a.minY) a.minY = y;
+		if (y > a.maxY) a.maxY = y;
+		if (entry === "n" ? y - y0 < band : entry === "s" ? y1 - y < band : entry === "w" ? x - x0 < band : x1 - x < band) a.mouth.add(entry === "n" || entry === "s" ? x : y);
+	}
+	return [...acc.entries()].map(([label, a]) => ({
+		label,
+		cells: a.cells,
+		bbox: {
+			minX: grid.ox + a.minX * res,
+			minY: grid.oy + a.minY * res,
+			maxX: grid.ox + (a.maxX + 1) * res,
+			maxY: grid.oy + (a.maxY + 1) * res
+		},
+		mouthLen: a.mouth.size * res
+	})).sort((p, q) => q.cells.length - p.cells.length);
 }
 var Grid = class Grid {
 	w;
@@ -5471,6 +5543,35 @@ function thicknessPeaks(hist, binSize, minT) {
 	}
 	return merged;
 }
+/**
+* 同じ壁の同じ所に二重に読めた窓の候補のうち、落とすもの。同じ向き（g）で芯のずれが 60mm 以内の候補どうしだけを見る。
+* ① 範囲がほぼ同じ（重なりが長い方の 9 割以上）: 同じ開口を、壁の帯のとなりの軸でも読んだもの（端部の infill の窓が、となりの軸の窓と
+*    同じ所に出る など）。確信度の低い方（同じなら後に読めた方）を落とす。
+* ② 片引戸の戸袋: 壁の間の線で確かめた開口（確信度 0.85 以上）と片方の端がそろい、そこから戸 1 枚分（0.7〜1.4 倍）だけ長い、
+*    確信度の低い候補は「開口＋戸袋（壁が半分の厚さになる所）」を半分ずれた軸で読んだもの。長い方を落とす。
+* 広い開口の中の小さい候補（どちらが本物か決められない）や、戸と窓の重なり（別の処理が決める）は触らない
+*/
+function duplicateWindowCandidates(openings) {
+	const drop = /* @__PURE__ */ new Set();
+	for (let i = 0; i < openings.length; i++) for (let j = i + 1; j < openings.length; j++) {
+		const a = openings[i];
+		const b = openings[j];
+		if (drop.has(a) || drop.has(b) || a.kind !== "window" || b.kind !== "window" || a.g !== b.g || Math.abs(a.o - b.o) > 60) continue;
+		const ov = Math.min(a.t1, b.t1) - Math.max(a.t0, b.t0);
+		const wa = a.t1 - a.t0;
+		const wb = b.t1 - b.t0;
+		if (ov >= Math.max(wa, wb) * .9) {
+			drop.add(b.confidence > a.confidence ? a : b);
+			continue;
+		}
+		const [short, long] = wa <= wb ? [a, b] : [b, a];
+		const ws = Math.min(wa, wb);
+		const extra = Math.max(wa, wb) - ws;
+		const sameEnd = Math.abs(short.t0 - long.t0) <= 60 || Math.abs(short.t1 - long.t1) <= 60;
+		if (ov >= ws * .9 && sameEnd && short.confidence >= .85 && long.confidence < short.confidence && extra >= ws * .7 && extra <= ws * 1.4) drop.add(long);
+	}
+	return drop;
+}
 function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 	const O = {
 		...DEFAULTS$1,
@@ -6103,6 +6204,13 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		if (ax) {
 			op.o = ax.o;
 			op.d = ax.d;
+		}
+	}
+	if (!globalThis.__NO_OPENING_DEDUPE) {
+		const drop = duplicateWindowCandidates(openings);
+		if (drop.size) {
+			for (const ax of axes) ax.openings = ax.openings.filter((o) => !drop.has(o));
+			for (let i = openings.length - 1; i >= 0; i--) if (drop.has(openings[i])) openings.splice(i, 1);
 		}
 	}
 	for (const op of openings) {
@@ -12067,10 +12175,6 @@ function looksLikeRoomName(raw) {
 	if (/^※/.test(raw.trim())) return false;
 	return /[\u3040-\u30ff\u3400-\u9fff]/.test(s) || /^[A-Z]{2,5}$/.test(s);
 }
-/**
-* 吹抜の範囲: 「吹抜」の文字を含み、対角線（×印）が引かれた長方形。
-* 吹抜は手すり・腰壁の細い線で描かれ壁として拾えないため、×印から範囲を求める。
-*/
 function voidRectangles(plan, level) {
 	const voidTexts = plan.texts.filter((t) => /吹抜|吹き抜け|VOID/i.test(t.str));
 	if (!voidTexts.length) return [];
@@ -12219,7 +12323,7 @@ function voidRectangles(plan, level) {
 			if (w < 1200 || h < 1200 || w * h > 6e7) continue;
 			if (covered(H, bb.minY, bb.minX, bb.maxX) < w * .8 || covered(H, bb.maxY, bb.minX, bb.maxX) < w * .8 || covered(V, bb.minX, bb.minY, bb.maxY) < h * .8 || covered(V, bb.maxX, bb.minY, bb.maxY) < h * .8) continue;
 			if (plan.texts.some((q) => q !== t && q.x > bb.minX + 100 && q.x < bb.maxX - 100 && q.y > bb.minY + 100 && q.y < bb.maxY - 100 && isRoomLabel(q.str))) continue;
-			out.push(bb);
+			out.push(Object.assign(bb, { byText: true }));
 		}
 	}
 	return out;
@@ -14741,9 +14845,174 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			}
 			return stairInner;
 		};
+		/** 昇る階段の口の前（または口のすぐ内側）に書かれた UP の文字の、口の辺に沿った位置。無ければ null */
+		const mouthMarkPos = (st) => {
+			const horiz = st.entry === "n" || st.entry === "s";
+			const lo = horiz ? st.minX : st.minY;
+			const hi = horiz ? st.maxX : st.maxY;
+			let best = null;
+			for (const t of plan.texts) {
+				if (parseStairMark(t.str) !== "up") continue;
+				const out = st.entry === "n" ? st.minY - t.y : st.entry === "s" ? t.y - st.maxY : st.entry === "w" ? st.minX - t.x : t.x - st.maxX;
+				const s = horiz ? t.x : t.y;
+				if (out < -700 || out > 1500 || s < lo - 200 || s > hi + 200) continue;
+				if (!best || Math.abs(out) < best.d) best = {
+					d: Math.abs(out),
+					s
+				};
+			}
+			return best ? best.s : null;
+		};
+		/**
+		* 昇り始めの段が、階段以外の区画に入っているのを直す（1 階など、上へ昇る階段の折り返し・直階段）。
+		*  (A) 玄関・ホール・LDK の一部になっている: 昇り始めの段は開いていて壁が無いので、段の間の中壁で区画が切れると、
+		*      昇り口の側は玄関・ホールの区画になる（大崎様邸 1 階: 玄関 3.1 帖の半分が段。伊藤様邸・田中様邸 1 階: ホールの一部）
+		*  (B) 階段下の物入の名前が、階段の範囲いっぱいの区画に付いている（舟橋様邸 1 階: 「階段」の区画が無い）:
+		*      UP の文字のある側の半分が昇り始めの段、物入の名前のある側の半分が階段下の物入
+		*  (C) 室名の無い区画を、隣の部屋から「CL」「収納」と推定している（市岡様邸 1 階: 寝室の隣なので CL）:
+		*      昇り口のある区画は収納ではなく、昇り始めの段とその前の踏み込み
+		* 根拠は口の前の UP の文字（その部分の正面にあること）。文字の無い階段は触らない
+		*/
+		const openFlightTypes = [
+			"hall",
+			"ldk",
+			"living",
+			"dining",
+			"kitchen",
+			"entrance"
+		];
+		/** 昇り口が開いている相手: 玄関・ホール・LDK と、名前の無い区画 */
+		const isOpenFlight = (r) => !!r && (openFlightTypes.includes(r.type) || r.type === "other" && r.name === "室");
+		const absorbFirstFlight = (st) => {
+			const mark = mouthMarkPos(st);
+			if (mark == null) return;
+			const horiz = st.entry === "n" || st.entry === "s";
+			const mid = horiz ? (st.minX + st.maxX) / 2 : (st.minY + st.maxY) / 2;
+			const [bx0, by0] = grid.cellOf({
+				x: st.minX + res / 2,
+				y: st.minY + res / 2
+			});
+			const [bx1, by1] = grid.cellOf({
+				x: st.maxX - res / 2,
+				y: st.maxY - res / 2
+			});
+			const boxCells = Math.max(1, (bx1 - bx0 + 1) * (by1 - by0 + 1));
+			const own = /* @__PURE__ */ new Set();
+			{
+				const cnt = /* @__PURE__ */ new Map();
+				for (let y = Math.max(0, by0); y <= Math.min(grid.h - 1, by1); y++) for (let x = Math.max(0, bx0); x <= Math.min(grid.w - 1, bx1); x++) {
+					const fl = labels[y * grid.w + x];
+					if (fl) cnt.set(fl, (cnt.get(fl) ?? 0) + 1);
+				}
+				for (const [fl, n] of cnt) if (n >= boxCells * .03 && roomByLabel.get(fl)?.type === "stairs") own.add(fl);
+			}
+			const hadStairs = own.size > 0;
+			const touched = /* @__PURE__ */ new Set();
+			let made = null;
+			const taken = [];
+			for (const part of stairPartsInOtherRegions(grid, labels, own, st, st.entry)) {
+				const fr = roomByLabel.get(part.label);
+				if (!fr || courtLabels.has(part.label)) continue;
+				if (part.cells.length < boxCells * .15 || part.mouthLen < 500) continue;
+				if (fr.inferred && !hadStairs && (fr.type === "closet" || fr.type === "storage" || fr.type === "hall" && fr.name === "通路")) {
+					const p0 = horiz ? part.bbox.minX : part.bbox.minY;
+					const p1 = horiz ? part.bbox.maxX : part.bbox.maxY;
+					const regionCells = sizes[part.label] ?? 0;
+					if ((st.kind === "straight" || mark >= p0 - 150 && mark <= p1 + 150) && part.cells.length >= regionCells * .3 && regionCells <= boxCells * 2) {
+						trace?.push(`${level}F 階段の区画: 名前の無い区画（${fr.name} と推定）に昇り口があるので「階段」にした`);
+						fr.name = "階段";
+						fr.type = "stairs";
+						fr.stairDir = "up";
+						own.add(part.label);
+						continue;
+					}
+				}
+				let take = null;
+				if (isOpenFlight(fr)) {
+					if (part.cells.length > boxCells * .7) continue;
+					const p0 = horiz ? part.bbox.minX : part.bbox.minY;
+					const p1 = horiz ? part.bbox.maxX : part.bbox.maxY;
+					if (mark < p0 - 150 || mark > p1 + 150) continue;
+					take = part.cells;
+				} else if ((fr.type === "storage" || fr.type === "closet") && st.kind === "u" && !hadStairs) {
+					if (Math.abs(mark - mid) < 150) continue;
+					const side = mark > mid ? 1 : -1;
+					if (((horiz ? fr.labelPos.x : fr.labelPos.y) - mid) * side > 0) continue;
+					take = part.cells.filter((i) => {
+						const c = grid.centerOf(i % grid.w, i / grid.w | 0);
+						return ((horiz ? c.x : c.y) - mid) * side > 0;
+					});
+					if (take.length < boxCells * .15 || take.length > part.cells.length * .8) continue;
+				}
+				if (!take || !take.length) continue;
+				const [lx, ly] = grid.cellOf(fr.labelPos);
+				const labelCell = ly * grid.w + lx;
+				if (take.includes(labelCell)) continue;
+				if (((sizes[part.label] ?? 0) - take.length) * res * res / 1e6 < (isOpenFlight(fr) ? 1.5 : .6)) continue;
+				let target = [...own][0];
+				if (target == null) {
+					target = sizes.length;
+					sizes.push(0);
+					made = target;
+					own.add(target);
+				}
+				for (const i of take) labels[i] = target;
+				sizes[target] += take.length;
+				sizes[part.label] -= take.length;
+				touched.add(part.label);
+				taken.push(`${fr.name} ${(take.length * res * res / 1e6).toFixed(1)}㎡`);
+			}
+			if (!touched.size) return;
+			{
+				const ring = {
+					minX: st.minX - 240,
+					minY: st.minY - 240,
+					maxX: st.maxX + 240,
+					maxY: st.maxY + 240
+				};
+				for (const sl of own) absorbStairRing(grid, labels, sizes, sl, ring, (fl) => touched.has(fl));
+			}
+			const stairInner = stairInnerOf(st, /* @__PURE__ */ new Set([...own, ...[...touched].filter((fl) => isOpenFlight(roomByLabel.get(fl)))]));
+			for (const sl of own) {
+				const tS = traceLabel(sl, stairInner);
+				if (!tS) continue;
+				const sr0 = roomByLabel.get(sl);
+				if (sr0) {
+					sr0.polygon = tS.poly;
+					sr0.area = tS.area;
+				} else if (sl === made) {
+					const sr = {
+						id: `F${level}-R${rooms.length + 1}`,
+						name: "階段",
+						type: "stairs",
+						polygon: tS.poly,
+						area: tS.area,
+						labelPos: insidePoint(sl) ?? {
+							x: (st.minX + st.maxX) / 2,
+							y: (st.minY + st.maxY) / 2
+						},
+						stairDir: "up"
+					};
+					labelOfRoom.set(rooms.length, sl);
+					roomByLabel.set(sl, sr);
+					rooms.push(sr);
+				}
+			}
+			for (const fl of touched) {
+				const fr = roomByLabel.get(fl);
+				const tF = fr ? traceLabel(fl, null, isOpenFlight(fr) ? carvedBox : null) : null;
+				if (!fr || !tF) continue;
+				fr.polygon = tF.poly;
+				fr.area = tF.area;
+				if (labelAt(fr.labelPos) !== fl) fr.labelPos = insidePoint(fl) ?? fr.labelPos;
+			}
+			trace?.push(`${level}F 階段の区画: 昇り始めの段を階段に含めた（${taken.join("・")}）`);
+		};
+		const noFlight = !!globalThis.__NO_STAIR_FLIGHT;
 		for (const st of stairsNow) {
 			const boxM2 = (st.maxX - st.minX) * (st.maxY - st.minY) / 1e6;
 			if (boxM2 < 1.2 || boxM2 > 10) continue;
+			if (!noFlight && st.goesUp && (st.kind === "u" || st.kind === "straight")) absorbFirstFlight(st);
 			const count = /* @__PURE__ */ new Map();
 			{
 				const [x0, y0] = grid.cellOf({
@@ -14764,6 +15033,16 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const rm = roomByLabel.get(l);
 			const a0 = acc.get(l);
 			if (!rm || !a0) continue;
+			if (rm.type === "void" && level > 1 && !noFlight && !courtLabels.has(l)) {
+				const inBoxCells = (count.get(l) ?? 0) * 4;
+				const rb = bboxOf$2(rm.polygon);
+				if (!voidRects.some((vr) => !vr.byText && Math.min(vr.maxX, rb.maxX) - Math.max(vr.minX, rb.minX) > (rb.maxX - rb.minX) * .5 && Math.min(vr.maxY, rb.maxY) - Math.max(vr.minY, rb.minY) > (rb.maxY - rb.minY) * .5) && inBoxCells >= (sizes[l] ?? 0) * .7 && inBoxCells >= (st.maxX - st.minX) * (st.maxY - st.minY) * .5 / 400) {
+					rm.type = "stairs";
+					rm.name = "階段";
+					rm.stairDir = st.goesUp ? "up" : "down";
+					trace?.push(`${level}F 階段の区画: 「吹抜」の名前の区画が階段の範囲と同じなので「階段」にした`);
+				}
+			}
 			if (OUTDOOR_TYPES.includes(rm.type) || rm.type === "void" || courtLabels.has(l)) continue;
 			const inBox = (p) => p.x > st.minX - 30 && p.x < st.maxX + 30 && p.y > st.minY - 30 && p.y < st.maxY + 30;
 			const outNames = a0.names.filter((n) => n.type !== "stairs" && !inBox(n));
@@ -16297,6 +16576,7 @@ function snapFloorWalls(f, m) {
 		op.t1 = Math.min(L, op.t0 + wd);
 	}
 	rejoinFloorWalls(f);
+	const noNearAxis = !!globalThis.__NO_NEAR_AXIS;
 	const movePoly = (poly) => {
 		const n = poly.length;
 		const out = [];
@@ -16306,18 +16586,28 @@ function snapFloorWalls(f, m) {
 			const p = poly[i];
 			const prev = poly[(i + n - 1) % n];
 			const next = poly[(i + 1) % n];
-			const vertEdge = (q) => Math.abs(q.x - p.x) < 1 && Math.abs(q.y - p.y) >= 1;
-			const horizEdge = (q) => Math.abs(q.y - p.y) < 1 && Math.abs(q.x - p.x) >= 1;
+			const nearAxis = (minor, major) => minor < 1 ? major >= 1 : !noNearAxis && minor <= 45 && major >= 300 && minor <= major * .08;
+			const vertEdge = (q) => nearAxis(Math.abs(q.x - p.x), Math.abs(q.y - p.y));
+			const horizEdge = (q) => nearAxis(Math.abs(q.y - p.y), Math.abs(q.x - p.x));
 			let x = p.x;
 			let y = p.y;
 			const gridOr = (v, phase) => {
 				const sn = snapCoord(v, phase, m.grid);
 				return Math.abs(sn - v) <= tol ? sn : v;
 			};
-			const hasV = vertEdge(prev) || vertEdge(next);
-			const hasH = horizEdge(prev) || horizEdge(next);
-			if (hasV) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
-			if (hasH) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+			const mate = (test, off) => [prev, next].filter(test).sort((a, b) => off(a) - off(b))[0];
+			const vq = mate(vertEdge, (q) => Math.abs(q.x - p.x));
+			const hq = mate(horizEdge, (q) => Math.abs(q.y - p.y));
+			const hasV = !!vq;
+			const hasH = !!hq;
+			if (vq) {
+				const vx = Math.abs(vq.x - p.x) < 1 ? p.x : (p.x + vq.x) / 2;
+				x = follow(vx, false, 160) ?? gridOr(vx, m.phaseX);
+			}
+			if (hq) {
+				const hy = Math.abs(hq.y - p.y) < 1 ? p.y : (p.y + hq.y) / 2;
+				y = follow(hy, true, 160) ?? gridOr(hy, m.phaseY);
+			}
 			if (diagMoves.length && !(hasV && hasH)) {
 				let dm = null;
 				let bd = 220;
@@ -18691,25 +18981,62 @@ function roomGraph(model) {
 			const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
 			const ux = (w.b.x - w.a.x) / L;
 			const uy = (w.b.y - w.a.y) / L;
-			const t = (o.t0 + o.t1) / 2;
-			const at = {
-				x: w.a.x + ux * t,
-				y: w.a.y + uy * t
-			};
 			const off = w.thickness / 2 + 250;
-			const ra = roomAt$2(f, {
-				x: at.x - uy * off,
-				y: at.y + ux * off
-			});
-			const rb = roomAt$2(f, {
-				x: at.x + uy * off,
-				y: at.y - ux * off
-			});
-			if (!ra || !rb || ra === rb) continue;
-			const ka = `${f.level}:${ra.id}`;
-			const kb = `${f.level}:${rb.id}`;
-			if (!nodes.has(ka) || !nodes.has(kb)) continue;
-			add(ka, kb, at, dist(nodes.get(ka).c, at) + dist(at, nodes.get(kb).c));
+			/** 開口の、壁に沿った位置 t の両側の部屋 */
+			const pairAt = (t) => {
+				const at = {
+					x: w.a.x + ux * t,
+					y: w.a.y + uy * t
+				};
+				const ra = roomAt$2(f, {
+					x: at.x - uy * off,
+					y: at.y + ux * off
+				});
+				const rb = roomAt$2(f, {
+					x: at.x + uy * off,
+					y: at.y - ux * off
+				});
+				if (!ra || !rb || ra === rb) return null;
+				const ka = `${f.level}:${ra.id}`;
+				const kb = `${f.level}:${rb.id}`;
+				if (!nodes.has(ka) || !nodes.has(kb)) return null;
+				return {
+					ka,
+					kb,
+					at,
+					key: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`
+				};
+			};
+			const link = (p) => add(p.ka, p.kb, p.at, dist(nodes.get(p.ka).c, p.at) + dist(p.at, nodes.get(p.kb).c));
+			const mid = pairAt((o.t0 + o.t1) / 2);
+			if (mid) link(mid);
+			if (o.kind === "open" && o.t1 - o.t0 >= 1200 && !globalThis.__NO_WIDE_OPEN_LINKS) {
+				const done = new Set(mid ? [mid.key] : []);
+				let run = null;
+				const flush = () => {
+					if (run && run.t1 - run.t0 >= 500 && !done.has(run.key)) {
+						const p = pairAt((run.t0 + run.t1) / 2);
+						if (p && p.key === run.key) {
+							link(p);
+							done.add(run.key);
+						}
+					}
+					run = null;
+				};
+				for (let t = o.t0 + 50; t <= o.t1 - 50 + 1e-6; t += 100) {
+					const p = pairAt(t);
+					if (run && p && p.key === run.key) run.t1 = t;
+					else {
+						flush();
+						if (p) run = {
+							key: p.key,
+							t0: t,
+							t1: t
+						};
+					}
+				}
+				flush();
+			}
 		}
 		for (const a of f.rooms) for (const b of f.rooms) {
 			if (a.id >= b.id || a.type === "void" || b.type === "void") continue;
@@ -18732,14 +19059,25 @@ function roomGraph(model) {
 			if (!up) continue;
 			add(`${lo.level}:${s.id}`, `${hi.level}:${up.id}`, c, 4e3, true);
 		}
-		if (!stairsLo.length) for (const st of lo.stairs) {
+		for (const st of lo.stairs) {
 			const c = {
 				x: (st.minX + st.maxX) / 2,
 				y: (st.minY + st.maxY) / 2
 			};
-			const a = roomAt$2(lo, c);
-			const b = roomAt$2(hi, c) ?? hi.rooms.filter((r) => r.type === "hall").sort((p, q) => dist(centroid$1(p.polygon), c) - dist(centroid$1(q.polygon), c))[0];
-			if (a && b) add(`${lo.level}:${a.id}`, `${hi.level}:${b.id}`, c, 4e3, true);
+			if (stairsLo.some((r) => pointInPolygon(c, r.polygon))) continue;
+			if (stairsLo.length && st.goesUp === false) continue;
+			const landing = (f) => {
+				const r = roomAt$2(f, c);
+				if (r && r.type !== "void") return r;
+				return f.rooms.filter((q) => q.type === "stairs" || q.type === "hall").sort((p, q) => dist(centroid$1(p.polygon), c) - dist(centroid$1(q.polygon), c))[0];
+			};
+			const a = landing(lo);
+			const b = landing(hi);
+			if (!a || !b) continue;
+			const ka = `${lo.level}:${a.id}`;
+			const kb = `${hi.level}:${b.id}`;
+			if (edges.get(ka)?.some((e) => e.to === kb && e.stairs)) continue;
+			add(ka, kb, c, 4e3, true);
 		}
 	}
 	return {
@@ -18747,9 +19085,14 @@ function roomGraph(model) {
 		edges
 	};
 }
-/** 2 つの部屋が共有する辺（同一直線上で重なる区間）を全部。300 mm 未満は除く */
+/**
+* 2 つの部屋が共有する辺（同一直線上で重なる区間）を全部。300 mm 未満は除く。
+* 細い線（階段の手すり・框の線）で区切られた区画どうしは、輪郭がその線の幅だけ重なり、向かい合う辺が平行に最大 12cm ほどずれる
+* （市岡様邸 1 階: 階段の昇り口と玄関ホール）。140mm までのずれは同じ辺として扱い、区間は 2 本の辺の真ん中の線で返す（gap = ずれ）
+*/
 function sharedEdges(a, b) {
 	const out = [];
+	const noGap = !!globalThis.__NO_GAP_EDGES;
 	for (let i = 0; i < a.length; i++) {
 		const p = a[i];
 		const q = a[(i + 1) % a.length];
@@ -18760,26 +19103,32 @@ function sharedEdges(a, b) {
 			if (L < 1) continue;
 			const ux = (q.x - p.x) / L;
 			const uy = (q.y - p.y) / L;
-			const off = (v) => Math.abs((v.x - p.x) * -uy + (v.y - p.y) * ux);
-			if (off(r) > 60 || off(s) > 60) continue;
+			const off = (v) => (v.x - p.x) * -uy + (v.y - p.y) * ux;
+			const or = off(r);
+			const os = off(s);
+			if (!(Math.abs(or) <= 60 && Math.abs(os) <= 60) && (noGap || Math.abs(or) > 140 || Math.abs(os) > 140 || Math.abs(or - os) > 60)) continue;
 			const t0 = Math.max(0, Math.min((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
 			const t1 = Math.min(L, Math.max((r.x - p.x) * ux + (r.y - p.y) * uy, (s.x - p.x) * ux + (s.y - p.y) * uy));
-			if (t1 - t0 >= 300) out.push({
+			if (t1 - t0 < 300) continue;
+			const gap = (or + os) / 2;
+			const h = Math.abs(gap) > 60 ? gap / 2 : 0;
+			out.push({
 				a: {
-					x: p.x + ux * t0,
-					y: p.y + uy * t0
+					x: p.x + ux * t0 - uy * h,
+					y: p.y + uy * t0 + ux * h
 				},
 				b: {
-					x: p.x + ux * t1,
-					y: p.y + uy * t1
+					x: p.x + ux * t1 - uy * h,
+					y: p.y + uy * t1 + ux * h
 				},
-				len: t1 - t0
+				len: t1 - t0,
+				gap: Math.abs(gap) > 60 ? Math.abs(gap) : 0
 			});
 		}
 	}
 	return out.sort((x, y) => y.len - x.len);
 }
-/** 共有辺のうち、壁の無い区間が 455 以上続く所の中点（通れる所）。無ければ null */
+/** 共有辺のうち、壁の無い区間が 455 以上続く所の中点（通れる所）。無ければ null。ずれた辺（gap）は、2 本の辺の間のどこかに壁があれば壁あり */
 function openStretch(edges, walls) {
 	for (const e of edges) {
 		const n = Math.max(1, Math.round(e.len / 150));
@@ -18787,10 +19136,11 @@ function openStretch(edges, walls) {
 			x: e.a.x + (e.b.x - e.a.x) * t,
 			y: e.a.y + (e.b.y - e.a.y) * t
 		});
+		const near = 100 + (e.gap ?? 0) / 2;
 		let run = 0;
 		for (let i = 0; i < n; i++) {
 			const p = at((i + .5) / n);
-			if (walls.some((w) => distToSeg(p, w.a, w.b) < 100)) {
+			if (walls.some((w) => distToSeg(p, w.a, w.b) < near)) {
 				run = 0;
 				continue;
 			}
@@ -19063,12 +19413,15 @@ function doorIssues(model) {
 	}
 	return out;
 }
-/** (3) 階段の昇り口・降り口の向き先 */
+/**
+* (3) 階段の昇り口・降り口の向き先。
+* 折り返し・かね折れの階段の口は、辺の一部（片方の段の幅）だけで、残りは手すり壁でふさがっている。
+* 辺の真ん中だけを見ると、口が開いていても「壁に向いている」になる（吉田様邸・伊藤様邸・林様邸・大崎様邸の 5 か所で誤報）。
+* 辺を 100mm ごとに見て、人の通れる所（壁が無いか戸・開口があり、先が通れる部屋）が 50cm 以上続けば、口は開いている
+*/
 function stairIssues(model) {
 	const out = [];
 	for (const f of model.floors) for (const st of f.stairs) {
-		const cx = (st.minX + st.maxX) / 2;
-		const cy = (st.minY + st.maxY) / 2;
 		const dir = st.entry === "n" ? {
 			x: 0,
 			y: -1
@@ -19082,45 +19435,51 @@ function stairIssues(model) {
 			x: -1,
 			y: 0
 		};
-		const edge = st.entry === "n" ? {
-			x: cx,
-			y: st.minY
-		} : st.entry === "s" ? {
-			x: cx,
-			y: st.maxY
-		} : st.entry === "e" ? {
-			x: st.maxX,
-			y: cy
+		const horizEdge = st.entry === "n" || st.entry === "s";
+		const W = horizEdge ? st.maxX - st.minX : st.maxY - st.minY;
+		/** 口の辺の上の点（s = 辺の始点からの距離） */
+		const edgeAt = (s) => horizEdge ? {
+			x: st.minX + s,
+			y: st.entry === "n" ? st.minY : st.maxY
 		} : {
-			x: st.minX,
-			y: cy
+			x: st.entry === "e" ? st.maxX : st.minX,
+			y: st.minY + s
 		};
-		const p = {
-			x: edge.x + dir.x * 400,
-			y: edge.y + dir.y * 400
+		/** その位置から出た先: null = 通れる、文字 = ふさいでいるもの */
+		const stateAt = (s, tolT) => {
+			const edge = edgeAt(s);
+			const p = {
+				x: edge.x + dir.x * 400,
+				y: edge.y + dir.y * 400
+			};
+			const from = {
+				x: edge.x - dir.x * 30,
+				y: edge.y - dir.y * 30
+			};
+			if (f.walls.some((w) => {
+				if (!segCross(from, p, w.a, w.b)) return false;
+				const L = len$1(w) || 1;
+				const t = ((edge.x - w.a.x) * (w.b.x - w.a.x) + (edge.y - w.a.y) * (w.b.y - w.a.y)) / L;
+				return !f.openings.some((o) => o.wallId === w.id && o.kind !== "window" && t >= o.t0 - tolT && t <= o.t1 + tolT);
+			})) return "壁";
+			const r = roomAt$1(f, p);
+			if (!r) return "外";
+			if ([
+				"closet",
+				"storage",
+				"toilet",
+				"bath",
+				"shed"
+			].includes(r.type)) return r.name;
+			return null;
 		};
-		const from = {
-			x: edge.x - dir.x * 30,
-			y: edge.y - dir.y * 30
-		};
-		const blocked = f.walls.some((w) => {
-			if (!segCross(from, p, w.a, w.b)) return false;
-			const L = len$1(w) || 1;
-			const t = ((edge.x - w.a.x) * (w.b.x - w.a.x) + (edge.y - w.a.y) * (w.b.y - w.a.y)) / L;
-			return !f.openings.some((o) => o.wallId === w.id && o.kind !== "window" && t >= o.t0 - 300 && t <= o.t1 + 300);
-		});
-		const r = roomAt$1(f, p);
-		let what = null;
-		if (blocked) what = "壁";
-		else if (!r) what = "外";
-		else if ([
-			"closet",
-			"storage",
-			"toilet",
-			"bath",
-			"shed"
-		].includes(r.type)) what = r.name;
+		const what = stateAt(W / 2, 300);
 		if (!what) continue;
+		let run = 0;
+		let best = 0;
+		for (let s = 100; s <= W - 100 + 1e-6; s += 100) if (stateAt(s, 50) == null) best = Math.max(best, ++run);
+		else run = 0;
+		if (best >= 6) continue;
 		const mouth = st.goesUp ? "昇り口" : "降り口";
 		out.push({
 			id: `live-stair-${f.level}-${st.id}`,

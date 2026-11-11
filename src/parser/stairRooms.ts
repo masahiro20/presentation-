@@ -234,3 +234,59 @@ export function absorbStairRing(grid: Grid, labels: Int32Array, sizes: number[],
   sizes[l] = (sizes[l] ?? 0) + take.length;
   return [...touched];
 }
+
+/** 階段の範囲の中にある、階段以外の区画の部分 */
+export interface StairPart {
+  /** 相手の区画のラベル */
+  label: number;
+  cells: number[];
+  /** 部分の範囲 (mm) */
+  bbox: BBox;
+  /** 口の辺（昇り口・降り口のある辺）に接している長さ (mm) */
+  mouthLen: number;
+}
+
+/**
+ * 階段の範囲 box の中にある、階段以外の区画（own に無いラベル）の升を、区画ごとに集める（広い順）。
+ *
+ * 折り返し階段の昇り始めの段は、玄関・ホールに開いていて壁が無い。段の間の中壁（手すり壁）で区画が切れると、
+ * 昇り始めの側は玄関・ホールの区画の一部になり、「階段」は奥の半分だけになる（大崎様邸 1 階: 玄関 3.1 帖の半分が段だった）。
+ * 階段に含めるかどうか（相手が玄関・ホールか、口の辺に接しているか、段の線・UP の文字があるか）は呼ぶ側が決める
+ */
+export function stairPartsInOtherRegions(grid: Grid, labels: Int32Array, own: Set<number>, box: BBox, entry: 'n' | 's' | 'e' | 'w'): StairPart[] {
+  const { w, h, res } = grid;
+  const [bx0, by0] = grid.cellOf({ x: box.minX + res / 2, y: box.minY + res / 2 });
+  const [bx1, by1] = grid.cellOf({ x: box.maxX - res / 2, y: box.maxY - res / 2 });
+  const x0 = Math.max(0, bx0);
+  const y0 = Math.max(0, by0);
+  const x1 = Math.min(w - 1, bx1);
+  const y1 = Math.min(h - 1, by1);
+  if (x1 < x0 || y1 < y0) return [];
+  // 口の辺から 200mm までの帯に入っている升の位置（辺に沿った向き）を数える
+  const band = Math.max(2, Math.round(200 / res));
+  const acc = new Map<number, { cells: number[]; minX: number; minY: number; maxX: number; maxY: number; mouth: Set<number> }>();
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++) {
+      const i = y * w + x;
+      if (grid.data[i] !== 0) continue;
+      const fl = labels[i];
+      if (!fl || own.has(fl)) continue;
+      let a = acc.get(fl);
+      if (!a) acc.set(fl, (a = { cells: [], minX: x, minY: y, maxX: x, maxY: y, mouth: new Set() }));
+      a.cells.push(i);
+      if (x < a.minX) a.minX = x;
+      if (x > a.maxX) a.maxX = x;
+      if (y < a.minY) a.minY = y;
+      if (y > a.maxY) a.maxY = y;
+      const nearMouth = entry === 'n' ? y - y0 < band : entry === 's' ? y1 - y < band : entry === 'w' ? x - x0 < band : x1 - x < band;
+      if (nearMouth) a.mouth.add(entry === 'n' || entry === 's' ? x : y);
+    }
+  return [...acc.entries()]
+    .map(([label, a]) => ({
+      label,
+      cells: a.cells,
+      bbox: { minX: grid.ox + a.minX * res, minY: grid.oy + a.minY * res, maxX: grid.ox + (a.maxX + 1) * res, maxY: grid.oy + (a.maxY + 1) * res },
+      mouthLen: a.mouth.size * res,
+    }))
+    .sort((p, q) => q.cells.length - p.cells.length);
+}

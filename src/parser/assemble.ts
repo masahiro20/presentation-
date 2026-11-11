@@ -7,7 +7,7 @@ import { ensureOpenings, relocateAutoShutters } from './ensureOpenings';
 import { chooseEntrance } from './entranceChoice';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
 import { detectPassMarks, marksCrossing } from './passMarks';
-import { absorbStairRing, carveStairRegion } from './stairRooms';
+import { absorbStairRing, carveStairRegion, stairPartsInOtherRegions } from './stairRooms';
 import { findBalconyRails } from './balconyRails';
 import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floorAlign';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
@@ -513,7 +513,9 @@ export function looksLikeRoomName(raw: string): boolean {
  * 吹抜の範囲: 「吹抜」の文字を含み、対角線（×印）が引かれた長方形。
  * 吹抜は手すり・腰壁の細い線で描かれ壁として拾えないため、×印から範囲を求める。
  */
-export function voidRectangles(plan: { segs: Seg[]; texts: MmText[]; walls?: { a: Vec2; b: Vec2 }[] }, level?: number): BBox[] {
+/** 吹抜の範囲。byText = ×印が無く、「吹抜」の文字のまわりの線・壁から決めた範囲 */
+export type VoidRect = BBox & { byText?: boolean };
+export function voidRectangles(plan: { segs: Seg[]; texts: MmText[]; walls?: { a: Vec2; b: Vec2 }[] }, level?: number): VoidRect[] {
   const voidTexts = plan.texts.filter((t) => /吹抜|吹き抜け|VOID/i.test(t.str));
   if (!voidTexts.length) return [];
   // 斜めの線（文字の部分などで途切れたものは、同じ直線上でつなぐ）
@@ -553,7 +555,7 @@ export function voidRectangles(plan: { segs: Seg[]; texts: MmText[]; walls?: { a
     for (const [a, b, j] of ivs) if (a >= lo - 1 && b <= hi + 1) used[j] = 1;
     if (hi - lo >= 1500) diag.push({ a: { x: S.a.x + u.x * lo, y: S.a.y + u.y * lo }, b: { x: S.a.x + u.x * hi, y: S.a.y + u.y * hi } });
   }
-  const out: BBox[] = [];
+  const out: VoidRect[] = [];
   for (let i = 0; i < diag.length; i++) {
     for (let j = i + 1; j < diag.length; j++) {
       const A = diag[i];
@@ -631,7 +633,7 @@ export function voidRectangles(plan: { segs: Seg[]; texts: MmText[]; walls?: { a
       if (w < 1200 || h < 1200 || w * h > 60e6) continue;
       if (covered(H, bb.minY, bb.minX, bb.maxX) < w * 0.8 || covered(H, bb.maxY, bb.minX, bb.maxX) < w * 0.8 || covered(V, bb.minX, bb.minY, bb.maxY) < h * 0.8 || covered(V, bb.maxX, bb.minY, bb.maxY) < h * 0.8) continue;
       if (plan.texts.some((q) => q !== t && q.x > bb.minX + 100 && q.x < bb.maxX - 100 && q.y > bb.minY + 100 && q.y < bb.maxY - 100 && isRoomLabel(q.str))) continue;
-      out.push(bb);
+      out.push(Object.assign(bb, { byText: true }));
     }
   }
   return out;
@@ -3006,9 +3008,161 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         }
       return stairInner;
     };
+    /** 昇る階段の口の前（または口のすぐ内側）に書かれた UP の文字の、口の辺に沿った位置。無ければ null */
+    const mouthMarkPos = (st: Stair): number | null => {
+      const horiz = st.entry === 'n' || st.entry === 's';
+      const lo = horiz ? st.minX : st.minY;
+      const hi = horiz ? st.maxX : st.maxY;
+      let best: { d: number; s: number } | null = null;
+      for (const t of plan.texts) {
+        // 昇る階段の口の文字は UP（隣に降りてくる階段があると DN も近くにある）
+        if (parseStairMark(t.str) !== 'up') continue;
+        // 口の辺からの距離（外側が正）
+        const out = st.entry === 'n' ? st.minY - t.y : st.entry === 's' ? t.y - st.maxY : st.entry === 'w' ? st.minX - t.x : t.x - st.maxX;
+        const s = horiz ? t.x : t.y;
+        if (out < -700 || out > 1500 || s < lo - 200 || s > hi + 200) continue;
+        if (!best || Math.abs(out) < best.d) best = { d: Math.abs(out), s };
+      }
+      return best ? best.s : null;
+    };
+    /**
+     * 昇り始めの段が、階段以外の区画に入っているのを直す（1 階など、上へ昇る階段の折り返し・直階段）。
+     *  (A) 玄関・ホール・LDK の一部になっている: 昇り始めの段は開いていて壁が無いので、段の間の中壁で区画が切れると、
+     *      昇り口の側は玄関・ホールの区画になる（大崎様邸 1 階: 玄関 3.1 帖の半分が段。伊藤様邸・田中様邸 1 階: ホールの一部）
+     *  (B) 階段下の物入の名前が、階段の範囲いっぱいの区画に付いている（舟橋様邸 1 階: 「階段」の区画が無い）:
+     *      UP の文字のある側の半分が昇り始めの段、物入の名前のある側の半分が階段下の物入
+     *  (C) 室名の無い区画を、隣の部屋から「CL」「収納」と推定している（市岡様邸 1 階: 寝室の隣なので CL）:
+     *      昇り口のある区画は収納ではなく、昇り始めの段とその前の踏み込み
+     * 根拠は口の前の UP の文字（その部分の正面にあること）。文字の無い階段は触らない
+     */
+    const openFlightTypes: RoomType[] = ['hall', 'ldk', 'living', 'dining', 'kitchen', 'entrance'];
+    /** 昇り口が開いている相手: 玄関・ホール・LDK と、名前の無い区画 */
+    const isOpenFlight = (r: Room | undefined): boolean => !!r && (openFlightTypes.includes(r.type) || (r.type === 'other' && r.name === '室'));
+    const absorbFirstFlight = (st: Stair) => {
+      const mark = mouthMarkPos(st);
+      if (mark == null) return;
+      const horiz = st.entry === 'n' || st.entry === 's';
+      const mid = horiz ? (st.minX + st.maxX) / 2 : (st.minY + st.maxY) / 2;
+      const [bx0, by0] = grid.cellOf({ x: st.minX + res / 2, y: st.minY + res / 2 });
+      const [bx1, by1] = grid.cellOf({ x: st.maxX - res / 2, y: st.maxY - res / 2 });
+      const boxCells = Math.max(1, (bx1 - bx0 + 1) * (by1 - by0 + 1));
+      // 階段の範囲の中の「階段」の区画（3 % 以上入っているもの）
+      const own = new Set<number>();
+      {
+        const cnt = new Map<number, number>();
+        for (let y = Math.max(0, by0); y <= Math.min(grid.h - 1, by1); y++)
+          for (let x = Math.max(0, bx0); x <= Math.min(grid.w - 1, bx1); x++) {
+            const fl = labels[y * grid.w + x];
+            if (fl) cnt.set(fl, (cnt.get(fl) ?? 0) + 1);
+          }
+        for (const [fl, n] of cnt) if (n >= boxCells * 0.03 && roomByLabel.get(fl)?.type === 'stairs') own.add(fl);
+      }
+      const hadStairs = own.size > 0;
+      const touched = new Set<number>();
+      let made: number | null = null;
+      const taken: string[] = [];
+      for (const part of stairPartsInOtherRegions(grid, labels, own, st, st.entry)) {
+        const fr = roomByLabel.get(part.label);
+        if (!fr || courtLabels.has(part.label)) continue;
+        if (part.cells.length < boxCells * 0.15 || part.mouthLen < 500) continue;
+        // (C) 名前の無い区画（隣の部屋から「CL」「収納」「物入」「通路」と推定したもの）に昇り口がある: 収納の中から階段は昇れないので、
+        //     その区画は昇り始めの段と、その前の踏み込み。区画ごと「階段」にする
+        if (fr.inferred && !hadStairs && (fr.type === 'closet' || fr.type === 'storage' || (fr.type === 'hall' && fr.name === '通路'))) {
+          const p0 = horiz ? part.bbox.minX : part.bbox.minY;
+          const p1 = horiz ? part.bbox.maxX : part.bbox.maxY;
+          const regionCells = sizes[part.label] ?? 0;
+          // 折り返し階段は、文字がこの部分の正面にあること（直階段は口が 1 つなので、口の脇に書かれた文字でもよい）。
+          // 区画の 3 割以上が段で、階段の範囲の 2 倍までの広さ（広い納戸・WIC・長い通路は触らない）
+          const inFront = st.kind === 'straight' || (mark >= p0 - 150 && mark <= p1 + 150);
+          if (inFront && part.cells.length >= regionCells * 0.3 && regionCells <= boxCells * 2) {
+            trace?.push(`${level}F 階段の区画: 名前の無い区画（${fr.name} と推定）に昇り口があるので「階段」にした`);
+            fr.name = '階段';
+            fr.type = 'stairs';
+            fr.stairDir = 'up';
+            own.add(part.label);
+            continue;
+          }
+        }
+        let take: number[] | null = null;
+        if (isOpenFlight(fr)) {
+          // 階段の範囲のほとんどが 1 つの開いた区画に入っているもの（リビング階段など）は、下の「区画から切り出す」処理に任せる
+          if (part.cells.length > boxCells * 0.7) continue;
+          // (A) 文字がこの部分の正面にあること
+          const p0 = horiz ? part.bbox.minX : part.bbox.minY;
+          const p1 = horiz ? part.bbox.maxX : part.bbox.maxY;
+          if (mark < p0 - 150 || mark > p1 + 150) continue;
+          take = part.cells;
+        } else if ((fr.type === 'storage' || fr.type === 'closet') && st.kind === 'u' && !hadStairs) {
+          // (B) 文字が片方の半分の正面にあり、物入の名前は反対の半分にあること
+          if (Math.abs(mark - mid) < 150) continue;
+          const side = mark > mid ? 1 : -1;
+          const lp = horiz ? fr.labelPos.x : fr.labelPos.y;
+          if ((lp - mid) * side > 0) continue;
+          take = part.cells.filter((i) => {
+            const c = grid.centerOf(i % grid.w, (i / grid.w) | 0);
+            return ((horiz ? c.x : c.y) - mid) * side > 0;
+          });
+          if (take.length < boxCells * 0.15 || take.length > part.cells.length * 0.8) continue;
+        }
+        if (!take || !take.length) continue;
+        // 相手の区画の名前の位置は取らない。相手の残りが狭すぎるなら分けない（玄関・ホールは 1.5 ㎡、物入は 0.6 ㎡）
+        const [lx, ly] = grid.cellOf(fr.labelPos);
+        const labelCell = ly * grid.w + lx;
+        if (take.includes(labelCell)) continue;
+        const restM2 = (((sizes[part.label] ?? 0) - take.length) * res * res) / 1e6;
+        if (restM2 < (isOpenFlight(fr) ? 1.5 : 0.6)) continue;
+        let target = [...own][0];
+        if (target == null) {
+          target = sizes.length;
+          sizes.push(0);
+          made = target;
+          own.add(target);
+        }
+        for (const i of take) labels[i] = target;
+        sizes[target] += take.length;
+        sizes[part.label] -= take.length;
+        touched.add(part.label);
+        taken.push(`${fr.name} ${((take.length * res * res) / 1e6).toFixed(1)}㎡`);
+      }
+      if (!touched.size) return;
+      // 階段の範囲（段の線の外周）と壁の間に残った細い帯（240mm まで）も、取った相手の区画から階段へ。
+      // 残すと、相手の輪郭が壁沿いの細い帯で階段の外側を回り込む
+      {
+        const ring = { minX: st.minX - 240, minY: st.minY - 240, maxX: st.maxX + 240, maxY: st.maxY + 240 };
+        for (const sl of own) absorbStairRing(grid, labels, sizes, sl, ring, (fl) => touched.has(fl));
+      }
+      // 輪郭を引き直す。階段の中の壁（中壁・手すり）は、階段と、取った相手の区画の間のものだけ階段に含める
+      const stairInner = stairInnerOf(st, new Set<number>([...own, ...[...touched].filter((fl) => isOpenFlight(roomByLabel.get(fl)))]));
+      for (const sl of own) {
+        const tS = traceLabel(sl, stairInner);
+        if (!tS) continue;
+        const sr0 = roomByLabel.get(sl);
+        if (sr0) {
+          sr0.polygon = tS.poly;
+          sr0.area = tS.area;
+        } else if (sl === made) {
+          const sr: Room = { id: `F${level}-R${rooms.length + 1}`, name: '階段', type: 'stairs', polygon: tS.poly, area: tS.area, labelPos: insidePoint(sl) ?? { x: (st.minX + st.maxX) / 2, y: (st.minY + st.maxY) / 2 }, stairDir: 'up' };
+          labelOfRoom.set(rooms.length, sl);
+          roomByLabel.set(sl, sr);
+          rooms.push(sr);
+        }
+      }
+      for (const fl of touched) {
+        const fr = roomByLabel.get(fl);
+        // 範囲の外に残る相手（玄関・ホール）は、階段の範囲へ輪郭を広げない。範囲の中に残る物入は普通に引く
+        const tF = fr ? traceLabel(fl, null, isOpenFlight(fr) ? carvedBox : null) : null;
+        if (!fr || !tF) continue;
+        fr.polygon = tF.poly;
+        fr.area = tF.area;
+        if (labelAt(fr.labelPos) !== fl) fr.labelPos = insidePoint(fl) ?? fr.labelPos;
+      }
+      trace?.push(`${level}F 階段の区画: 昇り始めの段を階段に含めた（${taken.join('・')}）`);
+    };
+    const noFlight = !!(globalThis as { __NO_STAIR_FLIGHT?: boolean }).__NO_STAIR_FLIGHT;
     for (const st of stairsNow) {
       const boxM2 = ((st.maxX - st.minX) * (st.maxY - st.minY)) / 1e6;
       if (boxM2 < 1.2 || boxM2 > 10) continue;
+      if (!noFlight && st.goesUp && (st.kind === 'u' || st.kind === 'straight')) absorbFirstFlight(st);
       // 階段の範囲にいちばん多く入っている区画（中心は折り返しの中壁の上のことがある）
       const count = new Map<number, number>();
       {
@@ -3025,6 +3179,20 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const rm = roomByLabel.get(l);
       const a0 = acc.get(l);
       if (!rm || !a0) continue;
+      // 2 階以上の「吹抜」の名前の区画が、階段の範囲とほぼ同じ広さ（階段室の「吹抜」の文字が、階段の区画に入っている）なら「階段」。
+      // 吹抜のままだと、階段を上がった先が床の無い区画になる（舟橋様邸 2 階: 「2 階へ階段でつながっていません」。面積表は階段を床面積に入れている）。
+      // ×印のある吹抜（本物の吹抜）と、階段より広い吹抜（階段が吹抜の縁に沿って上がる）はそのまま
+      if (rm.type === 'void' && level > 1 && !noFlight && !courtLabels.has(l)) {
+        const inBoxCells = (count.get(l) ?? 0) * 4;
+        const rb = bboxOf(rm.polygon);
+        const crossed = voidRects.some((vr) => !vr.byText && Math.min(vr.maxX, rb.maxX) - Math.max(vr.minX, rb.minX) > (rb.maxX - rb.minX) * 0.5 && Math.min(vr.maxY, rb.maxY) - Math.max(vr.minY, rb.minY) > (rb.maxY - rb.minY) * 0.5);
+        if (!crossed && inBoxCells >= (sizes[l] ?? 0) * 0.7 && inBoxCells >= ((st.maxX - st.minX) * (st.maxY - st.minY) * 0.5) / (res * res)) {
+          rm.type = 'stairs';
+          rm.name = '階段';
+          rm.stairDir = st.goesUp ? 'up' : 'down';
+          trace?.push(`${level}F 階段の区画: 「吹抜」の名前の区画が階段の範囲と同じなので「階段」にした`);
+        }
+      }
       if (OUTDOOR_TYPES.includes(rm.type) || rm.type === 'void' || courtLabels.has(l)) continue;
       const inBox = (p: Vec2) => p.x > st.minX - 30 && p.x < st.maxX + 30 && p.y > st.minY - 30 && p.y < st.maxY + 30;
       // 階段の範囲の外に、階段以外の室名があること（階段だけの区画・名前の無い区画は分けない）
@@ -4209,7 +4377,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
  * 縦横の壁の芯を格子へ寄せ、壁の端は接していた直交する壁の芯へ付け直し、部屋・外形の頂点は元の壁を追って動かす。
  * 斜めの壁・格子から大きく外れた壁はそのまま
  */
-function snapFloorWalls(f: Floor, m: ModuleFit) {
+export function snapFloorWalls(f: Floor, m: ModuleFit) {
   const tol = snapTolerance(m.grid);
   const tolEnd = endTolerance(m.grid);
   type Ax = { wall: Wall; horiz: boolean; oldAxis: number; newAxis: number; lo: number; hi: number };
@@ -4323,6 +4491,7 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
   // 角の接合（直交する壁の芯まで伸ばした端を、相手の壁厚の半分だけ延長して角を埋める）を結び直す
   rejoinFloorWalls(f);
   // 部屋・外形の頂点は元の壁を追う（壁に乗っていなかった頂点はそのまま）
+  const noNearAxis = !!(globalThis as { __NO_NEAR_AXIS?: boolean }).__NO_NEAR_AXIS;
   const movePoly = (poly: Vec2[]): Vec2[] => {
     const n = poly.length;
     const out: Vec2[] = [];
@@ -4332,8 +4501,12 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
       const p = poly[i];
       const prev = poly[(i + n - 1) % n];
       const next = poly[(i + 1) % n];
-      const vertEdge = (q: Vec2) => Math.abs(q.x - p.x) < 1 && Math.abs(q.y - p.y) >= 1;
-      const horizEdge = (q: Vec2) => Math.abs(q.y - p.y) < 1 && Math.abs(q.x - p.x) >= 1;
+      // 縦・横の辺。ほぼ縦・ほぼ横の辺（傾きが升目 1〜2 つ分 = 45mm まで）も縦・横として扱う: 升目でなぞった輪郭を間引くと、
+      // 1 升の段が 1 本の斜めの辺になる（59 か所／提案図 11 件）。寄せないと、壁の無い境界（LDK とホールの間など）で隣の部屋の辺と
+      // 5〜7cm ずれたまま残り、隣り合う部屋だと分からなくなる（大崎様邸 1 階: ホールの左の辺が 7,229 → 7,209。LDK の辺は 7,280）
+      const nearAxis = (minor: number, major: number) => (minor < 1 ? major >= 1 : !noNearAxis && minor <= 45 && major >= 300 && minor <= major * 0.08);
+      const vertEdge = (q: Vec2) => nearAxis(Math.abs(q.x - p.x), Math.abs(q.y - p.y));
+      const horizEdge = (q: Vec2) => nearAxis(Math.abs(q.y - p.y), Math.abs(q.x - p.x));
       let x = p.x;
       let y = p.y;
       // 壁に乗っていない頂点（吹抜・玄関の開口の縁など）は格子へ
@@ -4341,10 +4514,20 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
         const sn = snapCoord(v, phase, m.grid);
         return Math.abs(sn - v) <= tol ? sn : v;
       };
-      const hasV = vertEdge(prev) || vertEdge(next);
-      const hasH = horizEdge(prev) || horizEdge(next);
-      if (hasV) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
-      if (hasH) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+      // 相手の頂点（ぴったり縦・横の辺を優先）。ほぼ縦・ほぼ横の辺は、辺の真ん中の位置で寄せ先を決めて両端を同じ線に乗せる
+      const mate = (test: (q: Vec2) => boolean, off: (q: Vec2) => number) => [prev, next].filter(test).sort((a, b) => off(a) - off(b))[0];
+      const vq = mate(vertEdge, (q) => Math.abs(q.x - p.x));
+      const hq = mate(horizEdge, (q) => Math.abs(q.y - p.y));
+      const hasV = !!vq;
+      const hasH = !!hq;
+      if (vq) {
+        const vx = Math.abs(vq.x - p.x) < 1 ? p.x : (p.x + vq.x) / 2;
+        x = follow(vx, false, 160) ?? gridOr(vx, m.phaseX);
+      }
+      if (hq) {
+        const hy = Math.abs(hq.y - p.y) < 1 ? p.y : (p.y + hq.y) / 2;
+        y = follow(hy, true, 160) ?? gridOr(hy, m.phaseY);
+      }
       // 斜めの辺の端の頂点は、動いた斜めの壁の線の上へ（もう一方の辺が縦・横なら、その線との交点）
       if (diagMoves.length && !(hasV && hasH)) {
         let dm: (typeof diagMoves)[number] | null = null;

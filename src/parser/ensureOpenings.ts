@@ -240,6 +240,14 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
     }
     const partners = mine.map((s) => ({ s, o: other(s, r) })).filter(({ o }) => !!o) as { s: Shared; o: Room }[];
     if (!builtinGarage && partners.some(({ o }) => edgeFree(r, o, walls, rooms) && (isCirculation(o.type) || ROOM_KNOWLEDGE[r.type].adjacent.includes(o.type)))) continue;
+    // 壁を共有していない相手（間に壁が 1 本も無い）にも、壁の無い辺で開いていることがある: 寝室に開いた収納（前面が細い線の建具・
+    // ロールスクリーン）は、寝室との間に壁が無い。そこから入れるので、反対側の壁に戸を補わない
+    // （林様邸 1 階: 主寝室の「物入」の裏の壁に、LDK 側から入る戸を補っていた）
+    if (!builtinGarage && !(globalThis as { __NO_OPEN_EDGE_ACCESS?: boolean }).__NO_OPEN_EDGE_ACCESS) {
+      const isStore = r.type === 'closet' || r.type === 'storage';
+      const openTo = rooms.filter((o) => o !== r && o.type !== 'void' && !partners.some((p) => p.o === o) && edgeFree(r, o, walls, rooms));
+      if (openTo.some((o) => isCirculation(o.type) || ROOM_KNOWLEDGE[r.type].adjacent.includes(o.type) || (isStore && ['bedroom', 'kids', 'japanese', 'study', 'ldk', 'living', 'dining', 'kitchen', 'washroom', 'entrance'].includes(o.type)))) continue;
+    }
     const want = builtinGarage ? ['entrance', 'hall', 'storage'] : null;
     const rank = (o: Room) => {
       if (want) return want.includes(o.type) ? 10 - want.indexOf(o.type) : -1;

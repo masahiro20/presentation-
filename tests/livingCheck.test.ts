@@ -73,6 +73,50 @@ describe('住まいの成立チェック', () => {
     expect(good.filter((i) => i.id.startsWith('live-stair'))).toHaveLength(0);
   });
 
+  it('折り返し階段の口は辺の半分だけ: 残りの半分が手すり壁でふさがっていても「壁に向いている」と言わない', () => {
+    // 階段（左上 1,820 角・昇り口は下の辺）。下の辺の左 1,000 は手すり壁、右 820 がホールに開いている
+    const st = room('s', '階段', 'stairs', rect(0, 0, 1820, 1820));
+    const hall2 = room('h2', 'ホール', 'hall', [{ x: 1820, y: 0 }, { x: 3640, y: 0 }, { x: 3640, y: 3640 }, { x: 0, y: 3640 }, { x: 0, y: 1820 }, { x: 1820, y: 1820 }]);
+    const stair: Stair = { id: 'F1-S1', minX: 0, minY: 0, maxX: 1820, maxY: 1820, kind: 'u', entry: 's', goesUp: true };
+    const ops = [entDoor, hallDoor, bedDoor];
+    const run = (extra: Wall[], more: Opening[] = []) => livingCheck(model(floor([entrance, hall, hall2, st], [...walls, wall('Z', { x: 1820, y: 0 }, { x: 1820, y: 1820 }), ...extra], [...ops, ...more], [stair]))).filter((i) => i.id.startsWith('live-stair'));
+    // 手すり壁が辺の真ん中を越えていても、右に 50cm 以上の口がある
+    expect(run([wall('Y', { x: 0, y: 1820 }, { x: 1000, y: 1820 })])).toHaveLength(0);
+    // 辺が全部壁なら指摘する
+    const closed = run([wall('Y', { x: 0, y: 1820 }, { x: 1820, y: 1820 })]);
+    expect(closed).toHaveLength(1);
+    expect(closed[0].title).toContain('壁');
+    // 全部壁でも、右寄りに開口があれば通れる（真ん中から 30cm より離れた開口）
+    expect(run([wall('Y', { x: 0, y: 1820 }, { x: 1820, y: 1820 })], [op('so', 'Y', 'open', 1250, 1800)])).toHaveLength(0);
+    // 開口が 40cm しか無ければ、人は通れない
+    expect(run([wall('Y', { x: 0, y: 1820 }, { x: 1820, y: 1820 })], [op('so', 'Y', 'open', 1350, 1750)])).toHaveLength(1);
+  });
+
+  it('階段の区画が 1 階で「物入」（階段下の物入）、2 階で「吹抜」と読めていても、2 階へ階段でつながる', () => {
+    const o = rect(0, 0, 3640, 5460);
+    const stair = (goesUp: boolean): Stair => ({ id: goesUp ? 'F1-S1' : 'F2-S1', minX: 0, minY: 0, maxX: 1820, maxY: 1820, kind: 'u', entry: 's', goesUp });
+    const top = [{ x: 1820, y: 0 }, { x: 3640, y: 0 }, { x: 3640, y: 3640 }, { x: 0, y: 3640 }, { x: 0, y: 1820 }, { x: 1820, y: 1820 }];
+    const f1: Floor = {
+      level: 1, elevation: 500, height: 2900, ceilingHeight: 2400, outline: [o],
+      rooms: [entrance, hall, room('h2', 'ホール', 'hall', top), room('s', '物入', 'storage', rect(0, 0, 1820, 1820))],
+      walls: [...walls, wall('Z', { x: 1820, y: 0 }, { x: 1820, y: 1820 }), wall('Y', { x: 0, y: 1820 }, { x: 1000, y: 1820 })],
+      openings: [entDoor, hallDoor, bedDoor],
+      stairs: [stair(true)],
+    };
+    const f2: Floor = {
+      level: 2, elevation: 3400, height: 2900, ceilingHeight: 2400, outline: [o],
+      rooms: [room('v', '吹抜', 'void', rect(0, 0, 1820, 1820)), room('h3', 'ホール', 'hall', top), room('b2', '洋室', 'bedroom', rect(0, 3640, 3640, 5460))],
+      walls: [...walls.filter((w) => w.id !== 'V'), wall('Z', { x: 1820, y: 0 }, { x: 1820, y: 1820 }), wall('Y', { x: 0, y: 1820 }, { x: 1000, y: 1820 })],
+      openings: [op('d2', 'M', 'door', 2300, 3100)],
+      stairs: [stair(false)],
+    };
+    const issues = livingCheck({ name: 't', floors: [f1, f2], northAngleDeg: 0 } as unknown as BuildingModel);
+    expect(issues.filter((i) => i.id.startsWith('live-reach'))).toHaveLength(0);
+    // 2 階にホールも階段も無く、吹抜しか無ければつながらない
+    const f2b: Floor = { ...f2, rooms: [room('v', '吹抜', 'void', rect(0, 0, 1820, 1820)), room('b3', '洋室', 'bedroom', top), room('b2', '洋室', 'bedroom', rect(0, 3640, 3640, 5460))] };
+    expect(livingCheck({ name: 't', floors: [f1, f2b], northAngleDeg: 0 } as unknown as BuildingModel).some((i) => i.id === 'live-reach-2')).toBe(true);
+  });
+
   it('部屋と部屋の間の壁の窓は「室内窓か読み違い」、小さな窓だけの居室は採光不足', () => {
     const issues = livingCheck(model(floor([entrance, hall, bed], walls, [entDoor, hallDoor, bedDoor, op('iw', 'M', 'window', 300, 1200, 700), op('sw', 'N', 'window', 600, 1200, 700)])));
     expect(issues.some((i) => i.id === 'live-winin-1' && i.title.includes('1 か所'))).toBe(true);

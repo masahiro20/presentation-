@@ -74,4 +74,28 @@ describe('ensureOpenings', () => {
     expect(notes.some((t) => /シャッター/.test(t))).toBe(true);
     expect(notes.some((t) => /玄関ドア/.test(t))).toBe(true);
   });
+
+  it('寝室に開いた収納（寝室との間に壁が 1 本も無い）には、反対側の壁に戸を補わない', () => {
+    // 主寝室 (0..3640, 0..3185) の右に物入 (3640..4095, 1820..3185)。間は細い線だけで壁が無い。物入の右は LDK との壁（林様邸 1 階）
+    const walls = [wall(0, 0, 9100, 0, true), wall(0, 5460, 9100, 5460, true), wall(0, 0, 0, 5460, true), wall(9100, 0, 9100, 5460, true), wall(0, 3185, 4095, 3185), wall(4095, 0, 4095, 3185), wall(3640, 0, 3640, 1820)];
+    const bed = room('主寝室', 'bedroom', rect(0, 0, 3640, 3185));
+    const store = room('物入', 'storage', rect(3640, 1820, 4095, 3185));
+    const ldk = room('ＬＤＫ', 'ldk', [{ x: 4095, y: 0 }, { x: 9100, y: 0 }, { x: 9100, y: 5460 }, { x: 0, y: 5460 }, { x: 0, y: 3185 }, { x: 4095, y: 3185 }]);
+    const bedDoor: Opening = { id: 'bd', wallId: walls[4].id, kind: 'door', t0: 800, t1: 1580, sill: 0, height: 2000 };
+    const openings: Opening[] = [bedDoor];
+    const notes = ensureOpenings(walls, openings, [bed, store, ldk], 1);
+    expect(openings).toHaveLength(1);
+    expect(notes.some((t) => /物入/.test(t))).toBe(false);
+    // 切り替えを切ると、今までどおり LDK との壁に戸を補う
+    const g = globalThis as { __NO_OPEN_EDGE_ACCESS?: boolean };
+    g.__NO_OPEN_EDGE_ACCESS = true;
+    try {
+      const ops2: Opening[] = [{ ...bedDoor }];
+      const notes2 = ensureOpenings(walls, ops2, [bed, store, ldk], 1);
+      expect(ops2.length).toBe(2);
+      expect(notes2.some((t) => /物入.*ＬＤＫ/.test(t))).toBe(true);
+    } finally {
+      delete g.__NO_OPEN_EDGE_ACCESS;
+    }
+  });
 });

@@ -5975,24 +5975,27 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 				continue;
 			}
 			if (t1 - t0 < 250 || t1 - t0 > 4600) continue;
-			if (!ax.pieces.some((p) => p.t0 < t0 + 10 && p.t1 > t1 - 10)) continue;
-			if (ax.openings.some((o) => o.t0 < t1 && o.t1 > t0)) continue;
-			ax.pieces = ax.pieces.flatMap((p) => subtractIntervals([p.t0, p.t1], [[t0, t1]]).filter(([a, b]) => b - a >= 20).map(([a, b]) => ({
-				...p,
-				t0: a,
-				t1: b
-			})));
-			const op = {
-				g: ax.g,
-				o: ax.o,
-				d: ax.d,
-				t0,
-				t1,
-				kind: "window",
-				confidence: .75
-			};
-			ax.openings.push(op);
-			openings.push(op);
+			const over = ax.openings.filter((o) => o.t0 < t1 && o.t1 > t0);
+			const rest = over.length && over.every((o) => Math.min(o.t1, t1) - Math.max(o.t0, t0) <= 150) ? subtractIntervals([t0, t1], over.map((o) => [o.t0, o.t1])).filter(([a, b]) => b - a >= 250) : over.length ? [] : [[t0, t1]];
+			for (const [a, b] of rest) {
+				if (!ax.pieces.some((p) => p.t0 < a + 10 && p.t1 > b - 10)) continue;
+				ax.pieces = ax.pieces.flatMap((p) => subtractIntervals([p.t0, p.t1], [[a, b]]).filter(([x, y]) => y - x >= 20).map(([x, y]) => ({
+					...p,
+					t0: x,
+					t1: y
+				})));
+				const op = {
+					g: ax.g,
+					o: ax.o,
+					d: ax.d,
+					t0: a,
+					t1: b,
+					kind: "window",
+					confidence: .75
+				};
+				ax.openings.push(op);
+				openings.push(op);
+			}
 		}
 	}
 	const endJoined = (ax, t) => {
@@ -6109,6 +6112,20 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		if (!pk) continue;
 		op.pocketSide = Math.abs(pk.t0 - op.t1) <= 60 ? 1 : -1;
 		if (pk.sSign && op.swingSign == null) op.swingSign = pk.sSign > 0 ? 1 : -1;
+	}
+	for (const op of openings) {
+		if (op.kind !== "window") continue;
+		const w = op.t1 - op.t0;
+		const offs = /* @__PURE__ */ new Set();
+		for (const l of lines[op.g]) {
+			const off = l.o - op.o;
+			if (Math.abs(off) > op.d / 2 - 8) continue;
+			if (Math.min(l.t1, op.t1) - Math.max(l.t0, op.t0) < Math.min(200, w * .3)) continue;
+			offs.add(Math.round(off / 4));
+		}
+		op.inner = offs.size;
+		const touch = (a, b) => [-1, 1].some((sd) => wallFillCover(op.g, op.o + sd * op.d / 2, a, b) >= (b - a) * .5);
+		op.filledEnd = touch(op.t0 - 150, op.t0) || touch(op.t1, op.t1 + 150);
 	}
 	let heavyLen = 0;
 	for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;
@@ -11895,6 +11912,21 @@ function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs, ne
 	groups = groups.filter((g) => lenOf(g) >= 8e3);
 	return groups;
 }
+/** 室内窓（ガラス）・建具なしの開口があり得る部屋（収納・水まわりの前の白抜きは、印が無くても戸のまま） */
+var INTERIOR_WINDOW_SIDES = [
+	"hall",
+	"ldk",
+	"living",
+	"dining",
+	"kitchen",
+	"bedroom",
+	"kids",
+	"study",
+	"japanese",
+	"entrance",
+	"stairs",
+	"other"
+];
 function windowStyleFor(room, widthMm, facingSouth) {
 	switch (room) {
 		case "ldk":
@@ -14047,6 +14079,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			let sill = 0;
 			let height = 2e3;
 			let windowStyle;
+			let interiorWindow = false;
 			const outdoorType = (t) => !t || OUTDOOR_TYPES.includes(t);
 			const bothInside = !!inRoom && !!otherRoom && !outdoorType(inRoom.type) && !outdoorType(otherRoom.type);
 			const garageInner = (inRoom?.type === "garage" || otherRoom?.type === "garage") && !!inRoom && !!otherRoom && (inRoom.type === "garage" ? !outdoorType(otherRoom.type) : !outdoorType(inRoom.type));
@@ -14101,10 +14134,23 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				else if (op.kind === "window") kind = "sliding";
 				else kind = "open";
 				if (kind === "sliding" && unmarkedSet.has(op) && inRoom && otherRoom) kind = "open";
+				if (kind === "sliding" && !noteOpen && noteKind == null && usesMarks && plan.maskDrawn && op.confidence > .7 && op.inner != null && op.filledEnd && !opMarked(w, op) && inRoom && otherRoom && !globalThis.__NO_INTERIOR_WINDOWS) {
+					const glazable = (t) => INTERIOR_WINDOW_SIDES.includes(t);
+					if (glazable(inRoom.type) && glazable(otherRoom.type)) {
+						if (op.inner === 0) kind = "open";
+						else if (op.inner <= 2) interiorWindow = true;
+					}
+				}
 				if (noteOpen) kind = "open";
 				else if (noteKind === "sliding" && kind !== "door") kind = "sliding";
 				height = 2e3;
 				if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * .35)) height = noteSash.height >= 1800 ? noteSash.height : 2e3;
+				if (interiorWindow) {
+					kind = "window";
+					sill = 900;
+					height = 1100;
+					windowStyle = "koshi";
+				}
 				if (kind === "sliding" && width < 500) continue;
 			}
 			openings.push({
@@ -14116,6 +14162,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				sill,
 				height,
 				windowStyle,
+				...interiorWindow ? { interior: true } : {},
 				hingeAtStart: kind === "sliding" && op.pocketSide != null ? op.pocketSide > 0 : op.hingeAtStart,
 				swingSide: op.swingSign ?? (kind === "door" ? (() => {
 					const side = doorSwingFor(inRoom?.type ?? null, otherRoom?.type ?? null);
@@ -19107,7 +19154,7 @@ function windowIssues(model) {
 				...openingSides(f, w, o)
 			} : null;
 		}).filter((x) => !!x);
-		const inner = wins.filter((x) => x.a && x.b && x.a !== x.b && !OUTSIDE.includes(x.a.type) && !OUTSIDE.includes(x.b.type));
+		const inner = wins.filter((x) => !x.o.interior && x.a && x.b && x.a !== x.b && !OUTSIDE.includes(x.a.type) && !OUTSIDE.includes(x.b.type));
 		if (inner.length) out.push({
 			id: `live-winin-${f.level}`,
 			level: f.level,
@@ -20100,7 +20147,7 @@ function livabilityChecks(model) {
 	});
 	const drawnByMask = new Set(model.report?.openingsByMask ?? []);
 	const windowsOf = (f, r) => f.openings.filter((o) => {
-		if (o.kind !== "window") return false;
+		if (o.kind !== "window" || o.interior) return false;
 		const w = f.walls.find((w) => w.id === o.wallId);
 		if (!w) return false;
 		const L = len(w) || 1;
@@ -21541,7 +21588,7 @@ var BUILDER_SPECS = [{
 /** 仕様を反映した開口部の高さ (mm) */
 function effectiveOpening(o, ceilingHeight, spec) {
 	if (o.kind === "window") {
-		if (!spec.windows.headAtCeiling || o.heightFrom) return {
+		if (!spec.windows.headAtCeiling || o.heightFrom || o.interior) return {
 			sill: o.sill,
 			height: o.height
 		};
@@ -23141,7 +23188,8 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 	}
 	const outN = nW.clone().multiplyScalar(outSign);
 	if (o.kind === "window") {
-		const plane = mid.clone().addScaledVector(outN, t / 2 - .05);
+		const interiorWin = !!o.interior && !w.exterior;
+		const plane = interiorWin ? mid.clone() : mid.clone().addScaledVector(outN, t / 2 - .05);
 		const fw = .03;
 		const fd = .07;
 		const frame = "ext.frame";
@@ -23155,7 +23203,14 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		const y0 = sill + fw;
 		const mull = .03;
 		const cells = [];
-		if (H < .7 || o.windowStyle === "high") cells.push({
+		const flat = H < .7 || o.windowStyle === "high";
+		if (interiorWin) {
+			const nFix = Math.max(1, Math.ceil(innerW / 1.8));
+			for (let k = 0; k < nFix; k++) cells.push({
+				w: (innerW - mull * (nFix - 1)) / nFix,
+				vent: "none"
+			});
+		} else if (flat) cells.push({
 			w: innerW,
 			vent: "top"
 		});
@@ -23236,15 +23291,15 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 					a: g0.clone(),
 					b: g3.clone()
 				};
-				meta.sashes.push(sash);
+				if (!interiorWin) meta.sashes.push(sash);
 			}
 			u += cell.w;
 		});
-		mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + .01).setY(sill - .02), dir, width + .04, .02, .05);
-		if (o.sill > 0 && spec.windows.sillBoard) mb.box("int.trim", mid.clone().addScaledVector(outN, -t / 2 + .01).setY(sill - .02), dir, width + .06, .02, .06);
+		if (!interiorWin) mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + .01).setY(sill - .02), dir, width + .04, .02, .05);
+		if (!interiorWin && o.sill > 0 && spec.windows.sillBoard) mb.box("int.trim", mid.clone().addScaledVector(outN, -t / 2 + .01).setY(sill - .02), dir, width + .06, .02, .06);
 		const inRoom = roomAt(f, (mid.x - outN.x * (t / 2 + .2)) / MM, (mid.z - outN.z * (t / 2 + .2)) / MM);
 		const curtainable = o.sill * .001 <= 1.2 && o.height * .001 >= .8;
-		if (spec.curtains !== "none" && curtainable && inRoom && [
+		if (!interiorWin && spec.curtains !== "none" && curtainable && inRoom && [
 			"ldk",
 			"living",
 			"dining",
@@ -24578,7 +24633,7 @@ function collectBlocked(ctx, f, inner) {
 			const a = (p0.x * MM - fr.origin.x) * fr.along.x;
 			const b = (p1.x * MM - fr.origin.x) * fr.along.x;
 			if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-			if (o.kind === "window") ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === "hakidashi" ? 2 : 1);
+			if (o.kind === "window" && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === "hakidashi" ? 2 : 1);
 		};
 		const addV = (side, x) => {
 			if (Math.abs(p0.x - x) > tol) return;
@@ -24586,7 +24641,7 @@ function collectBlocked(ctx, f, inner) {
 			const a = (p0.y * MM - fr.origin.z) * fr.along.z;
 			const b = (p1.y * MM - fr.origin.z) * fr.along.z;
 			if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-			if (o.kind === "window") ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === "hakidashi" ? 2 : 1);
+			if (o.kind === "window" && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === "hakidashi" ? 2 : 1);
 		};
 		const within = (v, a, b) => v > a - 200 && v < b + 200;
 		if (horiz && (within(p0.x, inner.minX, inner.maxX) || within(p1.x, inner.minX, inner.maxX))) {
@@ -28493,7 +28548,7 @@ function openingSchedule(f) {
 			out.push({
 				id: o.id,
 				tag: `${pre}${counters[pre]}`,
-				kindJa: o.windowStyle === "hakidashi" ? "掃出し窓" : o.windowStyle === "koshi" ? "腰窓" : o.windowStyle === "high" ? "高窓" : o.windowStyle === "small" ? "小窓" : OPENING_KIND_JA[o.kind] ?? o.kind,
+				kindJa: o.kind === "window" && o.interior ? "室内窓" : o.windowStyle === "hakidashi" ? "掃出し窓" : o.windowStyle === "koshi" ? "腰窓" : o.windowStyle === "high" ? "高窓" : o.windowStyle === "small" ? "小窓" : OPENING_KIND_JA[o.kind] ?? o.kind,
 				w: Math.round(o.t1 - o.t0),
 				h: Math.round(o.height),
 				sill: Math.round(o.sill),
@@ -28909,13 +28964,13 @@ function floorPlanParts(model, f, opts = {}) {
 				const ln = (p0, p1, wd = 7, col = "#111") => `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="${col}" stroke-width="${wd}"/>`;
 				for (const k of [-1, 1]) s += ln(P(0, h * k), P(len, h * k));
 				const style = o.windowStyle ?? (len >= 1600 ? "hakidashi" : len >= 1200 ? "koshi" : "small");
-				if (style === "hakidashi" || style === "koshi" || style !== "small" && style !== "slit" && style !== "high" && len >= 1200) {
+				if (!o.interior && (style === "hakidashi" || style === "koshi" || style !== "small" && style !== "slit" && style !== "high" && len >= 1200)) {
 					const g = Math.min(28, h * .4);
 					s += ln(P(0, -g), P(len * .53, -g)) + ln(P(len * .47, g), P(len, g));
 					s += ln(P(len * .53, -g), P(len * .53, g)) + ln(P(len * .47, -g), P(len * .47, g));
 				} else {
 					s += ln(P(0, 0), P(len, 0));
-					if (style === "small" || style === "slit") {
+					if (!o.interior && (style === "small" || style === "slit")) {
 						const out = w.exterior ? w.outsideSign ?? 1 : 1;
 						const a0 = P(0, h * out);
 						const a1 = P(len, h * out);

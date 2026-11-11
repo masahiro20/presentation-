@@ -80,6 +80,16 @@ export interface DetectedOpening {
   /** 引込み戸（片引き戸）: 戸袋（開けた戸が収まる壁）が t1 側なら +1、t0 側なら -1 */
   pocketSide?: 1 | -1;
   confidence: number;
+  /**
+   * 窓・引戸の記号の開口: 開口の区間の中（壁の両面より内側）を通る平行線の位置の数。
+   * 0 = 建具の線が無い（白抜きだけ = 建具なしの開口）、1 = 芯に 1 本（FIX）、2 = 引違い、3 以上 = 格子の入った建具など
+   */
+  inner?: number;
+  /**
+   * 窓・引戸の記号の開口: 開口の端（どちらか）に、壁の色の塗りが接している = 塗りの壁に開けた開口。
+   * 塗りの無い壁（白い「アート壁」など）の横の線を窓と読んだものは false
+   */
+  filledEnd?: boolean;
 }
 
 /** 引込み戸の戸袋（白抜きの溝・戸の隠れ線の点線で分かる、開口ではなく壁のままにする区間） */
@@ -908,16 +918,21 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
           continue;
         }
         if (t1 - t0 < 250 || t1 - t0 > 4600) continue;
-        if (!ax.pieces.some((p) => p.t0 < t0 + 10 && p.t1 > t1 - 10)) continue;
-        if (ax.openings.some((o) => o.t0 < t1 && o.t1 > t0)) continue;
-        ax.pieces = ax.pieces.flatMap((p) =>
-          subtractIntervals([p.t0, p.t1], [[t0, t1]])
-            .filter(([a, b]) => b - a >= 20)
-            .map(([a, b]) => ({ ...p, t0: a, t1: b })),
-        );
-        const op: DetectedOpening = { g: ax.g, o: ax.o, d: ax.d, t0, t1, kind: 'window', confidence: 0.75 };
-        ax.openings.push(op);
-        openings.push(op);
+        // 開き戸の横の FIX（袖のガラス）: 白抜きが戸の開口に少し（15cm まで）掛かっているだけなら、掛かった分を除いた残りを見る
+        // （池本様邸 1 階の猫部屋: 戸の横の FIX 781mm の白抜きが戸の開口に 5cm 重なり、まるごと捨てられて壁になっていた）
+        const over = ax.openings.filter((o) => o.t0 < t1 && o.t1 > t0);
+        const rest = over.length && over.every((o) => Math.min(o.t1, t1) - Math.max(o.t0, t0) <= 150) ? subtractIntervals([t0, t1], over.map((o) => [o.t0, o.t1] as [number, number])).filter(([a, b]) => b - a >= 250) : over.length ? [] : [[t0, t1] as [number, number]];
+        for (const [a, b] of rest) {
+          if (!ax.pieces.some((p) => p.t0 < a + 10 && p.t1 > b - 10)) continue;
+          ax.pieces = ax.pieces.flatMap((p) =>
+            subtractIntervals([p.t0, p.t1], [[a, b]])
+              .filter(([x, y]) => y - x >= 20)
+              .map(([x, y]) => ({ ...p, t0: x, t1: y })),
+          );
+          const op: DetectedOpening = { g: ax.g, o: ax.o, d: ax.d, t0: a, t1: b, kind: 'window', confidence: 0.75 };
+          ax.openings.push(op);
+          openings.push(op);
+        }
       }
     }
   }
@@ -1029,6 +1044,22 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     if (!pk) continue;
     op.pocketSide = Math.abs(pk.t0 - op.t1) <= 60 ? 1 : -1;
     if (pk.sSign && op.swingSign == null) op.swingSign = pk.sSign > 0 ? 1 : -1;
+  }
+  // 開口の中を通る線（建具の線）の位置の数
+  for (const op of openings) {
+    if (op.kind !== 'window') continue;
+    const w = op.t1 - op.t0;
+    const offs = new Set<number>();
+    for (const l of lines[op.g]) {
+      const off = l.o - op.o;
+      if (Math.abs(off) > op.d / 2 - 8) continue;
+      if (Math.min(l.t1, op.t1) - Math.max(l.t0, op.t0) < Math.min(200, w * 0.3)) continue;
+      offs.add(Math.round(off / 4));
+    }
+    op.inner = offs.size;
+    // 開口の端から 15cm の区間に、壁の色の塗りの輪郭が（どちらかの面で）半分以上通っているか
+    const touch = (a: number, b: number) => [-1, 1].some((sd) => wallFillCover(op.g, op.o + (sd * op.d) / 2, a, b) >= (b - a) * 0.5);
+    op.filledEnd = touch(op.t0 - 150, op.t0) || touch(op.t1, op.t1 + 150);
   }
   let heavyLen = 0;
   for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;

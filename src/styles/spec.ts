@@ -81,13 +81,13 @@ export function specById(id: string | undefined): BuilderSpec {
 
 /** 仕様を反映した開口部の高さ (mm) */
 export function effectiveOpening(
-  o: { kind: string; sill: number; height: number; windowStyle?: string; heightFrom?: string },
+  o: { kind: string; sill: number; height: number; windowStyle?: string; heightFrom?: string; interior?: boolean },
   ceilingHeight: number,
   spec: BuilderSpec,
 ): { sill: number; height: number } {
   if (o.kind === 'window') {
-    // 立面図・設計の 3D データで分かった高さは図面どおり（仕様でそろえ直さない）
-    if (!spec.windows.headAtCeiling || o.heightFrom) return { sill: o.sill, height: o.height };
+    // 立面図・設計の 3D データで分かった高さは図面どおり（仕様でそろえ直さない）。室内窓も外のサッシの納まりには合わせない
+    if (!spec.windows.headAtCeiling || o.heightFrom || o.interior) return { sill: o.sill, height: o.height };
     // 上端を天井にそろえる（腰高は元の値、ただし小窓・高窓は高さを保って上に寄せる）
     if (o.windowStyle === 'small' || o.windowStyle === 'high') {
       const h = Math.min(o.height, ceilingHeight - 300);

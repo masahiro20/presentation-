@@ -780,7 +780,8 @@ function windowsOf(model: BuildingModel, level: number, room: Room, y0: number):
   const f = model.floors.find((f) => f.level === level)!;
   const out: WinInfo[] = [];
   for (const o of f.openings) {
-    if (o.kind !== 'window') continue;
+    // 室内窓（部屋と部屋の間のガラス）は外の光・眺めの窓ではないので、構図の手掛かりにしない
+    if (o.kind !== 'window' || o.interior) continue;
     const w = f.walls.find((w) => w.id === o.wallId);
     if (!w) continue;
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);

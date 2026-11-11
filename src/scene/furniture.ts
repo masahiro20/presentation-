@@ -748,7 +748,7 @@ function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
       const a = (p0.x * MM - fr.origin.x) * fr.along.x;
       const b = (p1.x * MM - fr.origin.x) * fr.along.x;
       if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-      if (o.kind === 'window') ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
+      if (o.kind === 'window' && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
     };
     const addV = (side: Side, x: number) => {
       if (Math.abs(p0.x - x) > tol) return;
@@ -756,7 +756,7 @@ function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
       const a = (p0.y * MM - fr.origin.z) * fr.along.z;
       const b = (p1.y * MM - fr.origin.z) * fr.along.z;
       if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-      if (o.kind === 'window') ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
+      if (o.kind === 'window' && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
     };
     const within = (v: number, a: number, b: number) => v > a - 200 && v < b + 200;
     if (horiz && (within(p0.x, inner.minX, inner.maxX) || within(p1.x, inner.minX, inner.maxX))) {

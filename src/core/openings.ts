@@ -41,6 +41,7 @@ export function applyWindowShape(op: Opening, style: Exclude<WindowStyle, 'none'
 
 /** 表示用の名前（勝手口は開き戸の一種だが、名前は分ける） */
 export function openingLabel(op: Opening): string {
+  if (op.kind === 'window' && op.interior) return '室内窓';
   return op.kind === 'door' && op.service ? '勝手口' : OPENING_LABEL[op.kind];
 }
 
@@ -54,13 +55,26 @@ export function setExteriorDoorRole(op: Opening, role: 'entrance' | 'service', c
   op.service = true;
 }
 
+/**
+ * 間仕切りの窓を「室内窓」（部屋と部屋の間の FIX のガラス）にする／外す。
+ * 室内窓は 3D でカーテン・水切りを付けず、採光の窓にも数えない。腰高・高さは仕様でそろえ直さない
+ */
+export function setInteriorWindow(op: Opening, on: boolean) {
+  if (op.kind !== 'window') return;
+  if (on) {
+    op.interior = true;
+    delete op.heightFrom;
+  } else delete op.interior;
+}
+
 /** 種類を変える（腰高・高さを種類の標準に。窓→窓以外は床まで、窓以外→窓は腰窓） */
 export function applyOpeningKind(op: Opening, kind: Opening['kind'], ceilingHeight: number) {
   if (kind === op.kind) return;
   op.kind = kind;
-  // 勝手口の印は開き戸のときだけ。種類を変えたら高さは標準（立面図・3D データの高さの印は外す）
+  // 勝手口の印は開き戸のときだけ。種類を変えたら高さは標準（立面図・3D データの高さの印・室内窓の印は外す）
   delete op.service;
   delete op.heightFrom;
+  delete op.interior;
   if (kind === 'window') {
     if (op.sill === 0 && op.height > 2000) applyWindowShape(op, 'hakidashi', ceilingHeight);
     else applyWindowShape(op, op.windowStyle && op.windowStyle !== 'none' ? op.windowStyle : 'koshi', ceilingHeight);
@@ -157,6 +171,8 @@ export function flipSwing(op: Opening) {
 
 /** 引違いか（幅 1.2m 以上の掃き出し・腰窓）。FIX・すべり出しは false */
 export function isSlidingWindow(op: Opening): boolean {
+  // 室内窓は FIX のガラス
+  if (op.interior) return false;
   const len = op.t1 - op.t0;
   const style = op.windowStyle ?? (len >= 1600 ? 'hakidashi' : len >= 1200 ? 'koshi' : 'small');
   return style === 'hakidashi' || style === 'koshi';
@@ -166,6 +182,8 @@ export function isSlidingWindow(op: Opening): boolean {
 export function openingSummary(op: Opening): string {
   const w = Math.round(op.t1 - op.t0).toLocaleString();
   if (op.kind === 'window') {
+    // 室内窓（部屋と部屋の間のガラス）
+    if (op.interior) return `室内窓（FIX）W${w}　腰 ${op.sill}　高さ ${op.height}`;
     const st = op.windowStyle && op.windowStyle !== 'none' ? WINDOW_SHAPES[op.windowStyle].short : isSlidingWindow(op) ? '引違い' : 'FIX';
     const how = isSlidingWindow(op) ? '引違い' : op.windowStyle === 'small' || op.windowStyle === 'slit' ? (op.windowStyle === 'slit' ? 'FIX' : '縦すべり出し') : 'FIX';
     return `${st}（${how}）W${w}　腰 ${op.sill}　高さ ${op.height}`;

@@ -12,7 +12,7 @@ import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { mmText, openingGaps } from '../core/dims';
 import { OUTDOOR_TYPES, FLOOR_FINISH_LABEL, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, ROOF_KIND_LABEL, type BuildingModel, type Floor, type FloorFinish, type Opening, type RoofHigh, type RoofKind, type RoofPatch, type Canopy, type VoidGuard, type Wall } from '../core/types';
 import { SHUTTER_LAYOUTS, applyShutterLayout, autoShutterLayout, shutterLayoutOf } from '../core/shutter';
-import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall } from '../core/openings';
+import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setInteriorWindow, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall } from '../core/openings';
 import { effectiveOpening, resolveSpec } from '../styles/spec';
 import { roofMasses, roofMassAt, patchLoop, type RoofMass } from '../scene/roof';
 import { SASH_MIN_CHECK, SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
@@ -1469,6 +1469,18 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           h('div', { class: 'field-label' }, '窓の形'),
           h('div', { class: 'segmented' }, ...(Object.keys(WINDOW_SHAPES) as (keyof typeof WINDOW_SHAPES)[]).map((k) => h('button', { class: (op.windowStyle ?? (isSlidingWindow(op) ? (op.sill === 0 ? 'hakidashi' : 'koshi') : 'small')) === k ? 'on' : '', title: WINDOW_SHAPES[k].label, onclick: () => change(() => applyWindowShape(op, k, f.ceilingHeight, wallLen)) }, WINDOW_SHAPES[k].short))),
           h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' }, numField('腰高 (mm)', () => op.sill, (v) => (op.sill = Math.max(0, v)), 50), numField('高さ (mm)', () => op.height, (v) => (op.height = Math.max(200, v)), 50)),
+          // 間仕切り（外壁でない壁）の窓: 室内窓（部屋と部屋の間のガラス）か、外に面した窓か
+          ...(wall && !wall.exterior
+            ? [
+                h('div', { class: 'field-label' }, '間仕切りの窓の扱い'),
+                h(
+                  'div',
+                  { class: 'segmented' },
+                  h('button', { class: op.interior ? 'on' : '', title: '部屋と部屋の間のガラス（FIX）。カーテン・水切りを付けず、採光の窓には数えません', onclick: () => change(() => setInteriorWindow(op, true)) }, '室内窓'),
+                  h('button', { class: !op.interior ? 'on' : '', title: '中庭・バルコニーなど、外に面した窓として扱います', onclick: () => change(() => setInteriorWindow(op, false)) }, '外に面した窓'),
+                ),
+              ]
+            : []),
           // 標準の幅（半間の割）: 柱芯 910 → 780、1,365 → 1,235、1,820 → 1,690、2,730 → 2,600 …
           h('div', { class: 'field-label' }, std ? '幅（標準の寸法）' : `幅 W${Math.round(width).toLocaleString()} は半間の割に合いません → ${sashWidthLabel(nearestSashWidth(width))} が近い寸法`),
           h('div', { class: 'segmented' }, ...SASH_QUICK_WIDTHS.map((x) => h('button', { class: Math.abs(width - x) <= 70 ? 'on' : '', title: sashWidthLabel(x), disabled: x > wallLen - 40, onclick: () => change(() => setOpeningWidth(op, x, wallLen)) }, x.toLocaleString()))),

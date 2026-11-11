@@ -402,6 +402,9 @@ export interface PlanData {
   maskDrawn?: boolean;
 }
 
+/** 室内窓（ガラス）・建具なしの開口があり得る部屋（収納・水まわりの前の白抜きは、印が無くても戸のまま） */
+const INTERIOR_WINDOW_SIDES: RoomType[] = ['hall', 'ldk', 'living', 'dining', 'kitchen', 'bedroom', 'kids', 'study', 'japanese', 'entrance', 'stairs', 'other'];
+
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
   switch (room) {
     case 'ldk':
@@ -2401,6 +2404,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       let sill = 0;
       let height = 2000;
       let windowStyle: WindowStyle | undefined;
+      let interiorWindow = false;
       // 外壁扱いの壁でも、両側が室内（中庭に面する壁の、ホール側の区間など）なら室内の建具として扱う
       const outdoorType = (t: RoomType | undefined) => !t || OUTDOOR_TYPES.includes(t);
       const bothInside = !!inRoom && !!otherRoom && !outdoorType(inRoom.type) && !outdoorType(otherRoom.type);
@@ -2459,12 +2463,32 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         // タイルの目地）。区切りは残して建具なしの開口にする。室名の無い区画（造作の棚・土間の奥）との間でも同じ:
         // 池本様邸 1 階の土間収納の中に 1.7m、パントリーの冷蔵庫置場の前に 1.3m、服部様邸のペット室の棚の前に 2.2m の「引戸」ができていた
         if (kind === 'sliding' && unmarkedSet.has(op) && inRoom && otherRoom) kind = 'open';
+        // 室内窓・建具なしの開口（印を使い、開口を白抜きで描く図面）: 通り口の印が無い白抜きの開口は、人が通る建具ではない。
+        //  - 中に建具の線が 1〜2 本（FIX の芯の線・引違いの 2 本）→ 室内窓（ガラス）
+        //  - 中に線が無い（白抜きだけ）→ 建具なしの開口（玄関と LDK の間の式台の所など）
+        //  - 線が 3 本以上（格子の入った造作の建具）や、収納・水まわりの前（折れ戸: 印が段の塗りに隠れることがある）は戸のまま
+        //  - 塗りの壁に開けた開口だけ（塗りの無い白い壁の横の額縁の線などは対象外）
+        // 池本様邸 1 階の LDK と猫部屋の間のガラス 1.7m・戸の両脇の FIX、2 階のホールと仕事部屋の間の引違いの窓が「引戸」になっていた
+        if (kind === 'sliding' && !noteOpen && noteKind == null && usesMarks && plan.maskDrawn && op.confidence > 0.7 && op.inner != null && op.filledEnd && !opMarked(w, op) && inRoom && otherRoom && !(globalThis as { __NO_INTERIOR_WINDOWS?: boolean }).__NO_INTERIOR_WINDOWS) {
+          const glazable = (t: RoomType) => INTERIOR_WINDOW_SIDES.includes(t);
+          if (glazable(inRoom.type) && glazable(otherRoom.type)) {
+            if (op.inner === 0) kind = 'open';
+            else if (op.inner <= 2) interiorWindow = true;
+          }
+        }
         // 「開口」の注記 = 建具なしの開口部。「引違」「FIX」の注記があれば引戸／固定として扱う
         if (noteOpen) kind = 'open';
         else if (noteKind === 'sliding' && kind !== 'door') kind = 'sliding';
         height = 2000;
         if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) height = noteSash.height >= 1800 ? noteSash.height : 2000;
         void otherRoom;
+        if (interiorWindow) {
+          // 高さは平面図からは分からないので、腰高 900・上端 2,000 の室内窓にしておく（修正画面で直せる）
+          kind = 'window';
+          sill = 900;
+          height = 1100;
+          windowStyle = 'koshi';
+        }
         // 幅 500 mm 未満の「引戸」は人が通れない（引込み戸の戸袋の端などの線）→ 建具にしない
         if (kind === 'sliding' && width < 500) continue;
       }
@@ -2477,6 +2501,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         sill,
         height,
         windowStyle,
+        ...(interiorWindow ? { interior: true } : {}),
         // 引戸は「引き込む側」を hingeAtStart に持つ（false = 始点側へ、true = 終点側へ）。図面の戸袋が読めたらその側
         hingeAtStart: kind === 'sliding' && op.pocketSide != null ? op.pocketSide > 0 : op.hingeAtStart,
         // 開く向きが読めない戸は、両側の部屋の種類から（個室・浴室はその部屋の中へ、トイレ・収納は外へ、通路からは部屋の中へ）
@@ -4986,10 +5011,13 @@ export function rebuildFloor(f: Floor, labels: RoomLabel[], northAngleDeg: numbe
       op.sill = src.sill ?? op.sill ?? 900;
       op.height = src.height || op.height || 1100;
       op.windowStyle = src.windowStyle ?? op.windowStyle;
+      if (src.interior) op.interior = true;
+      else delete op.interior;
     } else {
       op.sill = 0;
       op.height = src.kind === 'entrance' ? Math.max(2200, src.height) : src.kind === 'shutter' ? src.height || 2300 : src.height || 2000;
       op.windowStyle = undefined;
+      delete op.interior;
     }
     if (src.hingeAtStart != null) op.hingeAtStart = reversed ? !src.hingeAtStart : src.hingeAtStart;
     if (src.swingSide != null) op.swingSide = (reversed ? -src.swingSide : src.swingSide) as 1 | -1;

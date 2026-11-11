@@ -737,10 +737,10 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
   const rectOf = (r: Room) => bboxOf(r.polygon);
   const centerOf = (r: Room) => ({ x: (rectOf(r).minX + rectOf(r).maxX) / 2, y: (rectOf(r).minY + rectOf(r).maxY) / 2 });
   const drawnByMask = new Set((model as { report?: { openingsByMask?: number[] } }).report?.openingsByMask ?? []);
-  // 部屋に面する窓（開口の中心が部屋の境界から 250 以内）
+  // 部屋に面する窓（開口の中心が部屋の境界から 250 以内）。室内窓（部屋と部屋の間のガラス）は採光の窓に数えない
   const windowsOf = (f: Floor, r: Room) =>
     f.openings.filter((o) => {
-      if (o.kind !== 'window') return false;
+      if (o.kind !== 'window' || o.interior) return false;
       const w = f.walls.find((w) => w.id === o.wallId);
       if (!w) return false;
       const L = len(w) || 1;

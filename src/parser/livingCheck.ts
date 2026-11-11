@@ -198,7 +198,8 @@ function windowIssues(model: BuildingModel): WoodIssue[] {
         return w ? { o, w, ...openingSides(f, w, o) } : null;
       })
       .filter((x): x is NonNullable<typeof x> => !!x);
-    const inner = wins.filter((x) => x.a && x.b && x.a !== x.b && !OUTSIDE.includes(x.a.type) && !OUTSIDE.includes(x.b.type));
+    // 図面の窓の記号から室内窓と読めたもの（interior）は意図どおりなので、知らせない
+    const inner = wins.filter((x) => !x.o.interior && x.a && x.b && x.a !== x.b && !OUTSIDE.includes(x.a.type) && !OUTSIDE.includes(x.b.type));
     if (inner.length)
       out.push({ id: `live-winin-${f.level}`, level: f.level, severity: 'info', title: `${f.level}階: 部屋と部屋の間の壁に窓が ${inner.length} か所`, detail: '室内窓（LDK と書斎の間など）なら意図どおりです。そうでなければ、戸や壁の線を窓に読み違えています。方眼で種類を直してください', marks: [{ level: f.level, lines: inner.map((x) => x.line), label: '部屋の間の窓' }] });
     for (const r of f.rooms) {

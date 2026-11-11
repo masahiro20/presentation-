@@ -826,7 +826,7 @@ export const estimateStep: Step = {
             'div',
             { class: `sug-row ${sg.applied ? 'on' : ''}` },
             h('div', { class: 'sug-main' }, h('b', null, sg.label), h('div', { class: 'hint' }, sg.reason)),
-            canToggle ? h('button', { class: `btn xs ${sg.applied ? 'ghost' : 'dark'}`, onclick: () => toggle(!sg.applied) }, sg.applied ? '外す' : '入れる') : h('span', { class: 'sug-auto' }, '自動'),
+            canToggle ? h('button', { class: `btn xs ${sg.applied ? 'ghost' : 'dark'}`, onclick: () => toggle(!sg.applied) }, sg.applied ? '外す' : '入れる') : h('span', { class: 'sug-auto' }, sg.separate ? '別途' : '自動'),
           ),
         );
       }

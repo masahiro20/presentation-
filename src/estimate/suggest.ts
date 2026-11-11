@@ -17,6 +17,8 @@ export interface OptionSuggestion {
   reason: string;
   /** すでに入っている（数量 > 0 かスイッチ ON） */
   applied: boolean;
+  /** 価格表に行が無く、自動でも計上していない（「追加・増減」で別途入れる） */
+  separate?: boolean;
 }
 
 export function suggestOptions(model: BuildingModel, a: Areas, choice: EstimateChoice): OptionSuggestion[] {
@@ -53,6 +55,12 @@ export function suggestOptions(model: BuildingModel, a: Areas, choice: EstimateC
   if (floors.some((f) => f.openings.filter((o) => o.kind === 'entrance').length)) flag('pocketKey', '玄関ポケットキー', '玄関ドアあり（電気錠は電源直結）');
   if (a.totalArea >= 130) out.push({ label: '浄化槽 7 人槽', reason: `延床 ${a.totalArea.toFixed(0)}㎡（130㎡ 以上は 7 人槽）。下水道が無い敷地なら必要`, applied: flagOn('septic') });
   else flag('septic', '浄化槽 5 人槽', '下水道が無い敷地なら必要');
+  // 室内窓（部屋と部屋の間の FIX のガラス）: 建具の数にもサッシの概算にも入らないので、別途の計上を促す
+  const interiorWins = floors.flatMap((f) => f.openings.filter((o) => o.kind === 'window' && o.interior));
+  if (interiorWins.length) {
+    const widths = interiorWins.map((o) => `W${Math.round(o.t1 - o.t0).toLocaleString()}`);
+    out.push({ label: `室内窓 ${interiorWins.length} か所`, reason: `部屋と部屋の間のガラス（FIX。${widths.slice(0, 4).join('・')}${widths.length > 4 ? ' ほか' : ''}）。室内建具の数・サッシの概算には入っていません。「追加・増減」で別途計上してください`, applied: false, separate: true });
+  }
   if (floors.length >= 3) out.push({ label: '3 階建て: 構造計算（許容応力度）', reason: '3 階建ては構造計算が必須', applied: flagOn('structCalc') });
   if (floors.length >= 3 && !flagOn('structCalc')) flag('structCalc', '許容応力度計算', '3 階建て');
   return out;

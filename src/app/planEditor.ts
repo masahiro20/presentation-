@@ -21,7 +21,7 @@ import { h, clear, toast, useSelect } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
-import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall, dragOpeningEnd } from '../core/openings';
+import { OPENING_LABEL, OPENING_DEFAULT, OPENING_KINDS, WINDOW_SHAPES, applyWindowShape, applyOpeningKind, setInteriorWindow, setOpeningWidth, flipHinge, flipSwing, openingSummary, openingLabel, setExteriorDoorRole, isSlidingWindow, clampToWall, dragOpeningEnd } from '../core/openings';
 import { SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { siteSize, syncSiteFromPolygon } from '../parser/site';
 import { stairDrawing } from '../core/stairs';
@@ -1113,7 +1113,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         ln(P(len * 0.47, -g), P(len * 0.47, g), thin);
       } else {
         ln(P(0, 0), P(len, 0), mid);
-        if (op.windowStyle === 'small') {
+        if (op.windowStyle === 'small' && !op.interior) {
           const out = w.exterior ? (w.outsideSign ?? 1) : 1;
           const ap = P(len / 2, (hh + Math.min(len * 0.45, 420)) * out);
           ln(P(0, hh * out), ap, thin);
@@ -1169,7 +1169,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     if (on || fs < 180) {
       const c = P(len / 2, (hh + fs * 0.9) * (op.kind === 'door' || op.kind === 'entrance' ? -(op.swingSide ?? 1) : -1));
       const t = el('text', { x: c.x, y: c.y + fs * 0.25, 'font-size': fs * 0.55, 'text-anchor': 'middle', fill: on ? '#b8683a' : col, stroke: '#fff', 'stroke-width': fs * 0.12, 'paint-order': 'stroke', 'pointer-events': 'none', transform: `rotate(${Math.abs(ux) < 0.01 ? -90 : 0} ${c.x} ${c.y})` }, gOps);
-      t.textContent = on ? openingSummary(op) : op.kind === 'window' ? (op.windowStyle && op.windowStyle !== 'none' ? WINDOW_SHAPES[op.windowStyle].short : isSlidingWindow(op) ? '引違い' : 'FIX') : OPENING_LABEL[op.kind];
+      t.textContent = on ? openingSummary(op) : op.kind === 'window' && op.interior ? '室内窓' : op.kind === 'window' ? (op.windowStyle && op.windowStyle !== 'none' ? WINDOW_SHAPES[op.windowStyle].short : isSlidingWindow(op) ? '引違い' : 'FIX') : OPENING_LABEL[op.kind];
     }
   };
 
@@ -1565,7 +1565,19 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
                   ...(Object.keys(WINDOW_SHAPES) as (keyof typeof WINDOW_SHAPES)[]).map((k) => h('button', { class: (op.windowStyle ?? (isSlidingWindow(op) ? (op.sill === 0 ? 'hakidashi' : 'koshi') : 'small')) === k ? 'on' : '', title: WINDOW_SHAPES[k].label, onclick: () => change(() => applyWindowShape(op, k, f.ceilingHeight, wallLen)) }, WINDOW_SHAPES[k].short)),
                 ),
                 h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px' }, numField('腰高 (mm)', () => op.sill, (v) => (op.sill = Math.max(0, v)), 50), numField('窓の高さ (mm)', () => op.height, (v) => (op.height = Math.max(200, v)), 50)),
-                h('span', { class: 'hint' }, `掃出し・腰窓は引違い、小窓は縦すべり出し、高窓・スリットは FIX。この階の天井 ${f.ceilingHeight}（標準仕様はサッシ上端を天井にそろえます）`),
+                // 間仕切り（外壁でない壁）の窓: 室内窓（部屋と部屋の間のガラス）か、外に面した窓か
+                ...(wall && !wall.exterior
+                  ? [
+                      h('div', { class: 'field-label' }, '間仕切りの窓の扱い'),
+                      h(
+                        'div',
+                        { class: 'segmented' },
+                        h('button', { class: op.interior ? 'on' : '', title: '部屋と部屋の間のガラス（FIX）。3D でカーテン・水切りを付けず、採光の窓には数えません', onclick: () => change(() => setInteriorWindow(op, true)) }, '室内窓'),
+                        h('button', { class: !op.interior ? 'on' : '', title: '中庭・バルコニーなど、外に面した窓として扱います', onclick: () => change(() => setInteriorWindow(op, false)) }, '外に面した窓'),
+                      ),
+                    ]
+                  : []),
+                h('span', { class: 'hint' }, op.interior ? `室内窓は開かないガラス（FIX）。腰高と高さは上の数値どおり（仕様でそろえ直しません）。この階の天井 ${f.ceilingHeight}` : `掃出し・腰窓は引違い、小窓は縦すべり出し、高窓・スリットは FIX。この階の天井 ${f.ceilingHeight}（標準仕様はサッシ上端を天井にそろえます）`),
               ]
             : []),
           ...(op.kind === 'door' || op.kind === 'entrance'

@@ -1522,8 +1522,10 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   const outN = nW.clone().multiplyScalar(outSign);
 
   if (o.kind === 'window') {
+    // 室内窓（部屋と部屋の間のガラス）: 壁の芯に FIX のガラスだけ。水切り・カーテンは付けない
+    const interiorWin = !!o.interior && !w.exterior;
     // サッシ枠は外壁寄り（半外付け）
-    const plane = mid.clone().addScaledVector(outN, t / 2 - 0.05);
+    const plane = interiorWin ? mid.clone() : mid.clone().addScaledVector(outN, t / 2 - 0.05);
     const fw = 0.03;
     const fd = 0.07;
     const frame = 'ext.frame';
@@ -1544,7 +1546,10 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     // 区画: 横長の小窓・高窓は横すべり出し 1 枚。それ以外は FIX（1 枚の幅 1.8m まで）＋ 端に縦すべり出し（幅 0.5m）を 1 枚
     const cells: { w: number; vent: 'none' | 'side' | 'top' }[] = [];
     const flat = H < 0.7 || o.windowStyle === 'high';
-    if (flat) cells.push({ w: innerW, vent: 'top' });
+    if (interiorWin) {
+      const nFix = Math.max(1, Math.ceil(innerW / 1.8));
+      for (let k = 0; k < nFix; k++) cells.push({ w: (innerW - mull * (nFix - 1)) / nFix, vent: 'none' });
+    } else if (flat) cells.push({ w: innerW, vent: 'top' });
     else if (innerW <= 0.75) cells.push({ w: innerW, vent: 'side' });
     else {
       const ventW = Math.min(0.5, innerW * 0.35);
@@ -1595,20 +1600,20 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
           const hingeAtA = k === 0;
           sash.tri = hingeAtA ? { apex: g0.clone().lerp(g3, 0.5), a: g1.clone(), b: g2.clone() } : { apex: g1.clone().lerp(g2, 0.5), a: g0.clone(), b: g3.clone() };
         }
-        meta.sashes.push(sash);
+        if (!interiorWin) meta.sashes.push(sash);
       }
       u += cell.w;
     });
     // 外部の水切り
-    mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.04, 0.02, 0.05);
+    if (!interiorWin) mb.box(frame, mid.clone().addScaledVector(outN, t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.04, 0.02, 0.05);
     // 室内の窓台
-    if (o.sill > 0 && spec.windows.sillBoard) mb.box('int.trim', mid.clone().addScaledVector(outN, -t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.06, 0.02, 0.06);
+    if (!interiorWin && o.sill > 0 && spec.windows.sillBoard) mb.box('int.trim', mid.clone().addScaledVector(outN, -t / 2 + 0.01).setY(sill - 0.02), dir, width + 0.06, 0.02, 0.06);
     // カーテン（居室の掃き出し・腰窓）
     const inRoom = roomAt(f, (mid.x - outN.x * (t / 2 + 0.2)) / MM, (mid.z - outN.z * (t / 2 + 0.2)) / MM);
     // 高窓（下端が床から 1.2m より上・天井付けの横長窓）と小窓（高さ 0.8m 未満）にはカーテンを付けない。
     // 天井付けの細い窓に床までのカーテンが下がっていると、窓の無い所に布がある不自然な絵になる
     const curtainable = o.sill * MM <= 1.2 && o.height * MM >= 0.8;
-    if (spec.curtains !== 'none' && curtainable && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
+    if (!interiorWin && spec.curtains !== 'none' && curtainable && inRoom && ['ldk', 'living', 'dining', 'bedroom', 'kids', 'study'].includes(inRoom.type) && width > 0.7) {
       const ceil = fl + f.ceilingHeight * MM;
       const inner = mid.clone().addScaledVector(outN, -t / 2 - 0.12);
       // 束ねたカーテンが窓の脇の壁の外（建物の角の先）に出る場合は、窓の内側に寄せる

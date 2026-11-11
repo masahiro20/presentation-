@@ -100,6 +100,11 @@ export interface Opening {
    * 図面どおりの高さなので、仕様の「サッシ上端＝天井」でそろえ直さない
    */
   heightFrom?: 'elevation' | '3d';
+  /**
+   * 室内窓（部屋と部屋の間の壁のガラス: FIX・引違い。図面で通り口の印が無い窓の記号）。kind は 'window'。
+   * 仕様の「サッシ上端＝天井」でそろえ直さず、カーテン・水切りも付けない。採光の窓にも数えない
+   */
+  interior?: boolean;
 }
 
 export interface Room {

@@ -261,7 +261,7 @@ export function openingSchedule(f: Floor): OpeningScheduleEntry[] {
       out.push({
         id: o.id,
         tag: `${pre}${counters[pre]}`,
-        kindJa: o.windowStyle === 'hakidashi' ? '掃出し窓' : o.windowStyle === 'koshi' ? '腰窓' : o.windowStyle === 'high' ? '高窓' : o.windowStyle === 'small' ? '小窓' : OPENING_KIND_JA[o.kind] ?? o.kind,
+        kindJa: o.kind === 'window' && o.interior ? '室内窓' : o.windowStyle === 'hakidashi' ? '掃出し窓' : o.windowStyle === 'koshi' ? '腰窓' : o.windowStyle === 'high' ? '高窓' : o.windowStyle === 'small' ? '小窓' : OPENING_KIND_JA[o.kind] ?? o.kind,
         w: Math.round(o.t1 - o.t0),
         h: Math.round(o.height),
         sill: Math.round(o.sill),
@@ -581,14 +581,15 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         const ln = (p0: { x: number; y: number }, p1: { x: number; y: number }, wd = 7, col = '#111') => `<line x1="${p0.x.toFixed(0)}" y1="${p0.y.toFixed(0)}" x2="${p1.x.toFixed(0)}" y2="${p1.y.toFixed(0)}" stroke="${col}" stroke-width="${wd}"/>`;
         for (const k of [-1, 1]) s += ln(P(0, h * k), P(len, h * k));
         const style = o.windowStyle ?? (len >= 1600 ? 'hakidashi' : len >= 1200 ? 'koshi' : 'small');
-        const sliding = style === 'hakidashi' || style === 'koshi' || (style !== 'small' && style !== 'slit' && style !== 'high' && len >= 1200);
+        // 室内窓（部屋と部屋の間のガラス）は FIX の 1 本線
+        const sliding = !o.interior && (style === 'hakidashi' || style === 'koshi' || (style !== 'small' && style !== 'slit' && style !== 'high' && len >= 1200));
         if (sliding) {
           const g = Math.min(28, h * 0.4);
           s += ln(P(0, -g), P(len * 0.53, -g)) + ln(P(len * 0.47, g), P(len, g));
           s += ln(P(len * 0.53, -g), P(len * 0.53, g)) + ln(P(len * 0.47, -g), P(len * 0.47, g));
         } else {
           s += ln(P(0, 0), P(len, 0));
-          if (style === 'small' || style === 'slit') {
+          if (!o.interior && (style === 'small' || style === 'slit')) {
             // 縦すべり出し窓: 外側に開く三角（頂点が外）
             const out = w.exterior ? (w.outsideSign ?? 1) : 1;
             const a0 = P(0, h * out);

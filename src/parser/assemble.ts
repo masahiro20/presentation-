@@ -8,6 +8,7 @@ import { chooseEntrance } from './entranceChoice';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
 import { detectPassMarks, marksCrossing } from './passMarks';
 import { carveStairRegion } from './stairRooms';
+import { findBalconyRails } from './balconyRails';
 import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floorAlign';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
@@ -1394,6 +1395,43 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     if (marks.length) {
       const n = cutGarageRails(walls, (a, b) => marks.some((t) => distPointSegment(t, a, b) <= 4500));
       if (n) (globalThis as { __closerTrace?: string[] }).__closerTrace?.push(`rails ${n}`);
+    }
+  }
+  // 手すりが細い線だけで描かれたバルコニー（2 階以上）: 室名が屋外にあるとき、細い線と壁で囲まれた範囲の縁に手すり壁を補う。
+  // 壁として足しておけば、あとは壁で囲まれたバルコニーと同じ流れで部屋・外壁・3D の手すりになる（balconyRails.ts）
+  if (level >= 2 && segsU.length && !(globalThis as { __NO_BALCONY_RAILS?: boolean }).__NO_BALCONY_RAILS) {
+    const near = (p: Vec2, m: number) => p.x > plan.bbox.minX - m && p.x < plan.bbox.maxX + m && p.y > plan.bbox.minY - m && p.y < plan.bbox.maxY + m;
+    const seen = new Set<string>();
+    const balLabels: Vec2[] = [];
+    for (const t of [...plan.texts, ...plan.siteTexts]) {
+      if (!near(t, 2000)) continue;
+      const nm = cleanRoomName(t.str);
+      const ty = nm ? classifyRoomName(nm) : null;
+      if (!nm || !(ty === 'balcony' || ty === 'deck' || ty === 'terrace') || /庭|COURT/i.test(nm)) continue;
+      const key = `${Math.round(t.x)},${Math.round(t.y)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      balLabels.push({ x: t.x, y: t.y });
+    }
+    if (balLabels.length) {
+      const found = findBalconyRails({
+        bbox: plan.bbox,
+        labels: balLabels,
+        walls,
+        wallPolys: [...plan.wallPolys, ...plan.sashPolys],
+        closers: collinearGaps(walls, 4600),
+        lines: segsU.filter((sg) => sg.source === 'stroke' && !sg.dashed && near(sg.a, 2600) && near(sg.b, 2600)),
+      });
+      let k = 0;
+      for (const f of found)
+        for (const r of f.rails) {
+          const L = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
+          const u = { x: (r.b.x - r.a.x) / L, y: (r.b.y - r.a.y) / L };
+          const n = { x: -u.y, y: u.x };
+          // g は壁ごとに固有の負の値（同じ軸の仲間として扱われないように）
+          walls.push({ a: r.a, b: r.b, u, n, d: r.d, t0: r.a.x * u.x + r.a.y * u.y, t1: r.b.x * u.x + r.b.y * u.y, o: r.a.x * n.x + r.a.y * n.y, g: -(3000 + k++), openings: [], joinedA: true, joinedB: true });
+        }
+      (globalThis as { __railTrace?: string[] }).__railTrace?.push(...found.map((f) => `L${level} バルコニー ${f.area.toFixed(2)}㎡ 手すり ${f.rails.map((r) => `${Math.round(r.a.x)},${Math.round(r.a.y)}-${Math.round(r.b.x)},${Math.round(r.b.y)} d${r.d}`).join(' / ')}`));
     }
   }
   // 部屋の区切り: 壁・壁の塗り・窓の白抜き・吹抜（×印の四角）の輪郭
@@ -3638,6 +3676,76 @@ export function stairAlignShift(lower: Floor, upper: Floor): Vec2 | null {
   return d;
 }
 
+/**
+ * 上下階の重ね位置の検算（外壁）: 上の階の外壁が、下の階の外壁から半間（455）だけずれて平行に並んでいて、
+ * 半間動かせば 1 面まるごと（2 間以上）そろうなら、そろう位置へ直す量を返す。
+ *
+ * 910 の格子に乗った家は、室内の壁の重なりだけでは半間ずれた位置も同じくらい良く見える。
+ * 外壁が 1 面まるごと 455 だけはね出す・455 だけ下がる納まりはまず無い（柱・基礎・屋根がその分だけ増える）ので、
+ * 階段が決め手にならないとき（片方が読み切れていない）は、外壁がそろう位置を取る。
+ * 動かすと、いまそろっている外壁がずれる・壁の乗りが悪くなる・階段の重なりが大きく減る、のどれかなら直さない
+ * （田中様邸: 1 階の階段がかね折れの 1 列目しか読めず、2 階は 2 本の階段が重なって 1 つに読めていて、1 階が 455 西にずれていた。
+ *   東の外壁 5.5 m がそろう位置へ直すと、階段室の東の壁も上下でそろう）
+ */
+export function flushAlignShift(lower: Floor, upper: Floor): Vec2 | null {
+  type AX = { v: boolean; c: number; t0: number; t1: number };
+  const ext = (f: Floor): AX[] => {
+    const out: AX[] = [];
+    for (const w of f.walls) {
+      if (!w.exterior) continue;
+      if (Math.abs(w.a.x - w.b.x) < 1) out.push({ v: true, c: w.a.x, t0: Math.min(w.a.y, w.b.y), t1: Math.max(w.a.y, w.b.y) });
+      else if (Math.abs(w.a.y - w.b.y) < 1) out.push({ v: false, c: w.a.y, t0: Math.min(w.a.x, w.b.x), t1: Math.max(w.a.x, w.b.x) });
+    }
+    return out;
+  };
+  const A = ext(lower);
+  const B = ext(upper);
+  if (!A.length || !B.length) return null;
+  /** 上の階を d だけ動かしたとき、外壁どうしが同じ面にそろう長さ */
+  const flush = (d: Vec2): number => {
+    let sum = 0;
+    for (const b of B)
+      for (const a of A) {
+        if (a.v !== b.v) continue;
+        const dc = b.v ? d.x : d.y;
+        const dt = b.v ? d.y : d.x;
+        if (Math.abs(a.c - (b.c + dc)) > 40) continue;
+        sum += Math.max(0, Math.min(a.t1, b.t1 + dt) - Math.max(a.t0, b.t0 + dt));
+      }
+    return sum;
+  };
+  const base = flush({ x: 0, y: 0 });
+  let best: { d: Vec2; gain: number } | null = null;
+  for (const d of [
+    { x: 455, y: 0 },
+    { x: -455, y: 0 },
+    { x: 0, y: 455 },
+    { x: 0, y: -455 },
+  ]) {
+    const gain = flush(d) - base;
+    if (gain >= 3640 && (!best || gain > best.gain)) best = { d, gain };
+  }
+  if (!best) return null;
+  const d = best.d;
+  // 室内の壁も含めた壁の乗りが悪くならないこと
+  if (wallFitRatio(lower, upper, d) < wallFitRatio(lower, upper)) return null;
+  // 上の階が下の階の外へ大きくはみ出さないこと
+  const shifted = { ...upper, outline: upper.outline.map((l) => l.map((q) => ({ x: q.x + d.x, y: q.y + d.y }))) };
+  if (overhangArea(lower, shifted) > overhangArea(lower, upper) + 1) return null;
+  // 階段: よく重なっている階段（同じ範囲に読めている）を引き離さない。動かした後も重なっていること
+  const m = matchStairs(lower, upper);
+  if (m) {
+    const moved: Stair = { ...m.upper, minX: m.upper.minX + d.x, maxX: m.upper.maxX + d.x, minY: m.upper.minY + d.y, maxY: m.upper.maxY + d.y };
+    const iou = stairIoU(m.lower, moved);
+    // 小さいほうの階段（読み切れていない側）が、大きいほうの範囲に 7 割以上入っていること
+    const ix = Math.max(0, Math.min(m.lower.maxX, moved.maxX) - Math.max(m.lower.minX, moved.minX));
+    const iy = Math.max(0, Math.min(m.lower.maxY, moved.maxY) - Math.max(m.lower.minY, moved.minY));
+    const small = Math.min((m.lower.maxX - m.lower.minX) * (m.lower.maxY - m.lower.minY), (moved.maxX - moved.minX) * (moved.maxY - moved.minY));
+    if (small <= 0 || (ix * iy) / small < 0.7 || iou < m.iou - 0.12) return null;
+  }
+  return d;
+}
+
 /** 階段の辺 side の、辺に沿った位置 frac（0〜1。辺の左／上の端から）から外へ出られるか（400mm 先までに壁が無いか、そこに戸・開口がある） */
 export function stairSideOpen(f: Pick<Floor, 'walls' | 'openings'>, st: Stair, side: Stair['entry'], frac = 0.5): boolean {
   const horiz = side === 'n' || side === 's';
@@ -3932,7 +4040,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
 function snapFloorWalls(f: Floor, m: ModuleFit) {
   const tol = snapTolerance(m.grid);
   const tolEnd = endTolerance(m.grid);
-  type Ax = { wall: Wall; horiz: boolean; oldAxis: number; newAxis: number };
+  type Ax = { wall: Wall; horiz: boolean; oldAxis: number; newAxis: number; lo: number; hi: number };
   const axes: Ax[] = [];
   for (const w of f.walls) {
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -3942,7 +4050,9 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
     if (!horiz && !vert) continue;
     const oldAxis = horiz ? (w.a.y + w.b.y) / 2 : (w.a.x + w.b.x) / 2;
     const sn = snapCoord(oldAxis, horiz ? m.phaseY : m.phaseX, m.grid);
-    axes.push({ wall: w, horiz, oldAxis, newAxis: Math.abs(sn - oldAxis) <= tol ? sn : oldAxis });
+    const e0 = horiz ? w.a.x : w.a.y;
+    const e1 = horiz ? w.b.x : w.b.y;
+    axes.push({ wall: w, horiz, oldAxis, newAxis: Math.abs(sn - oldAxis) <= tol ? sn : oldAxis, lo: Math.min(e0, e1), hi: Math.max(e0, e1) });
   }
   /** 元の位置 v に最も近かった（横 or 縦の）壁の芯の、寄せた後の位置 */
   const follow = (v: number, horiz: boolean, within: number): number | null => {
@@ -3992,6 +4102,43 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
     w.a = na;
     w.b = nb;
   }
+  // 斜めの壁: 向きは変えないが、端が接していた縦・横の壁が格子へ動いたら、端もその壁の芯を追う。
+  // そのままだと、動いた壁の角から斜めの壁の端が 5〜6cm 取り残され、外形の両端に小さな段ができる（田中様邸 2 階: 三角のバルコニーの斜めの手すり）
+  const axisWalls = new Set(axes.map((ax) => ax.wall));
+  /** p のそば（芯から 160mm 以内・壁の区間 ±300mm）を通っていた縦（horiz=false）・横（true）の壁の、寄せた後の芯 */
+  const followAt = (p: Vec2, horiz: boolean): number | null => {
+    let best: Ax | null = null;
+    let bd = Infinity;
+    for (const ax of axes) {
+      if (ax.horiz !== horiz) continue;
+      const d = Math.abs(ax.oldAxis - (horiz ? p.y : p.x));
+      const t = horiz ? p.x : p.y;
+      if (d > 160 || t < ax.lo - 300 || t > ax.hi + 300) continue;
+      if (d < bd) {
+        bd = d;
+        best = ax;
+      }
+    }
+    return best ? best.newAxis : null;
+  };
+  const diagMoves: { oldA: Vec2; oldB: Vec2; a: Vec2; b: Vec2 }[] = [];
+  for (const w of f.walls) {
+    if (axisWalls.has(w)) continue;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    if (L < 300) continue;
+    const mv = (p: Vec2): Vec2 => ({ x: followAt(p, false) ?? p.x, y: followAt(p, true) ?? p.y });
+    const na = mv(w.a);
+    const nb = mv(w.b);
+    if (Math.hypot(na.x - w.a.x, na.y - w.a.y) < 1 && Math.hypot(nb.x - w.b.x, nb.y - w.b.y) < 1) continue;
+    // 長さ・向きが大きく変わるなら触らない
+    const L2 = Math.hypot(nb.x - na.x, nb.y - na.y);
+    if (L2 < L * 0.85 || L2 > L * 1.15 || Math.abs((nb.x - na.x) * (w.b.y - w.a.y) - (nb.y - na.y) * (w.b.x - w.a.x)) / (L * L2) > 0.12) continue;
+    const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+    shiftA.set(w.id, (na.x - w.a.x) * u.x + (na.y - w.a.y) * u.y);
+    diagMoves.push({ oldA: { ...w.a }, oldB: { ...w.b }, a: na, b: nb });
+    w.a = na;
+    w.b = nb;
+  }
   for (const op of f.openings) {
     const da = shiftA.get(op.wallId);
     if (da == null) continue;
@@ -4007,6 +4154,8 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
   const movePoly = (poly: Vec2[]): Vec2[] => {
     const n = poly.length;
     const out: Vec2[] = [];
+    /** 斜めの壁を追って動かした頂点 */
+    const onDiag: boolean[] = [];
     for (let i = 0; i < n; i++) {
       const p = poly[i];
       const prev = poly[(i + n - 1) % n];
@@ -4020,9 +4169,61 @@ function snapFloorWalls(f: Floor, m: ModuleFit) {
         const sn = snapCoord(v, phase, m.grid);
         return Math.abs(sn - v) <= tol ? sn : v;
       };
-      if (vertEdge(prev) || vertEdge(next)) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
-      if (horizEdge(prev) || horizEdge(next)) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+      const hasV = vertEdge(prev) || vertEdge(next);
+      const hasH = horizEdge(prev) || horizEdge(next);
+      if (hasV) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
+      if (hasH) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+      // 斜めの辺の端の頂点は、動いた斜めの壁の線の上へ（もう一方の辺が縦・横なら、その線との交点）
+      if (diagMoves.length && !(hasV && hasH)) {
+        let dm: (typeof diagMoves)[number] | null = null;
+        let bd = 220;
+        for (const d of diagMoves) {
+          const dd = distPointSegment(p, d.oldA, d.oldB);
+          if (dd >= bd) continue;
+          // 隣の辺のどちらかが、その壁と平行（斜めの辺）であること
+          const wl = Math.hypot(d.oldB.x - d.oldA.x, d.oldB.y - d.oldA.y) || 1;
+          const par = [prev, next].some((q) => {
+            const el = Math.hypot(q.x - p.x, q.y - p.y);
+            return el > 1 && Math.abs((q.x - p.x) * (d.oldB.y - d.oldA.y) - (q.y - p.y) * (d.oldB.x - d.oldA.x)) / (el * wl) < 0.12;
+          });
+          if (!par) continue;
+          bd = dd;
+          dm = d;
+        }
+        if (dm) {
+          const dx = dm.b.x - dm.a.x;
+          const dy = dm.b.y - dm.a.y;
+          let nx = x;
+          let ny = y;
+          if (hasH && Math.abs(dy) > 1) nx = dm.a.x + ((y - dm.a.y) * dx) / dy;
+          else if (hasV && Math.abs(dx) > 1) ny = dm.a.y + ((x - dm.a.x) * dy) / dx;
+          else {
+            // 斜めの辺どうしの頂点: 近いほうの端
+            const near = Math.hypot(p.x - dm.oldA.x, p.y - dm.oldA.y) <= Math.hypot(p.x - dm.oldB.x, p.y - dm.oldB.y) ? dm.a : dm.b;
+            nx = near.x;
+            ny = near.y;
+          }
+          if (Math.hypot(nx - p.x, ny - p.y) <= 300) {
+            x = nx;
+            y = ny;
+            onDiag[i] = true;
+          }
+        }
+      }
       out.push({ x, y });
+    }
+    // 斜めの壁の端へ動かした頂点のまわりを整える: すぐ隣（15mm 以内）の頂点は同じ角、
+    // 隣へ続く辺がほぼ縦・ほぼ横（ずれ 12mm 以内）なら隣の頂点をこの線に合わせる（升目でなぞった輪郭の端数が残って、外形がわずかに傾く）
+    for (let i = 0; i < n; i++) {
+      if (!onDiag[i]) continue;
+      for (const j of [(i + n - 1) % n, (i + 1) % n]) {
+        const q = out[j];
+        const dx = Math.abs(q.x - out[i].x);
+        const dy = Math.abs(q.y - out[i].y);
+        if (dx <= 15 && dy <= 15) out[i] = { x: q.x, y: q.y };
+        else if (dx > 0 && dx <= 12 && dy > 200) out[j] = { x: out[i].x, y: q.y };
+        else if (dy > 0 && dy <= 12 && dx > 200) out[j] = { x: q.x, y: out[i].y };
+      }
     }
     return cleanPolygon(out, poly);
   };
@@ -4300,6 +4501,25 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       }
       const how = [d.x ? `${d.x > 0 ? '右' : '左'}へ ${Math.abs(d.x).toLocaleString()} mm` : '', d.y ? `${d.y > 0 ? '下' : '上'}へ ${Math.abs(d.y).toLocaleString()} mm` : ''].filter(Boolean).join('・');
       warnings.push(`${floors[i].level}階の重ね位置を、階段が下の階の階段にぴったり重なる位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
+    }
+  }
+  // 外壁で上下階の重ね位置を検算: 上の階の外壁が下の階の外壁から半間だけずれて並び、半間動かせば 1 面まるごとそろうなら直す
+  // （階段がよく重なっている家は動かさない。flushAlignShift）
+  if (!samePageUnhinted && floors.length >= 2) {
+    for (let i = 1; i < floors.length; i++) {
+      const d = flushAlignShift(floors[i - 1], floors[i]);
+      if (!d) continue;
+      for (let k = i; k < floors.length; k++) {
+        const p = planOf.get(floors[k]);
+        if (!p) continue;
+        translatePlan(p, d);
+        const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+        nf.elevation = floors[k].elevation;
+        planOf.set(nf, p);
+        floors[k] = nf;
+      }
+      const how = [d.x ? `${d.x > 0 ? '右' : '左'}へ ${Math.abs(d.x).toLocaleString()} mm` : '', d.y ? `${d.y > 0 ? '下' : '上'}へ ${Math.abs(d.y).toLocaleString()} mm` : ''].filter(Boolean).join('・');
+      warnings.push(`${floors[i].level}階の重ね位置を、外壁が下の階の外壁とそろう位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
     }
   }
   // 1階の室名の無い区画で、上階に床が無く（2階図で空白）、周囲の大半がガラス戸・窓なら中庭（コの字プランの光庭）。

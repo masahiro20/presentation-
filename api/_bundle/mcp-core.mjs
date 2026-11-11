@@ -3356,7 +3356,7 @@ var DOOR_W = {
 	closet: 780,
 	storage: 780
 };
-var MARGIN = 60;
+var MARGIN$1 = 60;
 function wallFrame(w) {
 	const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
 	const ux = (w.b.x - w.a.x) / L;
@@ -3412,11 +3412,11 @@ function freeSpans(s, openings) {
 	const spans = [];
 	let cur = s.t0;
 	for (const o of ops) {
-		if (o.t0 - MARGIN > cur) spans.push({
+		if (o.t0 - MARGIN$1 > cur) spans.push({
 			t0: cur,
-			t1: o.t0 - MARGIN
+			t1: o.t0 - MARGIN$1
 		});
-		cur = Math.max(cur, o.t1 + MARGIN);
+		cur = Math.max(cur, o.t1 + MARGIN$1);
 	}
 	if (s.t1 > cur) spans.push({
 		t0: cur,
@@ -4314,6 +4314,780 @@ function carveStairRegion(grid, labels, sizes, l, box, opts) {
 		extraLabels,
 		joinedCells
 	};
+}
+var Grid = class Grid {
+	w;
+	h;
+	res;
+	ox;
+	oy;
+	data;
+	constructor(w, h, res, ox, oy) {
+		this.w = w;
+		this.h = h;
+		this.res = res;
+		this.ox = ox;
+		this.oy = oy;
+		this.data = new Uint8Array(w * h);
+	}
+	static around(minX, minY, maxX, maxY, res, margin) {
+		const ox = minX - margin;
+		const oy = minY - margin;
+		const w = Math.ceil((maxX - minX + margin * 2) / res);
+		const h = Math.ceil((maxY - minY + margin * 2) / res);
+		return new Grid(w, h, res, ox, oy);
+	}
+	cellOf(p) {
+		return [Math.floor((p.x - this.ox) / this.res), Math.floor((p.y - this.oy) / this.res)];
+	}
+	centerOf(x, y) {
+		return {
+			x: this.ox + (x + .5) * this.res,
+			y: this.oy + (y + .5) * this.res
+		};
+	}
+	get(x, y) {
+		if (x < 0 || y < 0 || x >= this.w || y >= this.h) return 2;
+		return this.data[y * this.w + x];
+	}
+	/** 凸多角形/任意多角形をスキャンラインで塗る（セル中心判定） */
+	fillPolygon(poly, val) {
+		let minY = Infinity;
+		let maxY = -Infinity;
+		for (const p of poly) {
+			minY = Math.min(minY, p.y);
+			maxY = Math.max(maxY, p.y);
+		}
+		const y0 = Math.max(0, Math.floor((minY - this.oy) / this.res - .5));
+		const y1 = Math.min(this.h - 1, Math.ceil((maxY - this.oy) / this.res));
+		const xs = [];
+		for (let y = y0; y <= y1; y++) {
+			const cy = this.oy + (y + .5) * this.res;
+			xs.length = 0;
+			for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+				const a = poly[i];
+				const b = poly[j];
+				if (a.y > cy !== b.y > cy) xs.push(a.x + (cy - a.y) / (b.y - a.y) * (b.x - a.x));
+			}
+			xs.sort((p, q) => p - q);
+			for (let k = 0; k + 1 < xs.length; k += 2) {
+				const xa = Math.max(0, Math.ceil((xs[k] - this.ox) / this.res - .5));
+				const xb = Math.min(this.w - 1, Math.floor((xs[k + 1] - this.ox) / this.res - .5));
+				for (let x = xa; x <= xb; x++) this.data[y * this.w + x] = val;
+			}
+		}
+	}
+	/** 太さ d の線分を塗る（少し太らせて隙間を防ぐ） */
+	fillThickSegment(a, b, d, val) {
+		const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+		const ux = (b.x - a.x) / L;
+		const uy = (b.y - a.y) / L;
+		const hw = Math.max(d / 2, this.res * .75);
+		const nx = -uy * hw;
+		const ny = ux * hw;
+		const ex = ux * this.res * .5;
+		const ey = uy * this.res * .5;
+		this.fillPolygon([
+			{
+				x: a.x - ex + nx,
+				y: a.y - ey + ny
+			},
+			{
+				x: b.x + ex + nx,
+				y: b.y + ey + ny
+			},
+			{
+				x: b.x + ex - nx,
+				y: b.y + ey - ny
+			},
+			{
+				x: a.x - ex - nx,
+				y: a.y - ey - ny
+			}
+		], val);
+	}
+	/** 外周から FREE セルを塗りつぶして OUTSIDE にする */
+	floodOutside() {
+		const { w, h, data } = this;
+		const q = new Int32Array(w * h);
+		let head = 0;
+		let tail = 0;
+		const push = (x, y) => {
+			const i = y * w + x;
+			if (data[i] === 0) {
+				data[i] = 2;
+				q[tail++] = i;
+			}
+		};
+		for (let x = 0; x < w; x++) {
+			push(x, 0);
+			push(x, h - 1);
+		}
+		for (let y = 0; y < h; y++) {
+			push(0, y);
+			push(w - 1, y);
+		}
+		while (head < tail) {
+			const i = q[head++];
+			const x = i % w;
+			const y = i / w | 0;
+			if (x > 0) push(x - 1, y);
+			if (x < w - 1) push(x + 1, y);
+			if (y > 0) push(x, y - 1);
+			if (y < h - 1) push(x, y + 1);
+		}
+	}
+	/** FREE セルの連結成分ラベル (0 = なし) */
+	labelComponents() {
+		const { w, h, data } = this;
+		const labels = new Int32Array(w * h);
+		const sizes = [0];
+		const q = new Int32Array(w * h);
+		let next = 1;
+		for (let s = 0; s < w * h; s++) {
+			if (data[s] !== 0 || labels[s]) continue;
+			let head = 0;
+			let tail = 0;
+			labels[s] = next;
+			q[tail++] = s;
+			let size = 0;
+			while (head < tail) {
+				const i = q[head++];
+				size++;
+				const x = i % w;
+				const y = i / w | 0;
+				const nb = [
+					x > 0 ? i - 1 : -1,
+					x < w - 1 ? i + 1 : -1,
+					y > 0 ? i - w : -1,
+					y < h - 1 ? i + w : -1
+				];
+				for (const j of nb) if (j >= 0 && data[j] === 0 && !labels[j]) {
+					labels[j] = next;
+					q[tail++] = j;
+				}
+			}
+			sizes.push(size);
+			next++;
+		}
+		return {
+			labels,
+			sizes
+		};
+	}
+};
+/** マスクを k セル膨張（allowed に含まれるセルのみ） */
+function dilateMask(mask, w, h, k, allowed) {
+	let cur = mask;
+	for (let it = 0; it < k; it++) {
+		const nxt = cur.slice();
+		for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+			const i = y * w + x;
+			if (cur[i]) continue;
+			if (allowed && !allowed(i)) continue;
+			if (x > 0 && cur[i - 1] || x < w - 1 && cur[i + 1] || y > 0 && cur[i - w] || y < h - 1 && cur[i + w] || x > 0 && y > 0 && cur[i - w - 1] || x < w - 1 && y > 0 && cur[i - w + 1] || x > 0 && y < h - 1 && cur[i + w - 1] || x < w - 1 && y < h - 1 && cur[i + w + 1]) nxt[i] = 1;
+		}
+		cur = nxt;
+	}
+	return cur;
+}
+function erodeMask(mask, w, h, k) {
+	const inv = new Uint8Array(mask.length);
+	for (let i = 0; i < mask.length; i++) inv[i] = mask[i] ? 0 : 1;
+	const d = dilateMask(inv, w, h, k);
+	const out = new Uint8Array(mask.length);
+	for (let i = 0; i < mask.length; i++) out[i] = d[i] ? 0 : 1;
+	return out;
+}
+/**
+* マスクの境界をたどって多角形（mm座標）を返す。外周ループのみ、面積の大きい順。
+*/
+function traceMask(mask, grid, simplifyTol) {
+	const { w, h } = grid;
+	const next = /* @__PURE__ */ new Map();
+	const key = (x, y) => y * (w + 1) + x;
+	const addEdge = (x0, y0, x1, y1) => {
+		const k0 = key(x0, y0);
+		if (!next.has(k0)) next.set(k0, []);
+		next.get(k0).push(key(x1, y1));
+	};
+	const at = (x, y) => x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x] === 1;
+	for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+		if (!at(x, y)) continue;
+		if (!at(x, y - 1)) addEdge(x + 1, y, x, y);
+		if (!at(x, y + 1)) addEdge(x, y + 1, x + 1, y + 1);
+		if (!at(x - 1, y)) addEdge(x, y, x, y + 1);
+		if (!at(x + 1, y)) addEdge(x + 1, y + 1, x + 1, y);
+	}
+	const loops = [];
+	const unkey = (k) => [k % (w + 1), Math.floor(k / (w + 1))];
+	while (next.size) {
+		const startK = next.keys().next().value;
+		const loop = [startK];
+		let cur = startK;
+		let prevDir = null;
+		for (let guard = 0; guard < 4 * w * h + 10; guard++) {
+			const outs = next.get(cur);
+			if (!outs || !outs.length) break;
+			let idx = 0;
+			if (outs.length > 1 && prevDir) {
+				const [cx, cy] = unkey(cur);
+				let best = -Infinity;
+				outs.forEach((o, oi) => {
+					const [nx, ny] = unkey(o);
+					const dx = nx - cx;
+					const dy = ny - cy;
+					const crossv = prevDir[0] * dy - prevDir[1] * dx;
+					if (crossv > best) {
+						best = crossv;
+						idx = oi;
+					}
+				});
+			}
+			const nk = outs.splice(idx, 1)[0];
+			if (!outs.length) next.delete(cur);
+			const [cx, cy] = unkey(cur);
+			const [nx, ny] = unkey(nk);
+			prevDir = [nx - cx, ny - cy];
+			cur = nk;
+			if (cur === startK) break;
+			loop.push(cur);
+		}
+		if (loop.length >= 4) {
+			const pts = loop.map((k) => {
+				const [x, y] = unkey(k);
+				return {
+					x: grid.ox + x * grid.res,
+					y: grid.oy + y * grid.res
+				};
+			});
+			loops.push(pts);
+		}
+	}
+	const tol = simplifyTol ?? grid.res * 1.2;
+	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea$1(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea$1(b)) - Math.abs(polygonArea$1(a)));
+}
+//#endregion
+//#region src/parser/balconyRails.ts
+var CLOSER = 3;
+/** バルコニーが図（壁のまとまり）の外へ出る分 */
+var MARGIN = 2600;
+var RES = 20;
+function findBalconyRails(input) {
+	const { bbox, labels, walls, wallPolys, closers } = input;
+	if (!labels.length || !input.lines.length) return [];
+	const g = Grid.around(bbox.minX, bbox.minY, bbox.maxX, bbox.maxY, RES, MARGIN);
+	const { w, h } = g;
+	const drawWalls = (grid) => {
+		for (const wl of walls) grid.fillThickSegment(wl.a, wl.b, wl.d, 1);
+		for (const poly of wallPolys) grid.fillPolygon(poly, 1);
+	};
+	for (const c of closers) g.fillThickSegment(c.a, c.b, Math.max(60, Math.min(c.d, 120)), CLOSER);
+	drawWalls(g);
+	g.floodOutside();
+	const at = (p) => {
+		const [x, y] = g.cellOf(p);
+		return x < 0 || y < 0 || x >= w || y >= h ? -1 : y * w + x;
+	};
+	const cand = labels.filter((p) => {
+		const i = at(p);
+		return i >= 0 && g.data[i] === 2;
+	});
+	if (!cand.length) return [];
+	const lines = dropBrokenLines(input.lines.filter((sg) => Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) >= 150));
+	const tg = new Grid(w, h, RES, g.ox, g.oy);
+	for (const sg of lines) {
+		const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+		const ex = (sg.b.x - sg.a.x) / L * 30;
+		const ey = (sg.b.y - sg.a.y) / L * 30;
+		tg.fillThickSegment({
+			x: sg.a.x - ex,
+			y: sg.a.y - ey
+		}, {
+			x: sg.b.x + ex,
+			y: sg.b.y + ey
+		}, 50, 1);
+	}
+	const line = new Uint8Array(w * h);
+	for (let i = 0; i < line.length; i++) if (tg.data[i] === 1 && g.data[i] === 2) line[i] = 1;
+	/** 図の外周から、屋外の升を blocked を越えずにたどる */
+	const queue = new Int32Array(w * h);
+	const floodFromBorder = (blocked) => {
+		const reach = new Uint8Array(w * h);
+		let head = 0;
+		let tail = 0;
+		const push = (i) => {
+			if (reach[i] || g.data[i] !== 2 || blocked(i)) return;
+			reach[i] = 1;
+			queue[tail++] = i;
+		};
+		for (let x = 0; x < w; x++) {
+			push(x);
+			push((h - 1) * w + x);
+		}
+		for (let y = 0; y < h; y++) {
+			push(y * w);
+			push(y * w + w - 1);
+		}
+		while (head < tail) {
+			const i = queue[head++];
+			const x = i % w;
+			const y = i / w | 0;
+			if (x > 0) push(i - 1);
+			if (x < w - 1) push(i + 1);
+			if (y > 0) push(i - w);
+			if (y < h - 1) push(i + w);
+		}
+		return reach;
+	};
+	const reach = floodFromBorder((i) => line[i] === 1);
+	const pocketCell = (i) => g.data[i] === 2 && !line[i] && !reach[i];
+	const comp = new Int32Array(w * h);
+	const compSize = [0];
+	for (let s0 = 0; s0 < comp.length; s0++) {
+		if (comp[s0] || !pocketCell(s0)) continue;
+		const id = compSize.length;
+		let head = 0;
+		let tail = 0;
+		let n = 0;
+		comp[s0] = id;
+		queue[tail++] = s0;
+		while (head < tail) {
+			const i = queue[head++];
+			n++;
+			const x = i % w;
+			const y = i / w | 0;
+			for (const j of [
+				x > 0 ? i - 1 : -1,
+				x < w - 1 ? i + 1 : -1,
+				y > 0 ? i - w : -1,
+				y < h - 1 ? i + w : -1
+			]) {
+				if (j < 0 || comp[j] || !pocketCell(j)) continue;
+				comp[j] = id;
+				queue[tail++] = j;
+			}
+		}
+		compSize.push(n);
+	}
+	const cellM2 = 400 / 1e6;
+	const out = [];
+	const usedId = /* @__PURE__ */ new Set();
+	for (const p of cand) {
+		let s = at(p);
+		if (s < 0) continue;
+		if (!comp[s]) {
+			const [cx, cy] = g.cellOf(p);
+			s = -1;
+			for (let r = 1; r <= 6 && s < 0; r++) for (let dy = -r; dy <= r && s < 0; dy++) for (let dx = -r; dx <= r && s < 0; dx++) {
+				if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+				const x = cx + dx;
+				const y = cy + dy;
+				if (x < 0 || y < 0 || x >= w || y >= h) continue;
+				if (comp[y * w + x]) s = y * w + x;
+			}
+			if (s < 0) continue;
+		}
+		const id = comp[s];
+		if (usedId.has(id)) continue;
+		usedId.add(id);
+		const cells = compSize[id] * cellM2;
+		if (cells < .9 || cells > 45) continue;
+		const mask = new Uint8Array(w * h);
+		for (let i = 0; i < mask.length; i++) if (comp[i] === id) mask[i] = 1;
+		if (attachedLength(mask, g) < 800) continue;
+		const open = (i) => reach[i] === 1 || comp[i] !== 0 && comp[i] !== id && compSize[comp[i]] * cellM2 >= 1;
+		const rails = railsFromLines(mask, g, lines, walls, open);
+		if (rails.reduce((sum, r) => sum + Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y), 0) < 800) continue;
+		const tg2 = new Grid(w, h, RES, g.ox, g.oy);
+		for (const r of rails) tg2.fillThickSegment(r.a, r.b, r.d, 1);
+		if (floodFromBorder((i) => tg2.data[i] === 1)[s]) continue;
+		const poly = traceMask(dilateMask(mask, w, h, 1, (i) => line[i] === 1), g, 45)[0] ?? [];
+		out.push({
+			label: p,
+			area: poly.length ? Math.abs(polygonArea$1(poly)) / 1e6 : cells,
+			polygon: poly,
+			rails
+		});
+	}
+	return out;
+}
+/**
+* 破線・一点鎖線を除く。CAD の出力では破線が「短い実線の列」になっていることがある（setDash ではない）。
+* 同じ直線上に、すき間（15〜400mm）をあけて 3 本以上並ぶ線は破線
+*/
+function dropBrokenLines(lines) {
+	const groups = /* @__PURE__ */ new Map();
+	for (const sg of lines) {
+		const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+		if (L < 1) continue;
+		let ux = (sg.b.x - sg.a.x) / L;
+		let uy = (sg.b.y - sg.a.y) / L;
+		if (Math.abs(uy) < .004) {
+			ux = 1;
+			uy = 0;
+		} else if (Math.abs(ux) < .004) {
+			ux = 0;
+			uy = 1;
+		} else if (ux < 0) {
+			ux = -ux;
+			uy = -uy;
+		}
+		const ak = Math.round(Math.atan2(uy, ux) * 360 / Math.PI);
+		const ta = sg.a.x * ux + sg.a.y * uy;
+		const tb = sg.b.x * ux + sg.b.y * uy;
+		const o = -sg.a.x * uy + sg.a.y * ux;
+		const key = `${ak}:${Math.round(o / 20)}`;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push({
+			sg,
+			t0: Math.min(ta, tb),
+			t1: Math.max(ta, tb),
+			o
+		});
+	}
+	const broken = /* @__PURE__ */ new Set();
+	for (const items of groups.values()) {
+		if (items.length < 3) continue;
+		items.sort((p, q) => p.t0 - q.t0);
+		let chain = [items[0]];
+		let end = items[0].t1;
+		const flush = () => {
+			if (chain.length >= 3) for (const it of chain) broken.add(it.sg);
+		};
+		for (let k = 1; k < items.length; k++) {
+			const it = items[k];
+			const gap = it.t0 - end;
+			if (gap >= 15 && gap <= 400) chain.push(it);
+			else if (gap < 15) {
+				chain[chain.length - 1] = {
+					...chain[chain.length - 1],
+					t1: Math.max(end, it.t1)
+				};
+				if (chain.length >= 2) broken.add(it.sg);
+			} else {
+				flush();
+				chain = [it];
+			}
+			end = Math.max(end, it.t1);
+		}
+		flush();
+	}
+	return broken.size ? lines.filter((sg) => !broken.has(sg)) : lines;
+}
+/** 囲みの縁のうち、壁・塞ぎ線に面した長さ (mm)。縁の升から 100mm 以内に壁があるものを数える */
+function attachedLength(mask, g) {
+	const { w, h } = g;
+	let n = 0;
+	const R = 5;
+	for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+		const i = y * w + x;
+		if (!mask[i]) continue;
+		if (x > 0 && x < w - 1 && y > 0 && y < h - 1 && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w]) continue;
+		let hit = false;
+		for (const [dx, dy] of [
+			[1, 0],
+			[-1, 0],
+			[0, 1],
+			[0, -1]
+		]) {
+			for (let d = 1; d <= R && !hit; d++) {
+				const xx = x + dx * d;
+				const yy = y + dy * d;
+				if (xx < 0 || yy < 0 || xx >= w || yy >= h) break;
+				const v = g.data[yy * w + xx];
+				if (v === 1 || v === CLOSER) hit = true;
+				else if (mask[yy * w + xx]) break;
+			}
+			if (hit) break;
+		}
+		if (hit) n++;
+	}
+	return n * g.res;
+}
+/**
+* 囲みに面した細い線を手すり壁にする。
+* 線の片側だけが囲みのもの（両側とも囲みの線は、引き出し線・床の目地）。二重線・三重線の笠木は、いちばん内側の線から外の線までを厚みにする
+*/
+function railsFromLines(mask, g, lines, walls, open) {
+	const { w, h } = g;
+	const inMask = (x, y) => {
+		const cx = Math.floor((x - g.ox) / g.res);
+		const cy = Math.floor((y - g.oy) / g.res);
+		return cx >= 0 && cy >= 0 && cx < w && cy < h && mask[cy * w + cx] === 1;
+	};
+	let bx0 = Infinity;
+	let by0 = Infinity;
+	let bx1 = -Infinity;
+	let by1 = -Infinity;
+	for (let i = 0; i < mask.length; i++) if (mask[i]) {
+		const x = i % w;
+		const y = i / w | 0;
+		if (x < bx0) bx0 = x;
+		if (x > bx1) bx1 = x;
+		if (y < by0) by0 = y;
+		if (y > by1) by1 = y;
+	}
+	const box = {
+		minX: g.ox + bx0 * g.res - 150,
+		minY: g.oy + by0 * g.res - 150,
+		maxX: g.ox + (bx1 + 1) * g.res + 150,
+		maxY: g.oy + (by1 + 1) * g.res + 150
+	};
+	const STEP = 40;
+	const raw = [];
+	for (const sg of lines) {
+		const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+		if (L < 300) continue;
+		if (Math.max(sg.a.x, sg.b.x) < box.minX || Math.min(sg.a.x, sg.b.x) > box.maxX || Math.max(sg.a.y, sg.b.y) < box.minY || Math.min(sg.a.y, sg.b.y) > box.maxY) continue;
+		const u = {
+			x: (sg.b.x - sg.a.x) / L,
+			y: (sg.b.y - sg.a.y) / L
+		};
+		const nn = {
+			x: -u.y,
+			y: u.x
+		};
+		const cnt = Math.max(1, Math.round(L / STEP));
+		let plus = 0;
+		let minus = 0;
+		let both = 0;
+		const side = [];
+		for (let k = 0; k < cnt; k++) {
+			const t = (k + .5) / cnt * L;
+			const px = sg.a.x + u.x * t;
+			const py = sg.a.y + u.y * t;
+			let p = false;
+			let m = false;
+			for (const dd of [
+				45,
+				65,
+				85
+			]) {
+				if (inMask(px + nn.x * dd, py + nn.y * dd)) p = true;
+				if (inMask(px - nn.x * dd, py - nn.y * dd)) m = true;
+			}
+			if (p && m) {
+				both++;
+				side.push(0);
+			} else if (p) {
+				plus++;
+				side.push(1);
+			} else if (m) {
+				minus++;
+				side.push(-1);
+			} else side.push(0);
+		}
+		const sgn = plus >= minus ? 1 : -1;
+		const adj = Math.max(plus, minus);
+		if (adj * L / cnt < 400) continue;
+		if (both > adj * .5 || Math.min(plus, minus) > adj * .3) continue;
+		let openN = 0;
+		let outdoorN = 0;
+		for (let k = 0; k < cnt; k++) {
+			if (side[k] !== sgn) continue;
+			const t = (k + .5) / cnt * L;
+			const px = sg.a.x + u.x * t;
+			const py = sg.a.y + u.y * t;
+			let outdoor = true;
+			for (let dd = 40; dd <= 320; dd += 20) {
+				const cx = Math.floor((px - nn.x * sgn * dd - g.ox) / g.res);
+				const cy = Math.floor((py - nn.y * sgn * dd - g.oy) / g.res);
+				if (cx < 0 || cy < 0 || cx >= w || cy >= h) {
+					openN++;
+					break;
+				}
+				const i = cy * w + cx;
+				if (g.data[i] !== 2) {
+					outdoor = false;
+					break;
+				}
+				if (open(i)) {
+					openN++;
+					break;
+				}
+			}
+			if (outdoor) outdoorN++;
+		}
+		if (openN < adj * .6) {
+			const nearWall = (q) => {
+				const cx = Math.floor((q.x - g.ox) / g.res);
+				const cy = Math.floor((q.y - g.oy) / g.res);
+				for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+					const x = cx + dx;
+					const y = cy + dy;
+					if (x >= 0 && y >= 0 && x < w && y < h && g.data[y * w + x] === 1) return true;
+				}
+				return false;
+			};
+			if (outdoorN < adj * .8 || !nearWall(sg.a) || !nearWall(sg.b)) continue;
+		}
+		let k0 = side.indexOf(sgn);
+		let k1 = side.lastIndexOf(sgn);
+		if (k0 <= 1) k0 = 0;
+		if (k1 >= cnt - 2) k1 = cnt - 1;
+		const t0 = k0 / cnt * L;
+		const t1 = (k1 + 1) / cnt * L;
+		if (t1 - t0 < 400) continue;
+		raw.push({
+			a: {
+				x: sg.a.x + u.x * t0,
+				y: sg.a.y + u.y * t0
+			},
+			b: {
+				x: sg.a.x + u.x * t1,
+				y: sg.a.y + u.y * t1
+			},
+			u,
+			n: {
+				x: -nn.x * sgn,
+				y: -nn.y * sgn
+			},
+			d: 0
+		});
+	}
+	let merged = [];
+	for (const r of raw.sort((p, q) => Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y) - Math.hypot(p.b.x - p.a.x, p.b.y - p.a.y))) {
+		let absorbed = false;
+		for (const m of merged) {
+			if (m.dead) continue;
+			if (Math.abs(m.u.x * r.u.y - m.u.y * r.u.x) > .03) continue;
+			if (m.n.x * r.n.x + m.n.y * r.n.y < .9) continue;
+			const L = Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
+			const ta = (r.a.x - m.a.x) * m.u.x + (r.a.y - m.a.y) * m.u.y;
+			const tb = (r.b.x - m.a.x) * m.u.x + (r.b.y - m.a.y) * m.u.y;
+			if (Math.min(ta, tb) > L + 150 || Math.max(ta, tb) < -150) continue;
+			const o = ((r.a.x + r.b.x) / 2 - m.a.x) * m.n.x + ((r.a.y + r.b.y) / 2 - m.a.y) * m.n.y;
+			if (Math.abs(o) > 260) continue;
+			const lo = Math.min(0, ta, tb);
+			const hi = Math.max(L, ta, tb);
+			if (o < -20) {
+				const base = {
+					x: m.a.x + m.n.x * o,
+					y: m.a.y + m.n.y * o
+				};
+				m.a = {
+					x: base.x + m.u.x * lo,
+					y: base.y + m.u.y * lo
+				};
+				m.b = {
+					x: base.x + m.u.x * hi,
+					y: base.y + m.u.y * hi
+				};
+			} else {
+				const a0 = m.a;
+				m.a = {
+					x: a0.x + m.u.x * lo,
+					y: a0.y + m.u.y * lo
+				};
+				m.b = {
+					x: a0.x + m.u.x * hi,
+					y: a0.y + m.u.y * hi
+				};
+			}
+			absorbed = true;
+			break;
+		}
+		if (!absorbed) merged.push({ ...r });
+	}
+	merged = merged.filter((m) => !m.dead);
+	for (const r of merged) {
+		const L = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
+		let far = 0;
+		for (const sg of lines) {
+			const sl = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+			if (sl < 300) continue;
+			const su = {
+				x: (sg.b.x - sg.a.x) / sl,
+				y: (sg.b.y - sg.a.y) / sl
+			};
+			if (Math.abs(su.x * r.u.y - su.y * r.u.x) > .03) continue;
+			const o = ((sg.a.x + sg.b.x) / 2 - r.a.x) * r.n.x + ((sg.a.y + sg.b.y) / 2 - r.a.y) * r.n.y;
+			if (o < 15 || o > 260) continue;
+			const ta = (sg.a.x - r.a.x) * r.u.x + (sg.a.y - r.a.y) * r.u.y;
+			const tb = (sg.b.x - r.a.x) * r.u.x + (sg.b.y - r.a.y) * r.u.y;
+			if (Math.min(L, Math.max(ta, tb)) - Math.max(0, Math.min(ta, tb)) < L * .5) continue;
+			far = Math.max(far, o);
+		}
+		const off = far / 2;
+		r.d = Math.round(Math.max(60, Math.min(200, far || 80)));
+		r.a = {
+			x: r.a.x + r.n.x * off,
+			y: r.a.y + r.n.y * off
+		};
+		r.b = {
+			x: r.b.x + r.n.x * off,
+			y: r.b.y + r.n.y * off
+		};
+	}
+	const cross = (p, r, q, s) => {
+		const den = r.x * s.y - r.y * s.x;
+		if (Math.abs(den) < 1e-6) return null;
+		const t = ((q.x - p.x) * s.y - (q.y - p.y) * s.x) / den;
+		return {
+			x: p.x + r.x * t,
+			y: p.y + r.y * t
+		};
+	};
+	const REACH = 450;
+	const ends = merged.map((r) => ({
+		a: { ...r.a },
+		b: { ...r.b }
+	}));
+	merged.forEach((r, ri) => {
+		for (const end of ["a", "b"]) {
+			const p = r[end];
+			/** 交点の候補: out = 端から外へ伸ばす長さ（負なら縮める）、cornerAdd = 相手の端（角）で出会うときに足す長さ（相手の厚みの半分） */
+			const cands = [];
+			const consider = (q, s, len, slack, thick) => {
+				const x = cross(r.a, r.u, q, s);
+				if (!x) return;
+				const t = (x.x - q.x) * s.x + (x.y - q.y) * s.y;
+				if (t < -slack || t > len + slack) return;
+				const along = (x.x - p.x) * r.u.x + (x.y - p.y) * r.u.y;
+				const out = end === "a" ? -along : along;
+				if (out > REACH || out < -150) return;
+				const tol = r.d / 2 + 40;
+				const corner = t < tol || t > len - tol;
+				cands.push({
+					x,
+					out,
+					cornerAdd: corner ? thick / 2 : 0
+				});
+			};
+			merged.forEach((o, oi) => {
+				if (oi === ri || Math.abs(o.u.x * r.u.y - o.u.y * r.u.x) < .2) return;
+				consider(o.a, o.u, Math.hypot(o.b.x - o.a.x, o.b.y - o.a.y), REACH, o.d);
+			});
+			if (!cands.length) for (const wl of walls) {
+				const wl2 = Math.hypot(wl.b.x - wl.a.x, wl.b.y - wl.a.y);
+				if (wl2 < 1) continue;
+				const su = {
+					x: (wl.b.x - wl.a.x) / wl2,
+					y: (wl.b.y - wl.a.y) / wl2
+				};
+				if (Math.abs(su.x * r.u.y - su.y * r.u.x) < .2) continue;
+				consider(wl.a, su, wl2, wl.d / 2 + 60, wl.d);
+			}
+			if (!cands.length) continue;
+			const outs = cands.filter((c) => c.out >= -1).sort((a, b) => a.out - b.out);
+			let pick;
+			if (outs.length) {
+				pick = outs[0];
+				for (const c of outs) if (c.out <= outs[0].out + 220) pick = c;
+			} else pick = cands.sort((a, b) => b.out - a.out)[0];
+			const sgn = end === "a" ? -1 : 1;
+			ends[ri][end] = {
+				x: pick.x.x + r.u.x * sgn * pick.cornerAdd,
+				y: pick.x.y + r.u.y * sgn * pick.cornerAdd
+			};
+		}
+	});
+	return merged.map((r, ri) => ({
+		a: ends[ri].a,
+		b: ends[ri].b,
+		d: r.d
+	})).filter((r) => Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y) >= 300);
 }
 //#endregion
 //#region src/parser/walls.ts
@@ -5632,258 +6406,6 @@ function classifyGap(g, o, d, gs, ge, _grp, lines, infills) {
 		kind: "open",
 		confidence: .5
 	};
-}
-var Grid = class Grid {
-	w;
-	h;
-	res;
-	ox;
-	oy;
-	data;
-	constructor(w, h, res, ox, oy) {
-		this.w = w;
-		this.h = h;
-		this.res = res;
-		this.ox = ox;
-		this.oy = oy;
-		this.data = new Uint8Array(w * h);
-	}
-	static around(minX, minY, maxX, maxY, res, margin) {
-		const ox = minX - margin;
-		const oy = minY - margin;
-		const w = Math.ceil((maxX - minX + margin * 2) / res);
-		const h = Math.ceil((maxY - minY + margin * 2) / res);
-		return new Grid(w, h, res, ox, oy);
-	}
-	cellOf(p) {
-		return [Math.floor((p.x - this.ox) / this.res), Math.floor((p.y - this.oy) / this.res)];
-	}
-	centerOf(x, y) {
-		return {
-			x: this.ox + (x + .5) * this.res,
-			y: this.oy + (y + .5) * this.res
-		};
-	}
-	get(x, y) {
-		if (x < 0 || y < 0 || x >= this.w || y >= this.h) return 2;
-		return this.data[y * this.w + x];
-	}
-	/** 凸多角形/任意多角形をスキャンラインで塗る（セル中心判定） */
-	fillPolygon(poly, val) {
-		let minY = Infinity;
-		let maxY = -Infinity;
-		for (const p of poly) {
-			minY = Math.min(minY, p.y);
-			maxY = Math.max(maxY, p.y);
-		}
-		const y0 = Math.max(0, Math.floor((minY - this.oy) / this.res - .5));
-		const y1 = Math.min(this.h - 1, Math.ceil((maxY - this.oy) / this.res));
-		const xs = [];
-		for (let y = y0; y <= y1; y++) {
-			const cy = this.oy + (y + .5) * this.res;
-			xs.length = 0;
-			for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-				const a = poly[i];
-				const b = poly[j];
-				if (a.y > cy !== b.y > cy) xs.push(a.x + (cy - a.y) / (b.y - a.y) * (b.x - a.x));
-			}
-			xs.sort((p, q) => p - q);
-			for (let k = 0; k + 1 < xs.length; k += 2) {
-				const xa = Math.max(0, Math.ceil((xs[k] - this.ox) / this.res - .5));
-				const xb = Math.min(this.w - 1, Math.floor((xs[k + 1] - this.ox) / this.res - .5));
-				for (let x = xa; x <= xb; x++) this.data[y * this.w + x] = val;
-			}
-		}
-	}
-	/** 太さ d の線分を塗る（少し太らせて隙間を防ぐ） */
-	fillThickSegment(a, b, d, val) {
-		const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-		const ux = (b.x - a.x) / L;
-		const uy = (b.y - a.y) / L;
-		const hw = Math.max(d / 2, this.res * .75);
-		const nx = -uy * hw;
-		const ny = ux * hw;
-		const ex = ux * this.res * .5;
-		const ey = uy * this.res * .5;
-		this.fillPolygon([
-			{
-				x: a.x - ex + nx,
-				y: a.y - ey + ny
-			},
-			{
-				x: b.x + ex + nx,
-				y: b.y + ey + ny
-			},
-			{
-				x: b.x + ex - nx,
-				y: b.y + ey - ny
-			},
-			{
-				x: a.x - ex - nx,
-				y: a.y - ey - ny
-			}
-		], val);
-	}
-	/** 外周から FREE セルを塗りつぶして OUTSIDE にする */
-	floodOutside() {
-		const { w, h, data } = this;
-		const q = new Int32Array(w * h);
-		let head = 0;
-		let tail = 0;
-		const push = (x, y) => {
-			const i = y * w + x;
-			if (data[i] === 0) {
-				data[i] = 2;
-				q[tail++] = i;
-			}
-		};
-		for (let x = 0; x < w; x++) {
-			push(x, 0);
-			push(x, h - 1);
-		}
-		for (let y = 0; y < h; y++) {
-			push(0, y);
-			push(w - 1, y);
-		}
-		while (head < tail) {
-			const i = q[head++];
-			const x = i % w;
-			const y = i / w | 0;
-			if (x > 0) push(x - 1, y);
-			if (x < w - 1) push(x + 1, y);
-			if (y > 0) push(x, y - 1);
-			if (y < h - 1) push(x, y + 1);
-		}
-	}
-	/** FREE セルの連結成分ラベル (0 = なし) */
-	labelComponents() {
-		const { w, h, data } = this;
-		const labels = new Int32Array(w * h);
-		const sizes = [0];
-		const q = new Int32Array(w * h);
-		let next = 1;
-		for (let s = 0; s < w * h; s++) {
-			if (data[s] !== 0 || labels[s]) continue;
-			let head = 0;
-			let tail = 0;
-			labels[s] = next;
-			q[tail++] = s;
-			let size = 0;
-			while (head < tail) {
-				const i = q[head++];
-				size++;
-				const x = i % w;
-				const y = i / w | 0;
-				const nb = [
-					x > 0 ? i - 1 : -1,
-					x < w - 1 ? i + 1 : -1,
-					y > 0 ? i - w : -1,
-					y < h - 1 ? i + w : -1
-				];
-				for (const j of nb) if (j >= 0 && data[j] === 0 && !labels[j]) {
-					labels[j] = next;
-					q[tail++] = j;
-				}
-			}
-			sizes.push(size);
-			next++;
-		}
-		return {
-			labels,
-			sizes
-		};
-	}
-};
-/** マスクを k セル膨張（allowed に含まれるセルのみ） */
-function dilateMask(mask, w, h, k, allowed) {
-	let cur = mask;
-	for (let it = 0; it < k; it++) {
-		const nxt = cur.slice();
-		for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-			const i = y * w + x;
-			if (cur[i]) continue;
-			if (allowed && !allowed(i)) continue;
-			if (x > 0 && cur[i - 1] || x < w - 1 && cur[i + 1] || y > 0 && cur[i - w] || y < h - 1 && cur[i + w] || x > 0 && y > 0 && cur[i - w - 1] || x < w - 1 && y > 0 && cur[i - w + 1] || x > 0 && y < h - 1 && cur[i + w - 1] || x < w - 1 && y < h - 1 && cur[i + w + 1]) nxt[i] = 1;
-		}
-		cur = nxt;
-	}
-	return cur;
-}
-function erodeMask(mask, w, h, k) {
-	const inv = new Uint8Array(mask.length);
-	for (let i = 0; i < mask.length; i++) inv[i] = mask[i] ? 0 : 1;
-	const d = dilateMask(inv, w, h, k);
-	const out = new Uint8Array(mask.length);
-	for (let i = 0; i < mask.length; i++) out[i] = d[i] ? 0 : 1;
-	return out;
-}
-/**
-* マスクの境界をたどって多角形（mm座標）を返す。外周ループのみ、面積の大きい順。
-*/
-function traceMask(mask, grid, simplifyTol) {
-	const { w, h } = grid;
-	const next = /* @__PURE__ */ new Map();
-	const key = (x, y) => y * (w + 1) + x;
-	const addEdge = (x0, y0, x1, y1) => {
-		const k0 = key(x0, y0);
-		if (!next.has(k0)) next.set(k0, []);
-		next.get(k0).push(key(x1, y1));
-	};
-	const at = (x, y) => x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x] === 1;
-	for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-		if (!at(x, y)) continue;
-		if (!at(x, y - 1)) addEdge(x + 1, y, x, y);
-		if (!at(x, y + 1)) addEdge(x, y + 1, x + 1, y + 1);
-		if (!at(x - 1, y)) addEdge(x, y, x, y + 1);
-		if (!at(x + 1, y)) addEdge(x + 1, y + 1, x + 1, y);
-	}
-	const loops = [];
-	const unkey = (k) => [k % (w + 1), Math.floor(k / (w + 1))];
-	while (next.size) {
-		const startK = next.keys().next().value;
-		const loop = [startK];
-		let cur = startK;
-		let prevDir = null;
-		for (let guard = 0; guard < 4 * w * h + 10; guard++) {
-			const outs = next.get(cur);
-			if (!outs || !outs.length) break;
-			let idx = 0;
-			if (outs.length > 1 && prevDir) {
-				const [cx, cy] = unkey(cur);
-				let best = -Infinity;
-				outs.forEach((o, oi) => {
-					const [nx, ny] = unkey(o);
-					const dx = nx - cx;
-					const dy = ny - cy;
-					const crossv = prevDir[0] * dy - prevDir[1] * dx;
-					if (crossv > best) {
-						best = crossv;
-						idx = oi;
-					}
-				});
-			}
-			const nk = outs.splice(idx, 1)[0];
-			if (!outs.length) next.delete(cur);
-			const [cx, cy] = unkey(cur);
-			const [nx, ny] = unkey(nk);
-			prevDir = [nx - cx, ny - cy];
-			cur = nk;
-			if (cur === startK) break;
-			loop.push(cur);
-		}
-		if (loop.length >= 4) {
-			const pts = loop.map((k) => {
-				const [x, y] = unkey(k);
-				return {
-					x: grid.ox + x * grid.res,
-					y: grid.oy + y * grid.res
-				};
-			});
-			loops.push(pts);
-		}
-	}
-	const tol = simplifyTol ?? grid.res * 1.2;
-	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea$1(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea$1(b)) - Math.abs(polygonArea$1(a)));
 }
 //#endregion
 //#region src/parser/rasterWalls.ts
@@ -12267,6 +12789,61 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			if (n) globalThis.__closerTrace?.push(`rails ${n}`);
 		}
 	}
+	if (level >= 2 && segsU.length && !globalThis.__NO_BALCONY_RAILS) {
+		const near = (p, m) => p.x > plan.bbox.minX - m && p.x < plan.bbox.maxX + m && p.y > plan.bbox.minY - m && p.y < plan.bbox.maxY + m;
+		const seen = /* @__PURE__ */ new Set();
+		const balLabels = [];
+		for (const t of [...plan.texts, ...plan.siteTexts]) {
+			if (!near(t, 2e3)) continue;
+			const nm = cleanRoomName(t.str);
+			const ty = nm ? classifyRoomName(nm) : null;
+			if (!nm || !(ty === "balcony" || ty === "deck" || ty === "terrace") || /庭|COURT/i.test(nm)) continue;
+			const key = `${Math.round(t.x)},${Math.round(t.y)}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			balLabels.push({
+				x: t.x,
+				y: t.y
+			});
+		}
+		if (balLabels.length) {
+			const found = findBalconyRails({
+				bbox: plan.bbox,
+				labels: balLabels,
+				walls,
+				wallPolys: [...plan.wallPolys, ...plan.sashPolys],
+				closers: collinearGaps(walls, 4600),
+				lines: segsU.filter((sg) => sg.source === "stroke" && !sg.dashed && near(sg.a, 2600) && near(sg.b, 2600))
+			});
+			let k = 0;
+			for (const f of found) for (const r of f.rails) {
+				const L = Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y);
+				const u = {
+					x: (r.b.x - r.a.x) / L,
+					y: (r.b.y - r.a.y) / L
+				};
+				const n = {
+					x: -u.y,
+					y: u.x
+				};
+				walls.push({
+					a: r.a,
+					b: r.b,
+					u,
+					n,
+					d: r.d,
+					t0: r.a.x * u.x + r.a.y * u.y,
+					t1: r.b.x * u.x + r.b.y * u.y,
+					o: r.a.x * n.x + r.a.y * n.y,
+					g: -(3e3 + k++),
+					openings: [],
+					joinedA: true,
+					joinedB: true
+				});
+			}
+			globalThis.__railTrace?.push(...found.map((f) => `L${level} バルコニー ${f.area.toFixed(2)}㎡ 手すり ${f.rails.map((r) => `${Math.round(r.a.x)},${Math.round(r.a.y)}-${Math.round(r.b.x)},${Math.round(r.b.y)} d${r.d}`).join(" / ")}`));
+		}
+	}
 	const voidRects = voidRectangles(plan, level);
 	const drawBarriers = () => {
 		for (const w of walls) grid.fillThickSegment(w.a, w.b, w.d, 1);
@@ -14694,6 +15271,108 @@ function stairAlignShift(lower, upper) {
 	}) > overhangArea(lower, upper) + 1) return null;
 	return d;
 }
+/**
+* 上下階の重ね位置の検算（外壁）: 上の階の外壁が、下の階の外壁から半間（455）だけずれて平行に並んでいて、
+* 半間動かせば 1 面まるごと（2 間以上）そろうなら、そろう位置へ直す量を返す。
+*
+* 910 の格子に乗った家は、室内の壁の重なりだけでは半間ずれた位置も同じくらい良く見える。
+* 外壁が 1 面まるごと 455 だけはね出す・455 だけ下がる納まりはまず無い（柱・基礎・屋根がその分だけ増える）ので、
+* 階段が決め手にならないとき（片方が読み切れていない）は、外壁がそろう位置を取る。
+* 動かすと、いまそろっている外壁がずれる・壁の乗りが悪くなる・階段の重なりが大きく減る、のどれかなら直さない
+* （田中様邸: 1 階の階段がかね折れの 1 列目しか読めず、2 階は 2 本の階段が重なって 1 つに読めていて、1 階が 455 西にずれていた。
+*   東の外壁 5.5 m がそろう位置へ直すと、階段室の東の壁も上下でそろう）
+*/
+function flushAlignShift(lower, upper) {
+	const ext = (f) => {
+		const out = [];
+		for (const w of f.walls) {
+			if (!w.exterior) continue;
+			if (Math.abs(w.a.x - w.b.x) < 1) out.push({
+				v: true,
+				c: w.a.x,
+				t0: Math.min(w.a.y, w.b.y),
+				t1: Math.max(w.a.y, w.b.y)
+			});
+			else if (Math.abs(w.a.y - w.b.y) < 1) out.push({
+				v: false,
+				c: w.a.y,
+				t0: Math.min(w.a.x, w.b.x),
+				t1: Math.max(w.a.x, w.b.x)
+			});
+		}
+		return out;
+	};
+	const A = ext(lower);
+	const B = ext(upper);
+	if (!A.length || !B.length) return null;
+	/** 上の階を d だけ動かしたとき、外壁どうしが同じ面にそろう長さ */
+	const flush = (d) => {
+		let sum = 0;
+		for (const b of B) for (const a of A) {
+			if (a.v !== b.v) continue;
+			const dc = b.v ? d.x : d.y;
+			const dt = b.v ? d.y : d.x;
+			if (Math.abs(a.c - (b.c + dc)) > 40) continue;
+			sum += Math.max(0, Math.min(a.t1, b.t1 + dt) - Math.max(a.t0, b.t0 + dt));
+		}
+		return sum;
+	};
+	const base = flush({
+		x: 0,
+		y: 0
+	});
+	let best = null;
+	for (const d of [
+		{
+			x: 455,
+			y: 0
+		},
+		{
+			x: -455,
+			y: 0
+		},
+		{
+			x: 0,
+			y: 455
+		},
+		{
+			x: 0,
+			y: -455
+		}
+	]) {
+		const gain = flush(d) - base;
+		if (gain >= 3640 && (!best || gain > best.gain)) best = {
+			d,
+			gain
+		};
+	}
+	if (!best) return null;
+	const d = best.d;
+	if (wallFitRatio(lower, upper, d) < wallFitRatio(lower, upper)) return null;
+	if (overhangArea(lower, {
+		...upper,
+		outline: upper.outline.map((l) => l.map((q) => ({
+			x: q.x + d.x,
+			y: q.y + d.y
+		})))
+	}) > overhangArea(lower, upper) + 1) return null;
+	const m = matchStairs(lower, upper);
+	if (m) {
+		const moved = {
+			...m.upper,
+			minX: m.upper.minX + d.x,
+			maxX: m.upper.maxX + d.x,
+			minY: m.upper.minY + d.y,
+			maxY: m.upper.maxY + d.y
+		};
+		const iou = stairIoU(m.lower, moved);
+		const ix = Math.max(0, Math.min(m.lower.maxX, moved.maxX) - Math.max(m.lower.minX, moved.minX));
+		const iy = Math.max(0, Math.min(m.lower.maxY, moved.maxY) - Math.max(m.lower.minY, moved.minY));
+		const small = Math.min((m.lower.maxX - m.lower.minX) * (m.lower.maxY - m.lower.minY), (moved.maxX - moved.minX) * (moved.maxY - moved.minY));
+		if (small <= 0 || ix * iy / small < .7 || iou < m.iou - .12) return null;
+	}
+	return d;
+}
 /** 階段の辺 side の、辺に沿った位置 frac（0〜1。辺の左／上の端から）から外へ出られるか（400mm 先までに壁が無いか、そこに戸・開口がある） */
 function stairSideOpen(f, st, side, frac = .5) {
 	const horiz = side === "n" || side === "s";
@@ -15052,11 +15731,15 @@ function snapFloorWalls(f, m) {
 		if (!horiz && !vert) continue;
 		const oldAxis = horiz ? (w.a.y + w.b.y) / 2 : (w.a.x + w.b.x) / 2;
 		const sn = snapCoord(oldAxis, horiz ? m.phaseY : m.phaseX, m.grid);
+		const e0 = horiz ? w.a.x : w.a.y;
+		const e1 = horiz ? w.b.x : w.b.y;
 		axes.push({
 			wall: w,
 			horiz,
 			oldAxis,
-			newAxis: Math.abs(sn - oldAxis) <= tol ? sn : oldAxis
+			newAxis: Math.abs(sn - oldAxis) <= tol ? sn : oldAxis,
+			lo: Math.min(e0, e1),
+			hi: Math.max(e0, e1)
 		});
 	}
 	/** 元の位置 v に最も近かった（横 or 縦の）壁の芯の、寄せた後の位置 */
@@ -15119,6 +15802,51 @@ function snapFloorWalls(f, m) {
 		w.a = na;
 		w.b = nb;
 	}
+	const axisWalls = new Set(axes.map((ax) => ax.wall));
+	/** p のそば（芯から 160mm 以内・壁の区間 ±300mm）を通っていた縦（horiz=false）・横（true）の壁の、寄せた後の芯 */
+	const followAt = (p, horiz) => {
+		let best = null;
+		let bd = Infinity;
+		for (const ax of axes) {
+			if (ax.horiz !== horiz) continue;
+			const d = Math.abs(ax.oldAxis - (horiz ? p.y : p.x));
+			const t = horiz ? p.x : p.y;
+			if (d > 160 || t < ax.lo - 300 || t > ax.hi + 300) continue;
+			if (d < bd) {
+				bd = d;
+				best = ax;
+			}
+		}
+		return best ? best.newAxis : null;
+	};
+	const diagMoves = [];
+	for (const w of f.walls) {
+		if (axisWalls.has(w)) continue;
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+		if (L < 300) continue;
+		const mv = (p) => ({
+			x: followAt(p, false) ?? p.x,
+			y: followAt(p, true) ?? p.y
+		});
+		const na = mv(w.a);
+		const nb = mv(w.b);
+		if (Math.hypot(na.x - w.a.x, na.y - w.a.y) < 1 && Math.hypot(nb.x - w.b.x, nb.y - w.b.y) < 1) continue;
+		const L2 = Math.hypot(nb.x - na.x, nb.y - na.y);
+		if (L2 < L * .85 || L2 > L * 1.15 || Math.abs((nb.x - na.x) * (w.b.y - w.a.y) - (nb.y - na.y) * (w.b.x - w.a.x)) / (L * L2) > .12) continue;
+		const u = {
+			x: (w.b.x - w.a.x) / L,
+			y: (w.b.y - w.a.y) / L
+		};
+		shiftA.set(w.id, (na.x - w.a.x) * u.x + (na.y - w.a.y) * u.y);
+		diagMoves.push({
+			oldA: { ...w.a },
+			oldB: { ...w.b },
+			a: na,
+			b: nb
+		});
+		w.a = na;
+		w.b = nb;
+	}
 	for (const op of f.openings) {
 		const da = shiftA.get(op.wallId);
 		if (da == null) continue;
@@ -15132,6 +15860,8 @@ function snapFloorWalls(f, m) {
 	const movePoly = (poly) => {
 		const n = poly.length;
 		const out = [];
+		/** 斜めの壁を追って動かした頂点 */
+		const onDiag = [];
 		for (let i = 0; i < n; i++) {
 			const p = poly[i];
 			const prev = poly[(i + n - 1) % n];
@@ -15144,12 +15874,67 @@ function snapFloorWalls(f, m) {
 				const sn = snapCoord(v, phase, m.grid);
 				return Math.abs(sn - v) <= tol ? sn : v;
 			};
-			if (vertEdge(prev) || vertEdge(next)) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
-			if (horizEdge(prev) || horizEdge(next)) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+			const hasV = vertEdge(prev) || vertEdge(next);
+			const hasH = horizEdge(prev) || horizEdge(next);
+			if (hasV) x = follow(p.x, false, 160) ?? gridOr(p.x, m.phaseX);
+			if (hasH) y = follow(p.y, true, 160) ?? gridOr(p.y, m.phaseY);
+			if (diagMoves.length && !(hasV && hasH)) {
+				let dm = null;
+				let bd = 220;
+				for (const d of diagMoves) {
+					const dd = distPointSegment(p, d.oldA, d.oldB);
+					if (dd >= bd) continue;
+					const wl = Math.hypot(d.oldB.x - d.oldA.x, d.oldB.y - d.oldA.y) || 1;
+					if (![prev, next].some((q) => {
+						const el = Math.hypot(q.x - p.x, q.y - p.y);
+						return el > 1 && Math.abs((q.x - p.x) * (d.oldB.y - d.oldA.y) - (q.y - p.y) * (d.oldB.x - d.oldA.x)) / (el * wl) < .12;
+					})) continue;
+					bd = dd;
+					dm = d;
+				}
+				if (dm) {
+					const dx = dm.b.x - dm.a.x;
+					const dy = dm.b.y - dm.a.y;
+					let nx = x;
+					let ny = y;
+					if (hasH && Math.abs(dy) > 1) nx = dm.a.x + (y - dm.a.y) * dx / dy;
+					else if (hasV && Math.abs(dx) > 1) ny = dm.a.y + (x - dm.a.x) * dy / dx;
+					else {
+						const near = Math.hypot(p.x - dm.oldA.x, p.y - dm.oldA.y) <= Math.hypot(p.x - dm.oldB.x, p.y - dm.oldB.y) ? dm.a : dm.b;
+						nx = near.x;
+						ny = near.y;
+					}
+					if (Math.hypot(nx - p.x, ny - p.y) <= 300) {
+						x = nx;
+						y = ny;
+						onDiag[i] = true;
+					}
+				}
+			}
 			out.push({
 				x,
 				y
 			});
+		}
+		for (let i = 0; i < n; i++) {
+			if (!onDiag[i]) continue;
+			for (const j of [(i + n - 1) % n, (i + 1) % n]) {
+				const q = out[j];
+				const dx = Math.abs(q.x - out[i].x);
+				const dy = Math.abs(q.y - out[i].y);
+				if (dx <= 15 && dy <= 15) out[i] = {
+					x: q.x,
+					y: q.y
+				};
+				else if (dx > 0 && dx <= 12 && dy > 200) out[j] = {
+					x: out[i].x,
+					y: q.y
+				};
+				else if (dy > 0 && dy <= 12 && dx > 200) out[j] = {
+					x: q.x,
+					y: out[i].y
+				};
+			}
 		}
 		return cleanPolygon(out, poly);
 	};
@@ -15448,6 +16233,21 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		}
 		const how = [d.x ? `${d.x > 0 ? "右" : "左"}へ ${Math.abs(d.x).toLocaleString()} mm` : "", d.y ? `${d.y > 0 ? "下" : "上"}へ ${Math.abs(d.y).toLocaleString()} mm` : ""].filter(Boolean).join("・");
 		warnings.push(`${floors[i].level}階の重ね位置を、階段が下の階の階段にぴったり重なる位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
+	}
+	if (!samePageUnhinted && floors.length >= 2) for (let i = 1; i < floors.length; i++) {
+		const d = flushAlignShift(floors[i - 1], floors[i]);
+		if (!d) continue;
+		for (let k = i; k < floors.length; k++) {
+			const p = planOf.get(floors[k]);
+			if (!p) continue;
+			translatePlan(p, d);
+			const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+			nf.elevation = floors[k].elevation;
+			planOf.set(nf, p);
+			floors[k] = nf;
+		}
+		const how = [d.x ? `${d.x > 0 ? "右" : "左"}へ ${Math.abs(d.x).toLocaleString()} mm` : "", d.y ? `${d.y > 0 ? "下" : "上"}へ ${Math.abs(d.y).toLocaleString()} mm` : ""].filter(Boolean).join("・");
+		warnings.push(`${floors[i].level}階の重ね位置を、外壁が下の階の外壁とそろう位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
 	}
 	if (floors.length >= 2) {
 		const f1 = floors[0];
@@ -18433,12 +19233,13 @@ function woodCheck(model) {
 			}],
 			label: `短辺 ${m(short)} m`
 		}];
-		if (r.type === "bath" && short < 1700 && short > 0) out.push({
+		const long = Math.max(w, h);
+		if (r.type === "bath" && short > 0 && !/シャワー/.test(r.name) && (short < 1300 || long < 1750)) out.push({
 			id: `ub-${f.level}-${r.id}`,
 			level: f.level,
 			severity: "warn",
-			title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`,
-			detail: "ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります",
+			title: `${f.level}階 ${r.name}: ${m(short)}×${m(long)} m ではユニットバスが入りません`,
+			detail: "ユニットバスはいちばん小さい 1216 でも柱芯 1,365×1,820（0.75 坪）が必要です（1616 は 1,820×1,820）。それより小さい区画は、壁の読み取りがずれているか、シャワー室です",
 			marks
 		});
 		if (r.type === "toilet" && short < 800 && short > 0) out.push({

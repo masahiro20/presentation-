@@ -299,3 +299,58 @@ describe('下の階の階段を、上の階の降りる階段から補う', () =
     expect(small.stairs).toHaveLength(0);
   });
 });
+
+// ---- 上下階の重ね位置: 外壁が半間だけずれて並んでいたら、そろう位置へ ----
+import { flushAlignShift } from '../src/parser/assemble';
+
+describe('外壁のそろいで上下階の重ね位置を検算する', () => {
+  const wall = (id: string, ax: number, ay: number, bx: number, by: number, exterior = false): Wall => ({ id, a: { x: ax, y: ay }, b: { x: bx, y: by }, thickness: 120, exterior });
+  const box = (id: string, x0: number, y0: number, x1: number, y1: number): Wall[] => [wall(`${id}n`, x0, y0, x1, y0, true), wall(`${id}e`, x1, y0, x1, y1, true), wall(`${id}s`, x1, y1, x0, y1, true), wall(`${id}w`, x0, y1, x0, y0, true)];
+  const outlineOf = (x0: number, y0: number, x1: number, y1: number) => [[{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]];
+  // 1 階: 8,645 × 5,460。階段は 1 列目だけ読めている（2,781〜4,080）。階段室の東の壁は x 5,005
+  const lower = (x1 = 8645): Floor => ({
+    level: 1, elevation: 500, height: 2900, ceilingHeight: 2400,
+    walls: [...box('A', 0, 0, x1, 5460), wall('L1', 5005, 0, 5005, 2275), wall('L2', 6825, 1820, 6825, 5460)],
+    openings: [], rooms: [], outline: outlineOf(0, 0, x1, 5460),
+    stairs: [{ id: 'F1-S1', minX: 2781, minY: 106, maxX: 4080, maxY: 910, kind: 'straight', entry: 'w', goesUp: true }],
+  });
+  // 2 階: 西へ 4,550 はね出す 13,650 × 5,460。正しい位置は東の外壁が 1 階とそろう x −5,005〜8,645。sx だけずらして作る
+  const upper = (sx: number, stair?: Partial<Stair>): Floor => ({
+    level: 2, elevation: 3400, height: 2800, ceilingHeight: 2400,
+    walls: [...box('B', -5005 + sx, 0, 8645 + sx, 5460), wall('U1', 5005 + sx, 0, 5005 + sx, 2275), wall('U2', 6370 + sx, 0, 6370 + sx, 5460)],
+    openings: [], rooms: [], outline: outlineOf(-5005 + sx, 0, 8645 + sx, 5460),
+    stairs: [{ id: 'F2-S1', minX: 1873 + sx, minY: 100, maxX: 5034 + sx, maxY: 2328, kind: 'u', entry: 'w', goesUp: true, ...stair }],
+  });
+
+  it('上の階の東の外壁が 455 だけ外にずれている → 455 戻して外壁をそろえる（田中様邸）', () => {
+    expect(flushAlignShift(lower(), upper(455))).toEqual({ x: -455, y: 0 });
+    expect(flushAlignShift(lower(), upper(-455))).toEqual({ x: 455, y: 0 });
+  });
+
+  it('すでにそろっていれば動かさない', () => {
+    expect(flushAlignShift(lower(), upper(0))).toBeNull();
+  });
+
+  it('動かすと反対側の外壁がずれる（幅が 455 違うだけの家）なら動かさない', () => {
+    // 2 階が 1 階と同じ西の外壁から始まり、東だけ 455 はね出す: 動かしても、そろう長さは増えない
+    const up: Floor = { ...upper(0), walls: box('B', 0, 0, 9100, 5460), outline: outlineOf(0, 0, 9100, 5460) };
+    expect(flushAlignShift(lower(), up)).toBeNull();
+  });
+
+  it('階段が上下でよく重なっている家は、外壁がずれて並んでいても動かさない', () => {
+    // 1 階も 2 階も同じ範囲の階段（ぴったり重なる）: 外壁より階段を信じる
+    const lo = lower();
+    lo.stairs = [{ id: 'F1-S1', minX: 2730, minY: 0, maxX: 5460, maxY: 1820, kind: 'u', entry: 'w', goesUp: true }];
+    const up = upper(455, { minX: 2730, minY: 0, maxX: 5460, maxY: 1820 });
+    expect(flushAlignShift(lo, up)).toBeNull();
+  });
+
+  it('動かすと室内の壁の乗りが悪くなるなら動かさない', () => {
+    // 室内の壁が、いまの位置で 1 階の壁にたくさん乗っている
+    const lo = lower();
+    lo.walls.push(wall('L3', 2730, 0, 2730, 5460), wall('L4', 1365, 0, 1365, 5460), wall('L5', 4095, 2275, 4095, 5460));
+    const up = upper(455);
+    up.walls.push(wall('U3', 2730, 0, 2730, 5460), wall('U4', 1365, 0, 1365, 5460), wall('U5', 4095, 2275, 4095, 5460));
+    expect(flushAlignShift(lo, up)).toBeNull();
+  });
+});

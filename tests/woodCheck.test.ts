@@ -66,6 +66,26 @@ describe('木造の常識チェック', () => {
     expect(steep?.marks?.[0].rects?.length).toBe(1);
   }, 60000);
 
+  it('ユニットバス: 0.75 坪（1216 サイズ）は疑わない。それより小さい区画だけ知らせる', async () => {
+    const model = await parseSample('sample_house_A3.pdf');
+    const f = model.floors[0];
+    const box = (id: string, name: string, x0: number, wd: number, dp: number) =>
+      f.rooms.push({ id, name, type: 'bath', polygon: [{ x: x0, y: 30000 }, { x: x0 + wd, y: 30000 }, { x: x0 + wd, y: 30000 + dp }, { x: x0, y: 30000 + dp }], area: (wd * dp) / 1e6, labelPos: { x: x0 + wd / 2, y: 30000 + dp / 2 } });
+    box('ub-1616', 'ＵＢ', 0, 1820, 1820);
+    box('ub-1216', 'ＵＢ', 3000, 1365, 1820);
+    box('ub-small', 'ＵＢ', 6000, 1365, 1365);
+    box('ub-narrow', 'ＵＢ', 9000, 910, 1820);
+    box('shower', 'シャワー室', 12000, 910, 910);
+    const issues = woodCheck(model);
+    const ids = issues.filter((i) => i.id.startsWith('ub-1-')).map((i) => i.id);
+    expect(ids).toContain('ub-1-ub-small');
+    expect(ids).toContain('ub-1-ub-narrow');
+    expect(ids).not.toContain('ub-1-ub-1616');
+    expect(ids).not.toContain('ub-1-ub-1216');
+    expect(ids).not.toContain('ub-1-shower');
+    expect(issues.find((i) => i.id === 'ub-1-ub-small')?.title).toContain('ユニットバスが入りません');
+  }, 60000);
+
   it('読み取りミスの疑い（つながらない短い壁）には「消す」の直し方が付く', async () => {
     const model = await parseSample('sample_house_A3.pdf');
     const f = model.floors[0];

@@ -406,7 +406,12 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const h = Math.max(...ys) - Math.min(...ys);
       const short = Math.min(w, h);
       const marks: WoodMark[] = [{ level: f.level, rects: [{ minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }], label: `短辺 ${m(short)} m` }];
-      if (r.type === 'bath' && short < 1700 && short > 0) out.push({ id: `ub-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 短辺 ${m(short)} m では UB 1616 が入りません`, detail: 'ユニットバス 1616 は柱芯 1,820×1,820（内法 1,600）が必要です。1 坪より小さい区画は読み取りの壁のずれか、1216・1317 などの小さいサイズになります', marks });
+      // ユニットバスは 1216（0.75 坪。柱芯 1,365×1,820）が最小。1 坪（1616）より小さくても 1216・1317 が入る区画は疑わない
+      // （3 階建て・賃貸併用・2 つ目の浴室では 1216 が普通。田中様邸 1 階・池本様邸 3 階で「1616 が入りません」と疑っていた）。
+      // シャワー室は別（910×910 から）
+      const long = Math.max(w, h);
+      if (r.type === 'bath' && short > 0 && !/シャワー/.test(r.name) && (short < 1300 || long < 1750))
+        out.push({ id: `ub-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: ${m(short)}×${m(long)} m ではユニットバスが入りません`, detail: 'ユニットバスはいちばん小さい 1216 でも柱芯 1,365×1,820（0.75 坪）が必要です（1616 は 1,820×1,820）。それより小さい区画は、壁の読み取りがずれているか、シャワー室です', marks });
       if (r.type === 'toilet' && short < 800 && short > 0) out.push({ id: `wc-${f.level}-${r.id}`, level: f.level, severity: 'warn', title: `${f.level}階 ${r.name}: 幅 ${m(short)} m は便所として狭すぎます`, detail: '便所は柱芯 910（内法 780 前後）が最小です。壁の読み取りがずれている可能性があります', marks });
     }
   }

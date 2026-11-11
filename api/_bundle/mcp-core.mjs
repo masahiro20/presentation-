@@ -12780,6 +12780,17 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const autoNamed = /* @__PURE__ */ new Set();
 	const minCells = 1e3;
 	/**
+	* 部屋にしない小さな区画。内法 0.4㎡ 未満は壁のすき間・線の重なりが多いので捨てるが、
+	* 収納の名前（物入・収納・CL・SC）の入った区画は内法 0.15㎡ から部屋にする
+	* （半間の物入 910×455 は内法 0.26㎡ ほど。捨てると 3D で床に穴があき、戸の向こうが抜ける。田中様邸 1 階）
+	*/
+	const minStorageCells = 375;
+	const tooSmall = (l) => {
+		if (sizes[l] >= minCells) return false;
+		if (sizes[l] < minStorageCells) return true;
+		return !acc.get(l)?.names.some((n) => n.type === "storage" || n.type === "closet");
+	};
+	/**
 	* 区画（ラベル l）の輪郭: 升を壁の芯まで広げてなぞる。
 	* extra = 区画に含める升（階段の中の中壁・手すりの線）、blocked = 広げない升（分けた階段の範囲）
 	*/
@@ -12795,7 +12806,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		};
 	};
 	for (let l = 1; l < sizes.length; l++) {
-		if (sizes[l] < minCells) continue;
+		if (tooSmall(l)) continue;
 		const traced = traceLabel(l);
 		if (!traced) continue;
 		const { poly, area, mask } = traced;
@@ -13097,7 +13108,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	{
 		let ri = 0;
 		for (let l = 1; l < sizes.length; l++) {
-			if (sizes[l] < minCells) continue;
+			if (tooSmall(l)) continue;
 			const r = rooms[ri];
 			if (!r) break;
 			roomByLabel.set(l, r);
@@ -14188,20 +14199,40 @@ function isStripFill(poly) {
 	const width = 2 * area / per;
 	return width >= 40 && width <= 180 && per / 2 >= 600;
 }
-/** 壁の塗りの色: その色の塗りの頂点の大半が、検出した壁の上にある色 */
-function wallFillColors(fills, walls) {
+/** 塗りの太さ（面積 ÷ 周長の半分）。細長い帯なら幅、矩形なら 幅×長さ÷(幅+長さ) */
+function fillWidth(poly) {
+	let per = 0;
+	for (let i = 0; i < poly.length; i++) per += Math.hypot(poly[(i + 1) % poly.length].x - poly[i].x, poly[(i + 1) % poly.length].y - poly[i].y);
+	return per > 0 ? 2 * Math.abs(polygonArea$1(poly)) / per : 0;
+}
+/** 壁の塗りとして扱う太さの上限 (mm)。壁の塗りは壁の厚み（提案図で 40〜120mm、RC・1/50 でも 250mm まで）しか無い */
+var WALL_FILL_MAX_W = 260;
+/** これより太い塗りは、壁の色でも壁として塗らない（部屋・造作の塗り。600 角の柱は 300 なので壁のまま） */
+var WALL_FILL_FAT_W = 400;
+/**
+* 壁の塗りの色: その色の塗りの頂点の大半が検出した壁の上にあり、塗りの大半が壁の厚みしか無い色。
+*
+* 部屋の形の塗りも頂点は壁の上にあるので、太さで見分ける。奥行 455mm の収納の塗りは太さ 300〜340mm になる
+* （田中様邸: 収納 5 か所を桃色で塗った図面で、桃色が「壁の色」になり、物入・パントリーがまるごと壁として塗られて部屋が消えていた）。
+* 室名・帖数の入った塗りは部屋なので、1 つでもあればその色は壁の色ではない
+*/
+function wallFillColors(fills, walls, labelPoints = []) {
 	const stat = /* @__PURE__ */ new Map();
 	for (const f of fills) {
 		const st = stat.get(f.color) ?? {
 			n: 0,
 			on: 0,
 			polys: 0,
-			thin: 0
+			thin: 0,
+			room: false
 		};
 		st.polys++;
-		let per = 0;
-		for (let i = 0; i < f.poly.length; i++) per += Math.hypot(f.poly[(i + 1) % f.poly.length].x - f.poly[i].x, f.poly[(i + 1) % f.poly.length].y - f.poly[i].y);
-		if (per > 0 && 2 * Math.abs(polygonArea$1(f.poly)) / per <= 400) st.thin++;
+		const wd = fillWidth(f.poly);
+		if (wd > 0 && wd <= WALL_FILL_MAX_W) st.thin++;
+		else if (!st.room && wd > WALL_FILL_MAX_W && labelPoints.length) {
+			const bb = bboxOf$2(f.poly);
+			if (labelPoints.some((t) => t.x > bb.minX && t.x < bb.maxX && t.y > bb.minY && t.y < bb.maxY && pointInPolygon(t, f.poly))) st.room = true;
+		}
 		for (const q of f.poly) {
 			st.n++;
 			if (walls.some((w) => distPointSegment(q, w.a, w.b) <= w.d / 2 + 40)) st.on++;
@@ -14209,7 +14240,7 @@ function wallFillColors(fills, walls) {
 		stat.set(f.color, st);
 	}
 	const out = /* @__PURE__ */ new Set();
-	for (const [c, st] of stat) if (st.polys >= 5 && st.on / st.n >= .6 && st.thin / st.polys >= .6) out.add(c);
+	for (const [c, st] of stat) if (st.polys >= 5 && !st.room && st.on / st.n >= .6 && st.thin / st.polys >= .6) out.add(c);
 	return out;
 }
 /**
@@ -14356,7 +14387,10 @@ function detectPlans(pages, warnings) {
 			const lens = ww.map((w) => w.t1 - w.t0);
 			console.log("walls", ww.length, "len<300", lens.filter((l) => l < 300).length, "<1000", lens.filter((l) => l >= 300 && l < 1e3).length, ">=1000", lens.filter((l) => l >= 1e3).length, "d", ww.slice(0, 12).map((w) => Math.round(w.d)).join("/"));
 		}
-		const wallColors = wallFillColors(page.colorFills, ww);
+		const wallColors = wallFillColors(page.colorFills, ww, page.texts.filter(isRoomText).map((t) => ({
+			x: t.x,
+			y: t.y
+		})));
 		if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
 		const pageHasRooms = page.texts.some(isRoomText);
 		const boxes = groups.map((g) => bboxOf$2(g.flatMap((w) => [w.a, w.b])));
@@ -14377,7 +14411,7 @@ function detectPlans(pages, warnings) {
 			const segs = page.segs.filter((s) => inBox((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2, margin));
 			const siteTexts = page.texts.filter((t) => inBox(t.x, t.y, 3e4));
 			const siteSegs = page.segs.filter((s) => inBox(s.a.x, s.a.y, 3e4) || inBox(s.b.x, s.b.y, 3e4));
-			const wallPolys = page.colorFills.filter((f) => f.poly.every((q) => inBox(q.x, q.y, margin)) && (wallColors.has(f.color) || isStripFill(f.poly))).map((f) => f.poly);
+			const wallPolys = page.colorFills.filter((f) => f.poly.every((q) => inBox(q.x, q.y, margin)) && (wallColors.has(f.color) && fillWidth(f.poly) <= WALL_FILL_FAT_W || isStripFill(f.poly))).map((f) => f.poly);
 			const sashPolys = page.masks.filter((poly) => {
 				if (!poly.every((q) => inBox(q.x, q.y, margin))) return false;
 				const b = bboxOf$2(poly);

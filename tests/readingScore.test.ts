@@ -58,6 +58,32 @@ describe('readingScore', () => {
     expect(fl.note).toMatch(/1階が読めていません/);
     expect(rs.fixes.some((f) => /1階の平面図が読めていません/.test(f.title))).toBe(true);
   });
+  it('ペット室・ジム・EV のように名前で用途が分かる部屋は「用途の分からない部屋」に数えない', () => {
+    const m = model();
+    m.floors[1].rooms.push(room('ペット室', 'other', rect(0, 0, 100, 100)), room('ジム', 'other', rect(0, 0, 100, 100)), room('EV', 'other', rect(0, 0, 100, 100)));
+    expect(readingScore(m).parts.find((p) => p.id === 'rooms')!.note).not.toMatch(/用途の分からない/);
+    // 読めていない名前（意味の取れない文字）は今までどおり数える
+    m.floors[1].rooms.push(room('ｱ1', 'other', rect(0, 0, 100, 100)));
+    const rs = readingScore(m);
+    expect(rs.parts.find((p) => p.id === 'rooms')!.note).toMatch(/用途の分からない部屋 1/);
+    expect(rs.fixes.some((f) => /「ｱ1」の用途が分かりません/.test(f.title))).toBe(true);
+  });
+  it('開口付きの間仕切りで 2 区画に読めた部屋は、同じ名前の隣の区画を足した広さで帖数と比べる', () => {
+    const m = model();
+    // LDK 19.8 帖（8 m × 4 m）を、5 m と 3 m の 2 区画に（名前は同じ・帖数は片方だけ）
+    const f = m.floors[0];
+    f.rooms[0] = room('LDK', 'ldk', rect(0, 0, 5000, 4000), { labeledTatami: 19.8 });
+    f.rooms.push(room('LDK', 'ldk', rect(5000, 0, 8000, 4000)));
+    expect(readingScore(m).parts.find((p) => p.id === 'tatami')!.note).toMatch(/すべて一致/);
+    // 「（キッチン側）」のように役割の付いた名前も同じ部屋
+    f.rooms[f.rooms.length - 1].name = 'LDK（キッチン側）';
+    expect(readingScore(m).parts.find((p) => p.id === 'tatami')!.note).toMatch(/すべて一致/);
+    // 隣り合っていない同じ名前の区画は足さない
+    f.rooms[f.rooms.length - 1] = room('LDK', 'ldk', rect(20000, 0, 23000, 4000));
+    const rs = readingScore(m);
+    expect(rs.parts.find((p) => p.id === 'tatami')!.note).toMatch(/LDK 19\.8→12\.3帖/);
+    expect(rs.fixes.some((x) => /LDK: 図面は 19\.8 帖、読み取りは 12\.3 帖（狭い）/.test(x.title))).toBe(true);
+  });
   it('最上階が塔屋（階段と踊り場だけ）でも「部屋がほとんど読めていない」にしない', () => {
     const m = model();
     const ph: Floor = { level: 3, elevation: 6300, height: 2600, ceilingHeight: 2300, outline: [rect(4000, 4000, 6000, 7600)], rooms: [room('階段', 'stairs', rect(4000, 4000, 6000, 5800)), room('通路', 'hall', rect(4000, 5800, 6000, 7600))], walls: [], openings: [], stairs: [{ id: 'st3', minX: 4000, minY: 4000, maxX: 6000, maxY: 5800, goesUp: false, kind: 'straight', entry: 's', steps: 14 }] };

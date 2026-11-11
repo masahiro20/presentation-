@@ -1,6 +1,6 @@
 // 階段の区画を分ける: LDK・ホール・パントリーと一続きに読めた階段を、升目のラベルの上で別の区画にする
 import { describe, expect, it } from 'vitest';
-import { carveStairRegion } from '../src/parser/stairRooms';
+import { absorbStairRing, carveStairRegion } from '../src/parser/stairRooms';
 import { Grid, WALL } from '../src/parser/raster';
 
 const RES = 20;
@@ -107,6 +107,66 @@ describe('階段の区画を分ける', () => {
 // ---- 部屋を作り直すとき（方眼で壁を直した後）にも、階段は LDK から分かれたまま ----
 import { rebuildFloor } from '../src/parser/assemble';
 import type { Floor, Stair, Wall } from '../src/core/types';
+
+describe('すでに別の区画として読めている階段のまわりの細いすき間', () => {
+  // 外周 6,000 × 5,000。右上の隅に階段（1,820 × 1,820）。下は壁、左（ホール側）は開いている。
+  // 階段は手すりの細い線（上・右・下）で囲まれ、本当の壁との間に 80 mm のすき間が残る → すき間はホールとつながる
+  const build = () => {
+    const g = Grid.around(0, 0, 6000, 5000, RES, 400);
+    const wall = (ax: number, ay: number, bx: number, by: number, d = 120) => g.fillThickSegment({ x: ax, y: ay }, { x: bx, y: by }, d, WALL);
+    wall(0, 0, 6000, 0);
+    wall(6000, 0, 6000, 5000);
+    wall(6000, 5000, 0, 5000);
+    wall(0, 5000, 0, 0);
+    wall(4180, 1820, 6000, 1820); // 階段の下の壁
+    // 手すりの細い線（壁の内面から 80 mm）。左の端は開いている
+    wall(4180, 150, 5850, 150, 20);
+    wall(5850, 150, 5850, 1670, 20);
+    wall(4180, 1670, 5850, 1670, 20);
+    // 階段の昇り口の線（ホールとの境）: 段鼻の線
+    wall(4180, 150, 4180, 1670, 20);
+    g.floodOutside();
+    return g;
+  };
+  const box = { minX: 4180, minY: 0, maxX: 6000, maxY: 1820 };
+
+  it('すき間はホールとつながっていて、ホールが階段を輪のように囲む。すき間を階段に含めると囲まなくなる', () => {
+    const g = build();
+    const { labels, sizes } = g.labelComponents();
+    const hall = labelAt(g, labels, 2000, 3000);
+    const stair = labelAt(g, labels, 5000, 900);
+    expect(stair).not.toBe(hall);
+    // 上・右・下のすき間はホールの区画
+    expect(labelAt(g, labels, 5000, 100)).toBe(hall);
+    expect(labelAt(g, labels, 5900, 900)).toBe(hall);
+    expect(labelAt(g, labels, 5000, 1720)).toBe(hall);
+    const before = sizes[hall] + sizes[stair];
+    const stairBefore = sizes[stair];
+    const touched = absorbStairRing(g, labels, sizes, stair, box);
+    expect(touched).toEqual([hall]);
+    expect(labelAt(g, labels, 5000, 100)).toBe(stair);
+    expect(labelAt(g, labels, 5900, 900)).toBe(stair);
+    expect(labelAt(g, labels, 5000, 1720)).toBe(stair);
+    // ホールの広い所は取らない（階段の範囲の外・幅の広い所）
+    expect(labelAt(g, labels, 2000, 3000)).toBe(hall);
+    expect(labelAt(g, labels, 4000, 900)).toBe(hall);
+    expect(sizes[hall] + sizes[stair]).toBe(before);
+    // 取ったのは 3 辺の帯（80 mm × 約 1.7 m × 3 ≒ 0.4 ㎡）
+    expect(m2(sizes[stair] - stairBefore)).toBeGreaterThan(0.2);
+    expect(m2(sizes[stair] - stairBefore)).toBeLessThan(0.7);
+  });
+
+  it('相手を選べる: 収納のような小さな部屋からは取らない', () => {
+    const g = build();
+    const { labels, sizes } = g.labelComponents();
+    const hall = labelAt(g, labels, 2000, 3000);
+    const stair = labelAt(g, labels, 5000, 900);
+    const n = sizes[stair];
+    expect(absorbStairRing(g, labels, sizes, stair, box, () => false)).toEqual([]);
+    expect(sizes[stair]).toBe(n);
+    expect(labelAt(g, labels, 5000, 100)).toBe(hall);
+  });
+});
 
 describe('作り直し: LDK と一続きの階段は「階段」の部屋になる', () => {
   const wall = (id: string, ax: number, ay: number, bx: number, by: number, exterior: boolean): Wall => ({ id, a: { x: ax, y: ay }, b: { x: bx, y: by }, thickness: 120, exterior });

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
+import { isSpecialRoomName } from '../parser/labels';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
 import { MM } from './building';
@@ -351,7 +352,7 @@ export function buildFurniture(
       const ceilingY = Math.max(1.8, ((room.ceilingHeight ?? f.ceilingHeight) - offMm) * MM);
       const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - 0.02, (R.minZ + R.maxZ) / 2);
       if (override) {
-        if (!excludedFromFloorArea(room.type) && !['other', 'closet', 'storage'].includes(room.type)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
+        if (!excludedFromFloorArea(room.type) && (!['other', 'closet', 'storage'].includes(room.type) || (room.type === 'other' && isSpecialRoomName(room.name)))) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
         continue;
       }
       // 図面の記号から読んだ家具は、図面どおりの位置・向きに先に置く
@@ -403,6 +404,10 @@ export function buildFurniture(
           break;
         case 'closet':
           layoutCloset(ctx);
+          break;
+        case 'other':
+          // ペット室・ジム・音楽室など（用途は分かるが決まった家具は無い部屋）: 照明だけ
+          if (isSpecialRoomName(room.name)) lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
           break;
         default:
           break;

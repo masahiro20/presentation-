@@ -21,6 +21,7 @@ import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site'
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { GRADE_LABEL, readingScore } from '../../parser/readingScore';
+import { isSpecialRoomName } from '../../parser/labels';
 import { ENTRANCE_VIA_LABEL, entranceDoorOf } from '../../core/entrance';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans, type PlanCost, type PlanSummary } from '../../core/planDiff';
@@ -1578,7 +1579,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
   // 部屋名
   // 名前の無い細い区画（線の読み違いの隙間）は数えない
   const allRooms = floors.flatMap((f) => f.rooms.filter((r) => r.type !== 'void' && r.name.trim()));
-  const unnamed = allRooms.filter((r) => r.type === 'other' || /^室$|^部屋$/.test(r.name.trim()));
+  const unnamed = allRooms.filter((r) => (r.type === 'other' && !isSpecialRoomName(r.name)) || /^室$|^部屋$/.test(r.name.trim()));
   const inferred = allRooms.filter((r) => r.inferred && r.type !== 'other');
   const hasLdk = allRooms.some((r) => r.type === 'ldk' || r.type === 'living');
   rows.push({

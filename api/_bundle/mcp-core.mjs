@@ -4315,6 +4315,81 @@ function carveStairRegion(grid, labels, sizes, l, box, opts) {
 		joinedCells
 	};
 }
+/**
+* すでに別の区画として読めている階段（ラベル l）のまわりの細い帯を、階段に含める。
+*
+* 階段は手すり壁の細い線で囲まれて描かれ、本当の壁との間に 60〜100mm のすき間が残る。昇り口に壁が無いと、そのすき間が
+* 前のホールとつながり、ホールの輪郭（外周 1 本）が階段を輪のように囲んで面積が二重になる（有元様邸 2 階: ホール 4.1 帖が 6.1 帖に）。
+* 階段の範囲 box の中にある、ほかの区画の升のうち「幅 240mm 以下で、両側が壁か階段」の升を階段のラベルに書き換える。
+* canTake で相手の区画を選べる（収納・水まわりのような小さな部屋からは取らない）。書き換えた相手の区画のラベルを返す（無ければ空）
+*/
+function absorbStairRing(grid, labels, sizes, l, box, canTake = () => true) {
+	const { w, h, res } = grid;
+	const [bx0, by0] = grid.cellOf({
+		x: box.minX + res / 2,
+		y: box.minY + res / 2
+	});
+	const [bx1, by1] = grid.cellOf({
+		x: box.maxX - res / 2,
+		y: box.maxY - res / 2
+	});
+	const x0 = Math.max(0, bx0);
+	const y0 = Math.max(0, by0);
+	const x1 = Math.min(w - 1, bx1);
+	const y1 = Math.min(h - 1, by1);
+	if (x1 < x0 || y1 < y0) return [];
+	const MAX = Math.round(240 / res);
+	const ok = /* @__PURE__ */ new Map();
+	const takable = (fl) => {
+		let v = ok.get(fl);
+		if (v == null) ok.set(fl, v = canTake(fl));
+		return v;
+	};
+	const foreign = (i) => grid.data[i] === 0 && labels[i] !== 0 && labels[i] !== l && takable(labels[i]);
+	/** 升 i から (dx, dy) の向きへ、ほかの区画の升が続く数と、その先にあるもの（'edge' = 壁か階段、'far' = 240mm を超えて続く・屋外・升目の外） */
+	const run = (x, y, dx, dy) => {
+		for (let d = 1; d <= MAX + 1; d++) {
+			const xx = x + dx * d;
+			const yy = y + dy * d;
+			if (xx < 0 || yy < 0 || xx >= w || yy >= h) return {
+				n: d - 1,
+				end: "far"
+			};
+			const j = yy * w + xx;
+			if (foreign(j)) continue;
+			return {
+				n: d - 1,
+				end: grid.data[j] === 1 || labels[j] === l ? "edge" : "far"
+			};
+		}
+		return {
+			n: MAX + 1,
+			end: "far"
+		};
+	};
+	const take = [];
+	for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+		const i = y * w + x;
+		if (!foreign(i)) continue;
+		const a = run(x, y, -1, 0);
+		const b = run(x, y, 1, 0);
+		const c = run(x, y, 0, -1);
+		const d = run(x, y, 0, 1);
+		const thinX = a.end === "edge" && b.end === "edge" && a.n + b.n + 1 <= MAX;
+		const thinY = c.end === "edge" && d.end === "edge" && c.n + d.n + 1 <= MAX;
+		if (thinX || thinY) take.push(i);
+	}
+	if (!take.length) return [];
+	const touched = /* @__PURE__ */ new Set();
+	for (const i of take) {
+		const fl = labels[i];
+		touched.add(fl);
+		sizes[fl] = Math.max(0, (sizes[fl] ?? 0) - 1);
+		labels[i] = l;
+	}
+	sizes[l] = (sizes[l] ?? 0) + take.length;
+	return [...touched];
+}
 var Grid = class Grid {
 	w;
 	h;
@@ -5421,7 +5496,9 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		const ta = s.a.x * g.u.x + s.a.y * g.u.y;
 		const tb = s.b.x * g.u.x + s.b.y * g.u.y;
 		const o = (s.a.x + s.b.x) / 2 * g.n.x + (s.a.y + s.b.y) / 2 * g.n.y;
-		const heavy = s.source === "fill" || heavyT == null || s.width >= heavyT;
+		const soft = s.source === "fill" && !!s.color && !!O.softFillColors?.has(s.color);
+		const isFill = s.source === "fill" && !soft;
+		const heavy = !soft && (isFill || heavyT == null || s.width >= heavyT);
 		groupLines[gi].push({
 			o,
 			t0: Math.min(ta, tb),
@@ -5429,7 +5506,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 			heavy,
 			eligible: heavy,
 			width: s.width,
-			fill: s.source === "fill"
+			fill: isFill
 		});
 	}
 	const fillLines = groupLines.map((ls) => mergeCollinear$1(ls.filter((l) => l.fill).map((l) => ({ ...l }))));
@@ -5783,6 +5860,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		if (!spans.length) continue;
 		const maxCover = Math.max(...spans.map((s) => s.cover));
 		const fullThr = Math.max(.5, Math.min(.75, maxCover));
+		if (globalThis.__WALLDBG) console.log("MASK", Math.round(ax.o), "d", Math.round(ax.d), spans.map((s) => `${Math.round(s.t0)}-${Math.round(s.t1)} c${s.cover.toFixed(2)}`).join(" "), "pieces", ax.pieces.map((p) => `${Math.round(p.t0)}-${Math.round(p.t1)}`).join(" "), "ops", ax.openings.map((p) => `${Math.round(p.t0)}-${Math.round(p.t1)}`).join(" "));
 		for (const sp of spans) {
 			const { t0, t1 } = sp;
 			if (sp.cover < fullThr) {
@@ -6765,14 +6843,14 @@ var RULES = [
 	[/土間収納|シューズ(クローク|クローゼット|イン|ボックス)?|^S\.?I\.?C|^S\.?C\.?L|^S\.?C$|^S\.?B$|玄関収納/, "storage"],
 	[/パントリー|PANTRY|^PAN$|^P\.?T$|食品庫/, "storage"],
 	[/ファミリークローゼット|ファミクロ|^F\.?C\.?L|^F\.?C$/, "closet"],
-	[/W\.?I\.?C|W\.?I\.?C\.?L|ウォークイン|ウォーク・イン|W\.?C\.?L|クローゼット|クロゼット|^CL\d*$|^C\.?L\d*$|^CLO$|押入|押し入れ|床の間|仏間|^物$|^収$/, "closet"],
+	[/W\.?I\.?C|W\.?I\.?C\.?L|ウォークイン|ウォーク・イン|W\.?C\.?L|クローゼット|クロゼット|^CL\d*$|^C\.?L\d*$|^CLO$|押入|押し入れ|床の間|仏間|^物$|^収$|ロッカー/, "closet"],
 	[/^L\.?D\.?K|LDK|リビング.*ダイニング.*キッチン/, "ldk"],
 	[/^L\.?D$|^LD\b|^LD\d|リビングダイニング|リビング・ダイニング/, "ldk"],
 	[/^D\.?K$|^DK\d|ダイニングキッチン/, "dining"],
 	[/リビング|居間|LIVING|^L$|ファミリースペース|くつろぎ/, "living"],
 	[/ダイニング|食堂|DINING|^D$/, "dining"],
 	[/キッチン|台所|KITCHEN|^K$|^KIT$/, "kitchen"],
-	[/和室|座敷|客間|茶の間|畳コーナー|畳スペース|タタミ|小上がり|小上り|^畳$/, "japanese"],
+	[/和室|座敷|客間|茶の間|茶室|畳コーナー|畳スペース|タタミ|小上がり|小上り|^畳$/, "japanese"],
 	[/子供|子ども|こども|キッズ|子室|KIDS|CHILD/, "kids"],
 	[/主寝室|寝室|ベッドルーム|MBR|BEDROOM|^BR\d*$|^B\.?R\d*$/, "bedroom"],
 	[/洋室|個室|^室\d*$|^居室|ゲストルーム|GUEST/, "bedroom"],
@@ -6781,7 +6859,7 @@ var RULES = [
 	[/パウダー|サンルーム|ランドリールーム/, "washroom"],
 	[/ウォークスルー|W\.?T\.?C/, "closet"],
 	[/クローク|ワインセラー|備蓄|(ホール|廊下|通路|階段下|洗面|トイレ)収納/, "storage"],
-	[/リモステ|リモート|ワークスペース/, "study"],
+	[/リモステ|リモート|ワークスペース|仕事(部屋|場|室|スペース|コーナー)|オフィス|事務(室|所|スペース)|SOHO|勉強|学習|自習|ミシン|裁縫/, "study"],
 	[/シャワー/, "bath"],
 	[/浴室|バスルーム|^バス$|風呂|^UB$|^U\.?B$|ユニットバス|BATH|^浴$/, "bath"],
 	[/洗面|脱衣|ランドリー|家事室|サニタリー|UTILITY|ユーティリティ|^UT$|^U\.?T$|洗濯|^洗$|LAUNDRY|ドレッサー|身支度/, "washroom"],
@@ -6805,6 +6883,15 @@ function classifyRoomName(raw) {
 	if (!s) return null;
 	for (const [re, t] of RULES) if (re.test(s)) return t;
 	return null;
+}
+/**
+* 用途ははっきりしているが、家具・仕上げの決まりを持つ部屋の種類には当てはめない部屋（種類は other のまま）:
+* ペット室・猫部屋・ジム・音楽室（歌部屋）・サウナ・店舗・EV など。
+* 名前は読めているので「用途の分からない部屋」には数えず、内観では照明だけ付ける（机やベッドは置かない）
+*/
+var SPECIAL_ROOM = /ペット|猫|ネコ|犬|ドッグ|キャット|ジム|GYM|トレーニング|フィットネス|筋トレ|ヨガ|音楽|楽器|ピアノ|防音|歌|カラオケ|スタジオ|オーディオ|ダンス|サウナ|店舗|ショップ|診察|待合|教室|サロン|工房|機械室|設備室|電気室|^EV$|^ELV$|エレベーター?/;
+function isSpecialRoomName(raw) {
+	return SPECIAL_ROOM.test(normalizeText(raw));
 }
 /** 「20.0帖」「6畳」「12.5J」「16.56㎡」 */
 function parseAreaLabel(raw) {
@@ -11325,7 +11412,8 @@ function pageToMm(p, k) {
 		b: sc(s.b),
 		width: s.width,
 		dashed: s.dashed,
-		source: s.source
+		source: s.source,
+		...s.source === "fill" ? { color: s.color.toLowerCase() } : {}
 	}));
 	const curves = p.curves.filter((c) => !c.dashed).map((c) => ({
 		p0: sc(c.p0),
@@ -13489,26 +13577,38 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			courtLabels.add(l);
 		}
 	});
-	for (const vr of voidRects) {
-		const ra = (vr.maxX - vr.minX) * (vr.maxY - vr.minY) / 1e6;
-		const r = rooms.find((rm) => {
-			const c = rm.polygon.reduce((a0, q) => ({
-				x: a0.x + q.x / rm.polygon.length,
-				y: a0.y + q.y / rm.polygon.length
-			}), {
-				x: 0,
-				y: 0
+	{
+		const marked = /* @__PURE__ */ new Map();
+		for (const vr of voidRects) {
+			const ra = (vr.maxX - vr.minX) * (vr.maxY - vr.minY) / 1e6;
+			const r = rooms.find((rm) => {
+				if (marked.has(rm)) return false;
+				const c = rm.polygon.reduce((a0, q) => ({
+					x: a0.x + q.x / rm.polygon.length,
+					y: a0.y + q.y / rm.polygon.length
+				}), {
+					x: 0,
+					y: 0
+				});
+				return c.x > vr.minX && c.x < vr.maxX && c.y > vr.minY && c.y < vr.maxY && rm.area > ra * .6 && rm.area < ra * 1.4;
 			});
-			return c.x > vr.minX && c.x < vr.maxX && c.y > vr.minY && c.y < vr.maxY && rm.area > ra * .6 && rm.area < ra * 1.4;
-		});
-		if (!r) continue;
-		r.name = "吹抜";
-		r.type = "void";
-		for (const o of rooms) {
-			if (o === r || !/吹抜/.test(o.name)) continue;
-			const rest = o.name.split("・").filter((n) => !/吹抜/.test(n));
-			if (rest.length) o.name = rest.join("・");
-			if (o.type === "void") o.type = rest.length ? classifyRoomName(rest[0]) ?? "other" : "other";
+			if (r) marked.set(r, {
+				vr,
+				own: /吹抜|吹き抜け/.test(r.name)
+			});
+		}
+		for (const [r, { vr, own }] of marked) {
+			r.name = "吹抜";
+			r.type = "void";
+			if (own) continue;
+			for (const o of rooms) {
+				if (o === r || marked.has(o) || !/吹抜|吹き抜け/.test(o.name)) continue;
+				const ob = bboxOf$2(o.polygon);
+				if (ob.minX > vr.maxX + 400 || ob.maxX < vr.minX - 400 || ob.minY > vr.maxY + 400 || ob.maxY < vr.minY - 400) continue;
+				const rest = o.name.split("・").filter((n) => !/吹抜|吹き抜け/.test(n));
+				if (rest.length) o.name = rest.join("・");
+				if (o.type === "void") o.type = rest.length ? classifyRoomName(rest[0]) ?? "other" : "other";
+			}
 		}
 	}
 	if (expectedArea && expectedArea > 5) {
@@ -14120,10 +14220,25 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const iy = Math.min(r.maxY, bx.maxY) - Math.max(r.minY, bx.minY);
 			if (ix <= 0 || iy <= 0 || ix * iy / Math.max(1, (bx.maxX - bx.minX) * (bx.maxY - bx.minY)) < .4) continue;
 			const half = 60;
-			r.minX = Math.min(r.minX, bx.minX + half);
-			r.minY = Math.min(r.minY, bx.minY + half);
-			r.maxX = Math.max(r.maxX, bx.maxX - half);
-			r.maxY = Math.max(r.maxY, bx.maxY - half);
+			const markIn = (x0, y0, x1, y1) => {
+				if (c.flights < 2) return false;
+				if (!plan.texts.some((t) => parseStairMark(t.str) != null && t.x > x0 && t.x < x1 && t.y > y0 && t.y < y1)) return false;
+				const inS = (q) => q.x > x0 - 50 && q.x < x1 + 50 && q.y > y0 - 50 && q.y < y1 + 50;
+				let lines = 0;
+				for (const sg of plan.segs) {
+					if (sg.dashed || sg.source !== "stroke" || !inS(sg.a) || !inS(sg.b)) continue;
+					if (Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 300) continue;
+					const mx = (sg.a.x + sg.b.x) / 2;
+					const my = (sg.a.y + sg.b.y) / 2;
+					if (mx > x0 + 120 && mx < x1 - 120 && my > y0 + 120 && my < y1 - 120) lines++;
+				}
+				return lines < 2;
+			};
+			const { minX: sx0, minY: sy0, maxX: sx1, maxY: sy1 } = r;
+			if (bx.minX + half < r.minX && !markIn(bx.minX, sy0, sx0, sy1)) r.minX = bx.minX + half;
+			if (bx.minY + half < r.minY && !markIn(sx0, bx.minY, sx1, sy0)) r.minY = bx.minY + half;
+			if (bx.maxX - half > r.maxX && !markIn(sx1, sy0, bx.maxX, sy1)) r.maxX = bx.maxX - half;
+			if (bx.maxY - half > r.maxY && !markIn(sx0, sy1, sx1, bx.maxY)) r.maxY = bx.maxY - half;
 		}
 		const sideWallRatio = (side) => {
 			let wall = 0;
@@ -14396,6 +14511,46 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		};
 		/** 分けた階段の範囲の升（残りの部屋の輪郭を、ここへは広げない） */
 		const carvedBox = new Uint8Array(grid.w * grid.h);
+		/**
+		* 階段の範囲の中の壁の升（折り返しの中壁・手すり・段の線を壁と読んだもの）は階段の一部。
+		* ほかの部屋・屋外との間の壁（8 升 = 160mm 以内に own 以外の区画がある）は入れない。範囲の升を carvedBox にも記す
+		*/
+		const stairInnerOf = (st, own) => {
+			const stairInner = new Uint8Array(grid.w * grid.h);
+			const [x0, y0] = grid.cellOf({
+				x: st.minX + res / 2,
+				y: st.minY + res / 2
+			});
+			const [x1, y1] = grid.cellOf({
+				x: st.maxX - res / 2,
+				y: st.maxY - res / 2
+			});
+			for (let y = Math.max(0, y0); y <= Math.min(grid.h - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(grid.w - 1, x1); x++) {
+				const i = y * grid.w + x;
+				carvedBox[i] = 1;
+				if (grid.data[i] !== 1) continue;
+				let foreign = false;
+				for (const [dx, dy] of [
+					[1, 0],
+					[-1, 0],
+					[0, 1],
+					[0, -1]
+				]) {
+					for (let q = 1; q <= 8; q++) {
+						const xx = x + dx * q;
+						const yy = y + dy * q;
+						if (xx < 0 || yy < 0 || xx >= grid.w || yy >= grid.h) break;
+						const j = yy * grid.w + xx;
+						if (grid.data[j] === 1) continue;
+						if (grid.data[j] === 2 || labels[j] && !own.has(labels[j])) foreign = true;
+						break;
+					}
+					if (foreign) break;
+				}
+				if (!foreign) stairInner[i] = 1;
+			}
+			return stairInner;
+		};
 		for (const st of stairsNow) {
 			const boxM2 = (st.maxX - st.minX) * (st.maxY - st.minY) / 1e6;
 			if (boxM2 < 1.2 || boxM2 > 10) continue;
@@ -14423,7 +14578,45 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const inBox = (p) => p.x > st.minX - 30 && p.x < st.maxX + 30 && p.y > st.minY - 30 && p.y < st.maxY + 30;
 			const outNames = a0.names.filter((n) => n.type !== "stairs" && !inBox(n));
 			const outOthers = a0.names.length ? [] : a0.others.filter((o) => !inBox(o));
-			if (!outNames.length && !outOthers.length) continue;
+			if (!outNames.length && !outOthers.length) {
+				if (rm.type === "stairs") {
+					const openTypes = [
+						"hall",
+						"ldk",
+						"living",
+						"dining",
+						"kitchen",
+						"entrance",
+						"stairs",
+						"bedroom",
+						"kids",
+						"study",
+						"japanese",
+						"other"
+					];
+					const touched = absorbStairRing(grid, labels, sizes, l, st, (fl) => {
+						const fr = roomByLabel.get(fl);
+						return !fr || openTypes.includes(fr.type) && !courtLabels.has(fl);
+					});
+					if (touched.length) {
+						const tS = traceLabel(l, stairInnerOf(st, /* @__PURE__ */ new Set([l, ...touched])));
+						if (tS) {
+							rm.polygon = tS.poly;
+							rm.area = tS.area;
+						}
+						for (const fl of touched) {
+							const fr = roomByLabel.get(fl);
+							const tF = fr ? traceLabel(fl) : null;
+							if (fr && tF) {
+								fr.polygon = tF.poly;
+								fr.area = tF.area;
+							}
+						}
+						trace?.push(`${level}F 階段の区画: 階段と壁の間のすき間を階段に含めた（${touched.map((fl) => roomByLabel.get(fl)?.name ?? fl).join("・")} から）`);
+					}
+				}
+				continue;
+			}
 			const before = new Set(a0.names.length ? a0.names.map((n) => n.str) : a0.others.map((o) => o.str));
 			const parts = rm.name.split("・");
 			const untouched = parts.every((q) => before.has(q));
@@ -14457,41 +14650,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 				}
 			}
 			collectTexts(affected);
-			const stairInner = new Uint8Array(grid.w * grid.h);
-			{
-				const [x0, y0] = grid.cellOf({
-					x: st.minX + res / 2,
-					y: st.minY + res / 2
-				});
-				const [x1, y1] = grid.cellOf({
-					x: st.maxX - res / 2,
-					y: st.maxY - res / 2
-				});
-				for (let y = Math.max(0, y0); y <= Math.min(grid.h - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(grid.w - 1, x1); x++) {
-					const i = y * grid.w + x;
-					carvedBox[i] = 1;
-					if (grid.data[i] !== 1) continue;
-					let foreign = false;
-					for (const [dx, dy] of [
-						[1, 0],
-						[-1, 0],
-						[0, 1],
-						[0, -1]
-					]) {
-						for (let q = 1; q <= 8; q++) {
-							const xx = x + dx * q;
-							const yy = y + dy * q;
-							if (xx < 0 || yy < 0 || xx >= grid.w || yy >= grid.h) break;
-							const j = yy * grid.w + xx;
-							if (grid.data[j] === 1) continue;
-							if (grid.data[j] === 2 || labels[j] && !affected.has(labels[j])) foreign = true;
-							break;
-						}
-						if (foreign) break;
-					}
-					if (!foreign) stairInner[i] = 1;
-				}
-			}
+			const stairInner = stairInnerOf(st, affected);
 			const aS = acc.get(carved.stairLabel);
 			const isStairName = (n) => n.type === "stairs" || /階段/.test(n.str) && !/収納|物入|クローゼット|倉庫|トイレ/.test(n.str);
 			const stairNames = (aS?.names ?? []).filter(isStairName);
@@ -14732,7 +14891,9 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	};
 	stairRoomSplitters.set(floorOut, () => {
 		if (floorOut.rooms === rooms) splitStairs(floorOut.stairs);
+		globalThis.__roomTrace?.push(`${level}F 階段を分けた後: ${rooms.map((r) => `${r.name}:${(r.area / 1.62).toFixed(1)}[${r.polygon.map((q) => `${Math.round(q.x)},${Math.round(q.y)}`).join(" ")}]`).join(" | ")}`);
 	});
+	globalThis.__roomTrace?.push(`${level}F buildFloor: ${rooms.map((r) => `${r.name}:${(r.area / 1.62).toFixed(1)}[${r.polygon.map((q) => `${Math.round(q.x)},${Math.round(q.y)}`).join(" ")}]`).join(" | ")}`);
 	return floorOut;
 }
 /** 階ごとの「階段を隣の部屋から分ける」処理（buildFloor が登録する。升目を持っているので、座標を動かす前に呼ぶ） */
@@ -14819,6 +14980,61 @@ function wallFillColors(fills, walls, labelPoints = []) {
 	const out = /* @__PURE__ */ new Set();
 	for (const [c, st] of stat) if (st.polys >= 5 && !st.room && st.on / st.n >= .6 && st.thin / st.polys >= .6) out.add(c);
 	return out;
+}
+/**
+* 壁ではない塗りの色: 壁の色でなく、その色の塗りの面積の 7 割以上が「太い塗り」（部屋・階段の段・造作・家具の形）の色。
+* 細い帯ばかりの色（柱・腰壁・手すり壁かもしれない）は入れない
+*/
+function softFillColors(fills, wallColors) {
+	const stat = /* @__PURE__ */ new Map();
+	for (const f of fills) {
+		if (wallColors.has(f.color)) continue;
+		const st = stat.get(f.color) ?? {
+			fat: 0,
+			all: 0
+		};
+		const a = Math.abs(polygonArea$1(f.poly));
+		st.all += a;
+		if (fillWidth(f.poly) > WALL_FILL_MAX_W) st.fat += a;
+		stat.set(f.color, st);
+	}
+	const out = /* @__PURE__ */ new Set();
+	for (const [c, st] of stat) if (st.all > 0 && st.fat / st.all >= .7) out.add(c);
+	return out;
+}
+/**
+* 図面に描かれた壁（壁の色の細長い塗り）を、検出した壁がどれだけ説明しているか:
+* 塗りの長い辺（300 mm 以上）の上の点（1/4・1/2・3/4）のうち、検出した壁の面の近くにある点の数
+*/
+function wallStripCoverage(fills, wallColors, walls) {
+	let n = 0;
+	let on = 0;
+	for (const f of fills) {
+		if (!wallColors.has(f.color)) continue;
+		const wd = fillWidth(f.poly);
+		if (wd <= 0 || wd > WALL_FILL_MAX_W) continue;
+		for (let i = 0; i < f.poly.length; i++) {
+			const a = f.poly[i];
+			const b = f.poly[(i + 1) % f.poly.length];
+			if (Math.hypot(b.x - a.x, b.y - a.y) < 300) continue;
+			for (const t of [
+				.25,
+				.5,
+				.75
+			]) {
+				const q = {
+					x: a.x + (b.x - a.x) * t,
+					y: a.y + (b.y - a.y) * t
+				};
+				n++;
+				if (walls.some((w) => distPointSegment(q, w.a, w.b) <= w.d / 2 + 40)) on++;
+			}
+		}
+	}
+	return {
+		n,
+		on
+	};
 }
 /**
 * ページが何の図面か（見出しと室名から）。
@@ -14964,10 +15180,32 @@ function detectPlans(pages, warnings) {
 			const lens = ww.map((w) => w.t1 - w.t0);
 			console.log("walls", ww.length, "len<300", lens.filter((l) => l < 300).length, "<1000", lens.filter((l) => l >= 300 && l < 1e3).length, ">=1000", lens.filter((l) => l >= 1e3).length, "d", ww.slice(0, 12).map((w) => Math.round(w.d)).join("/"));
 		}
-		const wallColors = wallFillColors(page.colorFills, ww, page.texts.filter(isRoomText).map((t) => ({
+		const roomLabelPts = page.texts.filter(isRoomText).map((t) => ({
 			x: t.x,
 			y: t.y
-		})));
+		}));
+		let wallColors = wallFillColors(page.colorFills, ww, roomLabelPts);
+		if (wallColors.size && !loose && !scan && !globalThis.__NO_SOFT_FILLS) {
+			const soft = softFillColors(page.colorFills, wallColors);
+			const cov1 = wallStripCoverage(page.colorFills, wallColors, ww);
+			if (soft.size && cov1.n >= 20 && cov1.on < cov1.n) {
+				const ww2 = makeWalls(detectWalls(page.segs, page.arcs, {
+					...globalThis.__wallBands ? { bands: true } : {},
+					softFillColors: soft
+				}, page.masks));
+				joinWalls(ww2);
+				const cov2 = wallStripCoverage(page.colorFills, wallColors, ww2);
+				globalThis.__softTrace?.push(`p${page.pageIndex + 1} 壁の塗りの縁 ${cov1.n} 点: 1 回目 ${cov1.on}・読み直し ${cov2.on}（壁 ${ww.length} → ${ww2.length}）soft=${[...soft].join(",")}`);
+				if (cov2.on > cov1.on + Math.max(2, cov1.n * .01)) {
+					const g2 = clusterPlans(ww2, pageExt);
+					if (g2.length >= groups.length) {
+						ww = ww2;
+						groups = g2;
+						wallColors = wallFillColors(page.colorFills, ww, roomLabelPts);
+					}
+				}
+			}
+		}
 		if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
 		const pageHasRooms = page.texts.some(isRoomText);
 		const boxes = groups.map((g) => bboxOf$2(g.flatMap((w) => [w.a, w.b])));
@@ -15953,6 +16191,25 @@ function cleanPolygon(out, fallback) {
 		dedup.push(p);
 	}
 	while (dedup.length > 1 && Math.abs(dedup[0].x - dedup[dedup.length - 1].x) < 1 && Math.abs(dedup[0].y - dedup[dedup.length - 1].y) < 1) dedup.pop();
+	for (let guard = 0; guard < 8 && dedup.length > 3; guard++) {
+		let removed = false;
+		for (let i = 0; i < dedup.length && dedup.length > 3; i++) {
+			const a = dedup[(i + dedup.length - 1) % dedup.length];
+			const p = dedup[i];
+			const b = dedup[(i + 1) % dedup.length];
+			const cross = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
+			const dot = (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y);
+			if (Math.abs(cross) < 1 && dot < 0) {
+				dedup.splice(i, 1);
+				const j = i % dedup.length;
+				const q = dedup[(j + dedup.length - 1) % dedup.length];
+				if (dedup.length > 3 && Math.abs(q.x - dedup[j].x) < 1 && Math.abs(q.y - dedup[j].y) < 1) dedup.splice(j, 1);
+				removed = true;
+				i--;
+			}
+		}
+		if (!removed) break;
+	}
 	const clean = [];
 	for (let i = 0; i < dedup.length; i++) {
 		const a = dedup[(i + dedup.length - 1) % dedup.length];
@@ -23613,11 +23870,11 @@ function buildFurniture(model, opts = {}) {
 			const ceilingY = Math.max(1.8, ((room.ceilingHeight ?? f.ceilingHeight) - offMm) * MM);
 			const center = V((R.minX + R.maxX) / 2, ctx.y + ceilingY - .02, (R.minZ + R.maxZ) / 2);
 			if (override) {
-				if (!excludedFromFloorArea(room.type) && ![
+				if (!excludedFromFloorArea(room.type) && (![
 					"other",
 					"closet",
 					"storage"
-				].includes(room.type)) lights.push({
+				].includes(room.type) || room.type === "other" && isSpecialRoomName(room.name))) lights.push({
 					pos: center,
 					kind: "ceiling",
 					roomId: room.id
@@ -23702,7 +23959,14 @@ function buildFurniture(model, opts = {}) {
 						roomId: room.id
 					});
 					break;
-				case "closet": layoutCloset(ctx);
+				case "closet":
+					layoutCloset(ctx);
+					break;
+				case "other": if (isSpecialRoomName(room.name)) lights.push({
+					pos: center,
+					kind: "ceiling",
+					roomId: room.id
+				});
 			}
 		}
 		if (override) for (const it of override.items) {

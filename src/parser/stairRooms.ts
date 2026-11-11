@@ -171,3 +171,66 @@ export function carveStairRegion(grid: Grid, labels: Int32Array, sizes: number[]
   }
   return { stairLabel, extraLabels, joinedCells };
 }
+
+/**
+ * すでに別の区画として読めている階段（ラベル l）のまわりの細い帯を、階段に含める。
+ *
+ * 階段は手すり壁の細い線で囲まれて描かれ、本当の壁との間に 60〜100mm のすき間が残る。昇り口に壁が無いと、そのすき間が
+ * 前のホールとつながり、ホールの輪郭（外周 1 本）が階段を輪のように囲んで面積が二重になる（有元様邸 2 階: ホール 4.1 帖が 6.1 帖に）。
+ * 階段の範囲 box の中にある、ほかの区画の升のうち「幅 240mm 以下で、両側が壁か階段」の升を階段のラベルに書き換える。
+ * canTake で相手の区画を選べる（収納・水まわりのような小さな部屋からは取らない）。書き換えた相手の区画のラベルを返す（無ければ空）
+ */
+export function absorbStairRing(grid: Grid, labels: Int32Array, sizes: number[], l: number, box: BBox, canTake: (label: number) => boolean = () => true): number[] {
+  const { w, h, res } = grid;
+  const [bx0, by0] = grid.cellOf({ x: box.minX + res / 2, y: box.minY + res / 2 });
+  const [bx1, by1] = grid.cellOf({ x: box.maxX - res / 2, y: box.maxY - res / 2 });
+  const x0 = Math.max(0, bx0);
+  const y0 = Math.max(0, by0);
+  const x1 = Math.min(w - 1, bx1);
+  const y1 = Math.min(h - 1, by1);
+  if (x1 < x0 || y1 < y0) return [];
+  const MAX = Math.round(240 / res);
+  const ok = new Map<number, boolean>();
+  const takable = (fl: number) => {
+    let v = ok.get(fl);
+    if (v == null) ok.set(fl, (v = canTake(fl)));
+    return v;
+  };
+  const foreign = (i: number) => grid.data[i] === 0 && labels[i] !== 0 && labels[i] !== l && takable(labels[i]);
+  /** 升 i から (dx, dy) の向きへ、ほかの区画の升が続く数と、その先にあるもの（'edge' = 壁か階段、'far' = 240mm を超えて続く・屋外・升目の外） */
+  const run = (x: number, y: number, dx: number, dy: number): { n: number; end: 'edge' | 'far' } => {
+    for (let d = 1; d <= MAX + 1; d++) {
+      const xx = x + dx * d;
+      const yy = y + dy * d;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) return { n: d - 1, end: 'far' };
+      const j = yy * w + xx;
+      if (foreign(j)) continue;
+      // 壁、または階段の升で止まる。屋外・ラベルの無い空きは帯の端ではない
+      return { n: d - 1, end: grid.data[j] === 1 || labels[j] === l ? 'edge' : 'far' };
+    }
+    return { n: MAX + 1, end: 'far' };
+  };
+  const take: number[] = [];
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++) {
+      const i = y * w + x;
+      if (!foreign(i)) continue;
+      const a = run(x, y, -1, 0);
+      const b = run(x, y, 1, 0);
+      const c = run(x, y, 0, -1);
+      const d = run(x, y, 0, 1);
+      const thinX = a.end === 'edge' && b.end === 'edge' && a.n + b.n + 1 <= MAX;
+      const thinY = c.end === 'edge' && d.end === 'edge' && c.n + d.n + 1 <= MAX;
+      if (thinX || thinY) take.push(i);
+    }
+  if (!take.length) return [];
+  const touched = new Set<number>();
+  for (const i of take) {
+    const fl = labels[i];
+    touched.add(fl);
+    sizes[fl] = Math.max(0, (sizes[fl] ?? 0) - 1);
+    labels[i] = l;
+  }
+  sizes[l] = (sizes[l] ?? 0) + take.length;
+  return [...touched];
+}

@@ -8,6 +8,8 @@ import { woodCheck, type WoodIssue } from './woodCheck';
 import { entranceDoorOf } from '../core/entrance';
 import { floorAreaOf } from '../core/floorArea';
 import { overlay } from '../estimate/areas';
+import { isSpecialRoomName } from './labels';
+import { sharedEdges } from './tatamiCheck';
 
 export interface ScorePart {
   id: 'tatami' | 'areaTable' | 'floors' | 'openings' | 'walls' | 'rooms';
@@ -57,8 +59,14 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
   // 1. 帖数の照合（25）: 図面の帖数と読み取った面積（±0.35 帖または ±6%）
   {
     const labeled = floors.flatMap((f) => f.rooms.filter((r) => r.labeledTatami && r.labeledTatami > 0).map((r) => ({ f, r })));
+    // 開口付きの間仕切りで 2 つの区画に読めた部屋（帖数との照合で「同じ部屋」とした、同じ名前で帖数の無い隣の区画）は、足した広さで比べる
+    // （池本様邸 2 階: 仕事部屋 14 帖 = 9.2 帖 ＋ 机の並ぶ 5.1 帖）
+    const baseName = (n: string) => n.replace(/（[^（）]*側）$/, '');
+    const partsOf = (f: Floor, r: Room) => f.rooms.filter((o) => o !== r && !o.labeledTatami && o.type !== 'void' && baseName(o.name) === baseName(r.name) && sharedEdges(r.polygon, o.polygon).length > 0);
+    const wholeTatami = new Map<Room, number>();
+    for (const { f, r } of labeled) wholeTatami.set(r, tatamiOf(r) + partsOf(f, r).reduce((s0, o) => s0 + tatamiOf(o), 0));
     const bad = labeled.filter(({ r }) => {
-      const t = tatamiOf(r);
+      const t = wholeTatami.get(r)!;
       return Math.abs(t - r.labeledTatami!) > Math.max(0.45, r.labeledTatami! * 0.07);
     });
     let got: number;
@@ -69,15 +77,16 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     } else {
       got = 25 * ((labeled.length - bad.length) / labeled.length);
       if (!readable) got = Math.min(got, 5);
-      note = bad.length ? `帖数の表記 ${labeled.length} 室のうち ${labeled.length - bad.length} 室が一致。ずれ: ${bad.slice(0, 3).map(({ f, r }) => `${f.level}階 ${r.name} ${r.labeledTatami!.toFixed(1)}→${tatamiOf(r).toFixed(1)}帖`).join('、')}${bad.length > 3 ? '…' : ''}` : `帖数の表記 ${labeled.length} 室すべて一致`;
+      note = bad.length ? `帖数の表記 ${labeled.length} 室のうち ${labeled.length - bad.length} 室が一致。ずれ: ${bad.slice(0, 3).map(({ f, r }) => `${f.level}階 ${baseName(r.name)} ${r.labeledTatami!.toFixed(1)}→${wholeTatami.get(r)!.toFixed(1)}帖`).join('、')}${bad.length > 3 ? '…' : ''}` : `帖数の表記 ${labeled.length} 室すべて一致`;
     }
     parts.push({ id: 'tatami', label: '帖数', max: 25, got: r1(got), note });
     for (const { f, r } of bad) {
-      const diff = tatamiOf(r) - r.labeledTatami!;
+      const whole = wholeTatami.get(r)!;
+      const diff = whole - r.labeledTatami!;
       fixes.push({
         lost: r1(25 / labeled.length),
         level: f.level,
-        title: `${f.level}階 ${r.name}: 図面は ${r.labeledTatami!.toFixed(1)} 帖、読み取りは ${tatamiOf(r).toFixed(1)} 帖（${diff > 0 ? '広い' : '狭い'}）`,
+        title: `${f.level}階 ${baseName(r.name)}: 図面は ${r.labeledTatami!.toFixed(1)} 帖、読み取りは ${whole.toFixed(1)} 帖（${diff > 0 ? '広い' : '狭い'}）`,
         detail: diff > 0 ? '隣の部屋・収納と区画がつながっているか、壁を読み落としています。方眼でその部屋の壁を確認してください' : '壁を余分に読んでいるか、部屋名の位置の区画が違います。方眼で壁を消すか部屋名を動かしてください',
       });
     }
@@ -213,8 +222,8 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     const top = floors.length ? Math.max(...floors.map((f) => f.level)) : 0;
     const isPenthouse = (f: Floor) => floors.length >= 2 && f.level === top && f.stairs.length > 0 && f.rooms.reduce((a, r) => a + r.area, 0) <= 12;
     const thin = floors.filter((f) => f.rooms.filter((r) => r.type !== 'void').length < 3 && !isPenthouse(f));
-    // EV（エレベーター）は用途が分かっている（部屋の種類は other のまま）
-    const unnamed = rooms.filter((r) => (r.type === 'other' && !/^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, ''))) || /^室$|^部屋$/.test(r.name.trim()));
+    // EV・ペット室・ジム・音楽室などは用途が分かっている（部屋の種類は other のまま。labels.ts isSpecialRoomName）
+    const unnamed = rooms.filter((r) => (r.type === 'other' && !isSpecialRoomName(r.name)) || /^室$|^部屋$/.test(r.name.trim()));
     const got = readable ? (floors.length && !thin.length ? 5 : 0) + (unnamed.length ? Math.max(0, 3 - unnamed.length) : 3) + (hasLdk ? 2 : 0) : 0;
     const notes: string[] = [];
     if (!floors.length) notes.push('階が読めていない');

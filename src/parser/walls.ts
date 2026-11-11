@@ -17,6 +17,8 @@ export interface Seg {
   width: number;
   dashed: boolean;
   source: 'stroke' | 'fill';
+  /** 塗りの輪郭（source = 'fill'）のときの塗りの色 */
+  color?: string;
 }
 
 export interface Arc {
@@ -173,6 +175,12 @@ export interface WallDetectOptions {
    * 柱は塗りの正方形になっている図面。帯を壁片として拾う
    */
   bands: boolean;
+  /**
+   * 壁ではないと分かっている塗りの色（部屋の色・階段の段の色・造作の色）。その輪郭は壁面の候補にしない
+   * （窓・引戸の記号の「間の線」としては使う）。壁を灰色の塗りで描く図面で、壁の両側に階段の色の帯が並ぶと、
+   * 本物の壁の線の組が「帯に挟まれた入れ子」として捨てられていた（有元様邸 2 階）
+   */
+  softFillColors?: Set<string>;
 }
 
 const DEFAULTS: WallDetectOptions = { minThickness: 45, maxThickness: 420, minSegment: 40, ignoreWidth: false, bands: false };
@@ -433,8 +441,11 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     const ta = s.a.x * g.u.x + s.a.y * g.u.y;
     const tb = s.b.x * g.u.x + s.b.y * g.u.y;
     const o = ((s.a.x + s.b.x) / 2) * g.n.x + ((s.a.y + s.b.y) / 2) * g.n.y;
-    const heavy = s.source === 'fill' || heavyT == null || s.width >= heavyT;
-    groupLines[gi].push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: s.source === 'fill' });
+    // 壁ではない色の塗りの輪郭は、壁面の候補にも「壁の塗りが続いている所」にも数えない
+    const soft = s.source === 'fill' && !!s.color && !!O.softFillColors?.has(s.color);
+    const isFill = s.source === 'fill' && !soft;
+    const heavy = !soft && (isFill || heavyT == null || s.width >= heavyT);
+    groupLines[gi].push({ o, t0: Math.min(ta, tb), t1: Math.max(ta, tb), heavy, eligible: heavy, width: s.width, fill: isFill });
   }
   // 塗りの輪郭だけの線（壁の塗りが続いている所を知るため。mergeCollinear は配列を並べ替えるので写しで）
   const fillLines = groupLines.map((ls) => mergeCollinear(ls.filter((l) => l.fill).map((l) => ({ ...l }))));
@@ -778,6 +789,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       if (!spans.length) continue;
       const maxCover = Math.max(...spans.map((s) => s.cover));
       const fullThr = Math.max(0.5, Math.min(0.75, maxCover));
+      if ((globalThis as any).__WALLDBG) console.log('MASK', Math.round(ax.o), 'd', Math.round(ax.d), spans.map((s) => `${Math.round(s.t0)}-${Math.round(s.t1)} c${s.cover.toFixed(2)}`).join(' '), 'pieces', ax.pieces.map((p) => `${Math.round(p.t0)}-${Math.round(p.t1)}`).join(' '), 'ops', ax.openings.map((p) => `${Math.round(p.t0)}-${Math.round(p.t1)}`).join(' '));
       for (const sp of spans) {
         const { t0, t1 } = sp;
         if (sp.cover < fullThr) {

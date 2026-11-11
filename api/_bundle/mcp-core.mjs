@@ -5816,6 +5816,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 			}
 		}
 	}
+	let maskStyle = false;
 	if (masks.length && infills.length && !globalThis.__NO_FILLWALL) {
 		const filled = (f, a, b) => wallFillCover(f.g, f.o - f.d / 2, a, b) >= (b - a) * .8 && wallFillCover(f.g, f.o + f.d / 2, a, b) >= (b - a) * .8;
 		const fullOf = (f) => mergeIntervals(masks.flatMap((poly) => {
@@ -5828,6 +5829,7 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 		const onFill = infills.map((f, k) => filled(f, f.t0, f.t1) ? k : -1).filter((k) => k >= 0);
 		const masked = onFill.filter((k) => intervalsLength(fulls[k]) >= (infills[k].t1 - infills[k].t0) * .5);
 		if (masked.length >= 3 && masked.length >= onFill.length * .5) {
+			maskStyle = true;
 			const keepInf = [];
 			const keepLines = [];
 			infills.forEach((f, k) => {
@@ -6111,13 +6113,38 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 	let heavyLen = 0;
 	for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;
 	const pairedLen = finalPieces.reduce((s0, q) => s0 + 2 * (q.t1 - q.t0), 0);
+	const heavyPairedFrac = heavyT == null || heavyLen <= 0 ? 1 : Math.min(1, pairedLen / heavyLen);
+	const maskMissed = [];
+	if (maskStyle) for (const poly of masks) for (const ax of axes) {
+		if (!ax.pieces.length && !ax.openings.length) continue;
+		const spans = maskSpans(poly, groups[ax.g], ax.o, ax.d);
+		if (!spans.length) continue;
+		const fullThr = Math.max(.5, Math.min(.75, Math.max(...spans.map((sp) => sp.cover))));
+		const a0 = Math.min(...ax.pieces.map((p) => p.t0), ...ax.openings.map((o) => o.t0));
+		const a1 = Math.max(...ax.pieces.map((p) => p.t1), ...ax.openings.map((o) => o.t1));
+		for (const sp of spans) {
+			if (sp.cover < fullThr || sp.t1 - sp.t0 < 250) continue;
+			if (sp.t1 < a0 - 50 || sp.t0 > a1 + 50) continue;
+			if (intervalsLength(mergeIntervals(openings.filter((o) => o.g === ax.g && Math.abs(o.o - ax.o) <= ax.d / 2 + o.d / 2 + 20).map((o) => [Math.max(sp.t0, o.t0), Math.min(sp.t1, o.t1)]).filter(([a, b]) => b > a))) >= (sp.t1 - sp.t0) * .5) continue;
+			const grp = groups[ax.g];
+			const tm = (sp.t0 + sp.t1) / 2;
+			maskMissed.push({
+				x: grp.u.x * tm + grp.n.x * ax.o,
+				y: grp.u.y * tm + grp.n.y * ax.o
+			});
+		}
+	}
 	return {
 		groups,
 		pieces: finalPieces,
 		openings,
 		thicknessPeaks: peaks,
 		heavyThreshold: heavyT,
-		heavyPairedFrac: heavyT == null || heavyLen <= 0 ? 1 : Math.min(1, pairedLen / heavyLen)
+		heavyPairedFrac,
+		...maskStyle ? {
+			maskStyle,
+			maskMissed
+		} : {}
 	};
 }
 /** 円弧の外接円（中心・半径） */
@@ -15233,7 +15260,12 @@ function detectPlans(pages, warnings) {
 			maxX: page.rasterMask.w * page.rasterMask.res,
 			maxY: page.rasterMask.h * page.rasterMask.res
 		};
-		let ww = makeWalls(detectWalls(page.segs, page.arcs, globalThis.__wallBands ? { bands: true } : {}, page.masks));
+		const det0 = detectWalls(page.segs, page.arcs, globalThis.__wallBands ? { bands: true } : {}, page.masks);
+		let ww = makeWalls(det0);
+		let maskInfo = {
+			style: !!det0.maskStyle,
+			missed: det0.maskMissed ?? []
+		};
 		joinWalls(ww);
 		let groups = clusterPlans(ww, pageExt);
 		let sketchHeavy = null;
@@ -15305,10 +15337,11 @@ function detectPlans(pages, warnings) {
 			const soft = softFillColors(page.colorFills, wallColors);
 			const cov1 = wallStripCoverage(page.colorFills, wallColors, ww);
 			if (soft.size && cov1.n >= 20 && cov1.on < cov1.n) {
-				const ww2 = makeWalls(detectWalls(page.segs, page.arcs, {
+				const det2 = detectWalls(page.segs, page.arcs, {
 					...globalThis.__wallBands ? { bands: true } : {},
 					softFillColors: soft
-				}, page.masks));
+				}, page.masks);
+				const ww2 = makeWalls(det2);
 				joinWalls(ww2);
 				const cov2 = wallStripCoverage(page.colorFills, wallColors, ww2);
 				globalThis.__softTrace?.push(`p${page.pageIndex + 1} 壁の塗りの縁 ${cov1.n} 点: 1 回目 ${cov1.on}・読み直し ${cov2.on}（壁 ${ww.length} → ${ww2.length}）soft=${[...soft].join(",")}`);
@@ -15317,6 +15350,10 @@ function detectPlans(pages, warnings) {
 					if (g2.length >= groups.length) {
 						ww = ww2;
 						groups = g2;
+						maskInfo = {
+							style: !!det2.maskStyle,
+							missed: det2.maskMissed ?? []
+						};
 						wallColors = wallFillColors(page.colorFills, ww, roomLabelPts);
 					}
 				}
@@ -15374,6 +15411,7 @@ function detectPlans(pages, warnings) {
 				roomFills.push(c.poly);
 			}
 			const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : void 0;
+			const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
 			plans.push({
 				pageIndex: page.pageIndex,
 				bbox,
@@ -15389,7 +15427,8 @@ function detectPlans(pages, warnings) {
 				roomFills,
 				sketchLines,
 				loose,
-				scan
+				scan,
+				...maskDrawn ? { maskDrawn } : {}
 			});
 		}
 	}
@@ -16769,6 +16808,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		const pg = planOf.get(f)?.pageIndex;
 		if (pg != null) floorPages[f.level] = pg;
 	}
+	const maskLevels = floors.filter((f) => planOf.get(f)?.maskDrawn).map((f) => f.level);
 	return {
 		name,
 		floors,
@@ -16778,7 +16818,8 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		thicknesses: [...thicknesses].sort((a, b) => a - b),
 		northDetected: northDeg != null,
 		areaTable,
-		floorPages
+		floorPages,
+		maskLevels
 	};
 }
 function translateFloor(f, dx, dy) {
@@ -17597,7 +17638,7 @@ function modelFromVectors(pages, opts = {}) {
 			if (info) info.used = [info.used, "外部仕上表"].filter(Boolean).join("・");
 		}
 	} catch {}
-	const { thicknesses, areaTable, floorPages: _fp, ...model } = res;
+	const { thicknesses, areaTable, floorPages: _fp, maskLevels, ...model } = res;
 	return {
 		...model,
 		...heights ? { heights } : {},
@@ -17614,7 +17655,8 @@ function modelFromVectors(pages, opts = {}) {
 			...pageMap.length ? { pageMap } : {},
 			...elevationWindows ? { elevationWindows } : {},
 			...finishTable ? { finishTable } : {},
-			...floorShifted.length ? { floorShifts: floorShifted } : {}
+			...floorShifted.length ? { floorShifts: floorShifted } : {},
+			...maskLevels.length ? { openingsByMask: maskLevels } : {}
 		}
 	};
 }
@@ -20056,6 +20098,7 @@ function livabilityChecks(model) {
 		x: (rectOf(r).minX + rectOf(r).maxX) / 2,
 		y: (rectOf(r).minY + rectOf(r).maxY) / 2
 	});
+	const drawnByMask = new Set(model.report?.openingsByMask ?? []);
 	const windowsOf = (f, r) => f.openings.filter((o) => {
 		if (o.kind !== "window") return false;
 		const w = f.walls.find((w) => w.id === o.wallId);
@@ -20087,14 +20130,24 @@ function livabilityChecks(model) {
 				"living",
 				"ldk",
 				"dining"
-			].includes(r.type) && r.area >= 4 && windowsOf(f, r).length === 0) out.push({
-				id: `nowin-${f.level}-${r.id}`,
-				level: f.level,
-				severity: "info",
-				title: `${f.level}階 ${r.name}: 窓が読めていません`,
-				detail: "居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです",
-				marks
-			});
+			].includes(r.type) && r.area >= 4 && windowsOf(f, r).length === 0) {
+				if (drawnByMask.has(f.level)) out.push({
+					id: `nowindrawn-${f.level}-${r.id}`,
+					level: f.level,
+					severity: "info",
+					title: `${f.level}階 ${r.name}: 図面に窓がありません`,
+					detail: "この図面は窓・戸を白抜きで描いていて、この部屋の壁には白抜きがありません（読み落としではなく、図面に窓が描かれていません）。居室には採光（床面積の 1/7 以上の窓）が要るので、設計を確かめてください。窓を足すときは修正画面で",
+					marks
+				});
+				else out.push({
+					id: `nowin-${f.level}-${r.id}`,
+					level: f.level,
+					severity: "info",
+					title: `${f.level}階 ${r.name}: 窓が読めていません`,
+					detail: "居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです",
+					marks
+				});
+			}
 			if (r.type === "bedroom" && /主寝室|寝室|MBR|主/.test(r.name) && r.area < 9.5 && r.area > 0) out.push({
 				id: `mbr-${f.level}-${r.id}`,
 				level: f.level,

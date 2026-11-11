@@ -378,7 +378,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
     // 仕上表が読めなくても読み取りはそのまま
   }
 
-  const { thicknesses, areaTable, floorPages: _fp, ...model } = res;
+  const { thicknesses, areaTable, floorPages: _fp, maskLevels, ...model } = res;
   return {
     ...model,
     ...(heights ? { heights } : {}),
@@ -396,6 +396,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       ...(elevationWindows ? { elevationWindows } : {}),
       ...(finishTable ? { finishTable } : {}),
       ...(floorShifted.length ? { floorShifts: floorShifted } : {}),
+      ...(maskLevels.length ? { openingsByMask: maskLevels } : {}),
     },
   };
 }

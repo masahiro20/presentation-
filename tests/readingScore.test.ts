@@ -158,6 +158,28 @@ describe('readingScore', () => {
     m.floors = [];
     expect(readingScore(m).score).toBeLessThanOrEqual(5);
   });
+  it('開口を白抜きで描く図面から読んだ階の「窓の無い居室」は、読み落としではないので減点しない（図面に窓が描かれていない）', () => {
+    // 2 階の洋室 1 の窓を消す（1 階の洋室は、もともと窓が無い）
+    const m = model();
+    m.floors[1].openings = m.floors[1].openings.filter((o) => o.id !== 'w22');
+    const before = readingScore(m);
+    const o0 = before.parts.find((p) => p.id === 'openings')!;
+    expect(o0.note).toMatch(/窓の無い居室 2/);
+    expect(before.fixes.some((f) => /2階 洋室1: 窓が読めていません/.test(f.title))).toBe(true);
+    // 白抜きの開口がすべて読めた階（1・2 階）なら、どちらも図面どおり
+    m.report.openingsByMask = [1, 2];
+    const after = readingScore(m);
+    const o1 = after.parts.find((p) => p.id === 'openings')!;
+    expect(o1.got).toBe(o1.max);
+    expect(o1.note).toMatch(/図面に窓の無い居室 2/);
+    expect(after.fixes.some((f) => /窓が読めていません/.test(f.title))).toBe(false);
+    // 1 階だけが白抜きの階なら、2 階の部屋は今までどおり「読めていません」
+    m.report.openingsByMask = [1];
+    const half = readingScore(m);
+    expect(half.fixes.some((f) => /2階 洋室1: 窓が読めていません/.test(f.title))).toBe(true);
+    expect(half.fixes.some((f) => /1階 洋室: 窓が読めていません/.test(f.title))).toBe(false);
+    expect(half.parts.find((p) => p.id === 'openings')!.got).toBeGreaterThan(o0.got);
+  });
   it('点数は 0〜100 に収まり、まず直す所は失った点の大きい順', () => {
     const m = model();
     m.floors[0].stairs = [];

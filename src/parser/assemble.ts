@@ -398,6 +398,8 @@ export interface PlanData {
   loose?: boolean;
   /** スキャン画像の図面 */
   scan?: boolean;
+  /** 開口を白抜きで描く図面で、壁の上の白抜きがすべて開口として読めた（壁の塗りが続いていて白抜きの無い所に、窓・戸は無い） */
+  maskDrawn?: boolean;
 }
 
 function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boolean): { style: WindowStyle; sill: number; height: number } {
@@ -3452,7 +3454,10 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       page.segs.length >= 50 || !page.rasterMask
         ? bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]))
         : { minX: 0, minY: 0, maxX: page.rasterMask.w * page.rasterMask.res, maxY: page.rasterMask.h * page.rasterMask.res };
-    let ww = makeWalls(detectWalls(page.segs, page.arcs, (globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}, page.masks));
+    const det0 = detectWalls(page.segs, page.arcs, (globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}, page.masks);
+    let ww = makeWalls(det0);
+    // 開口を白抜きで描く図面か（読めなかった白抜きの位置つき）。壁を読み直したら、その結果のものに替える
+    let maskInfo: { style: boolean; missed: Vec2[] } = { style: !!det0.maskStyle, missed: det0.maskMissed ?? [] };
     joinWalls(ww);
     let groups = clusterPlans(ww, pageExt);
     let sketchHeavy: Seg[] | null = null;
@@ -3509,7 +3514,8 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const soft = softFillColors(page.colorFills, wallColors);
       const cov1 = wallStripCoverage(page.colorFills, wallColors, ww);
       if (soft.size && cov1.n >= 20 && cov1.on < cov1.n) {
-        const ww2 = makeWalls(detectWalls(page.segs, page.arcs, { ...((globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}), softFillColors: soft }, page.masks));
+        const det2 = detectWalls(page.segs, page.arcs, { ...((globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}), softFillColors: soft }, page.masks);
+        const ww2 = makeWalls(det2);
         joinWalls(ww2);
         const cov2 = wallStripCoverage(page.colorFills, wallColors, ww2);
         (globalThis as { __softTrace?: string[] }).__softTrace?.push(`p${page.pageIndex + 1} 壁の塗りの縁 ${cov1.n} 点: 1 回目 ${cov1.on}・読み直し ${cov2.on}（壁 ${ww.length} → ${ww2.length}）soft=${[...soft].join(',')}`);
@@ -3519,6 +3525,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
           if (g2.length >= groups.length) {
             ww = ww2;
             groups = g2;
+            maskInfo = { style: !!det2.maskStyle, missed: det2.maskMissed ?? [] };
             wallColors = wallFillColors(page.colorFills, ww, roomLabelPts);
           }
         }
@@ -3589,7 +3596,9 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         roomFills.push(c.poly);
       }
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan });
+      // 開口を白抜きで描く図面で、この図の範囲の白抜きがすべて開口として読めた（窓の無い部屋は図面どおり、と言える）
+      const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}) });
     }
   }
   assignFloorTitles(plans, pages);
@@ -4470,7 +4479,7 @@ export interface AssembleOptions {
   module?: ModuleMode;
 }
 
-export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number>; floorPages: Record<number, number> } {
+export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number>; floorPages: Record<number, number>; maskLevels: number[] } {
   let plans = detectPlans(pages, warnings);
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
@@ -4811,7 +4820,9 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     const pg = planOf.get(f)?.pageIndex;
     if (pg != null) floorPages[f.level] = pg;
   }
-  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null, areaTable, floorPages };
+  // 開口を白抜きで描く図面から読んだ階（窓の無い部屋が「図面どおり」と言える階）
+  const maskLevels = floors.filter((f) => planOf.get(f)?.maskDrawn).map((f) => f.level);
+  return { name, floors, northAngleDeg: north, site: site ?? undefined, module: moduleInfo, thicknesses: [...thicknesses].sort((a, b) => a - b), northDetected: northDeg != null, areaTable, floorPages, maskLevels };
 }
 
 export function translateFloor(f: Floor, dx: number, dy: number) {

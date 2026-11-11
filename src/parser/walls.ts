@@ -162,6 +162,13 @@ export interface WallDetection {
   heavyThreshold: number | null;
   /** 太線のうち壁の両面として使われた長さの割合（線の太さで壁を選ぶのが妥当かの指標） */
   heavyPairedFrac: number;
+  /**
+   * 開口を白抜きで描く図面（壁の塗りの上に白い長方形を重ねて窓・戸を描く）。
+   * 壁の塗りが続いていて白抜きの無い所に、窓・戸は無い（窓の無い部屋は、読み落としではなく図面どおり）
+   */
+  maskStyle?: boolean;
+  /** maskStyle の図面で、壁の上の白抜きなのに開口として読めなかった所（白抜きの中心）。この近くでは「窓・戸は無い」と言い切れない */
+  maskMissed?: Vec2[];
 }
 
 export interface WallDetectOptions {
@@ -751,6 +758,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   // 林様邸 1 階: 玄関と土間収納の間の柱と壁 52cm が「引戸」、土間収納の外壁 1.8m が「窓」に。
   // 吉田大仁様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」に。坂井様邸・伊藤様邸: 窓の無い外壁に 6m・2.8m の「窓」。
   // 窓の幅も、隣の壁の中の線まで延びて 2,180・2,780・5,010 などになっていた（白抜きは 1,690・2,600＋1,235）
+  let maskStyle = false;
   if (masks.length && infills.length && !(globalThis as { __NO_FILLWALL?: boolean }).__NO_FILLWALL) {
     const filled = (f: Infill, a: number, b: number) =>
       wallFillCover(f.g, f.o - f.d / 2, a, b) >= (b - a) * 0.8 && wallFillCover(f.g, f.o + f.d / 2, a, b) >= (b - a) * 0.8;
@@ -771,6 +779,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
     const onFill = infills.map((f, k) => (filled(f, f.t0, f.t1) ? k : -1)).filter((k) => k >= 0);
     const masked = onFill.filter((k) => intervalsLength(fulls[k]) >= (infills[k].t1 - infills[k].t0) * 0.5);
     if (masked.length >= 3 && masked.length >= onFill.length * 0.5) {
+      maskStyle = true;
       const keepInf: Infill[] = [];
       const keepLines: [number, number][] = [];
       infills.forEach((f, k) => {
@@ -1025,7 +1034,33 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   for (const ls of lines) for (const l of ls) if (l.heavy && !l.fill) heavyLen += l.t1 - l.t0;
   const pairedLen = finalPieces.reduce((s0, q) => s0 + 2 * (q.t1 - q.t0), 0);
   const heavyPairedFrac = heavyT == null || heavyLen <= 0 ? 1 : Math.min(1, pairedLen / heavyLen);
-  return { groups, pieces: finalPieces, openings, thicknessPeaks: peaks, heavyThreshold: heavyT, heavyPairedFrac };
+  // 壁の上の白抜き（全幅で 25cm 以上）のうち、開口として読めなかった所
+  const maskMissed: Vec2[] = [];
+  if (maskStyle) {
+    for (const poly of masks) {
+      for (const ax of axes) {
+        if (!ax.pieces.length && !ax.openings.length) continue;
+        const spans = maskSpans(poly, groups[ax.g], ax.o, ax.d);
+        if (!spans.length) continue;
+        const fullThr = Math.max(0.5, Math.min(0.75, Math.max(...spans.map((sp) => sp.cover))));
+        // 軸の壁・開口の並びの外（図面の別の所の白抜き）は数えない
+        const a0 = Math.min(...ax.pieces.map((p) => p.t0), ...ax.openings.map((o) => o.t0));
+        const a1 = Math.max(...ax.pieces.map((p) => p.t1), ...ax.openings.map((o) => o.t1));
+        for (const sp of spans) {
+          if (sp.cover < fullThr || sp.t1 - sp.t0 < 250) continue;
+          if (sp.t1 < a0 - 50 || sp.t0 > a1 + 50) continue;
+          // 開き戸は自分の軸を持つことがあるので、同じ向きで帯が重なる開口をすべて見る
+          const near = openings.filter((o) => o.g === ax.g && Math.abs(o.o - ax.o) <= ax.d / 2 + o.d / 2 + 20);
+          const got = intervalsLength(mergeIntervals(near.map((o) => [Math.max(sp.t0, o.t0), Math.min(sp.t1, o.t1)] as [number, number]).filter(([a, b]) => b > a)));
+          if (got >= (sp.t1 - sp.t0) * 0.5) continue;
+          const grp = groups[ax.g];
+          const tm = (sp.t0 + sp.t1) / 2;
+          maskMissed.push({ x: grp.u.x * tm + grp.n.x * ax.o, y: grp.u.y * tm + grp.n.y * ax.o });
+        }
+      }
+    }
+  }
+  return { groups, pieces: finalPieces, openings, thicknessPeaks: peaks, heavyThreshold: heavyT, heavyPairedFrac, ...(maskStyle ? { maskStyle, maskMissed } : {}) };
 }
 
 /** 円弧の外接円（中心・半径） */

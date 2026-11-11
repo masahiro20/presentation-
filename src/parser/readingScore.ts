@@ -182,6 +182,8 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
   {
     const nodoor = issues.filter((i) => /^nodoor-/.test(i.id));
     const nowin = issues.filter((i) => /^nowin-/.test(i.id));
+    // 図面に窓が描かれていない居室（開口を白抜きで描く図面で、壁に白抜きが無い）: 読み取りの誤りではないので減点しない
+    const nowinDrawn = issues.filter((i) => /^nowindrawn-/.test(i.id));
     const living = rooms.filter(isLivingRoom);
     // 1 階が無い読み取り（2 階だけの図面）は玄関ドアを問わない
     const hasEntrance = floors.some((f) => !!entranceDoorOf(f)) || !floors.some((f) => f.level === 1);
@@ -193,6 +195,7 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
     if (nowin.length) notes.push(`窓の無い居室 ${nowin.length}`);
     if (!hasEntrance) notes.push('玄関ドアが無い');
     if (!notes.length) notes.push(`戸・窓 ${floors.reduce((s, f) => s + f.openings.length, 0)} か所、玄関あり`);
+    if (nowinDrawn.length) notes.push(`図面に窓の無い居室 ${nowinDrawn.length}（図面どおり）`);
     parts.push({ id: 'openings', label: '戸・窓', max: 20, got: r1(doorPt + winPt + entPt), note: notes.join('、') });
     for (const it of nodoor) fixes.push({ lost: r1(Math.min(10, 15 / Math.max(1, rooms.length))), level: it.level, title: it.title, detail: it.detail, issue: it });
     for (const it of nowin) fixes.push({ lost: r1(Math.min(7, 10.5 / Math.max(1, living.length))), level: it.level, title: it.title, detail: it.detail, issue: it });

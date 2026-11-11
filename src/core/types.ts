@@ -237,6 +237,11 @@ export interface ParseReport {
   floorShifts?: { level: number; dx: number; dy: number }[];
   /** 立面図の窓の線から窓の高さを当てた結果（当てた面・確かめた窓・腰高と高さを直した窓・足した窓・面の外壁の窓） */
   elevationWindows?: { views: number; facades: string[]; matched: number; changed: number; added: number; total: number };
+  /**
+   * 開口を白抜きで描く図面（壁の塗りの上に白い長方形を重ねて窓・戸を描く）から読み、白抜きがすべて開口として読めた階。
+   * その階では、窓の無い部屋は読み落としではなく「図面に窓が描かれていない」
+   */
+  openingsByMask?: number[];
 }
 
 /** 図面上の辺（図面の上 = top） */

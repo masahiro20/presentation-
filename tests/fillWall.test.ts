@@ -98,6 +98,17 @@ describe('壁の塗りが続いていて白抜きの無い所の平行線', () =
     expect(Math.round(onV(det, 0).opLen)).toBe(1235);
   });
 
+  it('開口を白抜きで描く図面と分かり、白抜きはすべて開口として読めている（窓の無い壁は「図面どおり窓が無い」と言える）', () => {
+    const d = drawing();
+    const det = detectWalls(d.segs, [], {}, d.masks);
+    expect(det.maskStyle).toBe(true);
+    expect(det.maskMissed).toEqual([]);
+    // 白抜きを使わない図面では、そうは言わない
+    const walls = [wallPoly(0, 0, 7280, 0), wallPoly(0, 5460, 7280, 5460), wallPoly(0, 0, 0, 5460), wallPoly(7280, 0, 7280, 5460)];
+    const plain = detectWalls([...walls.flatMap((p) => fillSegs(p, GRAY)), ...hOpening(0, 910, 2600).segs], [], {}, []);
+    expect(plain.maskStyle).toBeUndefined();
+  });
+
   it('この判定を切ると、見切りの線・壁芯の線の所が開口になる（直す前の読み違い）', () => {
     const d = drawing();
     g.__NO_FILLWALL = true;
@@ -199,5 +210,7 @@ describe('印を使う図面で、印が無く細い線だけが根拠の「引�
     expect(hits.some((o) => o.kind === 'open')).toBe(true);
     // 印のある室内の戸 2 か所は引戸のまま
     expect(f.openings.filter((o) => o.kind === 'sliding').length).toBe(2);
+    // 白抜きの開口がすべて読めた図として覚える（窓の無い部屋を「読み落とし」と言わないため）
+    expect(plans[0].maskDrawn).toBe(true);
   });
 });

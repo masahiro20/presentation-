@@ -736,6 +736,7 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
   const tatami = (a: number) => (a / 1.62).toFixed(1);
   const rectOf = (r: Room) => bboxOf(r.polygon);
   const centerOf = (r: Room) => ({ x: (rectOf(r).minX + rectOf(r).maxX) / 2, y: (rectOf(r).minY + rectOf(r).maxY) / 2 });
+  const drawnByMask = new Set((model as { report?: { openingsByMask?: number[] } }).report?.openingsByMask ?? []);
   // 部屋に面する窓（開口の中心が部屋の境界から 250 以内）
   const windowsOf = (f: Floor, r: Room) =>
     f.openings.filter((o) => {
@@ -756,7 +757,12 @@ function livabilityChecks(model: BuildingModel): WoodIssue[] {
       const marks: WoodMark[] = [{ level: f.level, rects: [rect], label: `${tatami(r.area)}帖` }];
       // 居室の採光: 窓の無い寝室・子供室・和室・書斎（建築基準法の居室は採光が要る。読み取り漏れのこともある）
       if (['bedroom', 'kids', 'japanese', 'study', 'living', 'ldk', 'dining'].includes(r.type) && r.area >= 4 && windowsOf(f, r).length === 0) {
-        out.push({ id: `nowin-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 窓が読めていません`, detail: '居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです', marks });
+        // 開口を白抜きで描く図面で、白抜きがすべて開口として読めた階: 窓が無いのは読み落としではなく、図面に描かれていない
+        if (drawnByMask.has(f.level)) {
+          out.push({ id: `nowindrawn-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 図面に窓がありません`, detail: 'この図面は窓・戸を白抜きで描いていて、この部屋の壁には白抜きがありません（読み落としではなく、図面に窓が描かれていません）。居室には採光（床面積の 1/7 以上の窓）が要るので、設計を確かめてください。窓を足すときは修正画面で', marks });
+        } else {
+          out.push({ id: `nowin-${f.level}-${r.id}`, level: f.level, severity: 'info', title: `${f.level}階 ${r.name}: 窓が読めていません`, detail: '居室には採光（床面積の 1/7 以上の窓）が要ります。図面に窓があるのに出ていないときは、修正画面で窓を足してください。無い場合は設計の見直しです', marks });
+        }
       }
       // 主寝室の広さ: 6 帖未満だとダブルベッド（W1400）＋通路が苦しい
       if (r.type === 'bedroom' && /主寝室|寝室|MBR|主/.test(r.name) && r.area < 9.5 && r.area > 0) {

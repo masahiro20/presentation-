@@ -132,6 +132,12 @@ function polygonCentroid(poly) {
 		y: cy / (3 * a)
 	};
 }
+/** 外形（穴あり）の内側か: 点を囲む輪郭の数が奇数なら内側（中庭などの穴に対応） */
+function insideLoops(p, loops) {
+	let n = 0;
+	for (const l of loops) if (pointInPolygon(p, l)) n++;
+	return n % 2 === 1;
+}
 /** 輪郭が他の輪郭の内側にある（＝穴）か */
 function isHoleLoop(loop, loops) {
 	const p = loop[0];
@@ -1995,12 +2001,93 @@ function translateFloor$1(f, d) {
 		translateXY(f.exterior.trees, d);
 	}
 }
+var center = (s) => ({
+	x: (s.minX + s.maxX) / 2,
+	y: (s.minY + s.maxY) / 2
+});
 var area = (s) => Math.max(0, s.maxX - s.minX) * Math.max(0, s.maxY - s.minY);
 /** 矩形の重なり ÷ 合わせた範囲（同じ大きさの階段が同じ位置にあるときだけ 1 に近づく） */
 function stairIoU(a, b) {
 	const inter = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX)) * Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
 	const union = area(a) + area(b) - inter;
 	return union > 0 ? inter / union : 0;
+}
+/**
+* 下の階の昇り階段と上の階の階段のうち、同じ階段と見てよい組（中心が近く、重なりが良い）。
+* 上の階に昇り（UP）と降り（DN）の両方がある 3 階建ての 2 階では降り口（goesUp=false）を優先する
+*/
+function matchStairs(lower, upper) {
+	const los = lower.stairs.filter((s) => s.goesUp).length ? lower.stairs.filter((s) => s.goesUp) : lower.stairs;
+	const ups = upper.stairs.filter((s) => !s.goesUp).length ? upper.stairs.filter((s) => !s.goesUp) : upper.stairs;
+	let best = null;
+	let bestKey = -Infinity;
+	for (const a of los) for (const b of ups) {
+		const ca = center(a);
+		const cb = center(b);
+		const dx = cb.x - ca.x;
+		const dy = cb.y - ca.y;
+		const dist = Math.hypot(dx, dy);
+		if (dist > 4e3) continue;
+		const iou = stairIoU(a, b);
+		const key = iou * 10 - dist / 1e3;
+		if (key > bestKey) {
+			bestKey = key;
+			best = {
+				lower: a,
+				upper: b,
+				dx: Math.round(dx),
+				dy: Math.round(dy),
+				iou
+			};
+		}
+	}
+	return best;
+}
+/** 上の階の外形のうち、下の階の外形の外に出ている面積（㎡。step mm の格子で数える概算） */
+function overhangArea(lower, upper, step = 100) {
+	if (!upper.outline.length || !lower.outline.length) return 0;
+	const pts = upper.outline.flat();
+	if (!pts.length) return 0;
+	const minX = Math.min(...pts.map((p) => p.x));
+	const maxX = Math.max(...pts.map((p) => p.x));
+	const minY = Math.min(...pts.map((p) => p.y));
+	const maxY = Math.max(...pts.map((p) => p.y));
+	let n = 0;
+	for (let y = minY + step / 2; y < maxY; y += step) for (let x = minX + step / 2; x < maxX; x += step) {
+		const p = {
+			x,
+			y
+		};
+		if (insideLoops(p, upper.outline) && !insideLoops(p, lower.outline)) n++;
+	}
+	return n * step * step / 1e6;
+}
+/** 上の階の壁を点にして（300 mm おき）、下の階の壁に乗っている割合（0〜1。外壁の点は 2 倍に数える） */
+function wallFitRatio(lower, upper, d = {
+	x: 0,
+	y: 0
+}, tol = 60) {
+	let total = 0;
+	let hit = 0;
+	for (const w of upper.walls) {
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+		if (L < 100) continue;
+		const n = Math.max(2, Math.round(L / 300));
+		const wt = w.exterior ? 2 : 1;
+		for (let i = 0; i <= n; i++) {
+			const t = i / n;
+			const p = {
+				x: w.a.x + (w.b.x - w.a.x) * t + d.x,
+				y: w.a.y + (w.b.y - w.a.y) * t + d.y
+			};
+			total += wt;
+			for (const q of lower.walls) if (distPointSegment(p, q.a, q.b) <= tol) {
+				hit += wt;
+				break;
+			}
+		}
+	}
+	return total ? hit / total : 0;
 }
 //#endregion
 //#region src/parser/pageMap.ts
@@ -14448,7 +14535,7 @@ function finishTopFloorStairs(floors) {
 *  (a) 上の階の読みが下の階の 6 割に満たない → 下の階と同じ範囲（同じ吹抜けを上から見ている）
 *  (b) 下の階の読みが、昇り口の反対側（かね折れは曲がる側も）で上の階より短い → 上の階の範囲まで伸ばす
 */
-function reconcileStairs(floors) {
+function reconcileStairs(floors, warnings) {
 	const area = (s) => (s.maxX - s.minX) * (s.maxY - s.minY);
 	const opposite = {
 		n: "s",
@@ -14456,6 +14543,38 @@ function reconcileStairs(floors) {
 		e: "w",
 		w: "e"
 	};
+	for (let i = 0; i + 1 < floors.length; i++) {
+		const lo = floors[i];
+		for (const u of floors[i + 1].stairs) {
+			if (u.goesUp || u.kind === "l") continue;
+			const m2 = area(u) / 1e6;
+			if (m2 < 1.5 || m2 > 9) continue;
+			if (lo.stairs.some((s) => {
+				const ix = Math.min(s.maxX, u.maxX) - Math.max(s.minX, u.minX);
+				const iy = Math.min(s.maxY, u.maxY) - Math.max(s.minY, u.minY);
+				return ix > 0 && iy > 0 && ix * iy / Math.min(area(s), area(u)) > .2;
+			})) continue;
+			const mgn = 120;
+			const inside = (x, y) => lo.outline.some((l) => pointInPolygon({
+				x,
+				y
+			}, l));
+			if (!lo.outline.length || !(inside(u.minX + mgn, u.minY + mgn) && inside(u.maxX - mgn, u.minY + mgn) && inside(u.maxX - mgn, u.maxY - mgn) && inside(u.minX + mgn, u.maxY - mgn))) continue;
+			lo.stairs.push({
+				id: `F${lo.level}-S${lo.stairs.length + 1}`,
+				minX: u.minX,
+				minY: u.minY,
+				maxX: u.maxX,
+				maxY: u.maxY,
+				kind: u.kind,
+				...u.turn ? { turn: u.turn } : {},
+				entry: u.kind === "straight" ? opposite[u.entry] : u.entry,
+				goesUp: true,
+				...u.steps ? { steps: u.steps } : {}
+			});
+			warnings?.push(`${lo.level}階: ${floors[i + 1].level}階の降りる階段の真下に、昇る階段を補いました（${lo.level}階の図では段の線が読めませんでした。方眼の「階段」で位置と昇り口を確かめてください）`);
+		}
+	}
 	for (let i = 0; i + 1 < floors.length; i++) for (const lo of floors[i].stairs) {
 		if (!lo.goesUp) continue;
 		let up = null;
@@ -14507,6 +14626,39 @@ function reconcileStairs(floors) {
 			else lo.maxX += d;
 		}
 	}
+}
+/**
+* 上下階の階段が「同じ大きさなのに半間の倍数だけずれて重なっている」とき、上の階を動かす量（ぴったり重なる位置へ）。
+* 動かさない（すでに重なっている・大きさが違う・壁の乗りが悪くなる・上の階が下の階からはみ出す）ときは null
+*/
+function stairAlignShift(lower, upper) {
+	const m = matchStairs(lower, upper);
+	if (!m || m.iou >= .8) return null;
+	const a = m.lower;
+	const b = m.upper;
+	if (Math.abs(a.maxX - a.minX - (b.maxX - b.minX)) > 150 || Math.abs(a.maxY - a.minY - (b.maxY - b.minY)) > 150) return null;
+	const snap = (v) => Math.round(v / 455) * 455 || 0;
+	const d = {
+		x: snap(-m.dx),
+		y: snap(-m.dy)
+	};
+	if (!d.x && !d.y || Math.max(Math.abs(d.x), Math.abs(d.y)) > 1820) return null;
+	if (stairIoU(a, {
+		...b,
+		minX: b.minX + d.x,
+		maxX: b.maxX + d.x,
+		minY: b.minY + d.y,
+		maxY: b.maxY + d.y
+	}) < .9) return null;
+	if (wallFitRatio(lower, upper, d) < wallFitRatio(lower, upper) - .02) return null;
+	if (overhangArea(lower, {
+		...upper,
+		outline: upper.outline.map((l) => l.map((q) => ({
+			x: q.x + d.x,
+			y: q.y + d.y
+		})))
+	}) > overhangArea(lower, upper) + 1) return null;
+	return d;
 }
 /** 階段の辺 side の、辺に沿った位置 frac（0〜1。辺の左／上の端から）から外へ出られるか（400mm 先までに壁が無いか、そこに戸・開口がある） */
 function stairSideOpen(f, st, side, frac = .5) {
@@ -15248,6 +15400,21 @@ function assembleModel(pages, name, warnings, opts = {}) {
 			break;
 		}
 	}
+	if (!samePageUnhinted && floors.length >= 2) for (let i = 1; i < floors.length; i++) {
+		const d = stairAlignShift(floors[i - 1], floors[i]);
+		if (!d) continue;
+		for (let k = i; k < floors.length; k++) {
+			const p = planOf.get(floors[k]);
+			if (!p) continue;
+			translatePlan(p, d);
+			const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+			nf.elevation = floors[k].elevation;
+			planOf.set(nf, p);
+			floors[k] = nf;
+		}
+		const how = [d.x ? `${d.x > 0 ? "右" : "左"}へ ${Math.abs(d.x).toLocaleString()} mm` : "", d.y ? `${d.y > 0 ? "下" : "上"}へ ${Math.abs(d.y).toLocaleString()} mm` : ""].filter(Boolean).join("・");
+		warnings.push(`${floors[i].level}階の重ね位置を、階段が下の階の階段にぴったり重なる位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
+	}
 	if (floors.length >= 2) {
 		const f1 = floors[0];
 		const f2 = floors[1];
@@ -15316,7 +15483,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		});
 	}
 	finishTopFloorStairs(floors);
-	reconcileStairs(floors);
+	reconcileStairs(floors, warnings);
 	for (const f of floors) splitStairRooms(f);
 	if (mfit && moduleInfo) {
 		thicknesses.clear();

@@ -8,6 +8,7 @@ import { chooseEntrance } from './entranceChoice';
 import { applyCeilingNotes, assignLdkRoles, reconcileTatami } from './tatamiCheck';
 import { detectPassMarks, marksCrossing } from './passMarks';
 import { carveStairRegion } from './stairRooms';
+import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floorAlign';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import type { PageVectors } from './pdfExtract';
@@ -3493,9 +3494,44 @@ export function finishTopFloorStairs(floors: Floor[]): void {
  *  (a) 上の階の読みが下の階の 6 割に満たない → 下の階と同じ範囲（同じ吹抜けを上から見ている）
  *  (b) 下の階の読みが、昇り口の反対側（かね折れは曲がる側も）で上の階より短い → 上の階の範囲まで伸ばす
  */
-export function reconcileStairs(floors: Floor[]): void {
+export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
   const area = (s: Stair) => (s.maxX - s.minX) * (s.maxY - s.minY);
   const opposite: Record<Stair['entry'], Stair['entry']> = { n: 's', s: 'n', e: 'w', w: 'e' };
+  // 上の階に降りる階段があるのに、下の階のその位置に階段が無い → 同じ範囲に昇る階段を補う。
+  // 1 階の図は切断線（床から 1.4 m）までしか段を描かないので、階段下を物入にした折り返し階段は段の線が 3 本ほどしか無く、
+  // 階段として読めないことがある（有元様邸 1 階: 2 階の床に穴だけあいて、昇る階段が無かった）
+  for (let i = 0; i + 1 < floors.length; i++) {
+    const lo = floors[i];
+    for (const u of floors[i + 1].stairs) {
+      if (u.goesUp || u.kind === 'l') continue;
+      const m2 = area(u) / 1e6;
+      if (m2 < 1.5 || m2 > 9) continue;
+      const overlaps = lo.stairs.some((s) => {
+        const ix = Math.min(s.maxX, u.maxX) - Math.max(s.minX, u.minX);
+        const iy = Math.min(s.maxY, u.maxY) - Math.max(s.minY, u.minY);
+        return ix > 0 && iy > 0 && (ix * iy) / Math.min(area(s), area(u)) > 0.2;
+      });
+      if (overlaps) continue;
+      // 下の階の建物の中（四隅とも）
+      const mgn = 120;
+      const inside = (x: number, y: number) => lo.outline.some((l) => pointInPolygon({ x, y }, l));
+      if (!lo.outline.length || !(inside(u.minX + mgn, u.minY + mgn) && inside(u.maxX - mgn, u.minY + mgn) && inside(u.maxX - mgn, u.maxY - mgn) && inside(u.minX + mgn, u.maxY - mgn))) continue;
+      lo.stairs.push({
+        id: `F${lo.level}-S${lo.stairs.length + 1}`,
+        minX: u.minX,
+        minY: u.minY,
+        maxX: u.maxX,
+        maxY: u.maxY,
+        kind: u.kind,
+        ...(u.turn ? { turn: u.turn } : {}),
+        // 折り返しは上の階の降り口と同じ側から昇る。直階段は反対の端から
+        entry: u.kind === 'straight' ? opposite[u.entry] : u.entry,
+        goesUp: true,
+        ...(u.steps ? { steps: u.steps } : {}),
+      });
+      warnings?.push(`${lo.level}階: ${floors[i + 1].level}階の降りる階段の真下に、昇る階段を補いました（${lo.level}階の図では段の線が読めませんでした。方眼の「階段」で位置と昇り口を確かめてください）`);
+    }
+  }
   for (let i = 0; i + 1 < floors.length; i++) {
     for (const lo of floors[i].stairs) {
       if (!lo.goesUp) continue;
@@ -3544,6 +3580,29 @@ export function reconcileStairs(floors: Floor[]): void {
       }
     }
   }
+}
+
+/**
+ * 上下階の階段が「同じ大きさなのに半間の倍数だけずれて重なっている」とき、上の階を動かす量（ぴったり重なる位置へ）。
+ * 動かさない（すでに重なっている・大きさが違う・壁の乗りが悪くなる・上の階が下の階からはみ出す）ときは null
+ */
+export function stairAlignShift(lower: Floor, upper: Floor): Vec2 | null {
+  const m = matchStairs(lower, upper);
+  if (!m || m.iou >= 0.8) return null;
+  const a = m.lower;
+  const b = m.upper;
+  // 同じ大きさの階段（切断線の先まで読めた範囲どうし）
+  if (Math.abs(a.maxX - a.minX - (b.maxX - b.minX)) > 150 || Math.abs(a.maxY - a.minY - (b.maxY - b.minY)) > 150) return null;
+  const snap = (v: number) => Math.round(v / 455) * 455 || 0;
+  const d = { x: snap(-m.dx), y: snap(-m.dy) };
+  if ((!d.x && !d.y) || Math.max(Math.abs(d.x), Math.abs(d.y)) > 1820) return null;
+  const moved: Stair = { ...b, minX: b.minX + d.x, maxX: b.maxX + d.x, minY: b.minY + d.y, maxY: b.maxY + d.y };
+  if (stairIoU(a, moved) < 0.9) return null;
+  // 壁の乗りが悪くならないこと、上の階が下の階の外へはみ出さないこと
+  if (wallFitRatio(lower, upper, d) < wallFitRatio(lower, upper) - 0.02) return null;
+  const shifted = { ...upper, outline: upper.outline.map((l) => l.map((q) => ({ x: q.x + d.x, y: q.y + d.y }))) };
+  if (overhangArea(lower, shifted) > overhangArea(lower, upper) + 1) return null;
+  return d;
 }
 
 /** 階段の辺 side の、辺に沿った位置 frac（0〜1。辺の左／上の端から）から外へ出られるか（400mm 先までに壁が無いか、そこに戸・開口がある） */
@@ -4189,6 +4248,27 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       }
     }
   }
+  // 階段の重なりで上下階の重ね位置を検算: 読み終えた階段（切断線の先まで広げた範囲）が上下で同じ大きさなのに、
+  // 半間・1 間ずれて重なっているなら、ぴったり重なる位置へ上の階を直す。910 の格子に乗った家は壁の重なりだけでは
+  // 半間ずれた位置も同じくらい良く見え、図面の線だけで合わせた段階では階段の範囲が短くて決められないことがある
+  // （吉田大仁様邸 1st-2: 1 階も 2 階も 2,730×1,820 の階段が 910 ずれて重なっていた。直すと壁の乗りも 40 → 48%）
+  if (!samePageUnhinted && floors.length >= 2) {
+    for (let i = 1; i < floors.length; i++) {
+      const d = stairAlignShift(floors[i - 1], floors[i]);
+      if (!d) continue;
+      for (let k = i; k < floors.length; k++) {
+        const p = planOf.get(floors[k]);
+        if (!p) continue;
+        translatePlan(p, d);
+        const nf = buildFloor(p, floors[k].level, north, warnings, areaTable[floors[k].level], { singleStorey });
+        nf.elevation = floors[k].elevation;
+        planOf.set(nf, p);
+        floors[k] = nf;
+      }
+      const how = [d.x ? `${d.x > 0 ? '右' : '左'}へ ${Math.abs(d.x).toLocaleString()} mm` : '', d.y ? `${d.y > 0 ? '下' : '上'}へ ${Math.abs(d.y).toLocaleString()} mm` : ''].filter(Boolean).join('・');
+      warnings.push(`${floors[i].level}階の重ね位置を、階段が下の階の階段にぴったり重なる位置（${how}）へ直しました（方眼の「上下階」で重なりを確かめられます）`);
+    }
+  }
   // 1階の室名の無い区画で、上階に床が無く（2階図で空白）、周囲の大半がガラス戸・窓なら中庭（コの字プランの光庭）。
   // 面積表の無い図面（CAD 書き出し等）では面積の照合で見つけられないため、上下階の比較で判定する
   if (floors.length >= 2) {
@@ -4254,7 +4334,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   }
   // 上下階で同じ階段の範囲をそろえてから、LDK・ホールと一続きに読めた階段を別の部屋に分ける（升目の座標のうちに）
   finishTopFloorStairs(floors);
-  reconcileStairs(floors);
+  reconcileStairs(floors, warnings);
   for (const f of floors) splitStairRooms(f);
   // 木造として: 部屋・外形・階段も格子へ寄せ、壁厚を在来木造の標準（外壁 160・内壁 130）にそろえる
   if (mfit && moduleInfo) {

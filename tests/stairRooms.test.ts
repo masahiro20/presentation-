@@ -223,3 +223,79 @@ describe('室名の無い区画の推定: 戸で 3 つ以上の部屋とつな�
     expect(middle(f).type).not.toBe('hall');
   });
 });
+
+// ---- 上下階の重ね位置: 同じ大きさの階段が半間の倍数だけずれていたら、重なる位置へ ----
+import { stairAlignShift } from '../src/parser/assemble';
+
+describe('階段の重なりで上下階の重ね位置を検算する', () => {
+  const wall = (id: string, ax: number, ay: number, bx: number, by: number, exterior = false): Wall => ({ id, a: { x: ax, y: ay }, b: { x: bx, y: by }, thickness: 120, exterior });
+  const box = (id: string, x0: number, y0: number, x1: number, y1: number): Wall[] => [wall(`${id}n`, x0, y0, x1, y0, true), wall(`${id}e`, x1, y0, x1, y1, true), wall(`${id}s`, x1, y1, x0, y1, true), wall(`${id}w`, x0, y1, x0, y0, true)];
+  const outlineOf = (x0: number, y0: number, x1: number, y1: number) => [[{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]];
+  // 1 階: 9,100 × 7,280。階段は (3640,0)-(6370,1820) の 2,730 × 1,820。階段の両脇に壁
+  const lower = (): Floor => ({
+    level: 1, elevation: 500, height: 2900, ceilingHeight: 2400,
+    walls: [...box('A', 0, 0, 9100, 7280), wall('L1', 3640, 0, 3640, 1820), wall('L2', 6370, 0, 6370, 1820)],
+    openings: [], rooms: [], outline: outlineOf(0, 0, 9100, 7280),
+    stairs: [{ id: 'F1-S1', minX: 3640, minY: 0, maxX: 6370, maxY: 1820, kind: 'u', entry: 's', goesUp: true }],
+  });
+  // 2 階: 5,460 × 5,460 の箱。正しい位置は x 2,730〜8,190（階段の両脇の壁が 1 階の壁に乗る）。sx だけずらして作る
+  const upper = (sx: number, stair?: Partial<Stair>): Floor => ({
+    level: 2, elevation: 3400, height: 2800, ceilingHeight: 2400,
+    walls: [...box('B', 2730 + sx, 0, 8190 + sx, 5460), wall('U1', 3640 + sx, 0, 3640 + sx, 1820), wall('U2', 6370 + sx, 0, 6370 + sx, 1820)],
+    openings: [], rooms: [], outline: outlineOf(2730 + sx, 0, 8190 + sx, 5460),
+    stairs: [{ id: 'F2-S1', minX: 3640 + sx, minY: 0, maxX: 6370 + sx, maxY: 1820, kind: 'u', entry: 's', goesUp: false, ...stair }],
+  });
+
+  it('同じ大きさの階段が 910 ずれている → 上の階を 910 戻す', () => {
+    expect(stairAlignShift(lower(), upper(-910))).toEqual({ x: 910, y: 0 });
+    expect(stairAlignShift(lower(), upper(455))).toEqual({ x: -455, y: 0 });
+  });
+
+  it('すでに重なっている・大きさの違う階段（片方が切断線の手前まで）は動かさない', () => {
+    expect(stairAlignShift(lower(), upper(0))).toBeNull();
+    // 上の階の階段が 1,820 角（2,730 のうち 1,820 しか読めていない）: どちらへ寄せるのが正しいか決められない
+    expect(stairAlignShift(lower(), upper(0, { maxX: 5460 }))).toBeNull();
+  });
+
+  it('動かすと上の階が下の階の外へはみ出すなら動かさない', () => {
+    const lo = lower();
+    // 1 階の右半分が無い家（外形が x 7,280 まで）: 2 階を右へ 910 動かすと 1 階の外へ出る
+    lo.walls = [...box('A', 0, 0, 7280, 7280), wall('L1', 3640, 0, 3640, 1820), wall('L2', 6370, 0, 6370, 1820)];
+    lo.outline = outlineOf(0, 0, 7280, 7280);
+    expect(stairAlignShift(lo, upper(-910))).toBeNull();
+  });
+});
+
+// ---- 上の階に降りる階段があるのに、下の階に階段が無い ----
+describe('下の階の階段を、上の階の降りる階段から補う', () => {
+  const outlineOf = (x0: number, y0: number, x1: number, y1: number) => [[{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }]];
+  const floor = (level: number, stairs: Stair[], outline = outlineOf(0, 0, 9100, 7280)): Floor => ({ level, elevation: 0, height: 2900, ceilingHeight: 2400, walls: [], openings: [], rooms: [], stairs, outline });
+  const down = (over: Partial<Stair> = {}): Stair => ({ id: 'F2-S1', minX: 3185, minY: 0, maxX: 5005, maxY: 1820, kind: 'u', entry: 'w', goesUp: false, ...over });
+
+  it('折り返し階段: 同じ範囲・同じ側の昇り口で、昇る階段を 1 階に足す', () => {
+    const f1 = floor(1, []);
+    const f2 = floor(2, [down()]);
+    const warnings: string[] = [];
+    reconcileStairs([f1, f2], warnings);
+    expect(f1.stairs).toHaveLength(1);
+    expect(f1.stairs[0]).toMatchObject({ id: 'F1-S1', minX: 3185, minY: 0, maxX: 5005, maxY: 1820, kind: 'u', entry: 'w', goesUp: true });
+    expect(warnings.join()).toMatch(/1階: 2階の降りる階段の真下に、昇る階段を補いました/);
+    // もう一度呼んでも増えない
+    reconcileStairs([f1, f2], warnings);
+    expect(f1.stairs).toHaveLength(1);
+  });
+
+  it('直階段は反対の端が昇り口。下の階に重なる階段があれば足さない。建物の外へ出るなら足さない', () => {
+    const f1 = floor(1, []);
+    reconcileStairs([f1, floor(2, [down({ kind: 'straight', minY: 0, maxY: 910, entry: 'e' })])]);
+    expect(f1.stairs[0]).toMatchObject({ kind: 'straight', entry: 'w', goesUp: true });
+
+    const has = floor(1, [{ id: 'F1-S1', minX: 3185, minY: 0, maxX: 4095, maxY: 1820, kind: 'straight', entry: 's', goesUp: true }]);
+    reconcileStairs([has, floor(2, [down()])]);
+    expect(has.stairs).toHaveLength(1);
+
+    const small = floor(1, [], outlineOf(0, 0, 4550, 7280));
+    reconcileStairs([small, floor(2, [down()])]);
+    expect(small.stairs).toHaveLength(0);
+  });
+});

@@ -98,4 +98,24 @@ describe('ensureOpenings', () => {
       delete g.__NO_OPEN_EDGE_ACCESS;
     }
   });
+  it('玄関が、壁を共有しない通路（框の先のホール）に壁の無い辺でつながっていれば、ほかのホールとの壁に開口を補わない', () => {
+    // 玄関（土間）(1820..4550, 1820..3640) の上に、框の先のホール (1820..5460, 910..1820)。間に壁は無い（框の線だけ）。
+    // 玄関の左は別のホール (0..1820, 0..3640) との壁（伊藤様邸: この壁に 1.3m の開口を補っていた）
+    const walls = [wall(0, 0, 5460, 0, true), wall(0, 3640, 5460, 3640, true), wall(0, 0, 0, 3640, true), wall(5460, 0, 5460, 3640, true), wall(1820, 0, 1820, 3640), wall(1820, 910, 5460, 910), wall(4550, 1820, 4550, 3640)];
+    const ent = room('玄関', 'entrance', rect(1820, 1820, 4550, 3640));
+    const hall2 = room('ホール②', 'hall', rect(1820, 910, 5460, 1820));
+    const hall1 = room('ホール', 'hall', rect(0, 0, 1820, 3640));
+    const store = room('土間収納', 'storage', rect(4550, 1820, 5460, 3640));
+    const entDoor: Opening = { id: 'ent', wallId: walls[1].id, kind: 'entrance', t0: 2500, t1: 3400, sill: 0, height: 2300 };
+    const storeDoor: Opening = { id: 'sd', wallId: walls[6].id, kind: 'door', t0: 300, t1: 1080, sill: 0, height: 2000 };
+    const openings: Opening[] = [entDoor, storeDoor];
+    const notes = ensureOpenings(walls, openings, [ent, hall2, hall1, store], 1);
+    expect(notes.some((t) => /上がり框の位置に開口/.test(t))).toBe(false);
+    expect(openings.some((o) => o.wallId === walls[4].id)).toBe(false);
+    // 框の先のホールとの間にも壁があれば（閉じた玄関）、今までどおり開口を補う
+    const walls2 = [...walls, wall(1820, 1820, 4550, 1820)];
+    const ops2: Opening[] = [{ ...entDoor }, { ...storeDoor }];
+    const notes2 = ensureOpenings(walls2, ops2, [ent, hall2, hall1, store], 1);
+    expect(notes2.some((t) => /上がり框の位置に開口/.test(t))).toBe(true);
+  });
 });

@@ -1,7 +1,7 @@
 // 立面図から窓の高さ・上下階の重ね位置・平面図の縮尺を読む（parser/elevationWindows）
 import { describe, expect, it } from 'vitest';
-import { applyElevationWindows, axisForFacing, findElevationTitles, findRects, floorShiftsFromElevation, planScaleFromElevation, styleFor, windowUnits, type ElevationView } from '../src/parser/elevationWindows';
-import type { RawSegment, RawText } from '../src/parser/pdfExtract';
+import { applyElevationWindows, axisForFacing, findElevationTitles, findRects, floorShiftsFromElevation, planScaleFromElevation, readElevationViews, styleFor, windowUnits, type ElevationView } from '../src/parser/elevationWindows';
+import type { PageVectors, RawSegment, RawText } from '../src/parser/pdfExtract';
 import type { Floor, Opening, Vec2, Wall } from '../src/core/types';
 
 const seg = (ax: number, ay: number, bx: number, by: number, width = 0.36, color = '#000000'): RawSegment => ({ a: { x: ax, y: ay }, b: { x: bx, y: by }, width, dashed: false, source: 'stroke', color });
@@ -130,5 +130,62 @@ describe('平面図の縮尺の確かめ', () => {
     expect(planScaleFromElevation([f1], [v('S', 9260 * 1.2, false), v('N', 9260 * 1.2, false), v('E', 7440 * 1.2, false)], 0)).toBeNull();
     // ばらつきが大きい（平面図の読み違いで形が違う）ときは返さない
     expect(planScaleFromElevation([f1], [v('S', 9260 * 1.0), v('N', 9260 * 1.3), v('E', 7440 * 1.5)], 0)).toBeNull();
+  });
+});
+
+describe('立面図の GL（地盤面の線）', () => {
+  /**
+   * 1 段に 2 面（左 = 南面、右 = 東面）。GL の線は y=331、基礎の天端は 470mm 上（y=317.7）で、壁の縦線は基礎の天端から立つ。
+   * 「GL」の文字は左の図にしか無い（段の端にだけ寸法と一緒に書く図面: 吉田大仁様邸・意匠図一式）
+   */
+  const page = (): PageVectors => {
+    const mmPt = 35.28;
+    const base = 331 - 470 / mmPt;
+    const one = (x0: number, x1: number): RawSegment[] => [
+      seg(x0 - 40, 331, x1 + 40, 331), // GL
+      seg(x0, base, x1, base), // 基礎の天端
+      seg(x0, base, x0, 150), seg(x1, base, x1, 150), seg((x0 + x1) / 2, base, (x0 + x1) / 2, 150), // 壁（基礎の天端から立つ）
+      seg(x0, 150, x1, 150), // 軒
+      ...box(x0 + 60, 230, x0 + 100, 260), ...box(x0 + 61, 231, x0 + 99, 259), // 窓（枠＋障子）
+      ...Array.from({ length: 8 }, (_, i) => seg(x0 + 5, 160 + i * 4, x0 + 30, 160 + i * 4, 0.12)), // 目地
+    ];
+    return {
+      pageIndex: 0,
+      width: 1191,
+      height: 842,
+      segments: [...one(150, 560), ...one(700, 1100)],
+      curves: [],
+      fills: [],
+      texts: [txt('南側立面図', 355, 372, 11.3, 60), txt('東側立面図', 900, 372, 11.3, 60), txt('GL', 97, 328, 6, 10)],
+    };
+  };
+  const win = (v: ElevationView) => v.windows[0];
+
+  it('「GL」の文字が無い図は、同じ段の図の GL と同じ高さの線を GL にする（基礎の天端と取り違えない）', () => {
+    const views = readElevationViews([page()], 35.28, null);
+    expect(views.map((v) => v.facing).sort()).toEqual(['E', 'S']);
+    const s = views.find((v) => v.facing === 'S')!;
+    const e = views.find((v) => v.facing === 'E')!;
+    expect(s.glY).toBeCloseTo(331, 1);
+    expect(e.glY).toBeCloseTo(331, 1);
+    // 窓の下端は GL から (331 − 260) × 35.28 ≒ 2,505mm。両方の面で同じ
+    expect(win(s).z0).toBeGreaterThan(2450);
+    expect(win(s).z0).toBeLessThan(2560);
+    expect(Math.abs(win(e).z0 - win(s).z0)).toBeLessThan(15);
+  });
+
+  it('切り替えを切ると、文字の無い図は壁の立つ線（基礎の天端）を GL にして、窓が 470mm 低く読める', () => {
+    const g = globalThis as { __NO_ELEV_ROW_GL?: boolean };
+    g.__NO_ELEV_ROW_GL = true;
+    try {
+      const views = readElevationViews([page()], 35.28, null);
+      const s = views.find((v) => v.facing === 'S')!;
+      const e = views.find((v) => v.facing === 'E')!;
+      expect(s.glY).toBeCloseTo(331, 1);
+      expect(e.glY).toBeLessThan(320);
+      expect(win(s).z0 - win(e).z0).toBeGreaterThan(400);
+    } finally {
+      delete g.__NO_ELEV_ROW_GL;
+    }
   });
 });

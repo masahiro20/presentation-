@@ -215,6 +215,8 @@ export function ensureOpenings(walls: Wall[], openings: Opening[], rooms: Room[]
     if (!inner.length) continue;
     if (inner.some(({ s }) => hasOpeningOn(s, openings))) continue;
     if (inner.some(({ o }) => edgeFree(e, o, walls, rooms))) continue;
+    // 壁を共有しない通路（框の先のホール: 土間との間に壁が無い）に、壁の無い辺でつながっていれば閉じていない
+    if (rooms.some((o) => o !== e && o.type !== 'porch' && o.type !== 'entrance' && (isCirculation(o.type) || o.type === 'ldk' || o.type === 'living' || o.type === 'dining') && edgeFree(e, o, walls, rooms))) continue;
     const rank = (o: Room) => (o.type === 'hall' ? 3 : o.type === 'stairs' ? 2 : 1);
     const best = inner
       .map(({ s, o }) => ({ s, o, span: freeSpans(s, openings)[0] }))

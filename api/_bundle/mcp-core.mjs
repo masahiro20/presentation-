@@ -1301,9 +1301,28 @@ function readElevationViews(pages, mmHint, heights) {
 		}
 		if (!mm) continue;
 		const regions = regionsOf(titles, page);
+		const got = [];
 		for (const [title, box] of regions) {
 			const v = readView(page, title, box, mm, heights);
-			if (v) out.push({
+			if (v) got.push({
+				title,
+				box,
+				v
+			});
+		}
+		if (!globalThis.__NO_ELEV_ROW_GL) for (const g of got) {
+			if (g.v.glInfo.byText) continue;
+			const ys = got.filter((o) => o !== g && Math.abs(o.title.cy - g.title.cy) < 60 && o.v.glInfo.byText).map((o) => o.v.glY);
+			if (!ys.length || Math.max(...ys) - Math.min(...ys) > 1.2) continue;
+			const anchor = ys[0];
+			if (Math.abs(anchor - g.v.glY) <= 1.2 || Math.abs(anchor - g.v.glY) * mm > 1500) continue;
+			if (!g.v.glInfo.cands.some((y) => Math.abs(y - anchor) <= 1.2)) continue;
+			const v2 = readView(page, g.title, g.box, mm, heights, anchor);
+			if (v2) g.v = v2;
+		}
+		for (const g of got) {
+			const { glInfo: _gi, ...v } = g.v;
+			out.push({
 				...v,
 				scaleFromLabels: fromLabels
 			});
@@ -1312,7 +1331,11 @@ function readElevationViews(pages, mmHint, heights) {
 	return out;
 }
 var dbg2 = () => globalThis.__ELEV_DBG;
-function readView(page, title, box, mm, heights) {
+/**
+* 1 面を読む。glHint = GL の線の高さの手掛かり（ページの pt。同じ段の図の GL）。その高さに横線があれば GL に使う。
+* glInfo は GL の決め方（byText = この図の「GL」の文字で決めた）と、GL の候補の横線の高さ
+*/
+function readView(page, title, box, mm, heights, glHint) {
 	const segs = page.segments.filter((s) => {
 		const cx = (s.a.x + s.b.x) / 2;
 		const cy = (s.a.y + s.b.y) / 2;
@@ -1328,7 +1351,8 @@ function readView(page, title, box, mm, heights) {
 	const glText = page.texts.find((t) => /^(設計)?GL$/.test(z2h(t.str).replace(/ＧＬ/g, "GL")) && t.cx > box.x0 && t.cx < box.x1 && t.cy > box.y0 && t.cy < box.y1);
 	const byText = glText ? cands.filter((h) => h.y >= glText.cy - 3 && h.y <= glText.cy + 15).sort((a, b) => Math.abs(a.y - glText.cy) - Math.abs(b.y - glText.cy)) : [];
 	const standing = (h) => segs.filter((sg) => isV(sg) && !isGray(sg.color) && Math.abs(Math.max(sg.a.y, sg.b.y) - h.y) < 1.5 && sg.a.x > h.x0 - 1 && sg.a.x < h.x1 + 1 && Math.abs(sg.a.y - sg.b.y) * mm > 800).length;
-	const gl = byText[0] ?? [...cands].sort((a, b) => standing(b) - standing(a) || b.x1 - b.x0 - (a.x1 - a.x0))[0];
+	const hinted = glHint != null ? cands.filter((h) => Math.abs(h.y - glHint) <= 1.2).sort((a, b) => Math.abs(a.y - glHint) - Math.abs(b.y - glHint))[0] : void 0;
+	const gl = hinted ?? byText[0] ?? [...cands].sort((a, b) => standing(b) - standing(a) || b.x1 - b.x0 - (a.x1 - a.x0))[0];
 	const glY = gl.y;
 	const spanLines = cands.filter((h) => h.y <= glY + 3 && h.y >= glY - 1500 / mm);
 	const sx0 = Math.min(gl.x0, ...spanLines.map((h) => h.x0));
@@ -1337,7 +1361,7 @@ function readView(page, title, box, mm, heights) {
 		facing: title.facing,
 		box,
 		gl,
-		cands: cands.slice(0, 8),
+		cands: cands.slice(0, 40),
 		glText: glText ? {
 			y: glText.cy,
 			x: glText.cx
@@ -1407,7 +1431,11 @@ function readView(page, title, box, mm, heights) {
 			z0: Math.round((glY - u.y1) * mm),
 			z1: Math.round((glY - u.y0) * mm),
 			panes: u.panes
-		})).sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0)
+		})).sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0),
+		glInfo: {
+			byText: !hinted && byText.length > 0,
+			cands: cands.map((h) => h.y)
+		}
 	};
 }
 /** 面の外向きの法線（平面図の座標: x 右・y 下）と、その面を外から見たときの右手の向き */
@@ -3571,6 +3599,7 @@ function ensureOpenings(walls, openings, rooms, level) {
 		if (!inner.length) continue;
 		if (inner.some(({ s }) => hasOpeningOn(s, openings))) continue;
 		if (inner.some(({ o }) => edgeFree(e, o, walls, rooms))) continue;
+		if (rooms.some((o) => o !== e && o.type !== "porch" && o.type !== "entrance" && (isCirculation(o.type) || o.type === "ldk" || o.type === "living" || o.type === "dining") && edgeFree(e, o, walls, rooms))) continue;
 		const rank = (o) => o.type === "hall" ? 3 : o.type === "stairs" ? 2 : 1;
 		const best = inner.map(({ s, o }) => ({
 			s,
@@ -7616,6 +7645,200 @@ function stairEntryFromArrow(r, segs, marks) {
 		};
 	}
 	return best ? sideOf(best.tail) : null;
+}
+//#endregion
+//#region src/parser/entranceFloor.ts
+/**
+* ラベル label の区画（玄関）のうち、框の先の床（ホール）にする升の番号を返す。分けないときは null。
+* @param strokes 図面の実線（図面座標 mm）
+* @param names 室名の位置と種類（玄関の文字が床の側にあれば分けない。ホールの文字が床の側にあれば確かな根拠）
+*/
+function splitEntranceFloor(grid, labels, label, strokes, names) {
+	const { w, h, res } = grid;
+	const N = w * h;
+	let i0 = w;
+	let j0 = h;
+	let i1 = -1;
+	let j1 = -1;
+	let total = 0;
+	for (let k = 0; k < N; k++) {
+		if (labels[k] !== label) continue;
+		total++;
+		const i = k % w;
+		const j = k / w | 0;
+		if (i < i0) i0 = i;
+		if (i > i1) i1 = i;
+		if (j < j0) j0 = j;
+		if (j > j1) j1 = j;
+	}
+	const m2 = (cells) => cells * res * res / 1e6;
+	if (total === 0 || m2(total) < 2.4) return null;
+	const line = new Uint8Array(N);
+	let lineCells = 0;
+	for (const sg of strokes) {
+		const L = Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y);
+		if (L < 1) continue;
+		const [ax, ay] = grid.cellOf(sg.a);
+		const [bx, by] = grid.cellOf(sg.b);
+		if (Math.max(ax, bx) < i0 || Math.min(ax, bx) > i1 || Math.max(ay, by) < j0 || Math.min(ay, by) > j1) continue;
+		const steps = Math.max(1, Math.ceil(L / (res * .4)));
+		for (let s = 0; s <= steps; s++) {
+			const [x, y] = grid.cellOf({
+				x: sg.a.x + (sg.b.x - sg.a.x) * s / steps,
+				y: sg.a.y + (sg.b.y - sg.a.y) * s / steps
+			});
+			if (x < 0 || y < 0 || x >= w || y >= h) continue;
+			const k = y * w + x;
+			if (labels[k] === label && !line[k]) {
+				line[k] = 1;
+				lineCells++;
+			}
+		}
+	}
+	if (!lineCells) return null;
+	const comp = new Int32Array(N);
+	const sizes = [0];
+	const NB = [
+		1,
+		-1,
+		w,
+		-w
+	];
+	const ok = (k, from) => k >= 0 && k < N && !(from % w === 0 && k === from - 1) && !(from % w === w - 1 && k === from + 1);
+	for (let k = 0; k < N; k++) {
+		if (labels[k] !== label || line[k] || comp[k]) continue;
+		const id = sizes.length;
+		sizes.push(0);
+		const stack = [k];
+		comp[k] = id;
+		while (stack.length) {
+			const c = stack.pop();
+			sizes[id]++;
+			for (const d of NB) {
+				const n = c + d;
+				if (!ok(n, c) || labels[n] !== label || line[n] || comp[n]) continue;
+				comp[n] = id;
+				stack.push(n);
+			}
+		}
+	}
+	const order = sizes.map((s, id) => ({
+		id,
+		s
+	})).filter((o) => o.id > 0).sort((a, b) => b.s - a.s);
+	if (order.length < 2) return null;
+	const H = order[0].id;
+	const compAt = (p) => {
+		const [x, y] = grid.cellOf(p);
+		if (x < 0 || y < 0 || x >= w || y >= h) return 0;
+		const k = y * w + x;
+		if (labels[k] !== label) return 0;
+		if (comp[k]) return comp[k];
+		const cnt = /* @__PURE__ */ new Map();
+		for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+			const xx = x + dx;
+			const yy = y + dy;
+			if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+			const c = comp[yy * w + xx];
+			if (c) cnt.set(c, (cnt.get(c) ?? 0) + 1);
+		}
+		return [...cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+	};
+	const inRegion = names.filter((n) => {
+		const [x, y] = grid.cellOf(n);
+		return x >= 0 && y >= 0 && x < w && y < h && labels[y * w + x] === label;
+	});
+	if (inRegion.some((n) => n.type && n.type !== "entrance" && n.type !== "hall")) return null;
+	if (inRegion.some((n) => n.type === "entrance" && compAt(n) === H)) return null;
+	const hallNamed = inRegion.some((n) => n.type === "hall" && compAt(n) === H);
+	const tiles = order.filter((o) => o.id !== H && m2(o.s) >= .04 && m2(o.s) <= 1).length;
+	if (m2(sizes[H]) < 1 || sizes[H] < order[1].s * 2 || tiles < (hallNamed ? 3 : 5)) return null;
+	const hall = new Uint8Array(N);
+	for (let k = 0; k < N; k++) if (comp[k] === H) hall[k] = 1;
+	const touchH = /* @__PURE__ */ new Map();
+	const touchO = /* @__PURE__ */ new Map();
+	for (let k = 0; k < N; k++) {
+		const c = comp[k];
+		if (!c || c === H) continue;
+		const seen = /* @__PURE__ */ new Set();
+		for (const d of NB) {
+			let n = k;
+			for (let q = 1; q <= 4; q++) {
+				const prev = n;
+				n += d;
+				if (!ok(n, prev) || labels[n] !== label) break;
+				if (line[n]) continue;
+				if (comp[n] !== c) seen.add(comp[n]);
+				break;
+			}
+		}
+		if (seen.has(H)) touchH.set(c, (touchH.get(c) ?? 0) + 1);
+		if ([...seen].some((x) => x !== H)) touchO.set(c, (touchO.get(c) ?? 0) + 1);
+	}
+	const absorbed = /* @__PURE__ */ new Set();
+	for (const o of order) {
+		if (o.id === H || m2(o.s) > 1) continue;
+		const th = touchH.get(o.id) ?? 0;
+		const to = touchO.get(o.id) ?? 0;
+		if (th > 0 && th >= (th + to) * .6) absorbed.add(o.id);
+	}
+	for (let k = 0; k < N; k++) if (absorbed.has(comp[k])) hall[k] = 1;
+	for (let pass = 0; pass < 2; pass++) {
+		const add = [];
+		for (let k = 0; k < N; k++) {
+			if (labels[k] !== label || !line[k] || hall[k]) continue;
+			let hallSide = 0;
+			let otherSide = 0;
+			for (const d of NB) {
+				let n = k;
+				for (let q = 1; q <= 3; q++) {
+					const prev = n;
+					n += d;
+					if (!ok(n, prev) || labels[n] !== label) break;
+					if (line[n] && !hall[n]) continue;
+					if (hall[n]) hallSide++;
+					else otherSide++;
+					break;
+				}
+			}
+			if (hallSide >= 2 && otherSide === 0) add.push(k);
+		}
+		for (const k of add) hall[k] = 1;
+	}
+	const inR = (k) => labels[k] === label;
+	const step = (src, grow) => {
+		const dst = Uint8Array.from(src);
+		for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+			const k = j * w + i;
+			if (!inR(k) || !!src[k] === grow) continue;
+			let hit = false;
+			for (let dj = -1; dj <= 1 && !hit; dj++) for (let di = -1; di <= 1; di++) {
+				if (!di && !dj) continue;
+				const ii = i + di;
+				const jj = j + dj;
+				if (ii < 0 || jj < 0 || ii >= w || jj >= h) continue;
+				const n = jj * w + ii;
+				if (grow ? src[n] === 1 : inR(n) && !src[n]) {
+					hit = true;
+					break;
+				}
+			}
+			if (hit) dst[k] = grow ? 1 : 0;
+		}
+		return dst;
+	};
+	const morph = (src, grow, n) => {
+		let m = src;
+		for (let q = 0; q < n; q++) m = step(m, grow);
+		return m;
+	};
+	let smooth = morph(morph(hall, true, 5), false, 5);
+	smooth = morph(morph(smooth, false, 3), true, 3);
+	const out = [];
+	for (let k = 0; k < N; k++) if (smooth[k] && inR(k)) out.push(k);
+	if (m2(out.length) < 1) return null;
+	if (m2(total - out.length) < 1) return null;
+	return out;
 }
 //#endregion
 //#region src/parser/site.ts
@@ -13649,6 +13872,70 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		}
 	}
 	const { labels, sizes } = grid.labelComponents();
+	/** 玄関の区画から分けた「框の先の床」（ホール）の区画 */
+	const hallBeyondStep = /* @__PURE__ */ new Set();
+	if (!plan.scan && !plan.loose && !globalThis.__NO_DOMA_SPLIT) {
+		const names = plan.texts.map((t) => ({
+			t,
+			nm: cleanRoomName(t.str)
+		})).map(({ t, nm }) => ({
+			x: t.x,
+			y: t.y,
+			type: nm ? classifyRoomName(nm) : null
+		}));
+		const cellAt = (p) => {
+			const [x, y] = grid.cellOf(p);
+			return x >= 0 && y >= 0 && x < grid.w && y < grid.h ? y * grid.w + x : -1;
+		};
+		const entranceLabels = /* @__PURE__ */ new Set();
+		for (const n of names) {
+			if (n.type !== "entrance") continue;
+			const i = cellAt(n);
+			if (i >= 0 && labels[i]) entranceLabels.add(labels[i]);
+		}
+		const strokes = segsU.filter((sg) => sg.source === "stroke" && !sg.dashed && Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) >= 40);
+		for (const l of entranceLabels) {
+			const found = splitEntranceFloor(grid, labels, l, strokes, names);
+			if (!found) continue;
+			const nl = sizes.length;
+			sizes.push(found.length);
+			sizes[l] -= found.length;
+			for (const i of found) labels[i] = nl;
+			hallBeyondStep.add(nl);
+			const at = (p) => {
+				const i = cellAt(p);
+				return i >= 0 ? labels[i] : 0;
+			};
+			for (const wl of [...walls]) {
+				const spans = [];
+				let run = null;
+				const off = wl.d / 2 + 2.5 * res;
+				for (let t = wl.t0 + 50; t <= wl.t1 - 50 + 1e-6; t += 100) {
+					const p = {
+						x: wl.u.x * t + wl.n.x * wl.o,
+						y: wl.u.y * t + wl.n.y * wl.o
+					};
+					const la = at({
+						x: p.x + wl.n.x * off,
+						y: p.y + wl.n.y * off
+					});
+					const lb = at({
+						x: p.x - wl.n.x * off,
+						y: p.y - wl.n.y * off
+					});
+					if (la === l && lb === nl || la === nl && lb === l) run = run ? [run[0], t + 50] : [t - 50, t + 50];
+					else if (run) {
+						spans.push(run);
+						run = null;
+					}
+				}
+				if (run) spans.push(run);
+				const long = spans.filter(([a, b]) => b - a >= 300);
+				if (long.length) cutWallSpans(walls, wl, long);
+			}
+			globalThis.__roomTrace?.push(`${level}F 玄関の区画: 框の先の床（線の無い範囲 ${(found.length * res * res / 1e6).toFixed(2)}㎡）をホールに分けた`);
+		}
+	}
 	globalThis.__DBG_GRID?.(grid, plan, level, labels);
 	const acc = /* @__PURE__ */ new Map();
 	const labelAt = (p) => {
@@ -13790,6 +14077,9 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			if (type === "balcony" && /庭|COURT/i.test(main.str)) courtLabels.add(l);
 			if (level >= 2 && (type === "deck" || type === "terrace" || type === "carport" || type === "parking")) type = "balcony";
 			if (level <= 1 && isExteriorWorks(type)) courtLabels.add(l);
+		} else if (hallBeyondStep.has(l)) {
+			name = "ホール";
+			type = "hall";
 		} else if (a?.stair) {
 			name = "階段";
 			type = "stairs";
@@ -13822,7 +14112,8 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			area,
 			labelPos,
 			labeledTatami: a?.tatami,
-			stairDir: a?.stair
+			stairDir: hallBeyondStep.has(l) ? void 0 : a?.stair,
+			...hallBeyondStep.has(l) && !a?.names.length && !a?.others.length ? { inferred: true } : {}
 		});
 	}
 	if (courtLabels.size) rooms.forEach((rm, idx) => {

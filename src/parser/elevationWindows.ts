@@ -343,9 +343,28 @@ export function readElevationViews(pages: PageVectors[], mmHint: number, heights
     }
     if (!mm) continue;
     const regions = regionsOf(titles, page);
+    const got: { title: ElevationTitle; box: Box; v: NonNullable<ReturnType<typeof readView>> }[] = [];
     for (const [title, box] of regions) {
       const v = readView(page, title, box, mm, heights);
-      if (v) out.push({ ...v, scaleFromLabels: fromLabels });
+      if (v) got.push({ title, box, v });
+    }
+    // 同じ段に並ぶ図は、同じ GL の線の上に描かれる。「GL」の文字は段の端の図にしか無いので、文字の無い図は
+    // 壁の縦線がいちばん多く立つ横線（= 基礎の天端。GL より 40〜50cm 高い）を GL と取り違える。
+    // 同じ段の、文字で GL を決めた図と同じ高さに横線があれば、それを GL にする（吉田大仁様邸: 東面・西面の窓の高さが 470mm 低かった）
+    if (!(globalThis as { __NO_ELEV_ROW_GL?: boolean }).__NO_ELEV_ROW_GL)
+      for (const g of got) {
+        if (g.v.glInfo.byText) continue;
+        const ys = got.filter((o) => o !== g && Math.abs(o.title.cy - g.title.cy) < 60 && o.v.glInfo.byText).map((o) => o.v.glY);
+        if (!ys.length || Math.max(...ys) - Math.min(...ys) > 1.2) continue;
+        const anchor = ys[0];
+        if (Math.abs(anchor - g.v.glY) <= 1.2 || Math.abs(anchor - g.v.glY) * mm > 1500) continue;
+        if (!g.v.glInfo.cands.some((y) => Math.abs(y - anchor) <= 1.2)) continue;
+        const v2 = readView(page, g.title, g.box, mm, heights, anchor);
+        if (v2) g.v = v2;
+      }
+    for (const g of got) {
+      const { glInfo: _gi, ...v } = g.v;
+      out.push({ ...v, scaleFromLabels: fromLabels });
     }
   }
   return out;
@@ -353,7 +372,11 @@ export function readElevationViews(pages: PageVectors[], mmHint: number, heights
 
 const dbg2 = () => (globalThis as { __ELEV_DBG?: unknown[] }).__ELEV_DBG;
 
-function readView(page: PageVectors, title: ElevationTitle, box: Box, mm: number, heights?: ElevationHeights | null): Omit<ElevationView, 'scaleFromLabels'> | null {
+/**
+ * 1 面を読む。glHint = GL の線の高さの手掛かり（ページの pt。同じ段の図の GL）。その高さに横線があれば GL に使う。
+ * glInfo は GL の決め方（byText = この図の「GL」の文字で決めた）と、GL の候補の横線の高さ
+ */
+function readView(page: PageVectors, title: ElevationTitle, box: Box, mm: number, heights?: ElevationHeights | null, glHint?: number): (Omit<ElevationView, 'scaleFromLabels'> & { glInfo: { byText: boolean; cands: number[] } }) | null {
   const segs = page.segments.filter((s) => {
     const cx = (s.a.x + s.b.x) / 2;
     const cy = (s.a.y + s.b.y) / 2;
@@ -369,13 +392,14 @@ function readView(page: PageVectors, title: ElevationTitle, box: Box, mm: number
   const byText = glText ? cands.filter((h) => h.y >= glText.cy - 3 && h.y <= glText.cy + 15).sort((a, b) => Math.abs(a.y - glText.cy) - Math.abs(b.y - glText.cy)) : [];
   const standing = (h: { y: number; x0: number; x1: number }) =>
     segs.filter((sg) => isV(sg) && !isGray(sg.color) && Math.abs(Math.max(sg.a.y, sg.b.y) - h.y) < 1.5 && sg.a.x > h.x0 - 1 && sg.a.x < h.x1 + 1 && Math.abs(sg.a.y - sg.b.y) * mm > 800).length;
-  const gl = byText[0] ?? [...cands].sort((a, b) => standing(b) - standing(a) || b.x1 - b.x0 - (a.x1 - a.x0))[0];
+  const hinted = glHint != null ? cands.filter((h) => Math.abs(h.y - glHint) <= 1.2).sort((a, b) => Math.abs(a.y - glHint) - Math.abs(b.y - glHint))[0] : undefined;
+  const gl = hinted ?? byText[0] ?? [...cands].sort((a, b) => standing(b) - standing(a) || b.x1 - b.x0 - (a.x1 - a.x0))[0];
   const glY = gl.y;
   // 建物の左右を探す範囲: GL の線と、その上 1.5m までの長い横線（基礎・土台の線。地面の線が斜め・途切れでも建物の幅を覆う）
   const spanLines = cands.filter((h) => h.y <= glY + 3 && h.y >= glY - 1500 / mm);
   const sx0 = Math.min(gl.x0, ...spanLines.map((h) => h.x0));
   const sx1 = Math.max(gl.x1, ...spanLines.map((h) => h.x1));
-  dbg2()?.push({ facing: title.facing, box, gl, cands: cands.slice(0, 8), glText: glText ? { y: glText.cy, x: glText.cx } : null });
+  dbg2()?.push({ facing: title.facing, box, gl, cands: cands.slice(0, 40), glText: glText ? { y: glText.cy, x: glText.cx } : null });
   // 外形の左右: GL から 1.2m 以内で立ち上がる 1m 以上の縦線（寸法線・灰色の線・GL の外の線は除く）
   const vs = segs
     .filter((s) => isV(s) && !s.dashed && !isGray(s.color))
@@ -438,6 +462,7 @@ function readView(page: PageVectors, title: ElevationTitle, box: Box, mm: number
     windows: units
       .map((u) => ({ u0: Math.round((u.x0 - bx0) * mm), u1: Math.round((u.x1 - bx0) * mm), z0: Math.round((glY - u.y1) * mm), z1: Math.round((glY - u.y0) * mm), panes: u.panes }))
       .sort((a, b) => a.u0 - b.u0 || a.z0 - b.z0),
+    glInfo: { byText: !hinted && byText.length > 0, cands: cands.map((h) => h.y) },
   };
 }
 

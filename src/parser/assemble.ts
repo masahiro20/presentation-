@@ -19,6 +19,7 @@ import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './r
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { detectStairs, stairEntryFromArrow, stairSideOf, stairMarkDist, stairMarkReach, STAIR_MARK_RANGE } from './stairs';
 import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate, ROOM_KNOWLEDGE } from './roomKnowledge';
+import { splitEntranceFloor } from './entranceFloor';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
 import { detectSymbols, dashedOutlines, dashedCarSymbols, symbolsToItems, detectNotes } from './symbols';
 import { readContextItems } from './context';
@@ -1866,6 +1867,56 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   }
   const { labels, sizes } = grid.labelComponents();
+  /** 玄関の区画から分けた「框の先の床」（ホール）の区画 */
+  const hallBeyondStep = new Set<number>();
+  if (!plan.scan && !plan.loose && !(globalThis as { __NO_DOMA_SPLIT?: boolean }).__NO_DOMA_SPLIT) {
+    const names = plan.texts.map((t) => ({ t, nm: cleanRoomName(t.str) })).map(({ t, nm }) => ({ x: t.x, y: t.y, type: nm ? classifyRoomName(nm) : null }));
+    const cellAt = (p: Vec2): number => {
+      const [x, y] = grid.cellOf(p);
+      return x >= 0 && y >= 0 && x < grid.w && y < grid.h ? y * grid.w + x : -1;
+    };
+    const entranceLabels = new Set<number>();
+    for (const n of names) {
+      if (n.type !== 'entrance') continue;
+      const i = cellAt(n);
+      if (i >= 0 && labels[i]) entranceLabels.add(labels[i]);
+    }
+    const strokes = segsU.filter((sg) => sg.source === 'stroke' && !sg.dashed && Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) >= 40);
+    for (const l of entranceLabels) {
+      const found = splitEntranceFloor(grid, labels, l, strokes, names);
+      if (!found) continue;
+      const nl = sizes.length;
+      sizes.push(found.length);
+      sizes[l] -= found.length;
+      for (const i of found) labels[i] = nl;
+      hallBeyondStep.add(nl);
+      // 土間と、分けた床の間に読めている「壁」は框の線（細い 2 本線が、となりの壁の続きとして壁になったもの）。
+      // 残すと 3D で玄関の中に壁が立つ（伊藤様邸: 土間収納の壁の続きとして、框の上に 1.8m の壁）
+      const at = (p: Vec2): number => {
+        const i = cellAt(p);
+        return i >= 0 ? labels[i] : 0;
+      };
+      for (const wl of [...walls]) {
+        const spans: [number, number][] = [];
+        let run: [number, number] | null = null;
+        const off = wl.d / 2 + 2.5 * res;
+        for (let t = wl.t0 + 50; t <= wl.t1 - 50 + 1e-6; t += 100) {
+          const p = { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o };
+          const la = at({ x: p.x + wl.n.x * off, y: p.y + wl.n.y * off });
+          const lb = at({ x: p.x - wl.n.x * off, y: p.y - wl.n.y * off });
+          if ((la === l && lb === nl) || (la === nl && lb === l)) run = run ? [run[0], t + 50] : [t - 50, t + 50];
+          else if (run) {
+            spans.push(run);
+            run = null;
+          }
+        }
+        if (run) spans.push(run);
+        const long = spans.filter(([a, b]) => b - a >= 300);
+        if (long.length) cutWallSpans(walls, wl, long);
+      }
+      (globalThis as { __roomTrace?: string[] }).__roomTrace?.push(`${level}F 玄関の区画: 框の先の床（線の無い範囲 ${((found.length * res * res) / 1e6).toFixed(2)}㎡）をホールに分けた`);
+    }
+  }
   (globalThis as any).__DBG_GRID?.(grid, plan, level, labels);
 
   // ---- 文字の割り当て ----
@@ -2001,6 +2052,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       if (level >= 2 && (type === 'deck' || type === 'terrace' || type === 'carport' || type === 'parking')) type = 'balcony';
       // 1 階の外構（カーポート・駐車場・デッキ・テラス・外部物置）は家の外形に入れない
       if (level <= 1 && isExteriorWorks(type)) courtLabels.add(l);
+    } else if (hallBeyondStep.has(l)) {
+      // 玄関の区画から分けた、上がり框の先の床（室名なし。階段の前の「UP」の文字が入っていても階段ではない）
+      name = 'ホール';
+      type = 'hall';
     } else if (a?.stair) {
       name = '階段';
       type = 'stairs';
@@ -2035,7 +2090,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       area,
       labelPos,
       labeledTatami: a?.tatami,
-      stairDir: a?.stair,
+      stairDir: hallBeyondStep.has(l) ? undefined : a?.stair,
+      ...(hallBeyondStep.has(l) && !a?.names.length && !a?.others.length ? { inferred: true } : {}),
     });
   }
 

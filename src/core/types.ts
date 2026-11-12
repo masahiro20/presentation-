@@ -176,6 +176,22 @@ export interface Stair {
   flightWidth?: number;
   /** 図面の段の線の間隔（mm = 図面の踏面）。直階段の段数を、長さ ÷ この間隔で決める（段数の注記が無いとき） */
   treadPitch?: number;
+  /** こだわり指定（参考資料）から決めた、階段の手すり・段数。3D と図面の段数に反映する（core/focus.ts の applyFocus が入れる） */
+  look?: StairLook;
+}
+
+/**
+ * 階段のつくり: 鉄骨（中央の桁に踏板）／木のスケルトン（両側の側板）／箱階段（蹴込みあり）／片持ち（踏板だけ）。
+ * 家に 1 つ: コーディネートの「階段」の品目で決まる（coordinate/catalog の stairBuildOf）。3D・説明文・仕様書・見積が同じ選択を見る
+ */
+export type StairBuild = 'steel' | 'woodSkeleton' | 'box' | 'cantilever';
+/** 階段の手すり: アイアン（フラットバー＋丸パイプ）／ガラス／腰壁／木／なし */
+export type StairRail = 'bar' | 'glass' | 'wall' | 'wood' | 'none';
+/** 階段ごとの指定（こだわりの参考資料から）。つくりは家に 1 つなのでここには入れない */
+export interface StairLook {
+  rail?: StairRail;
+  /** 指定の段数（図面の読み取り・階高からの推定より優先） */
+  steps?: number;
 }
 
 export interface Floor {

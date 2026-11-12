@@ -8,6 +8,7 @@
  * 動画はサイズが大きいので保存しません（必要なら動画ステップから個別に保存してください）。
  */
 import { state, emit, type ProjectState, type GalleryItem } from './state';
+import { normalizeFocus } from '../core/focus';
 import { toast } from './dom';
 
 export const PROJECT_FORMAT = 'madori-project-v1';
@@ -46,6 +47,8 @@ export interface ProjectFile {
   wishes?: string;
   revisions?: ProjectState['revisions'];
   siteStudy?: ProjectState['siteStudy'];
+  /** こだわり指定（参考資料）: 部位ごとのひとこと・参考画像・階段のつくり */
+  focus?: ProjectState['focus'];
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -111,10 +114,22 @@ export async function serializeProject(): Promise<ProjectFile> {
     wishes: state.wishes,
     revisions: state.revisions,
     siteStudy: state.siteStudy,
+    focus: state.focus,
   };
 }
 
 /** 読み込んだ内容を今のプロジェクトに反映する */
+/**
+ * お客様に渡すデータ（体験リンク）にする: 社内の作業用のものを外す。
+ * こだわりの参考資料は、参考画像（カタログ・他の家の写真のことがある）と社内向けのメモなので渡さない。
+ * 階段の手すり・段数はモデルに、つくりはコーディネートの品目に入っているので、お客様の 3D は変わらない
+ */
+export function publicProject(p: ProjectFile): ProjectFile {
+  const { focus: _focus, ...rest } = p;
+  void _focus;
+  return rest;
+}
+
 export function applyProject(p: ProjectFile) {
   if (p.format !== PROJECT_FORMAT) throw new Error('このファイルは間取りプレゼンのプロジェクトではありません');
   if (!p.model) throw new Error('プロジェクトに図面の読み取り結果が入っていません');
@@ -148,6 +163,8 @@ export function applyProject(p: ProjectFile) {
   state.wishes = p.wishes;
   state.revisions = p.revisions;
   state.siteStudy = p.siteStudy;
+  // こだわり指定: 開いたプロジェクトのもので置き換える（モデルへは emit('model') の直前に当たる）
+  state.focus = normalizeFocus(p.focus);
   emit('model');
   emit('project');
   emit('project-loaded');

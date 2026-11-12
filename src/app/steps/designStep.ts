@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { focusChips, focusNotes, onFocusChange, openFocusDialog } from '../focusNotes';
 import { FINISH_CATEGORIES } from '../../coordinate/catalog';
 
 /** テイストを変えたとき、その部位のコーディネートの選択を既定に戻す */
@@ -487,6 +488,8 @@ export const designStep: Step = {
           cutaway: cutLv ?? undefined,
           section: sec,
           level: cutLv ?? active?.level,
+          // 部屋の名前・写る部位（こだわりの参考資料）を説明文に入れるため、選んだ構図の部屋も渡す
+          roomId: cutLv == null && !sec ? active?.roomId : undefined,
         };
       };
       const size = () => ({ width: state.render.width, height: state.render.height });
@@ -538,6 +541,25 @@ export const designStep: Step = {
       side.append(
         // 写真の仕上げをツールの中で（Google AI Studio のキー。外部で仕上げる流れ①〜③はそのまま残す）
         aiFinishSection(ctx, { shots: () => shots, currentAsShot, onDone: () => renderGallery() }),
+        // こだわりの参考資料（この物件の、部位ごとの形・素材）。写るカットの説明文に足し、参考画像も一緒に渡す
+        (() => {
+          const box = h('div');
+          const renderFocusBox = () => {
+            clear(box);
+            box.append(
+              focusChips((editId) => openFocusDialog({ editId, onClose: renderFocusBox })),
+              h('div', { class: 'btn-row', style: 'margin-top:0' }, h('button', { class: 'btn sm', onclick: () => openFocusDialog({ onClose: renderFocusBox }) }, focusNotes().length ? '参考資料を足す・直す' : '参考資料を添える（階段・キッチンなど）')),
+            );
+          };
+          renderFocusBox();
+          // 3D の階段のパネルで手すり・つくりを変えたら、この一覧も描き直す
+          onFocusChange(box, renderFocusBox);
+          return section(
+            'こだわりの参考資料（部位ごと）',
+            h('p', { class: 'hint', style: 'margin-top:0' }, '「階段はこの写真のように」など、この物件でこだわりたい所の参考画像とひとことです。その部位が写るカットの説明文に入り、参考画像も一緒に渡します（AI 仕上げ・カット集の両方）。階段のつくり・手すりは 3D にも反映します。下の「お手本」は写り全体の雰囲気（事務所共通）、こちらは部位ごとの形と素材です。'),
+            box,
+          );
+        })(),
         section(
           '仕上げ（外部）① パースのカット集',
           h('p', { class: 'hint', style: 'margin-top:0' }, '見どころの構図を高解像度の下絵にして、Nano Banana Pro に貼る説明文（部屋・素材・品番の色・光）と一緒に ZIP で保存します。仕上げた写真は ③ で取り込むと、プレゼン資料の同じカットの下絵と入れ替わります。'),
@@ -620,7 +642,7 @@ export const designStep: Step = {
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
         { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
-        { id: 'export', label: '仕上げ', match: /仕上げ（外部）|写真に仕上げる|お手本の写真/ },
+        { id: 'export', label: '仕上げ', match: /仕上げ（外部）|写真に仕上げる|お手本の写真|こだわりの参考資料/ },
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));

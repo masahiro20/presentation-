@@ -23,7 +23,7 @@ import { buildExteriorLights } from './interiorLights';
 import { MaterialRegistry } from './materials';
 import { makeNeutralEnvTexture, makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle } from '../styles/presets';
-import { exteriorFor, interiorFor } from '../coordinate/catalog';
+import { exteriorFor, interiorFor, stairBuildOf } from '../coordinate/catalog';
 import { preloadPhotoTextures } from '../styles/photoTextures';
 import { clearMaterialCache } from '../styles/textures';
 import { resolveSpec } from '../styles/spec';
@@ -1449,7 +1449,7 @@ export class Viewer {
     // 天井高の上書き（仕様の調整）
     const ch = this.design.specPatch?.ceilingHeight;
     if (ch) for (const f of model.floors) f.ceilingHeight = Math.min(ch, f.height - 200);
-    const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch) });
+    const { mb, meta } = buildBuilding(model, { exterior: ext, spec: resolveSpec(this.design.specId, this.design.specPatch), stairBuild: stairBuildOf(this.design) });
     const resolve = (k: string) => this.registry.get(k);
     this.groups.building.add(mb.build(resolve, { name: 'building' }));
     // 扉は独立した部品にして、ウォークスルーで開閉できるようにする
@@ -1630,7 +1630,9 @@ export class Viewer {
     const ext = exteriorFor(design);
     const roofChanged =
       prev.exteriorId !== design.exteriorId || prev.roofOverride !== design.roofOverride || prev.roofPitch !== design.roofPitch || prev.eaves !== design.eaves || prev.specId !== design.specId || JSON.stringify(prev.specPatch) !== JSON.stringify(design.specPatch) || (prev.finishes?.accent ?? '') !== (design.finishes?.accent ?? '');
-    if (roofChanged || prev.exteriorId !== design.exteriorId) {
+    // 階段のつくり（コーディネートの「階段」の品目）が変わったら、階段の形を作り直す
+    const stairChanged = stairBuildOf(prev) !== stairBuildOf(design);
+    if (roofChanged || stairChanged || prev.exteriorId !== design.exteriorId) {
       // 外構・アクセント位置も変わるので建物以外を再構築
       this.setModel(this.state.model);
       return;
@@ -2105,6 +2107,7 @@ export class Viewer {
         const { mb, meta } = buildBuilding(model, {
           exterior: ext,
           spec: resolveSpec(this.design.specId, this.design.specPatch),
+          stairBuild: stairBuildOf(this.design),
           cut: f ? { level: level!, height: CUT_HEIGHT } : undefined,
           clip: sec ? clip : undefined,
         });

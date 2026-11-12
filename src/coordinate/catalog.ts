@@ -5,6 +5,7 @@
  */
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 import type { MatSpec } from '../styles/textures';
+import type { StairBuild } from '../core/types';
 
 export interface Product {
   id: string;
@@ -256,6 +257,10 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     products: [
       { id: 'stair.steel', maker: '造作（鉄工）', name: 'スチール階段', code: 'St 鉄骨 ＋ 木踏板 ＋ St 手摺', color: '黒皮鉄・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' } },
       { id: 'stair.wood', maker: '造作', name: '木製スケルトン階段', code: '側板 黒塗りつぶし塗装 ＋ 木踏板', color: 'ブラック・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: '見積は鉄骨階段の行で仮置き' },
+      // 3D の階段の「つくり」（こだわりの参考資料・3D の階段のパネル）と同じ 4 通り。どこで選んでも 3D・説明文・仕様書が同じ品目になる（STAIR_PRODUCT_OF_BUILD）
+      // （採用例 used は、御社の過去の仕様で確かめた物だけに書く。この 2 つは未確認なので書かない）
+      { id: 'stair.box', maker: '造作', name: '箱階段', code: '蹴込み板あり ＋ 木踏板', color: 'オーク', swatch: ['#c9a97c', '#ece9e2'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: '階段下を収納・トイレに使うときに。見積は鉄骨階段の行で仮置き（金額は別途確認）' },
+      { id: 'stair.cantilever', maker: '造作（鉄工）', name: '片持ち階段', code: '壁から持ち出し ＋ 木踏板', color: '黒皮鉄・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: 'リビング階段を軽く見せたいときに。見積は鉄骨階段の行で仮置き（金額は別途確認）。壁の中の下地・構造の検討が要ります' },
     ],
   },
   {
@@ -457,6 +462,15 @@ export function productById(id: string): Product | undefined {
 export function selectedProduct(cat: FinishCategory, d: DesignOptions): Product {
   const id = resolveProductId(d.finishes?.[cat.id] ?? cat.defaultFor?.(d) ?? cat.products[0].id);
   return cat.products.find((p) => p.id === id) ?? cat.products[0];
+}
+
+/** 階段のつくり（3D の形）と、コーディネートの「階段」の品目の対応。つくりは家に 1 つで、この品目が元 */
+export const STAIR_PRODUCT_OF_BUILD: Record<StairBuild, string> = { steel: 'stair.steel', woodSkeleton: 'stair.wood', box: 'stair.box', cantilever: 'stair.cantilever' };
+/** いまの階段のつくり（コーディネートの「階段」で選んだ品目から。選んでいなければ鉄骨） */
+export function stairBuildOf(d: DesignOptions): StairBuild {
+  const cat = FINISH_CATEGORIES.find((c) => c.id === 'stair');
+  const id = cat ? selectedProduct(cat, d).id : '';
+  return (Object.keys(STAIR_PRODUCT_OF_BUILD) as StairBuild[]).find((k) => STAIR_PRODUCT_OF_BUILD[k] === id) ?? 'steel';
 }
 
 function clone<T>(v: T): T {

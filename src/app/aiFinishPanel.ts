@@ -9,7 +9,7 @@ import { h, clear, modal, progressModal, section, toast } from './dom';
 import { state, emit } from './state';
 import { renderStudio } from '../scene/studio';
 import { exposureFor } from './draftCapture';
-import { cutPrompt, finishAssets, setRefsForPrompt } from './cuts';
+import { cutPrompt, finishAssets, focusForCut, setRefsForPrompt } from './cuts';
 import { addFinished } from './finishImport';
 import { harmonizeBatch } from './photoHarmonize';
 import { checkGeminiKey, compareWithDraft, costPerImage, generateFinish, getGeminiKey, getImageModel, onAiFinishChange, readUsage, scoreLabel, setGeminiKey, setImageModel, toAttachment, toJpegDataUrl, usageSummary, type ImageModelInfo } from './aiFinish';
@@ -81,7 +81,9 @@ export async function finishShots(ctx: StepCtx, shots: Shot[], opts: { signal?: 
         const p = cutPrompt(shot, i);
         const refs = refsLoaded.filter((r) => r.kind === (shot.kind === 'interior' ? 'interior' : 'exterior')).slice(-3).map((r) => refUrls.get(r.id)!);
         opts.onProgress?.(i, shots.length, `${shot.title}: 写真に仕上げています（${model}）`, draft);
-        const out = await generateFinish(key, model, { prompt: `${p.ja}\n\n${p.en}`, draft, board, refs, aspectRatio: '16:9', imageSize }, { signal: opts.signal });
+        // こだわりの参考画像（このカットに写る部位のもの。3 枚まで）
+        const focus = focusForCut(shot).images;
+        const out = await generateFinish(key, model, { prompt: `${p.ja}\n\n${p.en}`, draft, board, refs, ...(focus.length ? { focus } : {}), aspectRatio: '16:9', imageSize }, { signal: opts.signal });
         const cmp = await compareWithDraft(draft, out.url);
         done.push({ shot, draft, url: out.url, score: cmp.score, label: cmp.label, overlay: cmp.overlayUrl, model });
         opts.onProgress?.(i + 1, shots.length, `${shot.title}: ${cmp.label.text}`, out.url);

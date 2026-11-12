@@ -9,6 +9,7 @@ import { Viewer } from '../scene/viewer';
 import { auditEnvelope } from '../scene/selfCheck';
 import { createFurnitureTool } from './furnitureTool';
 import { createEditTool3d } from './editTool3d';
+import { syncFocusFromModel } from './focusNotes';
 import { createExteriorTool } from './exteriorTool';
 import { furnitureDims, furnitureItems } from '../scene/furniture';
 
@@ -154,6 +155,10 @@ export class App {
         this.snap3d = null;
       }
       this.renderSteps();
+    });
+    // 階段のつくりを変えた（こだわりの参考資料・3D の階段のパネル = コーディネートの「階段」の品目）: 開いている 3D を作り直す
+    on('stair-build', () => {
+      this._viewer?.setDesign(state.design);
     });
     // 保存したプロジェクトを開いたら、3D のテイストも反映して外観・内観パースへ
     on('project-loaded', () => {
@@ -469,6 +474,8 @@ export class App {
     const next = JSON.parse(json) as Record<string, unknown>;
     for (const k of Object.keys(m)) if (!(k in next)) delete m[k];
     Object.assign(m, next);
+    // 3D で変えた階段のつくり・手すり（こだわりの参考資料）も、戻ったモデルに合わせる
+    syncFocusFromModel();
     this.own3dEmit = true;
     try {
       emit('model');

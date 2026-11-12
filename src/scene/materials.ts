@@ -127,6 +127,8 @@ export class MaterialRegistry {
     }
     set('f.metal', color(F.metal, 0.35, 0.8));
     set('f.handle', color('#262626', 0.4, 0.6));
+    // 黒の塗りつぶし塗装（木製スケルトン階段の側板など。金属の光り方をさせない）
+    set('f.paintBlack', color('#242424', 0.62, 0.05));
     set('f.hood', color('#e9e7e3', 0.45, 0.2));
     // LINE KITCHEN: ステンレス（バイブレーション）のシンク、レンジフードのシルバー／ブラック、キャビネット内部のチャコールグレー
     set('f.stainless', color('#b9bbbd', 0.32, 0.9));

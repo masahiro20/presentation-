@@ -72,8 +72,10 @@ export function effectiveStair(s: Stair): Stair {
 
 /** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
 /** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
-export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps'> | null) {
-  if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+export function stairStepCount(riseMm: number, s?: Pick<Stair, 'steps' | 'look'> | null) {
+  // こだわり指定（参考資料）の段数 → 図面に書かれた段数 → 階高からの推定
+  const fixed = s?.look?.steps ?? s?.steps;
+  if (fixed && fixed >= 6 && fixed <= 30) return fixed;
   return Math.max(10, Math.round(riseMm / 200));
 }
 
@@ -104,7 +106,8 @@ export function maxStepsInRect(s0: Stair): number {
  * （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
  */
 export function effectiveStepCount(riseMm: number, s: Stair): number {
-  if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+  const fixed = s.look?.steps ?? s.steps;
+  if (fixed && fixed >= 6 && fixed <= 30) return fixed;
   const n0 = stairStepCount(riseMm);
   const nMin = Math.max(6, Math.ceil(riseMm / MAX_RISER));
   // 直階段で、図面の段の線の間隔（踏面）が読めていれば、図面どおりの段数: 長さ ÷ 間隔 が踏面の数、上がり切りの 1 段を足す。

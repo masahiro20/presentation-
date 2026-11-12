@@ -10,6 +10,7 @@ import type { ExternalBuilding } from './externalFit';
 import type { SunDisclosure } from './sunDisclosure';
 import type { EstimateState } from './steps/estimateStep';
 import type { CoordState } from '../coordinate/decisions';
+import type { FocusNote } from '../core/focus';
 
 export interface GalleryItem {
   id: string;
@@ -86,6 +87,11 @@ export interface ProjectState {
   estimate: EstimateState | null;
   /** コーディネートの段取り（部位ごとの候補・決定・お客様の選択） */
   coord: CoordState;
+  /**
+   * こだわり指定（参考資料）: 階段・キッチン・外観などに「この仕様・この写真のように提案したい」を添えたもの。
+   * 図面を読み直しても残り、モデルが変わるたびに階段のつくり・手すり・段数を当て直す（core/focus.ts・app/focusNotes.ts）
+   */
+  focus?: FocusNote[];
 }
 
 /**
@@ -142,7 +148,15 @@ export function on(ev: string, fn: Handler) {
   return () => handlers.get(ev)!.delete(fn);
 }
 
+/** モデルが変わった知らせ（emit('model')）の直前に、モデルへ当て直すもの（こだわり指定の階段のつくりなど）。聞き手より先に走る */
+const modelHooks = new Set<() => void>();
+export function beforeModelEmit(fn: () => void) {
+  modelHooks.add(fn);
+  return () => modelHooks.delete(fn);
+}
+
 export function emit(ev: string, payload?: unknown) {
+  if (ev === 'model') modelHooks.forEach((f) => f());
   handlers.get(ev)?.forEach((f) => f(payload));
 }
 

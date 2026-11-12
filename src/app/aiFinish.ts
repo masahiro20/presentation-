@@ -128,6 +128,8 @@ export interface FinishRequest {
   board?: string;
   /** お手本の写真（data URL。最大 3 枚） */
   refs?: string[];
+  /** こだわりの参考画像（階段・キッチンなど。最大 3 枚）。name は説明文に出てくる名前、part は部位 */
+  focus?: { url: string; name: string; part: string }[];
   /** 縦横比（下絵と同じに） */
   aspectRatio?: '16:9' | '4:3' | '3:2' | '1:1' | '9:16';
   /** 大きさ（Pro だけ '2K'・'4K' が効く） */
@@ -141,12 +143,13 @@ export function splitDataUrl(url: string): { mimeType: string; data: string } {
   return { mimeType: m[1], data: m[2] };
 }
 
-/** generateContent の本文（純粋な関数）。添付の順: 下絵 → 素材ボード → お手本 */
+/** generateContent の本文（純粋な関数）。添付の順: 下絵 → 素材ボード → お手本 → こだわりの参考画像 */
 export function buildGenerateBody(req: FinishRequest, withImageConfig = true): Record<string, unknown> {
   const parts: Record<string, unknown>[] = [];
   const order: string[] = ['1 枚目: 下絵（この構図・間取り・窓と戸の位置と数・屋根の形のまま仕上げる元の画像）'];
   if (req.board) order.push(`${order.length + 1} 枚目: 素材ボード（この色・質感に合わせる）`);
   (req.refs ?? []).slice(0, 3).forEach((_, i) => order.push(`${order.length + 1} 枚目: お手本の写真 ${i + 1}（写りの雰囲気だけ参考にする。建物や間取りは真似しない）`));
+  (req.focus ?? []).slice(0, 3).forEach((f) => order.push(`${order.length + 1} 枚目: こだわりの参考画像「${f.name}」（${f.part}の形・素材・納まりだけを手本にする。位置・大きさ・数は下絵のまま。この画像の部屋や建物は真似しない）`));
   parts.push({ text: `${req.prompt}\n\n添付画像の順番:\n${order.map((o) => `- ${o}`).join('\n')}\n出力は仕上げた画像 1 枚だけ。文字は書かないでください。` });
   const img = (url: string) => {
     const { mimeType, data } = splitDataUrl(url);
@@ -155,6 +158,7 @@ export function buildGenerateBody(req: FinishRequest, withImageConfig = true): R
   parts.push(img(req.draft));
   if (req.board) parts.push(img(req.board));
   for (const r of (req.refs ?? []).slice(0, 3)) parts.push(img(r));
+  for (const f of (req.focus ?? []).slice(0, 3)) parts.push(img(f.url));
   const generationConfig: Record<string, unknown> = { responseModalities: ['TEXT', 'IMAGE'] };
   if (withImageConfig && (req.aspectRatio || req.imageSize)) {
     const ic: Record<string, unknown> = {};

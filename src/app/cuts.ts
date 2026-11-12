@@ -12,7 +12,7 @@ import { progressModal, toast, download } from './dom';
 import type { Shot } from '../scene/shots';
 import { renderStudio } from '../scene/studio';
 import { exteriorById, interiorById, type TimeOfDay } from '../styles/presets';
-import { selectedProduct, type Product } from '../coordinate/catalog';
+import { selectedProduct, stairBuildOf, type Product } from '../coordinate/catalog';
 import { categoryById } from '../coordinate/decisions';
 import { boardEntries, renderMaterialBoard } from './materialBoard';
 import { librarySample } from '../coordinate/samples';
@@ -21,6 +21,9 @@ import { imageBytes } from './officeAssets';
 import { exposureFor } from './draftCapture';
 import { resolveSpec } from '../styles/spec';
 import { cutToken, saveCutManifest } from './finishImport';
+import { FOCUS_MAX_IMAGES, FOCUS_PART_LABEL, focusForShot, focusImageName, focusPromptLines, stairLookAt, stairRailText, type FocusNote, type FocusShot } from '../core/focus';
+import type { StairRail } from '../core/types';
+import { bboxOf, pointInPolygon } from '../core/geometry';
 
 // ---- ZIP（無圧縮） ----
 const CRC_TABLE = (() => {
@@ -107,8 +110,11 @@ const LOOK_EN: [RegExp, string][] = [
   [/^door\.kamiya|^door\.lixil|^door\.panasonic/, 'full-height flush interior door without casing, same color as the wall'],
   [/^door\.custom/, 'custom oak veneer door, flush, no casing'],
   [/^bb\./, 'very thin baseboard, almost invisible'],
-  [/^stair\.steel/, 'open-riser steel stair: black steel stringer and flat-bar balusters, thick oak treads'],
-  [/^stair\.wood/, 'open-riser wooden stair with oak treads and a slim black handrail'],
+  // 階段はつくり（品目）だけを書く。手すりは別（こだわりの参考資料で決めていなければ、標準のアイアン: STAIR_RAIL_DEFAULT_EN）
+  [/^stair\.steel/, 'open-riser steel stair: thick oak treads on a single black steel center stringer'],
+  [/^stair\.wood/, 'open-riser wooden stair: thick oak treads between two black side stringers'],
+  [/^stair\.box/, 'closed-riser boxed wooden stair: oak treads with risers, enclosed underneath'],
+  [/^stair\.cantilever/, 'cantilevered stair: thick oak treads projecting from the wall, no visible stringer'],
   [/^kit\.|^kitchen/, 'minimal flat-front kitchen with a thin counter, no visible handles, integrated hood'],
   [/^cup\./, 'matching flat-front back cabinets with floating wall units'],
   [/^pend\.ph5/, 'Louis Poulsen PH5 pendant above the dining table'],
@@ -134,11 +140,12 @@ function partWords(catId: string): { ja: string; en: string } | null {
   const en = `${maker}${p.name}${p.color ? ` [${p.color}]` : ''} — ${lookEn(p)}`;
   return { ja, en };
 }
-const list = (ids: [string, string, string][], lang: 'ja' | 'en') =>
+/** @param tail 部位ごとに、言葉の後ろへ足すもの（階段の手すりなど） */
+const list = (ids: [string, string, string][], lang: 'ja' | 'en', tail?: Record<string, { ja: string; en: string }>) =>
   ids
     .map(([id, ja, en]) => {
       const w = partWords(id);
-      return w ? `${lang === 'ja' ? ja : en}: ${w[lang]}` : '';
+      return w ? `${lang === 'ja' ? ja : en}: ${w[lang]}${tail?.[id]?.[lang] ?? ''}` : '';
     })
     .filter(Boolean)
     .join(lang === 'ja' ? '。' : '; ');
@@ -208,7 +215,7 @@ export async function finishAssets(): Promise<{ board?: string; refs: StyleRef[]
   return { board, refs };
 }
 
-export function cutPrompt(shot: Shot, index: number): { ja: string; en: string } {
+function cutPromptBase(shot: Shot, index: number): { ja: string; en: string } {
   const ext = exteriorById(state.design.exteriorId);
   const int = interiorById(state.design.interiorId);
   const spec = resolveSpec(state.design.specId, state.design.specPatch);
@@ -240,8 +247,15 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
     const stairy = /階段|ホール|吹抜/.test(shot.title) || (!!room && room.type === 'hall');
     const base = INT_PARTS.filter(([id]) => !['stair', 'kitchen', 'cupboard', 'pendant'].includes(id));
     const parts: [string, string, string][] = wet ? WET_PARTS : ldk ? INT_PARTS : stairy ? [...base, INT_PARTS.find(([id]) => id === 'stair')!] : room?.type === 'entrance' ? [['entFloor', '玄関土間', 'Entrance floor'], ...base] : base;
-    const ja = `${common.ja}\n内観: ${name}。${list(parts, 'ja')}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。`;
-    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(parts, 'en')}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.`;
+    // 階段: 部屋が分かっていて階段がそばに無いカットには書かない（階段の無い LDK の説明に階段が混ざっていた）
+    const fs = focusShotOf(shot);
+    const notes = state.focus ?? [];
+    const partsShown = parts.filter(([id]) => id !== 'stair' || !room || !!fs.hasStair || stairy);
+    // 階段の手すり: こだわりの参考資料で決めてあればその手すり（その階から上がる階段 → 下の階から上がってくる階段）、無ければ標準のアイアン
+    const rail: StairRail = (fs.level != null ? stairLookAt(notes, fs.level)?.rail ?? stairLookAt(notes, fs.level - 1)?.rail : notes.find((n) => n.part === 'stair' && n.level == null && n.stair?.rail)?.stair?.rail) ?? 'bar';
+    const tail = { stair: { ja: `、${stairRailText(rail, 'ja')}`, en: `, ${stairRailText(rail, 'en')}` } };
+    const ja = `${common.ja}\n内観: ${name}。${list(partsShown, 'ja', tail)}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。`;
+    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(partsShown, 'en', tail)}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.`;
     return { ja, en };
   }
   if (shot.kind === 'cutaway') {
@@ -260,6 +274,57 @@ export function cutPrompt(shot: Shot, index: number): { ja: string; en: string }
   const en = `${common.en}\nExterior${shot.kind === 'aerial' ? ' (aerial view)' : ''}: ${floors}-story timber house with a ${roofEn} roof and ${ext.roof.eaves} mm eaves. ${list(EXT_PARTS, 'en')}. Style: ${ext.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural exterior photography, quiet Japanese residential neighborhood with low, unobtrusive neighboring houses, asphalt road, natural sky, a multi-stem deciduous tree and low ground-cover planting.`;
   void index;
   return { ja, en };
+}
+
+/** カットに何が写るか（こだわり指定を、写るカットにだけ当てるため） */
+export function focusShotOf(shot: Shot): FocusShot {
+  const kind = shot.kind;
+  const model = state.model;
+  if (kind !== 'interior' || !model) return { kind, title: shot.title };
+  for (const f of model.floors) {
+    const room = f.rooms.find((r) => r.id === shot.roomId);
+    if (!room) continue;
+    const bb = bboxOf(room.polygon);
+    const nearBox = (x0: number, y0: number, x1: number, y1: number, m: number) => x0 < bb.maxX + m && x1 > bb.minX - m && y0 < bb.maxY + m && y1 > bb.minY - m;
+    // 階段: その階の階段（昇り口・降り口の穴）が部屋の中か、すぐ脇（リビング階段・階段ホール）
+    const hasStair = room.type === 'stairs' || f.stairs.some((st) => nearBox(st.minX, st.minY, st.maxX, st.maxY, 600));
+    // 吹抜: その階の吹抜がすぐ脇、または上の階の吹抜が真上
+    const up = model.floors.find((x) => x.level === f.level + 1);
+    const hasVoid =
+      f.rooms.some((r) => r.type === 'void' && r.id !== room.id && (() => { const vb = bboxOf(r.polygon); return nearBox(vb.minX, vb.minY, vb.maxX, vb.maxY, 300); })()) ||
+      !!up?.rooms.some((r) => r.type === 'void' && pointInPolygon(r.labelPos, room.polygon));
+    return { kind, title: shot.title, roomType: room.type, level: f.level, hasStair, hasVoid };
+  }
+  return { kind, title: shot.title, level: shot.level };
+}
+
+/** このカットに効くこだわり指定と、一緒に渡す参考画像（3 枚まで。指定ごとに 1 枚ずつ、余れば 2 枚目以降） */
+export function focusForCut(shot: Shot): { hits: FocusNote[]; images: { url: string; name: string; part: string }[] } {
+  const all = state.focus ?? [];
+  const hits = all.length ? focusForShot(all, focusShotOf(shot)) : [];
+  const images: { url: string; name: string; part: string }[] = [];
+  for (let k = 0; k < FOCUS_MAX_IMAGES && images.length < FOCUS_MAX_IMAGES; k++)
+    for (const n of hits) {
+      if (images.length >= FOCUS_MAX_IMAGES) break;
+      const im = n.images[k];
+      if (im) images.push({ url: im.url, name: focusImageName(all, n, k), part: FOCUS_PART_LABEL[n.part] });
+    }
+  return { hits, images };
+}
+
+/**
+ * カットの説明文（日本語・英語）。こだわり指定（参考資料）のうち、このカットに写る部位のものを最後に足す。
+ * @param focusImages 参考画像を一緒に渡すか（カット集・AI 仕上げは渡す）
+ */
+export function cutPrompt(shot: Shot, index: number, focusImages = true): { ja: string; en: string } {
+  const p = cutPromptBase(shot, index);
+  const all = state.focus ?? [];
+  if (!all.length) return p;
+  const { hits } = focusForCut(shot);
+  if (!hits.length) return p;
+  // 階段の行には、つくり（コーディネートの「階段」の品目 = 3D の形）も入れる
+  const build = stairBuildOf(state.design);
+  return { ja: `${p.ja}\n${focusPromptLines(all, hits, 'ja', focusImages, build).join('\n')}`, en: `${p.en}\n${focusPromptLines(all, hits, 'en', focusImages, build).join('\n')}` };
 }
 
 const safe = (s: string) => s.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim();
@@ -322,6 +387,21 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     } catch (e) {
       refsForPrompt = null;
       console.warn('お手本の写真を読めませんでした', e);
+    }
+    // こだわりの参考資料（階段・キッチンなど）: 説明文に名前の出るカットにだけ、参考画像として一緒に渡す。
+    // 今回書き出すカットのどれにも写らない部位の画像は入れない（「この構図だけ」に関係のない参考画像が混ざらないように）
+    try {
+      const notes = state.focus ?? [];
+      const used = new Set<string>(shots.flatMap((sh) => focusForCut(sh).hits.map((x) => x.id)));
+      let cnt = 0;
+      for (const fn of notes.filter((x) => used.has(x.id)))
+        for (let k = 0; k < fn.images.length; k++) {
+          entries.push({ name: focusImageName(notes, fn, k), data: dataUrlToBytes(fn.images[k].url) });
+          cnt++;
+        }
+      if (cnt) lines.push(`■ 00_参考_…jpg（${cnt} 枚）`, '（こだわりの参考資料。説明文に名前が出てくるカットにだけ、参考画像として一緒に渡してください。形・素材・納まりの手本で、位置・大きさ・数は下絵のまま、と説明文に入れてあります）', '');
+    } catch (e) {
+      console.warn('こだわりの参考画像を入れられませんでした', e);
     }
     for (let i = 0; i < shots.length; i++) {
       if (pm.signal.aborted) break;

@@ -1,4 +1,5 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
+import { focusChips, focusNotes, onFocusChange, openFocusDialog } from '../focusNotes';
 import { zoomPane } from '../zoomPane';
 import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
@@ -403,6 +404,9 @@ function dropScreen(ctx: StepCtx) {
     ),
   );
 
+  // こだわりの参考資料（階段・キッチンなど）は、図面を読む前に登録しておける（読み込んだら階段の 3D に反映する）
+  const focusLabel = () => (focusNotes().length ? `こだわりの参考資料（${focusNotes().length} 件）` : 'こだわりの参考資料を添える（階段・キッチンなど）');
+  const focusLink: HTMLButtonElement = h('button', { class: 'lnk', title: '「この仕様・この写真のような階段で提案したい」を、参考画像と一緒に登録します。3D とパースの仕上げに反映します', onclick: () => openFocusDialog({ onClose: () => { focusLink.textContent = focusLabel(); } }) }, focusLabel());
   const drop = h(
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
@@ -438,6 +442,8 @@ function dropScreen(ctx: StepCtx) {
         h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
         h('span', { class: 'sep' }, '｜'),
         h('button', { class: 'lnk', onclick: () => openSiteStudy() }, state.siteStudy ? '敷地から先に検討（控えあり）' : '図面がまだ無い: 敷地から先に検討'),
+        h('span', { class: 'sep' }, '｜'),
+        focusLink,
       ),
     ),
     h(
@@ -1374,6 +1380,20 @@ function renderResult(ctx: StepCtx) {
     resultCleanup?.();
     await loadPdf(ctx, new Uint8Array(await f.arrayBuffer()), f.name, undefined, 'dxf', lastPdf?.moduleMode ?? 'auto');
   });
+  // こだわりの参考資料: 階段などに「この仕様・この写真のように」を添える（3D とパースの仕上げに反映）
+  const focusBody = h('div');
+  const focusFold = fold('こだわりの参考資料（仕様・画像）', { meta: focusNotes().length ? `${focusNotes().length} 件` : '' }, focusBody);
+  const renderFocus = () => {
+    clear(focusBody);
+    focusFold.setMeta(focusNotes().length ? `${focusNotes().length} 件` : '');
+    focusBody.append(
+      focusChips((editId) => openFocusDialog({ editId, onClose: renderFocus })),
+      h('div', { class: 'btn-row', style: 'margin-top:0' }, h('button', { class: 'btn sm', title: '階段・キッチン・外観などに、参考画像・ひとこと・仕様（階段のつくり・手すり・段数）を添えます', onclick: () => openFocusDialog({ onClose: renderFocus }) }, focusNotes().length ? '参考資料を足す・直す' : '参考資料を添える')),
+      h('p', { class: 'hint' }, '階段のつくり・手すり・段数は 3D と図面に、どの部位もパースの仕上げ（カット集・AI 仕上げ）の説明文と同梱の参考画像に反映します。3D で階段を選んで添えることもできます。'),
+    );
+  };
+  renderFocus();
+  onFocusChange(focusBody, renderFocus);
   guideHost.append(
     sourcesCard(model, {
       addElevation: () => elevIn.click(),
@@ -1398,6 +1418,7 @@ function renderResult(ctx: StepCtx) {
       ),
       h('p', { class: 'hint' }, '平面図と立面図が 1 つの PDF なら、立面図の高さ（1 階床・階高・最高高さ・屋根勾配）・窓の高さ・屋根の形（片流れの向き・切妻・寄棟）・外部仕上表は最初から読んでいます。別ファイルのときはここで足してください。ARCHITREND ZERO なら 3DS の書き出しがいちばん正確で、窓の幅と位置・上の階の重ね位置・込み入った屋根の形まで 3D のとおりになります。平面図だけでは決められない所（床までの FIX か腰窓か・半間ずれても壁が重なる 2 階の位置）が、どちらかがあれば決まります。'),
     ),
+    focusFold,
     fold(
       '読み込みのやり直し・保存',
       {},

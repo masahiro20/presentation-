@@ -19930,7 +19930,8 @@ function effectiveStair(s) {
 /** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
 /** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
 function stairStepCount(riseMm, s) {
-	if (s?.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+	const fixed = s?.look?.steps ?? s?.steps;
+	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
 	return Math.max(10, Math.round(riseMm / 200));
 }
 /** 矩形（kind・entry を考慮）に踏面 MIN_TREAD で納まる最大の段数 */
@@ -19954,7 +19955,8 @@ function maxStepsInRect(s0) {
 * （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
 */
 function effectiveStepCount(riseMm, s) {
-	if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
+	const fixed = s.look?.steps ?? s.steps;
+	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
 	const n0 = stairStepCount(riseMm);
 	const nMin = Math.max(6, Math.ceil(riseMm / 230));
 	const e = effectiveStair(s);
@@ -24005,7 +24007,7 @@ function buildBuilding(model, opts) {
 		buildCeilingDetails(mb, f, fl, spec);
 		for (const s of f.stairs) {
 			if (!s.goesUp || !upper) continue;
-			buildStairs(mb, s, fl, upper.elevation * MM, f);
+			buildStairs(mb, s, fl, upper.elevation * MM, f, opts.stairBuild);
 		}
 	}
 	const f1 = model.floors[0];
@@ -25599,50 +25601,92 @@ function buildCeilingDetails(mb, f, fl, spec) {
 		}
 	}
 }
-/** 階段（直・折り返し） */
-function buildStairs(mb, s, y0, y1, f) {
+/**
+* 階段（直・折り返し・コの字・かね折れ）。
+* つくりと手すりは、こだわり指定（参考資料）で階段ごとに変えられる（Stair.look。core/focus.ts）。指定が無ければ
+* ホームランディックの標準 = 鉄骨の中央の桁に踏板を載せたストリップ階段＋フラットバーの支柱に丸パイプの手すり
+*  - steel: 厚さ 40 の踏板を、中央のささら桁（黒皮鉄の鋼板）で支える。蹴込みなし
+*  - woodSkeleton: 厚さ 40 の踏板を、両側の木の側板（36 × 260。黒の塗りつぶし = コーディネートの「木製スケルトン階段」）で支える。蹴込みなし
+*  - box: 箱階段。蹴込み板があり、段の両脇は床まで閉じる（下は収納・壁）
+*  - cantilever: 片持ち。厚さ 60 の踏板だけ（桁・側板は見せない）
+*/
+function buildStairs(mb, s, y0, y1, f, build = "steel") {
 	const rise = y1 - y0;
 	const n = effectiveStepCount(rise / MM, s);
 	const rh = rise / n;
 	const tread = "int.stairs";
+	const rail = s.look?.rail ?? "bar";
+	const thick = build === "cantilever" ? .06 : build === "box" ? .03 : .04;
 	const put = (p, yTop) => {
-		const min = V(p.minX * MM, yTop - .04, p.minY * MM);
+		const min = V(p.minX * MM, yTop - thick, p.minY * MM);
 		const max = V(p.maxX * MM, yTop, p.maxY * MM);
 		if (max.x - min.x < .01 || max.z - min.z < .01) return;
 		mb.aabb(tread, min, max);
-		const longX = max.x - min.x >= max.z - min.z;
-		const plateT = .012;
-		const ph = Math.min(.08, rh * .5);
-		if (longX) for (const x of [min.x + .03, max.x - .03 - plateT]) mb.aabb("ext.frame", V(x, yTop - .04 - ph, min.z + .02), V(x + plateT, yTop - .04, max.z - .02));
-		else for (const z of [min.z + .03, max.z - .03 - plateT]) mb.aabb("ext.frame", V(min.x + .02, yTop - .04 - ph, z), V(max.x - .02, yTop - .04, z + plateT));
+		if (build === "steel") {
+			const longX = max.x - min.x >= max.z - min.z;
+			const plateT = .012;
+			const ph = Math.min(.08, rh * .5);
+			if (longX) for (const x of [min.x + .03, max.x - .03 - plateT]) mb.aabb("ext.frame", V(x, yTop - thick - ph, min.z + .02), V(x + plateT, yTop - thick, max.z - .02));
+			else for (const z of [min.z + .03, max.z - .03 - plateT]) mb.aabb("ext.frame", V(min.x + .02, yTop - thick - ph, z), V(max.x - .02, yTop - thick, z + plateT));
+		}
+		if (build === "box") {
+			const t = .018;
+			const lo = Math.max(y0, yTop - rh);
+			const hi = yTop - thick;
+			if (hi - lo > .01) {
+				if (Math.abs(p.dir.x) > .5) {
+					const x = p.dir.x > 0 ? min.x : max.x - t;
+					mb.aabb("int.wall", V(x, lo, min.z), V(x + t, hi, max.z));
+				} else {
+					const z = p.dir.y > 0 ? min.z : max.z - t;
+					mb.aabb("int.wall", V(min.x, lo, z), V(max.x, hi, z + t));
+				}
+			}
+			const sideT = .02;
+			if (hi - y0 > .02) {
+				if (Math.abs(p.dir.x) > .5) for (const z of [min.z, max.z - sideT]) mb.aabb("int.wall", V(min.x, y0, z), V(max.x, hi, z + sideT));
+				else for (const x of [min.x, max.x - sideT]) mb.aabb("int.wall", V(x, y0, min.z), V(x + sideT, hi, max.z));
+			}
+		}
 	};
 	const lay = stairLayout(s, n);
 	for (const p of lay.pieces) put(p, y0 + rh * p.i);
 	if (lay.wall) mb.aabb("int.wall", V(lay.wall.minX * MM, y0, lay.wall.minY * MM), V(lay.wall.maxX * MM, y0 + rise * .5 + .9, lay.wall.maxY * MM));
-	steelStairDetails(mb, lay, rh, y0, f);
-	if (lay.well) {
+	stairRunDetails(mb, lay, rh, y0, f, build, rail, thick);
+	if (lay.well && rail !== "none") {
 		const w = lay.well;
 		const first = lay.pieces[0];
 		const horiz = Math.abs(first.dir.x) > .5;
 		const a = horiz ? V((first.dir.x > 0 ? w.minX : w.maxX) * MM, y1, w.minY * MM) : V(w.minX * MM, y1, (first.dir.y > 0 ? w.minY : w.maxY) * MM);
-		const d = (horiz ? V(a.x, y1, w.maxY * MM) : V(w.maxX * MM, y1, a.z)).clone().sub(a);
-		const L = d.length();
-		d.normalize();
-		const posts = Math.max(2, Math.round(L / .9) + 1);
-		const tops = [];
-		for (let k = 0; k < posts; k++) {
-			const p = a.clone().addScaledVector(d, L * k / (posts - 1));
-			mb.box("f.metal", p.clone(), d, .04, .9, .012);
-			tops.push(p.clone().setY(y1 + .9));
+		const b = horiz ? V(a.x, y1, w.maxY * MM) : V(w.maxX * MM, y1, a.z);
+		if (rail === "glass") buildGlassRail(mb, a, b, y1);
+		else if (rail === "wall") {
+			const d = b.clone().sub(a);
+			const L = d.length();
+			d.normalize();
+			mb.box("int.wall", a.clone().addScaledVector(d, L / 2).setY(y1), d, L, 1, .1);
+		} else {
+			const d = b.clone().sub(a);
+			const L = d.length();
+			d.normalize();
+			const key = rail === "wood" ? "f.wood" : "f.metal";
+			const posts = Math.max(2, Math.round(L / .9) + 1);
+			const tops = [];
+			for (let k = 0; k < posts; k++) {
+				const p = a.clone().addScaledVector(d, L * k / (posts - 1));
+				mb.box(key, p.clone(), d, .04, .9, rail === "wood" ? .04 : .012);
+				tops.push(p.clone().setY(y1 + .9));
+			}
+			for (let k = 0; k + 1 < tops.length; k++) mb.tube(key, tops[k], tops[k + 1], rail === "wood" ? .022 : .016, rail === "wood" ? .022 : .016, 10);
 		}
-		for (let k = 0; k + 1 < tops.length; k++) mb.tube("f.metal", tops[k], tops[k + 1], .016, .016, 10);
 	}
 }
 /**
-* 鉄骨階段の表現: 直線の区間ごとに中央のささら桁（黒皮鉄の鋼板）を勾配なりに通し、
-* 壁の無い側にフラットバーの支柱と丸パイプの手すりを付ける（ホームランディックの標準）。
+* 段の列（直線の区間）ごとの骨組みと手すり。
+* 骨組み: 鉄骨 = 中央のささら桁（黒皮鉄の鋼板）を勾配なりに／木のスケルトン = 両側の側板／箱階段・片持ち = なし。
+* 手すりは壁の無い側にだけ: アイアン（フラットバーの支柱＋丸パイプ）・ガラス・腰壁・木。
 */
-function steelStairDetails(mb, lay, rh, y0, f) {
+function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick) {
 	const center = (p) => V((p.minX + p.maxX) / 2 * MM, 0, (p.minY + p.maxY) / 2 * MM);
 	const runs = [];
 	for (const p of lay.pieces) {
@@ -25655,13 +25699,14 @@ function steelStairDetails(mb, lay, rh, y0, f) {
 		else runs.push([p]);
 	}
 	const metal = "f.metal";
+	const up = new THREE.Vector3(0, 1, 0);
 	for (const run of runs.filter((r) => r.length >= 2)) {
 		const a = run[0];
 		const b = run[run.length - 1];
 		const d = V(a.dir.x, 0, a.dir.y).normalize();
 		const perp = V(-d.z, 0, d.x);
-		const ca = center(a).setY(y0 + rh * a.i - .04);
-		const cb = center(b).setY(y0 + rh * b.i - .04);
+		const ca = center(a).setY(y0 + rh * a.i - thick);
+		const cb = center(b).setY(y0 + rh * b.i - thick);
 		const treadD = Math.abs(V(b.maxX - b.minX, 0, b.maxY - b.minY).dot(d)) * MM;
 		const treadW = Math.abs(V(b.maxX - b.minX, 0, b.maxY - b.minY).dot(perp)) * MM;
 		const x = cb.clone().sub(ca);
@@ -25669,11 +25714,26 @@ function steelStairDetails(mb, lay, rh, y0, f) {
 		x.normalize();
 		const z = perp.clone();
 		const y = new THREE.Vector3().crossVectors(z, x).normalize();
-		const geo = new THREE.BoxGeometry(len, .2, .012);
-		const m = new THREE.Matrix4().makeBasis(x, y, z);
-		m.setPosition(ca.clone().add(cb).multiplyScalar(.5).addScaledVector(y, -.12));
-		mb.addGeometry(metal, geo, m);
-		geo.dispose();
+		const mid = ca.clone().add(cb).multiplyScalar(.5);
+		/** 勾配なりの板（厚み t・せい hgt）を、踏板の下 drop・幅方向 off の位置に */
+		const sloped = (key, hgt, t, drop, off) => {
+			const geo = new THREE.BoxGeometry(len, hgt, t);
+			const m = new THREE.Matrix4().makeBasis(x, y, z);
+			m.setPosition(mid.clone().addScaledVector(y, -drop).addScaledVector(z, off));
+			mb.addGeometry(key, geo, m);
+			geo.dispose();
+		};
+		/** 勾配なりで、両端が鉛直の板（手すりのガラス・腰壁）: 踏板の天端の線から lo〜hi の高さ、幅方向 off の位置に */
+		const upright = (key, lo, hi, t, off) => {
+			const geo = new THREE.BoxGeometry(len, hi - lo, t);
+			const m = new THREE.Matrix4().makeBasis(x, up, z);
+			m.setPosition(mid.clone().addScaledVector(up, thick + (lo + hi) / 2).addScaledVector(z, off));
+			mb.addGeometry(key, geo, m);
+			geo.dispose();
+		};
+		if (build === "steel") sloped(metal, .2, .012, .12, 0);
+		if (build === "woodSkeleton") for (const sg of [1, -1]) sloped("f.paintBlack", .26, .036, .09, sg * (treadW / 2 - .018));
+		if (rail === "none") continue;
 		for (const sg of [1, -1]) {
 			let open = false;
 			const q = center(run[Math.floor(run.length / 2)]).clone().addScaledVector(perp, sg * (treadW / 2 + .3));
@@ -25683,14 +25743,27 @@ function steelStairDetails(mb, lay, rh, y0, f) {
 				open = !!r && r.type !== "stairs" && r.type !== "closet" && r.type !== "storage";
 			}
 			if (!open) continue;
+			const off = sg * (treadW / 2 - .05);
+			if (rail === "glass") {
+				upright("ext.glass", .05, .95, .012, off);
+				upright(metal, .95, .975, .03, off);
+				continue;
+			}
+			if (rail === "wall") {
+				upright("int.wall", -.25 - thick, .9, .1, sg * (treadW / 2 - .045));
+				upright("f.wood", .9, .93, .12, sg * (treadW / 2 - .045));
+				continue;
+			}
+			const wood = rail === "wood";
+			const key = wood ? "f.wood" : metal;
 			const posts = [];
 			run.forEach((p, k) => {
 				if (k % 2 && k !== run.length - 1) return;
-				const base = center(p).setY(y0 + rh * p.i).addScaledVector(perp, sg * (treadW / 2 - .05));
-				mb.box(metal, base.clone(), d, .04, .9, .012);
+				const base = center(p).setY(y0 + rh * p.i).addScaledVector(perp, off);
+				mb.box(key, base.clone(), d, .04, .9, wood ? .04 : .012);
 				posts.push(base.clone().setY(base.y + .9));
 			});
-			for (let k = 0; k + 1 < posts.length; k++) mb.tube(metal, posts[k], posts[k + 1], .016, .016, 10);
+			for (let k = 0; k + 1 < posts.length; k++) mb.tube(key, posts[k], posts[k + 1], wood ? .022 : .016, wood ? .022 : .016, 10);
 		}
 	}
 }
@@ -35301,30 +35374,59 @@ var FINISH_CATEGORIES = [
 		id: "stair",
 		label: "階段",
 		part: "内部",
-		products: [{
-			id: "stair.steel",
-			maker: "造作（鉄工）",
-			name: "スチール階段",
-			code: "St 鉄骨 ＋ 木踏板 ＋ St 手摺",
-			color: "黒皮鉄・オーク",
-			swatch: ["#2a2a2a", "#c9a97c"],
-			estimate: {
-				group: "stair",
-				line: "ib.stairSt"
-			}
-		}, {
-			id: "stair.wood",
-			maker: "造作",
-			name: "木製スケルトン階段",
-			code: "側板 黒塗りつぶし塗装 ＋ 木踏板",
-			color: "ブラック・オーク",
-			swatch: ["#2a2a2a", "#c9a97c"],
-			estimate: {
-				group: "stair",
-				line: "ib.stairSt"
+		products: [
+			{
+				id: "stair.steel",
+				maker: "造作（鉄工）",
+				name: "スチール階段",
+				code: "St 鉄骨 ＋ 木踏板 ＋ St 手摺",
+				color: "黒皮鉄・オーク",
+				swatch: ["#2a2a2a", "#c9a97c"],
+				estimate: {
+					group: "stair",
+					line: "ib.stairSt"
+				}
 			},
-			note: "見積は鉄骨階段の行で仮置き"
-		}]
+			{
+				id: "stair.wood",
+				maker: "造作",
+				name: "木製スケルトン階段",
+				code: "側板 黒塗りつぶし塗装 ＋ 木踏板",
+				color: "ブラック・オーク",
+				swatch: ["#2a2a2a", "#c9a97c"],
+				estimate: {
+					group: "stair",
+					line: "ib.stairSt"
+				},
+				note: "見積は鉄骨階段の行で仮置き"
+			},
+			{
+				id: "stair.box",
+				maker: "造作",
+				name: "箱階段",
+				code: "蹴込み板あり ＋ 木踏板",
+				color: "オーク",
+				swatch: ["#c9a97c", "#ece9e2"],
+				estimate: {
+					group: "stair",
+					line: "ib.stairSt"
+				},
+				note: "階段下を収納・トイレに使うときに。見積は鉄骨階段の行で仮置き（金額は別途確認）"
+			},
+			{
+				id: "stair.cantilever",
+				maker: "造作（鉄工）",
+				name: "片持ち階段",
+				code: "壁から持ち出し ＋ 木踏板",
+				color: "黒皮鉄・オーク",
+				swatch: ["#2a2a2a", "#c9a97c"],
+				estimate: {
+					group: "stair",
+					line: "ib.stairSt"
+				},
+				note: "リビング階段を軽く見せたいときに。見積は鉄骨階段の行で仮置き（金額は別途確認）。壁の中の下地・構造の検討が要ります"
+			}
+		]
 	},
 	{
 		id: "kitchen",

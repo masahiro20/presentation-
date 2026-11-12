@@ -20,8 +20,10 @@ import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
 import { massName, massSourceTag, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
-import type { Stair } from '../core/types';
+import type { Stair, StairBuild, StairRail } from '../core/types';
 import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL } from '../core/stairs';
+import { STAIR_BUILD_LABEL, STAIR_BUILDS, STAIR_RAIL_LABEL, STAIR_RAILS, stairLevels, stairNoteFor, stairNoteIndexToEdit } from '../core/focus';
+import { focusNotes, openFocusDialog, setStairBuild, setStairLookAt, stairBuildNow } from './focusNotes';
 import { keepInsideFloor, linkedStairs, movedCorner, placeStair, rotateStair, stairAtPoint, wallsThroughStair, type StairGrid, type StairRef } from '../core/stairEdit';
 
 /** 階段の短い名前（トースト・パネルの見出し） */
@@ -259,6 +261,12 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     fn(s.st);
     for (const l of linked) fn(l.st);
     afterStairEdit(s, msg);
+  };
+  /** 階段のつくり・手すり（こだわり指定）を変える: その階の階段の指定に入れて、3D を作り直す */
+  const changeLook = (level: number, patch: { rail?: StairRail }, msg: string) => {
+    setStairLookAt(level, patch);
+    toast(msg, 'ok', 3000);
+    commit();
   };
   /** 窓・戸の両端のハンドル（高さの中ほど）。端を引っ張ると幅が変わる */
   const openingHandles = (f: Floor, w: Wall, t0: number, t1: number, op: Opening): Handle3D[] => {
@@ -1328,6 +1336,44 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         (val) => editStair((x) => { x.kind = val as Stair['kind']; }, `${STAIR_SHORT[val as Stair['kind']]}にしました`),
       ),
       ...(st.kind === 'uOpen' && w < 2100 && d < 2100 ? [h('p', { class: 'warn' }, 'コの字階段は幅 2,100 以上（段 910 × 2 ＋ 吹抜 300）が要ります。狭いので折り返しとして描いています')] : []),
+      // 階段のつくり = コーディネートの「階段」の品目（家に 1 つ。3D・説明文・仕様書・見積が同じ品目を見る）
+      h('div', { class: 'field-label', style: 'margin-top:8px', title: 'コーディネートの「階段」と同じ品目です。家じゅうの階段に共通で、仕様書・見積の品目も同じになります' }, 'つくり（家じゅうの階段に共通）'),
+      segButtons(
+        STAIR_BUILDS.map((k) => ({ v: k, label: STAIR_BUILD_LABEL[k].replace(/（.*）/, ''), title: STAIR_BUILD_LABEL[k] })),
+        stairBuildNow(),
+        (val) => {
+          if (!setStairBuild(val as StairBuild)) return;
+          toast(`階段を「${STAIR_BUILD_LABEL[val as StairBuild].replace(/（.*）/, '')}」にしました（コーディネートの「階段」も同じ品目です）`, 'ok', 3500);
+          render();
+        },
+      ),
+      // こだわり指定（参考資料）: この階段の手すりを変える。参考画像・ひとこと・段数は「参考資料」の画面で
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '手すり'),
+      segButtons(
+        STAIR_RAILS.map((k) => ({ v: k, label: STAIR_RAIL_LABEL[k].replace(/（.*）/, ''), title: STAIR_RAIL_LABEL[k] })),
+        st.look?.rail ?? 'bar',
+        (val) => changeLook(f.level, { rail: val as StairRail }, `${f.level}階の階段の手すりを「${STAIR_RAIL_LABEL[val as StairRail].replace(/（.*）/, '')}」にしました`),
+      ),
+      (() => {
+        const notes = focusNotes();
+        const note = stairNoteFor(notes, f.level);
+        // 直す指定: その階を決めたもの。階段が 1 か所だけの家は「すべての階段」の指定（3D のつくり・手すりのボタンと同じ決まり）
+        const editIdx = stairNoteIndexToEdit(notes, f.level, stairLevels(state.model));
+        const n = note?.images.length ?? 0;
+        return h(
+          'div',
+          { class: 'btn-row', style: 'margin-top:6px' },
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              title: '「この写真のような階段で提案したい」を添えます。参考画像とひとことは、パースの仕上げ（カット集・AI 仕上げ）にも伝わります。段数の指定もここで',
+              onclick: () => openFocusDialog({ ...(editIdx >= 0 ? { editId: notes[editIdx].id } : { part: 'stair' as const, level: f.level }), onClose: () => commit() }),
+            },
+            n ? `参考資料（画像 ${n} 枚${note?.note ? '・ひとこと' : ''}）を直す` : '参考画像・ひとこと・段数を添える',
+          ),
+        );
+      })(),
       h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:0 8px;margin-top:6px' }, num('幅 W (mm)', () => w, (val) => editStair((x) => { x.maxX = x.minX + Math.max(600, val); }, `幅を ${mmText(Math.max(600, val))} mm にしました`)), num('奥行 D (mm)', () => d, (val) => editStair((x) => { x.maxY = x.minY + Math.max(600, val); }, `奥行を ${mmText(Math.max(600, val))} mm にしました`))),
       h('p', { class: 'hint' }, 'ドラッグで移動（半間の格子に止まる。Shift で自由）、矢印キーで 10 mm（Shift 100・Ctrl 半間）。上の階の床の穴（吹抜）も一緒に動きます。'),
       h('div', { class: 'btn-row' }, h('button', { class: 'btn sm ghost', onclick: () => removeStair() }, 'この階段を消す（Delete）'), h('button', { class: 'btn sm ghost', onclick: () => { stairSel = null; render(); } }, '選ぶのをやめる（Esc）')),

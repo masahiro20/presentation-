@@ -5,7 +5,7 @@
  */
 import { upload } from '@vercel/blob/client';
 import { state } from './state';
-import { serializeProject } from './project';
+import { publicProject, serializeProject } from './project';
 import { h, modal, toast } from './dom';
 import { finishDeltas, estimateSummary } from './steps/estimateStep';
 import { exportAr, type ArFiles } from '../scene/exportAr';
@@ -73,7 +73,8 @@ export async function shareProject(onProgress?: (msg: string) => void, app?: Sha
   }
   const ar = app ? await uploadAr(app, id, onProgress) : {};
   onProgress?.('プロジェクトを送っています');
-  const project = await serializeProject();
+  // こだわりの参考資料（参考画像・社内のメモ）は外して渡す
+  const project = publicProject(await serializeProject());
   // コーディネートの候補の差額（お客様の「仕様を選ぶ」に出す。見積の計算はこちらで済ませて渡す）
   const deltas: Record<string, Record<string, number | null>> = {};
   for (const [catId, it] of Object.entries(state.coord.items)) if ((it.candidates?.length ?? 0) >= 2 && it.status !== 'decided') deltas[catId] = finishDeltas(catId);

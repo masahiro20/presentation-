@@ -534,7 +534,14 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
       const riser = rise / n;
       const F = stairFrame(st);
       let tread: number;
-      if (st.kind === 'straight') tread = F.Ls / Math.max(1, n - 1);
+      if (st.kind === 'straight') {
+        tread = F.Ls / Math.max(1, n - 1);
+        // 図面の段の線の間隔が読めていて、範囲がそれに近い（3/4 以上）なら、踏面は図面の間隔: 範囲が少し短いのは、
+        // 角の回り段を含まずに読めているため（市岡様邸: 直線 8 段＋角の回り段。段を割ると 198、図面の踏面は 237.5）。
+        // 範囲がずっと短い階段（切断線までの数段しか読めていない）は、読み取りが足りない知らせとして今までどおり
+        const p = st0.treadPitch;
+        if (p != null && p >= 180 && p <= 300 && tread < p && tread >= p * 0.75) tread = p;
+      }
       else if (st.kind === 'u' || st.kind === 'uOpen') {
         const land = Math.min(F.Ls * 0.4, F.Lt / 2);
         tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));

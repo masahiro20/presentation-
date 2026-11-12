@@ -2983,9 +2983,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       // 折り返し階段の UP・DN の文字は、昇り口・降り口の手前（階段の外）に書かれる。文字のある帯は階段の前の踊り場・ホールなので、
       // そちらへは広げない（大崎様邸 2 階: 降り口の前の踊り場 910 mm が階段の区画に入り、階段が 3,640 に伸びて降り口が外壁側になっていた）。
       // 文字が階段の真正面（階段の幅の中）にあり、その帯の中を通る線（回り段の線）が無いときだけ。
-      // 直階段は上の端の踊り場まで含めて読んできたので変えない（市岡様邸 4 階: 塔屋の階段と、屋上へ出る戸の前の踊り場）
+      // 直階段も同じ: 上がり切った先の踊り場（その階の床）は階段ではない。含めて読むと、上下階の範囲合わせで下の階の階段まで
+      // 踊り場の奥行ぶん伸び、突き当たりの壁の向こうへ出る（市岡様邸 4 階の塔屋: 屋上へ出る戸の前の踊り場 0.9m を含めていて、
+      // 2〜3 階の階段が突き当たりの壁を越えて棚・クローゼットの中まで、1 階は車庫の中まで伸びていた）
       const markIn = (x0: number, y0: number, x1: number, y1: number) => {
-        if (c.flights < 2) return false;
+        if (c.flights < 2 && (globalThis as { __NO_STRAIGHT_LANDING?: boolean }).__NO_STRAIGHT_LANDING) return false;
         if (!plan.texts.some((t) => parseStairMark(t.str) != null && t.x > x0 && t.x < x1 && t.y > y0 && t.y < y1)) return false;
         // 帯の中を通る線（中点が帯の縁から 120mm 以上内側）。帯の縁の線（最後の段の線・壁の面・隣の吹抜の縁）は数えない
         const inS = (q: Vec2) => q.x > x0 - 50 && q.x < x1 + 50 && q.y > y0 - 50 && q.y < y1 + 50;
@@ -3141,6 +3143,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       entry,
       goesUp,
       ...(stepNote ? { steps: stepNote.n! } : {}),
+      ...(c.pitch ? { treadPitch: Math.round(c.pitch * 10) / 10 } : {}),
     };
     stairMarkSides.set(stair, { up: upSide, down: dnSide, arrowTail, downPos: dnMark ? { x: dnMark.x, y: dnMark.y } : null });
     stairs.push(stair);
@@ -3459,7 +3462,17 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       // 階段の範囲の外に、階段以外の室名があること（階段だけの区画・名前の無い区画は分けない）
       const outNames = a0.names.filter((n) => n.type !== 'stairs' && !inBox(n));
       const outOthers = a0.names.length ? [] : a0.others.filter((o) => !inBox(o));
-      if (!outNames.length && !outOthers.length) {
+      // UP・DN の文字だけで「階段」になった区画が、階段の範囲よりずっと広い（2 帖以上）: 階段の前のホールと一続きで、室名は書かれていない。
+      // 階段だけを分け、残りをホールにする（市岡様邸 3 階: 階段 1.1 帖＋ホール 3 帖が「階段 4.5 帖」になる）。
+      // 「階段」「階段ヌック」と書いてある区画は、設計者がまとめてそう呼んでいるので分けない
+      const hallToo =
+        rm.type === 'stairs' &&
+        !outNames.length &&
+        !outOthers.length &&
+        !a0.names.some((n) => /階段/.test(n.str)) &&
+        rm.area - boxM2 >= 3.3 &&
+        !(globalThis as { __NO_STAIR_HALL_SPLIT?: boolean }).__NO_STAIR_HALL_SPLIT;
+      if (!outNames.length && !outOthers.length && !hallToo) {
         // すでに別の区画として読めている階段: 階段と壁の間の細いすき間がホールとつながっていると、ホールの輪郭が階段を
         // 輪のように囲んで面積が二重になる。すき間を階段に含めて、両方の輪郭を引き直す（有元様邸 2 階）
         if (rm.type === 'stairs') {
@@ -4371,6 +4384,12 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
       warnings?.push(`${lo.level}階: ${floors[i + 1].level}階の降りる階段の真下に、昇る階段を補いました（${lo.level}階の図では段の線が読めませんでした。方眼の「階段」で位置と昇り口を確かめてください）`);
     }
   }
+  // 範囲合わせは、変わらなくなるまで繰り返す（階の数まで）。1 回では 1 階分しか伝わらない:
+  // 4 階の図で分かった階段室の奥行が 3 階 → 2 階 → 1 階へ伝わるのに 3 回かかり、市岡様邸の 1 階の階段が
+  // 切断線までの 1.9m（13 段を割ると踏面 158）のまま残っていた
+  const maxPass = (globalThis as { __NO_RECONCILE_REPEAT?: boolean }).__NO_RECONCILE_REPEAT ? 1 : Math.max(1, floors.length - 1);
+  for (let pass = 0, changed = true; changed && pass < maxPass; pass++) {
+  changed = false;
   for (let i = 0; i + 1 < floors.length; i++) {
     for (const lo of floors[i].stairs) {
       if (!lo.goesUp) continue;
@@ -4395,6 +4414,7 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
         const inside = (x: number, y: number) => outline.some((l) => pointInPolygon({ x, y }, l));
         const m = 120;
         if (!outline.length || (inside(lo.minX + m, lo.minY + m) && inside(lo.maxX - m, lo.minY + m) && inside(lo.maxX - m, lo.maxY - m) && inside(lo.minX + m, lo.maxY - m))) {
+          if (up.minX !== lo.minX || up.minY !== lo.minY || up.maxX !== lo.maxX || up.maxY !== lo.maxY) changed = true;
           up.minX = lo.minX;
           up.minY = lo.minY;
           up.maxX = lo.maxX;
@@ -4418,8 +4438,10 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
         else if (sd === 's') lo.maxY += d;
         else if (sd === 'w') lo.minX -= d;
         else lo.maxX += d;
+        changed = true;
       }
     }
+  }
   }
 }
 
@@ -4732,6 +4754,31 @@ export function alignOffset(base: PlanData, other: PlanData, mode: 'walls' | 'st
       dys.add(Math.round(a.y - b.y));
     }
   const areaB = (other.bbox.maxX - other.bbox.minX) * (other.bbox.maxY - other.bbox.minY);
+  // 階段の昇り始めの端（下の階の図の UP の文字に近い端）。上下階の図で長さの違う階段は、昇り始めの端がそろう:
+  // 下の階の図は切断線から先が描かれず、上の階の図は上がり切りまで描くので、長さが違うのは上の端の側。
+  // 重なりの割合（IoU）は上の端をそろえても下の端をそろえても同じ値になるので、壁の少ない階（塔屋だけの階）は決め手が無かった
+  // （市岡様邸 4 階: 塔屋の北の壁が 3 階の階段の突き当たりの壁に、南の壁が 3 階の南の壁に、どちらも同じ長さで重なり、
+  //   3 階の突き当たりの厚い壁が読めるようになったら、塔屋が段 2 つぶん（474mm）南へずれた）
+  const upMarks = (globalThis as { __NO_ALIGN_STAIR_FOOT?: boolean }).__NO_ALIGN_STAIR_FOOT ? [] : base.texts.filter((t) => parseStairMark(t.str) === 'up');
+  const footOf = (a: (typeof sa)[number]): { y: boolean; max: boolean } | null => {
+    const y = a.treadOrient === 'h';
+    let bestD = 1500;
+    let max: boolean | null = null;
+    for (const t of upMarks) {
+      // 文字は階段のそば（昇り口の 1 段手前〜横）。離れた階段の文字は見ない
+      if (t.x < a.minX - 1500 || t.x > a.maxX + 1500 || t.y < a.minY - 1500 || t.y > a.maxY + 1500) continue;
+      const p = y ? t.y : t.x;
+      const d0 = Math.abs(p - (y ? a.minY : a.minX));
+      const d1 = Math.abs(p - (y ? a.maxY : a.maxX));
+      if (Math.abs(d0 - d1) < 300) continue;
+      if (Math.min(d0, d1) < bestD) {
+        bestD = Math.min(d0, d1);
+        max = d1 < d0;
+      }
+    }
+    return max == null ? null : { y, max };
+  };
+  const feet = sa.map(footOf);
   let best = { x: 0, y: 0 };
   let bestScore = -Infinity;
   for (const dx of dxs)
@@ -4743,17 +4790,29 @@ export function alignOffset(base: PlanData, other: PlanData, mode: 'walls' | 'st
       // 重なりは IoU（重なり ÷ 合わせた範囲）で見る: 同じ大きさの階段が同じ位置にあるときだけ 1 に近づき、
       // 車の記号の縞（吉田大仁様邸のガレージで階段に見えた 1.3 × 0.9 m）に 2 階の階段 1.8 × 1.8 m が載っても 0.4 止まり
       let stairBest = 0;
-      for (const a of sa)
+      let footAligned = false;
+      for (let ai = 0; ai < sa.length; ai++) {
+        const a = sa[ai];
         for (const b of sb) {
           const ix = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx));
           const iy = Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
           const inter = ix * iy;
           const union = (a.maxX - a.minX) * (a.maxY - a.minY) + (b.maxX - b.minX) * (b.maxY - b.minY) - inter;
           if (union > 0) stairBest = Math.max(stairBest, inter / union);
+          // 昇り始めの端がそろっている（同じ向きの段の並び・半分以上重なる階段どうし）
+          const ft = feet[ai];
+          if (ft && union > 0 && inter / union >= 0.5 && (b.treadOrient === 'h') === ft.y) {
+            const ea = ft.y ? (ft.max ? a.maxY : a.minY) : ft.max ? a.maxX : a.minX;
+            const eb = ft.y ? (ft.max ? b.maxY : b.minY) + dy : (ft.max ? b.maxX : b.minX) + dx;
+            if (Math.abs(ea - eb) <= 40) footAligned = true;
+          }
         }
+      }
       // 'walls': 壁の重なりが主で階段は加点（既定）。'stairs': 階段の重なりが主（面積表の建築面積が合わないときの再試行。
       // 既定にすると、デッキの縞・車の記号を階段と見た図面（伊藤様・池本様・舟橋様）で逆にずれる）
       let score = mode === 'stairs' && sa.length && sb.length ? wallScore * (0.15 + 0.85 * stairBest) + 80000 * stairBest : wallScore + 20000 * stairBest;
+      // 同点に近いときの決め手（壁 0.8m ぶん）。壁の重なりがはっきり違うときは変わらない
+      if (footAligned) score += 800;
       for (const a of evA) for (const b of evB) score += 30000 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
       if (dbg && (stairBest > 0 || score > 20000)) console.log(`[align] d=(${dx},${dy}) wall=${Math.round(wallScore)} stair=${stairBest.toFixed(2)} score=${Math.round(score)}`);
       // 上階が下階の外形からはみ出す面積にペナルティ

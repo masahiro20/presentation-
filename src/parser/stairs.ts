@@ -20,6 +20,8 @@ export interface StairCandidate {
   mixed?: boolean;
   /** 歩行線の位置（'columns' = 左右の列にそれぞれ = 折り返し、'center' = 中央だけ = 幅の広い直階段） */
   walk?: 'center' | 'columns';
+  /** 段の線の間隔（mm。等間隔の並びの平均 = 図面の踏面） */
+  pitch?: number;
 }
 
 interface Tread {
@@ -221,6 +223,7 @@ export function detectStairs(segs: Seg[], within: { minX: number; minY: number; 
       treadLen: merged.treadLen,
       ...(merged.mixed ? { mixed: true } : {}),
       ...(walk ? { walk } : {}),
+      ...(b.pitch >= 150 && b.pitch <= 330 ? { pitch: b.pitch } : {}),
     });
   });
   return out;

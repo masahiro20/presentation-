@@ -6435,6 +6435,11 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 				const q = pairs[qi];
 				if (q.i === p.i) return lenOf(q.j) >= .6 * lenOf(p.j);
 				if (q.j === p.j) return lenOf(q.i) >= .6 * lenOf(p.i);
+				if (!globalThis.__NO_OFFSET_DOUBLE_WALL) {
+					const qDom = Math.abs(q.d - domT) <= Math.max(10, domT * .1);
+					const interleaved = q.i < p.i && p.i < q.j && q.j < p.j || p.i < q.i && q.i < p.j && p.j < q.j;
+					if (qDom && interleaved && Math.abs(ls[q.i].o - ls[p.i].o) >= 50 && Math.min(p.t1, q.t1) - Math.max(p.t0, q.t0) >= 600) return false;
+				}
 				return true;
 			}).map(([a, b]) => [a, b]));
 			if (!iv.length) return true;
@@ -7373,7 +7378,26 @@ function classifyGap(g, o, d, gs, ge, _grp, lines, infills) {
 	const faceCover = (side) => intervalsLength(mergeIntervals(lines.filter((l) => Math.abs((l.o - o) * side - d / 2) <= Math.max(25, d * .3)).map((l) => [Math.max(gs, l.t0), Math.min(ge, l.t1)]).filter(([a, b]) => b > a), 30));
 	const f1 = faceCover(1);
 	const f2 = faceCover(-1);
-	if (f1 > gap * .7 && f2 > gap * .7 || (f1 > gap * .7 || f2 > gap * .7) && bandCover > gap * .6) return {
+	const faceAndBand = (side) => {
+		if (globalThis.__NO_GAP_TWO_LINES) return true;
+		const all = [...lines.filter((l) => Math.abs((l.o - o) * side - d / 2) <= Math.max(25, d * .3) && Math.min(l.t1, ge) - Math.max(l.t0, gs) > 0), ...inBand];
+		if (!all.length || new Set(all.map((l) => Math.round(l.o / 10))).size >= 2) return true;
+		const L = all[0];
+		const sibling = (dir) => {
+			let best = null;
+			for (const l of lines) {
+				const dd = (l.o - L.o) * dir;
+				if (dd < 150 || dd > 330) continue;
+				if (Math.min(l.t1, ge) - Math.max(l.t0, gs) < gap * .8 || l.t0 < gs - 150 || l.t1 > ge + 150) continue;
+				if (best == null || dd < best) best = dd;
+			}
+			return best;
+		};
+		const p1 = sibling(1);
+		const p2 = sibling(-1);
+		return !(p1 != null && p2 != null && Math.abs(p1 - p2) <= 15);
+	};
+	if (f1 > gap * .7 && f2 > gap * .7 || (f1 > gap * .7 && faceAndBand(1) || f2 > gap * .7 && faceAndBand(-1)) && bandCover > gap * .6) return {
 		g,
 		o,
 		d,
@@ -8096,7 +8120,8 @@ function detectStairs(segs, within) {
 			flights: merged.flights,
 			treadLen: merged.treadLen,
 			...merged.mixed ? { mixed: true } : {},
-			...walk ? { walk } : {}
+			...walk ? { walk } : {},
+			...b.pitch >= 150 && b.pitch <= 330 ? { pitch: b.pitch } : {}
 		});
 	});
 	return out;
@@ -15729,7 +15754,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			if (ix <= 0 || iy <= 0 || ix * iy / Math.max(1, (bx.maxX - bx.minX) * (bx.maxY - bx.minY)) < .4) continue;
 			const half = 60;
 			const markIn = (x0, y0, x1, y1) => {
-				if (c.flights < 2) return false;
+				if (c.flights < 2 && globalThis.__NO_STRAIGHT_LANDING) return false;
 				if (!plan.texts.some((t) => parseStairMark(t.str) != null && t.x > x0 && t.x < x1 && t.y > y0 && t.y < y1)) return false;
 				const inS = (q) => q.x > x0 - 50 && q.x < x1 + 50 && q.y > y0 - 50 && q.y < y1 + 50;
 				let lines = 0;
@@ -15912,7 +15937,8 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			...turn ? { turn } : {},
 			entry,
 			goesUp,
-			...stepNote ? { steps: stepNote.n } : {}
+			...stepNote ? { steps: stepNote.n } : {},
+			...c.pitch ? { treadPitch: Math.round(c.pitch * 10) / 10 } : {}
 		};
 		stairMarkSides.set(stair, {
 			up: upSide,
@@ -16265,7 +16291,8 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const inBox = (p) => p.x > st.minX - 30 && p.x < st.maxX + 30 && p.y > st.minY - 30 && p.y < st.maxY + 30;
 			const outNames = a0.names.filter((n) => n.type !== "stairs" && !inBox(n));
 			const outOthers = a0.names.length ? [] : a0.others.filter((o) => !inBox(o));
-			if (!outNames.length && !outOthers.length) {
+			const hallToo = rm.type === "stairs" && !outNames.length && !outOthers.length && !a0.names.some((n) => /階段/.test(n.str)) && rm.area - boxM2 >= 3.3 && !globalThis.__NO_STAIR_HALL_SPLIT;
+			if (!outNames.length && !outOthers.length && !hallToo) {
 				if (rm.type === "stairs") {
 					const openTypes = [
 						"hall",
@@ -17291,56 +17318,62 @@ function reconcileStairs(floors, warnings) {
 			warnings?.push(`${lo.level}階: ${floors[i + 1].level}階の降りる階段の真下に、昇る階段を補いました（${lo.level}階の図では段の線が読めませんでした。方眼の「階段」で位置と昇り口を確かめてください）`);
 		}
 	}
-	for (let i = 0; i + 1 < floors.length; i++) for (const lo of floors[i].stairs) {
-		if (!lo.goesUp) continue;
-		let up = null;
-		let best = 0;
-		for (const u of floors[i + 1].stairs) {
-			if (stackedStairs.has(lo) && stackedStairs.has(u)) continue;
-			const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
-			const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
-			if (ix <= 0 || iy <= 0) continue;
-			const ov = ix * iy / Math.min(area(lo), area(u));
-			if (ov >= .5 && ov > best) {
-				up = u;
-				best = ov;
+	const maxPass = globalThis.__NO_RECONCILE_REPEAT ? 1 : Math.max(1, floors.length - 1);
+	for (let pass = 0, changed = true; changed && pass < maxPass; pass++) {
+		changed = false;
+		for (let i = 0; i + 1 < floors.length; i++) for (const lo of floors[i].stairs) {
+			if (!lo.goesUp) continue;
+			let up = null;
+			let best = 0;
+			for (const u of floors[i + 1].stairs) {
+				if (stackedStairs.has(lo) && stackedStairs.has(u)) continue;
+				const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
+				const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
+				if (ix <= 0 || iy <= 0) continue;
+				const ov = ix * iy / Math.min(area(lo), area(u));
+				if (ov >= .5 && ov > best) {
+					up = u;
+					best = ov;
+				}
 			}
-		}
-		if (!up) continue;
-		if (area(up) < area(lo) * .6) {
-			const outline = floors[i + 1].outline;
-			const inside = (x, y) => outline.some((l) => pointInPolygon({
-				x,
-				y
-			}, l));
-			const m = 120;
-			if (!outline.length || inside(lo.minX + m, lo.minY + m) && inside(lo.maxX - m, lo.minY + m) && inside(lo.maxX - m, lo.maxY - m) && inside(lo.minX + m, lo.maxY - m)) {
-				up.minX = lo.minX;
-				up.minY = lo.minY;
-				up.maxX = lo.maxX;
-				up.maxY = lo.maxY;
-				fixTopEntry(floors[i + 1], up, lo);
+			if (!up) continue;
+			if (area(up) < area(lo) * .6) {
+				const outline = floors[i + 1].outline;
+				const inside = (x, y) => outline.some((l) => pointInPolygon({
+					x,
+					y
+				}, l));
+				const m = 120;
+				if (!outline.length || inside(lo.minX + m, lo.minY + m) && inside(lo.maxX - m, lo.minY + m) && inside(lo.maxX - m, lo.maxY - m) && inside(lo.minX + m, lo.maxY - m)) {
+					if (up.minX !== lo.minX || up.minY !== lo.minY || up.maxX !== lo.maxX || up.maxY !== lo.maxY) changed = true;
+					up.minX = lo.minX;
+					up.minY = lo.minY;
+					up.maxX = lo.maxX;
+					up.maxY = lo.maxY;
+					fixTopEntry(floors[i + 1], up, lo);
+				}
+				continue;
 			}
-			continue;
-		}
-		const right = {
-			n: "w",
-			s: "e",
-			w: "s",
-			e: "n"
-		};
-		const sides = [opposite[lo.entry]];
-		if (lo.kind === "l") {
-			const r = right[lo.entry];
-			sides.push((lo.turn ?? "right") === "right" ? r : opposite[r]);
-		}
-		for (const sd of sides) {
-			const d = sd === "n" ? lo.minY - up.minY : sd === "s" ? up.maxY - lo.maxY : sd === "w" ? lo.minX - up.minX : up.maxX - lo.maxX;
-			if (d < 300 || d > 1900) continue;
-			if (sd === "n") lo.minY -= d;
-			else if (sd === "s") lo.maxY += d;
-			else if (sd === "w") lo.minX -= d;
-			else lo.maxX += d;
+			const right = {
+				n: "w",
+				s: "e",
+				w: "s",
+				e: "n"
+			};
+			const sides = [opposite[lo.entry]];
+			if (lo.kind === "l") {
+				const r = right[lo.entry];
+				sides.push((lo.turn ?? "right") === "right" ? r : opposite[r]);
+			}
+			for (const sd of sides) {
+				const d = sd === "n" ? lo.minY - up.minY : sd === "s" ? up.maxY - lo.maxY : sd === "w" ? lo.minX - up.minX : up.maxX - lo.maxX;
+				if (d < 300 || d > 1900) continue;
+				if (sd === "n") lo.minY -= d;
+				else if (sd === "s") lo.maxY += d;
+				else if (sd === "w") lo.minX -= d;
+				else lo.maxX += d;
+				changed = true;
+			}
 		}
 	}
 }
@@ -17721,6 +17754,28 @@ function alignOffset(base, other, mode = "walls") {
 		dys.add(Math.round(a.y - b.y));
 	}
 	const areaB = (other.bbox.maxX - other.bbox.minX) * (other.bbox.maxY - other.bbox.minY);
+	const upMarks = globalThis.__NO_ALIGN_STAIR_FOOT ? [] : base.texts.filter((t) => parseStairMark(t.str) === "up");
+	const footOf = (a) => {
+		const y = a.treadOrient === "h";
+		let bestD = 1500;
+		let max = null;
+		for (const t of upMarks) {
+			if (t.x < a.minX - 1500 || t.x > a.maxX + 1500 || t.y < a.minY - 1500 || t.y > a.maxY + 1500) continue;
+			const p = y ? t.y : t.x;
+			const d0 = Math.abs(p - (y ? a.minY : a.minX));
+			const d1 = Math.abs(p - (y ? a.maxY : a.maxX));
+			if (Math.abs(d0 - d1) < 300) continue;
+			if (Math.min(d0, d1) < bestD) {
+				bestD = Math.min(d0, d1);
+				max = d1 < d0;
+			}
+		}
+		return max == null ? null : {
+			y,
+			max
+		};
+	};
+	const feet = sa.map(footOf);
 	let best = {
 		x: 0,
 		y: 0
@@ -17729,12 +17784,23 @@ function alignOffset(base, other, mode = "walls") {
 	for (const dx of dxs) for (const dy of dys) {
 		const wallScore = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
 		let stairBest = 0;
-		for (const a of sa) for (const b of sb) {
-			const inter = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx)) * Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
-			const union = (a.maxX - a.minX) * (a.maxY - a.minY) + (b.maxX - b.minX) * (b.maxY - b.minY) - inter;
-			if (union > 0) stairBest = Math.max(stairBest, inter / union);
+		let footAligned = false;
+		for (let ai = 0; ai < sa.length; ai++) {
+			const a = sa[ai];
+			for (const b of sb) {
+				const inter = Math.max(0, Math.min(a.maxX, b.maxX + dx) - Math.max(a.minX, b.minX + dx)) * Math.max(0, Math.min(a.maxY, b.maxY + dy) - Math.max(a.minY, b.minY + dy));
+				const union = (a.maxX - a.minX) * (a.maxY - a.minY) + (b.maxX - b.minX) * (b.maxY - b.minY) - inter;
+				if (union > 0) stairBest = Math.max(stairBest, inter / union);
+				const ft = feet[ai];
+				if (ft && union > 0 && inter / union >= .5 && b.treadOrient === "h" === ft.y) {
+					const ea = ft.y ? ft.max ? a.maxY : a.minY : ft.max ? a.maxX : a.minX;
+					const eb = ft.y ? (ft.max ? b.maxY : b.minY) + dy : (ft.max ? b.maxX : b.minX) + dx;
+					if (Math.abs(ea - eb) <= 40) footAligned = true;
+				}
+			}
 		}
 		let score = mode === "stairs" && sa.length && sb.length ? wallScore * (.15 + .85 * stairBest) + 8e4 * stairBest : wallScore + 2e4 * stairBest;
+		if (footAligned) score += 800;
 		for (const a of evA) for (const b of evB) score += 3e4 * Math.max(0, 1 - Math.hypot(a.x - (b.x + dx), a.y - (b.y + dy)) / 600);
 		if (dbg && (stairBest > 0 || score > 2e4)) console.log(`[align] d=(${dx},${dy}) wall=${Math.round(wallScore)} stair=${stairBest.toFixed(2)} score=${Math.round(score)}`);
 		const ix = Math.max(0, Math.min(base.bbox.maxX, other.bbox.maxX + dx) - Math.max(base.bbox.minX, other.bbox.minX + dx));
@@ -19891,6 +19957,12 @@ function effectiveStepCount(riseMm, s) {
 	if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
 	const n0 = stairStepCount(riseMm);
 	const nMin = Math.max(6, Math.ceil(riseMm / 230));
+	const e = effectiveStair(s);
+	if (e.kind === "straight" && s.treadPitch != null && s.treadPitch >= 180 && s.treadPitch <= 300) {
+		const k = stairFrame(e).Ls / s.treadPitch;
+		const n = Math.round(k) + 1;
+		if (Math.abs(k - Math.round(k)) <= .12 && n >= nMin && n <= 22) return n;
+	}
 	return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
 }
 function stairLayout(s0, n = 14) {
@@ -21651,8 +21723,11 @@ function woodCheck(model) {
 			const riser = rise / n;
 			const F = stairFrame(st);
 			let tread;
-			if (st.kind === "straight") tread = F.Ls / Math.max(1, n - 1);
-			else if (st.kind === "u" || st.kind === "uOpen") {
+			if (st.kind === "straight") {
+				tread = F.Ls / Math.max(1, n - 1);
+				const p = st0.treadPitch;
+				if (p != null && p >= 180 && p <= 300 && tread < p && tread >= p * .75) tread = p;
+			} else if (st.kind === "u" || st.kind === "uOpen") {
 				const land = Math.min(F.Ls * .4, F.Lt / 2);
 				tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));
 			} else tread = (F.Ls + F.Lt - Math.min(F.Lt, F.Ls / 2) * 2) / Math.max(1, n - 2);

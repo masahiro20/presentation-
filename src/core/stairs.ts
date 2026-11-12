@@ -107,6 +107,19 @@ export function effectiveStepCount(riseMm: number, s: Stair): number {
   if (s.steps && s.steps >= 6 && s.steps <= 30) return s.steps;
   const n0 = stairStepCount(riseMm);
   const nMin = Math.max(6, Math.ceil(riseMm / MAX_RISER));
+  // 直階段で、図面の段の線の間隔（踏面）が読めていれば、図面どおりの段数: 長さ ÷ 間隔 が踏面の数、上がり切りの 1 段を足す。
+  // 以前は「踏面 240 以上」で割っていたので、踏面 227.5（910 ÷ 4）で端から端まで描かれた 15 段の階段が 13 段（蹴上 223）になり、
+  // 木造チェックに「やや急」と出ていた（田中様邸 2 階）。
+  // 使うのは、範囲が間隔のちょうど整数倍で、その段数で蹴上が上限に納まるときだけ:
+  //  - 半端が出る範囲は、段の線の無い所（踊り場・角の回り段）を含んでいる
+  //  - 段数が足りない範囲は、直線の段のほかに角の回り段がある（市岡様邸: 直線 8 段＋上下の角に 2 段ずつ = 13 段）
+  // どちらも今までどおり階高から決める
+  const e = effectiveStair(s);
+  if (e.kind === 'straight' && s.treadPitch != null && s.treadPitch >= 180 && s.treadPitch <= 300) {
+    const k = stairFrame(e).Ls / s.treadPitch;
+    const n = Math.round(k) + 1;
+    if (Math.abs(k - Math.round(k)) <= 0.12 && n >= nMin && n <= 22) return n;
+  }
   return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
 }
 

@@ -174,6 +174,8 @@ export interface Stair {
   steps?: number;
   /** かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めたとき（半間 = 910 など）。省略時は 1,000 まで */
   flightWidth?: number;
+  /** 図面の段の線の間隔（mm = 図面の踏面）。直階段の段数を、長さ ÷ この間隔で決める（段数の注記が無いとき） */
+  treadPitch?: number;
 }
 
 export interface Floor {

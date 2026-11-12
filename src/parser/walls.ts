@@ -661,6 +661,14 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
         const q = pairs[qi];
         if (q.i === p.i) return lenOf(q.j) >= 0.6 * lenOf(p.j);
         if (q.j === p.j) return lenOf(q.i) >= 0.6 * lenOf(p.i);
+        // ずれて重なる 2 枚の壁（収納の奥の壁と階段室の壁を 12cm ずらして並べた厚い壁など）: どちらも主要な壁厚で、
+        // 面の線が互い違いに並ぶ（A の面・B の面・A の面・B の面）。互いに「相手の 2 本の間にある線との組」になって
+        // 両方とも捨てられ、厚い壁が丸ごと読めていなかった（市岡様邸 3 階: 階段の突き当たりの壁 31cm。洋室とホールがつながる）
+        if (!(globalThis as { __NO_OFFSET_DOUBLE_WALL?: boolean }).__NO_OFFSET_DOUBLE_WALL) {
+          const qDom = Math.abs(q.d - domT) <= Math.max(10, domT * 0.1);
+          const interleaved = (q.i < p.i && p.i < q.j && q.j < p.j) || (p.i < q.i && q.i < p.j && p.j < q.j);
+          if (qDom && interleaved && Math.abs(ls[q.i].o - ls[p.i].o) >= 50 && Math.min(p.t1, q.t1) - Math.max(p.t0, q.t0) >= 600) return false;
+        }
         return true;
       });
       const iv = mergeIntervals(ivs.map(([a, b]) => [a, b] as [number, number]));
@@ -1610,7 +1618,32 @@ function classifyGap(
     );
   const f1 = faceCover(1);
   const f2 = faceCover(-1);
-  if ((f1 > gap * 0.7 && f2 > gap * 0.7) || ((f1 > gap * 0.7 || f2 > gap * 0.7) && bandCover > gap * 0.6)) {
+  // 片方の面の線＋帯の中の線で窓とする組: 壁の面すれすれを通る 1 本の線は「面の線」と「帯の中の線」の両方に数えられる。
+  // その 1 本が、等間隔に並ぶ平行線の列（階段の段の線）の 1 本なら、窓の線ではない
+  // （市岡様邸 4 階: 両側の壁の中の柱と柱の間を階段の段の線が通っていて、階段の途中に「壁＋引戸」ができ、階段が 2 つに切れていた）。
+  // 列になっていない 1 本（造作の棚の前の線など）は今までどおり（服部様邸 1 階のペット室: 棚の所を分けると図面の 4.4 帖に合う）
+  const faceAndBand = (side: 1 | -1): boolean => {
+    if ((globalThis as { __NO_GAP_TWO_LINES?: boolean }).__NO_GAP_TWO_LINES) return true;
+    const near = lines.filter((l) => Math.abs((l.o - o) * side - d / 2) <= Math.max(25, d * 0.3) && Math.min(l.t1, ge) - Math.max(l.t0, gs) > 0);
+    const all = [...near, ...inBand];
+    if (!all.length || new Set(all.map((l) => Math.round(l.o / 10))).size >= 2) return true;
+    const L = all[0];
+    // 両隣の同じ長さの線までの間隔（150〜330mm = 階段の踏面）
+    const sibling = (dir: 1 | -1): number | null => {
+      let best: number | null = null;
+      for (const l of lines) {
+        const dd = (l.o - L.o) * dir;
+        if (dd < 150 || dd > 330) continue;
+        if (Math.min(l.t1, ge) - Math.max(l.t0, gs) < gap * 0.8 || l.t0 < gs - 150 || l.t1 > ge + 150) continue;
+        if (best == null || dd < best) best = dd;
+      }
+      return best;
+    };
+    const p1 = sibling(1);
+    const p2 = sibling(-1);
+    return !(p1 != null && p2 != null && Math.abs(p1 - p2) <= 15);
+  };
+  if ((f1 > gap * 0.7 && f2 > gap * 0.7) || (((f1 > gap * 0.7 && faceAndBand(1)) || (f2 > gap * 0.7 && faceAndBand(-1))) && bandCover > gap * 0.6)) {
     return { g, o, d, t0: gs, t1: ge, kind: 'window', confidence: 0.65 };
   }
   return { g, o, d, t0: gs, t1: ge, kind: 'open', confidence: 0.5 };

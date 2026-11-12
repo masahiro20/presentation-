@@ -160,6 +160,8 @@ interface WWall {
    * 室名の無い断片を作っているだけなら部屋に戻す（収納の前の引戸のように部屋を分けているなら残す）
    */
   weak?: boolean;
+  /** 壁の天端（その階の床からの mm）。図面で壁の色ではない帯として描かれた腰壁・手すり壁は 1,100 */
+  topMm?: number;
 }
 
 function makeWalls(det: WallDetection): WWall[] {
@@ -401,6 +403,11 @@ export interface PlanData {
   scan?: boolean;
   /** 開口を白抜きで描く図面で、壁の上の白抜きがすべて開口として読めた（壁の塗りが続いていて白抜きの無い所に、窓・戸は無い） */
   maskDrawn?: boolean;
+  /**
+   * 壁の色ではない細長い帯の塗り（幅 60〜135mm・木の色など）: 小上がりの框・吹抜の手すりの笠木・カウンター。
+   * 壁を色で塗る図面で、壁の色と違う色の帯は天井までの壁ではない
+   */
+  trimBands?: Vec2[][];
 }
 
 /** 室内窓（ガラス）・建具なしの開口があり得る部屋（収納・水まわりの前の白抜きは、印が無くても戸のまま） */
@@ -1165,6 +1172,56 @@ export function cutWallSpans(walls: WWall[], w: WWall, spans: [number, number][]
       if (cutHi) nw.joinedA = false;
     }
     delete nw.weak;
+    return nw;
+  });
+  walls.splice(idx, 1, ...parts);
+}
+
+/**
+ * 壁 w のうち spans（軸の上の区間）を、天端の低い壁（腰壁・手すり壁）として切り分ける。残りは今までどおりの壁。
+ * 区間の外に残る端が 8cm 未満なら、その端も低い壁に入れる（切れ端を残さない）
+ */
+export function splitWallSpans(walls: WWall[], w: WWall, spans: [number, number][], topMm: number): void {
+  const idx = walls.indexOf(w);
+  if (idx < 0 || !spans.length) return;
+  const P = (t: number): Vec2 => ({ x: w.u.x * t + w.n.x * w.o, y: w.u.y * t + w.n.y * w.o });
+  const sorted = spans.map(([a, b]) => [Math.max(w.t0, Math.min(a, b)), Math.min(w.t1, Math.max(a, b))] as [number, number]).sort((p, q) => p[0] - q[0]);
+  const pieces: { lo: number; hi: number; low: boolean }[] = [];
+  let cur = w.t0;
+  for (const [a0, b] of sorted) {
+    if (b <= cur) continue;
+    let a = Math.max(a0, cur);
+    if (a - cur >= 80) pieces.push({ lo: cur, hi: a, low: false });
+    else a = cur;
+    const last = pieces[pieces.length - 1];
+    if (last?.low && Math.abs(last.hi - a) < 1) last.hi = b;
+    else pieces.push({ lo: a, hi: b, low: true });
+    cur = b;
+  }
+  if (w.t1 - cur >= 80) pieces.push({ lo: cur, hi: w.t1, low: false });
+  else if (pieces.length) pieces[pieces.length - 1].hi = w.t1;
+  const aLow = w.a.x * w.u.x + w.a.y * w.u.y <= w.b.x * w.u.x + w.b.y * w.u.y;
+  const parts: WWall[] = pieces.map(({ lo, hi, low }) => {
+    const nw: WWall = { ...w, t0: lo, t1: hi, openings: w.openings.filter((op) => (op.t0 + op.t1) / 2 >= lo && (op.t0 + op.t1) / 2 < hi) };
+    const cutLo = lo > w.t0 + 1;
+    const cutHi = hi < w.t1 - 1;
+    const pLo = cutLo ? P(lo) : aLow ? w.a : w.b;
+    const pHi = cutHi ? P(hi) : aLow ? w.b : w.a;
+    if (aLow) {
+      nw.a = pLo;
+      nw.b = pHi;
+      if (cutLo) nw.joinedA = false;
+      if (cutHi) nw.joinedB = false;
+    } else {
+      nw.b = pLo;
+      nw.a = pHi;
+      if (cutLo) nw.joinedB = false;
+      if (cutHi) nw.joinedA = false;
+    }
+    if (low) {
+      nw.topMm = topMm;
+      delete nw.weak;
+    }
     return nw;
   });
   walls.splice(idx, 1, ...parts);
@@ -2326,6 +2383,153 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     } else if (rm.name === '収納') rm.inferred = true;
   }
 
+  // ---- 小上がりの框（畳の部屋を囲む、壁の色ではない細い帯）----
+  // 大崎様邸 1 階の畳コーナー: LDK との間は木の色の幅 105mm の帯（框）で、ホールとの間は FIX のガラス。
+  // 帯の縁の 2 本線が「壁」に読めて、3D で LDK との間が天井までの壁になっていた。
+  // 壁の色ではない帯は天井までの壁ではない。畳の部屋が、その帯で開いた部屋（LDK・ホール）と仕切られていて、ほかに戸が無ければ、
+  // 帯をまたいで上がる小上がり（戸のある部屋なら、帯は腰壁かもしれないので触らない）
+  if (plan.trimBands?.length && !plan.scan && !plan.loose && !(globalThis as { __NO_KOAGARI?: boolean }).__NO_KOAGARI) {
+    const bands = plan.trimBands;
+    const onBand = (p: Vec2) => bands.some((poly) => pointInPolygon(p, poly));
+    const labelOf = (p: Vec2): number => {
+      const [x, y] = grid.cellOf(p);
+      return x >= 0 && y >= 0 && x < grid.w && y < grid.h ? labels[y * grid.w + x] : 0;
+    };
+    const roomOfLabel = new Map<number, Room>();
+    for (const r of rooms) {
+      const l = labelOf(r.labelPos) || labelAt(r.labelPos);
+      if (l) roomOfLabel.set(l, r);
+    }
+    // 確かめ用の記録: 帯の上に乗っている壁（60cm 以上）と、その両側の部屋
+    const bandTrace = (globalThis as { __roomTrace?: string[] }).__roomTrace;
+    if (bandTrace)
+      for (const wl of walls) {
+        const off = wl.d / 2 + 2.5 * res;
+        let n = 0;
+        const pairs = new Set<string>();
+        for (let t = wl.t0 + 50; t <= wl.t1 - 50 + 1e-6; t += 100) {
+          const p = { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o };
+          if (!onBand(p)) continue;
+          n++;
+          const nm = (q: Vec2) => roomOfLabel.get(labelOf(q))?.name ?? '-';
+          pairs.add(`${nm({ x: p.x + wl.n.x * off, y: p.y + wl.n.y * off })}｜${nm({ x: p.x - wl.n.x * off, y: p.y - wl.n.y * off })}`);
+        }
+        if (n >= 6) bandTrace.push(`${level}F 帯の上の壁 ${n * 100}mm（壁の長さ ${Math.round(wl.t1 - wl.t0)}・厚さ ${Math.round(wl.d)}）両側: ${[...pairs].join(' / ')}`);
+      }
+    const OPEN_SIDE: RoomType[] = ['ldk', 'living', 'dining', 'kitchen', 'hall'];
+    for (const [lr, r] of roomOfLabel) {
+      if (r.type !== 'japanese') continue;
+      const cuts: { wl: WWall; spans: [number, number][] }[] = [];
+      let bandLen = 0;
+      let hasDoor = false;
+      for (const wl of walls) {
+        const off = wl.d / 2 + 2.5 * res;
+        const sides = (t: number): [number, number] => {
+          const p = { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o };
+          return [labelOf({ x: p.x + wl.n.x * off, y: p.y + wl.n.y * off }), labelOf({ x: p.x - wl.n.x * off, y: p.y - wl.n.y * off })];
+        };
+        // この部屋に面した戸・引戸・建具なしの開口（窓は通れない）
+        for (const op of wl.openings) {
+          if (op.kind === 'window') continue;
+          const [la, lb] = sides((op.t0 + op.t1) / 2);
+          if (la === lr || lb === lr) hasDoor = true;
+        }
+        // 帯の上に乗っていて、この部屋と開いた部屋の間にある区間
+        const spans: [number, number][] = [];
+        let run: [number, number] | null = null;
+        for (let t = wl.t0 + 50; t <= wl.t1 - 50 + 1e-6; t += 100) {
+          const p = { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o };
+          const [la, lb] = sides(t);
+          const other = la === lr ? lb : lb === lr ? la : 0;
+          const o = other && other !== lr ? roomOfLabel.get(other) : undefined;
+          if (o && OPEN_SIDE.includes(o.type) && onBand(p)) run = run ? [run[0], t + 50] : [t - 50, t + 50];
+          else if (run) {
+            spans.push(run);
+            run = null;
+          }
+        }
+        if (run) spans.push(run);
+        const long = spans.filter(([a, b]) => b - a >= 300);
+        if (long.length) {
+          cuts.push({ wl, spans: long });
+          bandLen += long.reduce((sum, [a, b]) => sum + (b - a), 0);
+        }
+      }
+      (globalThis as { __roomTrace?: string[] }).__roomTrace?.push(`${level}F ${r.name}: 框の帯の候補 ${bands.length} 本・帯の上の壁 ${Math.round(bandLen)}mm・戸 ${hasDoor ? 'あり' : 'なし'}`);
+      if (hasDoor || bandLen < 1200) continue;
+      for (const c of cuts) cutWallSpans(walls, c.wl, c.spans);
+      if (r.floorOffset == null) r.floorOffset = 400;
+      warnings.push(`${level}階: ${r.name}は、木の色の帯（框）で囲まれていて戸が無いので、小上がり（床 +${r.floorOffset}mm・壁なし）として読みました。段差が無い・腰壁のときは、方眼の修正画面で部屋の「床の段差」と壁を直してください`);
+      (globalThis as { __roomTrace?: string[] }).__roomTrace?.push(`${level}F ${r.name}: 框の帯の上の壁 ${Math.round(bandLen)}mm を外し、小上がり +${r.floorOffset}`);
+    }
+
+    // ---- 腰壁・手すり壁（壁の色ではない帯の上に読めた壁）----
+    // 平面図は床から 1m ほどの高さで切った図で、切られた壁は壁の色（濃い灰）で塗る。それより低い腰壁・手すり壁は
+    // 切られないので、木の色（笠木）や薄い灰の帯で描く。帯の縁の 2 本線が「壁」に読めると、3D で天井までの壁になる
+    // （大崎様邸 1 階: 造作デスクの背の腰壁が天井まで立ち、スタディコーナーが LDK から閉じた。2 階: 階段の手すり壁）。
+    // 吹抜に面する縁は、仕様の「吹抜の手すり」（鉄の手すり・腰壁・壁）で 3D が作るので触らない。
+    if (!(globalThis as { __NO_LOW_BAND_WALL?: boolean }).__NO_LOW_BAND_WALL) {
+      const OUT: RoomType[] = ['void', ...OUTDOOR_TYPES];
+      const lows: { wl: WWall; spans: [number, number][]; pair: string }[] = [];
+      for (const wl of walls) {
+        const off = wl.d / 2 + 2.5 * res;
+        const spans: [number, number][] = [];
+        let run: [number, number] | null = null;
+        let pair = '';
+        for (let t = wl.t0 + 50; t <= wl.t1 - 50 + 1e-6; t += 100) {
+          const p = { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o };
+          const ra = roomOfLabel.get(labelOf({ x: p.x + wl.n.x * off, y: p.y + wl.n.y * off }));
+          const rb = roomOfLabel.get(labelOf({ x: p.x - wl.n.x * off, y: p.y - wl.n.y * off }));
+          const ok = onBand(p) && !!ra && !!rb && !OUT.includes(ra.type) && !OUT.includes(rb.type) && !wl.openings.some((op) => t >= op.t0 - 60 && t <= op.t1 + 60);
+          if (ok) {
+            run = run ? [run[0], t + 50] : [t - 50, t + 50];
+            if (!pair) pair = ra === rb ? `${ra.name}の中` : `${ra.name}と${rb.name}の間`;
+          } else if (run) {
+            spans.push(run);
+            run = null;
+          }
+        }
+        if (run) spans.push(run);
+        const long = spans.filter(([a, b]) => b - a >= 600);
+        if (long.length) lows.push({ wl, spans: long, pair });
+      }
+      for (const c of lows) splitWallSpans(walls, c.wl, c.spans, 1100);
+      // 帯の上にすっぽり乗った短い壁（60cm 未満）も低い壁: 曲がった手すり壁を刻んだ切れ端・帯の継ぎ目の線。
+      // 林様邸 2 階: 吹抜の曲がった手すり壁が、天井までの柱の列になっていた（切れ端は短くて、両側の部屋を確かめられない）
+      let shortLen = 0;
+      let shortN = 0;
+      for (const wl of walls) {
+        const L = wl.t1 - wl.t0;
+        if (wl.topMm != null || wl.openings.length || L >= 600 || L < 30) continue;
+        const ts: number[] = [];
+        if (L < 120) ts.push((wl.t0 + wl.t1) / 2);
+        else for (let t = wl.t0 + 30; t <= wl.t1 - 30 + 1e-6; t += Math.min(100, (L - 60) / Math.max(1, Math.ceil((L - 60) / 100)))) ts.push(t);
+        // 曲面の壁を刻んだ切れ端（g が -1000 以下）は、軸ではなく端点 a からの距離で位置が決まる
+        const at = (t: number): Vec2 => (wl.g <= -1000 ? { x: wl.a.x + wl.u.x * t, y: wl.a.y + wl.u.y * t } : { x: wl.u.x * t + wl.n.x * wl.o, y: wl.u.y * t + wl.n.y * wl.o });
+        if (!ts.every((t) => onBand(at(t)))) continue;
+        // 壁の形がすっぽり帯の中にあること: 両端と、中央から厚みの方向へ少し寄せた点も帯の上。
+        // 本物の壁の角に帯の先端が重なっているだけの所は違う（有元様邸 3 階: パントリーの壁の角に、斜めのカウンターの帯の先が掛かる）
+        const mid = at((wl.t0 + wl.t1) / 2);
+        const q = wl.d * 0.3;
+        const inside = [at(wl.t0 + 8), at(wl.t1 - 8), { x: mid.x + wl.n.x * q, y: mid.y + wl.n.y * q }, { x: mid.x - wl.n.x * q, y: mid.y - wl.n.y * q }];
+        if (!inside.every(onBand)) continue;
+        wl.topMm = 1100;
+        delete wl.weak;
+        shortLen += L;
+        shortN++;
+      }
+      if (lows.length || shortLen >= 600) {
+        const total = lows.reduce((sum, c) => sum + c.spans.reduce((q, [a, b]) => q + (b - a), 0), 0);
+        const where = [...new Set(lows.map((c) => c.pair))];
+        if (shortLen >= 600) where.push('曲がった手すり壁など');
+        warnings.push(
+          `${level}階: 壁と違う色の帯で描かれた壁 ${lows.reduce((n, c) => n + c.spans.length, 0) + (shortLen >= 600 ? 1 : 0)} か所（${where.slice(0, 2).join('・')}${where.length > 2 ? ' ほか' : ''}）を、腰壁・手すり壁（高さ 1,100mm）として読みました。天井までの壁のときは、3D の「窓・戸」の道具で壁をクリックして高さを直してください`,
+        );
+        (globalThis as { __roomTrace?: string[] }).__roomTrace?.push(`${level}F 腰壁: ${lows.map((c) => `${c.pair} ${c.spans.map(([a, b]) => Math.round(b - a)).join('+')}mm（${Math.round(c.wl.a.x)},${Math.round(c.wl.a.y)}–${Math.round(c.wl.b.x)},${Math.round(c.wl.b.y)}）`).join(' / ')} 計 ${Math.round(total)}mm・短い壁 ${shortN} 本 ${Math.round(shortLen)}mm`);
+      }
+    }
+  }
+
   // ---- 外形 ----
   const building = new Uint8Array(grid.w * grid.h);
   for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== OUTSIDE && !courtLabels.has(labels[i]) ? 1 : 0;
@@ -2409,6 +2613,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       outsideSign,
       joinedA: w.joinedA,
       joinedB: w.joinedB,
+      ...(w.topMm != null && !exterior ? { topMm: w.topMm } : {}),
     });
     void mid;
     void L;
@@ -3780,6 +3985,16 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         }
       }
     }
+    // 確かめ用: 壁の色ではない細長い帯の塗り（框・笠木・カウンター・手すり）。globalThis.__stripTrace に配列を置くと入る
+    const stripTrace = (globalThis as { __stripTrace?: string[] }).__stripTrace;
+    if (stripTrace) {
+      const softC = softFillColors(page.colorFills, wallColors);
+      for (const f of page.colorFills) {
+        if (wallColors.has(f.color) || !isStripFill(f.poly)) continue;
+        const bb = bboxOf(f.poly);
+        stripTrace.push(`p${page.pageIndex + 1} ${f.color}${softC.has(f.color) ? '(soft)' : ''} 幅 ${Math.round(fillWidth(f.poly))} 範囲 ${Math.round(bb.maxX - bb.minX)}×${Math.round(bb.maxY - bb.minY)} @${Math.round(bb.minX)},${Math.round(bb.minY)} 頂点 ${f.poly.length}`);
+      }
+    }
     if (!groups.length && !page.rasterMask) warnings.push(`${page.pageIndex + 1}ページ目: 平面図の壁を検出できませんでした`);
     // 平面図でないもの（立面図・図面枠・表・カタログ）を除く
     const pageHasRooms = page.texts.some(isRoomText);
@@ -3844,10 +4059,22 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
         kept.push(c);
         roomFills.push(c.poly);
       }
+      // 壁の色ではない細長い帯（框・手すりの笠木）。壁を色で塗っている図面（壁の色が分かっている）のときだけ
+      const trimBands = wallColors.size
+        ? page.colorFills
+            .filter((f) => {
+              if (wallColors.has(f.color) || !isStripFill(f.poly) || !f.poly.every((q) => inBox(q.x, q.y, margin))) return false;
+              const wd = fillWidth(f.poly);
+              if (wd < 60 || wd > 135) return false;
+              const bb = bboxOf(f.poly);
+              return Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) >= 900;
+            })
+            .map((f) => f.poly)
+        : [];
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
       // 開口を白抜きで描く図面で、この図の範囲の白抜きがすべて開口として読めた（窓の無い部屋は図面どおり、と言える）
       const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}) });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}) });
     }
   }
   assignFloorTitles(plans, pages);
@@ -3895,6 +4122,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.wallPolys.push(...p.wallPolys);
     q.sashPolys.push(...p.sashPolys);
     q.roomFills.push(...p.roomFills);
+    if (p.trimBands?.length) q.trimBands = [...(q.trimBands ?? []), ...p.trimBands];
     if (p.sketchLines) q.sketchLines = [...(q.sketchLines ?? []), ...p.sketchLines];
     if (p.loose) q.loose = true;
     q.bbox = { minX: Math.min(q.bbox.minX, p.bbox.minX), minY: Math.min(q.bbox.minY, p.bbox.minY), maxX: Math.max(q.bbox.maxX, p.bbox.maxX), maxY: Math.max(q.bbox.maxY, p.bbox.maxY) };
@@ -4423,6 +4651,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
   p.sashPolys = p.sashPolys.map((poly) => poly.map(tr));
   p.roomFills = p.roomFills.map((poly) => poly.map(tr));
+  if (p.trimBands) p.trimBands = p.trimBands.map((poly) => poly.map(tr));
   if (p.sketchLines) p.sketchLines = p.sketchLines.map((sg) => ({ ...sg, a: tr(sg.a), b: tr(sg.b) }));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }

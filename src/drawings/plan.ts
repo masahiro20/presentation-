@@ -545,13 +545,20 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     }
     if (cur < L) solid.push([cur, L]);
     const h = w.thickness / 2;
+    // 腰壁・手すり壁（天端 1.5m 未満）: 平面図は床から 1m ほどで切った図なので、切られない低い壁は塗りつぶさず、
+    // 薄い色の帯に輪郭線で描く（黒塗りにすると天井までの壁に見えて、開いた空間が閉じて読める）
+    const low = !w.exterior && w.topMm != null && w.topMm < 1500;
     for (const [t0, t1] of solid) {
       const p = (t: number, sgn: number) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
+      if (low) {
+        s += `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#d9d2c4" stroke="#151515" stroke-width="10"/>`;
+        continue;
+      }
       // 御社の提案図面（1/100）: 壁は黒塗り（柱・間柱は描かない。柱は平面詳細図 1/50 の表記）
       s += hl ? `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#151515" stroke="#151515" stroke-width="4"/>` : `<polygon points="${p(t0, 1)} ${p(t1, 1)} ${p(t1, -1)} ${p(t0, -1)}" fill="#2b2b2b"/>`;
     }
-    // 柱（105 角）: 平面詳細図の表記（showPosts のときだけ）
-    if (hl && opts.showPosts) {
+    // 柱（105 角）: 平面詳細図の表記（showPosts のときだけ）。腰壁には柱を描かない
+    if (hl && opts.showPosts && !low) {
       const posts: number[] = [0, L];
       for (const o of ops) if (o.kind === 'window') posts.push(o.t0, o.t1);
       for (const t of posts) {

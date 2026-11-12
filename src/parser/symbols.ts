@@ -34,6 +34,8 @@ export interface PlanSymbol {
   rot?: number;
   /** L 字の記号（L 型ソファ）: 空いている角（記号を軸に戻した向きで、x: 幅方向の ±1、y: 高さ方向の ±1） */
   lEmpty?: { x: 1 | -1; y: 1 | -1 };
+  /** ソファの背の側（記号の中心から見た向きの単位ベクトル）。背のクッションを丸く描く記号で、丸い線の集まっている側 */
+  back?: Vec2;
 }
 
 /** 線のまとまりの主方向（長さ加重・90° 周期）。-45°〜45° の rad */
@@ -319,6 +321,7 @@ export function dottedRings(segs: Seg[]): PlanSymbol[] {
 
 /** 線のまとまりを記号として分類する（部屋の情報は使わず形だけで） */
 export function detectSymbols(segs: Seg[]): PlanSymbol[] {
+  const noDetailSofa = !!(globalThis as { __NO_DETAIL_SOFA?: boolean }).__NO_DETAIL_SOFA;
   // 線 3 本のまとまりも拾う（×印の小さな正方形の部品は、辺の 1 本がハッチ扱いで抜けて 3 本になることがある）
   const clusters = assembleCars(clusterSegments(segs, 3400, 3));
   const out: PlanSymbol[] = [];
@@ -413,6 +416,8 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
     // L 字（L 型ソファ: 外形 1.6〜4.6 × 1.2〜3.6m で四隅の 1 つが空いている）
     const lEmpty = within(L, 1600, 4600) && within(S, 1200, 3600) && n >= 20 ? lShapeOf(c) : null;
     let kind: SymbolKind | null = null;
+    // 確かめ用の記録: 家具ほどの大きさの線のまとまりの形（長さ・幅・線の数・短い線の割合・でこぼこ）
+    if (L >= 600) (globalThis as { __symRaw?: string[] }).__symRaw?.push(`${Math.round(L)}x${Math.round(S)} n=${n} short=${shortFrac.toFixed(2)} bump=${bump.toFixed(3)} long=${Math.round(longLen)} @${Math.round(cx)},${Math.round(cy)}`);
     // 車: 普通車 4.3〜5.3m。線の多い詳しい記号なら軽自動車・コンパクト（3.3m〜）も
     if ((within(L, 4300, 5300) || (within(L, 3300, 4300) && n >= 150)) && within(S, 1450, 2350) && n >= 50) kind = 'car';
     else if (within(L, 270, 310) && within(S, 40, 70) && n >= 14 && shortFrac > 0.8) kind = 'chairBack';
@@ -425,6 +430,19 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
     else if (within(L, 580, 740) && within(S, 350, 430) && n >= 16 && longLen >= S * 0.8) kind = 'toilet';
     else if (within(L, 540, 740) && within(S, 440, 560) && n >= 12 && n <= 60 && shortFrac > 0.3) kind = 'sink';
     else if (within(L, 1800, 4600) && within(S, 720, 2300) && n >= 40 && n <= 200 && shortFrac > 0.6 && within(bump, 0.1, 0.3)) kind = 'sofa';
+    // 細かく描いたまっすぐのソファ（1.7〜3.2m × 0.7〜1.1m。背のクッションを丸く、座面を四角く描くので、短い線が数百本）。
+    // 大崎様邸・堀様邸（福井）の 3 人掛け: 線が多すぎて上の決まり（200 本まで）から外れ、背のクッションの列だけが
+    // 「壁沿いの薄い台 = テレビ台」に読まれていた。端から端まで通る直線があるもの（カウンター・台）は違う
+    else if (!noDetailSofa && within(L, 1700, 3200) && within(S, 700, 1100) && S / L < 0.6 && n >= 150 && shortFrac > 0.85 && longLen < L * 0.6) {
+      // 背の側: 丸い線（短い線）の重心が、幅の方向で寄っている側
+      const longX = w >= h;
+      const short = c.segs.filter((sg) => Math.hypot(sg.b.x - sg.a.x, sg.b.y - sg.a.y) < 60);
+      const mean = short.reduce((a, sg) => a + (longX ? (sg.a.y + sg.b.y) / 2 - cy : (sg.a.x + sg.b.x) / 2 - cx), 0) / (short.length || 1);
+      const back0 = Math.abs(mean) > S * 0.04 ? (longX ? { x: 0, y: Math.sign(mean) } : { x: Math.sign(mean), y: 0 }) : null;
+      const back = back0 ? rotPt(back0, { x: 0, y: 0 }, rot) : undefined;
+      out.push({ kind: 'sofa', ...base, ...(back ? { back } : {}), bump: +bump.toFixed(3), shortFrac: +shortFrac.toFixed(2), longLen: Math.round(longLen) });
+      continue;
+    }
     else if (n >= 80 && within(L, 300, 2800) && S / L >= 0.7 && shortFrac > 0.7 && within(bump, 0.03, 0.5)) kind = 'plant';
     if (!kind) continue;
     void longCount;
@@ -978,8 +996,9 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
           push('sofa', c, along, inward, S / 2, { w: +Math.min(3.6, Math.max(1.6, Math.max(s.w, s.h) / 1000)).toFixed(2), shape: 'l', legSide, leg: +Math.min(2.2, Math.max(1.2, S / 1000)).toFixed(2) });
           break;
         }
-        const back = towardWall(c, perp(along), 450);
-        push('sofa', c, along, { x: -back.x, y: -back.y }, 450, { w: +Math.min(3.6, Math.max(1.6, Math.max(s.w, s.h) / 1000)).toFixed(2) });
+        // 背の側: 記号から読めていればそれ（丸いクッションの側）。無ければ壁に近い側
+        const back = s.back ?? towardWall(c, perp(along), 450);
+        push('sofa', c, along, { x: -back.x, y: -back.y }, s.back ? Math.min(s.w, s.h) / 2 : 450, { w: +Math.min(3.6, Math.max(1.6, Math.max(s.w, s.h) / 1000)).toFixed(2) });
         break;
       }
       case 'xbox': {

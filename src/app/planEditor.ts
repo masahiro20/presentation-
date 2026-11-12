@@ -932,7 +932,9 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
     }
     for (const w of f.walls) {
       const on = sel?.kind === 'wall' && sel.id === w.id;
-      const p = el('polygon', { points: wallPoly(w), fill: on ? '#d9822b' : w.exterior ? '#1f2226' : '#3d424a', class: 'pe-wall' }, gWalls);
+      // 腰壁・手すり壁（天端 1.5m 未満）は薄い色（天井までの壁と見分けられるように）
+      const lowWall = !w.exterior && w.topMm != null && w.topMm < 1500;
+      const p = el('polygon', { points: wallPoly(w), fill: on ? '#d9822b' : w.exterior ? '#1f2226' : lowWall ? '#b9b1a3' : '#3d424a', class: 'pe-wall' }, gWalls);
       p.dataset.id = w.id;
     }
     // 選んだ壁の端点のつまみ（ドラッグで伸ばす・縮める。つながった壁の端も一緒に動く）

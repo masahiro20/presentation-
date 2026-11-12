@@ -454,6 +454,23 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
       const hit = dict ? lookupSymbol(dict, signatureOf(t, c.w, c.h, c.rect.inner), 'user') : null;
       if (hit) applyDict(c, hit, '辞書');
     }
+    // 形で読めたソファ（背のクッションを丸く描く詳しい記号）の中にある長方形は、ソファの部品（背の列・座面）。
+    // 背のクッションの列（奥行 36cm・長さ 1.9m）が「壁沿いの薄い台 = テレビ台」に読まれていた（大崎様邸 1 階）
+    for (const c of cands) {
+      const inSofa = prior.some((p) => {
+        if (p.kind !== 'sofa' || p.roomId !== room.id || p.shape === 'l') return false;
+        const r = (p.rot * Math.PI) / 180;
+        const along = { x: Math.cos(r), y: Math.sin(r) };
+        const inward = { x: -Math.sin(r), y: Math.cos(r) };
+        const u = (c.cx - p.x) * along.x + (c.cy - p.y) * along.y;
+        const v = (c.cx - p.x) * inward.x + (c.cy - p.y) * inward.y;
+        return Math.abs(u) <= ((p.w ?? 2.1) * 1000) / 2 + 50 && v >= -50 && v <= 950 && c.L <= (p.w ?? 2.1) * 1000 + 200;
+      });
+      if (inSofa) {
+        c.note = 'ソファの部品';
+        used.add(c);
+      }
+    }
     const free = () => cands.filter((c) => !used.has(c) && !c.kind);
     const livingLike = t === 'ldk' || t === 'living' || t === 'dining' || t === 'kitchen' || t === 'japanese' || (t === 'other' && Math.abs(polygonArea(room.polygon)) >= 8e6);
     if (livingLike) {

@@ -3,7 +3,7 @@
  * 部屋の種類と開口部（窓・ドア）の位置から、壁際の空いている場所に配置する。
  */
 import * as THREE from 'three';
-import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall } from '../core/types';
+import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall, type Vec2 } from '../core/types';
 import { pointInPolygon } from '../core/geometry';
 import { isSpecialRoomName } from '../parser/labels';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
@@ -119,6 +119,8 @@ interface RoomCtx {
   R: { minX: number; maxX: number; minZ: number; maxZ: number };
   y: number;
   blocked: Record<Side, [number, number][]>;
+  /** 腰壁・手すり壁（天端 1.5m 未満）の区間: 壁掛けのテレビは付けない */
+  low?: Partial<Record<Side, [number, number][]>>;
   windows: Record<Side, number>;
   lights: LightPoint[];
   room: Room;
@@ -729,26 +731,21 @@ export function planFurniture(model: BuildingModel): Map<number, PlanItem[]> {
 
 function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
   const tol = 400; // mm
-  for (const o of f.openings) {
-    const w = f.walls.find((w) => w.id === o.wallId);
-    if (!w) continue;
-    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
-    const ux = (w.b.x - w.a.x) / L;
-    const uy = (w.b.y - w.a.y) / L;
-    const p0 = { x: w.a.x + ux * o.t0, y: w.a.y + uy * o.t0 };
-    const p1 = { x: w.a.x + ux * o.t1, y: w.a.y + uy * o.t1 };
-    const horiz = Math.abs(uy) < 0.1;
-    const vert = Math.abs(ux) < 0.1;
-    // 低い窓（腰高 > 1.1m）は家具の妨げにならない
-    const blocks = !(o.kind === 'window' && o.sill >= 1100);
-    const extra = o.kind === 'door' ? 0.1 : 0.05;
+  /** 壁の上の区間 p0–p1 を、部屋の辺ごとの「家具を付けられない区間」に入れる。win = 窓としての重み（0 = 窓でない） */
+  const span = (p0: Vec2, p1: Vec2, blocks: boolean, extra: number, win: number, low = false) => {
+    const dx = Math.abs(p1.x - p0.x);
+    const dy = Math.abs(p1.y - p0.y);
+    const L = Math.hypot(dx, dy) || 1;
+    const horiz = dy / L < 0.1;
+    const vert = dx / L < 0.1;
     const addH = (side: Side, z: number) => {
       if (Math.abs(p0.y - z) > tol) return;
       const { f: fr } = sideFrame(ctx, side);
       const a = (p0.x * MM - fr.origin.x) * fr.along.x;
       const b = (p1.x * MM - fr.origin.x) * fr.along.x;
       if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-      if (o.kind === 'window' && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
+      if (low) ((ctx.low ??= {})[side] ??= []).push([Math.min(a, b), Math.max(a, b)]);
+      if (win) ctx.windows[side] += Math.abs(b - a) * win;
     };
     const addV = (side: Side, x: number) => {
       if (Math.abs(p0.x - x) > tol) return;
@@ -756,7 +753,8 @@ function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
       const a = (p0.y * MM - fr.origin.z) * fr.along.z;
       const b = (p1.y * MM - fr.origin.z) * fr.along.z;
       if (blocks) ctx.blocked[side].push([Math.min(a, b) - extra, Math.max(a, b) + extra]);
-      if (o.kind === 'window' && !o.interior) ctx.windows[side] += Math.abs(b - a) * (o.windowStyle === 'hakidashi' ? 2 : 1);
+      if (low) ((ctx.low ??= {})[side] ??= []).push([Math.min(a, b), Math.max(a, b)]);
+      if (win) ctx.windows[side] += Math.abs(b - a) * win;
     };
     const within = (v: number, a: number, b: number) => v > a - 200 && v < b + 200;
     if (horiz && (within(p0.x, inner.minX, inner.maxX) || within(p1.x, inner.minX, inner.maxX))) {
@@ -767,7 +765,29 @@ function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
       addV('w', inner.minX);
       addV('e', inner.maxX);
     }
+  };
+  for (const o of f.openings) {
+    const w = f.walls.find((w) => w.id === o.wallId);
+    if (!w) continue;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+    const ux = (w.b.x - w.a.x) / L;
+    const uy = (w.b.y - w.a.y) / L;
+    const p0 = { x: w.a.x + ux * o.t0, y: w.a.y + uy * o.t0 };
+    const p1 = { x: w.a.x + ux * o.t1, y: w.a.y + uy * o.t1 };
+    // 低い窓（腰高 > 1.1m）は家具の妨げにならない
+    const blocks = !(o.kind === 'window' && o.sill >= 1100);
+    span(p0, p1, blocks, o.kind === 'door' ? 0.1 : 0.05, o.kind === 'window' && !o.interior ? (o.windowStyle === 'hakidashi' ? 2 : 1) : 0);
   }
+  // 腰壁・手すり壁（天端が 1.5m 未満の壁）: 壁掛けのテレビや背の高い家具を付けると壁の上にはみ出すので、開口と同じに避ける
+  for (const w of f.walls) {
+    if (w.topMm == null || w.topMm >= 1500 || w.exterior) continue;
+    span(w.a, w.b, true, 0.05, 0, true);
+  }
+}
+
+/** 辺 s の区間 u0〜u1 が腰壁・手すり壁に掛かるか（壁掛けのテレビは、壁の上にはみ出すので付けない） */
+function onLowWall(ctx: RoomCtx, s: Side, u0: number, u1: number): boolean {
+  return !!ctx.low?.[s]?.some(([a, b]) => a < u1 && b > u0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1521,13 +1541,21 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
   }
   // 窓のない長辺に TV を置き、ソファは向かい（窓側）
   const sides: Side[] = kSide === 'e' || kSide === 'w' ? ['n', 's'] : ['w', 'e'];
-  const tvSide = sides.sort((a, b) => ctx.windows[a] - ctx.windows[b])[0];
-  const { f: tf, len: tlen } = sideFrame(ctx, tvSide);
-  // リビング域の中心（tf の u 座標）
+  sides.sort((a, b) => ctx.windows[a] - ctx.windows[b]);
+  // リビング域の中心（辺ごとの u 座標）
   const kfCenterToLiv = kf.point(0, livStart + livDepth / 2, 0);
-  const uLiv = kfCenterToLiv.clone().sub(tf.origin).dot(tf.along);
-  const tvU2 = findSpot(ctx, tvSide, 1.9, tlen, uLiv) ?? uLiv;
-  place('tv', tf, tvU2, 0.02, ctx.env, { w: 1.8 });
+  const uLivOf = (sd: Side) => {
+    const fr = sideFrame(ctx, sd).f;
+    return kfCenterToLiv.clone().sub(fr.origin).dot(fr.along);
+  };
+  // 空きのある辺を先に選ぶ（窓の少ない辺が腰壁・開口でふさがっていれば、向かいの辺へ）
+  const spotOf = (sd: Side) => findSpot(ctx, sd, 1.9, sideFrame(ctx, sd).len, uLivOf(sd));
+  const tvSide = sides.find((sd) => spotOf(sd) != null) ?? sides[0];
+  const { f: tf } = sideFrame(ctx, tvSide);
+  const uLiv = uLivOf(tvSide);
+  const tvU2 = spotOf(tvSide) ?? uLiv;
+  // 腰壁・手すり壁には壁掛けのテレビを付けない（壁の上にはみ出して宙に浮く）
+  if (!onLowWall(ctx, tvSide, tvU2 - 0.9, tvU2 + 0.9)) place('tv', tf, tvU2, 0.02, ctx.env, { w: 1.8 });
   const across = tvSide === 'n' || tvSide === 's' ? D : W;
   const sofaV = Math.min(across - 1.0, 2.8);
   place('rug', tf, tvU2, 0.9, ctx.env, { w: 2.2, d: +Math.max(1.4, sofaV - 0.7).toFixed(2) });

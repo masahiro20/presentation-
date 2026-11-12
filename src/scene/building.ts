@@ -535,7 +535,13 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       };
       const bothOutdoor = w.exterior && [1, -1].every((sg) => outdoorAt(j.p.x + ((w.b.y - w.a.y) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * -sg * (w.thickness + 80), j.p.y + ((w.b.x - w.a.x) / Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)) * sg * (w.thickness + 80)));
       const bottom = w.exterior && f.level === 1 ? (bothOutdoor ? -0.05 : fl - 0.1) : fl;
-      const wallTop = w.exterior ? top : fl + f.ceilingHeight * MM;
+      // 丸柱の高さは、つながる 2 本の壁に合わせる。以前はいつも天井までだったので、吹抜の曲がった手すり（壁は手すりに
+      // 置き換わって無い）や曲がった腰壁の継ぎ目に、天井までの柱の列が残っていた（林様邸 2 階の吹抜まわり）
+      const tw = jointTop(f, w, fl, spec);
+      const tv = jointTop(f, j.v, fl, spec);
+      if (tw === null && tv === null) continue; // 両方とも手すり（壁が無い）: 柱を立てない
+      const lowTop = typeof tw === 'number' && typeof tv === 'number' ? Math.min(tw, tv) : typeof tw === 'number' && tv === null ? tw : typeof tv === 'number' && tw === null ? tv : null;
+      const wallTop = lowTop ?? (w.exterior ? top : fl + f.ceilingHeight * MM);
       const key = w.exterior ? (ext.accent && ((ext.accentRule === 'upper' && f.level >= 2) || (ext.accentRule === 'lower' && f.level === 1)) ? 'ext.accent' : 'ext.wall') : 'int.wall';
       mb.cylinder(key, V(j.p.x * MM, bottom, j.p.y * MM), (j.t * MM) / 2 - 0.002, wallTop - bottom, 24, false);
     }
@@ -1007,12 +1013,43 @@ function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }
 }
 
 
+/** 吹抜に面する壁（片側が吹抜、反対側がホール・LDK など開いた部屋）なら、その縁の落下防止の種類。そうでなければ null */
+export function voidGuardOfWall(f: Floor, w: Wall, spec: BuilderSpec): VoidGuard | null {
+  const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  if (f.level < 2 || w.exterior || L < 1) return null;
+  const nx = -(w.b.y - w.a.y) / L;
+  const ny = (w.b.x - w.a.x) / L;
+  const side = (sign: 1 | -1) => roomAt(f, (w.a.x + w.b.x) / 2 + nx * sign * (w.thickness / 2 + 80), (w.a.y + w.b.y) / 2 + ny * sign * (w.thickness / 2 + 80));
+  const rPlus = side(1);
+  const rMinus = side(-1);
+  const voidPlus = rPlus?.type === 'void';
+  const voidMinus = rMinus?.type === 'void';
+  if (voidPlus === voidMinus || outdoorRoom(rPlus) || outdoorRoom(rMinus)) return null;
+  const other = voidPlus ? rMinus : rPlus;
+  if (!other || !['hall', 'ldk', 'living', 'dining', 'kitchen', 'stairs', 'entrance', 'other'].includes(other.type)) return null;
+  return guardKindOf(voidPlus ? rPlus : rMinus, spec);
+}
+
+/**
+ * 継ぎ目の丸柱の天端（m）を決めるための、壁 1 本の高さ:
+ * null = 手すり（鉄・アイアン・ガラス）に置き換わって壁が無い／数値 = 腰壁・手すり壁の天端／undefined = 天井まで（今までどおり）
+ */
+function jointTop(f: Floor, w: Wall, fl: number, spec: BuilderSpec): number | null | undefined {
+  if (w.exterior) return undefined;
+  const guard = voidGuardOfWall(f, w, spec);
+  if (guard === 'steel' || guard === 'iron' || guard === 'glass') return null;
+  if (w.topMm != null) return fl + Math.max(300, w.topMm) * MM;
+  if (guard === 'half') return fl + 1.1;
+  if (guard === 'halfGlass') return fl + 0.9;
+  return undefined;
+}
+
 /**
  * 斜めの壁（直交しない壁同士）の継ぎ目。角が直角でないと、矩形の壁同士では外側の角にくさび状の隙間が残るので、
  * 壁の軸線の交点に壁厚の丸柱を立てて埋める。戻り値は交点と、その継ぎ目の最大壁厚（mm）。
  */
-function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; y: number }; t: number; w: Wall }[] {
-  const out: { p: { x: number; y: number }; t: number; w: Wall }[] = [];
+function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; y: number }; t: number; w: Wall; v: Wall }[] {
+  const out: { p: { x: number; y: number }; t: number; w: Wall; v: Wall }[] = [];
   const angOf = (w: Wall) => Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x);
   const distToSeg = (p: { x: number; y: number }, w: Wall) => {
     const dx = w.b.x - w.a.x;
@@ -1046,7 +1083,7 @@ function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; 
         }
         const t = Math.max(w.thickness, v.thickness);
         if (out.some((o) => Math.hypot(o.p.x - p.x, o.p.y - p.y) < t)) continue;
-        out.push({ p, t, w });
+        out.push({ p, t, w, v });
       }
     }
   }
@@ -1192,7 +1229,7 @@ function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec:
  * 1 本の壁のうち「吹抜とホール・LDK の境」になっている区間を切り出す（その区間は手すり・腰壁になる）。
  * 堀様邸の 2 階: 吹抜の下辺からホールと中庭の境まで 1 本の外壁として読めていたため、吹抜の縁まで外壁（天井までの壁）になっていた
  */
-function splitAtVoid(f: Floor, w: Wall, ops: Opening[]): { w: Wall; ops: Opening[] }[] {
+export function splitAtVoid(f: Floor, w: Wall, ops: Opening[]): { w: Wall; ops: Opening[] }[] {
   const whole = [{ w, ops }];
   if (f.level < 2 || !f.rooms.some((r) => r.type === 'void')) return whole;
   const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -1235,7 +1272,13 @@ function splitAtVoid(f: Floor, w: Wall, ops: Opening[]): { w: Wall; ops: Opening
       joinedA: a > 0 ? true : w.joinedA,
       joinedB: b < L ? true : w.joinedB,
     },
-    ops: ops.filter((o) => o.t0 >= a - 1 && o.t1 <= b + 1).map((o) => ({ ...o, t0: o.t0 - a, t1: o.t1 - a })),
+    // 開口は、中心のある区間に入れる（区間の端をまたぐ分は端で止める）。
+    // 以前は区間にすっぽり入る開口だけ残していたので、吹抜の縁に少しはみ出した「建具なしの開口」が消えて、
+    // ホールから階段の降り口が天井までの壁でふさがっていた（大崎様邸 2 階: 開口 962mm、吹抜の縁は 910mm から）
+    ops: ops
+      .filter((o) => (o.t0 + o.t1) / 2 >= a && (o.t0 + o.t1) / 2 < b)
+      .map((o) => ({ ...o, t0: Math.max(0, o.t0 - a), t1: Math.min(b - a, o.t1 - a) }))
+      .filter((o) => o.t1 - o.t0 >= 300),
   });
   const out: { w: Wall; ops: Opening[] }[] = [];
   if (t0 > 50) out.push(sub(0, t0, false));
@@ -1419,7 +1462,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     if (r?.type === 'bath') return 'int.bathWall';
     // 壁ごとの指定（3D でクリック）が最優先。無ければ LDK の窓の無い長い壁をアクセントクロスに
     if (!w.exterior && w.accent !== undefined) return w.accent ? 'int.accent' : 'int.wall';
-    if (r && (r.type === 'ldk' || r.type === 'living') && !w.exterior && ops.length === 0 && L > 2.2) return 'int.accent';
+    // （腰壁・手すり壁はアクセントにしない: 低い壁だけ色が変わると、造作の箱のように見える）
+    if (r && (r.type === 'ldk' || r.type === 'living') && !w.exterior && ops.length === 0 && L > 2.2 && !(w.topMm != null && w.topMm < 1800)) return 'int.accent';
     return 'int.wall';
   };
   const kPlus = sideKey(1);

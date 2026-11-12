@@ -6792,7 +6792,8 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 			const ge = occ[k + 1].t0;
 			const gap = ge - gs;
 			if (gap < 250 || gap > 6e3) continue;
-			const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills);
+			const isPost = (q) => !q.op && q.t1 - q.t0 <= ax.d * 1.3;
+			const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills, isPost(occ[k]) && isPost(occ[k + 1]));
 			if (globalThis.__WALLDBG) console.log("GAP", Math.round(ax.o), Math.round(gs), Math.round(ge), op.kind, "opEnds", occ[k].op, occ[k + 1].op, "joined", endJoined(ax, gs), endJoined(ax, ge));
 			if (op.kind === "window" && gap > 4600) continue;
 			if (op.kind === "open") {
@@ -7359,14 +7360,29 @@ function mergeAxes(pieces, joinGap) {
 	}
 	return axes;
 }
-function classifyGap(g, o, d, gs, ge, _grp, lines, infills) {
+function classifyGap(g, o, d, gs, ge, _grp, lines, infills, betweenPosts = false) {
 	const gap = ge - gs;
 	const infCover = intervalsLength(mergeIntervals(infills.filter((f) => f.g === g && Math.abs(f.o - o) < 20 && f.t0 < ge && f.t1 > gs).map((f) => [Math.max(gs, f.t0), Math.min(ge, f.t1)])));
 	const inBand = lines.filter((l) => Math.abs(l.o - o) <= d / 2 + 4 && Math.min(l.t1, ge) - Math.max(l.t0, gs) >= Math.min(150, gap * .3) && l.t0 > gs - 150 && l.t1 < ge + 150);
 	const bandCover = intervalsLength(mergeIntervals(inBand.map((l) => [Math.max(gs, l.t0), Math.min(ge, l.t1)]), 40));
 	const offs = [...new Set(inBand.map((l) => Math.round(l.o - o)))];
 	const spread = offs.length ? Math.max(...offs) - Math.min(...offs) : 0;
-	if (infCover > gap * .5 || bandCover > gap * .6 && offs.length >= 2 && spread >= 10) return {
+	const sashLike = () => {
+		if (!betweenPosts || gap <= 2e3 || globalThis.__NO_GAP_SASH_CHECK) return true;
+		const sorted = [...inBand].sort((a, b) => a.o - b.o);
+		const groupsByOff = [];
+		let lastO = -Infinity;
+		for (const l of sorted) {
+			if (l.o - lastO > 8) groupsByOff.push([]);
+			lastO = l.o;
+			groupsByOff[groupsByOff.length - 1].push([Math.max(gs, l.t0), Math.min(ge, l.t1)]);
+		}
+		const covs = groupsByOff.map((iv) => mergeIntervals(iv, 40));
+		if (covs.some((c) => intervalsLength(c) >= gap * .6)) return true;
+		for (let i = 0; i < covs.length; i++) for (let j = i + 1; j < covs.length; j++) for (const [a0, a1] of covs[i]) for (const [b0, b1] of covs[j]) if (Math.min(a1, b1) - Math.max(a0, b0) >= 40) return true;
+		return false;
+	};
+	if (infCover > gap * .5 || bandCover > gap * .6 && offs.length >= 2 && spread >= 10 && sashLike()) return {
 		g,
 		o,
 		d,

@@ -1004,7 +1004,8 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       if (gap < 250 || gap > 6000) continue;
       // 両側が柱の塗り（壁厚の正方形）だけで、2m を超えて離れている隙間は開口ではない。窓と窓の間の柱と直交する壁の柱が
       // 並ぶと、その間が「隙間＝引戸」に分類されて部屋を横切る壁が生まれていた（吉田大仁様邸 2 階の洋室 5.3 帖がベッドの所で 2 つに割れた）
-      const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills);
+      const isPost = (q: { t0: number; t1: number; op: boolean }) => !q.op && q.t1 - q.t0 <= ax.d * 1.3;
+      const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills, isPost(occ[k]) && isPost(occ[k + 1]));
       if ((globalThis as any).__WALLDBG) console.log('GAP', Math.round(ax.o), Math.round(gs), Math.round(ge), op.kind, 'opEnds', occ[k].op, occ[k + 1].op, 'joined', endJoined(ax, gs), endJoined(ax, ge));
       // 住宅の窓は最大でも 4.5m 程度。それより広い隙間は別の図（隣の階の図面・屋根の斜線など）
       if (op.kind === 'window' && gap > 4600) continue;
@@ -1583,6 +1584,8 @@ function classifyGap(
   _grp: AngleGroup,
   lines: Line[],
   infills: Infill[],
+  /** 隙間の両端の壁片が、どちらも柱の塗り（壁厚ほどの正方形）だけか */
+  betweenPosts = false,
 ): DetectedOpening {
   const gap = ge - gs;
   // infill（壁の間の平行線）による判定
@@ -1601,8 +1604,31 @@ function classifyGap(
   const bandCover = intervalsLength(bandIv);
   const offs = [...new Set(inBand.map((l) => Math.round(l.o - o)))];
   const spread = offs.length ? Math.max(...offs) - Math.min(...offs) : 0;
+  // 帯の中の線が「サッシ・引戸」に見えるか: どれか 1 つの位置の線が開口の大半を覆う（枠・敷居の線は端から端まで通る）か、
+  // 位置の違う線どうしが重なっている（引違いの障子は召し合わせで重なる）こと。
+  // 位置の違う線が、重ならずに入れ替わりで並ぶだけなら窓ではない: 階段の側桁の線 → 踊り場の縁の線、のように、
+  // 別々の物の縁がたまたま帯の中に並んだもの（林様邸 2 階: 階段室の東西の壁の柱と柱の間 3.5m が「窓の壁」になり、
+  // 階段の曲がり角を天井までの壁が横切っていた）
+  // 見るのは、両端が柱だけ（壁の塗りが無い）で 2m を超える隙間だけ: 壁と壁の間の窓は今までどおり
+  const sashLike = (): boolean => {
+    if (!betweenPosts || gap <= 2000 || (globalThis as { __NO_GAP_SASH_CHECK?: boolean }).__NO_GAP_SASH_CHECK) return true;
+    const sorted = [...inBand].sort((a, b) => a.o - b.o);
+    const groupsByOff: [number, number][][] = [];
+    let lastO = -Infinity;
+    for (const l of sorted) {
+      if (l.o - lastO > 8) groupsByOff.push([]);
+      lastO = l.o;
+      groupsByOff[groupsByOff.length - 1].push([Math.max(gs, l.t0), Math.min(ge, l.t1)]);
+    }
+    const covs = groupsByOff.map((iv) => mergeIntervals(iv, 40));
+    if (covs.some((c) => intervalsLength(c) >= gap * 0.6)) return true;
+    for (let i = 0; i < covs.length; i++)
+      for (let j = i + 1; j < covs.length; j++)
+        for (const [a0, a1] of covs[i]) for (const [b0, b1] of covs[j]) if (Math.min(a1, b1) - Math.max(a0, b0) >= 40) return true;
+    return false;
+  };
   // 帯の中の平行線だけが根拠のものは確信度 0.7（柱と柱の間に家具の縁が入っただけのこともある → assemble の「弱い壁」で部屋と照合）
-  if (infCover > gap * 0.5 || (bandCover > gap * 0.6 && offs.length >= 2 && spread >= 10)) {
+  if (infCover > gap * 0.5 || (bandCover > gap * 0.6 && offs.length >= 2 && spread >= 10 && sashLike())) {
     return { g, o, d, t0: gs, t1: ge, kind: 'window', confidence: infCover > gap * 0.5 ? 0.85 : 0.7 };
   }
   // 壁の面の線が開口を横切って続いている（ARCHITREND 等: 塗りの壁の切れ目＋外面・内面の線＝窓）

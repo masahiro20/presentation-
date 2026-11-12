@@ -32,6 +32,15 @@ export const STAIR_KIND_LABEL: Record<Stair['kind'], string> = { straight: '直�
 const U_OPEN_MIN_WIDTH = 2100;
 export const STAIR_ENTRY_LABEL: Record<Stair['entry'], string> = { n: '北（上）側', s: '南（下）側', e: '東（右）側', w: '西（左）側' };
 
+/**
+ * かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めていれば（Stair.flightWidth）その幅、無ければ 1,000 まで。
+ * 半間（910）の列の階段を 1,000 で作ると、段の端が隣の壁から 3cm ほどはみ出して見える
+ */
+export function lFlightWidth(s: Stair, Ls: number, Lt: number): number {
+  const base = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  return s.flightWidth != null ? Math.max(600, Math.min(s.flightWidth, Math.min(Ls, Lt))) : base;
+}
+
 /** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
 export function stairFrame(s: Stair) {
   const W = s.maxX - s.minX;
@@ -84,7 +93,7 @@ export function maxStepsInRect(s0: Stair): number {
     const k = Math.floor((Ls - land) / MIN_TREAD);
     return Math.max(3, 2 * k + 1);
   }
-  const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  const fw = lFlightWidth(s, Ls, Lt);
   const len1 = Math.max(0, Ls - fw);
   const len2 = Math.max(0, Lt - fw);
   return Math.max(3, Math.floor(len1 / MIN_TREAD) + Math.floor(len2 / MIN_TREAD) + 1);
@@ -145,7 +154,7 @@ export function stairLayout(s0: Stair, n = 14): StairLayout {
   }
   // かね折れ: 最初の列は矩形の片側の帯、角で踊り場、奥の辺に沿って曲がる
   const turn = s.turn ?? 'right';
-  const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  const fw = lFlightWidth(s, Ls, Lt);
   const strip: [number, number] = turn === 'right' ? [0, fw] : [Lt - fw, Lt];
   const len1 = Math.max(0, Ls - fw);
   const len2 = Math.max(0, Lt - fw);
@@ -179,7 +188,7 @@ export function stairFootprint(s0: Stair): { minX: number; minY: number; maxX: n
     const b = P(a1, t1);
     return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
   };
-  const fw = Math.min(1000, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+  const fw = lFlightWidth(s, Ls, Lt);
   const strip: [number, number] = (s.turn ?? 'right') === 'right' ? [0, fw] : [Lt - fw, Lt];
   return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];
 }

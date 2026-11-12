@@ -3142,7 +3142,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       goesUp,
       ...(stepNote ? { steps: stepNote.n! } : {}),
     };
-    stairMarkSides.set(stair, { up: upSide, down: dnSide, arrowTail });
+    stairMarkSides.set(stair, { up: upSide, down: dnSide, arrowTail, downPos: dnMark ? { x: dnMark.x, y: dnMark.y } : null });
     stairs.push(stair);
   }
   dedupeStairs(stairs, level);
@@ -4140,7 +4140,151 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
 }
 
 /** 階段ごとの「UP の文字の側・DN の文字の側・矢印の始点の側」（最上階の階段を降り口に直すときに使う） */
-const stairMarkSides = new WeakMap<Stair, { up: Stair['entry'] | null; down: Stair['entry'] | null; arrowTail: Stair['entry'] | null }>();
+const stairMarkSides = new WeakMap<Stair, { up: Stair['entry'] | null; down: Stair['entry'] | null; arrowTail: Stair['entry'] | null; downPos?: Vec2 | null }>();
+/** 横に並ぶ別々の階段として分けたもの（上下階の「同じ階段」の範囲合わせで、また 1 つにまとめないように） */
+const stackedStairs = new WeakSet<Stair>();
+/** 下の階の階段を、部屋を分けた後でかね折れに直す予定（幅の範囲と曲がる向き）。bendStackedStairs で使う */
+const pendingBends = new WeakMap<Stair, { a0: number; a1: number; horiz: boolean; turn: 'left' | 'right'; lane: number }>();
+
+/**
+ * 3 階建ての途中の階では、下から上がってくる階段と、上へ昇る階段が横に並ぶことがある（段を重ねて納める）。
+ * その階の図には両方の段が並んで描かれるので、1 つの折り返し階段に読めてしまう
+ * （田中様邸 2 階: 1 階からの階段が北の列を東へ上がって角で南へ曲がり、3 階への直階段が南の列を西から東へ昇る。
+ *  折り返しと読むと、3 階への階段が北の列を戻って 3 階の外壁の外へ出て行き、1 階からの階段の上に重なっていた）。
+ * 上の階の「降りる直階段」が片方の列だけ、下の階の「昇る直階段」がもう片方の列だけに重なっていれば、別々の階段:
+ *  - この階の階段: 上の階の階段と同じ列の直階段（昇り口は、上の階の降り口の反対の端）
+ *  - 下の階の階段: この階の図の DN の文字が、上がり切る側の端の横（もう片方の列の外）にあれば、
+ *    角で曲がって上がってくるかね折れ階段（範囲はこの階の階段室の幅いっぱい）
+ */
+export function splitStackedStairs(
+  floors: Floor[],
+  warnings?: string[],
+  /** 階段のそばの文字の読み（テスト用に差し替えられる。ふだんは図面から読んだもの） */
+  marksOf: (st: Stair) => { up?: Stair['entry'] | null; downPos?: Vec2 | null } | undefined = (st) => stairMarkSides.get(st),
+): void {
+  if ((globalThis as { __NO_STACKED_STAIRS?: boolean }).__NO_STACKED_STAIRS) return;
+  const opposite: Record<Stair['entry'], Stair['entry']> = { n: 's', s: 'n', e: 'w', w: 'e' };
+  for (let i = 1; i + 1 < floors.length; i++) {
+    const f = floors[i];
+    const below = floors[i - 1];
+    const above = floors[i + 1];
+    for (const U of f.stairs) {
+      if (!(U.kind === 'u' || U.kind === 'uOpen') || !U.goesUp) continue;
+      const horiz = U.entry === 'w' || U.entry === 'e'; // 段の並ぶ向きが横（列は上下に分かれる）
+      const run = (st: Stair): [number, number] => (horiz ? [st.minX, st.maxX] : [st.minY, st.maxY]);
+      const across = (st: Stair): [number, number] => (horiz ? [st.minY, st.maxY] : [st.minX, st.maxX]);
+      const [a0, a1] = across(U);
+      const [r0, r1] = run(U);
+      const W = a1 - a0;
+      if (W < 1500 || r1 - r0 < 1800) continue;
+      const mid = (a0 + a1) / 2;
+      /** 片方の列だけに納まる階段なら、その列（0 = 上・左、1 = 下・右） */
+      const laneOf = (st: Stair): 0 | 1 | null => {
+        const [s0, s1] = across(st);
+        if (s1 - s0 > W * 0.6 || s0 < a0 - 200 || s1 > a1 + 200) return null;
+        const c = (s0 + s1) / 2;
+        return c < mid - W * 0.1 ? 0 : c > mid + W * 0.1 ? 1 : null;
+      };
+      const sameAxis = (st: Stair) => (st.entry === 'w' || st.entry === 'e') === horiz;
+      const runShare = (st: Stair) => {
+        const [s0, s1] = run(st);
+        return (Math.min(s1, r1) - Math.max(s0, r0)) / Math.max(1, s1 - s0);
+      };
+      // 上の階: この階から昇った先の、降りる直階段（片方の列・この階の階段の長さの 6 割以上）
+      const A = above.stairs.find((st) => st.kind === 'straight' && !st.goesUp && sameAxis(st) && laneOf(st) != null && runShare(st) >= 0.8 && run(st)[1] - run(st)[0] >= (r1 - r0) * 0.6);
+      if (!A) continue;
+      const laneA = laneOf(A)!;
+      // 下の階: この階へ上がってくる直階段（もう片方の列）
+      const B = below.stairs.find((st) => st.kind === 'straight' && st.goesUp && sameAxis(st) && laneOf(st) === (laneA === 0 ? 1 : 0) && runShare(st) >= 0.8);
+      if (!B) continue;
+      // UP の文字の側が読めていて、上の階の降り口と食い違うなら決めない
+      const ms = marksOf(U);
+      const entry = opposite[A.entry];
+      if (ms?.up && (ms.up === 'w' || ms.up === 'e') === horiz && ms.up !== entry) continue;
+      const before = { ...U };
+      // この階: 上の階の階段と同じ列の直階段
+      const [la0, la1] = across(A);
+      if (horiz) {
+        U.minY = Math.max(a0, la0);
+        U.maxY = Math.min(a1, la1);
+      } else {
+        U.minX = Math.max(a0, la0);
+        U.maxX = Math.min(a1, la1);
+      }
+      U.kind = 'straight';
+      U.entry = entry;
+      delete U.turn;
+      stackedStairs.add(U);
+      stackedStairs.add(B);
+      // 下の階: DN の文字が、上がり切る端の近くで、もう片方の列（laneA）の外にあれば、角で曲がるかね折れ階段
+      const dn = ms?.downPos;
+      const topEnd = opposite[B.entry]; // 直階段の上の端
+      let bent = false;
+      if (dn) {
+        const along = horiz ? dn.x : dn.y;
+        const side = horiz ? dn.y : dn.x;
+        // 上がり切る端は、この階の階段室の端（下の階の図は切断線より上の段が描かれず、短く読めていることがある）
+        const far = topEnd === 'e' || topEnd === 's';
+        const nearTop = far ? along >= r1 - 1100 && along <= r1 + 300 : along <= r0 + 1100 && along >= r0 - 300;
+        const beyond = laneA === 1 ? side >= a1 - 150 && side <= a1 + 900 : side <= a0 + 150 && side >= a0 - 900;
+        if (nearTop && beyond) {
+          // 昇る人から見た右向き（core/stairs.ts の stairFrame と同じ）
+          const right = B.entry === 'n' ? { x: -1, y: 0 } : B.entry === 's' ? { x: 1, y: 0 } : B.entry === 'w' ? { x: 0, y: 1 } : { x: 0, y: -1 };
+          const toA = horiz ? { x: 0, y: laneA === 1 ? 1 : -1 } : { x: laneA === 1 ? 1 : -1, y: 0 };
+          // ここでは上がり切る端まで伸ばすだけ。かね折れへの変更は、階段の部屋を分けた後（bendStackedStairs）:
+          // 先に範囲を階段室の幅いっぱいに広げると、ホールの床まで「階段」の区画に取り込もうとして、階段の部屋が分かれなくなる
+          pendingBends.set(B, { a0, a1, horiz, turn: toA.x * right.x + toA.y * right.y > 0 ? 'right' : 'left', lane: across(B)[1] - across(B)[0] });
+          if (horiz) {
+            if (far) B.maxX = r1;
+            else B.minX = r0;
+          } else if (far) B.maxY = r1;
+          else B.minY = r0;
+          bent = true;
+        }
+      }
+      if (!bent) {
+        // 曲がらない直階段のまま: 上がり切る端だけ、この階の階段室の端まで伸ばす（切断線より上の段のぶん。1.9m まで）
+        const far = topEnd === 'e' || topEnd === 's';
+        const [b0, b1] = run(B);
+        const d = far ? r1 - b1 : b0 - r0;
+        if (d >= 300 && d <= 1900) {
+          if (horiz) {
+            if (far) B.maxX = r1;
+            else B.minX = r0;
+          } else if (far) B.maxY = r1;
+          else B.minY = r0;
+        }
+      }
+      (globalThis as { __stairTrace?: string[] }).__stairTrace?.push(
+        `${f.level}F 並んだ階段: ${Math.round(before.minX)},${Math.round(before.minY)}-${Math.round(before.maxX)},${Math.round(before.maxY)} の折り返し → 直階段 ${Math.round(U.minX)},${Math.round(U.minY)}-${Math.round(U.maxX)},${Math.round(U.maxY)} 口=${U.entry}／${below.level}F の階段は${bent ? `かね折れ（${pendingBends.get(B)?.turn === 'right' ? '右' : '左'}へ曲がる）` : '直階段のまま'}`,
+      );
+      warnings?.push(
+        `${f.level}階: 階段は、${below.level}階から上がってくる階段と${above.level}階へ昇る階段が横に並ぶ形として読みました（${above.level}階への階段はまっすぐ${bent ? `、${below.level}階からの階段は角で曲がって上がります` : ''}）。違うときは、方眼・3D の「階段」で種類と昇り口を直してください`,
+      );
+    }
+  }
+}
+
+/** 横に並ぶ階段のうち、下の階の階段をかね折れに直す（階段の部屋を分けた後に呼ぶ。splitStackedStairs の続き） */
+export function bendStackedStairs(floors: Floor[]): void {
+  for (const f of floors)
+    for (const st of f.stairs) {
+      const b = pendingBends.get(st);
+      if (!b || st.kind !== 'straight') continue;
+      pendingBends.delete(st);
+      st.kind = 'l';
+      st.turn = b.turn;
+      // 列の幅は図面どおり（直階段として読めていた幅。半間なら 910）
+      if (b.lane >= 700 && b.lane <= 1300) st.flightWidth = Math.round(b.lane);
+      if (b.horiz) {
+        st.minY = b.a0;
+        st.maxY = b.a1;
+      } else {
+        st.minX = b.a0;
+        st.maxX = b.a1;
+      }
+    }
+}
 
 /**
  * 最上階の階段は「降りる階段」。上の階が無いのに UP と読んだ階段（上階の図に下階の UP の文字と矢印がそのまま写る）を直す。
@@ -4233,6 +4377,8 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
       let up: Stair | null = null;
       let best = 0;
       for (const u of floors[i + 1].stairs) {
+        // 横に並ぶ別々の階段として分けたもの（下からの階段と、上へ昇る階段）は、同じ階段ではない
+        if (stackedStairs.has(lo) && stackedStairs.has(u)) continue;
         const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
         const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
         if (ix <= 0 || iy <= 0) continue;
@@ -5256,8 +5402,10 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   }
   // 上下階で同じ階段の範囲をそろえてから、LDK・ホールと一続きに読めた階段を別の部屋に分ける（升目の座標のうちに）
   finishTopFloorStairs(floors);
+  splitStackedStairs(floors, warnings);
   reconcileStairs(floors, warnings);
   for (const f of floors) splitStairRooms(f);
+  bendStackedStairs(floors);
   // 木造として: 部屋・外形・階段も格子へ寄せ、壁厚を在来木造の標準（外壁 160・内壁 130）にそろえる
   if (mfit && moduleInfo) {
     thicknesses.clear();
@@ -5297,6 +5445,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   if (roadSide && f1 && relocateAutoShutters(f1.walls, f1.openings, f1.rooms, roadSide, f1.level)) warnings.push(`1階 車庫: シャッターを道路側（${{ top: '上', bottom: '下', left: '左', right: '右' }[roadSide]}）の辺に置き直しました`);
   // （上下階の検算で階を組み立て直したあとにも、もう一度）
   finishTopFloorStairs(floors);
+  splitStackedStairs(floors);
   reconcileStairs(floors);
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];

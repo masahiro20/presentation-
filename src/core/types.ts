@@ -172,6 +172,8 @@ export interface Stair {
   goesUp: boolean;
   /** 図面に書かれた段数（「14段」など）。省略時は階高から推定 */
   steps?: number;
+  /** かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めたとき（半間 = 910 など）。省略時は 1,000 まで */
+  flightWidth?: number;
 }
 
 export interface Floor {

@@ -15917,7 +15917,11 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		stairMarkSides.set(stair, {
 			up: upSide,
 			down: dnSide,
-			arrowTail
+			arrowTail,
+			downPos: dnMark ? {
+				x: dnMark.x,
+				y: dnMark.y
+			} : null
 		});
 		stairs.push(stair);
 	}
@@ -17052,6 +17056,156 @@ function detectPlans(pages, warnings) {
 }
 /** 階段ごとの「UP の文字の側・DN の文字の側・矢印の始点の側」（最上階の階段を降り口に直すときに使う） */
 var stairMarkSides = /* @__PURE__ */ new WeakMap();
+/** 横に並ぶ別々の階段として分けたもの（上下階の「同じ階段」の範囲合わせで、また 1 つにまとめないように） */
+var stackedStairs = /* @__PURE__ */ new WeakSet();
+/** 下の階の階段を、部屋を分けた後でかね折れに直す予定（幅の範囲と曲がる向き）。bendStackedStairs で使う */
+var pendingBends = /* @__PURE__ */ new WeakMap();
+/**
+* 3 階建ての途中の階では、下から上がってくる階段と、上へ昇る階段が横に並ぶことがある（段を重ねて納める）。
+* その階の図には両方の段が並んで描かれるので、1 つの折り返し階段に読めてしまう
+* （田中様邸 2 階: 1 階からの階段が北の列を東へ上がって角で南へ曲がり、3 階への直階段が南の列を西から東へ昇る。
+*  折り返しと読むと、3 階への階段が北の列を戻って 3 階の外壁の外へ出て行き、1 階からの階段の上に重なっていた）。
+* 上の階の「降りる直階段」が片方の列だけ、下の階の「昇る直階段」がもう片方の列だけに重なっていれば、別々の階段:
+*  - この階の階段: 上の階の階段と同じ列の直階段（昇り口は、上の階の降り口の反対の端）
+*  - 下の階の階段: この階の図の DN の文字が、上がり切る側の端の横（もう片方の列の外）にあれば、
+*    角で曲がって上がってくるかね折れ階段（範囲はこの階の階段室の幅いっぱい）
+*/
+function splitStackedStairs(floors, warnings, marksOf = (st) => stairMarkSides.get(st)) {
+	if (globalThis.__NO_STACKED_STAIRS) return;
+	const opposite = {
+		n: "s",
+		s: "n",
+		e: "w",
+		w: "e"
+	};
+	for (let i = 1; i + 1 < floors.length; i++) {
+		const f = floors[i];
+		const below = floors[i - 1];
+		const above = floors[i + 1];
+		for (const U of f.stairs) {
+			if (!(U.kind === "u" || U.kind === "uOpen") || !U.goesUp) continue;
+			const horiz = U.entry === "w" || U.entry === "e";
+			const run = (st) => horiz ? [st.minX, st.maxX] : [st.minY, st.maxY];
+			const across = (st) => horiz ? [st.minY, st.maxY] : [st.minX, st.maxX];
+			const [a0, a1] = across(U);
+			const [r0, r1] = run(U);
+			const W = a1 - a0;
+			if (W < 1500 || r1 - r0 < 1800) continue;
+			const mid = (a0 + a1) / 2;
+			/** 片方の列だけに納まる階段なら、その列（0 = 上・左、1 = 下・右） */
+			const laneOf = (st) => {
+				const [s0, s1] = across(st);
+				if (s1 - s0 > W * .6 || s0 < a0 - 200 || s1 > a1 + 200) return null;
+				const c = (s0 + s1) / 2;
+				return c < mid - W * .1 ? 0 : c > mid + W * .1 ? 1 : null;
+			};
+			const sameAxis = (st) => (st.entry === "w" || st.entry === "e") === horiz;
+			const runShare = (st) => {
+				const [s0, s1] = run(st);
+				return (Math.min(s1, r1) - Math.max(s0, r0)) / Math.max(1, s1 - s0);
+			};
+			const A = above.stairs.find((st) => st.kind === "straight" && !st.goesUp && sameAxis(st) && laneOf(st) != null && runShare(st) >= .8 && run(st)[1] - run(st)[0] >= (r1 - r0) * .6);
+			if (!A) continue;
+			const laneA = laneOf(A);
+			const B = below.stairs.find((st) => st.kind === "straight" && st.goesUp && sameAxis(st) && laneOf(st) === (laneA === 0 ? 1 : 0) && runShare(st) >= .8);
+			if (!B) continue;
+			const ms = marksOf(U);
+			const entry = opposite[A.entry];
+			if (ms?.up && (ms.up === "w" || ms.up === "e") === horiz && ms.up !== entry) continue;
+			const before = { ...U };
+			const [la0, la1] = across(A);
+			if (horiz) {
+				U.minY = Math.max(a0, la0);
+				U.maxY = Math.min(a1, la1);
+			} else {
+				U.minX = Math.max(a0, la0);
+				U.maxX = Math.min(a1, la1);
+			}
+			U.kind = "straight";
+			U.entry = entry;
+			delete U.turn;
+			stackedStairs.add(U);
+			stackedStairs.add(B);
+			const dn = ms?.downPos;
+			const topEnd = opposite[B.entry];
+			let bent = false;
+			if (dn) {
+				const along = horiz ? dn.x : dn.y;
+				const side = horiz ? dn.y : dn.x;
+				const far = topEnd === "e" || topEnd === "s";
+				const nearTop = far ? along >= r1 - 1100 && along <= r1 + 300 : along <= r0 + 1100 && along >= r0 - 300;
+				const beyond = laneA === 1 ? side >= a1 - 150 && side <= a1 + 900 : side <= a0 + 150 && side >= a0 - 900;
+				if (nearTop && beyond) {
+					const right = B.entry === "n" ? {
+						x: -1,
+						y: 0
+					} : B.entry === "s" ? {
+						x: 1,
+						y: 0
+					} : B.entry === "w" ? {
+						x: 0,
+						y: 1
+					} : {
+						x: 0,
+						y: -1
+					};
+					const toA = horiz ? {
+						x: 0,
+						y: laneA === 1 ? 1 : -1
+					} : {
+						x: laneA === 1 ? 1 : -1,
+						y: 0
+					};
+					pendingBends.set(B, {
+						a0,
+						a1,
+						horiz,
+						turn: toA.x * right.x + toA.y * right.y > 0 ? "right" : "left",
+						lane: across(B)[1] - across(B)[0]
+					});
+					if (horiz) {
+						if (far) B.maxX = r1;
+						else B.minX = r0;
+					} else if (far) B.maxY = r1;
+					else B.minY = r0;
+					bent = true;
+				}
+			}
+			if (!bent) {
+				const far = topEnd === "e" || topEnd === "s";
+				const [b0, b1] = run(B);
+				const d = far ? r1 - b1 : b0 - r0;
+				if (d >= 300 && d <= 1900) {
+					if (horiz) {
+						if (far) B.maxX = r1;
+						else B.minX = r0;
+					} else if (far) B.maxY = r1;
+					else B.minY = r0;
+				}
+			}
+			globalThis.__stairTrace?.push(`${f.level}F 並んだ階段: ${Math.round(before.minX)},${Math.round(before.minY)}-${Math.round(before.maxX)},${Math.round(before.maxY)} の折り返し → 直階段 ${Math.round(U.minX)},${Math.round(U.minY)}-${Math.round(U.maxX)},${Math.round(U.maxY)} 口=${U.entry}／${below.level}F の階段は${bent ? `かね折れ（${pendingBends.get(B)?.turn === "right" ? "右" : "左"}へ曲がる）` : "直階段のまま"}`);
+			warnings?.push(`${f.level}階: 階段は、${below.level}階から上がってくる階段と${above.level}階へ昇る階段が横に並ぶ形として読みました（${above.level}階への階段はまっすぐ${bent ? `、${below.level}階からの階段は角で曲がって上がります` : ""}）。違うときは、方眼・3D の「階段」で種類と昇り口を直してください`);
+		}
+	}
+}
+/** 横に並ぶ階段のうち、下の階の階段をかね折れに直す（階段の部屋を分けた後に呼ぶ。splitStackedStairs の続き） */
+function bendStackedStairs(floors) {
+	for (const f of floors) for (const st of f.stairs) {
+		const b = pendingBends.get(st);
+		if (!b || st.kind !== "straight") continue;
+		pendingBends.delete(st);
+		st.kind = "l";
+		st.turn = b.turn;
+		if (b.lane >= 700 && b.lane <= 1300) st.flightWidth = Math.round(b.lane);
+		if (b.horiz) {
+			st.minY = b.a0;
+			st.maxY = b.a1;
+		} else {
+			st.minX = b.a0;
+			st.maxX = b.a1;
+		}
+	}
+}
 /**
 * 最上階の階段は「降りる階段」。上の階が無いのに UP と読んだ階段（上階の図に下階の UP の文字と矢印がそのまま写る）を直す。
 * 降り口は DN の文字の側。文字が無く矢印だけの直階段は、矢印の始点（下階の昇り口）の反対側が降り口
@@ -17142,6 +17296,7 @@ function reconcileStairs(floors, warnings) {
 		let up = null;
 		let best = 0;
 		for (const u of floors[i + 1].stairs) {
+			if (stackedStairs.has(lo) && stackedStairs.has(u)) continue;
 			const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
 			const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
 			if (ix <= 0 || iy <= 0) continue;
@@ -18304,8 +18459,10 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		});
 	}
 	finishTopFloorStairs(floors);
+	splitStackedStairs(floors, warnings);
 	reconcileStairs(floors, warnings);
 	for (const f of floors) splitStairRooms(f);
+	bendStackedStairs(floors);
 	if (mfit && moduleInfo) {
 		thicknesses.clear();
 		for (const f of floors) {
@@ -18358,6 +18515,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 		right: "右"
 	}[roadSide]}）の辺に置き直しました`);
 	finishTopFloorStairs(floors);
+	splitStackedStairs(floors);
 	reconcileStairs(floors);
 	const o1 = floors[0]?.outline.flat() ?? [];
 	if (o1.length) {
@@ -19607,6 +19765,14 @@ function norm(x, y) {
 //#region src/core/stairs.ts
 /** コの字階段で中央に吹抜を取れる最小の幅（段の幅 910 × 2 ＋ 吹抜 300） */
 var U_OPEN_MIN_WIDTH = 2100;
+/**
+* かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めていれば（Stair.flightWidth）その幅、無ければ 1,000 まで。
+* 半間（910）の列の階段を 1,000 で作ると、段の端が隣の壁から 3cm ほどはみ出して見える
+*/
+function lFlightWidth(s, Ls, Lt) {
+	const base = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	return s.flightWidth != null ? Math.max(600, Math.min(s.flightWidth, Math.min(Ls, Lt))) : base;
+}
 /** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
 function stairFrame(s) {
 	const W = s.maxX - s.minX;
@@ -19712,7 +19878,7 @@ function maxStepsInRect(s0) {
 		const k = Math.floor((Ls - land) / 240);
 		return Math.max(3, 2 * k + 1);
 	}
-	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	const fw = lFlightWidth(s, Ls, Lt);
 	const len1 = Math.max(0, Ls - fw);
 	const len2 = Math.max(0, Lt - fw);
 	return Math.max(3, Math.floor(len1 / 240) + Math.floor(len2 / 240) + 1);
@@ -19803,7 +19969,7 @@ function stairLayout(s0, n = 14) {
 		};
 	}
 	const turn = s.turn ?? "right";
-	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	const fw = lFlightWidth(s, Ls, Lt);
 	const strip = turn === "right" ? [0, fw] : [Lt - fw, Lt];
 	const len1 = Math.max(0, Ls - fw);
 	const len2 = Math.max(0, Lt - fw);
@@ -19867,7 +20033,7 @@ function stairFootprint(s0) {
 			maxY: Math.max(a.y, b.y)
 		};
 	};
-	const fw = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	const fw = lFlightWidth(s, Ls, Lt);
 	const strip = (s.turn ?? "right") === "right" ? [0, fw] : [Lt - fw, Lt];
 	return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];
 }

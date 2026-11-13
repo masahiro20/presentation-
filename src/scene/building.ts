@@ -1913,7 +1913,6 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const smb = new MeshBuilder();
     smb.clip = localClip(top, yaw);
     smb.box('ext.shutter', V(0, -panelH, 0), V(1, 0, 0), width - 0.1, panelH, 0.05);
-    for (let y = -panelH + 0.23; y < -0.1; y += 0.25) smb.box('ext.frame', V(0, y, 0), V(1, 0, 0), width - 0.14, 0.008, 0.056);
     // 下端の座板（巻き上げても残る）
     smb.box('ext.frame', V(0, -panelH, 0), V(1, 0, 0), width - 0.1, 0.06, 0.06);
     meta.doors.push({

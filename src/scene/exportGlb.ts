@@ -13,6 +13,9 @@ import { prepareMaterials, restoreMaterials } from './photoFinish';
 export async function exportGlb(viewer: Viewer): Promise<ArrayBuffer> {
   const g = viewer.groups;
   const roots = [g.building, g.roof, g.furniture, g.landscape].filter((o) => o.visible);
+  // 想定の街並み（パースの背景）は書き出さない（外部のレンダラーでは、実際の周辺や好みの背景を使う）
+  const town = viewer.townShown();
+  viewer.setTownVisible(false);
   // ガラスは透過の材料に（写真品質の計算と同じ設定）
   const saved = prepareMaterials(viewer.scene);
   try {
@@ -21,6 +24,7 @@ export async function exportGlb(viewer: Viewer): Promise<ArrayBuffer> {
     return out as ArrayBuffer;
   } finally {
     restoreMaterials(saved);
+    viewer.setTownVisible(town);
     viewer.invalidate();
   }
 }

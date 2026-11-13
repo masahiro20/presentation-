@@ -105,7 +105,7 @@ var lerp = (a, b, t) => ({
 	x: a.x + (b.x - a.x) * t,
 	y: a.y + (b.y - a.y) * t
 });
-function polygonArea$1(poly) {
+function polygonArea$2(poly) {
 	let s = 0;
 	for (let i = 0; i < poly.length; i++) {
 		const p = poly[i];
@@ -5368,7 +5368,7 @@ function traceMask(mask, grid, simplifyTol) {
 		}
 	}
 	const tol = simplifyTol ?? grid.res * 1.2;
-	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea$1(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea$1(b)) - Math.abs(polygonArea$1(a)));
+	return loops.map((l) => simplifyClosed(removeCollinear(l, .01), tol)).filter((l) => l.length >= 3 && Math.abs(polygonArea$2(l)) > grid.res * grid.res * 4).sort((a, b) => Math.abs(polygonArea$2(b)) - Math.abs(polygonArea$2(a)));
 }
 //#endregion
 //#region src/parser/balconyRails.ts
@@ -5508,7 +5508,7 @@ function findBalconyRails(input) {
 		const poly = traceMask(dilateMask(mask, w, h, 1, (i) => line[i] === 1), g, 45)[0] ?? [];
 		out.push({
 			label: p,
-			area: poly.length ? Math.abs(polygonArea$1(poly)) / 1e6 : cells,
+			area: poly.length ? Math.abs(polygonArea$2(poly)) / 1e6 : cells,
 			polygon: poly,
 			rails
 		});
@@ -8989,9 +8989,9 @@ function sitePolygon(edges, c) {
 		return;
 	}
 	if (pts.length >= 3 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) <= 50) pts.pop();
-	return pts.length >= 3 && Math.abs(polygonArea(pts)) > 1e6 ? pts : void 0;
+	return pts.length >= 3 && Math.abs(polygonArea$1(pts)) > 1e6 ? pts : void 0;
 }
-function polygonArea(p) {
+function polygonArea$1(p) {
 	let s = 0;
 	for (let i = 0; i < p.length; i++) {
 		const a = p[i];
@@ -10902,7 +10902,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			"garage"
 		].includes(room.type)) continue;
 		const bb = roomBBox(room);
-		const roomArea = Math.abs(polygonArea$1(room.polygon));
+		const roomArea = Math.abs(polygonArea$2(room.polygon));
 		const cands = [];
 		for (const r of rects) {
 			const cx = (r.minX + r.maxX) / 2;
@@ -11165,7 +11165,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			used.add(c);
 		}
 		const free = () => cands.filter((c) => !used.has(c) && !c.kind);
-		if (t === "ldk" || t === "living" || t === "dining" || t === "kitchen" || t === "japanese" || t === "other" && Math.abs(polygonArea$1(room.polygon)) >= 8e6) {
+		if (t === "ldk" || t === "living" || t === "dining" || t === "kitchen" || t === "japanese" || t === "other" && Math.abs(polygonArea$2(room.polygon)) >= 8e6) {
 			const counters = free().filter((c) => within(c.S, 550, 1100) && within(c.L, 1600, 9e3) && c.rect.innerRects <= 8);
 			let kitchenDone = false;
 			if (t !== "japanese" && t !== "other") {
@@ -14813,7 +14813,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		if (!loops.length) return null;
 		return {
 			poly: loops[0],
-			area: Math.abs(polygonArea$1(loops[0])) / 1e6,
+			area: Math.abs(polygonArea$2(loops[0])) / 1e6,
 			mask
 		};
 	};
@@ -15299,7 +15299,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const building = new Uint8Array(grid.w * grid.h);
 	for (let i = 0; i < building.length; i++) building[i] = grid.data[i] !== 2 && !courtLabels.has(labels[i]) ? 1 : 0;
 	const extD = walls.length ? Math.max(...walls.map((w) => w.d)) : 150;
-	const outline = traceMask(erodeMask(building, grid.w, grid.h, Math.max(1, Math.round(extD / 2 / res))), grid, res * 1.5).filter((l) => Math.abs(polygonArea$1(l)) > 2e6);
+	const outline = traceMask(erodeMask(building, grid.w, grid.h, Math.max(1, Math.round(extD / 2 / res))), grid, res * 1.5).filter((l) => Math.abs(polygonArea$2(l)) > 2e6);
 	const sideState = (p) => {
 		const [x, y] = grid.cellOf(p);
 		if (x >= 0 && y >= 0 && x < grid.w && y < grid.h && courtLabels.has(labels[y * grid.w + x])) return 2;
@@ -16660,7 +16660,7 @@ function isRoomShaped(poly) {
 }
 /** 細長い帯状の塗り（手すり壁・腰壁・曲面の壁など）: 幅 40〜180mm、長さ 600mm 以上 */
 function isStripFill(poly) {
-	const area = Math.abs(polygonArea$1(poly));
+	const area = Math.abs(polygonArea$2(poly));
 	let per = 0;
 	for (let i = 0; i < poly.length; i++) per += Math.hypot(poly[(i + 1) % poly.length].x - poly[i].x, poly[(i + 1) % poly.length].y - poly[i].y);
 	if (per < 1200) return false;
@@ -16671,7 +16671,7 @@ function isStripFill(poly) {
 function fillWidth(poly) {
 	let per = 0;
 	for (let i = 0; i < poly.length; i++) per += Math.hypot(poly[(i + 1) % poly.length].x - poly[i].x, poly[(i + 1) % poly.length].y - poly[i].y);
-	return per > 0 ? 2 * Math.abs(polygonArea$1(poly)) / per : 0;
+	return per > 0 ? 2 * Math.abs(polygonArea$2(poly)) / per : 0;
 }
 /** 壁の塗りとして扱う太さの上限 (mm)。壁の塗りは壁の厚み（提案図で 40〜120mm、RC・1/50 でも 250mm まで）しか無い */
 var WALL_FILL_MAX_W = 260;
@@ -16723,7 +16723,7 @@ function softFillColors(fills, wallColors) {
 			fat: 0,
 			all: 0
 		};
-		const a = Math.abs(polygonArea$1(f.poly));
+		const a = Math.abs(polygonArea$2(f.poly));
 		st.all += a;
 		if (fillWidth(f.poly) > WALL_FILL_MAX_W) st.fat += a;
 		stat.set(f.color, st);
@@ -16991,7 +16991,7 @@ function detectPlans(pages, warnings) {
 			const roomFills = [];
 			const cand = page.colorFills.filter((f) => !wallColors.has(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin))).map((f) => ({
 				poly: f.poly,
-				area: Math.abs(polygonArea$1(f.poly)) / 1e6,
+				area: Math.abs(polygonArea$2(f.poly)) / 1e6,
 				bb: bboxOf$2(f.poly)
 			})).filter((c) => c.area >= .6 && c.area <= 150 && isRoomShaped(c.poly)).map((c) => ({
 				...c,
@@ -18140,7 +18140,7 @@ function snapFloorWalls(f, m) {
 	};
 	for (const r of f.rooms) {
 		r.polygon = movePoly(r.polygon);
-		r.area = Math.round(Math.abs(polygonArea$1(r.polygon)) / 1e6 * 100) / 100;
+		r.area = Math.round(Math.abs(polygonArea$2(r.polygon)) / 1e6 * 100) / 100;
 	}
 	f.outline = f.outline.map(movePoly);
 }
@@ -19810,7 +19810,7 @@ function largestInnerRect(poly, tol = 5) {
 /** 多角形のオフセット（マイタ結合、外向き正） */
 function offsetPolygon(poly, d) {
 	const n = poly.length;
-	const sign = polygonArea$1(poly) > 0 ? 1 : -1;
+	const sign = polygonArea$2(poly) > 0 ? 1 : -1;
 	const out = [];
 	for (let i = 0; i < n; i++) {
 		const p0 = poly[(i - 1 + n) % n];
@@ -22480,7 +22480,7 @@ function roomsArea(f, types) {
 	return f.rooms.filter((r) => types.includes(r.type)).reduce((s, r) => s + r.area, 0);
 }
 function outlineArea$1(f) {
-	return f.outline.reduce((s, l) => s + Math.abs(polygonArea$1(l)) / 1e6, 0);
+	return f.outline.reduce((s, l) => s + Math.abs(polygonArea$2(l)) / 1e6, 0);
 }
 /** 点が階の外形の内側か（外形の輪が複数・中庭の穴があっても偶奇で判定） */
 function inFloor(f, x, y) {
@@ -22680,7 +22680,7 @@ function exteriorRuns(f, poly, step = 100) {
 function convexCorners(f) {
 	let n = 0;
 	for (const l of f.outline) {
-		const sgn = Math.sign(polygonArea$1(l)) || 1;
+		const sgn = Math.sign(polygonArea$2(l)) || 1;
 		for (let i = 0; i < l.length; i++) {
 			const a = l[(i - 1 + l.length) % l.length];
 			const b = l[i];
@@ -22746,7 +22746,7 @@ function takeoff(model, opts) {
 	let lowerShort = 0;
 	for (let i = 0; i < floors.length - 1; i++) for (const loop of floors[i].outline) {
 		if (loop.length < 3) continue;
-		const area = Math.abs(polygonArea$1(loop)) / 1e6;
+		const area = Math.abs(polygonArea$2(loop)) / 1e6;
 		if (area < 6 || uncoveredArea(loop, floors.slice(i + 1)) < area * .5) continue;
 		const lb = bboxOf(loop);
 		lowerShort += Math.min(lb.maxX - lb.minX, lb.maxY - lb.minY) / 1e3;
@@ -24412,7 +24412,7 @@ function emitFlat(mb, key, polyMm, voidsMm, y, faceUp) {
 	}
 }
 /** 多角形を半平面で切る（Sutherland–Hodgman）。axis の値が v 以下（keepLess）／以上の側を残す */
-function clipHalf(poly, axis, v, keepLess) {
+function clipHalf$1(poly, axis, v, keepLess) {
 	const out = [];
 	const inside = (p) => keepLess ? p[axis] <= v : p[axis] >= v;
 	for (let i = 0; i < poly.length; i++) {
@@ -24501,7 +24501,7 @@ function polygonMinusRects(poly, rects) {
 			for (const reg of regions) {
 				let c = pc;
 				for (const [ax, v, less] of reg) {
-					c = clipHalf(c, ax, v, less);
+					c = clipHalf$1(c, ax, v, less);
 					if (c.length < 3) break;
 				}
 				if (c.length >= 3 && polyArea(c) > 100) next.push(c);
@@ -25467,7 +25467,6 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		const smb = new MeshBuilder();
 		smb.clip = localClip(top, yaw);
 		smb.box("ext.shutter", V(0, -panelH, 0), V(1, 0, 0), width - .1, panelH, .05);
-		for (let y = -panelH + .23; y < -.1; y += .25) smb.box("ext.frame", V(0, y, 0), V(1, 0, 0), width - .14, .008, .056);
 		smb.box("ext.frame", V(0, -panelH, 0), V(1, 0, 0), width - .1, .06, .06);
 		meta.doors.push({
 			id: o.id,
@@ -28351,6 +28350,992 @@ function stepCount(diffMm) {
 	};
 }
 //#endregion
+//#region src/sun/plannedHouse.ts
+var ROOF_TYPES = [
+	"gable",
+	"hip",
+	"shed",
+	"flat"
+];
+/** 想定の家のプリセット（寸法は一般的な建売・分譲住宅の目安） */
+var PLANNED_PRESETS = [
+	{
+		id: "hiraya",
+		label: "平屋（切妻）",
+		width: 12,
+		depth: 8,
+		eaveHeight: 3,
+		ridgeHeight: 5,
+		roof: "gable"
+	},
+	{
+		id: "gable2",
+		label: "2 階建て（切妻）",
+		width: 9.1,
+		depth: 7.3,
+		eaveHeight: 6,
+		ridgeHeight: 8.5,
+		roof: "gable"
+	},
+	{
+		id: "shed2",
+		label: "2 階建て（片流れ）",
+		width: 9.1,
+		depth: 7.3,
+		eaveHeight: 5.5,
+		ridgeHeight: 7.5,
+		roof: "shed"
+	},
+	{
+		id: "hip2",
+		label: "2 階建て（寄棟）",
+		width: 9.1,
+		depth: 7.3,
+		eaveHeight: 6,
+		ridgeHeight: 8,
+		roof: "hip"
+	},
+	{
+		id: "flat3",
+		label: "3 階建て（陸屋根）",
+		width: 8,
+		depth: 8,
+		eaveHeight: 9.5,
+		ridgeHeight: 9.5,
+		roof: "flat"
+	},
+	{
+		id: "apartment2",
+		label: "アパート 2 階（陸屋根）",
+		width: 16,
+		depth: 9,
+		eaveHeight: 7,
+		ridgeHeight: 7,
+		roof: "flat"
+	},
+	{
+		id: "box",
+		label: "箱（高さだけ）",
+		width: 8,
+		depth: 8,
+		eaveHeight: 7,
+		ridgeHeight: 7,
+		roof: "flat"
+	}
+];
+var PLANNED_PRESET_IDS = PLANNED_PRESETS.map((p) => p.id);
+/** 既定のプリセット（2 階建て・切妻） */
+var DEFAULT_PLANNED_PRESET = "gable2";
+/** 軒の出 (m) */
+var PLANNED_EAVE_OVERHANG = .45;
+/** 屋根の板の厚さ (m)。壁の上端は屋根の上面より この分だけ下 */
+var PLANNED_ROOF_THICKNESS = .15;
+/** プリセット（知らない id なら既定の 2 階建て・切妻） */
+function plannedPreset(id) {
+	return PLANNED_PRESETS.find((p) => p.id === id) ?? PLANNED_PRESETS.find((p) => p.id === "gable2");
+}
+function isPlannedPresetId(v) {
+	return typeof v === "string" && PLANNED_PRESET_IDS.includes(v);
+}
+function isRoofType(v) {
+	return typeof v === "string" && ROOF_TYPES.includes(v);
+}
+var plannedSeq = 0;
+/** 新しい想定の家の id（'planned:<時刻>:<連番>'） */
+function newPlannedId() {
+	plannedSeq++;
+	return `planned:${Date.now().toString(36)}:${plannedSeq.toString(36)}`;
+}
+var finite = (v, d) => typeof v === "number" && Number.isFinite(v) ? v : d;
+var clampN = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+/**
+* 値を整える（保存データ・入力欄の値に使う）: 数値は有限値だけ（無ければプリセット・既定の値）、寸法は 1〜300 m、
+* 高さは 1 m 以上、棟 ≥ 軒、陸屋根は棟 = 軒、方位は [0, 360)、知らない屋根の形は切妻、知らないプリセットは外す、
+* 名前は前後の空白を落として 40 文字まで（空なら外す）、id が無ければ新しく作る。元のオブジェクトは変えない
+*/
+function clampHouse(raw) {
+	const h = raw && typeof raw === "object" ? raw : {};
+	const p = plannedPreset(isPlannedPresetId(h.preset) ? h.preset : DEFAULT_PLANNED_PRESET);
+	const roof = isRoofType(h.roof) ? h.roof : p.roof;
+	const width = clampN(finite(h.width, p.width), 1, 300);
+	const depth = clampN(finite(h.depth, p.depth), 1, 300);
+	const eave = clampN(finite(h.eaveHeight, p.eaveHeight), 1, 300);
+	const ridge = roof === "flat" ? eave : clampN(Math.max(eave, finite(h.ridgeHeight, Math.max(eave, p.ridgeHeight))), 1, 300);
+	const rot = (finite(h.rotDeg, 0) % 360 + 360) % 360;
+	const out = {
+		id: typeof h.id === "string" && h.id ? h.id : newPlannedId(),
+		ce: finite(h.ce, 0),
+		cn: finite(h.cn, 0),
+		width,
+		depth,
+		rotDeg: rot >= 360 - 1e-12 ? 0 : rot,
+		eaveHeight: eave,
+		ridgeHeight: ridge,
+		roof
+	};
+	if (isPlannedPresetId(h.preset)) out.preset = h.preset;
+	const label = typeof h.label === "string" ? h.label.trim().slice(0, 40) : "";
+	if (label) out.label = label;
+	return out;
+}
+var planeZ = (p, u, v) => p.a * u + p.b * v + p.c;
+/** 屋根の上面の平面（屋根の高さ = これらの最小値）。o = 軒の出 */
+function roofPlanes(h, o) {
+	const W = h.width;
+	const D = h.depth;
+	const E = h.eaveHeight;
+	const H = Math.max(0, h.ridgeHeight - E);
+	const out = [];
+	if (h.roof === "flat" || H <= 1e-9) out.push({
+		a: 0,
+		b: 0,
+		c: E
+	});
+	else if (h.roof === "shed") {
+		const s = H / (D + o);
+		out.push({
+			a: 0,
+			b: s,
+			c: E + s * D / 2
+		});
+	} else {
+		const s = H / (D / 2);
+		out.push({
+			a: 0,
+			b: s,
+			c: E + s * D / 2
+		}, {
+			a: 0,
+			b: -s,
+			c: E + s * D / 2
+		});
+		if (h.roof === "hip") {
+			const r = Math.max(0, (W - D) / 2);
+			const su = H / (W / 2 - r);
+			out.push({
+				a: su,
+				b: 0,
+				c: E + su * W / 2
+			}, {
+				a: -su,
+				b: 0,
+				c: E + su * W / 2
+			});
+		}
+	}
+	return out.filter((p, i) => !out.slice(0, i).some((q) => Math.abs(q.a - p.a) < 1e-12 && Math.abs(q.b - p.b) < 1e-12 && Math.abs(q.c - p.c) < 1e-9));
+}
+/** 凸多角形を半平面 A·u + B·v + C ≤ 0 で切り取る */
+function clipHalf(poly, A, B, C) {
+	const out = [];
+	const f = (p) => A * p.u + B * p.v + C;
+	const eps = 1e-10;
+	for (let i = 0; i < poly.length; i++) {
+		const cur = poly[i];
+		const prev = poly[(i + poly.length - 1) % poly.length];
+		const fc = f(cur);
+		const fp = f(prev);
+		const ci = fc <= eps;
+		const pi = fp <= eps;
+		if (ci) {
+			if (!pi) {
+				const t = fp / (fp - fc);
+				out.push({
+					u: prev.u + (cur.u - prev.u) * t,
+					v: prev.v + (cur.v - prev.v) * t
+				});
+			}
+			out.push(cur);
+		} else if (pi) {
+			const t = fp / (fp - fc);
+			out.push({
+				u: prev.u + (cur.u - prev.u) * t,
+				v: prev.v + (cur.v - prev.v) * t
+			});
+		}
+	}
+	return out;
+}
+var area2 = (poly) => {
+	let s = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const a = poly[i];
+		const b = poly[(i + 1) % poly.length];
+		s += a.u * b.v - b.u * a.v;
+	}
+	return s / 2;
+};
+/** 同じ点を 1 つの点にまとめる（面どうしで頂点が完全に一致するように） */
+var PointPool = class {
+	pts = [];
+	get(p) {
+		for (const q of this.pts) if (Math.abs(q.u - p.u) < 1e-7 && Math.abs(q.v - p.v) < 1e-7) return q;
+		const c = {
+			u: p.u,
+			v: p.v
+		};
+		this.pts.push(c);
+		return c;
+	}
+};
+/** 長方形の中を「どの屋根面が最小か」で分けた凸多角形（反時計回り。頂点は pool で共有） */
+function roofRegions(planes, u0, u1, v0, v1, pool) {
+	const rect = [
+		{
+			u: u0,
+			v: v0
+		},
+		{
+			u: u1,
+			v: v0
+		},
+		{
+			u: u1,
+			v: v1
+		},
+		{
+			u: u0,
+			v: v1
+		}
+	];
+	const out = [];
+	for (let i = 0; i < planes.length; i++) {
+		let poly = rect;
+		for (let j = 0; j < planes.length && poly.length >= 3; j++) {
+			if (j === i) continue;
+			const A = planes[i].a - planes[j].a;
+			const B = planes[i].b - planes[j].b;
+			const C = planes[i].c - planes[j].c;
+			poly = clipHalf(poly, A, B, C);
+		}
+		const merged = [];
+		for (const p of poly) {
+			const q = pool.get(p);
+			if (merged[merged.length - 1] !== q) merged.push(q);
+		}
+		while (merged.length > 1 && merged[0] === merged[merged.length - 1]) merged.pop();
+		if (merged.length >= 3 && area2(merged) > 1e-8) out.push(merged);
+	}
+	return out;
+}
+/** 線分 a→b の上にある点（端点を含む）を a からの順に */
+function pointsOnSide(polys, a, b) {
+	const du = b.u - a.u;
+	const dv = b.v - a.v;
+	const L2 = du * du + dv * dv;
+	const L = Math.sqrt(L2);
+	const seen = /* @__PURE__ */ new Set();
+	const out = [];
+	for (const poly of polys) for (const p of poly) {
+		if (seen.has(p)) continue;
+		const t = ((p.u - a.u) * du + (p.v - a.v) * dv) / L2;
+		if (Math.abs((p.u - a.u) * dv - (p.v - a.v) * du) / L > 1e-6 || t < -1e-9 || t > 1 + 1e-9) continue;
+		seen.add(p);
+		out.push({
+			p,
+			t
+		});
+	}
+	return out.sort((x, y) => x.t - y.t).map((x) => x.p);
+}
+/** 三角形の集まり（局所座標、屋根・壁） */
+var TriSink = class {
+	roof = [];
+	wall = [];
+	/** 平らな凸多角形を外向き（outward の側から見て反時計回り）に三角形に分けて足す（4 点以上は重心から扇形: 一直線上の点があっても潰れた三角形を作らない） */
+	poly(pts, outward, group) {
+		if (pts.length < 3) return;
+		let nx = 0;
+		let ny = 0;
+		let nz = 0;
+		for (let i = 0; i < pts.length; i++) {
+			const a = pts[i];
+			const b = pts[(i + 1) % pts.length];
+			nx += (a.v - b.v) * (a.z + b.z);
+			ny += (a.z - b.z) * (a.u + b.u);
+			nz += (a.u - b.u) * (a.v + b.v);
+		}
+		const ps = nx * outward[0] + ny * outward[1] + nz * outward[2] < 0 ? pts.slice().reverse() : pts;
+		const t = group === "roof" ? this.roof : this.wall;
+		if (ps.length === 3) {
+			t.push(ps[0], ps[1], ps[2]);
+			return;
+		}
+		const c = {
+			u: 0,
+			v: 0,
+			z: 0
+		};
+		for (const p of ps) {
+			c.u += p.u / ps.length;
+			c.v += p.v / ps.length;
+			c.z += p.z / ps.length;
+		}
+		for (let i = 0; i < ps.length; i++) t.push(c, ps[i], ps[(i + 1) % ps.length]);
+	}
+};
+/** 局所座標の三角形（屋根・壁）。テスト・解析用（ジオメトリは buildPlannedHouseGeometry） */
+function plannedHouseTriangles(hIn, opts = {}) {
+	const h = clampHouse(hIn);
+	const W = h.width;
+	const D = h.depth;
+	const flat = h.roof === "flat";
+	const o = flat || opts.eaves === false ? 0 : PLANNED_EAVE_OVERHANG;
+	const t = flat ? 0 : PLANNED_ROOF_THICKNESS;
+	const z0 = -Math.max(0, finite(opts.sink, 0));
+	const planes = roofPlanes(h, o);
+	const zTop = (p) => {
+		let z = Infinity;
+		for (const pl of planes) z = Math.min(z, planeZ(pl, p.u, p.v));
+		return z;
+	};
+	const pool = new PointPool();
+	const sink = new TriSink();
+	const UP = [
+		0,
+		0,
+		1
+	];
+	const DOWN = [
+		0,
+		0,
+		-1
+	];
+	const corners = (u0, u1, v0, v1) => [
+		pool.get({
+			u: u0,
+			v: v0
+		}),
+		pool.get({
+			u: u1,
+			v: v0
+		}),
+		pool.get({
+			u: u1,
+			v: v1
+		}),
+		pool.get({
+			u: u0,
+			v: v1
+		})
+	];
+	const bodyRegions = roofRegions(planes, -W / 2, W / 2, -D / 2, D / 2, pool);
+	const bodyTop = (p) => zTop(p) - t;
+	for (const poly of bodyRegions) sink.poly(poly.map((p) => ({
+		u: p.u,
+		v: p.v,
+		z: bodyTop(p)
+	})), UP, "roof");
+	const rc = corners(-W / 2, W / 2, -D / 2, D / 2);
+	for (let k = 0; k < 4; k++) {
+		const a = rc[k];
+		const b = rc[(k + 1) % 4];
+		const chain = pointsOnSide(bodyRegions, a, b);
+		const pts = [
+			{
+				u: a.u,
+				v: a.v,
+				z: z0
+			},
+			{
+				u: b.u,
+				v: b.v,
+				z: z0
+			},
+			...chain.reverse().map((p) => ({
+				u: p.u,
+				v: p.v,
+				z: bodyTop(p)
+			}))
+		];
+		sink.poly(pts, [
+			b.v - a.v,
+			-(b.u - a.u),
+			0
+		], "wall");
+	}
+	sink.poly(rc.map((p) => ({
+		u: p.u,
+		v: p.v,
+		z: z0
+	})), DOWN, "wall");
+	if (!flat) {
+		const slabRegions = roofRegions(planes, -W / 2 - o, W / 2 + o, -D / 2 - o, D / 2 + o, pool);
+		for (const poly of slabRegions) {
+			sink.poly(poly.map((p) => ({
+				u: p.u,
+				v: p.v,
+				z: zTop(p)
+			})), UP, "roof");
+			sink.poly(poly.map((p) => ({
+				u: p.u,
+				v: p.v,
+				z: zTop(p) - t
+			})), DOWN, "roof");
+		}
+		const sc = corners(-W / 2 - o, W / 2 + o, -D / 2 - o, D / 2 + o);
+		for (let k = 0; k < 4; k++) {
+			const a = sc[k];
+			const b = sc[(k + 1) % 4];
+			const out = [
+				b.v - a.v,
+				-(b.u - a.u),
+				0
+			];
+			const chain = pointsOnSide(slabRegions, a, b);
+			for (let i = 0; i + 1 < chain.length; i++) {
+				const p = chain[i];
+				const q = chain[i + 1];
+				sink.poly([
+					{
+						u: p.u,
+						v: p.v,
+						z: zTop(p) - t
+					},
+					{
+						u: q.u,
+						v: q.v,
+						z: zTop(q) - t
+					},
+					{
+						u: q.u,
+						v: q.v,
+						z: zTop(q)
+					},
+					{
+						u: p.u,
+						v: p.v,
+						z: zTop(p)
+					}
+				], out, "roof");
+			}
+		}
+	}
+	return {
+		roof: sink.roof,
+		wall: sink.wall
+	};
+}
+//#endregion
+//#region src/scene/town.ts
+/**
+* 想定の街並み（パースの背景）
+*
+* 外観を立ち上げたとき、家のまわりが「何もない地面」か「白い箱」だと、絵が冷たく見える。
+* 敷地のまわりに、住宅地らしい区画（家・駐車場・低い塀・生垣・庭木）を並べる:
+*  - 同じ並びの両隣、裏の並び、道路の向かいの並び、その奥の並び（遠くはかすみに溶ける）
+*  - 家は屋根の形（切妻・寄棟・片流れ・陸屋根）と窓のある形。色は主役を引き立てる淡い色に抑える
+*  - 区画ごとに 1 つのまとまり（houses）。カメラと建物の間に入る区画は viewer が丸ごと隠す
+*
+* 実際の周辺建物（日照の画面で取得したもの）とは別物。実際の街を出すときは viewer.setTownVisible(false) で消す
+*/
+var UP = new THREE.Vector3(0, 1, 0);
+var WALL_KEYS = [
+	"l.nbWallA",
+	"l.nbWallB",
+	"l.nbWallC",
+	"l.nbWallD",
+	"l.nbWallE"
+];
+var ROOF_KEYS = [
+	"l.nbRoofA",
+	"l.nbRoofB",
+	"l.nbRoofC"
+];
+/** 外向きの面に貼る板（c は板の下辺の中央。off は壁からの浮き） */
+function panel(mb, key, c, out, w, h, off) {
+	const t = new THREE.Vector3().crossVectors(UP, out).normalize();
+	const b = c.clone().addScaledVector(out, off);
+	const p0 = b.clone().addScaledVector(t, -w / 2);
+	const p1 = b.clone().addScaledVector(t, w / 2);
+	mb.quad(key, p0, p1, p1.clone().addScaledVector(UP, h), p0.clone().addScaledVector(UP, h), t, UP);
+}
+/** 家 1 軒（壁・屋根・窓・玄関・基礎の帯・バルコニー）。戻り値は最高高さ */
+function addHouse(mb, s, rnd) {
+	const eave = s.stories === 2 ? 5.75 + rnd() * .35 : 3.05 + rnd() * .25;
+	const ridge = eave + (s.roof === "gable" ? s.d / 2 * (.38 + rnd() * .12) : s.roof === "hip" ? s.d / 2 * (.34 + rnd() * .1) : s.roof === "shed" ? (s.d + .45) * (.14 + rnd() * .08) : 0);
+	const u = s.u.clone();
+	if (rnd() < .5) u.negate();
+	const v = V(u.z, 0, -u.x);
+	const tris = plannedHouseTriangles({
+		id: "nb",
+		ce: 0,
+		cn: 0,
+		width: s.w,
+		depth: s.d,
+		rotDeg: 0,
+		eaveHeight: eave,
+		ridgeHeight: ridge,
+		roof: s.roof
+	}, { eaves: true });
+	const world = (p) => s.c.clone().addScaledVector(u, p.u).addScaledVector(v, p.v).addScaledVector(UP, p.z);
+	const put = (key, pts) => {
+		for (let i = 0; i + 2 < pts.length; i += 3) mb.tri(key, world(pts[i]), world(pts[i + 1]), world(pts[i + 2]), u, UP);
+	};
+	put(s.wallKey, tris.wall);
+	put(s.roofKey, tris.roof);
+	if (s.roof === "flat") mb.box(s.roofKey, s.c.clone().setY(s.c.y + eave), u, s.w + .06, .07, s.d + .06);
+	const sides = [
+		{
+			out: v.clone(),
+			len: s.w,
+			half: s.d / 2
+		},
+		{
+			out: v.clone().negate(),
+			len: s.w,
+			half: s.d / 2
+		},
+		{
+			out: u.clone(),
+			len: s.d,
+			half: s.w / 2
+		},
+		{
+			out: u.clone().negate(),
+			len: s.d,
+			half: s.w / 2
+		}
+	];
+	const floorY = (k) => s.c.y + .5 + k * 2.85;
+	const frontIdx = sides.reduce((bi, sd, i) => sd.out.dot(s.front) > sides[bi].out.dot(s.front) ? i : bi, 0);
+	for (const sd of sides) panel(mb, "l.nbBase", s.c.clone().addScaledVector(sd.out, sd.half), sd.out, sd.len + .02, .42, .012);
+	sides.forEach((sd, si) => {
+		const face = s.c.clone().addScaledVector(sd.out, sd.half);
+		const t = new THREE.Vector3().crossVectors(UP, sd.out).normalize();
+		const isFront = si === frontIdx;
+		const isBack = sd.out.dot(s.front) < -.9;
+		const nBay = Math.max(1, Math.min(3, Math.round(sd.len / 3.1)));
+		const doorBay = isFront ? Math.floor(rnd() * nBay) : -1;
+		for (let k = 0; k < s.stories; k++) for (let b = 0; b < nBay; b++) {
+			const pos = ((b + .5) / nBay - .5) * sd.len + (rnd() - .5) * .4;
+			const at = (dy) => face.clone().addScaledVector(t, pos).setY(floorY(k) + dy);
+			if (k === 0 && b === doorBay) {
+				panel(mb, "l.nbDoor", at(0), sd.out, .92, 2.15, .02);
+				mb.box("l.nbBase", face.clone().addScaledVector(t, pos).addScaledVector(sd.out, .6).setY(s.c.y), t, 1.7, .38, 1.2);
+				mb.box(s.roofKey, face.clone().addScaledVector(t, pos).addScaledVector(sd.out, .45).setY(floorY(0) + 2.4), t, 1.8, .07, .9);
+				continue;
+			}
+			if (rnd() < (isFront || isBack ? .12 : .34)) continue;
+			const tall = k === 0 && (isBack || isFront) && rnd() < .5;
+			const slim = !tall && rnd() < (isFront || isBack ? .25 : .6);
+			const ww = slim ? .62 : 1.66;
+			const wh = tall ? 2 : slim ? 1.15 : 1.08;
+			const sill = tall ? .12 : slim ? .95 : .92;
+			if (pos - ww / 2 < -sd.len / 2 + .35 || pos + ww / 2 > sd.len / 2 - .35) continue;
+			panel(mb, "l.nbFrame", at(sill - .045), sd.out, ww + .09, wh + .09, .016);
+			panel(mb, rnd() < .3 ? "l.nbGlassLit" : "l.nbGlass", at(sill), sd.out, ww, wh, .026);
+		}
+	});
+	if (s.stories === 2 && rnd() < .4) {
+		const sd = sides[rnd() < .5 ? frontIdx : sides.findIndex((x) => x.out.dot(s.front) < -.9)];
+		if (sd && sd.len > 5) {
+			const t = new THREE.Vector3().crossVectors(UP, sd.out).normalize();
+			const len = Math.min(sd.len - 1.2, 3.6 + rnd() * 1.4);
+			const pos = (rnd() - .5) * (sd.len - len - .6);
+			const base = s.c.clone().addScaledVector(sd.out, sd.half + .55).addScaledVector(t, pos).setY(floorY(1) - .12);
+			mb.box(s.wallKey, base, t, len, 1.2, 1.1);
+		}
+	}
+	return ridge;
+}
+/** 庭木（背景用の軽い作り: 幹と枝、葉のカードの樹冠） */
+function addTree(mb, p, h, rnd, leafKey) {
+	const top = p.clone().setY(p.y + h * .52);
+	mb.tube("l.trunk", p, top, .035 * h + .03, .02 * h + .015, 6);
+	const crown = p.clone().setY(p.y + h * .68);
+	const rx = h * .3;
+	const ry = h * .3;
+	for (let i = 0; i < 3; i++) {
+		const az = i / 3 * Math.PI * 2 + rnd() * 1.2;
+		const tip = crown.clone().add(V(Math.cos(az) * rx * .55, (rnd() - .2) * ry * .5, Math.sin(az) * rx * .55));
+		mb.tube("l.trunk", top.clone().setY(top.y - .25 * rnd()), tip, .014 * h + .012, .008 * h + .006, 5);
+	}
+	const n = 16;
+	for (let i = 0; i < n; i++) {
+		const az = rnd() * Math.PI * 2;
+		const el = (rnd() - .35) * Math.PI * .9;
+		const r = .55 + rnd() * .45;
+		const q = crown.clone().add(V(Math.cos(az) * Math.cos(el) * rx * r, Math.sin(el) * ry * r, Math.sin(az) * Math.cos(el) * rx * r));
+		mb.card(leafKey, q, h * (.26 + rnd() * .12), new THREE.Euler((rnd() - .5) * 1.6, rnd() * Math.PI * 2, (rnd() - .5) * 1.6));
+	}
+}
+/** 生垣（a → b。高さ h） */
+function addHedge(mb, a, b, h, rnd) {
+	const L = a.distanceTo(b);
+	if (L < .3) return;
+	const dir = b.clone().sub(a).normalize();
+	mb.roundedBox("l.hedge", a.clone().lerp(b, .5), dir, L, h * .92, .5, .16, 2);
+	const side = V(dir.z, 0, -dir.x);
+	const n = Math.max(2, Math.round(L / .3));
+	for (let i = 0; i < n; i++) {
+		const p = a.clone().lerp(b, (i + rnd()) / n);
+		for (let k = 0; k < 3; k++) {
+			const face = k === 0 ? 0 : k === 1 ? 1 : -1;
+			const q = p.clone().addScaledVector(side, face * .24).setY(a.y + (face === 0 ? h * .93 : h * (.25 + rnd() * .6)));
+			mb.card("l.leafCardDark", q, .42 + rnd() * .16, new THREE.Euler(face === 0 ? -Math.PI / 2 + (rnd() - .5) * .9 : (rnd() - .5) * .7, Math.atan2(dir.x, dir.z) + Math.PI / 2 + (rnd() - .5) * .8, (rnd() - .5) * .9));
+		}
+	}
+}
+/** 低木のひと株 */
+function addShrub(mb, p, s, rnd) {
+	for (let i = 0; i < 5; i++) {
+		const q = p.clone().add(V((rnd() - .5) * s * 1.2, s * (.3 + rnd() * .5), (rnd() - .5) * s * 1.2));
+		mb.card("l.leafCardDark", q, s * (.9 + rnd() * .5), new THREE.Euler(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI));
+	}
+}
+/** 駐車場の車（背景用の簡単な形。前後の向き dir） */
+function addCar(mb, c, dir, rnd) {
+	const body = rnd() < .4 ? "l.nbCarLight" : rnd() < .5 ? "l.nbCarDark" : "l.nbCarGrey";
+	const small = rnd() < .4;
+	const L = small ? 3.4 : 4.5;
+	const W = small ? 1.48 : 1.78;
+	const H = small ? 1.55 : 1.5;
+	mb.roundedBox(body, c.clone().setY(c.y + .22), dir, L, .62, W, .14, 2);
+	mb.roundedBox(body, c.clone().addScaledVector(dir, -L * .06).setY(c.y + .8), dir, L * (small ? .72 : .56), H - .84, W - .1, .16, 2);
+	mb.box("l.nbGlass", c.clone().addScaledVector(dir, -L * .06).setY(c.y + .9), dir, L * (small ? .74 : .58), H - 1.12, W - .16);
+	const side = V(dir.z, 0, -dir.x);
+	for (const du of [-L * .31, L * .31]) for (const dv of [-W / 2 + .1, W / 2 - .1]) mb.box("x.tire", c.clone().addScaledVector(dir, du).addScaledVector(side, dv).setY(c.y), dir, .62, .62, .2);
+}
+function addLot(town, f, L, rnd) {
+	const mb = new MeshBuilder();
+	const flat = new MeshBuilder();
+	const W = L.a1 - L.a0;
+	const D = L.q1 - L.q0;
+	const y = L.y;
+	const P = (a, q, yy = y) => f.toWorld(a, q, yy);
+	const dirA = P(1, 0).sub(P(0, 0)).normalize();
+	const dirQ = P(0, 1).sub(P(0, 0)).normalize();
+	/** 間口からの奥行 t（0 = 道路際）→ q */
+	const fq = (t) => L.frontSign < 0 ? L.q0 + t : L.q1 - t;
+	const front = dirQ.clone().multiplyScalar(L.frontSign);
+	const quadUp = (m, key, a0, a1, t0, t1, yy) => {
+		const p = [
+			P(a0, fq(t0), yy),
+			P(a1, fq(t0), yy),
+			P(a1, fq(t1), yy),
+			P(a0, fq(t1), yy)
+		];
+		if (new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0])).y < 0) m.quad(key, p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
+		else m.quad(key, p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
+	};
+	quadUp(flat, rnd() < .5 ? "l.nbLotA" : rnd() < .5 ? "l.nbLotB" : "l.nbLotC", L.a0, L.a1, 0, D, y + .004);
+	const twoCars = W > 10.5 && rnd() < .6;
+	const parkW = Math.min(W - 4.5, twoCars ? 5.4 : 2.9);
+	const parkLeft = rnd() < .5;
+	const setback = D < 12.5 ? 1.6 + rnd() * .8 : 2.2 + rnd() * 3.2;
+	const parkDepth = Math.min(D - 1, 5.4);
+	const pa0 = parkLeft ? L.a0 + .4 : L.a1 - .4 - parkW;
+	if (parkW > 2.4) quadUp(flat, "l.nbPave", pa0, pa0 + parkW, 0, parkDepth, y + .012);
+	const stories = D < 10 || rnd() < .14 ? 1 : 2;
+	const houseT0 = Math.max(setback, parkW > 2.4 && D >= 13 ? Math.min(parkDepth + .6, D - 8.4) : setback);
+	const side = .9 + rnd() * .5;
+	let ha0 = L.a0 + side;
+	let ha1 = L.a1 - side;
+	if (parkW > 2.4 && houseT0 < parkDepth + .3) {
+		if (parkLeft) ha0 = pa0 + parkW + .5;
+		else ha1 = pa0 - .5;
+	}
+	const hw = Math.min(ha1 - ha0, stories === 1 ? 11 : 9.6);
+	const hd = Math.min(D - houseT0 - (1.4 + rnd() * 1.6), stories === 1 ? 8.6 : 7.9);
+	let ridge = 0;
+	let solid = null;
+	if (hw >= 4.2 && hd >= 4.2) {
+		const hc0 = ha0 + (ha1 - ha0 - hw) * (parkLeft ? 1 : 0) * .5 + (ha1 - ha0 - hw) * .25;
+		const ca = hc0 + hw / 2;
+		const cq = fq(houseT0 + hd / 2);
+		const along = rnd() < .62 || hw < hd;
+		const r = rnd();
+		const roof = r < .36 ? "gable" : r < .6 ? "hip" : r < .84 ? "shed" : "flat";
+		ridge = addHouse(mb, {
+			c: P(ca, cq),
+			u: along ? dirA.clone() : dirQ.clone(),
+			w: along ? hw : hd,
+			d: along ? hd : hw,
+			stories,
+			roof,
+			front,
+			wallKey: WALL_KEYS[Math.floor(rnd() * WALL_KEYS.length)],
+			roofKey: ROOF_KEYS[Math.floor(rnd() * ROOF_KEYS.length)]
+		}, rnd);
+		{
+			const h0 = P(hc0 - .5, fq(houseT0 - .5));
+			const h1 = P(hc0 + hw + .5, fq(houseT0 + hd + .5));
+			solid = new THREE.Box3(V(Math.min(h0.x, h1.x), y, Math.min(h0.z, h1.z)), V(Math.max(h0.x, h1.x), y + ridge + .2, Math.max(h0.z, h1.z)));
+		}
+		if (!f.light) {
+			const rearT = houseT0 + hd + (D - houseT0 - hd) * .5;
+			if (D - houseT0 - hd > 1.6 && rnd() < .7) addTree(mb, P(L.a0 + 1.2 + rnd() * (W - 2.4), fq(rearT)), 3.2 + rnd() * 1.8, rnd, rnd() < .5 ? "l.leafCardSoft" : "l.leafCard");
+			const freeA = parkLeft ? L.a1 - 1.3 : L.a0 + 1.3;
+			if (houseT0 > 2.4 && rnd() < .55) addTree(mb, P(freeA, fq(Math.min(houseT0 - 1, 1.4 + rnd()))), 2.6 + rnd() * 1.4, rnd, "l.leafCardSoft");
+			for (let i = 0; i < 2; i++) addShrub(mb, P(L.a0 + .9 + rnd() * (W - 1.8), fq(rearT + (rnd() - .5))), .3 + rnd() * .25, rnd);
+		}
+		if (parkW > 2.4 && Math.abs(y) < .03 && rnd() < .5) addCar(mb, P(pa0 + (twoCars ? parkW * .27 : parkW / 2), fq(parkDepth / 2 + .2), y + .012), front, rnd);
+	}
+	const frontWall = rnd();
+	if (frontWall < .75) {
+		const segs = parkW > 2.4 ? parkLeft ? [[pa0 + parkW + .1, L.a1]] : [[L.a0, pa0 - .1]] : [[L.a0, L.a1]];
+		for (const [s0, s1] of segs) {
+			const gate = s0 + (s1 - s0) * (.35 + rnd() * .3);
+			for (const [g0, g1] of [[s0, gate - .6], [gate + .6, s1]]) {
+				if (g1 - g0 < .6) continue;
+				const mid = P((g0 + g1) / 2, fq(.1));
+				const hgt = .45 + (frontWall < .35 ? .35 : 0);
+				mb.box("l.block", mid, dirA, g1 - g0, hgt, .12);
+				if (frontWall >= .35 && !f.light) addHedge(mb, P(g0 + .1, fq(.42), y), P(g1 - .1, fq(.42), y), 1.05 + rnd() * .25, rnd);
+			}
+		}
+	}
+	const sideWall = (a) => mb.box("l.block", P(a, (L.q0 + L.q1) / 2), dirQ, D - .3, .5, .1);
+	if (L.wallA0) sideWall(L.a0 + .06);
+	if (L.wallA1) sideWall(L.a1 - .06);
+	if (L.wallBack) mb.box("l.block", P((L.a0 + L.a1) / 2, fq(D - .06)), dirA, W - .2, .5, .1);
+	const c0 = P(L.a0, L.q0);
+	const c1 = P(L.a1, L.q1);
+	const box = new THREE.Box3(V(Math.min(c0.x, c1.x), y, Math.min(c0.z, c1.z)), V(Math.max(c0.x, c1.x), y + Math.max(ridge, 2.2) + .3, Math.max(c0.z, c1.z)));
+	town.lots.push({
+		mb,
+		flat,
+		box,
+		solid
+	});
+}
+/**
+* 敷地のまわりの街並みを作る。seed を変えると並びが変わる（同じ家は毎回同じ街並みにする）
+*/
+function buildTown(f, seed = 7) {
+	const rnd = mulberry32(seed);
+	const town = {
+		lots: [],
+		roads: new MeshBuilder()
+	};
+	const flatLand = Math.abs(f.levelLeft) < .03 && Math.abs(f.levelRight) < .03 && Math.abs(f.levelBack) < .03 && Math.abs(f.roadY) < .03;
+	const reach = f.light ? 34 : 64;
+	const center = (f.a0 + f.a1) / 2;
+	const lotW = () => 9.6 + rnd() * 3.4;
+	const cornerL = f.roadLeft && f.roadLeft > 0 ? f.roadLeft : 0;
+	const cornerR = f.roadRight && f.roadRight > 0 ? f.roadRight : 0;
+	const backAdj = f.roadBack && f.roadBack > 0 ? f.roadBack : 0;
+	const leftW = cornerL ? [] : [lotW(), lotW()];
+	const rightW = cornerR ? [] : [
+		lotW(),
+		lotW(),
+		lotW()
+	];
+	const sum = (ws) => ws.reduce((x, w) => x + w, 0);
+	const useL = cornerL > 0 || flatLand && !f.light;
+	const useR = cornerR > 0 || flatLand && !f.light;
+	/** 横の道の幅（角地は縁石の分を含めて敷地の際から） */
+	const cwL = cornerL ? cornerL + f.curb : 5;
+	const cwR = cornerR ? cornerR + f.curb : 5;
+	/** 横の道の、敷地に近い側の端 */
+	const xL = f.a0 - sum(leftW);
+	const xR = f.a1 + sum(rightW);
+	/** 横の道の路面の高さ（角地はその側の地盤、ほかは表の道路） */
+	const yL = cornerL ? f.levelLeft : f.roadY;
+	const yR = cornerR ? f.levelRight : f.roadY;
+	/** a の範囲 [lo, hi] から横の道を除いた区間 */
+	const spansOf = (lo, hi) => {
+		const out = [];
+		let t = lo;
+		for (const [c0, c1] of [...useL ? [[xL - cwL, xL]] : [], ...useR ? [[xR, xR + cwR]] : []]) {
+			if (c0 > t) out.push([t, Math.min(c0, hi)]);
+			t = Math.max(t, c1);
+		}
+		if (hi > t) out.push([t, hi]);
+		return out.filter(([s0, s1]) => s1 > s0);
+	};
+	/** a の範囲 [s0, s1] を区画に割る（幅 9.6〜13 m） */
+	const split = (s0, s1) => {
+		const n = Math.max(1, Math.round((s1 - s0) / 11.2));
+		const out = [];
+		const ws = Array.from({ length: n }, () => .85 + rnd() * .3);
+		const total = sum(ws);
+		let t = s0;
+		for (const w of ws) {
+			const e = t + (s1 - s0) * w / total;
+			out.push([t, e]);
+			t = e;
+		}
+		return out;
+	};
+	/** 並び 1 本分の区画の範囲（横の道をよける） */
+	const blocks = () => spansOf(center - reach, center + reach).filter(([s0, s1]) => s1 - s0 > 7).flatMap(([s0, s1]) => split(s0, s1));
+	{
+		let a = f.a0;
+		(useL ? leftW : split(center - reach, f.a0).map(([s0, s1]) => s1 - s0).reverse()).forEach((w) => {
+			addLot(town, f, {
+				a0: a - w,
+				a1: a,
+				q0: 0,
+				q1: f.depth,
+				y: f.levelLeft,
+				frontSign: -1,
+				wallA0: true,
+				wallA1: false,
+				wallBack: true
+			}, rnd);
+			a -= w;
+		});
+		if (useL && xL - cwL - (center - reach) > 7) for (const [s0, s1] of split(center - reach, xL - cwL)) addLot(town, f, {
+			a0: s0,
+			a1: s1,
+			q0: 0,
+			q1: f.depth,
+			y: f.levelLeft,
+			frontSign: -1,
+			wallA0: true,
+			wallA1: false,
+			wallBack: true
+		}, rnd);
+		a = f.a1;
+		(useR ? rightW : split(f.a1, center + reach).map(([s0, s1]) => s1 - s0)).forEach((w) => {
+			addLot(town, f, {
+				a0: a,
+				a1: a + w,
+				q0: 0,
+				q1: f.depth,
+				y: f.levelRight,
+				frontSign: -1,
+				wallA0: false,
+				wallA1: true,
+				wallBack: true
+			}, rnd);
+			a += w;
+		});
+		if (useR && center + reach - (xR + cwR) > 7) for (const [s0, s1] of split(xR + cwR, center + reach)) addLot(town, f, {
+			a0: s0,
+			a1: s1,
+			q0: 0,
+			q1: f.depth,
+			y: f.levelRight,
+			frontSign: -1,
+			wallA0: false,
+			wallA1: true,
+			wallBack: true
+		}, rnd);
+	}
+	const backD = 14.5 + rnd() * 2.5;
+	const backRoadW = 5;
+	const qB0 = backAdj ? f.depth + f.curb + backAdj + f.curb : f.depth;
+	const qB1 = qB0 + backD;
+	for (const [s0, s1] of blocks()) addLot(town, f, {
+		a0: s0,
+		a1: s1,
+		q0: qB0,
+		q1: qB1,
+		y: f.levelBack,
+		frontSign: backAdj ? -1 : 1,
+		wallA0: true,
+		wallA1: false,
+		wallBack: !!backAdj
+	}, rnd);
+	/** 裏の並びの先に裏の道を敷くか（裏がすぐ道路のときは、その道路があるので敷かない） */
+	const farBackRoad = flatLand && !backAdj;
+	if (!f.light && !backAdj) {
+		const q2 = qB1 + backRoadW + .4;
+		for (const [s0, s1] of blocks()) addLot(town, f, {
+			a0: s0,
+			a1: s1,
+			q0: q2,
+			q1: q2 + 15 + rnd() * 2,
+			y: f.levelBack,
+			frontSign: -1,
+			wallA0: true,
+			wallA1: false,
+			wallBack: true
+		}, rnd);
+	}
+	const qO1 = -(f.curb + f.roadW + f.curb);
+	const oppD = 14 + rnd() * 3;
+	for (const [s0, s1] of blocks()) addLot(town, f, {
+		a0: s0,
+		a1: s1,
+		q0: qO1 - oppD,
+		q1: qO1,
+		y: f.roadY,
+		frontSign: 1,
+		wallA0: true,
+		wallA1: false,
+		wallBack: true
+	}, rnd);
+	if (!f.light) for (const [s0, s1] of blocks()) addLot(town, f, {
+		a0: s0,
+		a1: s1,
+		q0: qO1 - oppD - 15.5,
+		q1: qO1 - oppD,
+		y: f.roadY,
+		frontSign: -1,
+		wallA0: true,
+		wallA1: false,
+		wallBack: false
+	}, rnd);
+	const R = town.roads;
+	const P = f.toWorld;
+	const dirA = P(1, 0, 0).sub(P(0, 0, 0)).normalize();
+	const dirQ = P(0, 1, 0).sub(P(0, 0, 0)).normalize();
+	const strip = (key, a0, a1, q0, q1, y) => {
+		const p = [
+			P(a0, q0, y),
+			P(a1, q0, y),
+			P(a1, q1, y),
+			P(a0, q1, y)
+		];
+		if (new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0])).y < 0) R.quad(key, p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
+		else R.quad(key, p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
+	};
+	const far = reach + 80;
+	const alongSpans = spansOf(center - far, center + far);
+	const qRoad0 = -(f.curb + f.roadW);
+	for (const [s0, s1] of alongSpans) {
+		R.box("l.curb", P((s0 + s1) / 2, qRoad0 - f.curb / 2, f.roadY), dirA, s1 - s0, .12, f.curb);
+		for (const [c0, c1] of [[s0, Math.min(s1, f.a0 - .2)], [Math.max(s0, f.a1 + .2), s1]]) if (c1 - c0 > .1) R.box("l.curb", P((c0 + c1) / 2, -f.curb / 2, f.roadY), dirA, c1 - c0, .12, f.curb);
+		strip("l.gutter", s0, s1, -f.curb, -(f.curb + .45), f.roadY + .008);
+		strip("l.gutter", s0, s1, qRoad0 + .45, qRoad0, f.roadY + .008);
+	}
+	const qBack0 = qB1 + .2;
+	if (backAdj) for (const [s0, s1] of alongSpans) {
+		strip("l.road", s0, s1, f.depth, f.depth + f.curb + backAdj, f.levelBack + .005);
+		R.box("l.curb", P((s0 + s1) / 2, f.depth + f.curb + backAdj + f.curb / 2, f.levelBack), dirA, s1 - s0, .12, f.curb);
+		for (const [c0, c1] of [[s0, Math.min(s1, f.a0 - .2)], [Math.max(s0, f.a1 + .2), s1]]) if (c1 - c0 > .1) R.box("l.curb", P((c0 + c1) / 2, f.depth + f.curb / 2, f.levelBack), dirA, c1 - c0, .12, f.curb);
+	}
+	else if (farBackRoad) for (const [s0, s1] of alongSpans) {
+		strip("l.road", s0, s1, qBack0, qBack0 + backRoadW, f.levelBack + .005);
+		R.box("l.curb", P((s0 + s1) / 2, qB1 + .1, f.levelBack), dirA, s1 - s0, .12, .2);
+		R.box("l.curb", P((s0 + s1) / 2, qB1 + .3 + backRoadW, f.levelBack), dirA, s1 - s0, .12, .2);
+	}
+	if (useL || useR) {
+		const qFar0 = qO1 - oppD - 15.5 - 30;
+		const qFar1 = qB1 + backRoadW + 50;
+		const roadSpans = [[qFar0, qRoad0], [0, qFar1]];
+		/** 縁石は、表の道路・裏の道路を横切らない（交差点を空ける）。site = 敷地に接する側（敷地の奥行の分は外構が作る） */
+		const curbSpans = (site) => {
+			const backGap = backAdj ? [f.depth, f.depth + f.curb + backAdj + f.curb] : farBackRoad ? [qB1, qBack0 + backRoadW + .2] : null;
+			const inner = backGap ? [[site ? f.depth : 0, backGap[0]], [backGap[1], qFar1]] : [[site ? f.depth : 0, qFar1]];
+			return [[qFar0, qRoad0 - f.curb], ...inner].filter(([s0, s1]) => s1 - s0 > .1);
+		};
+		const cross = [];
+		if (useL) cross.push({
+			x: xL - cwL,
+			w: cwL,
+			y: yL,
+			siteSide: cornerL ? 1 : 0
+		});
+		if (useR) cross.push({
+			x: xR,
+			w: cwR,
+			y: yR,
+			siteSide: cornerR ? -1 : 0
+		});
+		for (const c of cross) {
+			for (const [s0, s1] of roadSpans) strip("l.road", c.x, c.x + c.w, s0, s1, c.y + .005);
+			for (const [s0, s1] of curbSpans(c.siteSide === -1)) R.box("l.curb", P(c.siteSide === -1 ? c.x + .1 : c.x - .1, (s0 + s1) / 2, c.y), dirQ, s1 - s0, .12, .2);
+			for (const [s0, s1] of curbSpans(c.siteSide === 1)) R.box("l.curb", P(c.siteSide === 1 ? c.x + c.w - .1 : c.x + c.w + .1, (s0 + s1) / 2, c.y), dirQ, s1 - s0, .12, .2);
+		}
+	}
+	return town;
+}
+//#endregion
 //#region src/scene/landscape.ts
 /**
 * 外構・敷地の自動生成
@@ -28400,9 +29385,10 @@ function planExteriorOf(model) {
 }
 /**
 * 外構を作る。levels（敷地の高低差）があれば、道路・縁石・隣家をその高さに、境界に擁壁（または法面）、
-* 玄関アプローチに階段（またはスロープ）、駐車場を道路の高さに下げる。擁壁・階段は walls（影を落とす）に入れる
+* 玄関アプローチに階段（またはスロープ）、駐車場を道路の高さに下げる。擁壁・階段は walls（影を落とす）に入れる。
+* opts.town = false で想定の街並みを作らない（平面図に外構だけ要るとき）。opts.light は軽い表示（街並みを減らす）
 */
-function buildLandscape(meta, style, siteData, planExt, levels) {
+function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 	const mb = new MeshBuilder();
 	const walls = new MeshBuilder();
 	const trees = new MeshBuilder();
@@ -28443,7 +29429,7 @@ function buildLandscape(meta, style, siteData, planExt, levels) {
 	const gy = 0;
 	const poly = siteData?.polygon?.map((q) => V(q.x / 1e3, gy, q.y / 1e3));
 	const groundHoles = [];
-	const R = 120;
+	const R = 420;
 	const cx = (min.x + max.x) / 2;
 	const cz = (min.y + max.y) / 2;
 	const flat = (key, x0, x1, z0, z1, y) => mb.quad(key, V(x0, y, z0), V(x0, y, z1), V(x1, y, z1), V(x1, y, z0), V(1, 0, 0), V(0, 0, 1));
@@ -28457,47 +29443,61 @@ function buildLandscape(meta, style, siteData, planExt, levels) {
 		else if (s === "bottom") flat("l.far", cx - R, cx + R, max.y, cz + R, yy);
 		else flat("l.far", cx - R, cx + R, cz - R, min.y, yy);
 	});
-	const roadW = pr?.widthMm ? Math.max(3, Math.min(20, pr.widthMm / 1e3)) : 6;
+	const clampW = (mm, def) => mm ? Math.max(3, Math.min(20, mm / 1e3)) : def;
+	const roadW = clampW(pr?.widthMm, 6);
+	/** 道路を敷く長さ（敷地の中心から片側）。かすみに溶ける所まで */
+	const RL = 150;
+	/** 縁石の幅。道路の帯は敷地の際（min・max）から敷き、縁石はその上の端に載る */
+	const CURB = .2;
 	let roadCenter;
+	if (road.x !== 0) {
+		const x0 = road.x > 0 ? max.x : min.x - CURB - roadW;
+		flat("l.road", x0, x0 + CURB + roadW, cz - RL, cz + RL, roadY + .005);
+		roadCenter = V(x0 + (road.x > 0 ? CURB : 0) + roadW / 2, roadY, cz);
+	} else {
+		const z0 = road.z > 0 ? max.y : min.y - CURB - roadW;
+		flat("l.road", cx - RL, cx + RL, z0, z0 + CURB + roadW, roadY + .005);
+		roadCenter = V(cx, roadY, z0 + (road.z > 0 ? CURB : 0) + roadW / 2);
+	}
 	const roadEdges = (siteData?.edges ?? []).filter((e) => e.kind === "road");
-	if (roadEdges.length) {
+	/** 道路に面する辺（主の道路のほかは、道路境界線の辺がある面と、手で指定した面） */
+	const roadSides = /* @__PURE__ */ new Set([roadSide]);
+	for (const r of siteData?.roads ?? []) if (r.source === "manual") roadSides.add(r.side);
+	const curbedSides = /* @__PURE__ */ new Set();
+	{
 		const sc = V((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
-		let bestDot = -Infinity;
-		roadCenter = V(0, roadY, 0);
 		for (const e of roadEdges) {
 			const A = V(e.a.x / 1e3, 0, e.a.y / 1e3);
 			const B = V(e.b.x / 1e3, 0, e.b.y / 1e3);
+			const len = A.distanceTo(B);
+			if (len < .05) continue;
 			const dir = B.clone().sub(A).normalize();
 			let out = V(-dir.z, 0, dir.x);
 			const mid = A.clone().add(B).multiplyScalar(.5);
 			if (out.dot(mid.clone().sub(sc)) < 0) out = out.negate();
-			const A2 = A.clone().addScaledVector(dir, -12);
-			const B2 = B.clone().addScaledVector(dir, 12);
-			const p = [
-				A2,
-				B2,
-				B2.clone().addScaledVector(out, roadW),
-				A2.clone().addScaledVector(out, roadW)
-			].map((q) => q.setY(roadY + .005));
-			if (new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0])).y < 0) mb.quad("l.road", p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
-			else mb.quad("l.road", p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
-			mb.box("l.curb", mid.clone().addScaledVector(out, .1).setY(roadY), dir, A.distanceTo(B) + .2, .12, .2);
-			const d = out.dot(road);
-			if (d > bestDot) {
-				bestDot = d;
-				roadCenter = mid.clone().addScaledVector(out, roadW / 2).setY(roadY);
+			const cut = Math.min(Math.abs(out.x), Math.abs(out.z)) > .35 && len < 4.5;
+			const sideE = sideOfOutward(out.x, out.z);
+			if (!cut) {
+				roadSides.add(sideE);
+				curbedSides.add(sideE);
 			}
+			const y = cut || sideE === roadSide ? roadY : nbY(sideE);
+			const sweep = clipPolygonRect([
+				A,
+				B,
+				B.clone().addScaledVector(out, 60),
+				A.clone().addScaledVector(out, 60)
+			], min.x, max.x, min.y, max.y);
+			if (sweep.length >= 3 && polygonArea(sweep) > Math.max(.05, len * .06)) mb.polygon("l.road", sweep.map((q) => q.setY(y + .005)), V(0, 1, 0), V(1, 0, 0), V(0, 0, 1));
+			const seg = clipSegmentRect(A, B, min.x - .01, max.x + .01, min.y - .01, max.y + .01);
+			if (seg && seg[0].distanceTo(seg[1]) > .3) mb.box("l.curb", seg[0].clone().add(seg[1]).multiplyScalar(.5).addScaledVector(out, .1).setY(y), dir, seg[0].distanceTo(seg[1]) + .2, .12, .2);
 		}
-	} else if (road.x !== 0) {
-		const x0 = road.x > 0 ? max.x + .2 : min.x - .2 - roadW;
-		flat("l.road", x0, x0 + roadW, cz - 60, cz + 60, roadY + .005);
-		roadCenter = V(x0 + roadW / 2, roadY, cz);
-		mb.aabb("l.curb", V(road.x > 0 ? max.x : min.x - .2, roadY, cz - 60), V(road.x > 0 ? max.x + .2 : min.x, roadY + .12, cz + 60));
-	} else {
-		const z0 = road.z > 0 ? max.y + .2 : min.y - .2 - roadW;
-		flat("l.road", cx - 60, cx + 60, z0, z0 + roadW, roadY + .005);
-		roadCenter = V(cx, roadY, z0 + roadW / 2);
-		mb.aabb("l.curb", V(cx - 60, roadY, road.z > 0 ? max.y : min.y - .2), V(cx + 60, roadY + .12, road.z > 0 ? max.y + .2 : min.y));
+	}
+	for (const s of roadSides) {
+		if (curbedSides.has(s)) continue;
+		const y = s === roadSide ? roadY : nbY(s);
+		if (s === "right" || s === "left") mb.aabb("l.curb", V(s === "right" ? max.x : min.x - CURB, y, min.y - CURB), V(s === "right" ? max.x + CURB : min.x, y + .12, max.y + CURB));
+		else mb.aabb("l.curb", V(min.x - CURB, y, s === "bottom" ? max.y : min.y - CURB), V(max.x + CURB, y + .12, s === "bottom" ? max.y + CURB : min.y));
 	}
 	const along = road.x !== 0 ? V(0, 0, 1) : V(1, 0, 0);
 	const frontEdge = road.x > 0 ? b.max.x : road.x < 0 ? b.min.x : road.z > 0 ? b.max.z : b.min.z;
@@ -28911,75 +29911,35 @@ function buildLandscape(meta, style, siteData, planExt, levels) {
 			d: fp.d
 		});
 	}
-	const town = [];
-	{
-		let seed = 7;
-		const r2 = () => {
-			seed = seed * 16807 % 2147483647;
-			return seed / 2147483647;
-		};
-		const sides = [
-			{
-				n: V(1, 0, 0),
-				ok: !(road.x > 0)
-			},
-			{
-				n: V(-1, 0, 0),
-				ok: !(road.x < 0)
-			},
-			{
-				n: V(0, 0, 1),
-				ok: !(road.z > 0)
-			},
-			{
-				n: V(0, 0, -1),
-				ok: !(road.z < 0)
-			}
-		];
-		for (const s of sides) {
-			if (!s.ok) continue;
-			V(-s.n.z, 0, s.n.x);
-			const edge = s.n.x !== 0 ? s.n.x > 0 ? max.x : min.x : s.n.z > 0 ? max.y : min.y;
-			const span = s.n.x !== 0 ? [min.y, max.y] : [min.x, max.x];
-			const sideOfRoad = Math.abs(s.n.dot(road)) < .5;
-			if (sideOfRoad) {
-				const roadEdge = road.x !== 0 ? road.x > 0 ? max.x : min.x : road.z > 0 ? max.y : min.y;
-				if (road.x + road.z > 0) span[1] = Math.min(span[1], roadEdge - 3);
-				else span[0] = Math.max(span[0], roadEdge + 3);
-			}
-			let t = span[0] - (sideOfRoad && road.x + road.z < 0 ? 0 : 4 + r2() * 3);
-			while (t < span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) {
-				const w = 6 + r2() * 3;
-				const d = 6.5 + r2() * 2.5;
-				const hh = r2() > .3 ? 6 : 3.2;
-				const gap = 2.2 + r2() * 1.8;
-				if (t + w > span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) break;
-				const lvl = nbY(sideOfOutward(s.n.x, s.n.z));
-				const center = V(0, lvl, 0);
-				if (s.n.x !== 0) center.set(edge + s.n.x * (gap + d / 2), lvl, t + w / 2);
-				else center.set(t + w / 2, lvl, edge + s.n.z * (gap + d / 2));
-				const dir = s.n.x !== 0 ? V(0, 0, 1) : V(1, 0, 0);
-				const len = w;
-				const depth = d;
-				const key = r2() > .66 ? "l.nbWallB" : r2() > .4 ? "l.nbWallA" : "l.nbWallC";
-				const one = new MeshBuilder();
-				mb_box(one, key, center, dir, len, hh, depth);
-				mb_box(one, "l.nbRoof", center.clone().setY(lvl + hh), dir, len + .5, .35, depth + .5);
-				const ex = dir.x !== 0 ? len : depth;
-				const ez = dir.x !== 0 ? depth : len;
-				town.push({
-					mb: one,
-					box: new THREE.Box3(V(center.x - ex / 2, lvl, center.z - ez / 2), V(center.x + ex / 2, lvl + hh + .4, center.z + ez / 2))
-				});
-				t += w + .4 + r2() * 1.2;
-			}
-		}
-	}
+	const sgnR = road.x + road.z;
+	const sideA0 = road.x !== 0 ? "top" : "left";
+	const sideA1 = road.x !== 0 ? "bottom" : "right";
+	const sideBack = road.x > 0 ? "left" : road.x < 0 ? "right" : road.z > 0 ? "top" : "bottom";
+	/** 主の道路のほかに道路が接する面（角地・二方道路）の、その道路の幅。接していなければ undefined */
+	const sideRoadW = (sd) => sd !== roadSide && roadSides.has(sd) ? clampW(siteData?.roads.find((r) => r.side === sd)?.widthMm, roadW) : void 0;
 	return {
 		mb,
 		walls,
 		trees,
-		town,
+		town: opts.town === false ? {
+			lots: [],
+			roads: new MeshBuilder()
+		} : buildTown({
+			toWorld: (a, q, y) => toWorld(a, siteEdge - sgnR * q, y),
+			a0: alongMin,
+			a1: alongMax,
+			depth: road.x !== 0 ? max.x - min.x : max.y - min.y,
+			roadW,
+			roadY,
+			curb: .2,
+			levelLeft: nbY(sideA0),
+			levelRight: nbY(sideA1),
+			levelBack: nbY(sideBack),
+			roadLeft: sideRoadW(sideA0),
+			roadRight: sideRoadW(sideA1),
+			roadBack: sideRoadW(sideBack),
+			light: opts.light
+		}),
 		site: {
 			min,
 			max,
@@ -28990,8 +29950,62 @@ function buildLandscape(meta, style, siteData, planExt, levels) {
 		plan
 	};
 }
-function mb_box(m, key, base, dir, len, height, depth) {
-	m.box(key, base, dir, len, height, depth);
+/** 多角形（x・z）の面積 */
+function polygonArea(pts) {
+	let a = 0;
+	for (let i = 0; i < pts.length; i++) {
+		const p = pts[i];
+		const q = pts[(i + 1) % pts.length];
+		a += p.x * q.z - q.x * p.z;
+	}
+	return Math.abs(a) / 2;
+}
+/** 多角形（x・z）を、軸に平行な四角 [x0, x1] × [z0, z1] で切り取る */
+function clipPolygonRect(pts, x0, x1, z0, z1) {
+	let out = pts.map((p) => p.clone());
+	const inside = [
+		(p) => p.x - x0,
+		(p) => x1 - p.x,
+		(p) => p.z - z0,
+		(p) => z1 - p.z
+	];
+	for (const d of inside) {
+		const src = out;
+		out = [];
+		for (let i = 0; i < src.length; i++) {
+			const a = src[i];
+			const c = src[(i + 1) % src.length];
+			const da = d(a);
+			const dc = d(c);
+			if (da >= 0) out.push(a);
+			if (da >= 0 !== dc >= 0) out.push(a.clone().lerp(c, da / (da - dc)));
+		}
+		if (out.length < 3) return [];
+	}
+	return out;
+}
+/** 線分（x・z）を、軸に平行な四角で切り取る。四角の外なら null */
+function clipSegmentRect(a, c, x0, x1, z0, z1) {
+	let t0 = 0;
+	let t1 = 1;
+	const dx = c.x - a.x;
+	const dz = c.z - a.z;
+	for (const [p, q] of [
+		[-dx, a.x - x0],
+		[dx, x1 - a.x],
+		[-dz, a.z - z0],
+		[dz, z1 - a.z]
+	]) {
+		if (Math.abs(p) < 1e-12) {
+			if (q < 0) return null;
+			continue;
+		}
+		const r = q / p;
+		if (p < 0) t0 = Math.max(t0, r);
+		else t1 = Math.min(t1, r);
+	}
+	if (t0 > t1) return null;
+	return [a.clone().lerp(c, t0), a.clone().lerp(c, t1)];
 }
 //#endregion
 //#region src/styles/presets.ts
@@ -30740,7 +31754,7 @@ function landscapeOf(model) {
 	try {
 		const ext = EXTERIOR_STYLES[0];
 		const { meta } = buildBuilding(model, { exterior: ext });
-		lp = buildLandscape(meta, ext, model.site, planExteriorOf(model)).plan;
+		lp = buildLandscape(meta, ext, model.site, planExteriorOf(model), void 0, { town: false }).plan;
 	} catch {
 		lp = null;
 	}

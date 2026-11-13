@@ -11,6 +11,7 @@ import type { BuildingModel, ExteriorItem, ExteriorKind, PlanSide, RoadInfo, Sit
 import { buildExteriorObject, exteriorFootprint } from './exteriorItems';
 import { PLAN_SIDES, levelAtSide, sideOfOutward, stepCount } from '../core/siteLevels';
 import { subtractIntervals } from '../core/geometry';
+import { buildTown, type Town } from './town';
 
 export interface SiteInfo {
   /** 敷地の範囲（ワールド） */
@@ -75,9 +76,10 @@ export function planExteriorOf(model: BuildingModel): PlanExterior | undefined {
 
 /**
  * 外構を作る。levels（敷地の高低差）があれば、道路・縁石・隣家をその高さに、境界に擁壁（または法面）、
- * 玄関アプローチに階段（またはスロープ）、駐車場を道路の高さに下げる。擁壁・階段は walls（影を落とす）に入れる
+ * 玄関アプローチに階段（またはスロープ）、駐車場を道路の高さに下げる。擁壁・階段は walls（影を落とす）に入れる。
+ * opts.town = false で想定の街並みを作らない（平面図に外構だけ要るとき）。opts.light は軽い表示（街並みを減らす）
  */
-export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior, levels?: SiteLevels): { mb: MeshBuilder; walls: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: { mb: MeshBuilder; box: THREE.Box3 }[] } {
+export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteData?: SiteData, planExt?: PlanExterior, levels?: SiteLevels, opts: { light?: boolean; town?: boolean } = {}): { mb: MeshBuilder; walls: MeshBuilder; site: SiteInfo; trees: MeshBuilder; plan: LandscapePlan; town: Town } {
   const mb = new MeshBuilder();
   const walls = new MeshBuilder();
   const trees = new MeshBuilder();
@@ -119,7 +121,8 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   const poly = siteData?.polygon?.map((q) => V(q.x / 1000, gy, q.y / 1000));
   const groundHoles: THREE.Vector3[][] = [];
   // 周辺の地面（広く）: いちばん低い地盤に合わせ、道路・隣地が高い辺にはその高さの地面を重ねる
-  const R = 120;
+  // 遠くはかすみに溶けるまで地面を続ける（地面の端が地平線に見えないように）
+  const R = 420;
   const cx = (min.x + max.x) / 2;
   const cz = (min.y + max.y) / 2;
   const flat = (key: string, x0: number, x1: number, z0: number, z1: number, y: number) => mb.quad(key, V(x0, y, z0), V(x0, y, z1), V(x1, y, z1), V(x1, y, z0), V(1, 0, 0), V(0, 0, 1));
@@ -135,45 +138,64 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   });
 
   // 道路（図面の幅員。不明なら 6m）。路面は roadY（敷地の高低差）
-  const roadW = pr?.widthMm ? Math.max(3, Math.min(20, pr.widthMm / 1000)) : 6;
+  const clampW = (mm: number | undefined, def: number) => (mm ? Math.max(3, Math.min(20, mm / 1000)) : def);
+  const roadW = clampW(pr?.widthMm, 6);
+  /** 道路を敷く長さ（敷地の中心から片側）。かすみに溶ける所まで */
+  const RL = 150;
+  /** 縁石の幅。道路の帯は敷地の際（min・max）から敷き、縁石はその上の端に載る */
+  const CURB = 0.2;
+  // 主の道路: 敷地の道路側の辺の外に、まっすぐ長く敷く（想定の街並みも、この線に合わせて並べる）
   let roadCenter: THREE.Vector3;
+  if (road.x !== 0) {
+    const x0 = road.x > 0 ? max.x : min.x - CURB - roadW;
+    flat('l.road', x0, x0 + CURB + roadW, cz - RL, cz + RL, roadY + 0.005);
+    roadCenter = V(x0 + (road.x > 0 ? CURB : 0) + roadW / 2, roadY, cz);
+  } else {
+    const z0 = road.z > 0 ? max.y : min.y - CURB - roadW;
+    flat('l.road', cx - RL, cx + RL, z0, z0 + CURB + roadW, roadY + 0.005);
+    roadCenter = V(cx, roadY, z0 + (road.z > 0 ? CURB : 0) + roadW / 2);
+  }
+  // 道路に面する辺（角地は 2 面以上）: 図面の「道路境界線」の辺ごとに、縁石と、辺から敷地の際までの舗装を作る。
+  // 辺の外へ道路を伸ばすことはしない（伸ばすと、斜めの辺・隅切りの先が隣の区画に食い込む）
   const roadEdges = (siteData?.edges ?? []).filter((e) => e.kind === 'road');
-  if (roadEdges.length) {
-    // 「道路境界線」の辺ごとに、その外側へ道路を敷く
+  /** 道路に面する辺（主の道路のほかは、道路境界線の辺がある面と、手で指定した面） */
+  const roadSides = new Set<PlanSide>([roadSide]);
+  for (const r of siteData?.roads ?? []) if (r.source === 'manual') roadSides.add(r.side);
+  const curbedSides = new Set<PlanSide>();
+  {
     const sc = V((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
-    let bestDot = -Infinity;
-    roadCenter = V(0, roadY, 0);
     for (const e of roadEdges) {
       const A = V(e.a.x / 1000, 0, e.a.y / 1000);
       const B = V(e.b.x / 1000, 0, e.b.y / 1000);
+      const len = A.distanceTo(B);
+      if (len < 0.05) continue;
       const dir = B.clone().sub(A).normalize();
       let out = V(-dir.z, 0, dir.x);
       const mid = A.clone().add(B).multiplyScalar(0.5);
       if (out.dot(mid.clone().sub(sc)) < 0) out = out.negate();
-      const A2 = A.clone().addScaledVector(dir, -12);
-      const B2 = B.clone().addScaledVector(dir, 12);
-      const p = [A2, B2, B2.clone().addScaledVector(out, roadW), A2.clone().addScaledVector(out, roadW)].map((q) => q.setY(roadY + 0.005));
-      const n = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
-      if (n.y < 0) mb.quad('l.road', p[0], p[3], p[2], p[1], V(1, 0, 0), V(0, 0, 1));
-      else mb.quad('l.road', p[0], p[1], p[2], p[3], V(1, 0, 0), V(0, 0, 1));
-      mb.box('l.curb', mid.clone().addScaledVector(out, 0.1).setY(roadY), dir, A.distanceTo(B) + 0.2, 0.12, 0.2);
-      const d = out.dot(road);
-      if (d > bestDot) {
-        bestDot = d;
-        roadCenter = mid.clone().addScaledVector(out, roadW / 2).setY(roadY);
+      // 隅切り（短い斜めの辺）は、どの面の道路でもない。路面は、接する道路の高さ
+      const cut = Math.min(Math.abs(out.x), Math.abs(out.z)) > 0.35 && len < 4.5;
+      const sideE = sideOfOutward(out.x, out.z);
+      if (!cut) {
+        roadSides.add(sideE);
+        curbedSides.add(sideE);
       }
+      const y = cut || sideE === roadSide ? roadY : nbY(sideE);
+      // 辺から外へ、敷地の際（min・max の四角）までを舗装で埋める: 斜めの境界・隅切り・境界が四角より内側にある所
+      const sweep = clipPolygonRect([A, B, B.clone().addScaledVector(out, 60), A.clone().addScaledVector(out, 60)], min.x, max.x, min.y, max.y);
+      // （幅が数 cm の細い帯は作らない: 縁石の下に隠れる幅で、遠目には破線にちらつく）
+      if (sweep.length >= 3 && polygonArea(sweep) > Math.max(0.05, len * 0.06)) mb.polygon('l.road', sweep.map((q) => q.setY(y + 0.005)), V(0, 1, 0), V(1, 0, 0), V(0, 0, 1));
+      // 縁石は、敷地の際より内側にある部分だけ（外に出た部分は道路の帯の中）
+      const seg = clipSegmentRect(A, B, min.x - 0.01, max.x + 0.01, min.y - 0.01, max.y + 0.01);
+      if (seg && seg[0].distanceTo(seg[1]) > 0.3) mb.box('l.curb', seg[0].clone().add(seg[1]).multiplyScalar(0.5).addScaledVector(out, 0.1).setY(y), dir, seg[0].distanceTo(seg[1]) + 0.2, 0.12, 0.2);
     }
-  } else if (road.x !== 0) {
-    const x0 = road.x > 0 ? max.x + 0.2 : min.x - 0.2 - roadW;
-    flat('l.road', x0, x0 + roadW, cz - 60, cz + 60, roadY + 0.005);
-    roadCenter = V(x0 + roadW / 2, roadY, cz);
-    // 縁石
-    mb.aabb('l.curb', V(road.x > 0 ? max.x : min.x - 0.2, roadY, cz - 60), V(road.x > 0 ? max.x + 0.2 : min.x, roadY + 0.12, cz + 60));
-  } else {
-    const z0 = road.z > 0 ? max.y + 0.2 : min.y - 0.2 - roadW;
-    flat('l.road', cx - 60, cx + 60, z0, z0 + roadW, roadY + 0.005);
-    roadCenter = V(cx, roadY, z0 + roadW / 2);
-    mb.aabb('l.curb', V(cx - 60, roadY, road.z > 0 ? max.y : min.y - 0.2), V(cx + 60, roadY + 0.12, road.z > 0 ? max.y + 0.2 : min.y));
+  }
+  // 道路境界線の辺が無い面の縁石: 敷地の際に沿って、まっすぐ
+  for (const s of roadSides) {
+    if (curbedSides.has(s)) continue;
+    const y = s === roadSide ? roadY : nbY(s);
+    if (s === 'right' || s === 'left') mb.aabb('l.curb', V(s === 'right' ? max.x : min.x - CURB, y, min.y - CURB), V(s === 'right' ? max.x + CURB : min.x, y + 0.12, max.y + CURB));
+    else mb.aabb('l.curb', V(min.x - CURB, y, s === 'bottom' ? max.y : min.y - CURB), V(max.x + CURB, y + 0.12, s === 'bottom' ? max.y + CURB : min.y));
   }
 
   // 駐車スペース（道路側の余白。玄関アプローチの横）
@@ -590,61 +612,29 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     else plan.items.push({ kind: it.kind, x: p.x, z: p.z, rot: it.rot, w: fp.w, d: fp.d });
   }
 
-  // 隣家（住宅地の中の敷地に見せる: 道路以外の 3 辺のすぐ外に、淡い色の箱型住宅を並べる）
-  const town: { mb: MeshBuilder; box: THREE.Box3 }[] = [];
-  {
-    let seed = 7;
-    const r2 = () => {
-      seed = (seed * 16807) % 2147483647;
-      return seed / 2147483647;
-    };
-    const sides: { n: THREE.Vector3; ok: boolean }[] = [
-      { n: V(1, 0, 0), ok: !(road.x > 0) },
-      { n: V(-1, 0, 0), ok: !(road.x < 0) },
-      { n: V(0, 0, 1), ok: !(road.z > 0) },
-      { n: V(0, 0, -1), ok: !(road.z < 0) },
-    ];
-    for (const s of sides) {
-      if (!s.ok) continue;
-      const alongV = V(-s.n.z, 0, s.n.x);
-      const edge = s.n.x !== 0 ? (s.n.x > 0 ? max.x : min.x) : s.n.z > 0 ? max.y : min.y;
-      const span = s.n.x !== 0 ? [min.y, max.y] : [min.x, max.x];
-      // 道路に面する側の隣家は、道路境界から 1.5m 以上下がる（道路まで迫り出して外観を塞がない）
-      const sideOfRoad = Math.abs(s.n.dot(road)) < 0.5;
-      if (sideOfRoad) {
-        const roadEdge = road.x !== 0 ? (road.x > 0 ? max.x : min.x) : road.z > 0 ? max.y : min.y;
-        const sgn = road.x + road.z;
-        if (sgn > 0) span[1] = Math.min(span[1], roadEdge - 3.0);
-        else span[0] = Math.max(span[0], roadEdge + 3.0);
-      }
-      let t = span[0] - (sideOfRoad && road.x + road.z < 0 ? 0 : 4 + r2() * 3);
-      while (t < span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) {
-        const w = 6 + r2() * 3;
-        const d = 6.5 + r2() * 2.5;
-        const hh = r2() > 0.3 ? 6.0 : 3.2;
-        const gap = 2.2 + r2() * 1.8;
-        if (t + w > span[1] + (sideOfRoad && road.x + road.z > 0 ? 0 : 4)) break;
-        // 隣家はその辺の隣地の地盤の高さに立つ
-        const lvl = nbY(sideOfOutward(s.n.x, s.n.z));
-        const center = V(0, lvl, 0);
-        if (s.n.x !== 0) center.set(edge + s.n.x * (gap + d / 2), lvl, t + w / 2);
-        else center.set(t + w / 2, lvl, edge + s.n.z * (gap + d / 2));
-        const dir = s.n.x !== 0 ? V(0, 0, 1) : V(1, 0, 0);
-        const len = w;
-        const depth = d;
-        // 躯体と、薄い片流れの屋根（色は 3 種からばらつかせる）
-        const key = r2() > 0.66 ? 'l.nbWallB' : r2() > 0.4 ? 'l.nbWallA' : 'l.nbWallC';
-        const one = new MeshBuilder();
-        mb_box(one, key, center, dir, len, hh, depth);
-        mb_box(one, 'l.nbRoof', center.clone().setY(lvl + hh), dir, len + 0.5, 0.35, depth + 0.5);
-        const ex = dir.x !== 0 ? len : depth;
-        const ez = dir.x !== 0 ? depth : len;
-        town.push({ mb: one, box: new THREE.Box3(V(center.x - ex / 2, lvl, center.z - ez / 2), V(center.x + ex / 2, lvl + hh + 0.4, center.z + ez / 2)) });
-        t += w + 0.4 + r2() * 1.2;
-        void alongV;
-      }
-    }
-  }
+  // 想定の街並み（両隣・裏・道路の向かいに、住宅地らしい区画を並べる。town.ts）
+  const sgnR = road.x + road.z;
+  const sideA0: PlanSide = road.x !== 0 ? 'top' : 'left';
+  const sideA1: PlanSide = road.x !== 0 ? 'bottom' : 'right';
+  const sideBack: PlanSide = road.x > 0 ? 'left' : road.x < 0 ? 'right' : road.z > 0 ? 'top' : 'bottom';
+  /** 主の道路のほかに道路が接する面（角地・二方道路）の、その道路の幅。接していなければ undefined */
+  const sideRoadW = (sd: PlanSide) => (sd !== roadSide && roadSides.has(sd) ? clampW(siteData?.roads.find((r) => r.side === sd)?.widthMm, roadW) : undefined);
+  const town: Town = opts.town === false ? { lots: [], roads: new MeshBuilder() } : buildTown({
+    toWorld: (a, q, y) => toWorld(a, siteEdge - sgnR * q, y),
+    a0: alongMin,
+    a1: alongMax,
+    depth: road.x !== 0 ? max.x - min.x : max.y - min.y,
+    roadW,
+    roadY,
+    curb: 0.2,
+    levelLeft: nbY(sideA0),
+    levelRight: nbY(sideA1),
+    levelBack: nbY(sideBack),
+    roadLeft: sideRoadW(sideA0),
+    roadRight: sideRoadW(sideA1),
+    roadBack: sideRoadW(sideBack),
+    light: opts.light,
+  });
 
   return {
     mb,
@@ -656,6 +646,57 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   };
 }
 
-function mb_box(m: MeshBuilder, key: string, base: THREE.Vector3, dir: THREE.Vector3, len: number, height: number, depth: number) {
-  m.box(key, base, dir, len, height, depth);
+/** 多角形（x・z）の面積 */
+function polygonArea(pts: THREE.Vector3[]): number {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    a += p.x * q.z - q.x * p.z;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** 多角形（x・z）を、軸に平行な四角 [x0, x1] × [z0, z1] で切り取る */
+export function clipPolygonRect(pts: THREE.Vector3[], x0: number, x1: number, z0: number, z1: number): THREE.Vector3[] {
+  let out = pts.map((p) => p.clone());
+  const inside: ((p: THREE.Vector3) => number)[] = [(p) => p.x - x0, (p) => x1 - p.x, (p) => p.z - z0, (p) => z1 - p.z];
+  for (const d of inside) {
+    const src = out;
+    out = [];
+    for (let i = 0; i < src.length; i++) {
+      const a = src[i];
+      const c = src[(i + 1) % src.length];
+      const da = d(a);
+      const dc = d(c);
+      if (da >= 0) out.push(a);
+      if (da >= 0 !== dc >= 0) out.push(a.clone().lerp(c, da / (da - dc)));
+    }
+    if (out.length < 3) return [];
+  }
+  return out;
+}
+
+/** 線分（x・z）を、軸に平行な四角で切り取る。四角の外なら null */
+export function clipSegmentRect(a: THREE.Vector3, c: THREE.Vector3, x0: number, x1: number, z0: number, z1: number): [THREE.Vector3, THREE.Vector3] | null {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = c.x - a.x;
+  const dz = c.z - a.z;
+  for (const [p, q] of [
+    [-dx, a.x - x0],
+    [dx, x1 - a.x],
+    [-dz, a.z - z0],
+    [dz, z1 - a.z],
+  ]) {
+    if (Math.abs(p) < 1e-12) {
+      if (q < 0) return null;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) t0 = Math.max(t0, r);
+    else t1 = Math.min(t1, r);
+  }
+  if (t0 > t1) return null;
+  return [a.clone().lerp(c, t0), a.clone().lerp(c, t1)];
 }

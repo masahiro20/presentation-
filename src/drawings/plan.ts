@@ -23,7 +23,7 @@ function landscapeOf(model: BuildingModel): LandscapePlan | null {
   try {
     const ext = EXTERIOR_STYLES[0];
     const { meta } = buildBuilding(model, { exterior: ext });
-    lp = buildLandscape(meta, ext, model.site, planExteriorOf(model)).plan;
+    lp = buildLandscape(meta, ext, model.site, planExteriorOf(model), undefined, { town: false }).plan;
   } catch {
     lp = null;
   }

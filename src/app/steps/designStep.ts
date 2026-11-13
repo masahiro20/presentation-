@@ -50,7 +50,8 @@ export const designStep: Step = {
   mount(ctx) {
     const v = ctx.app.viewer;
     v.setCutaway(null);
-    v.setTownVisible(false);
+    // 想定の街並み（両隣・裏・向かいの家並み）は最初から出す: 外観を立ち上げたときに、周りの様子が想像できるように。「街並み」で消せる
+    v.setTownVisible(!(v.userData as { townOff?: boolean }).townOff);
     ctx.app.viewer.groups.context.visible = false;
     let shots = currentShots(ctx);
     let active: Shot | null = null;
@@ -110,6 +111,18 @@ export const designStep: Step = {
       }),
       toolBtn('▶ シネマ', () => startCinema(v, ctx.stage, shots, { start: Math.max(0, shots.findIndex((x) => x === active)) })),
     );
+    {
+      // 想定の街並みの表示
+      const tw = toolBtn('街並み', () => {
+        const ud = v.userData as { townOff?: boolean };
+        ud.townOff = v.townShown();
+        v.setTownVisible(!ud.townOff);
+        tw.classList.toggle('on', v.townShown());
+      });
+      tw.title = '周りの家並み（想定）を表示する／消す。実際の周辺は「日照」で立ち上げます';
+      tw.classList.toggle('on', v.townShown());
+      tools.appendChild(tw);
+    }
     {
       // 模型の部屋名タグ
       const lbl = toolBtn('部屋名', () => {

@@ -47,6 +47,7 @@ w.__renderShot = async (id, W, H, grade) => {
   const s = viewer.shots(W / H).find((x) => x.id === id);
   if (!s) throw new Error(`カット ${id} がありません`);
   viewer.applyShot(s);
+  await viewer.ensurePhotoSky();
   await new Promise((r) => setTimeout(r, 400));
   const url = await viewer.capture(W, H, 'image/png');
   if (!grade) return url;

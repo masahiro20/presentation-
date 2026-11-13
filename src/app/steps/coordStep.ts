@@ -111,7 +111,7 @@ export const coordStep: Step = {
   mount(ctx) {
     const v = ctx.app.viewer;
     v.setCutaway(null);
-    v.setTownVisible(false);
+    v.setTownVisible(!(v.userData as { townOff?: boolean }).townOff);
     v.groups.context.visible = false;
     // 色・素材を決める画面なので、3D は仕上げ表示（室内の照明・高精細）。閲覧表示の昼は室内の照明を消すため、床や壁が灰色に沈んで見える
     prevViewMode = v.viewMode;

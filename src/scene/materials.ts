@@ -14,7 +14,7 @@ export class MaterialRegistry {
   constructor(
     public ext: ExteriorStyle,
     public int: InteriorStyle,
-    public opts: { wallColor?: string; doorColor?: string; night?: boolean; clay?: boolean } = {},
+    public opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean } = {},
   ) {
     this.rebuild();
   }
@@ -23,7 +23,7 @@ export class MaterialRegistry {
     return this.map.get(key) ?? this.map.get(key.split(':')[0]) ?? this.fallback;
   }
 
-  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean; clay?: boolean } = {}) {
+  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean } = {}) {
     this.ext = ext;
     this.int = int;
     this.opts = opts;
@@ -46,6 +46,8 @@ export class MaterialRegistry {
       new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal, ...extra });
     const wall: MatSpec = this.opts.wallColor ? { ...e.wall, color: this.opts.wallColor } : e.wall;
     const night = !!this.opts.night;
+    // 夕景・夜景（街並みの窓に明かりが点く）
+    const dusk = night || !!this.opts.evening;
     const set = (k: string, m: THREE.Material) => this.map.set(k, m);
 
     // 外装
@@ -65,7 +67,8 @@ export class MaterialRegistry {
     // 外構: ガレージ・カーポート・駐車場の土間コンクリート、テラスのタイル、ガレージのシャッター（ガルバの横スラット）
     set('ext.concrete', color('#b8b5ae', 0.92));
     set('ext.terrace', M(i.entranceFloor));
-    set('ext.shutter', color('#8e9195', 0.42, 0.55));
+    // シャッター: スラットの陰影は模様で出す（細い黒い線を形で並べると、離れたときに破線にちらつく）
+    set('ext.shutter', M({ pattern: 'slat', color: '#8e9195', roughness: 0.6, metalness: 0.25, normalStrength: 0.28 }));
     // 透明ガラス（Low-E クリア）: ほぼ無色で、映り込みは控えめに。色付き・濃い不透明度だとスモークガラスのように外が曇って見える
     const glass = new THREE.MeshPhysicalMaterial({
       color: '#f2f6f7',
@@ -195,12 +198,35 @@ export class MaterialRegistry {
     const L = e.landscape;
     set('l.ground', M(L.ground));
     // 敷地の外は落ち着いた緑の地面（一面の舗装は駐車場のように見えるので避ける）。彩度を抑えて建物を主役に
-    set('l.far', M({ pattern: 'grass', color: '#66704f', color2: '#7a8460', tile: 3 }));
-    // 隣家は主役を引き立てる淡いグレー（彩度・明暗差を抑える）
-    set('l.nbWallA', color('#cfcbc4', 0.95));
-    set('l.nbWallB', color('#bdbab4', 0.95));
-    set('l.nbWallC', color('#d8d4cd', 0.95));
+    set('l.far', M({ pattern: 'grass', color: '#727a60', color2: '#838a70', tile: 3 }));
+    // 想定の街並み（town.ts）: 主役を引き立てる淡い色（彩度・明暗差を抑える）。壁 5 色・屋根 3 色をばらつかせる
+    set('l.nbWallA', color('#cdc9c0', 0.95));
+    set('l.nbWallB', color('#bfbab0', 0.95));
+    set('l.nbWallC', color('#b3b0aa', 0.95));
+    set('l.nbWallD', color('#c6bfb1', 0.95));
+    set('l.nbWallE', color('#9a9995', 0.95));
+    set('l.nbRoofA', color('#4b4d50', 0.7));
+    set('l.nbRoofB', color('#5d564f', 0.75));
+    set('l.nbRoofC', color('#6d7073', 0.5, 0.25));
     set('l.nbRoof', color('#45474a', 0.75));
+    // 窓は空を映す暗いガラス、枠は白、玄関戸は濃い茶、基礎は明るいコンクリート色
+    set('l.nbGlass', color('#56636e', 0.1, 0.2, { envMapIntensity: 1.3 }));
+    set('l.nbFrame', color('#d9d7d1', 0.6));
+    // 夕景・夜景では、街並みの窓の一部に明かりが点く（昼は普通のガラス）
+    set('l.nbGlassLit', dusk ? color('#f1d7a6', 0.4, 0, { emissive: new THREE.Color('#ffcf8a'), emissiveIntensity: night ? 0.9 : 0.6 }) : color('#56636e', 0.1, 0.2, { envMapIntensity: 1.3 }));
+    // 生垣の芯（葉のカードの奥に見える濃い緑のかたまり）
+    set('l.hedge', M({ pattern: 'grass', color: '#34482c', color2: '#3f5634', tile: 1.2, roughness: 0.95 }));
+    set('l.nbDoor', color('#4a4038', 0.6));
+    set('l.nbBase', color('#b9b6af', 0.92));
+    // 区画の地面（砂利・土間・芝）と駐車場の舗装、道路の側溝
+    set('l.nbLotA', M({ pattern: 'gravel', color: '#aba69c', color2: '#98948b' }));
+    set('l.nbLotB', M({ pattern: 'gravel', color: '#a39f95', color2: '#918d84' }));
+    set('l.nbLotC', M({ pattern: 'grass', color: '#7d8767', color2: '#8c9474', tile: 3 }));
+    set('l.nbPave', M({ pattern: 'concrete', color: '#b0ada7', roughness: 0.9 }));
+    set('l.gutter', color('#bdbab3', 0.9));
+    set('l.nbCarLight', color('#e9e9e6', 0.3, 0.3));
+    set('l.nbCarDark', color('#2c2e31', 0.3, 0.4));
+    set('l.nbCarGrey', color('#8c8f93', 0.3, 0.5));
     set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
     set('l.curb', color('#b8b6b0', 0.9));
     // 道路の白線（OpenStreetMap の街路用）
@@ -223,6 +249,8 @@ export class MaterialRegistry {
     set('l.leafCard', leafMat('#5f8a3c', '#9dbb5c', 3));
     set('l.leafSpray', new THREE.MeshStandardMaterial({ map: leafSprayTexture('#5e8c3a', '#a9c766', 5), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.65 }));
     set('l.leafCardDark', leafMat('#3f6630', '#6f9448', 7));
+    // 街並みの庭木（少し明るく黄味のある葉。主役の植栽より淡く）
+    set('l.leafCardSoft', leafMat('#6f9450', '#a6c078', 11));
     set('l.soilDark', color('#4a3b2f', 0.95));
     // 外構に置く物（車・BBQ・物置・ポスト・庭園灯）
     set('x.carBody', color('#3a3c40', 0.35, 0.6));

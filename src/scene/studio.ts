@@ -70,7 +70,8 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
   // 画面用の空の球があると実写の空（こちらの球）を隠すので、描く間だけ外す
   const hadDome = viewer.hasSkyDome();
   try {
-    const hdri = await loadHdri(viewer.design.timeOfDay);
+    // 画面がすでに実写の空（球）で描いているときは、それをそのまま使う
+    const hdri = (await viewer.ensurePhotoSky()) ? null : await loadHdri(viewer.design.timeOfDay);
     if (hdri && hadDome) viewer.useSkyDome(false);
     if (hdri) {
       // 背景だけを実写の空に（環境光はリアルタイム描画で確実に動く手続き的な空のまま。浮動小数のテクスチャを

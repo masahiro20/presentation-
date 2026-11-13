@@ -32,7 +32,8 @@ export type Pattern =
   | 'gravel'
   | 'fabric'
   | 'wood'
-  | 'leather';
+  | 'leather'
+  | 'slat';
 
 export interface MatSpec {
   pattern: Pattern;
@@ -79,6 +80,7 @@ const DEFAULT_TILE: Record<Pattern, number> = {
   fabric: 0.4,
   wood: 1.2,
   leather: 0.6,
+  slat: 0.9,
 };
 
 export function tileOf(spec: MatSpec) {
@@ -221,6 +223,16 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           const c = lerp3(base, alt, rv * 0.7);
           const k = (0.85 + 0.25 * grain) * mix(0.5, 1, g);
           set(i, tint(c, k), g * (0.8 + 0.2 * grain), baseRough);
+          break;
+        }
+        case 'slat': {
+          // シャッターのスラット: 75mm ピッチの横の板。板ごとにゆるく膨らみ、継ぎ目は細い影（黒い線ではなく、同じ色の陰影）
+          const band = my / 0.075;
+          const f = band - Math.floor(band);
+          const bulge = Math.sin(f * Math.PI);
+          const joint = f < 0.1 ? 1 - f / 0.1 : f > 0.94 ? (f - 0.94) / 0.06 : 0;
+          const k = (0.975 + 0.03 * n2) * (1 - 0.2 * joint);
+          set(i, tint(base, k), 0.15 + 0.85 * bulge * (1 - joint), baseRough + 0.08 * joint);
           break;
         }
         case 'galvalume': {

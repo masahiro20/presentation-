@@ -61,7 +61,8 @@ async function main() {
   (window as unknown as { __view?: unknown }).__view = { viewer, proj, THREE };
   viewer.setModel(proj.model);
   viewer.setDesign(design);
-  viewer.setTownVisible(false);
+  // 実際の周辺（担当者が日照の画面で取得したもの）があればそれを、無ければ想定の街並みを出す
+  viewer.setTownVisible(!proj.share?.context);
   // スマホの縦画面では背景の空が崩れるので、空は球で描く
   viewer.useSkyDome(true);
   // 周辺環境（担当者が日照の画面で取得した周辺建物・航空写真）: 同じ周りの中に家を置いて見せる

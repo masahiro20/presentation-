@@ -109,7 +109,7 @@ function drawPass<T>(viewer: Viewer, kind: PassKind, width: number, height: numb
       }
       const m = o as THREE.Mesh;
       // 空の球・札・間接照明の光の帯（加算の薄い面）は形ではないので描かない
-      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel || o.name === 'skydome' || o.name === 'studioSky' || String(o.userData.matKey ?? '').startsWith('f.coveGlow')) {
+      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel || o.name === 'skydome' || o.name === 'studioSky' || o.userData.sky || String(o.userData.matKey ?? '').startsWith('f.coveGlow')) {
         hidden.push(o);
         o.visible = false;
         return;

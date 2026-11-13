@@ -18,6 +18,7 @@ import { buildFurniture, setKitchenFinish, setFurnitureLighting, setFurnitureVoc
 import { contactShadows } from './contactShadow';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
+import { hdriScreenTexture, loadHdri, type Hdri } from './hdri';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
 import { buildLandscape, planExteriorOf, type SiteInfo, type LandscapePlan } from './landscape';
@@ -301,6 +302,12 @@ export class Viewer {
       this.hemi.intensity = b.hemi * (cut ? this.look.hemi : 0.8);
       this.bounce.intensity = b.bounce * (cut ? this.look.bounce : 0.72);
       this.scene.environmentIntensity = b.env * (cut ? this.look.env : 0.9);
+    } else if (outside) {
+      // 夜の外観: 空の残光と街の明かりの分だけ周囲光を足す（建物が真っ黒な影にならず、外壁の形が読める）
+      this.sun.intensity = b.sun;
+      this.hemi.intensity = 0.3;
+      this.bounce.intensity = b.bounce;
+      this.scene.environmentIntensity = 0.55;
     } else {
       this.sun.intensity = b.sun;
       this.hemi.intensity = b.hemi;
@@ -362,6 +369,15 @@ export class Viewer {
   private skyTex: THREE.DataTexture | null = null;
   /** 空を背景（scene.background）ではなく大きな球で描く（縦画面・広い画角で背景の立方体が崩れる環境向け。体験リンクで使う） */
   private skyDome: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null;
+  /**
+   * 実写の空（雲のある空の写真）の球と、地平線のかすみの帯。
+   * 画面の空が平らなグラデーションだと絵が冷たく見えるので、外観を立ち上げた最初から写真の空にする。
+   * 球・帯はレイヤー 1 に置き、画面のカメラだけが写す（立面図の作図・部屋の映り込みの撮影には写らない）
+   */
+  private photoSky: { dome: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>; haze: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial>; mode: string; hdri: Hdri } | null = null;
+  /** 画面に実写の空を使うか。日照の検討（時刻で空の色が変わる）では手続きの空に戻す */
+  private photoSkyOn = true;
+  private photoSkyToken = 0;
   private pmrem: THREE.PMREMGenerator;
   private envRT: THREE.WebGLRenderTarget | null = null;
   /** 室内の視点用の環境光（空の青を持ち込まない暖かい無彩色）。施工写真の室内は白が白く、グレーがグレーに見える */
@@ -430,6 +446,8 @@ export class Viewer {
     // 影はカメラを動かしただけでは変わらないので、場面が変わったときだけ描き直す
     this.renderer.shadowMap.autoUpdate = false;
     // 写真的なトーン（ハイライトの転び方が自然で、白い壁が飛ばない）
+    // レイヤー 1 = 実写の空の球とかすみの帯（画面のカメラだけが写す）
+    this.camera.layers.enable(1);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -668,7 +686,9 @@ export class Viewer {
     this.bounce.position.set(0, -1, 0);
     this.scene.add(this.sun, this.sun.target, this.hemi, this.bounce);
 
-    this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', clay: design.clay });
+    this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', evening: design.timeOfDay === 'evening', clay: design.clay });
+    // 実写の空は、図面を読んでいる間に先に読み込んでおく（外観が立ち上がった最初のコマから雲のある空にする）
+    void loadHdri(design.timeOfDay);
     // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
     void preloadPhotoTextures().then(() => {
       clearMaterialCache();
@@ -1100,19 +1120,27 @@ export class Viewer {
 
   /** 外構（敷地・道路・植栽・隣家・手で置いた物）を作って landscape のグループに入れる */
   private addLandscape(model: BuildingModel, meta: BuildingMeta, ext: ExteriorStyle, resolve: (k: string) => THREE.Material) {
-    const land = buildLandscape(meta, ext, model.site, planExteriorOf(model), model.siteLevels);
+    const land = buildLandscape(meta, ext, model.site, planExteriorOf(model), model.siteLevels, { light: this.lowPower });
     const landG = land.mb.build(resolve, { name: 'landscape', castShadow: false });
     this.groups.landscape.add(landG);
     // 擁壁・階段（敷地の高低差）は影を落とす
     if (!land.walls.isEmpty()) this.groups.landscape.add(land.walls.build(resolve, { name: 'walls', castShadow: true }));
     this.groups.landscape.add(land.trees.build(resolve, { name: 'trees' }));
+    // 想定の街並み: 区画ごとに 1 つのまとまり（家・塀・生垣・木・車＋区画の地面）。カメラの前に入る区画は丸ごと隠す
     this.town = [];
-    for (const t of land.town) {
-      const g = t.mb.build(resolve, { name: 'town', castShadow: true });
-      this.groups.landscape.add(g);
-      this.town.push({ g, box: t.box });
+    this.townRoads = null;
+    for (const t of land.town.lots) {
+      const g = t.mb.build(resolve, { name: 'town', castShadow: false });
+      const flat = t.flat.build(resolve, { name: 'townFlat', castShadow: false });
+      this.groups.landscape.add(g, flat);
+      this.town.push({ g, flat, box: t.box, solid: t.solid, cast: false });
+    }
+    if (!land.town.roads.isEmpty()) {
+      this.townRoads = land.town.roads.build(resolve, { name: 'townRoads', castShadow: false });
+      this.groups.landscape.add(this.townRoads);
     }
     this.cullTown();
+    this.updateTownCasters();
     // 遠景の木立（地平線まで何もない地面にしない）
     this.groups.landscape.add(distantTreeBand((land.site.min.x + land.site.max.x) / 2, (land.site.min.y + land.site.max.y) / 2));
     return land;
@@ -1770,6 +1798,10 @@ export class Viewer {
    */
   renderFrame(force = false) {
     if (this.skyDome) this.skyDome.position.copy(this.camera.position);
+    if (this.photoSky) {
+      this.photoSky.dome.position.copy(this.camera.position);
+      this.photoSky.haze.position.copy(this.camera.position);
+    }
     this.flushShadow();
     if (this.quality === 'high' || force) this.updateRoomProbe();
     if (this.quality === 'high' || force) this.composer.render();
@@ -2033,6 +2065,7 @@ export class Viewer {
       // 室内ドアの色: 手で選んだ色 → コーディネートで選んだ建具の商品 → 壁になじませる（既定）
       doorColor: design.specPatch?.doorColor ?? (design.finishes?.door ? 'preset' : undefined),
       night: design.timeOfDay === 'night',
+      evening: design.timeOfDay === 'evening',
       clay: design.clay,
     });
     if (!this.state) return;
@@ -2072,15 +2105,16 @@ export class Viewer {
    * setModel から毎回呼ばれるので、外部の建物を足した後も setModel で範囲が戻ることはない。
    * 見えていない 3DS（他のステップ）は範囲に入れない（単位違いで巨大なままの 3DS が PDF の建物の影を粗くしないように）
    */
-  fitShadow(extra?: THREE.Box3) {
+  fitShadow(extra?: THREE.Box3, envUpdate = true) {
     if (!this.state) return;
     const b = this.state.meta.bbox.clone();
     const ext = this.userData.externalMounted === true || this.groups.external.visible ? this.externalBox() : null;
     if (ext) b.union(ext);
     if (extra && !extra.isEmpty()) b.union(extra);
     const c = b.getCenter(new THREE.Vector3());
-    const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5 + 7;
-    this.fitShadowTo(c, r);
+    // 鳥瞰で街並みが出ているときは、まわりの家にも影が付く広さに（syncShadowWide）
+    const r = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) * 0.5 + 7 + (this.shadowWide ? 42 : 0);
+    this.fitShadowTo(c, r, envUpdate);
   }
 
   /**
@@ -2099,7 +2133,7 @@ export class Viewer {
   }
 
   /** 影の範囲を中心 center・半径 radius (m) の箱にする */
-  fitShadowTo(center: THREE.Vector3, radius: number) {
+  fitShadowTo(center: THREE.Vector3, radius: number, envUpdate = true) {
     const r = Math.max(1, radius);
     const c = center.clone();
     this.shadowCenter = c;
@@ -2112,7 +2146,8 @@ export class Viewer {
     cam.far = this.shadowReach * 2.5;
     cam.updateProjectionMatrix();
     this.sun.target.position.copy(c);
-    this.setSunDirection(this.sunDir);
+    this.setSunDirection(this.sunDir, envUpdate);
+    this.updateTownCasters();
   }
 
   setSunDirection(dir: THREE.Vector3, envUpdate = true) {
@@ -2136,6 +2171,7 @@ export class Viewer {
     this.lightBase.bounce = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
     this.bounce.color.set(evening ? '#f3d9bd' : '#f4efe8');
     if (envUpdate) this.updateEnvironment();
+    else this.placePhotoSky();
     this.applyLightBalance(true);
     this.dirty = true;
   }
@@ -2161,23 +2197,185 @@ export class Viewer {
     this.exposureBase = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
     // 露出は applyLightBalance が決める（室内では壁の明るさで補正する）
     this.applyLightBalance(true);
-    // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）。朝は靄が濃い
-    const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : mode === 'morning' ? '#e3e2e6' : '#cfd6dc';
-    const fogD = mode === 'morning' ? 0.0036 : 0.0024;
-    if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(fogCol, fogD);
-    else {
-      (this.scene.fog as THREE.FogExp2).color.set(fogCol);
-      (this.scene.fog as THREE.FogExp2).density = fogD;
-    }
+    this.applyHaze();
+    this.syncPhotoSky();
     this.dirty = true;
+  }
+
+  /**
+   * 遠くほど空気に溶けるかすみ（奥行き感。室内の距離では効かない）。朝は濃い。
+   * 実写の空のときは、空の地平線の色に合わせて濃くする（30 m 先で 3%、100 m で 3 割、250 m でほぼ空の色）:
+   * 街並みの奥と地面の端が空に溶け、地平線まで何もない地面に見えない。
+   * 日照の検討（実際の街・地形を遠くまで見る）では薄いまま
+   */
+  private applyHaze() {
+    const mode = this.design.timeOfDay;
+    const ps = this.photoSky && this.photoSky.mode === mode ? this.photoSky : null;
+    const col = new THREE.Color(mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : mode === 'morning' ? '#e3e2e6' : '#cfd6dc');
+    let d = mode === 'morning' ? 0.0036 : 0.0024;
+    if (ps) {
+      col.copy(ps.hdri.horizon).multiplyScalar(this.photoSkyIntensity(ps.hdri));
+      // かすみが白く飛ばないように、明るさに上限
+      const l = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
+      const cap = mode === 'night' ? 0.06 : 0.82;
+      if (l > cap) col.multiplyScalar(cap / l);
+      d = mode === 'night' ? 0.004 : mode === 'morning' ? 0.0075 : 0.0058;
+      ps.haze.material.color.copy(col);
+    }
+    if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(col, d);
+    else {
+      (this.scene.fog as THREE.FogExp2).color.copy(col);
+      (this.scene.fog as THREE.FogExp2).density = d;
+    }
+  }
+
+  /**
+   * 実写の空の明るさ: 空の明るさの中央値（青空・雲の間の空の地の色）を、時間帯ごとの決まった明るさにそろえる。
+   * 写真ごとに太陽の強さが違うので、照度（太陽込み）でそろえると夕景・夜の空が白く飛ぶ
+   */
+  private photoSkyIntensity(h: Hdri): number {
+    const tod = this.design.timeOfDay;
+    const target = tod === 'night' ? 0.03 : tod === 'evening' ? 0.24 : tod === 'morning' ? 0.4 : 0.34;
+    return Math.min(6, target / Math.max(0.002, h.skyMedian));
+  }
+
+  hasPhotoSky(): boolean {
+    return !!this.photoSky;
+  }
+
+  /** 画面の空に実写の空を使う／使わない（日照の検討では使わない） */
+  setPhotoSky(on: boolean) {
+    if (this.photoSkyOn === on) return;
+    this.photoSkyOn = on;
+    this.syncPhotoSky();
+    this.applyHaze();
+    this.dirty = true;
+  }
+
+  private removePhotoSky() {
+    const ps = this.photoSky;
+    if (!ps) return;
+    this.scene.remove(ps.dome, ps.haze);
+    ps.dome.geometry.dispose();
+    ps.dome.material.dispose();
+    ps.haze.geometry.dispose();
+    ps.haze.material.map?.dispose();
+    ps.haze.material.dispose();
+    this.photoSky = null;
+  }
+
+  /** 実写の空を、いまの時間帯のものにする（読み込みは 1 回だけ。読めない環境では手続きの空のまま） */
+  private syncPhotoSky() {
+    const mode = this.design.timeOfDay;
+    const want = this.photoSkyOn && !this.design.clay;
+    if (this.photoSky && (!want || this.photoSky.mode !== mode)) {
+      // 時間帯が変わった・使わなくなった: 前の時間帯の空は、すぐ外す（昼の空のまま夕景を描かない）
+      this.removePhotoSky();
+      this.applyHaze();
+    }
+    if (!want) {
+      this.photoSkyToken++;
+      return;
+    }
+    if (this.photoSky) {
+      this.placePhotoSky();
+      return;
+    }
+    const token = ++this.photoSkyToken;
+    void loadHdri(mode).then((h) => {
+      if (!h || token !== this.photoSkyToken || this.design.timeOfDay !== mode || !this.photoSkyOn || this.design.clay) return;
+      this.installPhotoSky(h, mode);
+    });
+  }
+
+  /**
+   * いまの時間帯の実写の空が画面に出るまで待つ（書き出しの前に呼ぶ）。
+   * @returns 実写の空で描いているか（読めない環境・白模型・日照の検討では false）
+   */
+  async ensurePhotoSky(): Promise<boolean> {
+    const mode = this.design.timeOfDay;
+    if (!this.photoSkyOn || this.design.clay) return false;
+    if (this.photoSky?.mode === mode) return true;
+    const h = await loadHdri(mode);
+    if (!h || this.design.timeOfDay !== mode || !this.photoSkyOn || this.design.clay) return this.photoSky?.mode === this.design.timeOfDay;
+    if (this.photoSky?.mode !== mode) this.installPhotoSky(h, mode);
+    return true;
+  }
+
+  private installPhotoSky(h: Hdri, mode: string) {
+    this.photoSkyToken++;
+    this.removePhotoSky();
+    const tex = hdriScreenTexture(h);
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(860, 64, 32), new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+    dome.name = 'photoSky';
+    // 地平線のかすみ: 地平線より下は空の地平線の色で塗り、上へ向かって透ける（仰角 9° で消える）
+    const R = 840;
+    const lo = R * Math.tan((7 * Math.PI) / 180);
+    const hi = R * Math.tan((9 * Math.PI) / 180);
+    const c = document.createElement('canvas');
+    c.width = 2;
+    c.height = 128;
+    const g = c.getContext('2d')!;
+    const img = g.createImageData(2, 128);
+    for (let y = 0; y < 128; y++) {
+      // キャンバスの上の行 = 帯の上端
+      const hgt = (1 - (y + 0.5) / 128) * (lo + hi) - lo;
+      const t = Math.max(0, Math.min(1, hgt / hi));
+      const a = Math.pow(1 - t, 2.2);
+      for (let x = 0; x < 2; x++) {
+        const i = (y * 2 + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = 255;
+        img.data[i + 3] = Math.round(a * 255);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    const grad = new THREE.CanvasTexture(c);
+    grad.colorSpace = THREE.NoColorSpace;
+    const hazeGeo = new THREE.CylinderGeometry(R, R, lo + hi, 64, 1, true);
+    hazeGeo.translate(0, (hi - lo) / 2, 0);
+    const haze = new THREE.Mesh(hazeGeo, new THREE.MeshBasicMaterial({ map: grad, transparent: true, side: THREE.BackSide, fog: false, depthWrite: false }));
+    haze.name = 'photoHaze';
+    for (const m of [dome, haze] as THREE.Mesh[]) {
+      m.frustumCulled = false;
+      m.castShadow = false;
+      m.receiveShadow = false;
+      m.userData.noShadow = true;
+      m.userData.sky = true;
+      m.raycast = () => {};
+      m.layers.set(1);
+    }
+    dome.renderOrder = -999;
+    haze.renderOrder = -998;
+    this.photoSky = { dome, haze, mode, hdri: h };
+    this.scene.add(dome, haze);
+    this.placePhotoSky();
+    this.applyHaze();
+    this.dirty = true;
+  }
+
+  /** 実写の空の向き（写真の太陽の方位を、いまの太陽の方位に合わせる）と明るさ */
+  private placePhotoSky() {
+    const ps = this.photoSky;
+    if (!ps) return;
+    const sd = this.sunDir;
+    ps.dome.rotation.y = ps.hdri.sunAzimuth - (this.design.timeOfDay === 'night' ? 0 : Math.atan2(sd.z, sd.x));
+    ps.dome.material.color.setScalar(this.photoSkyIntensity(ps.hdri));
+    ps.dome.position.copy(this.camera.position);
+    ps.haze.position.copy(this.camera.position);
   }
 
   // ------------------------------------------------------------------
   // 演出
   // ------------------------------------------------------------------
   private revealToken = 0;
-  private town: { g: THREE.Group; box: THREE.Box3 }[] = [];
+  /** g = 影を落とす物（家・塀・生垣・木・車）、flat = 区画の地面（家を隠しても残す = 空き地に見える）、cast = いま影を落としているか */
+  private town: { g: THREE.Group; flat: THREE.Group; box: THREE.Box3; solid: THREE.Box3 | null; cast: boolean }[] = [];
+  /** 街並みの道路（裏の道・横の道・向かいの縁石）。街並みと一緒に出し入れする */
+  private townRoads: THREE.Group | null = null;
   private townVisible = true;
+  townShown(): boolean {
+    return this.townVisible;
+  }
   /** 隣家（想定の街並み）の表示。日照では実際の周辺建物を使うので消す */
   setTownVisible(on: boolean) {
     this.townVisible = on;
@@ -2186,7 +2384,12 @@ export class Viewer {
   }
   /** カメラと建物の間に入る隣家、カメラに近すぎる隣家は隠す（視界を塞がない） */
   private cullTown() {
+    if (this.townRoads && this.townRoads.visible !== this.townVisible) {
+      this.townRoads.visible = this.townVisible;
+      this.dirty = true;
+    }
     if (!this.town.length) return;
+    this.syncShadowWide();
     const cam = this.camera.position;
     const tgt = this.controls.target;
     const ray = new THREE.Ray(cam.clone(), tgt.clone().sub(cam).normalize());
@@ -2195,16 +2398,60 @@ export class Viewer {
     for (const t of this.town) {
       let show = this.townVisible;
       if (show) {
-        const grown = t.box.clone().expandByScalar(2.5);
-        if (grown.containsPoint(cam)) show = false;
-        else if (ray.intersectBox(t.box.clone().expandByScalar(3.2), hit) && hit.distanceTo(cam) < dist - 1) show = false;
-        // 高い視点（鳥瞰）では、カメラより手前に張り出す隣家は隠す
-        else if (cam.y > 7 && t.box.distanceToPoint(new THREE.Vector3(cam.x, 0, cam.z)) < 10) show = false;
+        // カメラが区画の中（または 1 m 以内）: 生垣・庭木が目の前に来るので、区画の物を隠す
+        if (t.box.clone().expandByScalar(1).containsPoint(cam)) show = false;
+        // 視線（カメラ → 注視点）が家のそばを通る: 建物を塞ぐので隠す
+        else if (t.solid && ray.intersectBox(t.solid.clone().expandByScalar(3), hit) && hit.distanceTo(cam) < dist - 1) show = false;
+        // 高い視点（鳥瞰）では、カメラの足元からカメラと建物の中ほどまでにある家は隠す（手前の屋根が画面を塞ぐ）
+        else if (t.solid && cam.y > 7) {
+          const c = t.solid.getCenter(hit);
+          const to = new THREE.Vector3(c.x - cam.x, 0, c.z - cam.z);
+          const fwd = new THREE.Vector3(tgt.x - cam.x, 0, tgt.z - cam.z);
+          const span = fwd.length();
+          if (t.solid.distanceToPoint(new THREE.Vector3(cam.x, 0, cam.z)) < 8 || (span > 1 && to.dot(fwd) / span > -4 && to.length() < span * 0.62)) show = false;
+        }
       }
       if (t.g.visible !== show) {
         t.g.visible = show;
         this.dirty = true;
       }
+      if (t.flat.visible !== this.townVisible) {
+        t.flat.visible = this.townVisible;
+        this.dirty = true;
+      }
+    }
+  }
+
+  /**
+   * 影の範囲を街並みまで広げるか。高い視点（鳥瞰）で街並みが出ているときだけ広げる:
+   * 目の高さの外観・内観では、建物のまわりだけを細かい影で描く（塀の格子・窓の見込みの影を鈍らせない）
+   */
+  private shadowWide = false;
+  private syncShadowWide() {
+    const wide = this.townVisible && this.town.length > 0 && !this.cut && this.camera.position.y > 7 && !this.cameraInside();
+    if (wide === this.shadowWide) return;
+    this.shadowWide = wide;
+    this.fitShadow(undefined, false);
+  }
+
+  /**
+   * 街並みの区画のうち、影の範囲に丸ごと入るものだけが影を落とす。
+   * 範囲からはみ出す家に影を落とさせると、影が途中で切れて、何もない地面に三角形の影が浮く
+   */
+  private updateTownCasters() {
+    if (!this.town.length) return;
+    const c = this.sun.target.position;
+    const r = this.sun.shadow.camera.right - 1;
+    const sp = new THREE.Sphere();
+    for (const t of this.town) {
+      t.box.getBoundingSphere(sp);
+      const cast = this.shadowWide && Math.hypot(sp.center.x - c.x, sp.center.z - c.z) + sp.radius < r;
+      if (cast === t.cast) continue;
+      t.cast = cast;
+      t.g.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) o.castShadow = cast;
+      });
+      this.dirty = true;
     }
   }
   /** 図面から建物が立ち上がる演出: 地面から屋根まで水平の切断面を持ち上げながら、カメラをゆっくり回し込む */

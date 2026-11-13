@@ -235,8 +235,19 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
     const target = center.clone().setY(eye + midTan * dist);
     // 時間帯ごとの太陽: 昼は高く（38°）、朝は低く横から（長い影と靄）、夕景はさらに低く逆光気味
     const elev = tod === 'morning' ? 16 : tod === 'evening' ? 9 : 38;
-    const side = tod === 'morning' ? 88 : tod === 'evening' ? 112 : 55;
-    return { id, kind: 'exterior', title, caption, view: { pos, target, fov: vfov, architectural: true }, sunDir: sunForView(pos, target, sideSign, elev, side), timeOfDay: tod };
+    let side = tod === 'morning' ? 88 : tod === 'evening' ? 112 : 55;
+    let sunSide = sideSign;
+    if (tod === 'day') {
+      // 昼の外観: 主役の面（カメラがいちばん正面から見ている面）を斜め 38° から照らし、もう一方の見えている面は陰にする。
+      // 建築写真の定石（面の向きで明暗が分かれて形が立ち、軒や窓の見込みの影が主役の面に落ちる）。
+      // 以前はカメラの左後ろ 55° に固定で、家によっては道路側の正面が陰になっていた
+      const f = fromDir.clone().setY(0).normalize();
+      const main = Math.abs(f.x) > Math.abs(f.z) ? new THREE.Vector3(Math.sign(f.x), 0, 0) : new THREE.Vector3(0, 0, Math.sign(f.z));
+      const a = Math.atan2(-(f.x * main.z - f.z * main.x), f.dot(main));
+      sunSide = Math.abs(a) < 0.05 ? sideSign : Math.sign(a);
+      side = (Math.abs(a) * 180) / Math.PI + 38;
+    }
+    return { id, kind: 'exterior', title, caption, view: { pos, target, fov: vfov, architectural: true }, sunDir: sunForView(pos, target, sunSide, elev, side), timeOfDay: tod };
   };
   let frontDir = road.clone().multiplyScalar(Math.cos(0.6)).addScaledVector(along, entSide * Math.sin(0.6)).normalize();
   // 窓の情報があれば、道路側の半分の中で窓（＝表情）が最も多く見える角度を選ぶ（窓の無い壁ばかり写さない）

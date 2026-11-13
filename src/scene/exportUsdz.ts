@@ -11,6 +11,9 @@ import { stripUnexportableTextures } from './exportAr';
 export async function exportUsdz(viewer: Viewer, opts: { landscape?: boolean; scale?: number } = {}): Promise<Uint8Array> {
   const g = viewer.groups;
   const roots = [g.building, g.roof, g.furniture, ...(opts.landscape ? [g.landscape] : [])].filter((o) => o.visible);
+  // 想定の街並み（パースの背景）は書き出さない（AR で実物の場所に置くと、想像の隣家が邪魔になる）
+  const town = viewer.townShown();
+  viewer.setTownVisible(false);
   const saved = prepareMaterials(viewer.scene);
   const holder = new THREE.Scene();
   const parents = roots.map((r) => r.parent);
@@ -28,6 +31,7 @@ export async function exportUsdz(viewer: Viewer, opts: { landscape?: boolean; sc
   } finally {
     roots.forEach((r, i) => parents[i]?.add(r));
     restoreMaterials(saved);
+    viewer.setTownVisible(town);
     viewer.invalidate();
   }
 }

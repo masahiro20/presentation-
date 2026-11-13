@@ -19,7 +19,9 @@ interface PhotoDef {
 /** パターン → 実写素材 */
 const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   // 塗り壁の粒子感・左官のムラは写真らしさの要（弱すぎると均一な CG に見える）
-  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.5 },
+  // 外壁の塗り壁（ジョリパット）: 新築の面は、離れて見るとほぼ均一で、近づくと細かい粒が見える。
+  // 0.5 では 1〜2 m の大きなしみが繰り返して、汚れた壁に見えていた（粒の凹凸・粗さは写真のまま）
+  stucco: { id: 'white_plaster_02', tile: 2.4, detail: 0.2 },
   // 室内の塗り壁: 御社の提案パース（林様・堀様・吉田様）の壁は、色むらのほとんど無い細かい粒子の面。
   // 0.6 では古い塗装のしみのようなムラが出て、打ち放しコンクリートの壁のように見えていた
   plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.36 },

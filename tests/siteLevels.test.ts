@@ -140,14 +140,14 @@ describe('外構の 3D（buildLandscape）', () => {
   it('隣地が高い・低い: 隣家はその高さに立ち、境界に擁壁、フェンスはその上', () => {
     const r = land({ neighborMm: { top: 500, left: -400 } });
     // 隣家の辺は箱の中心で見る（敷地は x −1.6〜11.6、z −1.6〜14）
-    const center = (t: (typeof r.town)[number]) => ({ x: (t.box.min.x + t.box.max.x) / 2, z: (t.box.min.z + t.box.max.z) / 2 });
-    const top = r.town.filter((t) => center(t).z < -1.6 && center(t).x > -1.6 && center(t).x < 11.6);
+    const center = (t: (typeof r.town.lots)[number]) => ({ x: (t.box.min.x + t.box.max.x) / 2, z: (t.box.min.z + t.box.max.z) / 2 });
+    const top = r.town.lots.filter((t) => center(t).z < -1.6 && center(t).x > -1.6 && center(t).x < 11.6);
     expect(top.length).toBeGreaterThan(0);
     for (const t of top) expect(t.box.min.y).toBeCloseTo(0.5, 3);
-    const left = r.town.filter((t) => center(t).x < -1.6 && center(t).z > -1.6 && center(t).z < 14);
+    const left = r.town.lots.filter((t) => center(t).x < -1.6 && center(t).z > -1.6 && center(t).z < 14);
     expect(left.length).toBeGreaterThan(0);
     for (const t of left) expect(t.box.min.y).toBeCloseTo(-0.4, 3);
-    const right = r.town.filter((t) => center(t).x > 11.6 && center(t).z > -1.6 && center(t).z < 14);
+    const right = r.town.lots.filter((t) => center(t).x > 11.6 && center(t).z > -1.6 && center(t).z < 14);
     for (const t of right) expect(t.box.min.y).toBeCloseTo(0, 3);
     const wall = yRange(r.walls, 'l.retain')!;
     expect(wall.min).toBeCloseTo(-0.42, 3);
@@ -175,5 +175,80 @@ describe('標高の格子から高低差を推定（levelsFromGrid）', () => {
     expect(lv.roadMm).toBe(-800);
     expect(lv.neighborMm).toEqual({ top: 500 });
     expect(lv.note).toContain('DEM1A');
+  });
+});
+
+describe('外構の道路（角地・斜めの道路境界線）', () => {
+  /** 路面（l.road）の三角形の頂点（x・z） */
+  const roadTris = (mb: MeshBuilder): { x: number; z: number }[][] => {
+    const g = mb.build(() => new THREE.MeshBasicMaterial());
+    const m = g.children.find((c) => c.name === 'l.road') as THREE.Mesh;
+    const pos = m.geometry.getAttribute('position');
+    const out: { x: number; z: number }[][] = [];
+    for (let i = 0; i < pos.count; i += 3) out.push([0, 1, 2].map((k) => ({ x: pos.getX(i + k), z: pos.getZ(i + k) })));
+    return out;
+  };
+  // 建物 10 × 8 m。敷地は 16 × 14 m（x = −2 〜 14、z = −3 〜 11）。右と下が道路で、右下の角に 2 m の隅切り
+  const cornerSite: BuildingModel['site'] = {
+    roads: [
+      { side: 'right', source: 'text', label: '道路境界線' },
+      { side: 'bottom', source: 'text', label: '道路境界線', widthMm: 5000 },
+    ],
+    bounds: { left: -2000, right: 14000, top: -3000, bottom: 11000 },
+    edges: [
+      { a: { x: 14000, y: 9000 }, b: { x: 14000, y: -3000 }, kind: 'road' },
+      { a: { x: 12000, y: 11000 }, b: { x: 14000, y: 9000 }, kind: 'road' },
+      { a: { x: -2000, y: 11000 }, b: { x: 12000, y: 11000 }, kind: 'road' },
+      { a: { x: -2000, y: -3000 }, b: { x: -2000, y: 11000 }, kind: 'neighbor' },
+      { a: { x: -2000, y: -3000 }, b: { x: 14000, y: -3000 }, kind: 'neighbor' },
+    ],
+    polygon: [
+      { x: -2000, y: -3000 },
+      { x: 14000, y: -3000 },
+      { x: 14000, y: 9000 },
+      { x: 12000, y: 11000 },
+      { x: -2000, y: 11000 },
+    ],
+  };
+
+  it('角地: 路面は「表の道路の帯」と「敷地の四角の中（隅切りの三角）」だけ。隣の区画へはみ出さない', () => {
+    const r = buildLandscape(meta(), style, cornerSite);
+    // 表の道路は下（玄関の向き）。帯は z = 11 〜 16.2
+    expect(r.site.roadDir.z).toBe(1);
+    for (const t of roadTris(r.mb)) {
+      const inBand = t.every((p) => p.z > 11 - 1e-6 && p.z < 16.2 + 1e-6);
+      const inSite = t.every((p) => p.x > -2 - 1e-6 && p.x < 14 + 1e-6 && p.z > -3 - 1e-6 && p.z < 11 + 1e-6);
+      expect(inBand || inSite).toBe(true);
+    }
+    // 隅切りの三角（12,11）-（14,9）-（14,11）が舗装されている
+    const cut = roadTris(r.mb).filter((t) => t.every((p) => p.x > 11.9 && p.z > 8.9 && p.z < 11.01 && p.x < 14.01));
+    expect(cut.length).toBeGreaterThan(0);
+  });
+
+  it('角地: 横の道路の上に隣家を並べない（街並みは道路の向こうから）', () => {
+    const r = buildLandscape(meta(), style, cornerSite);
+    // 右の道路（幅は表と同じ 5 m）: x = 14 〜 19.2
+    const band = new THREE.Box3(new THREE.Vector3(14.05, -1, -200), new THREE.Vector3(19.15, 30, 200));
+    expect(r.town.lots.length).toBeGreaterThan(20);
+    for (const l of r.town.lots) expect(l.box.intersectsBox(band)).toBe(false);
+    const g = r.town.roads.build(() => new THREE.MeshBasicMaterial());
+    expect(g.children.some((c) => c.name === 'l.road')).toBe(true);
+  });
+
+  it('斜めの道路境界線: 境界から敷地の際までを舗装で埋め、敷地の外へは伸ばさない', () => {
+    // 下の道路境界線が斜め（左で 1.5 m 内側）
+    const site: BuildingModel['site'] = {
+      roads: [{ side: 'bottom', source: 'text', label: '道路境界線' }],
+      bounds: { left: -2000, right: 14000, top: -3000, bottom: 11000 },
+      edges: [{ a: { x: -2000, y: 9500 }, b: { x: 14000, y: 11000 }, kind: 'road' }],
+    };
+    const r = buildLandscape(meta(), style, site);
+    const tris = roadTris(r.mb);
+    for (const t of tris) {
+      const inBand = t.every((p) => p.z > 11 - 1e-6 && p.z < 17.2 + 1e-6);
+      const inSite = t.every((p) => p.x > -2 - 1e-6 && p.x < 14 + 1e-6 && p.z > 9.5 - 1e-6 && p.z < 11 + 1e-6);
+      expect(inBand || inSite).toBe(true);
+    }
+    expect(tris.some((t) => t.every((p) => p.z < 11 + 1e-6) && t.some((p) => p.z < 9.6))).toBe(true);
   });
 });

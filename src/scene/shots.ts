@@ -8,6 +8,7 @@ import type { BuildingModel, Room } from '../core/types';
 import { isHabitable, ROOM_TYPE_LABEL } from '../core/types';
 import { largestInnerRect } from '../core/rects';
 import { pointInPolygon } from '../core/geometry';
+import { sunDirectionWorld } from '../sun/solar';
 import type { BuildingMeta } from './building';
 import type { SiteInfo } from './landscape';
 import type { CameraView } from './viewer';
@@ -70,6 +71,44 @@ function sunForView(pos: THREE.Vector3, target: THREE.Vector3, sideSign = -1, el
   const h = back.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), ang);
   const el = (elevDeg * Math.PI) / 180;
   return new THREE.Vector3(h.x * Math.cos(el), Math.sin(el), h.z * Math.cos(el)).normalize();
+}
+
+/**
+ * 内観の日差しの向き。部屋の窓から、斜めに日が差し込む向きを選ぶ（床と壁に日なたの帯が落ち、庭の木の影がまだらに映る）。
+ *  - 太陽が実際に通る方位（東〜南〜西）だけから選ぶ。北向きの窓しか無い部屋は null（直射は入らない。今の光のまま）
+ *  - 窓に対して斜め（正面すぎず、壁に平行すぎず）、日なたがカメラの前に落ちる向きを優先する
+ * @returns 太陽へ向かう単位ベクトル（setSunDirection に渡す向き）
+ */
+function sunForInterior(pos: THREE.Vector3, target: THREE.Vector3, wins: WinInfo[], northAngleDeg: number): THREE.Vector3 | null {
+  if (!wins.length) return null;
+  const view = new THREE.Vector3().subVectors(target, pos).setY(0);
+  if (view.lengthSq() < 1e-6) return null;
+  view.normalize();
+  const ELEV = 38;
+  let best: { dir: THREE.Vector3; score: number } | null = null;
+  for (let az = 80; az <= 280; az += 10) {
+    const sun = sunDirectionWorld(az, ELEV, northAngleDeg);
+    // 光の進む向き（水平）
+    const ray = new THREE.Vector3(-sun.x, 0, -sun.z).normalize();
+    let score = 0;
+    for (const w of wins) {
+      const into = ray.dot(w.inward);
+      if (into < 0.3) continue;
+      // 日なたの落ちる所（窓から光の向きへ、窓の高さの分だけ進んだ床）
+      const reach = Math.min(3.2, (w.center.y - pos.y + 1.6) / Math.tan((ELEV * Math.PI) / 180));
+      const spot = w.center.clone().addScaledVector(ray, reach * 0.6).setY(pos.y);
+      const to = spot.clone().sub(pos).setY(0);
+      const dist = to.length();
+      const ahead = dist > 0.3 ? to.normalize().dot(view) : 0;
+      // 画面の中（視線から 50° 以内）に落ちる日なたを優先。斜め 30〜55° がいちばん絵になる
+      const oblique = 1 - Math.abs(into - 0.72) * 1.4;
+      score += w.weight * Math.max(0.15, oblique) * (ahead > 0.64 ? 1.6 : ahead > 0.2 ? 1 : 0.45);
+    }
+    // 真南に近い（昼の高い日差しに近い）ほうを、わずかに優先
+    score *= 1 - Math.abs(az - 180) / 600;
+    if (score > 0 && (!best || score > best.score)) best = { dir: sun, score };
+  }
+  return best ? best.dir : null;
 }
 
 /** 建物の点群が収まる距離を探す（水平視線 + シフト前提） */
@@ -601,6 +640,19 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     });
   }
   shots.push(...extraInteriorShots(model, meta, occupancy, aspect, ray));
+  // 内観の光: 部屋の窓から日が斜めに差し込む向きを選ぶ（写真家が時間を選ぶのと同じ）
+  for (const sh of shots) {
+    if (sh.kind !== 'interior' || sh.sunDir || !sh.roomId) continue;
+    const ri = meta.rooms.find((r) => r.room.id === sh.roomId);
+    if (!ri) continue;
+    const wins = windowsOf(model, ri.floor.level, ri.room, ri.floorY);
+    // 吹抜の下の部屋は、上の階の窓（ハイサイド）からも日が入る
+    for (const v of meta.rooms) {
+      if (v.room.type !== 'void' || v.floor.level !== ri.floor.level + 1 || !pointInPolygon({ x: v.center.x, y: v.center.z }, ri.poly)) continue;
+      wins.push(...windowsOf(model, v.floor.level, v.room, v.floorY));
+    }
+    sh.sunDir = sunForInterior(sh.view.pos, sh.view.target, wins, model.northAngleDeg ?? 0);
+  }
   return shots;
 }
 

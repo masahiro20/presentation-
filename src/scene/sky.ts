@@ -29,8 +29,9 @@ function smoothstep(a: number, b: number, x: number) {
  * （上＝天井・窓からの柔らかい白、下＝床の照り返しの暖かいグレー）。施工写真の「白は白く、グレーはグレーに」見える室内に合わせる
  */
 export function makeNeutralEnvTexture(mode: SkyParams['mode'] = 'day'): THREE.DataTexture {
-  const W = 64;
-  const H = 32;
+  // 空の環境マップ（幅 512）と同じ大きさ: 部屋の映り込み（roomProbe.ts）が同じ段数の絵として引けるように
+  const W = 512;
+  const H = 256;
   const data = new Float32Array(W * H * 4);
   const night = mode === 'night';
   const evening = mode === 'evening';

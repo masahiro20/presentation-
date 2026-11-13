@@ -57,6 +57,46 @@ function inwardNormal(f: Floor, w: Wall, mid: THREE.Vector3, nW: THREE.Vector3):
   return nW.clone().multiplyScalar(-outSign);
 }
 
+/** 外壁の窓 1 つ分の「光の入口」: 室内側のガラス面の中心・室内へ向かう向き・大きさ */
+export interface WindowPortal {
+  pos: THREE.Vector3;
+  normal: THREE.Vector3;
+  width: number;
+  height: number;
+  level: number;
+}
+
+/**
+ * 外壁の窓を「光の入口」として並べる（リアルタイムの 3D の、窓からの空の光に使う）。
+ * 窓からの光は、窓の近くが明るく奥へ行くほど暗い。これが無いと部屋じゅうが同じ明るさになり、奥行きが出ない
+ */
+export function windowPortals(model: BuildingModel, spec: BuilderSpec): WindowPortal[] {
+  const out: WindowPortal[] = [];
+  for (const f of model.floors) {
+    const fl = f.elevation * MM;
+    const walls = new Map(f.walls.map((w) => [w.id, w]));
+    for (const op of f.openings) {
+      if (op.kind !== 'window') continue;
+      const w = walls.get(op.wallId);
+      if (!w || !w.exterior) continue;
+      const eff = effectiveOpening(op, f.ceilingHeight, spec);
+      const A = new THREE.Vector3(w.a.x * MM, 0, w.a.y * MM);
+      const B = new THREE.Vector3(w.b.x * MM, 0, w.b.y * MM);
+      const dir = new THREE.Vector3().subVectors(B, A).normalize();
+      const nW = new THREE.Vector3(-dir.z, 0, dir.x);
+      const width = (op.t1 - op.t0) * MM - 0.06;
+      const height = eff.height * MM - 0.06;
+      if (width < 0.2 || height < 0.2) continue;
+      const mid = A.clone().addScaledVector(dir, ((op.t0 + op.t1) / 2) * MM);
+      const inN = inwardNormal(f, w, mid, nW);
+      const pos = mid.clone().addScaledVector(inN, (w.thickness * MM) / 2 + 0.02);
+      pos.y = fl + (eff.sill + eff.height / 2) * MM;
+      out.push({ pos, normal: inN, width, height, level: f.level });
+    }
+  }
+  return out;
+}
+
 export function buildInteriorPhotoLights(o: InteriorLightOptions): THREE.Group {
   const g = new THREE.Group();
   g.name = 'photoreal-interior-lights';

@@ -20,6 +20,9 @@ export interface StudioOptions {
   interior?: boolean;
 }
 
+/** 内観の標準の露出の指定（draftCapture の exposureFor） */
+const INTERIOR_EXPOSURE = 1.6;
+
 const skyTexCache = new WeakMap<THREE.Texture, THREE.Texture>();
 /** HDRI を貼った空の球。球の UV は正距円筒の向きと左右が逆なので、テクスチャを左右反転して貼る */
 function skyDome(tex: THREE.Texture, rotY: number, intensity: number, radius: number): THREE.Mesh {
@@ -87,12 +90,19 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     viewer.invalidate(); // 影の描き直し（描く直前に needsUpdate が立つ）
     // 室内の照明: 内観はもちろん、夜景の外観も点ける（窓の明かりが夜景の主役）
     if (opts.interior || night) viewer.groups.lights.visible = true;
+    // 照明を点けた状態の光の配分に（内観は、窓からの面の光で明暗を付け、均一な光を抑える）
+    viewer.refreshLightBalance();
+    // 光のにじみ・階調は、下の写真仕上げ（finishPhoto）が掛ける。画面用の後処理と二重にしない
+    viewer.setScreenFinish(false);
     if (night && !opts.interior) {
       // 夜景の外観: 建物が真っ黒な影になっていた。空の残光と街の明かりの分だけ周囲光を足し、外壁の形が読めるようにする
       viewer.hemi.intensity = 0.35;
       scene.environmentIntensity = 0.6;
     }
-    renderer.toneMappingExposure = (opts.exposure ?? 1) * (opts.interior ? 0.75 : 0.95);
+    // 内観の露出: 壁の明るさに合わせた倍率（濃い壁の家は上げる）に、呼び出し側の指定（内観の標準 1.6 を 1 とする）を掛ける
+    // （夕景・夜景・スマホは今までどおり: 指定 × 0.75）
+    const wallGain = viewer.interiorExposureGain();
+    renderer.toneMappingExposure = !opts.interior ? (opts.exposure ?? 1) * 0.95 : wallGain > 0 ? wallGain * ((opts.exposure ?? INTERIOR_EXPOSURE) / INTERIOR_EXPOSURE) : (opts.exposure ?? 1) * 0.75;
     const url = await viewer.capture(W, H, 'image/png');
     // 縮小して写真の仕上げ
     const img = new Image();
@@ -118,6 +128,8 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     viewer.groups.lights.visible = prev.lights;
     viewer.hemi.intensity = prev.hemi;
     scene.environmentIntensity = prev.env;
+    viewer.setScreenFinish(true);
+    viewer.refreshLightBalance();
     viewer.invalidate();
   }
 }

@@ -8,6 +8,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import type { BuildingModel, Room } from '../core/types';
 import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
@@ -19,8 +21,11 @@ import { distantTreeBand } from './distant';
 import { exteriorShots, sectionShots, interiorShots, facadeWindows, type Shot } from './shots';
 import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
 import { buildLandscape, planExteriorOf, type SiteInfo, type LandscapePlan } from './landscape';
-import { buildExteriorLights } from './interiorLights';
+import { buildExteriorLights, windowPortals, type WindowPortal } from './interiorLights';
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import { MaterialRegistry } from './materials';
+import { roomProbeUniforms } from './roomProbe';
+import { pointInPolygon } from '../core/geometry';
 import { makeNeutralEnvTexture, makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle } from '../styles/presets';
 import { exteriorFor, interiorFor, stairBuildOf } from '../coordinate/catalog';
@@ -36,6 +41,81 @@ function isDarkColor(hex: string): boolean {
   // （堀様の提案パース: グレージュのアイランドに白いフード。以前はモルタライトも「暗い色」に入り、黒いフードになっていた）
   return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.3;
 }
+
+/** 窓からの空の光（面の光）: 同時に使う数・窓の明るさ（輝度）／昼の室内の補助光（部屋の真ん中の点の光）の強さ */
+/** 窓からの空の光（面の光）を同時に使う数（数を変えるとシェーダーを作り直すので固定） */
+const PORTAL_MAX = 4;
+
+/**
+ * 絵づくりの値（光の配分・にじみ・階調）。1 か所にまとめて、点検のときは実行中に差し替えて見比べられるようにする
+ * （viewer.look を書き換えて applyLook()）
+ */
+export const DEFAULT_LOOK = {
+  /** 室内（昼・仕上げ表示）の均一な光の倍率: 空の拡散光・床の照り返し・無地の環境光 */
+  hemi: 0.22,
+  bounce: 0.18,
+  env: 0.32,
+  /**
+   * 窓の明るさ（面の光の輝度）・室内側へ出す距離 (m)・下へ傾ける量。
+   * 傾けると、窓の脇の壁に光の境目が斜めの線で出るので 0 にしている
+   */
+  portalL: 3.4,
+  portalInset: 0.1,
+  portalTilt: 0,
+  /** 昼の室内の補助光（部屋の真ん中の点の光） */
+  dayFill: 0.15,
+  /**
+   * 室内の露出を壁の明るさに合わせる強さ（0 = 合わせない）。濃い壁の部屋は、カメラと同じように露出を上げる:
+   * 均一な光を減らしたぶん、濃いグレーの壁の家は真っ暗になる。上げると窓の外は白く飛ぶが、写真の内観もそうなる
+   */
+  autoExposure: 0.3,
+  /** 室内（昼）の露出の底上げ: 均一な光を減らしたぶん、白い壁がグレーに沈んで見えないように */
+  interiorBoost: 1.22,
+  /** 光のにじみ: 強さ・広がり・にじみ始める明るさ */
+  bloom: 0.13,
+  bloomRadius: 0.62,
+  bloomThreshold: 1.2,
+  /** 仕上げの階調: 周辺減光・中間の明暗・彩度 */
+  vignette: 0.14,
+  contrast: 0.12,
+  saturation: 1.03,
+  /** 部屋の映り込みの強さ */
+  probeGain: 1,
+};
+
+/** 仕上げの階調（画面に出す直前の色に掛ける）: 周辺減光・中間の明暗・彩度 */
+const GRADE_SHADER = {
+  name: 'GradeShader',
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    vignette: { value: DEFAULT_LOOK.vignette },
+    contrast: { value: DEFAULT_LOOK.contrast },
+    saturation: { value: DEFAULT_LOOK.saturation },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float vignette;
+    uniform float contrast;
+    uniform float saturation;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D( tDiffuse, vUv );
+      vec2 q = ( vUv - 0.5 ) * vec2( 1.0, 0.82 );
+      float edge = smoothstep( 0.32, 0.78, length( q ) );
+      c.rgb *= 1.0 - vignette * edge;
+      vec3 s = c.rgb * c.rgb * ( 3.0 - 2.0 * c.rgb );
+      c.rgb = mix( c.rgb, s, contrast );
+      float l = dot( c.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+      c.rgb = mix( vec3( l ), c.rgb, saturation );
+      gl_FragColor = c;
+    }`,
+};
 
 export class ArchCamera extends THREE.PerspectiveCamera {
   shiftY = 0;
@@ -193,12 +273,17 @@ export class Viewer {
       this._dirty = true;
     }
   }
-  private balanceOutside: boolean | null = null;
+  private balanceOutside: string | null = null;
+  /** 時間帯ごとの露出（室内では壁の明るさで補正する前の値） */
+  private exposureBase = 1;
   private applyLightBalance(force = false) {
     const outside = !this.cameraInside();
     this.tuneGlass(outside);
-    if (!force && outside === this.balanceOutside) return;
-    this.balanceOutside = outside;
+    // 窓からの面の光が点いているか（仕上げ表示の室内）。閲覧表示では点けないので、均一な光を今までどおりにする
+    const portalsOn = !outside && this.portalGroup.visible;
+    const balanceKey = `${outside}|${portalsOn}`;
+    if (!force && balanceKey === this.balanceOutside) return;
+    this.balanceOutside = balanceKey;
     const night = this.design.timeOfDay === 'night';
     const b = this.lightBase;
     if (outside && !night) {
@@ -209,22 +294,64 @@ export class Viewer {
     } else if (!outside && !night) {
       // 室内（昼）: 全体を均一に照らす光（空の拡散光・床の照り返し・環境光）を少し抑えて、窓から入る日差しとの明暗を残す。
       // 御社の提案パースは、白い壁でも面ごとに明るさが違い、奥は暗く沈む。以前の値では白い壁が白飛びして平板だった
+      // 2026-11-13: 窓からの光を面の光（assignPortals）で入れたので、均一な光はさらに抑える。窓の近くから奥へ、明るさの勾配ができる
       this.sun.intensity = b.sun;
-      this.hemi.intensity = b.hemi * 0.8;
-      this.bounce.intensity = b.bounce * 0.72;
-      this.scene.environmentIntensity = b.env * 0.9;
+      // 夕景は今までどおり: 均一な光を抑えると、照明の暖色だけが勝って橙色に寄りすぎる
+      const cut = portalsOn && this.design.timeOfDay !== 'evening';
+      this.hemi.intensity = b.hemi * (cut ? this.look.hemi : 0.8);
+      this.bounce.intensity = b.bounce * (cut ? this.look.bounce : 0.72);
+      this.scene.environmentIntensity = b.env * (cut ? this.look.env : 0.9);
     } else {
       this.sun.intensity = b.sun;
       this.hemi.intensity = b.hemi;
       this.bounce.intensity = b.bounce;
       this.scene.environmentIntensity = b.env;
     }
+    // 露出: 室内（面の光あり）は壁の明るさに合わせる
+    this.renderer.toneMappingExposure = this.exposureBase * (portalsOn && this.design.timeOfDay !== 'evening' ? this.wallExposureGain() : 1);
+    // 光のにじみ: 屋外の昼は弱く（日なたの白い壁や隣家の箱まで光って見える）。室内と夕景・夜景は、窓・照明がにじむ
+    const dusk = this.design.timeOfDay === 'evening' || night;
+    this.bloom.strength = this.lowPower ? 0 : this.look.bloom * (outside && !dusk ? 0.35 : 1);
+    this.bloom.enabled = !this.lowPower && this.screenFinish;
     // 室内の視点では空（青）の環境光をやめ、暖かい無彩色の環境光にする（グレーの壁・白い布が青くかぶらない）
     const indoorEnv = !outside && this.envIndoorRT ? this.envIndoorRT.texture : this.envRT?.texture ?? null;
     if (this.scene.environment !== indoorEnv) this.scene.environment = indoorEnv;
     this.hemi.color.set(outside ? '#dbe8ff' : '#efeae2');
     this._dirty = true;
   }
+  /**
+   * 壁の明るさに合わせた露出の倍率。白い壁（明るさ 0.76）を 1 として、濃い壁ほど上げる（カメラが暗い部屋で露出を上げるのと同じ）
+   */
+  wallExposureGain(): number {
+    if (this.look.autoExposure <= 0) return this.look.interiorBoost;
+    const wc = new THREE.Color(interiorFor(this.design).wall.color);
+    const lum = 0.2126 * wc.r + 0.7152 * wc.g + 0.0722 * wc.b;
+    return Math.min(2.6, this.look.interiorBoost * Math.max(1, Math.pow(0.76 / Math.max(0.06, lum), this.look.autoExposure)));
+  }
+  /** 内観の露出の倍率（昼・朝で、窓からの面の光が使えるときだけ壁の明るさに合わせる。夕景・夜景・スマホは 0 = 今までどおり） */
+  interiorExposureGain(): number {
+    const tod = this.design.timeOfDay;
+    return this.portalLights.length > 0 && (tod === 'day' || tod === 'morning') ? this.wallExposureGain() : 0;
+  }
+  /** 光の配分と露出を、いまの状態（室内／屋外・照明の表示）で計算し直す（書き出しの前後で呼ぶ） */
+  refreshLightBalance() {
+    this.applyLightBalance(true);
+  }
+  /**
+   * 画面用の後処理（光のにじみ・階調）を切る／戻す。
+   * 書き出し（カット集・資料の下絵）は、2D の写真仕上げ（finishPhoto）が同じ処理をするので、二重に掛けない
+   */
+  setScreenFinish(on: boolean) {
+    this.screenFinish = on;
+    this.bloom.enabled = on && !this.lowPower;
+    this.grade.enabled = on;
+  }
+  private screenFinish = true;
+  /**
+   * スマホ・タブレット（指で操作する端末）: 面の光（窓からの光）と光のにじみは使わない。
+   * どちらも画面の全部の点で計算が増えるので、歩いている間のコマ数が落ちる。光の配分は今までどおり
+   */
+  readonly lowPower = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   /** カメラが建物の箱の中（室内の視点）か */
   private cameraInside(): boolean {
     const b = this.state?.meta.bbox;
@@ -239,6 +366,34 @@ export class Viewer {
   private envRT: THREE.WebGLRenderTarget | null = null;
   /** 室内の視点用の環境光（空の青を持ち込まない暖かい無彩色）。施工写真の室内は白が白く、グレーがグレーに見える */
   private envIndoorRT: THREE.WebGLRenderTarget | null = null;
+  /** 部屋の映り込み（roomProbe.ts）: いまいる部屋の中心から撮った 6 面の絵 */
+  private probeRT: THREE.WebGLCubeRenderTarget | null = null;
+  private probeCam: THREE.CubeCamera | null = null;
+  private probeEnv: THREE.WebGLRenderTarget | null = null;
+  private probeRoom = '';
+  private probeDirty = true;
+  /** 窓からの空の光（面の光）: 外壁の窓の一覧と、いまいる部屋の窓に割り当てる光の持ち駒 */
+  /** 絵づくりの値（DEFAULT_LOOK）。書き換えたら applyLook() */
+  look = { ...DEFAULT_LOOK };
+  applyLook() {
+    this.bloom.radius = this.look.bloomRadius;
+    this.bloom.threshold = this.look.bloomThreshold;
+    const gu = this.grade.uniforms as Record<string, { value: number }>;
+    gu.vignette.value = this.look.vignette;
+    gu.contrast.value = this.look.contrast;
+    gu.saturation.value = this.look.saturation;
+    roomProbeUniforms.roomProbeGain.value = this.look.probeGain;
+    this.portalKey = '';
+    this.updateInteriorLights();
+    this.applyLightBalance(true);
+    this.dirty = true;
+  }
+  private portals: WindowPortal[] = [];
+  private portalLights: THREE.RectAreaLight[] = [];
+  private portalGroup = new THREE.Group();
+  private portalKey = '';
+  private bloom!: UnrealBloomPass;
+  private grade!: ShaderPass;
   quality: 'fast' | 'high' = 'high';
   /**
    * 表示の重さ: 'browse'（閲覧。見て回る間は後処理なし・操作中は解像度を落として軽く）／'finish'（仕上げ。止まると GTAO・SMAA 込みで描く）。
@@ -289,6 +444,17 @@ export class Viewer {
       this.contextLost = true;
     });
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
+    // 面の光（窓からの空の光）の計算に使う表を用意し、持ち駒を置く。数を変えるとシェーダーを作り直すので、
+    // いつも同じ数だけ置き、使わない分は明るさ 0 にする。室内の昼の点の光（groups.lights）と違い、閲覧表示でも使う
+    RectAreaLightUniformsLib.init();
+    this.portalGroup.name = 'window-portals';
+    this.portalGroup.visible = false;
+    for (let i = 0; i < (this.lowPower ? 0 : PORTAL_MAX); i++) {
+      const pl = new THREE.RectAreaLight('#eef3ff', 0, 1, 1);
+      this.portalLights.push(pl);
+      this.portalGroup.add(pl);
+    }
+    this.scene.add(this.portalGroup);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -529,7 +695,14 @@ export class Viewer {
       });
     };
     this.composer.addPass(this.gtao);
+    // 光のにじみ: とても明るい所（窓の外の空・日なた・照明）だけが、まわりへ少しあふれる。写真のレンズと同じで、
+    // 「光っている」ことが伝わる（にじみが無いと、照明も窓もただの白い面に見える）
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), this.look.bloom, this.look.bloomRadius, this.look.bloomThreshold);
+    this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    // 仕上げの階調: 周辺を少し落として視線を中央へ集め、中間の明暗をわずかに立てる（建築写真の現像と同じ手順）
+    this.grade = new ShaderPass(GRADE_SHADER);
+    this.composer.addPass(this.grade);
     this.smaa = new SMAAPass();
     this.composer.addPass(this.smaa);
 
@@ -1313,10 +1486,16 @@ export class Viewer {
 
   /** 室内の点光源を見せるか（外部モデルで隠している間はそちらが優先） */
   private applyLightsVisibility() {
-    if (this.pdfGroupsHidden) return;
+    if (this.pdfGroupsHidden) {
+      this.portalGroup.visible = false;
+      return;
+    }
     const tod = this.design.timeOfDay;
     const needed = tod === 'evening' || tod === 'night';
     this.groups.lights.visible = needed || (this.viewMode === 'finish' && this.cameraInside());
+    this.portalGroup.visible = this.portalLights.length > 0 && tod !== 'night' && !this.cut && this.cameraInside();
+    // 歩いて別の部屋へ入ったら、その部屋の窓に付け替える（止まった絵を待たない）
+    if (this.portalGroup.visible && this.assignPortals(this.roomAtCamera()?.ri ?? null)) this.probeDirty = true;
   }
 
   /** 画面の解像度（仕上げは高精細ディスプレイでも 1.5 倍まで。閲覧は等倍: 画素数が 2.25 分の 1 になる） */
@@ -1467,6 +1646,123 @@ export class Viewer {
     this.dirty = true;
   }
 
+  /** カメラのいる部屋（その階の床から天井までの高さにいて、部屋の形の中） */
+  private roomAtCamera() {
+    const st = this.state;
+    if (!st) return null;
+    const p = this.camera.position;
+    let best: { ri: (typeof st.meta.rooms)[number]; top: number } | null = null;
+    for (const ri of st.meta.rooms) {
+      if (ri.room.type === 'void' || ri.poly.length < 3) continue;
+      const top = ri.floorY + Math.max(2.1, (ri.floor.ceilingHeight ?? 2400) * MM);
+      if (p.y < ri.floorY - 0.05 || p.y > ri.floorY + ri.floor.height * MM + 0.05) continue;
+      if (!pointInPolygon({ x: p.x, y: p.z }, ri.poly)) continue;
+      if (!best || ri.room.area < best.ri.room.area) best = { ri, top };
+    }
+    return best;
+  }
+
+  /**
+   * いまいる部屋の窓に、面の光（窓からの空の光）を割り当てる。変わったら true。
+   * 窓の近くは明るく、奥へ行くほど暗くなる。窓のある壁そのものには当たらない（逆光の壁は暗い）。影は落とさない
+   */
+  private assignPortals(ri: SceneState['meta']['rooms'][number] | null): boolean {
+    if (!this.state) return false;
+    const tod = this.design.timeOfDay;
+    const key = `${ri?.room.id ?? ''}|${tod}|${this.portalLights.length}`;
+    if (key === this.portalKey) return false;
+    this.portalKey = key;
+    let list: WindowPortal[] = [];
+    if (ri && tod !== 'night') {
+      // 吹抜の上の窓（ハイサイド）も、下の部屋の窓として数える
+      const voids = this.state!.meta.rooms.filter((o) => o.room.type === 'void' && o.floor.level === ri.floor.level + 1 && pointInPolygon({ x: o.center.x, y: o.center.z }, ri.poly));
+      const inRoom = (p: WindowPortal, poly: THREE.Vector2[]) => pointInPolygon({ x: p.pos.x + p.normal.x * 0.35, y: p.pos.z + p.normal.z * 0.35 }, poly);
+      list = this.portals
+        .filter((p) => (p.level === ri.floor.level && inRoom(p, ri.poly)) || (p.level === ri.floor.level + 1 && voids.some((v) => inRoom(p, v.poly))))
+        .sort((a, b) => b.width * b.height - a.width * a.height)
+        .slice(0, PORTAL_MAX);
+    }
+    const L = this.look.portalL * (tod === 'evening' ? 0.4 : tod === 'morning' ? 0.75 : 1);
+    const col = tod === 'evening' ? '#ffd9b0' : tod === 'morning' ? '#f6eef0' : '#eef3ff';
+    this.portalLights.forEach((l, i) => {
+      const p = list[i];
+      if (!p) {
+        l.intensity = 0;
+        return;
+      }
+      l.width = p.width;
+      l.height = p.height;
+      // 室内側へ少し出す: 光は面の表側にしか出ないので、窓枠・窓まわりの壁の小口は光の裏になり、白く光らない
+      l.position.copy(p.pos).addScaledVector(p.normal, this.look.portalInset);
+      l.lookAt(l.position.clone().add(p.normal).setY(l.position.y - this.look.portalTilt));
+      l.color.set(col);
+      l.intensity = L;
+    });
+    return true;
+  }
+
+  /**
+   * 部屋の映り込みを撮り直す（止まった絵を描く直前）。カメラが室内にいて、場面が変わったか別の部屋へ移ったときだけ。
+   * 家具は写さない: 撮った位置のすぐそばの家具は、箱投影で壁いっぱいに引き伸ばされて映ってしまう。映り込みの主役は窓・壁・天井の光
+   */
+  private updateRoomProbe() {
+    const U = roomProbeUniforms;
+    const env = this.scene.environment;
+    const hit = !this.cut && !this.pdfGroupsHidden && this.cameraInside() ? this.roomAtCamera() : null;
+    if (this.assignPortals(hit?.ri ?? null)) this.probeDirty = true;
+    // 環境マップと同じ段数の絵にする（シェーダーが同じ関数で引くため）。小さすぎる環境マップのときは使わない
+    const size = env?.image ? Math.round((env.image as { height: number }).height / 4) : 0;
+    // 指で操作する端末（スマホ・タブレット）では撮らない: 止まるたびに 6 面を描くぶん、次の操作の出だしが遅れる
+    if (!hit || size < 64 || this.contextLost || this.lowPower) {
+      U.roomProbeOn.value = 0;
+      this.probeRoom = '';
+      return;
+    }
+    const { ri } = hit;
+    if (!this.probeDirty && this.probeRoom === ri.room.id && this.probeEnv && U.roomProbeOn.value === 1) return;
+    if (!this.probeRT || this.probeRT.width !== size) {
+      this.probeRT?.dispose();
+      this.probeRT = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType, generateMipmaps: false });
+      this.probeCam = new THREE.CubeCamera(0.05, 80, this.probeRT);
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const q of ri.poly) {
+      minX = Math.min(minX, q.x);
+      maxX = Math.max(maxX, q.x);
+      minZ = Math.min(minZ, q.y);
+      maxZ = Math.max(maxZ, q.y);
+    }
+    // 吹抜の下の部屋は、上の階の天井までを箱にする
+    const above = this.state!.meta.rooms.find(
+      (o) => o.room.type === 'void' && o.floor.level === ri.floor.level + 1 && pointInPolygon({ x: o.center.x, y: o.center.z }, ri.poly),
+    );
+    const top = above ? above.floorY + Math.max(2.1, (above.floor.ceilingHeight ?? 2400) * MM) : hit.top;
+    const cam = this.probeCam!;
+    cam.position.set(ri.center.x, ri.floorY + Math.min(1.3, (top - ri.floorY) * 0.5), ri.center.z);
+    const prevTarget = this.renderer.getRenderTarget();
+    const furnVisible = this.groups.furniture.visible;
+    U.roomProbeOn.value = 0;
+    this.groups.furniture.visible = false;
+    try {
+      cam.update(this.renderer, this.scene);
+    } finally {
+      this.groups.furniture.visible = furnVisible;
+      this.renderer.setRenderTarget(prevTarget);
+    }
+    this.probeEnv?.dispose();
+    this.probeEnv = this.pmrem.fromCubemap(this.probeRT.texture);
+    U.roomProbeMap.value = this.probeEnv.texture;
+    U.roomProbePos.value.copy(cam.position);
+    U.roomProbeMin.value.set(minX, ri.floorY, minZ);
+    U.roomProbeMax.value.set(maxX, top, maxZ);
+    U.roomProbeOn.value = 1;
+    this.probeRoom = ri.room.id;
+    this.probeDirty = false;
+  }
+
   /**
    * 止まったときの 1 コマ。閲覧モードでも後処理（GTAO の陰影・SMAA の輪郭）込みで描く:
    * 軽さは操作中のコマ（loop 内の素の描画・低い画素比）で稼ぎ、止まった絵は常に質感を残す。
@@ -1475,6 +1771,7 @@ export class Viewer {
   renderFrame(force = false) {
     if (this.skyDome) this.skyDome.position.copy(this.camera.position);
     this.flushShadow();
+    if (this.quality === 'high' || force) this.updateRoomProbe();
     if (this.quality === 'high' || force) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.onAfterRender?.();
@@ -1493,6 +1790,7 @@ export class Viewer {
   // ------------------------------------------------------------------
 
   setModel(model: BuildingModel) {
+    this.probeDirty = true;
     const ext = this.extStyle();
     for (const g of [this.groups.building, this.groups.roof, this.groups.furniture, this.groups.landscape, this.groups.lights, this.groups.cut]) clearGroup(g);
     this.cutBuilt = null;
@@ -1543,6 +1841,8 @@ export class Viewer {
       }
     });
     this.state = { model, meta, roof: roof.info, site: land.site, plan: land.plan, lights: fur.lights, occupancy: fur.occupancy };
+    this.portals = windowPortals(model, resolveSpec(this.design.specId, this.design.specPatch));
+    this.portalKey = '';
     this.fitShadow();
     this.updateInteriorLights();
     this.updateEnvironment();
@@ -1725,6 +2025,7 @@ export class Viewer {
   }
 
   setDesign(design: DesignOptions) {
+    this.probeDirty = true;
     const prev = this.design;
     this.design = design;
     this.registry.update(exteriorFor(design), interiorFor(design), {
@@ -1815,6 +2116,7 @@ export class Viewer {
   }
 
   setSunDirection(dir: THREE.Vector3, envUpdate = true) {
+    this.probeDirty = true;
     this.sunDir.copy(dir).normalize();
     const b = this.state?.meta.bbox;
     const c = this.shadowCenter ? this.shadowCenter.clone() : b ? b.getCenter(new THREE.Vector3()) : new THREE.Vector3();
@@ -1839,6 +2141,7 @@ export class Viewer {
   }
 
   updateEnvironment(sunDisk = false) {
+    this.probeDirty = true;
     const mode = this.design.timeOfDay;
     this.skyTex?.dispose();
     this.skyTex = makeSkyTexture({ sunDir: this.sunDir, mode, sunDisk, width: 512 });
@@ -1855,8 +2158,9 @@ export class Viewer {
       this.scene.background = null;
     } else this.scene.background = this.skyTex;
     this.lightBase.env = mode === 'night' ? 0.28 : mode === 'morning' ? 0.6 : 0.66;
+    this.exposureBase = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
+    // 露出は applyLightBalance が決める（室内では壁の明るさで補正する）
     this.applyLightBalance(true);
-    this.renderer.toneMappingExposure = mode === 'night' ? 1.5 : mode === 'evening' ? 1.2 : mode === 'morning' ? 1.1 : 1.0;
     // 遠くほど空気に溶ける薄い靄（奥行き感。室内の距離では効かない）。朝は靄が濃い
     const fogCol = mode === 'night' ? '#0a0d14' : mode === 'evening' ? '#d9b79a' : mode === 'morning' ? '#e3e2e6' : '#cfd6dc';
     const fogD = mode === 'morning' ? 0.0036 : 0.0024;
@@ -2018,6 +2322,7 @@ export class Viewer {
 
   /** 室内照明（夕景・夜景は点光源＋外部の照明、昼は弱い補助光で室内の暗さを緩和） */
   updateInteriorLights() {
+    this.probeDirty = true;
     clearGroup(this.groups.lights);
     if (!this.state) return;
     const tod = this.design.timeOfDay;
@@ -2030,7 +2335,8 @@ export class Viewer {
       const key = `${l.roomId}:${l.kind}`;
       if (!night && used.has(key)) continue;
       used.add(key);
-      const intensity = night ? (l.kind === 'ceiling' ? 6 * dim : l.kind === 'pendant' ? 3 * dim : 1.2 * dim) : l.kind === 'ceiling' ? 2.2 : 0;
+      // 昼の補助光は弱く: 部屋の真ん中の点の光は、壁も天井も同じ明るさにしてしまう。昼の明るさは窓からの光（下の面の光）で作る
+      const intensity = night ? (l.kind === 'ceiling' ? 6 * dim : l.kind === 'pendant' ? 3 * dim : 1.2 * dim) : l.kind === 'ceiling' ? (this.portalLights.length ? this.look.dayFill : 2.2) : 0;
       if (intensity <= 0) continue;
       const p = new THREE.PointLight(night ? col : new THREE.Color('#fff6ea'), intensity, night ? 7 : 7, night ? 1.6 : 1.0);
       p.position.copy(l.pos);

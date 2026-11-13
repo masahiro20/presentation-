@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { makeMaterial, leafCardTexture, leafSprayTexture, type MatSpec } from '../styles/textures';
 import { TATAMI, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 import { FABRIC_COLORS } from '../core/types';
+import { patchRoomProbe } from './roomProbe';
 
 export class MaterialRegistry {
   private map = new Map<string, THREE.Material>();
@@ -261,5 +262,8 @@ export class MaterialRegistry {
         else this.map.set(k, clayM);
       }
     }
+    // 部屋の映り込み（床・天板・ガラスに、窓と照明が映る）を、標準・物理マテリアルすべてに足す
+    for (const m of this.map.values()) patchRoomProbe(m);
+    patchRoomProbe(this.fallback);
   }
 }

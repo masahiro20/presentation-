@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { ModelPlacement } from './furniture';
 import { b64BlobUrl } from './hdri';
+import { patchRoomProbe } from './roomProbe';
 
 const cache = new Map<string, Promise<THREE.Object3D | null>>();
 
@@ -40,6 +41,7 @@ function loadModel(id: string): Promise<THREE.Object3D | null> {
           if (m.isMesh) {
             m.castShadow = true;
             m.receiveShadow = true;
+            for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (mat) patchRoomProbe(mat);
           }
         });
         return root;

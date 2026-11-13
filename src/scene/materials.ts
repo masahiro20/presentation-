@@ -142,7 +142,8 @@ export class MaterialRegistry {
     set('f.hood', color('#e9e7e3', 0.45, 0.2));
     // LINE KITCHEN: ステンレス（バイブレーション）のシンク、レンジフードのシルバー／ブラック、キャビネット内部のチャコールグレー
     set('f.stainless', color('#b9bbbd', 0.32, 0.9));
-    set('f.hoodSilver', color('#c6c7c9', 0.35, 0.85));
+    // 白系のキッチンのフード（ステンレス・白）。金属感を強くすると、室内の弱い映り込みでは黒く沈んで「黒いフード」に見えていた
+    set('f.hoodSilver', color('#dcdcda', 0.42, 0.25));
     set('f.hoodDark', color('#1b1b1b', 0.45, 0.6));
     // Y チェアのペーパーコードの座（生成りの紙紐）
     set('f.cord', color('#d8c8a6', 0.95, 0));

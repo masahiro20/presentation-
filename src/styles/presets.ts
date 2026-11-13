@@ -73,10 +73,11 @@ export interface InteriorStyle {
   /**
    * 家具・照明の語彙（ホームランディックの施工事例から）。省略時は id が hl- で始まるテイストは HL の語彙、それ以外は従来。
    * - pendant: 'ph5' = 白い多層シェード（PH 5 風）1〜2 灯／'dome' = 黒い大きなドーム 1 灯／'globes' = 乳白ガラスの小さな球 2〜3 灯
+   *   'none' = 描かない（御社の最初の提案パースは、食卓の上に器具を下げずダウンライトだけ。器具はコーディネートの「ダイニングの照明」で足す）
    * - chair: 'y' = Y チェア風（曲げ木の笠木＋Y の背＋ペーパーコードの座）／'light' = 軽い木椅子
    * - table: 'round' = 4 人なら丸テーブル／'plank' = 一枚板
    */
-  vocab?: { pendant?: 'ph5' | 'dome' | 'globes'; chair?: 'y' | 'light'; table?: 'round' | 'plank' };
+  vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank' };
 }
 
 const ext = (s: ExteriorStyle) => s;
@@ -700,7 +701,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ---- ホームランディック事例から（実際の施工写真の素材感に合わせる） ----
   int({
     id: 'hl-grey-oak',
-    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
+    vocab: { pendant: 'none', chair: 'y', table: 'plank' },
     name: 'グレーの塗り壁 × オーク',
     catch: '中間グレーの壁と天井、幅広のオークの床',
     description: '中間グレーの塗り壁と、同じ色でつなげた平らな天井。幅広のオークの床に、黒の細い建具と手すり、小さなダウンライトと線状の間接光で陰影をつくる、落ち着いた LDK。',
@@ -728,23 +729,25 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ホームランディックの標準仕様: オークのフローリング、白の塗り壁、平らな白い天井（木は張らない）、黒の細いサッシ、黒皮鉄の階段。玄関と水まわりはグレーの大判タイル
   int({
     id: 'hl-standard',
-    vocab: { pendant: 'ph5', chair: 'y', table: 'round' },
+    vocab: { pendant: 'none', chair: 'y', table: 'round' },
     name: 'オークの床 × 白壁 × 白天井（標準）',
     catch: '明るいオークのフローリング、白い塗り壁、黒のサッシ',
     description: 'オークのフローリングに、白の塗り壁と平らな白い天井。黒の細いサッシと黒皮鉄の階段、天井際の間接光で陰影をつくる、ホームランディックの標準的な内観。',
-    swatch: ['#efede8', '#c9a97c', '#f4f3f0', '#1f1f1f'],
+    swatch: ['#e8e2d6', '#c9a97c', '#e8e2d6', '#1f1f1f'],
     floor: { pattern: 'woodFloor', color: '#c9a97c', color2: '#b8976c', roughness: 0.55, size: 0.15 },
     wetFloor: { pattern: 'tileFloor', color: '#8e8c88', roughness: 0.45, size: 0.6, size2: 0.6, tile: 1.2 },
     entranceFloor: { pattern: 'tileFloor', color: '#6f6d69', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
-    wall: { pattern: 'plaster', color: '#ece8e1', color2: '#e4dfd7', roughness: 0.95, normalStrength: 0.2 },
+    // 壁と天井は同じクリームがかった白の塗り（御社の提案パース: 堀様の内観。真っ白にすると室内の光で白飛びして、面の明暗が消える）
+    wall: { pattern: 'plaster', color: '#e8e2d6', color2: '#dfd8cb', roughness: 0.95, normalStrength: 0.2 },
     accentWall: { pattern: 'plaster', color: '#b9b5ad', color2: '#aeaaa2', roughness: 0.95, normalStrength: 0.25 },
-    ceiling: { pattern: 'paint', color: '#f1efea' },
-    door: { pattern: 'paint', color: '#ece8e1', roughness: 0.6 },
+    ceiling: { pattern: 'plaster', color: '#e8e2d6', color2: '#dfd8cb', roughness: 0.96, normalStrength: 0.12 },
+    door: { pattern: 'paint', color: '#e8e2d6', roughness: 0.6 },
     trim: '#1f1f1f',
     furniture: {
       wood: { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 },
-      fabric: { pattern: 'fabric', color: '#4a4a4a', roughness: 0.95 },
-      fabric2: { pattern: 'fabric', color: '#9a968e', roughness: 0.95 },
+      // ソファは暖かいベージュ（御社の提案パース: 堀様の内観は、白い壁・オークの床に、木の枠とキャメル〜ベージュの布のソファ）
+      fabric: { pattern: 'fabric', color: '#b9a58d', roughness: 0.95 },
+      fabric2: { pattern: 'fabric', color: '#8c7f70', roughness: 0.95 },
       metal: '#1c1c1c',
       counter: { pattern: 'marble', color: '#d9d7d2', color2: '#cdcbc5', roughness: 0.3, size: 3.2, size2: 3.2 },
       cabinet: { pattern: 'paint', color: '#e6e4df', roughness: 0.5 },
@@ -755,7 +758,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // 黒の大判スレートタイル床、白の塗り壁と平らな白い天井、黒サッシ（天井は板張りにしない。木は家具・造作で入れる）
   int({
     id: 'hl-slate-cedar',
-    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
+    vocab: { pendant: 'none', chair: 'y', table: 'plank' },
     name: '黒スレート床 × 白壁',
     catch: '大判の黒いタイル床、白い塗り壁と天井、木の造作',
     description: '600×1200 の黒いスレート調タイルの床に、白の塗り壁と平らな白い天井。黒の細いサッシと木の造作、中庭の緑を引き立てる、ホームランディックらしい陰影のある空間。',
@@ -781,9 +784,9 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   }),
   int({
     id: 'hl-dark-stone',
-    vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
-    name: 'ダークグレーの石目タイル',
-    catch: '深いグレーの壁と、大判の石目の床',
+    vocab: { pendant: 'none', chair: 'y', table: 'plank' },
+    name: 'グレーの塗り壁 × 大判タイル（陰影）',
+    catch: '深いグレーの壁と天井、大判のグレーのタイルの床',
     description: '深いグレーの壁と天井に、大判の石目調タイルの床。細い黒サッシの大開口と、床・天井の間接光だけで見せる、陰影の強い上質な空間。',
     swatch: ['#5d5c5a', '#4b4b4d', '#3a3a3c', '#b08a5c'],
     floor: { pattern: 'tileFloor', color: '#4b4b4d', roughness: 0.35, size: 0.6, size2: 1.2, tile: 2.4 },
@@ -791,7 +794,8 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     entranceFloor: { pattern: 'stone', color: '#444446', color2: '#3a3a3c', roughness: 0.6, size: 0.6, size2: 0.6 },
     wall: { pattern: 'plaster', color: '#5d5c5a', color2: '#555452', roughness: 0.95, normalStrength: 0.25 },
     accentWall: { pattern: 'stone', color: '#4d4d4f', color2: '#424244', roughness: 0.7, size: 0.6, size2: 0.3 },
-    ceiling: { pattern: 'paint', color: '#3f3f41' },
+    // 天井は壁と同じ色・同じ塗り（御社の提案パース: 林様・吉田様の内観は、壁と天井がひと続きの濃いグレー。以前は天井だけ一段暗い塗装だった）
+    ceiling: { pattern: 'plaster', color: '#5d5c5a', color2: '#575654', roughness: 0.96, normalStrength: 0.12 },
     door: { pattern: 'paint', color: '#323234', roughness: 0.5 },
     trim: '#1f1f20',
     furniture: {
@@ -884,7 +888,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ---- 線の少ない空間（標準・淡色・ホテルライク） ----
   int({
     id: 'hl-greige-hotel',
-    vocab: { pendant: 'ph5', chair: 'y', table: 'round' },
+    vocab: { pendant: 'none', chair: 'y', table: 'round' },
     name: 'ホテルライク・グレージュ',
     catch: '淡いグレージュ × 大判タイル',
     description: '淡いグレージュの壁と大判タイルの床、天井まで届くフルハイトドアで線を減らした、ホテルのように静かで上質な空間。石目のアクセントウォールと間接照明が陰影を添えます。',

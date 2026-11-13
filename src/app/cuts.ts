@@ -121,6 +121,7 @@ const LOOK_EN: [RegExp, string][] = [
   [/^stair\.cantilever/, 'cantilevered stair: thick oak treads projecting from the wall, no visible stringer'],
   [/^kit\.|^kitchen/, 'minimal flat-front kitchen with a thin counter, no visible handles, integrated hood'],
   [/^cup\./, 'matching flat-front back cabinets with floating wall units'],
+  [/^pend\.none/, 'no pendant light above the dining table (recessed downlights only; do not add a pendant)'],
   [/^pend\.ph5/, 'Louis Poulsen PH5 pendant above the dining table'],
   [/^pend\.dome/, 'black dome pendant above the dining table'],
   [/^pend\.globes/, 'cluster of small frosted glass globe pendants above the dining table'],
@@ -260,8 +261,8 @@ function cutPromptBase(shot: Shot, index: number): { ja: string; en: string } {
     const lookHere = fs.level != null ? stairLookAt(notes, fs.level) ?? stairLookAt(notes, fs.level - 1) : stairLookAt(allStairs, 1);
     const build = stairBuildOf(state.design);
     const tail = { stair: { ja: `、${stairTailText(lookHere, 'ja', build)}`, en: `, ${stairTailText(lookHere, 'en', build)}` } };
-    const ja = `${common.ja}\n内観: ${name}。${list(partsShown, 'ja', tail)}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。`;
-    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(partsShown, 'en', tail)}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.`;
+    const ja = `${common.ja}\n内観: ${name}。${list(partsShown, 'ja', tail)}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。${spec.drapes ? '' : '窓にカーテン・ブラインドは付けない（黒い細枠のガラス越しに、庭の木と空を見せる）。'}室内の戸は閉じたまま、小物は増やさない（枝もの・本・器くらい）。影になる所は暗いままにして、陰影を残す（部屋全体を均一に明るくしない）。`;
+    const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(partsShown, 'en', tail)}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.${spec.drapes ? '' : ' No curtains or blinds on the windows (clear glass in thin black frames, with the garden trees and sky visible).'} Keep interior doors closed and do not add clutter (a branch in a vase, a few books at most). Keep shaded areas dark and preserve natural contrast; do not brighten the room evenly.`;
     return { ja, en };
   }
   if (shot.kind === 'cutaway') {

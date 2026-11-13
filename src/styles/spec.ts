@@ -31,6 +31,12 @@ export interface BuilderSpec {
   };
   /** カーテン: 天井埋込のカーテンボックス / レール露出 / なし */
   curtains: 'pocket' | 'rail' | 'none';
+  /**
+   * カーテンの布を 3D に描くか。御社の提案パース（林様・堀様・吉田様の内観）は、カーテンボックスの納まりでも布は描かず、
+   * 黒い細枠の大きなガラス越しに中庭の木と空を見せている。布を描くと、束ねたドレープが構図の真ん中に下がってしまう。
+   * false ならカーテンボックスの溝（またはレール）だけを描く
+   */
+  drapes: boolean;
   /** 照明: ダウンライト（天井をすっきり） / シーリングライト */
   lighting: 'downlight' | 'ceiling';
   /** 間接照明（天井際のコーブ照明） */
@@ -61,6 +67,7 @@ export const BUILDER_SPECS: BuilderSpec[] = [
     doors: { fullHeight: true, frame: 'stealth', thickness: 40, topGap: 6, handle: 'slim-lever', handleColor: '#2a2a2a' },
     windows: { headAtCeiling: true, interiorReveal: 'plaster', sillBoard: false },
     curtains: 'pocket',
+    drapes: false,
     lighting: 'downlight',
     indirectLighting: true,
     baseboard: 'recessed',
@@ -73,6 +80,7 @@ export const BUILDER_SPECS: BuilderSpec[] = [
     doors: { fullHeight: false, frame: 'casing', thickness: 36, topGap: 0, handle: 'lever', handleColor: '#b9b9b9' },
     windows: { headAtCeiling: false, interiorReveal: 'trim', sillBoard: true },
     curtains: 'rail',
+    drapes: true,
     lighting: 'ceiling',
     indirectLighting: false,
     baseboard: 'standard',
@@ -116,6 +124,8 @@ export interface SpecPatch {
   windowHeadAtCeiling?: boolean;
   indirectLighting?: boolean;
   curtains?: BuilderSpec['curtains'];
+  /** カーテンの布を描くか（未指定なら仕様の既定。「線の少ない空間」は描かない） */
+  drapes?: boolean;
   /** 室内ドアの色（未指定なら内観テイストの色） */
   doorColor?: string;
   /** 天井高 (mm)。未指定なら図面・入力値 */
@@ -137,6 +147,7 @@ export function resolveSpec(id: string | undefined, patch: SpecPatch | undefined
     windows: { ...base.windows, headAtCeiling: patch.windowHeadAtCeiling ?? base.windows.headAtCeiling },
     indirectLighting: patch.indirectLighting ?? base.indirectLighting,
     curtains: patch.curtains ?? base.curtains,
+    drapes: patch.drapes ?? base.drapes,
     voidGuard: patch.voidGuard ?? base.voidGuard,
   };
 }

@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import type { BuildingModel, Room } from '../core/types';
 import { isHabitable, ROOM_TYPE_LABEL } from '../core/types';
 import { largestInnerRect } from '../core/rects';
+import { pointInPolygon } from '../core/geometry';
 import type { BuildingMeta } from './building';
 import type { SiteInfo } from './landscape';
 import type { CameraView } from './viewer';
@@ -374,6 +375,15 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
     const occ = occupancy.get(room.id) ?? [];
     const wins = windowsOf(model, ri.floor.level, room, y0);
     const center = new THREE.Vector3((R.minX + R.maxX) / 2, y0 + 1.1, (R.minZ + R.maxZ) / 2);
+    // この部屋の上の吹抜（上の階の void の区画で、重心がこの部屋の上にあるもの）
+    const voidsAbove = meta.rooms
+      .filter((v) => v.room.type === 'void' && v.floor.level === ri.floor.level + 1 && v.poly.length >= 3)
+      .filter((v) => {
+        const cx = v.poly.reduce((a, q) => a + q.x, 0) / v.poly.length;
+        const cz = v.poly.reduce((a, q) => a + q.y, 0) / v.poly.length;
+        return pointInPolygon({ x: cx / MM, y: cz / MM }, room.polygon);
+      })
+      .map((v) => v.poly);
     let best: { score: number; pos: THREE.Vector3; target: THREE.Vector3; mean: number } | null = null;
     // 小さな個室（寝室・子供室・和室・書斎）は建築写真の作法どおり、入口か部屋の隅に立って対角を広角で撮る。
     // 以前は部屋の中の格子点（ベッドから 30cm 離れた所）から選んでいて、ベッドと壁しか写らないカットが多かった
@@ -458,6 +468,8 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
           const cornerBonus = Math.min(Math.abs(pos.x - center.x) / (W / 2), 1) * Math.min(Math.abs(pos.z - center.z) / (D / 2), 1);
           // 窓は視野の端に入るのが良い（正面に窓だけが見える逆光の構図は避ける）
           score = mean * 1.4 + Math.min(outside, 3) * 0.3 + cornerBonus * 1.5 - (minC < 1.6 ? (1.6 - minC) * 6 : 0) - (centerOut ? 2.5 : 0);
+          // 視野の 6 割以上が窓の外へ抜ける構図（窓の前に立って外だけを写す）は、内観パースにならない
+          if (outside >= Math.ceil(N * 0.6)) score -= 6;
           // 画面の片側 1/3 が、すぐ横の壁や階段の側面で塗りつぶされる構図は避ける（LDK の左 1/3 が白い壁だけだった）。
           // 「近い」は部屋の奥行きに対して（見通しの平均の 4 割以内）。小さな個室は隅から撮るので片側の壁が近いのは当然
           const nearThr = Math.min(2.9, mean * 0.45);
@@ -527,9 +539,29 @@ export function interiorShots(model: BuildingModel, meta: BuildingMeta, occupanc
           }
         }
         score -= Math.min(cut, 3) * 0.9;
+        // カメラのすぐ前（1.25m 以内）に家具がある構図は避ける。御社の提案パース（林様・堀様・吉田様の内観）は、家具を中景に置いて
+        // 手前に床を見せる引きの構図。以前はソファの背のすぐ後ろに立っていて、画面の下 1/3 がソファで埋まっていた
+        let nearFurn = 0;
+        if (!smallRoom)
+          for (const o of occ) {
+            if (o.maxY < 0.35) continue;
+            const nx = Math.max(o.minX, Math.min(pos.x, o.maxX));
+            const nz = Math.max(o.minZ, Math.min(pos.z, o.maxZ));
+            const d = Math.hypot(nx - pos.x, nz - pos.z);
+            if (d < 0.05 || d > 1.25) continue;
+            if (((nx - pos.x) * dir.x + (nz - pos.z) * dir.z) / d < Math.cos(halfH * 0.9)) continue;
+            nearFurn += 1.25 - d;
+          }
+        score -= Math.min(nearFurn, 1.6) * 1.4;
         if (dbgOn) dbg.push({ score: +score.toFixed(2), x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), yaw: Math.round((yaw * 180) / Math.PI), cut, cutKeys, ...parts });
         if (!best || score > best.score) {
-          const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + 1.15);
+          // 吹抜が見える向きなら視線を上げて、上の空間（2 階のホール・高窓）を画面に入れる（堀様邸の LDK のパース）
+          const seesVoid = voidsAbove.some((vp) => {
+            const c = vp.reduce((a, q) => a.add(new THREE.Vector3(q.x, 0, q.y)), new THREE.Vector3()).multiplyScalar(1 / vp.length);
+            const v = c.sub(pos).setY(0);
+            return v.lengthSq() > 0.25 && Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir)))) < halfH * 0.85;
+          });
+          const target = pos.clone().addScaledVector(dir, Math.max(2, diag * 0.7)).setY(y0 + (seesVoid ? 1.75 : 1.15));
           best = { score, pos, target, mean: ray ? meanDist : Infinity };
         }
       }
@@ -662,7 +694,7 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
     if (bb.maxX - bb.minX < 3.0 && bb.maxZ - bb.minZ < 3.0) continue;
     const others = meta.rooms.filter((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area);
     const dirs = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)];
-    let best: { pos: THREE.Vector3; dir: THREE.Vector3; see: number; score: number } | null = null;
+    let best: { pos: THREE.Vector3; dir: THREE.Vector3; see: number; score: number; voidNear: number } | null = null;
     for (let x = bb.minX + 0.45; x <= bb.maxX - 0.45; x += 0.3) {
       for (let z = bb.minZ + 0.45; z <= bb.maxZ - 0.45; z += 0.3) {
         if (!inPoly(x, z, ri.poly)) continue;
@@ -694,19 +726,97 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
           });
           if (Math.min(diag[0], diag[1]) < 1.6 || Math.min(diag[2], diag[3]) < 0.8) continue;
           const back = clear(pos, dir.clone().negate());
+          // 吹抜に面した所（手すり越しに下階と高窓が見える）を優先する。御社の提案パースの 2 階ホールは、吹抜を見下ろす構図
+          // （以前は戸の並ぶ廊下の方が長く見通せるので、そちらを選んでいた）
+          let voidNear = 0;
+          let winSeen = 0;
+          for (const hl of holes) {
+            if (hl.floor.level !== ri.floor.level || hl.room.type !== 'void') continue;
+            const dv = distToPoly(pos, hl.poly);
+            if (dv > 2.4) continue;
+            // 吹抜が視野の中（前方〜斜め前）にある
+            const c = new THREE.Vector3(hl.poly.reduce((a, q) => a + q.x, 0) / hl.poly.length, 0, hl.poly.reduce((a, q) => a + q.y, 0) / hl.poly.length);
+            const v = c.sub(pos).setY(0);
+            if (v.lengthSq() > 0.01 && v.normalize().dot(dir) > 0.2) voidNear = Math.max(voidNear, 1 - dv / 2.4);
+            for (const w of windowsOf(model, hl.floor.level, hl.room, hl.floorY)) {
+              const wv = w.center.clone().sub(pos).setY(0);
+              if (wv.lengthSq() > 0.04 && wv.normalize().dot(dir) > 0.55) winSeen = 1;
+            }
+          }
           // 廊下の端に立って奥を見る（背中側はすぐ壁）が廊下らしい
-          const score = see + (back < 0.9 ? 0.6 : 0) - back * 0.15;
-          if (!best || score > best.score) best = { pos, dir, see, score };
+          const score = see + (back < 0.9 ? 0.6 : 0) - back * 0.15 + voidNear * 4 + winSeen * 1.5;
+          if (!best || score > best.score) best = { pos, dir, see, score, voidNear };
         }
       }
     }
+    // 吹抜を見下ろす（御社の提案パースの 2 階ホール: 手すりの内側に立ち、吹抜の向こうの壁と高窓、下の階を見渡す）。
+    // 手すりから 0.5〜1.3m 下がった所で、吹抜の中心の方を向き、3m 以上ひらけている向きを採る
+    let over: { pos: THREE.Vector3; dir: THREE.Vector3; score: number } | null = null;
+    const rotY = (v: THREE.Vector3, deg: number) => {
+      const a = (deg * Math.PI) / 180;
+      return new THREE.Vector3(v.x * Math.cos(a) - v.z * Math.sin(a), 0, v.x * Math.sin(a) + v.z * Math.cos(a));
+    };
+    for (const hl of holes) {
+      if (hl.floor.level !== ri.floor.level || hl.room.type !== 'void' || hl.poly.length < 3) continue;
+      const vc = new THREE.Vector3(hl.poly.reduce((a, q) => a + q.x, 0) / hl.poly.length, 0, hl.poly.reduce((a, q) => a + q.y, 0) / hl.poly.length);
+      const vWins = windowsOf(model, hl.floor.level, hl.room, hl.floorY);
+      for (let x = bb.minX + 0.3; x <= bb.maxX - 0.3; x += 0.3) {
+        for (let z = bb.minZ + 0.3; z <= bb.maxZ - 0.3; z += 0.3) {
+          if (!inPoly(x, z, ri.poly)) continue;
+          const pos = new THREE.Vector3(x, ri.floorY + 1.5, z);
+          const dv = distToPoly(pos, hl.poly);
+          if (dv < 0.5 || dv > 1.3) continue;
+          if (holes.some((h) => h.floor.level === ri.floor.level && inPoly(x, z, h.poly))) continue;
+          if (others.some((o) => inPoly(x, z, o.poly))) continue;
+          const d0 = vc.clone().sub(pos).setY(0);
+          if (d0.lengthSq() < 0.25) continue;
+          d0.normalize();
+          for (const deg of [0, 18, -18]) {
+            const dir = rotY(d0, deg);
+            if (clear(pos, dir) < 3.0) continue;
+            let sum = 0;
+            let tight = false;
+            for (let a = -35; a <= 35; a += 7) {
+              const c = clear(pos, rotY(dir, a));
+              sum += Math.min(c, 9);
+              if (Math.abs(a) <= 28 && c < 1.6) tight = true;
+            }
+            if (tight) continue;
+            let winSeen = 0;
+            for (const w of vWins) {
+              const wv = w.center.clone().sub(pos).setY(0);
+              if (wv.lengthSq() > 0.04 && wv.normalize().dot(dir) > 0.6) winSeen = Math.min(2, winSeen + 1);
+            }
+            const score = sum + winSeen * 4 - Math.abs(deg) * 0.05;
+            if (!over || score > over.score) over = { pos, dir, score };
+          }
+        }
+      }
+    }
+    if (over) {
+      out.push({
+        id: `int-hall-${ri.room.id}`,
+        kind: 'interior',
+        title: `内観パース（${ri.room.name || 'ホール'}）`,
+        caption: `${ri.room.name || 'ホール'}から吹抜を見下ろす。上下の階の気配と光がつながる、家の中心です。`,
+        // 手すり越しに下の階が見えるよう、少し見下ろす
+        view: { pos: over.pos, target: over.pos.clone().addScaledVector(over.dir, 4).setY(ri.floorY + 1.0), fov: vfov, architectural: true },
+        sunDir: null,
+        roomId: ri.room.id,
+        level: ri.floor.level,
+      });
+      continue;
+    }
     if (!best) continue;
+    const byVoid = best.voidNear > 0.2;
     const target = best.pos.clone().addScaledVector(best.dir, Math.max(3, best.see * 0.8)).setY(ri.floorY + 1.2);
     out.push({
       id: `int-hall-${ri.room.id}`,
       kind: 'interior',
       title: `内観パース（${ri.room.name || 'ホール'}）`,
-      caption: `${ri.room.name || 'ホール'}の奥行き。突き当たりの光に向かって歩く、家の中の小さな道です。`,
+      caption: byVoid
+        ? `${ri.room.name || 'ホール'}から吹抜を見下ろす。上下の階の気配と光がつながる、家の中心です。`
+        : `${ri.room.name || 'ホール'}の奥行き。突き当たりの光に向かって歩く、家の中の小さな道です。`,
       view: { pos: best.pos, target, fov: vfov, architectural: true },
       sunDir: null,
       roomId: ri.room.id,
@@ -716,51 +826,78 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
   // ---- キッチンから（LDK） ----
   for (const ri of meta.rooms.filter((r) => (r.room.type === 'ldk' || r.room.type === 'kitchen') && r.room.area >= 16)) {
     const occ = occupancy.get(ri.room.id) ?? [];
+    // 御社の提案パース（堀様・吉田様・林様）: キッチンの中に立ち、手前に天板（シンク・IH）を入れて、ダイニング・リビングと窓の外を見渡す。
+    // 対面のキッチン（アイランド・ペニンシュラ）があれば、まずこの構図にする
+    // 見る先: ダイニング・リビングの家具の重心（L 字の LDK では部屋の中心が何も無い所になる）
+    const livingFp = occ.filter((o) => o.maxY >= 0.3 && o.maxY <= 1.05 && !/counter|cabinet|stainless|carcass|handle|fridge|hood|cupboard|screen/.test(o.key ?? ''));
+    const focus = livingFp.length
+      ? new THREE.Vector3(livingFp.reduce((a, o) => a + (o.minX + o.maxX) / 2, 0) / livingFp.length, ri.center.y, livingFp.reduce((a, o) => a + (o.minZ + o.maxZ) / 2, 0) / livingFp.length)
+      : ri.center.clone();
+    const behind = kitchenInsideView({ poly: ri.poly, center: focus, floorY: ri.floorY }, occ, aspect, vfov, clear, inPoly, windowsOf(model, ri.floor.level, ri.room, ri.floorY));
+    if (behind) {
+      out.push({
+        id: `int-kitchen-${ri.room.id}`,
+        kind: 'interior',
+        title: '内観パース（キッチンから）',
+        caption: 'キッチンに立ったときの景色。料理をしながら家族と会話し、ダイニングとリビングを見渡せます。',
+        view: { pos: behind.pos, target: behind.target, fov: vfov, architectural: true },
+        sunDir: null,
+        roomId: ri.room.id,
+        level: ri.floor.level,
+      });
+      continue;
+    }
     // 背の高い物（レンジフード・カップボード）がキッチンの目印
     const tall = occ.filter((o) => o.maxY > 1.4);
     if (!tall.length) continue;
     const kb = tall.reduce((b, o) => ({ minX: Math.min(b.minX, o.minX), maxX: Math.max(b.maxX, o.maxX), minZ: Math.min(b.minZ, o.minZ), maxZ: Math.max(b.maxZ, o.maxZ) }), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
     const kc = new THREE.Vector3((kb.minX + kb.maxX) / 2, 0, (kb.minZ + kb.maxZ) / 2);
-    const rc = ri.center.clone().setY(0);
-    const toRoom = rc.clone().sub(kc).setY(0);
-    if (toRoom.length() < 2.5) continue;
-    toRoom.normalize();
-    // キッチンの前（部屋側）に立ち、ダイニング・リビングの方を見る
-    let pos: THREE.Vector3 | null = null;
-    for (let d = 1.2; d <= 2.4; d += 0.3) {
-      const p = kc.clone().addScaledVector(toRoom, Math.max(kb.maxX - kb.minX, kb.maxZ - kb.minZ) / 2 + d);
-      p.y = ri.floorY + eyeH;
-      if (!inPoly(p.x, p.z, ri.poly)) continue;
-      if (meta.rooms.some((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area && inPoly(p.x, p.z, o.poly))) continue;
-      if (occ.some((o) => o.maxY > 0.5 && p.x > o.minX - 0.25 && p.x < o.maxX + 0.25 && p.z > o.minZ - 0.25 && p.z < o.maxZ + 0.25)) continue;
-      pos = p;
-      break;
-    }
-    if (!pos) continue;
-    // ダイニング・リビングの方を向くが、正面や画角の内側（斜め 25°）がすぐ壁なら少し振って一番ひらけた向きにする。
-    // どの向きも壁が近い（キッチンと居間が壁で仕切られている）なら、このカットは作らない
-    const rot = (v: THREE.Vector3, deg: number) => {
-      const a = (deg * Math.PI) / 180;
-      return new THREE.Vector3(v.x * Math.cos(a) - v.z * Math.sin(a), 0, v.x * Math.sin(a) + v.z * Math.cos(a));
-    };
-    let look: { dir: THREE.Vector3; score: number } | null = null;
-    for (const deg of [0, 15, -15, 30, -30]) {
-      const dir = rot(toRoom, deg);
-      const c0 = clear(pos, dir);
-      // 画角いっぱい（±35°）を 5° 刻みに見渡し、3.5m 以上ひらけている向きが 8 割以上あること
-      // （正面だけ抜けていて両脇が壁の板、という絵になっていた）
-      let open = 0;
-      let sum = 0;
-      for (let a = -35; a <= 35; a += 5) {
-        const c = clear(pos, rot(dir, a));
-        sum += Math.min(c, 9);
-        if (c >= 3.5) open++;
+    // キッチンの前（部屋側）に立ち、見る先（rc）の方を見る。見る先は、まずダイニング・リビングの家具の重心、
+    // それで構図が作れなければ部屋の中心（家具の重心がキッチンのすぐ前に来る間取りで、このカットが出なくなっていた）
+    const frontView = (rc: THREE.Vector3): { pos: THREE.Vector3; dir: THREE.Vector3 } | null => {
+      const toRoom = rc.clone().sub(kc).setY(0);
+      if (toRoom.length() < 2.5) return null;
+      toRoom.normalize();
+      let pos: THREE.Vector3 | null = null;
+      for (let d = 1.2; d <= 2.4; d += 0.3) {
+        const p = kc.clone().addScaledVector(toRoom, Math.max(kb.maxX - kb.minX, kb.maxZ - kb.minZ) / 2 + d);
+        p.y = ri.floorY + eyeH;
+        if (!inPoly(p.x, p.z, ri.poly)) continue;
+        if (meta.rooms.some((o) => o !== ri && o.floor.level === ri.floor.level && o.room.area < ri.room.area && inPoly(p.x, p.z, o.poly))) continue;
+        if (occ.some((o) => o.maxY > 0.5 && p.x > o.minX - 0.25 && p.x < o.maxX + 0.25 && p.z > o.minZ - 0.25 && p.z < o.maxZ + 0.25)) continue;
+        pos = p;
+        break;
       }
-      if (c0 < 4.5 || open < 12) continue;
-      const score = sum - Math.abs(deg) * 0.3;
-      if (!look || score > look.score) look = { dir, score };
-    }
-    if (!look) continue;
+      if (!pos) return null;
+      // ダイニング・リビングの方を向くが、正面や画角の内側（斜め 25°）がすぐ壁なら少し振って一番ひらけた向きにする。
+      // どの向きも壁が近い（キッチンと居間が壁で仕切られている）なら、このカットは作らない
+      const rot = (v: THREE.Vector3, deg: number) => {
+        const a = (deg * Math.PI) / 180;
+        return new THREE.Vector3(v.x * Math.cos(a) - v.z * Math.sin(a), 0, v.x * Math.sin(a) + v.z * Math.cos(a));
+      };
+      let look: { dir: THREE.Vector3; score: number } | null = null;
+      for (const deg of [0, 15, -15, 30, -30]) {
+        const dir = rot(toRoom, deg);
+        const c0 = clear(pos, dir);
+        // 画角いっぱい（±35°）を 5° 刻みに見渡し、3.5m 以上ひらけている向きが 8 割以上あること
+        // （正面だけ抜けていて両脇が壁の板、という絵になっていた）
+        let open = 0;
+        let sum = 0;
+        for (let a = -35; a <= 35; a += 5) {
+          const c = clear(pos, rot(dir, a));
+          sum += Math.min(c, 9);
+          if (c >= 3.5) open++;
+        }
+        if (c0 < 4.5 || open < 12) continue;
+        const score = sum - Math.abs(deg) * 0.3;
+        if (!look || score > look.score) look = { dir, score };
+      }
+      return look ? { pos, dir: look.dir } : null;
+    };
+    const fv = frontView(focus.clone().setY(0)) ?? frontView(ri.center.clone().setY(0));
+    if (!fv) continue;
+    const { pos } = fv;
+    const look = { dir: fv.dir };
     const target = pos.clone().addScaledVector(look.dir, 4).setY(ri.floorY + 1.15);
     out.push({
       id: `int-kitchen-${ri.room.id}`,
@@ -774,6 +911,76 @@ function extraInteriorShots(model: BuildingModel, meta: BuildingMeta, occupancy:
     });
   }
   return out;
+}
+
+/**
+ * 対面キッチンの内側（料理をする人の立ち位置）から、天板越しに部屋を見渡すカメラ。
+ * 天板（高さ 0.8〜1.0m・長さ 1.5m 以上）の長辺の外 0.55m に立ち、天板をはさんで向こうが 3m 以上ひらけている向きだけを採る
+ * （壁付けのキッチンは、どちらに立っても天板の先が壁なので対象外 = 呼び出し側の従来の構図になる）
+ */
+function kitchenInsideView(
+  ri: { poly: THREE.Vector2[]; center: THREE.Vector3; floorY: number },
+  occ: Footprint[],
+  aspect: number,
+  vfov: number,
+  clear: (pos: THREE.Vector3, dir: THREE.Vector3) => number,
+  inPoly: (x: number, z: number, poly: THREE.Vector2[]) => boolean,
+  wins: WinInfo[],
+): { pos: THREE.Vector3; target: THREE.Vector3 } | null {
+  const eye = 1.45;
+  const halfH = Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect);
+  const tops = occ.filter((o) => /counter/.test(o.key ?? '') && o.maxY >= 0.78 && o.maxY <= 1.05 && Math.max(o.maxX - o.minX, o.maxZ - o.minZ) >= 1.5);
+  const rot = (v: THREE.Vector3, deg: number) => {
+    const a = (deg * Math.PI) / 180;
+    return new THREE.Vector3(v.x * Math.cos(a) - v.z * Math.sin(a), 0, v.x * Math.sin(a) + v.z * Math.cos(a));
+  };
+  let best: { pos: THREE.Vector3; dir: THREE.Vector3; score: number } | null = null;
+  for (const t of tops) {
+    const alongX = t.maxX - t.minX >= t.maxZ - t.minZ;
+    const len = alongX ? t.maxX - t.minX : t.maxZ - t.minZ;
+    const dep = alongX ? t.maxZ - t.minZ : t.maxX - t.minX;
+    if (dep > 1.3) continue; // 天板ではなくテーブルや広い台
+    for (const sg of [-1, 1]) {
+      // 天板をはさんで見る向き（長辺に直交）
+      const across = alongX ? new THREE.Vector3(0, 0, -sg) : new THREE.Vector3(-sg, 0, 0);
+      for (const f of [0.3, 0.5, 0.7]) {
+        const pos = alongX
+          ? new THREE.Vector3(t.minX + len * f, ri.floorY + eye, (sg > 0 ? t.maxZ : t.minZ) + sg * 0.55)
+          : new THREE.Vector3((sg > 0 ? t.maxX : t.minX) + sg * 0.55, ri.floorY + eye, t.minZ + len * f);
+        if (!inPoly(pos.x, pos.z, ri.poly)) continue;
+        if (occ.some((o) => o.maxY > 0.5 && pos.x > o.minX - 0.12 && pos.x < o.maxX + 0.12 && pos.z > o.minZ - 0.12 && pos.z < o.maxZ + 0.12)) continue;
+        for (const deg of [0, 14, -14, 26, -26]) {
+          const dir = rot(across, deg);
+          const c0 = clear(pos, dir);
+          if (c0 < 3.2) continue;
+          let open = 0;
+          let sum = 0;
+          for (let a = -35; a <= 35; a += 5) {
+            const c = clear(pos, rot(dir, a));
+            sum += Math.min(c, 9);
+            if (c >= 3.0) open++;
+          }
+          if (open < 11) continue;
+          const toC = ri.center.clone().sub(pos).setY(0);
+          const facing = toC.lengthSq() > 0.01 ? toC.normalize().dot(dir) : 0;
+          // 部屋の中心の方を向くこと（窓の外だけを見る向きは採らない）
+          if (facing < 0.35) continue;
+          let winIn = 0;
+          for (const w of wins) {
+            const v = w.center.clone().sub(pos).setY(0);
+            if (v.lengthSq() < 0.04) continue;
+            const ang = Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir))));
+            if (ang < halfH * 0.95) winIn += ang > halfH * 0.25 ? 1 : 0.3;
+          }
+          const score = sum * 0.5 + facing * 6 + Math.min(winIn, 2) * 1.5 - Math.abs(deg) * 0.04 - Math.abs(f - 0.5) * 2;
+          if (!best || score > best.score) best = { pos, dir, score };
+        }
+      }
+    }
+  }
+  if (!best) return null;
+  // 天板（シンク・IH）が手前に入るよう、少し見下ろす
+  return { pos: best.pos, target: best.pos.clone().addScaledVector(best.dir, 4).setY(ri.floorY + 1.02) };
 }
 
 function windowsOf(model: BuildingModel, level: number, room: Room, y0: number): WinInfo[] {

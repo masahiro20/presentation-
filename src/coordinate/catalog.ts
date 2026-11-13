@@ -305,6 +305,7 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     label: 'ダイニングの照明',
     part: '内部',
     products: [
+      { id: 'pend.none', maker: '—', name: 'ペンダントなし（ダウンライトだけ）', code: '照明計画で決めるまで、パースには描きません', color: '—', swatch: ['#dcdad5'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'none' }; }, note: '最初のご提案のパースは、食卓の上に器具を下げずに、窓の外と部屋の奥行きを見せます' },
       { id: 'pend.ph5', maker: 'Louis Poulsen', name: 'PH 5', code: 'ペンダント', color: 'ホワイト', swatch: ['#f2f0ea'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'ph5' }; }, note: '施主支給・照明計画の器具で。白い多層シェードで手元に柔らかい光' },
       { id: 'pend.dome', maker: '—', name: 'ドーム型ペンダント（大）', code: '照明計画の器具 ※品番は品番メモに', color: 'ブラック', swatch: ['#2a2a2a'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'dome' }; } },
       { id: 'pend.globes', maker: '—', name: 'ガラスの小さな球 2〜3 灯', code: '照明計画の器具 ※品番は品番メモに', color: '乳白ガラス', swatch: ['#efece4'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'globes' }; } },

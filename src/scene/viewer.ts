@@ -32,8 +32,9 @@ import { resolveSpec } from '../styles/spec';
 /** 暗い色か（キッチンの扉の色でレンジフードをシルバー／ブラックに振り分ける） */
 function isDarkColor(hex: string): boolean {
   const c = new THREE.Color(hex);
-  // 御社の事例: グレーの扉でもフードは黒（シルバーは白系の扉のときだけ）
-  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.45;
+  // 御社の事例: グレーの扉はフードも黒。明るいグレージュ（モルタライト）・白系の扉は、ステンレス・白のフード
+  // （堀様の提案パース: グレージュのアイランドに白いフード。以前はモルタライトも「暗い色」に入り、黒いフードになっていた）
+  return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b < 0.3;
 }
 
 export class ArchCamera extends THREE.PerspectiveCamera {
@@ -105,7 +106,8 @@ export class Viewer {
   state: SceneState | null = null;
   design: DesignOptions;
   /** 開閉できる扉（部品ごとの Group） */
-  private doors: { info: DoorInfo; group: THREE.Group }[] = [];
+  /** at: 閉じた状態の板の中心（y は板の下端 = その階の床） */
+  private doors: { info: DoorInfo; group: THREE.Group; at: THREE.Vector3 }[] = [];
   sunDir = new THREE.Vector3(0.4, 0.7, 0.5).normalize();
   /** 実物モデルの非同期配置の世代（図面を読み直したら古い配置を捨てる） */
   private modelGen = 0;
@@ -175,9 +177,26 @@ export class Viewer {
    * 拡散光を抑えて太陽の明暗（日なた・日陰・影）を立てる。写真の外観はこの明暗差で立体に見える
    */
   private lightBase = { sun: 0, hemi: 0, bounce: 0, env: 0.66 };
+  /**
+   * 室内から外を見るとき、ガラスに室内の明るい環境が映り込んで、窓の外の木や中庭が白くかすんで見えていた。
+   * 室内の視点では映り込みとガラスの色の濃さを抑える（御社の提案パースは、ガラス越しの中庭の緑がはっきり見える）
+   */
+  private tuneGlass(outside: boolean) {
+    const g = this.registry.get('ext.glass') as THREE.MeshPhysicalMaterial;
+    if (!g?.userData?.isGlass) return;
+    const night = this.design.timeOfDay === 'night';
+    const env = outside ? 1.1 : 0.15;
+    const op = night ? 0.08 : outside ? 0.13 : 0.05;
+    if (g.envMapIntensity !== env || g.opacity !== op) {
+      g.envMapIntensity = env;
+      g.opacity = op;
+      this._dirty = true;
+    }
+  }
   private balanceOutside: boolean | null = null;
   private applyLightBalance(force = false) {
     const outside = !this.cameraInside();
+    this.tuneGlass(outside);
     if (!force && outside === this.balanceOutside) return;
     this.balanceOutside = outside;
     const night = this.design.timeOfDay === 'night';
@@ -187,6 +206,13 @@ export class Viewer {
       this.hemi.intensity = b.hemi * 0.5;
       this.bounce.intensity = b.bounce * 0.3;
       this.scene.environmentIntensity = b.env * 0.7;
+    } else if (!outside && !night) {
+      // 室内（昼）: 全体を均一に照らす光（空の拡散光・床の照り返し・環境光）を少し抑えて、窓から入る日差しとの明暗を残す。
+      // 御社の提案パースは、白い壁でも面ごとに明るさが違い、奥は暗く沈む。以前の値では白い壁が白飛びして平板だった
+      this.sun.intensity = b.sun;
+      this.hemi.intensity = b.hemi * 0.8;
+      this.bounce.intensity = b.bounce * 0.72;
+      this.scene.environmentIntensity = b.env * 0.9;
     } else {
       this.sun.intensity = b.sun;
       this.hemi.intensity = b.hemi;
@@ -489,6 +515,19 @@ export class Viewer {
     this.gtao = new GTAOPass(this.scene, this.camera, 1, 1);
     this.gtao.updateGtaoMaterial({ radius: 0.6, distanceExponent: 1.5, thickness: 1.2, scale: 1.2 });
     this.gtao.blendIntensity = 0.85;
+    // 葉のカード（葉の絵を貼った透過の板）は陰影の計算から外す。板の四角い輪郭のまま陰が付き、室内の鉢植えの木のまわりの壁に
+    // 白い破片のような模様が出ていた（外の木でも、壁際で同じ模様になる）
+    const gt = this.gtao as unknown as { _overrideVisibility: () => void; _visibilityCache: THREE.Object3D[]; scene: THREE.Scene };
+    const baseOverride = gt._overrideVisibility.bind(gt);
+    gt._overrideVisibility = () => {
+      baseOverride();
+      gt.scene.traverse((o) => {
+        if (o.visible && (o as THREE.Mesh).isMesh && String(o.userData.matKey ?? '').startsWith('l.leaf')) {
+          o.visible = false;
+          gt._visibilityCache.push(o);
+        }
+      });
+    };
     this.composer.addPass(this.gtao);
     this.composer.addPass(new OutputPass());
     this.smaa = new SMAAPass();
@@ -506,6 +545,7 @@ export class Viewer {
   setNavMode(mode: 'orbit' | 'pan' | 'walk') {
     const prev = this.navMode;
     this.navMode = mode;
+    if (prev === 'walk' && mode !== 'walk') this.closeAutoDoors();
     const M = THREE.MOUSE;
     const T = THREE.TOUCH;
     this.walkPtrs.clear();
@@ -939,11 +979,14 @@ export class Viewer {
     this.dirty = true;
   }
 
-  /** 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う） */
+  /**
+   * 建物（壁・床・屋根）だけの当たり判定（歩行の壁抜け防止・床の高さ・回転の中心に使う）。
+   * 開き戸・引戸の板は入れない: 戸は閉じて描くので、板を入れると戸口を通れなくなる（歩くモードでは近づくと戸が開く → autoDoors）
+   */
   private occluder() {
     if (!this.state) return null;
     const cutKey = JSON.stringify(this.cut);
-    if (!this.walkOcc || this.walkOcc.state !== this.state || this.walkOcc.cut !== cutKey) this.walkOcc = { state: this.state, cut: cutKey, occ: buildOccluder(this, { buildingOnly: true }) };
+    if (!this.walkOcc || this.walkOcc.state !== this.state || this.walkOcc.cut !== cutKey) this.walkOcc = { state: this.state, cut: cutKey, occ: buildOccluder(this, { buildingOnly: true, doors: false }) };
     return this.walkOcc.occ;
   }
 
@@ -955,10 +998,15 @@ export class Viewer {
     const rc = new THREE.Raycaster();
     rc.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
     const occ = this.occluder();
+    // 戸の板は当たり判定に入っていないので、別に当てる（閉じた戸を指してズームしたとき、戸の向こうの壁までの距離にならないように）
+    const leaf = this.doors.length
+      ? rc.intersectObjects(this.doors.filter((d) => d.group.userData.walkThrough).map((d) => d.group), true).find((x) => (x.object as THREE.Mesh).visible && x.distance > 0.05)
+      : undefined;
     if (occ) {
       const hit = occ.bvh.raycastFirst(rc.ray, THREE.DoubleSide);
-      if (hit && hit.distance > 0.05) return hit.distance;
+      if (hit && hit.distance > 0.05) return leaf ? Math.min(hit.distance, leaf.distance) : hit.distance;
     }
+    if (leaf) return leaf.distance;
     // 家具・外構
     const hits = rc.intersectObjects([this.groups.furniture, this.groups.landscape], true);
     const h = hits.find((x) => (x.object as THREE.Mesh).visible && x.distance > 0.05);
@@ -1347,6 +1395,7 @@ export class Viewer {
       this.camera.position.add(mv);
       this.controls.target.add(mv);
       this.camMoved();
+      this.autoDoors();
     }
     // 目線モードは床の高さに追従する（階段も上れる）。Q/E で浮いた分はそのまま
     if (walkMode && !k.has('q') && !k.has('e')) {
@@ -1458,9 +1507,15 @@ export class Viewer {
     for (const info of meta.doors) {
       const group = new THREE.Group();
       group.name = `door:${info.id}`;
+      group.userData.walkThrough = info.kind !== 'roll';
       group.add(info.mb.build(resolve, { name: 'door' }));
       this.groups.building.add(group);
-      this.doors.push({ info, group });
+      // 閉じた状態の板の中心と床の高さ（歩くモードで「近づいたら開ける」の判定に使う）
+      this.poseDoor(info, group, 0);
+      group.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(group);
+      const at = box.isEmpty() ? info.origin.clone() : box.getCenter(new THREE.Vector3()).setY(box.min.y);
+      this.doors.push({ info, group, at });
     }
     this.setDoors(null);
     const roof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch);
@@ -1501,6 +1556,8 @@ export class Viewer {
   /** 扉の開き具合を設定（null = 通常表示の状態に戻す）。map に無い扉は閉じる */
   setDoors(open: Map<string, number> | null) {
     this.doorAnim.clear();
+    this.doorNear.clear();
+    this.doorAuto.clear();
     for (const { info, group } of this.doors) {
       const frac = open ? Math.max(0, Math.min(1, open.get(info.id) ?? 0)) : info.staticOpen;
       this.poseDoor(info, group, frac);
@@ -1545,6 +1602,7 @@ export class Viewer {
     if (!d) return false;
     const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
     this.doorAnim.set(d.info.id, cur > 0.5 ? 0 : 1);
+    this.doorAuto.delete(d.info.id);
     this.dirty = true;
     return true;
   }
@@ -1561,10 +1619,58 @@ export class Viewer {
       const step = dt * 1.6;
       const next = Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step;
       this.poseDoor(d.info, d.group, next);
+      if (d.info.kind === 'roll') this.walkOcc = null;
       if (next === target) this.doorAnim.delete(id);
     }
-    this.walkOcc = null;
     this.camMoved();
+  }
+
+  /** 歩くモードで近くにいる戸／そのうち自動で開けた戸（離れたら閉じ直す） */
+  private doorNear = new Set<string>();
+  private doorAuto = new Set<string>();
+
+  /**
+   * 歩くモード: 近づいた開き戸・引戸を自動で開け、離れたら閉じる。
+   * 戸は閉じて描く（提案パースの見せ方）ので、そのままだとお客様が体験リンクで歩いたときに戸口で止まってしまう。
+   * 手で開け閉めした戸はそのまま（自動で開けた戸だけを閉じ直す）。
+   */
+  private autoDoors() {
+    if (this.navMode !== 'walk' || this.cut || !this.doors.length) return;
+    const p = this.camera.position;
+    for (const d of this.doors) {
+      if (d.info.kind === 'roll') continue;
+      const id = d.info.id;
+      const was = this.doorNear.has(id);
+      const up = p.y - d.at.y;
+      const near = up > 0.3 && up < 2.6 && Math.hypot(p.x - d.at.x, p.z - d.at.z) < (was ? 1.9 : 1.35);
+      if (near === was) continue;
+      if (near) {
+        this.doorNear.add(id);
+        const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
+        if (cur < 0.5 && (this.doorAnim.get(id) ?? cur) < 0.5) {
+          this.doorAnim.set(id, 1);
+          this.doorAuto.add(id);
+        }
+      } else {
+        this.doorNear.delete(id);
+        if (this.doorAuto.delete(id)) this.doorAnim.set(id, d.info.staticOpen);
+      }
+    }
+  }
+
+  /** 歩くモードを抜けた・別の構図へ飛んだら、自動で開けた戸を閉じ直す（now: 動きを付けずにすぐ。構図の書き出しに開いた戸が写らないように） */
+  private closeAutoDoors(now = false) {
+    for (const id of this.doorAuto) {
+      const d = this.doors.find((x) => x.info.id === id);
+      if (!d) continue;
+      if (now) {
+        this.doorAnim.delete(id);
+        this.poseDoor(d.info, d.group, d.info.staticOpen);
+      } else this.doorAnim.set(id, d.info.staticOpen);
+    }
+    this.doorNear.clear();
+    this.doorAuto.clear();
+    this.dirty = true;
   }
 
   /** 扉の一覧（経路の計画用） */
@@ -1987,6 +2093,7 @@ export class Viewer {
   }
 
   applyView(v: CameraView) {
+    if (this.doorAuto.size) this.closeAutoDoors(true);
     this.camera.fov = v.fov;
     if (v.architectural) {
       // 水平視線 + シフト
@@ -2132,7 +2239,7 @@ export class Viewer {
           g.position.copy(info.origin);
           g.rotation.set(0, info.yaw0, 0);
           // 断面では切り口を合わせるため閉じたまま。輪切りでは少し開ける
-          const frac = sec ? 0 : info.kind === 'swing' ? Math.max(info.staticOpen, 0.35) : info.staticOpen;
+          const frac = sec ? 0 : info.kind === 'swing' ? Math.max(info.cutOpen, 0.35) : info.cutOpen;
           if (info.kind === 'swing') g.rotation.y = info.yaw0 + info.openAngle * frac;
           else if (info.kind === 'roll') g.scale.y = Math.max(0.04, 1 - frac * 0.96);
           else g.position.addScaledVector(info.slideDir, info.slideDist * frac);

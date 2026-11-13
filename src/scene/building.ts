@@ -96,8 +96,13 @@ export interface DoorInfo {
   /** 引戸: 全開時の移動方向と距離 */
   slideDir: THREE.Vector3;
   slideDist: number;
-  /** 通常表示（ウォークスルー以外）での開き具合 0〜1 */
+  /**
+   * 通常表示（3D・パース）での開き具合 0〜1。室内の戸は閉じて見せる（御社の提案パースは、壁と同色のハイドアを閉じた状態で描く。
+   * 以前は開き戸を 80° 開けていて、廊下やホールのパースに開いた戸の板が何枚も立って見えていた）。クリック・ルームツアーで開く
+   */
   staticOpen: number;
+  /** 輪切り模型（上から見る）で見せる開き具合 0〜1（間取りのつながりが分かるように少し開ける） */
+  cutOpen: number;
   mb: MeshBuilder;
   width: number;
 }
@@ -675,7 +680,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? 'int.ceilingMain' : 'int.ceiling', r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
     }
     // ---- 天井の設備（ダウンライト・間接照明） ----
-    buildCeilingDetails(mb, f, fl, spec);
+    buildCeilingDetails(mb, f, fl, spec, ceilVoids);
     // ---- 階段 ----
     for (const s of f.stairs) {
       if (!s.goesUp || !upper) continue;
@@ -1412,7 +1417,8 @@ function buildVoidGuardsOnOpenEdges(mb: MeshBuilder, f: Floor, fl: number, spec:
       // 縁から部屋側へ少し（6cm）寄せて、床の小口に重ねない
       const inset = new THREE.Vector3(nx, 0, ny).multiplyScalar(0.06);
       const kind = guardKindOf(r, spec);
-      const wallKeys = ['int.wall', 'int.wall', 'int.wallTop', 'int.wallTop', 'int.wall', 'int.wall'];
+      // 腰壁の天端も壁と同じ仕上げ（塗り回し）。以前は白い板の色で、グレーの壁の家では天端だけ白く浮いていた
+      const wallKeys = ['int.wall', 'int.wall', 'int.wall', 'int.wall', 'int.wall', 'int.wall'];
       if (kind === 'half') mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, 1.1, 0.12);
       else if (kind === 'halfGlass') {
         mb.box(wallKeys, midV.clone().add(inset).setY(fl), dir, L, 0.9, 0.12);
@@ -1682,7 +1688,8 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   const wallTopAuto = parapet ? Math.min(top, fl + 1.1) : guard === 'half' ? fl + 1.1 : guard === 'halfGlass' ? fl + 0.9 : annexTop > 0 ? annexTop : fence ? 1.8 : w.exterior || facesOutdoor ? top : fl + wallCeilingMm(f, w) * MM;
   // 天端の指定（3D の「窓・戸」の道具で壁をクリック）: 袖壁・腰壁・パラペットの立ち上げ。床から 300mm 以上
   const wallTop = w.topMm != null ? fl + Math.max(300, w.topMm) * MM : wallTopAuto;
-  const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wallTop';
+  // 室内の腰壁・袖壁の天端は壁と同じ仕上げ（塗り回し）。以前は白い板の色で、グレーの壁の家では天端だけ白く浮いていた
+  const topKey = w.exterior || facesOutdoor ? 'ext.wallTop' : 'int.wall';
   if (guard === 'halfGlass') voidGlassOnTop(mb, A, B, fl + 0.9);
   // 開口の小口: 塗り回し（ステルス枠）なら壁と同じ仕上げで線を出さない
   const jambKey = w.exterior
@@ -1870,6 +1877,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
         const pL = fitsAt(-(width / 2 + 0.36)) ? 0.35 : 0;
         const pR = fitsAt(width / 2 + 0.36) ? 0.35 : 0;
         mb.box('int.shadowGap', pocket.clone().addScaledVector(dir, (pR - pL) / 2), dir, width + pL + pR, 0.004, 0.16);
+        // 布は既定では描かない（御社の提案パースは、ガラス越しの中庭と空を見せる。溝だけが天井に残る）
+        if (!spec.drapes) return;
         // 両脇にまとめたドレープ: 波打つ薄い布（正弦波の面）。硬い縦の束に見せない
         for (const side of [-1, 1]) {
           const bundle = 0.34;
@@ -1881,8 +1890,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
         return;
       }
       const cy = fl + Math.min(2.35, (o.sill + o.height) * MM + 0.1);
-      // 両端にまとめたカーテン
-      for (const side of [-1, 1]) {
+      // 両端にまとめたカーテン（布を描く設定のときだけ。レールは残す）
+      for (const side of spec.drapes ? [-1, 1] : []) {
         const c = inner.clone().addScaledVector(dir, fitsAt(side * (width / 2 + 0.2)) ? side * (width / 2 + 0.05) : side * (width / 2 - 0.15));
         mb.box('f.curtain', c.setY(fl + (o.sill > 0 ? o.sill * MM - 0.1 : 0.01)), dir, 0.28, cy - (fl + (o.sill > 0 ? o.sill * MM - 0.1 : 0.01)), 0.1);
       }
@@ -1917,6 +1926,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       slideDir: new THREE.Vector3(),
       slideDist: 0,
       staticOpen: 0,
+      cutOpen: 0,
       mb: smb,
       width: width - 0.1,
     });
@@ -1965,6 +1975,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       slideDir: new THREE.Vector3(),
       slideDist: 0,
       staticOpen: 0,
+      cutOpen: 0,
       mb: dmb,
       width: dw,
     });
@@ -2095,7 +2106,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       openAngle: Math.atan2(closedDir.z * fullOpen.x - closedDir.x * fullOpen.z, closedDir.dot(fullOpen)),
       slideDir: new THREE.Vector3(),
       slideDist: 0,
-      staticOpen: ang > 0 ? ang / 1.396 : 0,
+      staticOpen: 0,
+      cutOpen: ang > 0 ? ang / 1.396 : 0,
       mb: dmb,
       width: lw,
     });
@@ -2135,7 +2147,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const face = mid.clone().addScaledVector(nW, fc * (t / 2 + 0.025));
     const slideDir = dir.clone().multiplyScalar(pick?.sd ?? 1);
     const slideDist = pick?.dist ?? 0;
-    const staticOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
+    // 通常表示は閉じる。輪切り模型では 6 割開けて、行き来できる所が分かるようにする
+    const cutOpen = pick && slideDist >= width * 0.4 ? 0.6 : 0;
     const dmb = new MeshBuilder();
     dmb.clip = localClip(face.clone().setY(0), Math.atan2(-dir.z, dir.x));
     leaf(dmb, V(0, fl + 0.008, 0), lw, H - 0.008 - topGap, doorT * 0.9);
@@ -2150,11 +2163,13 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
       openAngle: 0,
       slideDir,
       slideDist,
-      staticOpen,
+      staticOpen: 0,
+      cutOpen,
       mb: dmb,
       width: lw,
     });
-    const cs = face.clone().addScaledVector(slideDir, slideDist * staticOpen).setY(fl);
+    // 開けたときに板が来る位置（家具・カメラが避ける範囲）
+    const cs = face.clone().addScaledVector(slideDir, slideDist * cutOpen).setY(fl);
     meta.doorLeaves.push({ a: cs.clone().addScaledVector(dir, -lw / 2), b: cs.clone().addScaledVector(dir, lw / 2) });
     if (!spec.doors.fullHeight) mb.box(trim, face.clone().setY(head + cw), dir, width * 2, 0.04, 0.03);
   }
@@ -2250,7 +2265,9 @@ function solidWallRuns(f: Floor, p: Vec2, q: Vec2): [number, number][] {
 const MAIN_CEILING_ROOMS = new Set<Room['type']>(['ldk', 'living', 'dining', 'kitchen']);
 
 /** 天井のダウンライト・間接照明 */
-function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec) {
+function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec, ceilVoids: { minX: number; minY: number; maxX: number; maxY: number }[] = []) {
+  // 上が吹抜・階段で天井の無い所（mm）。そこには器具を付けない（以前は LDK の吹抜の空中に、1 階の天井の高さでダウンライトが浮いていた）
+  const openAbove = (xMm: number, yMm: number, margin = 100) => ceilVoids.some((v) => xMm > v.minX - margin && xMm < v.maxX + margin && yMm > v.minY - margin && yMm < v.maxY + margin);
   for (const r of f.rooms) {
     const ceil = fl + roomCeilingMm(f, r) * MM;
     if (['closet', 'storage', 'void', 'balcony', 'porch', 'stairs', 'garage'].includes(r.type) || outdoorRoom(r)) continue;
@@ -2265,6 +2282,7 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
       // 小さな部屋・水まわりは 1 灯
       const lamp = (x: number, z: number, rr: number) => {
         if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) return;
+        if (openAbove(x / MM, z / MM)) return;
         mb.cylinder('f.downlightRing', V(x, ceil - 0.004, z), rr + 0.008, 0.003, 20);
         mb.cylinder('f.downlight', V(x, ceil - 0.006, z), rr, 0.003, 20);
       };
@@ -2290,7 +2308,7 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
             }
           }
       }
-    } else if (!['bath', 'toilet'].includes(r.type)) {
+    } else if (!['bath', 'toilet'].includes(r.type) && !openAbove((x0 + x1) / 2 / MM, (z0 + z1) / 2 / MM)) {
       mb.cylinder('f.lampShade', V((x0 + x1) / 2, ceil - 0.08, (z0 + z1) / 2), 0.28, 0.08, 28);
     }
     // 間接照明: LDK・リビング・寝室の長い壁の天井際（窓のない壁）
@@ -2314,6 +2332,16 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
           return Math.hypot(p.x + dx * t - c.x, p.y + dy * t - c.y) < 300;
         });
         if (hasWin) continue;
+        // 吹抜の下の壁（天井が無い）には付けない: 壁の内側 25cm の所が吹抜なら除く
+        {
+          const mx = (p.x + q.x) / 2;
+          const my = (p.y + q.y) / 2;
+          const l = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+          const nx = (-(q.y - p.y) / l) * 250;
+          const ny = ((q.x - p.x) / l) * 250;
+          const inside = pointInPolygon({ x: mx + nx, y: my + ny }, r.polygon) ? { x: mx + nx, y: my + ny } : { x: mx - nx, y: my - ny };
+          if (openAbove(inside.x, inside.y, 0)) continue;
+        }
         if (!best || len > best.len) best = { a: V(p.x * MM, 0, p.y * MM), b: V(q.x * MM, 0, q.y * MM), len, p, q };
       }
       if (best) {

@@ -358,8 +358,15 @@ export function buildFurniture(
         continue;
       }
       // 図面の記号から読んだ家具は、図面どおりの位置・向きに先に置く
+      // 図面の植物の記号は、ほかの家具を置き終えてから置く（天板・収納の上にある記号は、その上の枝ものにするため）
+      const planPlants: FurnitureItem[] = [];
       for (const it of f.planItems ?? []) {
         if (it.roomId !== room.id) continue;
+        if (it.kind === 'plant') {
+          planPlants.push(it);
+          ctx.has.add(it.kind);
+          continue;
+        }
         emitItem({ ...it }, roomEnv);
         ctx.has.add(it.kind);
         if (it.kind === 'kitchen') ctx.planKitchen = it;
@@ -414,6 +421,7 @@ export function buildFurniture(
         default:
           break;
       }
+      for (const it of planPlants) emitItem({ ...it }, roomEnv);
     }
     if (override) {
       for (const it of override.items) {
@@ -636,9 +644,16 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
     case 'rug':
       rug(fr, 0, 0, it.w ?? 2.2, it.d ?? 1.6);
       break;
-    case 'plant':
-      plant(fr, 0, 0, it.w ?? 1);
+    case 'plant': {
+      // 図面の植物の記号が天板・低い収納の上にあるとき（キッチンの背面カウンターや食卓の枝もの）は、その上に花器の枝ものを置く。
+      // 背の高い収納に重なる記号は読み違いなので置かない（以前は床から木を立てていて、キッチンの壁に葉が茂って見えていた）
+      const p = fr.point(0, 0, 0);
+      const under = (currentOcc ?? []).filter((o) => o.maxY > 0.3 && p.x > o.minX && p.x < o.maxX && p.z > o.minZ && p.z < o.maxZ);
+      if (under.some((o) => o.maxY > 1.15)) break;
+      if (under.length) branchVase(fr, Math.max(...under.map((o) => o.maxY)));
+      else plant(fr, 0, 0, it.w ?? 1);
       break;
+    }
     case 'chair': {
       const p = fr.point(0, 0, 0);
       currentModels.push({ id: 'modern_arm_chair_01', pos: p, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.82 });
@@ -902,13 +917,8 @@ function sofa(fr: Frame, u: number, v: number, w: number, chaise?: { side: 'left
     fr.box('f.fabric', cu + sg * (cw / 2 - 0.09), v + d, 0.18, cd - 0.05, 0.32, 0.22);
     fr.box('f.fabric2', cu - sg * 0.1, v + d + 0.3, 0.4, 0.14, 0.42, 0.3);
   }
-  // ソファ脇のサイドテーブル（オークの箱型・実物モデル）と、その上の器。L 型のカウチ側には置かない
-  const tableSide = chaise?.side === 'right' ? -1 : 1;
-  const sp = fr.point(u + tableSide * (w / 2 + 0.32), v + 0.35, 0);
-  currentModels.push({ id: 'side_table_01', pos: sp, rotY: Math.atan2(fr.inward.x, fr.inward.z), height: 0.5 });
-  currentModels.push({ id: 'ceramic_vase_01', pos: sp.clone().setY(sp.y + 0.5), rotY: 0.7, height: 0.2 });
-  if (currentPlan) currentPlan.push({ key: 'f.wood', shape: 'box', cx: sp.x, cz: sp.z, w: 0.45, d: 0.45, ax: fr.along.x, az: fr.along.z, r: 0, top: 0.5, roomId: currentRoomId });
-  if (currentOcc) currentOcc.push({ minX: sp.x - 0.25, maxX: sp.x + 0.25, minZ: sp.z - 0.25, maxZ: sp.z + 0.25, maxY: sp.y + 0.5, baseY: sp.y });
+  // ソファの脇には何も置かない（御社の提案パースは、低いソファとローテーブルだけ。以前はサイドテーブルと花器を添えていて、
+  // 手前のソファの横に茶色い台が大きく写っていた）
 }
 
 function coffeeTable(fr: Frame, u: number, v: number) {
@@ -954,30 +964,76 @@ function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
   fr.box('f.cabinet', u, v, w, 0.38, 0.28, 0.3);
   underGlow(fr, u, v, w, 0.38, 0.28);
   fr.box('f.screen', u, v + 0.0, 1.3, 0.035, 0.95, 0.75);
-  // ボードの上: 本を 3 冊重ねた束と小さな器（テレビの脇）
-  fr.box('f.fabric2', u + w / 2 - 0.22, v + 0.2, 0.24, 0.18, 0.58, 0.022);
-  fr.box('f.white', u + w / 2 - 0.2, v + 0.21, 0.2, 0.15, 0.602, 0.02);
-  fr.box('f.fabric', u + w / 2 - 0.24, v + 0.19, 0.22, 0.16, 0.622, 0.018);
-  fr.cyl('f.white', u - w / 2 + 0.2, v + 0.2, 0.06, 0.58, 0.09, 18);
-  plant(fr, u + w / 2 + 0.35, v + 0.3, 1.0);
+  // ボードの上と脇には何も置かない（御社の提案パースのテレビは壁掛けだけで、まわりは壁を見せる）
 }
 
+/**
+ * 鉢植えの細い木（オリーブ・シマトネリコのように、幹が細く葉がまばらな木）を、丸いつや消しの鉢に。
+ * 御社の提案パースの室内の緑は、丸い白い鉢の細い木か、花器の枝もの。以前は小さな多肉植物の実物モデルを 1m に拡大していて、
+ * 巨大なアロエのように見えていた。scale 1 で高さ 約 1.7m
+ */
 export function plant(fr: Frame, u: number, v: number, scale = 1) {
-  // 実物の観葉植物モデル（読み込めない環境では下の簡易形状）
   const p = fr.point(u, v, 0);
-  const alt = (Math.sin(p.x * 7.3 + p.z * 3.1) + 1) * 0.5 > 0.55;
-  currentModels.push({ id: alt ? 'potted_plant_04' : 'potted_plant_02', pos: p, rotY: Math.sin(u * 12.9898 + v * 4.1) * Math.PI, height: (alt ? 0.95 : 1.15) * scale });
   if (currentPlan) currentPlan.push({ key: 'f.pot', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.3 * scale, top: 1, roomId: currentRoomId });
-  if (modelsAvailable) return;
-  fr.cyl('f.pot', u, v, 0.17 * scale, 0, 0.35 * scale, 14);
-  fr.box('f.soil', u, v - 0.13 * scale, 0.26 * scale, 0.26 * scale, 0.33 * scale, 0.02);
-  const rnd = (i: number) => Math.sin(i * 12.9898 + u * 78.233) * 0.5 + 0.5;
-  for (let i = 0; i < 9; i++) {
-    const a = (i / 9) * Math.PI * 2;
-    const r = 0.14 * scale * (0.6 + rnd(i));
-    fr.sphere('f.leaf', u + Math.cos(a) * r, v + Math.sin(a) * r, (0.6 + rnd(i + 3) * 0.7) * scale, 0.16 * scale, 0.8);
+  const P = (y: number) => p.clone().setY(p.y + y * scale);
+  // 鉢: 下すぼまりの丸い形（底 φ26 → 胴 φ40 → 口 φ32）
+  fr.mb.tube('f.pot', P(0), P(0.16), 0.13 * scale, 0.2 * scale, 20);
+  fr.mb.tube('f.pot', P(0.16), P(0.38), 0.2 * scale, 0.16 * scale, 20);
+  fr.mb.cylinder('f.soil', P(0.35), 0.15 * scale, 0.012 * scale, 20);
+  // 置き場所ごとに同じ形になる乱数
+  let seed = Math.floor((Math.sin(p.x * 12.9898 + p.z * 78.233) * 0.5 + 0.5) * 233279) + 1;
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  const up = new THREE.Vector3(0, 1, 0);
+  const turn = (d: THREE.Vector3, minA: number, maxA: number) => {
+    const ax = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.95 ? up : new THREE.Vector3(1, 0, 0)).normalize();
+    ax.applyAxisAngle(d, rnd() * Math.PI * 2);
+    return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, 0.22).normalize();
+  };
+  const leafSize = 0.24 * scale;
+  const leaves = (a: THREE.Vector3, b: THREE.Vector3, n: number) => {
+    for (let i = 0; i < n; i++) {
+      const q = a.clone().lerp(b, 0.3 + 0.7 * rnd()).add(new THREE.Vector3((rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.06, (rnd() - 0.5) * 0.08).multiplyScalar(scale));
+      fr.mb.card('l.leafSpray', q, leafSize * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.4, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.4));
+    }
+  };
+  const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
+    const b = a.clone().addScaledVector(dir, len);
+    fr.mb.tube('l.trunk', a, b, r, r * 0.72, 6);
+    if (level >= 3) {
+      leaves(a, b, 3);
+      return;
+    }
+    // 下の方は枝を出さず、幹を見せる（軽やかな樹形）
+    if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, 0.45 + 0.5 * rnd()), turn(dir, 0.4, 0.85), len * (0.5 + rnd() * 0.15), r * 0.55, level + 1);
+    grow(b, turn(dir, 0.05, 0.3), len * (0.62 + rnd() * 0.1), r * 0.72, level + 1);
+    if (level >= 2) leaves(a, b, 2);
+  };
+  // 幹は 2 本（株立ち）。少し外へ傾ける
+  for (let i = 0; i < 2; i++) {
+    const az = i * Math.PI + rnd() * 1.2;
+    const lean = 0.08 + rnd() * 0.1;
+    const d0 = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
+    grow(P(0.34).add(new THREE.Vector3(Math.cos(az) * 0.03, 0, Math.sin(az) * 0.03).multiplyScalar(scale)), d0, (0.52 + rnd() * 0.08) * scale, 0.011 * scale, 0);
   }
-  fr.sphere('f.leaf', u, v, 1.25 * scale, 0.2 * scale, 0.9);
+}
+
+/** 花器の枝もの（天板・収納の上に置く。高さ 約 60cm）。y0 = 置く面の高さ */
+function branchVase(fr: Frame, y0: number) {
+  const base = fr.point(0, 0, y0);
+  fr.mb.tube('f.white', base, base.clone().setY(base.y + 0.2), 0.05, 0.035, 16);
+  let seed = Math.floor((Math.sin(base.x * 12.9898 + base.z * 78.233) * 0.5 + 0.5) * 233279) + 1;
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 5; i++) {
+    const az = (i / 5) * Math.PI * 2 + rnd() * 0.9;
+    const lean = 0.18 + rnd() * 0.22;
+    const d = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
+    const a = base.clone().setY(base.y + 0.14);
+    const b = a.clone().addScaledVector(d, 0.3 + rnd() * 0.18);
+    fr.mb.tube('l.trunk', a, b, 0.004, 0.003, 5);
+    const c = b.clone().addScaledVector(d.clone().lerp(new THREE.Vector3(Math.cos(az + 0.8), 0.6, Math.sin(az + 0.8)), 0.4).normalize(), 0.12 + rnd() * 0.08);
+    fr.mb.tube('l.trunk', b, c, 0.003, 0.002, 5);
+    fr.mb.card('l.leafSpray', c, 0.11 + rnd() * 0.05, new THREE.Euler((rnd() - 0.5) * 1.2, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.2));
+  }
 }
 
 function rug(fr: Frame, u: number, v: number, w: number, d: number) {
@@ -1027,6 +1083,12 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
       for (const lu of [-0.17, 0.17]) fr.cyl('f.wood', cu + lu, cv + side * 0.17, 0.012, 0.395, 0.32, 10);
       fr.box('f.wood', cu, cv + side * 0.17 - 0.012, 0.4, 0.024, 0.6, 0.12);
     }
+  // ペンダントを描かない（御社の最初の提案パース: 林様・吉田様の内観は、食卓の上に器具を下げていない。以前は黒いドームが
+  // 画面の真ん中に下がって、キッチンから見た景色を隠していた）。夜の明かりは天井のダウンライトで
+  if (vocab.pendant === 'none') {
+    lights.push({ pos: fr.point(u, v, ceilingY - 0.02), kind: 'ceiling', roomId });
+    return;
+  }
   // ペンダント: 御社の事例は PH 5 風（白）か黒いドームを 1 灯（長いテーブルは 2 灯）。従来は乳白ガラスの球（実物モデル）を 2〜3 灯
   if (vocab.pendant !== 'globes') {
     const us = tw >= 2.3 && !round ? [-tw / 4, tw / 4] : [0];
@@ -1062,8 +1124,8 @@ export function setKitchenFinish(f: { dark: boolean }) {
 }
 
 /** 家具・照明の語彙（テイストごと）。組み立て前に設定する */
-let vocab: { pendant: 'ph5' | 'dome' | 'globes'; chair: 'y' | 'light'; table: 'round' | 'plank' } = { pendant: 'globes', chair: 'light', table: 'plank' };
-export function setFurnitureVocab(style: { id: string; vocab?: { pendant?: 'ph5' | 'dome' | 'globes'; chair?: 'y' | 'light'; table?: 'round' | 'plank' } }) {
+let vocab: { pendant: 'ph5' | 'dome' | 'globes' | 'none'; chair: 'y' | 'light'; table: 'round' | 'plank' } = { pendant: 'globes', chair: 'light', table: 'plank' };
+export function setFurnitureVocab(style: { id: string; vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank' } }) {
   const hl = style.id.startsWith('hl-');
   vocab = {
     pendant: style.vocab?.pendant ?? (hl ? 'ph5' : 'globes'),
@@ -1321,13 +1383,11 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     fr.box(hoodKey, u, v - 0.25, 0.9, 0.5, 1.66, 0.22);
     fr.box(hoodKey, u, v - 0.11, 0.22, 0.22, 1.88, Math.max(0.05, ceilingY - 1.88));
   };
-  /** 小物: 黒いトレーと器、細い一輪挿し */
+  /** 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた） */
   const props = (u: number, v: number) => {
     fr.box('f.handle', u - 0.1 * stoveSign, v, 0.4, 0.26, H, 0.015);
     fr.cyl('f.white', u - 0.14 * stoveSign, v, 0.065, H + 0.015, 0.08);
     fr.cyl('f.white', u + 0.02 * stoveSign, v + 0.02, 0.04, H + 0.015, 0.12);
-    fr.cyl('f.white', u + 0.45 * stoveSign, v, 0.03, H, 0.24);
-    fr.sphere('f.leaf', u + 0.45 * stoveSign, v, H + 0.34, 0.05, 1.5);
   };
   /** 冷蔵庫（扉面が平らな W680 D700 H1820） */
   const fridgeBox = (u: number) => {
@@ -1551,15 +1611,9 @@ function layoutLDK(ctx: RoomCtx, model: BuildingModel, f: Floor) {
     // ソファは TV を向く（反対向きのフレーム）
     const back = new Frame(ctx.mb, ef.point(tvU, sofaV + 0.9, 0), ef.along.clone().negate(), ef.inward.clone().negate());
     place('sofa', back, 0, 0, ctx.env, { w: 2.1 });
-    place('plant', ef, -elen / 2 + 0.35, 0.35, ctx.env, { w: 1.1 });
-    // ラウンジチェア（ソファの横で TV・ソファの方を向く）
-    const chairU = tvU + 1.75;
-    if (Math.abs(chairU) < elen / 2 - 0.5 && isFree(ctx, endSide, chairU - 0.45, chairU + 0.45)) {
-      const cp = ef.point(chairU, Math.max(1.4, sofaV - 0.6), 0);
-      const toward = ef.point(tvU, sofaV * 0.5, 0).sub(cp).setY(0).normalize();
-      // チェアの向き（inward）を TV・ソファの方へ
-      place('chair', new Frame(ctx.mb, cp, V(toward.z, 0, -toward.x), toward), 0, 0, ctx.env);
-    }
+    place('plant', ef, -elen / 2 + 0.35, 0.35, ctx.env, { w: 1.0 });
+    // ラウンジチェアは自動では置かない（御社の提案パースのリビングは、低いソファとローテーブルだけ。黒い革のチェアが
+    // 手前に大きく写っていた）。「家具」の道具からは置ける
     ctx.lights.push({ pos: ef.point(tvU, livDepth / 2, ceilingY - 0.02), kind: 'ceiling', roomId: ctx.room.id });
     return;
   }
@@ -1834,6 +1888,6 @@ function layoutEntrance(ctx: RoomCtx) {
   const u = findSpot(ctx, s, 1.2, len, 0);
   if (u == null) return;
   place('shoeCabinet', f, u, 0, ctx.env);
-  place('plant', f, u + 0.3, 0.2, ctx.env, { w: 0.35 });
-  place('plant', f, u + 0.9, 0.25, ctx.env, { w: 0.7 });
+  // 下足入れの脇に、丸い鉢の細い木を 1 本（御社の提案パースの玄関ホール）
+  place('plant', f, u + 0.95, 0.3, ctx.env, { w: 0.9 });
 }

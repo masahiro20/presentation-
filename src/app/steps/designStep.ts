@@ -276,6 +276,16 @@ export const designStep: Step = {
               spec.curtains,
               (val) => update({ specPatch: { ...state.design.specPatch, curtains: val as 'pocket' | 'rail' | 'none' } }),
             ),
+            ...(spec.curtains !== 'none'
+              ? [
+                  h(
+                    'label',
+                    { class: 'check', title: '御社の提案パースは、カーテンの布を描かずに、ガラス越しの中庭と空を見せています' },
+                    h('input', { type: 'checkbox', checked: spec.drapes, onchange: (e: Event) => update({ specPatch: { ...state.design.specPatch, drapes: (e.target as HTMLInputElement).checked } }) }),
+                    'カーテンの布も描く（提案パースでは描かないのが標準）',
+                  ),
+                ]
+              : []),
             ...(v.state!.model.floors.some((f) => f.rooms.some((r) => r.type === 'void'))
               ? [
                   h('div', { class: 'field-label', style: 'margin-top:8px' }, '吹抜の 2 階側（落下防止）'),

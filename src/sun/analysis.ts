@@ -211,6 +211,12 @@ export function externalReplacesBuilding(viewer: Viewer): boolean {
   return externalHasVisibleMesh(viewer);
 }
 
+/** 歩いて通れる戸（開き戸・引戸）の板か。viewer が戸のグループに userData.walkThrough を付けている（シャッターは付けない） */
+function isWalkThroughDoor(m: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = m.parent; p; p = p.parent) if (p.userData.walkThrough) return true;
+  return false;
+}
+
 /**
  * 既存アプリ: 影を落とす物体を 1 つの BVH にまとめる。
  * 外部の建物（3DS）が置き換え中なら、建物の種別 'building' は groups.external だけ（PDF の建物・屋根は焼き込まない）。
@@ -218,7 +224,7 @@ export function externalReplacesBuilding(viewer: Viewer): boolean {
  * false なら 3DS を使わない、省略時は externalReplacesBuilding（日照ステップ表示中の置き換え）に従う。
  * opts.opaqueGlass: 窓ガラスも影を落とす（日影図）。省略時はガラスは光を通す（部屋の日当たり・実時間の影）
  */
-export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean; external?: boolean; opaqueGlass?: boolean } = {}): Occluder {
+export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?: boolean; buildingOnly?: boolean; furniture?: boolean; external?: boolean; opaqueGlass?: boolean; doors?: boolean } = {}): Occluder {
   const useExternal = opts.external === true ? externalHasVisibleMesh(viewer) : opts.external === false ? false : externalReplacesBuilding(viewer);
   const parts: OccluderPart[] = useExternal
     ? [{ root: viewer.groups.external, kind: 'building' }]
@@ -227,6 +233,8 @@ export function buildOccluder(viewer: Viewer, opts: { context?: boolean; trees?:
         { root: viewer.groups.roof, kind: 'building' },
       ];
   const filters = new Map<THREE.Object3D, (m: THREE.Mesh) => boolean>();
+  // opts.doors === false: 開き戸・引戸の板を除く（歩行の当たり判定。戸は閉じて描くので、板を入れると戸口を通れなくなる）
+  if (opts.doors === false && !useExternal) filters.set(viewer.groups.building, (m) => !isWalkThroughDoor(m));
   if (opts.furniture) parts.push({ root: viewer.groups.furniture, kind: 'furniture' });
   if (!opts.buildingOnly) {
     if (opts.context !== false) {

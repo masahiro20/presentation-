@@ -17,6 +17,28 @@
 6. **小さな仕上げ**: 腰壁の壁面積を見積に反映／1 階の階段下の物入の上を階段が通ることを天井に反映（市岡様邸 1 階のシューズクロークも同じ）／木製スケルトン階段の見積の行（今は鉄骨階段の行で仮置き）。
 7. **こだわりの参考資料の続き**（使ってみてのご意見を待つ）: キッチン・外観の指定を 3D の形にも反映（今は説明文と参考画像だけ）／階段ごとに違うつくり（今は家に 1 つ）／造作を参考画像の寸法・割りで作る（今は 8 つの形から選んで置く）／AI への実送信（画像の読み取り・参考画像付きの AI 仕上げ）は鍵が無く未確認。
 
+## 2026-11-13 スキルの追加（X の記事「Claude Skills 67 選」から）
+
+### いただいたお話
+
+X の記事（Claude Code に入れると良いスキルの紹介）のスキルを追加しておいてほしい。
+
+### やったこと
+
+- 記事が紹介している配布元を取り込み、スキルの中身を 1 つずつ読んでから、このリポジトリで役に立つもの **13 個** を `.claude/skills/` に置いた（配布元のファイルのまま。書き換えていない）。
+  一覧・呼び方・出どころ・ライセンス・入れなかった理由は `.claude/skills/README.md`。
+  - 自分で呼ぶもの: `/grill-me`（質問攻めで詰める）・`/grill-with-docs`（同じ＋用語集と決定の記録を残す）・`/to-spec`（会話を仕様書に）・`/to-tickets`（小さな作業に分ける）・`/improve-codebase-architecture`（コードの作りの見直し）
+  - 場面に合わせて自動で使われるもの: `tdd`・`diagnosing-bugs`・`systematic-debugging`・`codebase-design`・`domain-modeling`・`writing-for-agents`・`frontend-design`・`grilling`
+- 記事（2026-04）のあとで配布元が作り直されていて、名前が変わったものは現行の後継を入れた（Write a PRD → `to-spec`、PRD to Plan／PRD to Issues → `to-tickets`、Design an Interface → `codebase-design`、Ubiquitous Language → `domain-modeling`、Write a Skill → `writing-for-agents`）。
+- このリポジトリ向けの設定: `CLAUDE.md` の「Agent skills」（日本語でやり取り・この CLAUDE.md の約束が優先・御社のテイストが基準）、`docs/agents/issue-tracker.md`（仕様書とチケットは GitHub の Issue ではなく `docs/specs/<機能>/` に置く）、`docs/agents/domain.md`（用語集 `GLOSSARY.md` と決定の記録 `docs/adr/` は、必要になったときに作る）。
+
+### 方針（入れなかったもの）
+
+- **約束とぶつかるもの**は入れない: Git Guardrails（`git push` を止める ＝「コミットしたら必ずプッシュ」とぶつかる）、Setup Pre-Commit（コミットのたびに点検を走らせる仕掛け）、Superpowers 一式（毎回の会話の最初に指示を差し込み、進め方全体を変える。中の Systematic Debugging だけ入れた）。
+- **もとから使えるもの**は置かない: Skill Creator、Code Review（`/code-review`）、PDF・DOCX・PPTX・XLSX。
+- **このツールの開発に関係しないもの**は入れない: 決済・集客・SEO・ドメイン名・Obsidian・多数のエージェントに解かせる道具・外部の読み取りサービス。必要になったら足す。
+- 入れたのはこのリポジトリの中（このプロジェクトの会話で使える）。ほかのプロジェクトや claude.ai 全体で使うには、ご自身のアカウント側で入れる必要がある。
+
 ## 2026-11-13 3D の質の底上げ（参考: X の投稿の内観ウォークスルー 2 本）
 
 ### いただいたお話

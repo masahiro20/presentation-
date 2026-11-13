@@ -20,3 +20,20 @@
 - `npx tsc --noEmit`・`npx vitest run --exclude 'tests/tmp/**'`・`npm run build` が通ること。
 - 節目ごとに `PROGRESS.md` を更新し、コミットしたら必ずプッシュ（本番は Vercel が自動で更新）。
 - コミットメッセージにモデル名を書かない。
+
+## Agent skills
+
+外から取り込んだスキルが `.claude/skills/` にある（一覧・呼び方・出どころは `.claude/skills/README.md`）。使うときの、このリポジトリでの決まり:
+
+- スキルの文面は英語だが、やり取りと成果物は日本語。進め方・コミットとプッシュ・提出前の自己点検は、この CLAUDE.md が優先。
+- スキルが「一時フォルダに書いて開く」と言う成果物（設計の見直しレポートなど）は、作業用の場所に書いて、見える形で渡す。
+- スキルの中の `superpowers:test-driven-development` は `tdd`、`superpowers:verification-before-completion` は上の「提出前の自己点検」と読み替える。
+- 見た目を作るとき（`frontend-design`）も、御社のテイスト（`docs/HOMELANDICK_STYLE.md`）と今の画面・資料の作りが基準。
+
+### Issue tracker
+
+仕様書・チケットは GitHub の Issue ではなく、リポジトリの中の Markdown（`docs/specs/<機能>/`）に置く。See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+single-context（用語集 `GLOSSARY.md`、決定の記録 `docs/adr/`。どちらも必要になったときに作る）。See `docs/agents/domain.md`.

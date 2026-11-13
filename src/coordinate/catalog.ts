@@ -221,9 +221,11 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     label: '天井',
     part: '内部',
     products: [
-      { id: 'ceil.cloth', maker: 'サンゲツ', name: 'ビニールクロス（壁と同じ）', code: 'SP シリーズ', color: 'ホワイト', swatch: ['#f1efeb'], apply: (s) => { s.int.ceiling = { pattern: 'plaster', color: '#f1efeb', color2: '#ebe9e4', roughness: 0.96, normalStrength: 0.12 }; } },
-      { id: 'ceil.sugi', maker: 'チャネルオリジナル', name: '杉羽目板（天井）', code: '木板 杉板', color: '自然塗装', swatch: ['#b08d66'], apply: (s) => { s.int.ceiling = sugi(); }, note: 'LDK・吹抜の天井に。勾配天井と相性がよい' },
-      { id: 'ceil.dark', maker: 'サンゲツ', name: 'ビニールクロス', code: '※品番は品番メモに', color: 'チャコール', swatch: ['#4d4c49'], apply: (s) => { s.int.ceiling = { pattern: 'plaster', color: '#4d4c49', color2: '#484744', roughness: 0.95, normalStrength: 0.12 }; }, note: '天井を暗くすると落ち着いた「こもり感」が出ます（天井高 2,400 以上で）' },
+      // 御社の施工事例は、天井を壁と同じ色・同じ仕上げでつなげる家がほとんど（11 件のうち、天井に木が出るのは 3 件。LDK の天井全体が板張りなのは 1 件。docs/HOMELANDICK_STYLE.md）。家じゅうの板張りはしない
+      { id: 'ceil.cloth', maker: 'サンゲツ', name: 'ビニールクロス（壁と同じ色）', code: 'SP シリーズ（壁と同じ品番）', color: '壁と同じ', swatch: ['#dcdad5'], apply: (s) => { s.int.ceiling = { ...s.int.wall, roughness: 0.96, normalStrength: Math.min(0.12, s.int.wall.normalStrength ?? 0.12) }; s.int.ceilingMain = undefined; }, note: '壁と天井を同じ色でつなげます（御社の施工事例で最も多い納まり）' },
+      { id: 'ceil.white', maker: 'サンゲツ', name: 'ビニールクロス', code: 'SP シリーズ', color: 'ホワイト', swatch: ['#f1efeb'], apply: (s) => { s.int.ceiling = { pattern: 'plaster', color: '#f1efeb', color2: '#ebe9e4', roughness: 0.96, normalStrength: 0.12 }; s.int.ceilingMain = undefined; }, note: '壁に色があっても、天井は白く明るく' },
+      { id: 'ceil.dark', maker: 'サンゲツ', name: 'ビニールクロス', code: '※品番は品番メモに', color: 'チャコール', swatch: ['#4d4c49'], apply: (s) => { s.int.ceiling = { pattern: 'plaster', color: '#4d4c49', color2: '#484744', roughness: 0.95, normalStrength: 0.12 }; s.int.ceilingMain = undefined; }, note: '天井を暗くすると落ち着いた「こもり感」が出ます（天井高 2,400 以上で）' },
+      { id: 'ceil.sugi', maker: 'チャネルオリジナル', name: '杉羽目板（LDK の天井だけ）', code: '木板 杉板', color: '自然塗装', swatch: ['#b08d66'], apply: (s) => { s.int.ceilingMain = sugi(); }, note: 'LDK の天井だけに張ります（ほかの部屋・廊下は壁と同じ色のまま）。家じゅうの天井を板張りにはしません。勾配天井と相性がよい' },
     ],
   },
   {
@@ -259,8 +261,8 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
       { id: 'stair.wood', maker: '造作', name: '木製スケルトン階段', code: '側板 黒塗りつぶし塗装 ＋ 木踏板', color: 'ブラック・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: '見積は鉄骨階段の行で仮置き' },
       // 3D の階段の「つくり」（こだわりの参考資料・3D の階段のパネル）と同じ 4 通り。どこで選んでも 3D・説明文・仕様書が同じ品目になる（STAIR_PRODUCT_OF_BUILD）
       // （採用例 used は、御社の過去の仕様で確かめた物だけに書く。この 2 つは未確認なので書かない）
-      { id: 'stair.box', maker: '造作', name: '箱階段', code: '蹴込み板あり ＋ 木踏板', color: 'オーク', swatch: ['#c9a97c', '#ece9e2'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: '階段下を収納・トイレに使うときに。見積は鉄骨階段の行で仮置き（金額は別途確認）' },
-      { id: 'stair.cantilever', maker: '造作（鉄工）', name: '片持ち階段', code: '壁から持ち出し ＋ 木踏板', color: '黒皮鉄・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: 'リビング階段を軽く見せたいときに。見積は鉄骨階段の行で仮置き（金額は別途確認）。壁の中の下地・構造の検討が要ります' },
+      { id: 'stair.box', maker: '造作', name: '箱階段', code: '蹴込み板あり ＋ 木踏板', color: 'オーク', swatch: ['#c9a97c', '#ece9e2'], estimate: { group: 'stair', line: 'ib.stairBox' }, note: '階段下を収納・トイレに使うときに。見積は箱階段の行（お客様への金額で約 57 万円。目安 55〜60 万円）' },
+      { id: 'stair.cantilever', maker: '造作（鉄工）', name: '片持ち階段', code: '壁から持ち出し ＋ 木踏板', color: '黒皮鉄・オーク', swatch: ['#2a2a2a', '#c9a97c'], estimate: { group: 'stair', line: 'ib.stairSt' }, note: 'リビング階段を軽く見せたいときに。見積は鉄骨階段と同額。壁の中の下地・構造の検討が要ります' },
     ],
   },
   {

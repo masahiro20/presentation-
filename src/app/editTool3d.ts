@@ -20,9 +20,9 @@ import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
 import { massName, massSourceTag, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
-import type { Stair, StairBuild, StairRail } from '../core/types';
+import type { Stair, StairBuild, StairFrame, StairLook, StairRail, StairStringer, StairTread } from '../core/types';
 import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL } from '../core/stairs';
-import { STAIR_BUILD_LABEL, STAIR_BUILDS, STAIR_RAIL_LABEL, STAIR_RAILS, stairLevels, stairNoteFor, stairNoteIndexToEdit } from '../core/focus';
+import { STAIR_BUILD_LABEL, STAIR_BUILDS, STAIR_FRAME_LABEL, STAIR_FRAMES, STAIR_RAIL_LABEL, STAIR_RAILS, STAIR_STRINGER_LABEL, STAIR_STRINGERS, STAIR_TREAD_LABEL, STAIR_TREADS, stairLevels, stairNoteFor, stairNoteIndexToEdit } from '../core/focus';
 import { focusNotes, openFocusDialog, setStairBuild, setStairLookAt, stairBuildNow } from './focusNotes';
 import { keepInsideFloor, linkedStairs, movedCorner, placeStair, rotateStair, stairAtPoint, wallsThroughStair, type StairGrid, type StairRef } from '../core/stairEdit';
 
@@ -146,9 +146,10 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       const y0 = f.elevation / 1000;
       const y1 = (fs[i + 1]?.elevation ?? f.elevation + f.height) / 1000;
       if (pt.y < y0 - 0.15 || pt.y > y1 + 0.15) continue;
-      // 3D に立ち上がっているのは上の階へ昇る階段だけ。段は外形 ± 60 mm、鉄骨・手すりは外形の 15 mm 内側だけ
-      // （窓の枠（ext.frame）・吹抜の手すり（f.metal）が階段の脇の壁にあっても、階段を選ばないように）
-      const st = stairAtPoint({ stairs: f.stairs.filter((s) => s.goesUp) }, p, matKey === 'int.stairs' ? 60 : -15);
+      // 3D に立ち上がっているのは上の階へ昇る階段だけ。段は外形 ± 60 mm。
+      // 鉄骨（ささら桁は踏板の小口の位置 = 外形の縁）・手すりは、上の階の床より下なら外形 + 10 mm まで、
+      // 上の階の床の高さでは外形の 15 mm 内側だけ（上の階の吹抜の手すり（f.metal）が階段の縁にあっても、階段を選ばないように）
+      const st = stairAtPoint({ stairs: f.stairs.filter((s) => s.goesUp) }, p, matKey.startsWith('int.stairs') ? 60 : pt.y < y1 - 0.05 ? 10 : -15);
       if (st) return { f, st };
     }
     return null;
@@ -263,7 +264,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
     afterStairEdit(s, msg);
   };
   /** 階段のつくり・手すり（こだわり指定）を変える: その階の階段の指定に入れて、3D を作り直す */
-  const changeLook = (level: number, patch: { rail?: StairRail }, msg: string) => {
+  const changeLook = (level: number, patch: Partial<StairLook>, msg: string) => {
     setStairLookAt(level, patch);
     toast(msg, 'ok', 3000);
     commit();
@@ -609,7 +610,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
   const WALL_KEYS = /^(ext\.(wall|accent|glass\w*|frame|door|shutter|sash\w*)|int\.(wall|accent|bathWall|wallTop|door\w*|frame\w*|glass\w*)|f\.metal)$/;
   const ROOF_KEYS = /^ext\.(roof|soffit|fascia|gutter)$/;
   /** 階段の部材（段・ささら桁・受け材・手すり）。手すり・鉄骨は階段の外形の中と高さの範囲で当たったものだけを階段とみなす */
-  const STAIR_KEYS = /^(int\.stairs|ext\.frame|f\.metal)$/;
+  const STAIR_KEYS = /^(int\.stairs(@\w+)?|f\.metal|f\.steelWhite|f\.paintBlack)$/;
 
   // ---- 屋根: 塊（上の階が載らない範囲のつながった所）を選んで、掛け方・向き・勾配・軒の出を塊ごとに変える ----
   const masses = (): RoofMass[] => {
@@ -1260,8 +1261,8 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
             h('div', { class: 'field-label', style: 'margin-top:8px' }, '吹抜の落下防止（上階の縁）'),
             h(
               'select',
-              { onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value as VoidGuard | ''; for (const { r } of voids) { if (v) r.voidGuard = v; else delete r.voidGuard; } toast(v ? `吹抜の縁を${VOID_GUARD_LABEL[v]}にしました` : 'テイストの既定に戻しました', 'ok'); commit(); } },
-              h('option', { value: '', selected: !g }, 'テイストの既定'),
+              { onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value as VoidGuard | ''; for (const { r } of voids) { if (v) r.voidGuard = v; else delete r.voidGuard; } toast(v ? `吹抜の縁を${VOID_GUARD_LABEL[v]}にしました` : '家全体の設定に戻しました', 'ok'); commit(); } },
+              h('option', { value: '', selected: !g }, '家全体の設定のまま（パースの「納まり」）'),
               ...VOID_GUARDS.map((k) => h('option', { value: k, selected: g === k }, VOID_GUARD_LABEL[k])),
             ),
           );
@@ -1347,12 +1348,34 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
           render();
         },
       ),
-      // こだわり指定（参考資料）: この階段の手すりを変える。参考画像・ひとこと・段数は「参考資料」の画面で
+      // こだわり指定（参考資料）: この階段の桁・手すり・踏板の色・鉄の色を変える。参考画像・ひとこと・段数は「参考資料」の画面で
+      ...(stairBuildNow() === 'steel'
+        ? [
+            h('div', { class: 'field-label', style: 'margin-top:8px', title: '御社の施工事例は、両側の黒い鋼板のささら桁で踏板を挟む形です' }, '鉄骨の桁'),
+            segButtons(
+              STAIR_STRINGERS.map((k) => ({ v: k, label: STAIR_STRINGER_LABEL[k] })),
+              st.look?.stringer ?? 'side',
+              (val) => changeLook(f.level, { stringer: val as StairStringer }, `${f.level}階の階段の桁を「${STAIR_STRINGER_LABEL[val as StairStringer]}」にしました`),
+            ),
+          ]
+        : []),
       h('div', { class: 'field-label', style: 'margin-top:8px' }, '手すり'),
       segButtons(
         STAIR_RAILS.map((k) => ({ v: k, label: STAIR_RAIL_LABEL[k].replace(/（.*）/, ''), title: STAIR_RAIL_LABEL[k] })),
         st.look?.rail ?? 'bar',
         (val) => changeLook(f.level, { rail: val as StairRail }, `${f.level}階の階段の手すりを「${STAIR_RAIL_LABEL[val as StairRail].replace(/（.*）/, '')}」にしました`),
+      ),
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '踏板の色'),
+      segButtons(
+        STAIR_TREADS.map((k) => ({ v: k, label: STAIR_TREAD_LABEL[k].replace(/（.*）/, ''), title: STAIR_TREAD_LABEL[k] })),
+        st.look?.tread ?? 'floor',
+        (val) => changeLook(f.level, { tread: val as StairTread }, `${f.level}階の階段の踏板を「${STAIR_TREAD_LABEL[val as StairTread]}」にしました`),
+      ),
+      h('div', { class: 'field-label', style: 'margin-top:8px' }, '鉄の色（桁・アイアンの手すり）'),
+      segButtons(
+        STAIR_FRAMES.map((k) => ({ v: k, label: STAIR_FRAME_LABEL[k] })),
+        st.look?.frame ?? 'black',
+        (val) => changeLook(f.level, { frame: val as StairFrame }, `${f.level}階の階段の鉄の色を「${STAIR_FRAME_LABEL[val as StairFrame]}」にしました`),
       ),
       (() => {
         const notes = focusNotes();
@@ -1667,6 +1690,22 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       const sr = stairAt3d(hit.point, hit.matKey);
       if (sr) {
         selectStair(sr);
+        return true;
+      }
+    }
+    // 吹抜の縁の手すり（鉄骨・ガラス）: その吹抜を選ぶ（落下防止を 鉄骨手すり・腰壁・ガラス手すり から選べる）
+    if (/^(f\.metal|ext\.glass)$/.test(hit.matKey) && hit.group !== 'furniture') {
+      const fv = floorAt(hit.point.y);
+      const pv = { x: hit.point.x * 1000, y: hit.point.z * 1000 };
+      const vr = fv && fv.level >= 2 ? fv.rooms.find((r) => r.type === 'void' && r.polygon.some((a, i) => distPointSegment(pv, a, r.polygon[(i + 1) % r.polygon.length]) < 260)) : undefined;
+      if (fv && vr) {
+        if (!active) setActive(true);
+        mode = 'ceiling';
+        selected.clear();
+        selected.add(vr.id);
+        paintOverlay();
+        render();
+        toast(`${fv.level}階の吹抜を選びました（落下防止: 鉄骨手すり・腰壁・ガラス手すり から選べます）`, 'ok', 3500);
         return true;
       }
     }

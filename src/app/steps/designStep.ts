@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { focusChips, focusNotes, onFocusChange, openFocusDialog } from '../focusNotes';
+import { focusChips, focusNotes, onDesignFromFocus, onFocusChange, openFocusDialog } from '../focusNotes';
 import { FINISH_CATEGORIES } from '../../coordinate/catalog';
 
 /** テイストを変えたとき、その部位のコーディネートの選択を既定に戻す */
@@ -12,7 +12,7 @@ import { h, clear, toast, progressModal, section, segmented, modal, download } f
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { EXTERIOR_STYLES, INTERIOR_STYLES, MAIN_EXTERIOR_IDS, MAIN_INTERIOR_IDS, exteriorById, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
-import { BUILDER_SPECS, resolveSpec } from '../../styles/spec';
+import { BUILDER_SPECS, resolveSpec, VOID_GUARD_SPECS, type VoidGuardSpec } from '../../styles/spec';
 import type { Shot } from '../../scene/shots';
 import { exportCuts } from '../cuts';
 import { listRefs, addRef, deleteRef, REF_KIND_LABEL, type RefKind } from '../styleRefs';
@@ -280,16 +280,11 @@ export const designStep: Step = {
               ? [
                   h('div', { class: 'field-label', style: 'margin-top:8px' }, '吹抜の 2 階側（落下防止）'),
                   segmented(
-                    [
-                      { value: 'rail', label: '鉄骨手すり' },
-                      { value: 'half', label: '腰壁' },
-                      { value: 'halfGlass', label: '腰壁＋ガラス' },
-                      { value: 'wall', label: '壁' },
-                    ],
+                    VOID_GUARD_SPECS.map((g) => ({ value: g.value, label: g.label })),
                     spec.voidGuard,
-                    (val) => update({ specPatch: { ...state.design.specPatch, voidGuard: val as 'rail' | 'half' | 'halfGlass' | 'wall' } }),
+                    (val) => update({ specPatch: { ...state.design.specPatch, voidGuard: val as VoidGuardSpec } }),
                   ),
-                  h('p', { class: 'hint', style: 'margin:4px 0 0' }, '黒皮鉄のフラットバー手すり（御社の標準）／腰壁 H1100／腰壁 H900 にガラス H300／天井までの壁。図面に線が無い縁にも付けます。'),
+                  h('p', { class: 'hint', style: 'margin:4px 0 0' }, '鉄骨手すり = 黒の細いフレームに横桟 1 本（御社の標準）／腰壁 H1100／ガラス手すり／腰壁 H900 にガラス H300／天井までの壁。図面に線が無い縁にも付けます。吹抜ごとに変えるときは、3D で吹抜の縁をクリック。'),
                 ]
               : []),
             h('div', { class: 'field-label', style: 'margin-top:8px' }, '室内ドアの色'),
@@ -660,6 +655,11 @@ export const designStep: Step = {
       for (const t of TABS) bar.appendChild(h('button', { class: 'side-tab', 'data-tab': t.id, onclick: () => show(t.id) }, t.label));
       side.append(bar, ...panes.values());
       show(designTab);
+      // こだわりの参考資料の画面・3D のパネルからデザイン（吹抜の手すり・照明・階段のつくり）を変えたら、このパネルの選択も描き直す
+      onDesignFromFocus(bar, () => {
+        shots = currentShots(ctx);
+        renderSide();
+      });
     };
     renderSide();
   },

@@ -216,6 +216,9 @@ export const CATEGORIES: CategoryDef[] = [
       { id: 'ib.skirting', spec: '巾木', desc: '【神谷コーポレーション】スリム巾木', unit: '坪', cost: 1100, round: -2, qty: (a) => a.totalTsubo, qtyNote: '延床坪', on: 'both' },
       { id: 'ib.highCeil', spec: '高天井', desc: '高天井変更費 ※H2500以上', unit: '㎥', cost: 40000, round: -2, qty: (a) => a.highCeil, optional: true, on: 'both' },
       { id: 'ib.stairSt', spec: '階段', desc: 'St鉄骨階段 St手摺 木踏板', unit: '式', cost: 850000, round: -2, qty: (a) => a.stairs, qtyNote: '階段数', group: 'stair', on: 'both' },
+      // 箱階段（蹴込みあり）: 御社の目安は、お客様への金額で 55〜60 万円（2026-11-12 のお話）。
+      // 売価が約 57 万円になるように、原価 40 万円（÷ 粗利係数 0.7 = 571,400 円）で置く。片持ち階段は鉄骨階段と同額（上の行）
+      { id: 'ib.stairBox', spec: '階段', desc: '箱階段（蹴込みあり）木踏板 手摺', unit: '式', cost: 400000, round: -2, qty: (a) => a.stairs, qtyNote: '階段数', group: 'stair', on: 'none' },
       { id: 'ib.handrail', spec: '手摺', desc: 'St手摺', unit: 'm', cost: 35000, round: -2, qty: (a) => a.handrailLen, optional: true, on: 'both' },
       { id: 'ib.shelves', spec: '棚工事一式', desc: '【WOODONE】室内棚工事一式 ※概算 仕様打合せにて詳細決定', unit: '式', cost: 300000, round: -2, on: 'both' },
       { id: 'ib.floorHatch', spec: '床下点検口', desc: '高断熱型床下点検口', unit: '式', cost: 32000, round: -2, on: 'both' },

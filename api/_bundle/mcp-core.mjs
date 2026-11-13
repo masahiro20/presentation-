@@ -23331,6 +23331,21 @@ var MeshBuilder = class {
 		this.addGeometry(key, geo, m);
 		geo.dispose();
 	}
+	/**
+	* 光の面（間接照明が壁・床を照らす光。素材 f.coveGlow を加算で重ねる）:
+	* 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）
+	*/
+	glowPlane(key, c, along, toLight, w, h) {
+		if (w < .05 || h < .02) return;
+		const x = along.clone().normalize();
+		const y = toLight.clone().normalize();
+		const z = new THREE.Vector3().crossVectors(x, y).normalize();
+		const geo = new THREE.PlaneGeometry(w, h);
+		const m = new THREE.Matrix4().makeBasis(x, y, z);
+		m.setPosition(c);
+		this.addGeometry(key, geo, m, true);
+		geo.dispose();
+	}
 	/** 葉のカード（アルファ付きテクスチャを貼る両面の板） */
 	card(key, c, size, rot) {
 		const geo = new THREE.PlaneGeometry(size, size);
@@ -23376,6 +23391,12 @@ var MeshBuilder = class {
 			m.userData.matKey = key;
 			m.castShadow = opts.castShadow ?? true;
 			m.receiveShadow = opts.receiveShadow ?? true;
+			if (key.startsWith("f.coveGlow")) {
+				m.castShadow = false;
+				m.receiveShadow = false;
+				m.raycast = () => {};
+				m.renderOrder = 2;
+			}
 			g.add(m);
 		}
 		return g;
@@ -23655,17 +23676,67 @@ function stairVoidsFor(model, f) {
 		for (const s of below.stairs) if (s.goesUp) out.push(...stairFootprint(s));
 	}
 	for (const s of f.stairs) if (!s.goesUp && below && !below.stairs.some((b) => Math.abs(b.minX - s.minX) < 300 && Math.abs(b.minY - s.minY) < 300)) out.push(...stairFootprint(s));
-	for (const r of f.rooms) if (r.type === "void") {
-		const xs = r.polygon.map((p) => p.x);
-		const ys = r.polygon.map((p) => p.y);
-		out.push({
-			minX: Math.min(...xs),
-			maxX: Math.max(...xs),
-			minY: Math.min(...ys),
-			maxY: Math.max(...ys)
-		});
-	}
+	for (const r of f.rooms) if (r.type === "void") out.push(...voidRects(r.polygon));
 	return out;
+}
+/**
+* 吹抜の形を、床・天井の穴に使う長方形の集まりにする。
+*  - 長方形・L 字など軸に平行な形: そのまま分ける（形どおり）
+*  - 斜めの辺・丸い角のある形: 横の帯に分ける。両脇が鉛直な範囲は 1 枚、斜め・曲線の範囲は 40mm ごとの帯で近似する
+*/
+function voidRects(poly) {
+	const xs = poly.map((p) => p.x);
+	const ys = poly.map((p) => p.y);
+	const bbox = {
+		minX: Math.min(...xs),
+		maxX: Math.max(...xs),
+		minY: Math.min(...ys),
+		maxY: Math.max(...ys)
+	};
+	if (poly.length < 3) return [];
+	if (isRectilinear(poly, 2)) {
+		const rects = polygonToRects([poly], 3);
+		return rects.length ? rects : [bbox];
+	}
+	const STEP = 40;
+	const cuts = /* @__PURE__ */ new Set([bbox.minY, bbox.maxY]);
+	for (let i = 0; i < poly.length; i++) {
+		const a = poly[i];
+		const b = poly[(i + 1) % poly.length];
+		cuts.add(a.y);
+		if (Math.abs(a.x - b.x) < 2 || Math.abs(a.y - b.y) < 2) continue;
+		const lo = Math.min(a.y, b.y);
+		const hi = Math.max(a.y, b.y);
+		for (let y = lo + STEP; y < hi - 1; y += STEP) cuts.add(Math.round(y));
+	}
+	const levels = [...cuts].sort((p, q) => p - q).filter((y, i, arr) => i === 0 || y - arr[i - 1] > 1);
+	const out = [];
+	for (let k = 0; k + 1 < levels.length; k++) {
+		const y0 = levels[k];
+		const y1 = levels[k + 1];
+		const ym = (y0 + y1) / 2;
+		const cross = [];
+		for (let i = 0; i < poly.length; i++) {
+			const a = poly[i];
+			const b = poly[(i + 1) % poly.length];
+			if (a.y > ym !== b.y > ym) cross.push(a.x + (b.x - a.x) * (ym - a.y) / (b.y - a.y));
+		}
+		cross.sort((p, q) => p - q);
+		for (let c = 0; c + 1 < cross.length; c += 2) {
+			const x0 = Math.round(cross[c]);
+			const x1 = Math.round(cross[c + 1]);
+			if (x1 - x0 < 20) continue;
+			const prev = out.find((r) => Math.abs(r.maxY - y0) < 1 && Math.abs(r.minX - x0) < 2 && Math.abs(r.maxX - x1) < 2);
+			if (prev) prev.maxY = y1;
+			else out.push({
+				minX: x0,
+				maxX: x1,
+				minY: y0,
+				maxY: y1
+			});
+		}
+	}
+	return out.length ? out : [bbox];
 }
 /**
 * 上下階の外壁の面を揃える（図面の読み取りで芯が数 cm ずれると、外壁に段差の帯ができるため）。
@@ -23921,6 +23992,7 @@ function buildBuilding(model, opts) {
 			return !f.outline.some((l) => pointInPolygon(m, l)) && outlineDist(m) < 200;
 		};
 		const pieces = [];
+		beginGuards();
 		for (const w0 of f.walls) {
 			if (stub(w0)) continue;
 			const ops0 = f.openings.filter((o) => o.wallId === w0.id).map((o) => ({
@@ -23934,6 +24006,7 @@ function buildBuilding(model, opts) {
 			for (const o of ops) buildOpening(mb, f, w, o, fl, meta, spec, upperOutlinesOf(model, f));
 		}
 		buildVoidGuardsOnOpenEdges(mb, f, fl, spec);
+		flushGuards(mb);
 		buildCanopies(mb, model, f, fl);
 		for (const j of diagonalJoints(f.walls.filter((w) => !stub(w)))) {
 			const w = j.w;
@@ -23984,7 +24057,12 @@ function buildBuilding(model, opts) {
 		const lowerRects = lower ? polygonToRects(lower.outline.filter((l) => !isHoleLoop(l, lower.outline))) : [];
 		for (const poly of f.outline) {
 			if (holes.includes(poly)) continue;
-			emitSlab(mb, "int.slab", poly, [...voids, ...holeRects], fl - .24, fl - .005, "ext.wall");
+			const fasciaY0 = lower ? Math.min(fl - .24, lower.elevation * MM + lower.ceilingHeight * MM) : fl - .24;
+			emitSlab(mb, "int.slab", poly, [...voids, ...holeRects], fl - .24, fl - .005, "ext.wall", lower ? {
+				rects: voids,
+				y0: fasciaY0,
+				y1: fl
+			} : void 0);
 			if (lower) emitFlat(mb, "ext.soffit", poly, [
 				...voids,
 				...holeRects,
@@ -24018,7 +24096,7 @@ function buildBuilding(model, opts) {
 				emitFlat(mb, "ext.soffit", r.polygon, [], top - (upper ? .25 : .02), false);
 				continue;
 			}
-			emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
+			emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? "int.ceilingMain" : "int.ceiling", r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
 		}
 		buildCeilingDetails(mb, f, fl, spec);
 		for (const s of f.stairs) {
@@ -24431,8 +24509,57 @@ function polygonMinusRects(poly, rects) {
 	}
 	return pieces;
 }
-function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key) {
+/**
+* @param fascia 吹抜・階段の穴の縁に張る小口（幕板）: rects = 穴（この縁にだけ張る）、y0 = 下端（下の階の天井の高さ）、y1 = 上端（この階の床の高さ）。
+*   張らないと、下の階から穴の縁を見上げたときに、床の厚みと天井懐のすき間から上の階の部屋の中（家具の裏）が見える
+*/
+function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key, fascia) {
 	emitFlat(mb, key, polyMm, voidsMm, y0, false);
+	if (fascia?.rects.length) {
+		const inHole = (x, y) => fascia.rects.some((r) => x > r.minX && x < r.maxX && y > r.minY && y < r.maxY);
+		const toPoly = (r) => [
+			{
+				x: r.minX,
+				y: r.minY
+			},
+			{
+				x: r.maxX,
+				y: r.minY
+			},
+			{
+				x: r.maxX,
+				y: r.maxY
+			},
+			{
+				x: r.minX,
+				y: r.maxY
+			}
+		];
+		const pieces = isRectilinear(polyMm, 2) ? rectsMinus(polygonToRects([polyMm], 3), voidsMm).map(toPoly) : polygonMinusRects(polyMm, voidsMm);
+		for (const pc of pieces) for (let i = 0; i < pc.length; i++) {
+			const a = pc[i];
+			const b = pc[(i + 1) % pc.length];
+			const len = Math.hypot(b.x - a.x, b.y - a.y);
+			if (len < 5) continue;
+			const nx = (b.y - a.y) / len;
+			const ny = -(b.x - a.x) / len;
+			const mx = (a.x + b.x) / 2;
+			const my = (a.y + b.y) / 2;
+			const insidePiece = pointInPolygon({
+				x: mx + nx * 10,
+				y: my + ny * 10
+			}, pc);
+			const ox = insidePiece ? -nx : nx;
+			const oy = insidePiece ? -ny : ny;
+			if (!inHole(mx + ox * 10, my + oy * 10)) continue;
+			const pa = V(a.x * MM, fascia.y0, a.y * MM);
+			const pb = V(b.x * MM, fascia.y0, b.y * MM);
+			const ta = V(a.x * MM, fascia.y1, a.y * MM);
+			const tb = V(b.x * MM, fascia.y1, b.y * MM);
+			if (insidePiece) mb.quad("int.wall", pa, pb, tb, ta);
+			else mb.quad("int.wall", pb, pa, ta, tb);
+		}
+	}
 	const pts = polyMm.map((p) => ({
 		x: p.x * MM,
 		y: p.y * MM
@@ -24547,22 +24674,159 @@ function diagonalJoints(walls, onlyExterior = false) {
 	return out;
 }
 /**
-* 吹抜の縁の鉄骨手すり（御社の標準: 黒皮鉄のフラットバー）。
-* 支柱 FB-12×50 @ ≤1.0m、笠木は丸パイプ φ32（H1100）、縦桟 FB-9×30 @110
+* 吹抜・階段の降り口の手すりを、折れ線 pts（床 fl）に沿って作る。
+*  - steel: 御社の施工事例の形 = 黒の細いフラットバーのフレーム。支柱 FB-12×38 @ ≤1.2m、上の手すり FB-12×44（H1100）、中ほどに横桟 FB-9×25 を 1 本。
+*    縦桟を細かく並べた手すりは御社の事例には無い（縦格子にしたいときは iron）
+*  - iron: 縦格子。20mm 角の支柱 @ ≤1.2m、上に平鋼 40×12、φ12 の細い丸棒 @100（すき間 110 以下。小さなお子さまのいるご家庭向け）
+*  - glass: 30mm 角の支柱 @ ≤1.5m、t12 のガラス全面、上の縁に細い平鋼
+* 支柱は両端・角（向きが 30° 以上変わる頂点）と、その間を等分した位置にだけ立てる
+* （曲がった縁を短い線分で読んだ図面でも、線分ごとに支柱が並ばない）
 */
-function buildVoidRail(mb, A, B, fl) {
-	const L = A.distanceTo(B);
-	if (L < .15) return;
-	const dir = new THREE.Vector3().subVectors(B, A).normalize();
-	const H = 1.1;
-	const metal = "f.metal";
-	const nPost = Math.max(2, Math.ceil(L / 1) + 1);
-	for (let i = 0; i < nPost; i++) {
-		const s = .03 + (L - .06) * i / (nPost - 1);
-		mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl), dir, .012, 1.08, .05);
+function buildGuardPath(mb, kind, pts, fl, key = "f.metal") {
+	const P = [];
+	for (const p0 of pts) {
+		const p = p0.clone().setY(fl);
+		if (P.length && P[P.length - 1].distanceTo(p) < .01) continue;
+		if (P.length >= 2) {
+			const d0 = P[P.length - 1].clone().sub(P[P.length - 2]).normalize();
+			const d1 = p.clone().sub(P[P.length - 1]).normalize();
+			if (d0.dot(d1) > .9994) P.pop();
+		}
+		P.push(p);
 	}
-	mb.tube(metal, A.clone().setY(fl + H), B.clone().setY(fl + H), .016, .016, 10);
-	for (let s = .14; s < L - .08; s += .11) mb.box(metal, A.clone().addScaledVector(dir, s).setY(fl + .05), dir, .009, 1.01, .03);
+	if (P.length < 2) return;
+	const segL = [];
+	const segD = [];
+	let total = 0;
+	for (let k = 0; k + 1 < P.length; k++) {
+		const d = P[k + 1].clone().sub(P[k]);
+		const l = d.length();
+		segL.push(l);
+		segD.push(d.normalize());
+		total += l;
+	}
+	if (total < .15) return;
+	const H = 1.1;
+	/** 折れ線上の距離 s の点と、その区間の向き */
+	const at = (s) => {
+		let acc = 0;
+		for (let k = 0; k < segL.length; k++) {
+			if (s <= acc + segL[k] || k === segL.length - 1) return {
+				p: P[k].clone().addScaledVector(segD[k], Math.max(0, Math.min(segL[k], s - acc))),
+				d: segD[k]
+			};
+			acc += segL[k];
+		}
+		return {
+			p: P[0].clone(),
+			d: segD[0]
+		};
+	};
+	const pitch = kind === "glass" ? 1.5 : 1.2;
+	const end = Math.min(.03, total / 4);
+	const stops = [end];
+	let acc = 0;
+	for (let k = 1; k < P.length - 1; k++) {
+		acc += segL[k - 1];
+		if (segD[k - 1].dot(segD[k]) < .866 && acc > stops[stops.length - 1] + .15 && acc < total - end - .15) stops.push(acc);
+	}
+	stops.push(total - end);
+	const posts = [];
+	for (let i = 0; i + 1 < stops.length; i++) {
+		const n = Math.max(1, Math.ceil((stops[i + 1] - stops[i] - .001) / pitch));
+		for (let j = 0; j < n; j++) posts.push(stops[i] + (stops[i + 1] - stops[i]) * j / n);
+	}
+	posts.push(stops[stops.length - 1]);
+	const postT = kind === "steel" ? .012 : kind === "iron" ? .02 : .03;
+	const postW = kind === "steel" ? .038 : postT;
+	for (const sPos of posts) {
+		const { p, d } = at(sPos);
+		mb.box(key, p, d, postT, 1.088, postW);
+	}
+	for (let k = 0; k < segL.length; k++) {
+		const ext0 = k > 0 ? 1 : 0;
+		const ext1 = k < segL.length - 1 ? 1 : 0;
+		/** 長さ方向に、途中の頂点の側だけ e ずつ延ばした横材 */
+		const along = (matKey, y, h, w, e, trim = 0) => {
+			const L = segL[k] + (ext0 + ext1) * e - trim;
+			if (L < .02) return;
+			const mid = P[k].clone().addScaledVector(segD[k], segL[k] / 2 + (ext1 - ext0) * e / 2);
+			mb.box(matKey, mid.setY(y), segD[k], L, h, w);
+		};
+		if (kind === "steel") {
+			along(key, fl + H - .012, .012, .044, .022);
+			along(key, fl + .55, .009, .025, .012);
+		} else if (kind === "iron") along(key, fl + H - .012, .012, .04, .02);
+		else {
+			along("ext.glass", fl + .05, 1.01, .012, 0, .02);
+			along(key, fl + H - .012, .012, .04, .02);
+		}
+	}
+	if (kind === "iron") for (let sPos = .1; sPos < total - .05; sPos += .1) mb.cylinder(key, at(sPos).p.setY(fl + .02), .006, 1.05, 8, false);
+}
+var guardSegs = null;
+/** これ以降の buildVoidGuard を集め始める（flushGuards でまとめて作る） */
+function beginGuards() {
+	guardSegs = [];
+}
+/** 集めた区間を、端がつながるものどうし 1 本の折れ線にまとめて作る（角・曲がった縁・途中で分かれた壁で、支柱が重ならないように） */
+function flushGuards(mb) {
+	const segs = guardSegs ?? [];
+	guardSegs = null;
+	const near = (p, q) => Math.hypot(p.x - q.x, p.z - q.z) < .1;
+	/** 2 直線（p0→p1 と q0→q1）の交点（平面）。ほぼ平行なら null */
+	const cross = (p0, p1, q0, q1) => {
+		const dx = p1.x - p0.x;
+		const dz = p1.z - p0.z;
+		const ex = q1.x - q0.x;
+		const ez = q1.z - q0.z;
+		const den = dx * ez - dz * ex;
+		if (Math.abs(den) < 1e-6 * Math.hypot(dx, dz) * Math.hypot(ex, ez) + 1e-9) return null;
+		const t = ((q0.x - p0.x) * ez - (q0.z - p0.z) * ex) / den;
+		return new THREE.Vector3(p0.x + dx * t, p0.y, p0.z + dz * t);
+	};
+	const used = segs.map(() => false);
+	/** 点 p に端が付く区間（self 以外。同じ種類・同じ階） */
+	const touching = (p, self) => segs.map((_, j) => j).filter((j) => j !== self && segs[j].kind === segs[self].kind && Math.abs(segs[j].fl - segs[self].fl) < .01 && (near(segs[j].a, p) || near(segs[j].b, p)));
+	for (let i = 0; i < segs.length; i++) {
+		if (used[i]) continue;
+		used[i] = true;
+		const pts = [segs[i].a.clone(), segs[i].b.clone()];
+		for (const head of [false, true]) {
+			let cur = i;
+			for (;;) {
+				const tip = head ? pts[0] : pts[pts.length - 1];
+				const t = touching(tip, cur);
+				if (t.length !== 1 || used[t[0]]) break;
+				const j = t[0];
+				used[j] = true;
+				const [q0, q1] = near(segs[j].a, tip) ? [segs[j].a, segs[j].b] : [segs[j].b, segs[j].a];
+				const x = cross(head ? pts[1] : pts[pts.length - 2], tip, q0, q1);
+				if (x && Math.hypot(x.x - tip.x, x.z - tip.z) < .2) tip.copy(x);
+				else if (!x && Math.hypot(q0.x - tip.x, q0.z - tip.z) > .01) {
+					if (head) pts.unshift(q0.clone());
+					else pts.push(q0.clone());
+				}
+				if (head) pts.unshift(q1.clone());
+				else pts.push(q1.clone());
+				cur = j;
+			}
+		}
+		buildGuardPath(mb, segs[i].kind, pts, segs[i].fl);
+	}
+}
+/** 手すり型の落下防止（鉄骨の細いフレーム・縦格子の丸棒・ガラス）を A→B（床 fl）に作る。集めている間は flushGuards でまとめて作る */
+function buildVoidGuard(mb, kind, A, B, fl) {
+	if (guardSegs) {
+		guardSegs.push({
+			kind,
+			a: A.clone(),
+			b: B.clone(),
+			fl
+		});
+		return;
+	}
+	buildGuardPath(mb, kind, [A, B], fl);
 }
 /** 腰壁の上のガラス（H300）と細い黒の笠木 */
 function voidGlassOnTop(mb, A, B, y) {
@@ -24577,43 +24841,6 @@ function voidGlassOnTop(mb, A, B, y) {
 function guardKindOf(r, spec) {
 	if (r?.voidGuard) return r.voidGuard;
 	return spec.voidGuard === "rail" ? "steel" : spec.voidGuard;
-}
-/** 手すり型の落下防止（スチール縦桟・アイアン丸棒・ガラス）を A→B（床 fl）に作る */
-function buildVoidGuard(mb, kind, A, B, fl) {
-	if (kind === "steel") return buildVoidRail(mb, A, B, fl);
-	if (kind === "iron") return buildIronRail(mb, A, B, fl);
-	buildGlassRail(mb, A, B, fl);
-}
-/** アイアン手すり: 20mm 角の支柱 @1.2m、上に平鋼 40×12 の笠木、φ12 の細い丸棒 @100 */
-function buildIronRail(mb, A, B, fl) {
-	const L = A.distanceTo(B);
-	if (L < .15) return;
-	const dir = new THREE.Vector3().subVectors(B, A).normalize();
-	const H = 1.1;
-	const key = "f.metal";
-	const nPost = Math.max(2, Math.ceil(L / 1.2) + 1);
-	for (let i = 0; i < nPost; i++) {
-		const s = .02 + (L - .04) * i / (nPost - 1);
-		mb.box(key, A.clone().addScaledVector(dir, s).setY(fl), dir, .02, 1.088, .02);
-	}
-	const mid = A.clone().addScaledVector(dir, L / 2);
-	mb.box(key, mid.clone().setY(fl + H - .012), dir, L, .012, .04);
-	for (let s = .1; s < L - .05; s += .1) mb.cylinder(key, A.clone().addScaledVector(dir, s).setY(fl + .02), .006, 1.05, 8, false);
-}
-/** ガラス手すり: 30mm 角の支柱 @1.5m、t12 のガラス全面、木の笠木 45×40 */
-function buildGlassRail(mb, A, B, fl) {
-	const L = A.distanceTo(B);
-	if (L < .15) return;
-	const dir = new THREE.Vector3().subVectors(B, A).normalize();
-	const H = 1.1;
-	const nPost = Math.max(2, Math.ceil(L / 1.5) + 1);
-	for (let i = 0; i < nPost; i++) {
-		const s = .03 + (L - .06) * i / (nPost - 1);
-		mb.box("f.metal", A.clone().addScaledVector(dir, s).setY(fl), dir, .03, 1.06, .03);
-	}
-	const mid = A.clone().addScaledVector(dir, L / 2);
-	mb.box("ext.glass", mid.clone().setY(fl + .05), dir, L - .02, 1.01, .012);
-	mb.box("f.wood", mid.clone().setY(fl + H - .04), dir, L, .04, .045);
 }
 /**
 * 壁の無い吹抜の縁（図面で手すりの細い線だけ、または何も描かれていない縁）にも仕様の落下防止を付ける。
@@ -24635,7 +24862,7 @@ function buildVoidGuardsOnOpenEdges(mb, f, fl, spec) {
 			const p = poly[i];
 			const q = poly[(i + 1) % poly.length];
 			const len = Math.hypot(q.x - p.x, q.y - p.y);
-			if (len < 300) continue;
+			if (len < 80) continue;
 			const mid = {
 				x: (p.x + q.x) / 2,
 				y: (p.y + q.y) / 2
@@ -25510,6 +25737,73 @@ function curtainWave(mb, start, dir, outN, len, y0, y1) {
 		mb.quad("f.curtain", b, a, d, c, dir, V(0, 1, 0));
 	}
 }
+/**
+* 部屋の辺 p→q（mm）から、その辺に沿う壁の室内側の面までの距離 (m)。inward = 室内側の向き（単位ベクトル）。
+* 部屋の多角形は壁の芯に沿うことが多いが、面に沿うこともあるので、沿う壁を探して測る。見つからなければ 65mm
+*/
+function wallFaceOffsetM(f, p, q, inward) {
+	const mid = {
+		x: (p.x + q.x) / 2,
+		y: (p.y + q.y) / 2
+	};
+	const ang = Math.atan2(q.y - p.y, q.x - p.x);
+	let best = .065;
+	let bd = 140;
+	for (const w of f.walls) {
+		let da = Math.abs(Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) - ang) % Math.PI;
+		da = Math.min(da, Math.PI - da);
+		if (da > .14) continue;
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+		const t = Math.max(0, Math.min(1, ((mid.x - w.a.x) * (w.b.x - w.a.x) + (mid.y - w.a.y) * (w.b.y - w.a.y)) / (L * L)));
+		const cx = w.a.x + (w.b.x - w.a.x) * t;
+		const cy = w.a.y + (w.b.y - w.a.y) * t;
+		const dist = Math.hypot(cx - mid.x, cy - mid.y);
+		if (dist >= bd) continue;
+		bd = dist;
+		const s = (cx - mid.x) * inward.x + (cy - mid.y) * inward.y;
+		best = Math.max(.01, (s + w.thickness / 2) * MM);
+	}
+	return best;
+}
+/** 間接照明が壁を照らす光の、天井からの長さ (m) */
+var WASH_H = .6;
+/**
+* 部屋の辺 p→q（mm）のうち、天井まで立つ壁が沿っていて、戸・窓の無い区間（辺の p からの距離。m）。
+* 壁の無い所（隣の空間に開いている）・腰壁・開口の所は入らない
+*/
+function solidWallRuns(f, p, q) {
+	const L = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+	const ux = (q.x - p.x) / L;
+	const uy = (q.y - p.y) / L;
+	const off = (pt) => Math.abs(-(pt.x - p.x) * uy + (pt.y - p.y) * ux);
+	const out = [];
+	for (const w of f.walls) {
+		const wl = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+		if (wl < 200) continue;
+		if (Math.abs(((w.b.x - w.a.x) * uy - (w.b.y - w.a.y) * ux) / wl) > .14) continue;
+		if (off(w.a) > 140 || off(w.b) > 140) continue;
+		if (w.topMm != null && w.topMm < f.ceilingHeight - 100) continue;
+		const ta = (w.a.x - p.x) * ux + (w.a.y - p.y) * uy;
+		const tb = (w.b.x - p.x) * ux + (w.b.y - p.y) * uy;
+		const run = [Math.max(0, Math.min(ta, tb)), Math.min(L, Math.max(ta, tb))];
+		if (run[1] - run[0] < 300) continue;
+		const sgn = tb >= ta ? 1 : -1;
+		const holes = f.openings.filter((o) => o.wallId === w.id).map((o) => {
+			const x0 = ta + sgn * o.t0;
+			const x1 = ta + sgn * o.t1;
+			return [Math.min(x0, x1) - 60, Math.max(x0, x1) + 60];
+		});
+		out.push(...subtractIntervals(run, mergeIntervals(holes)));
+	}
+	return mergeIntervals(out, 20).map(([a, b]) => [a * MM, b * MM]);
+}
+/** 主室（LDK）: 天井を別の素材にできる部屋 */
+var MAIN_CEILING_ROOMS = /* @__PURE__ */ new Set([
+	"ldk",
+	"living",
+	"dining",
+	"kitchen"
+]);
 /** 天井のダウンライト・間接照明 */
 function buildCeilingDetails(mb, f, fl, spec) {
 	for (const r of f.rooms) {
@@ -25599,7 +25893,9 @@ function buildCeilingDetails(mb, f, fl, spec) {
 				if (!best || len > best.len) best = {
 					a: V(p.x * MM, 0, p.y * MM),
 					b: V(q.x * MM, 0, q.y * MM),
-					len
+					len,
+					p,
+					q
 				};
 			}
 			if (best) {
@@ -25612,16 +25908,31 @@ function buildCeilingDetails(mb, f, fl, spec) {
 				}, r.polygon) ? 1 : -1;
 				const c = mid.clone().addScaledVector(n, inside * .16);
 				mb.box("int.shadowGap", c.clone().setY(ceil - .005), d, best.len - .3, .005, .14);
-				mb.box("f.cove", c.clone().addScaledVector(n, -inside * .03).setY(ceil - .012), d, best.len - .4, .006, .03);
+				mb.box("f.cove", c.clone().addScaledVector(n, -inside * .02).setY(ceil - .012), d, best.len - .36, .006, .09);
+				const inward = {
+					x: n.x * inside,
+					y: n.z * inside
+				};
+				const face = wallFaceOffsetM(f, best.p, best.q, inward) + .004;
+				for (const [t0, t1] of solidWallRuns(f, best.p, best.q)) {
+					const lenRun = t1 - t0 - .06;
+					if (lenRun < .3) continue;
+					const at = best.a.clone().addScaledVector(d, (t0 + t1) / 2).addScaledVector(n, inside * face);
+					mb.glowPlane("f.coveGlow", at.setY(ceil - .02 - WASH_H / 2), d, V(0, 1, 0), lenRun, WASH_H);
+				}
 			}
 		}
 	}
 }
+/** 踏板の素材のキー（指定が無い・「床に合わせる」は int.stairs） */
+var treadKeyOf = (look) => look?.tread && look.tread !== "floor" ? `int.stairs@${look.tread}` : "int.stairs";
+/** 鉄の骨組み・手すりの素材のキー（黒 = テイストの金物の色、白 = 白く塗った鉄） */
+var frameKeyOf = (look) => look?.frame === "white" ? "f.steelWhite" : "f.metal";
 /**
 * 階段（直・折り返し・コの字・かね折れ）。
-* つくりと手すりは、こだわり指定（参考資料）で階段ごとに変えられる（Stair.look。core/focus.ts）。指定が無ければ
-* ホームランディックの標準 = 鉄骨の中央の桁に踏板を載せたストリップ階段＋フラットバーの支柱に丸パイプの手すり
-*  - steel: 厚さ 40 の踏板を、中央のささら桁（黒皮鉄の鋼板）で支える。蹴込みなし
+* つくりはコーディネートの「階段」の品目（家に 1 つ）、手すり・桁・踏板の色・鉄の色は、こだわり指定（参考資料）で階段ごとに変えられる（Stair.look。core/focus.ts）。
+* 指定が無ければ御社の施工事例の形 = 両側の黒い鋼板のささら桁に木の踏板（蹴込みなし）＋細いフラットバーの手すり
+*  - steel: 厚さ 40 の踏板を、両側のささら桁（黒皮鉄の鋼板 t12 × 250）で支える。蹴込みなし。look.stringer = 'center' なら中央の力桁 1 本
 *  - woodSkeleton: 厚さ 40 の踏板を、両側の木の側板（36 × 260。黒の塗りつぶし = コーディネートの「木製スケルトン階段」）で支える。蹴込みなし
 *  - box: 箱階段。蹴込み板があり、段の両脇は床まで閉じる（下は収納・壁）
 *  - cantilever: 片持ち。厚さ 60 の踏板だけ（桁・側板は見せない）
@@ -25630,8 +25941,10 @@ function buildStairs(mb, s, y0, y1, f, build = "steel") {
 	const rise = y1 - y0;
 	const n = effectiveStepCount(rise / MM, s);
 	const rh = rise / n;
-	const tread = "int.stairs";
+	const tread = treadKeyOf(s.look);
+	const frame = frameKeyOf(s.look);
 	const rail = s.look?.rail ?? "bar";
+	const centerStringer = build === "steel" && s.look?.stringer === "center";
 	const thick = build === "cantilever" ? .06 : build === "box" ? .03 : .04;
 	const put = (p, yTop) => {
 		const min = V(p.minX * MM, yTop - thick, p.minY * MM);
@@ -25642,8 +25955,12 @@ function buildStairs(mb, s, y0, y1, f, build = "steel") {
 			const longX = max.x - min.x >= max.z - min.z;
 			const plateT = .012;
 			const ph = Math.min(.08, rh * .5);
-			if (longX) for (const x of [min.x + .03, max.x - .03 - plateT]) mb.aabb("ext.frame", V(x, yTop - thick - ph, min.z + .02), V(x + plateT, yTop - thick, max.z - .02));
-			else for (const z of [min.z + .03, max.z - .03 - plateT]) mb.aabb("ext.frame", V(min.x + .02, yTop - thick - ph, z), V(max.x - .02, yTop - thick, z + plateT));
+			if (centerStringer) {
+				const t = .009;
+				if (longX) mb.aabb(frame, V((min.x + max.x) / 2 - .12, yTop - thick - t, min.z + .02), V((min.x + max.x) / 2 + .12, yTop - thick, max.z - .02));
+				else mb.aabb(frame, V(min.x + .02, yTop - thick - t, (min.z + max.z) / 2 - .12), V(max.x - .02, yTop - thick, (min.z + max.z) / 2 + .12));
+			} else if (longX) for (const x of [min.x + .03, max.x - .03 - plateT]) mb.aabb(frame, V(x, yTop - thick - ph, min.z + .02), V(x + plateT, yTop - thick, max.z - .02));
+			else for (const z of [min.z + .03, max.z - .03 - plateT]) mb.aabb(frame, V(min.x + .02, yTop - thick - ph, z), V(max.x - .02, yTop - thick, z + plateT));
 		}
 		if (build === "box") {
 			const t = .018;
@@ -25668,41 +25985,40 @@ function buildStairs(mb, s, y0, y1, f, build = "steel") {
 	const lay = stairLayout(s, n);
 	for (const p of lay.pieces) put(p, y0 + rh * p.i);
 	if (lay.wall) mb.aabb("int.wall", V(lay.wall.minX * MM, y0, lay.wall.minY * MM), V(lay.wall.maxX * MM, y0 + rise * .5 + .9, lay.wall.maxY * MM));
-	stairRunDetails(mb, lay, rh, y0, f, build, rail, thick);
+	stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer, frame);
 	if (lay.well && rail !== "none") {
 		const w = lay.well;
 		const first = lay.pieces[0];
 		const horiz = Math.abs(first.dir.x) > .5;
 		const a = horiz ? V((first.dir.x > 0 ? w.minX : w.maxX) * MM, y1, w.minY * MM) : V(w.minX * MM, y1, (first.dir.y > 0 ? w.minY : w.maxY) * MM);
 		const b = horiz ? V(a.x, y1, w.maxY * MM) : V(w.maxX * MM, y1, a.z);
-		if (rail === "glass") buildGlassRail(mb, a, b, y1);
+		if (rail === "glass") buildGuardPath(mb, "glass", [a, b], y1, frame);
 		else if (rail === "wall") {
 			const d = b.clone().sub(a);
 			const L = d.length();
 			d.normalize();
 			mb.box("int.wall", a.clone().addScaledVector(d, L / 2).setY(y1), d, L, 1, .1);
-		} else {
+		} else if (rail === "wood") {
 			const d = b.clone().sub(a);
 			const L = d.length();
 			d.normalize();
-			const key = rail === "wood" ? "f.wood" : "f.metal";
 			const posts = Math.max(2, Math.round(L / .9) + 1);
 			const tops = [];
 			for (let k = 0; k < posts; k++) {
 				const p = a.clone().addScaledVector(d, L * k / (posts - 1));
-				mb.box(key, p.clone(), d, .04, .9, rail === "wood" ? .04 : .012);
+				mb.box("f.wood", p.clone(), d, .04, .9, .04);
 				tops.push(p.clone().setY(y1 + .9));
 			}
-			for (let k = 0; k + 1 < tops.length; k++) mb.tube(key, tops[k], tops[k + 1], rail === "wood" ? .022 : .016, rail === "wood" ? .022 : .016, 10);
-		}
+			for (let k = 0; k + 1 < tops.length; k++) mb.tube("f.wood", tops[k], tops[k + 1], .022, .022, 10);
+		} else buildGuardPath(mb, "steel", [a, b], y1, frame);
 	}
 }
 /**
 * 段の列（直線の区間）ごとの骨組みと手すり。
-* 骨組み: 鉄骨 = 中央のささら桁（黒皮鉄の鋼板）を勾配なりに／木のスケルトン = 両側の側板／箱階段・片持ち = なし。
-* 手すりは壁の無い側にだけ: アイアン（フラットバーの支柱＋丸パイプ）・ガラス・腰壁・木。
+* 骨組み: 鉄骨 = 両側のささら桁（黒皮鉄の鋼板）を勾配なりに（指定で中央の力桁 1 本）／木のスケルトン = 両側の側板／箱階段・片持ち = なし。
+* 手すりは壁の無い側にだけ: アイアン（細いフラットバーの支柱 @ 約 1m ＋ 上の手すり ＋ 横桟 1 本）・ガラス・腰壁・木。
 */
-function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick) {
+function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer = false, metal = "f.metal") {
 	const center = (p) => V((p.minX + p.maxX) / 2 * MM, 0, (p.minY + p.maxY) / 2 * MM);
 	const runs = [];
 	for (const p of lay.pieces) {
@@ -25714,7 +26030,6 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick) {
 		if (last && last.length && last[0].dir.x === p.dir.x && last[0].dir.y === p.dir.y) last.push(p);
 		else runs.push([p]);
 	}
-	const metal = "f.metal";
 	const up = new THREE.Vector3(0, 1, 0);
 	for (const run of runs.filter((r) => r.length >= 2)) {
 		const a = run[0];
@@ -25747,8 +26062,11 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick) {
 			mb.addGeometry(key, geo, m);
 			geo.dispose();
 		};
-		if (build === "steel") sloped(metal, .2, .012, .12, 0);
-		if (build === "woodSkeleton") for (const sg of [1, -1]) sloped("f.paintBlack", .26, .036, .09, sg * (treadW / 2 - .018));
+		if (build === "steel") {
+			if (centerStringer) sloped(metal, .18, .1, .11, 0);
+			else for (const sg of [1, -1]) sloped(metal, .25, .012, 0, sg * (treadW / 2 - .003));
+		}
+		if (build === "woodSkeleton") for (const sg of [1, -1]) sloped("f.paintBlack", .26, .036, .09, sg * (treadW / 2 - .015));
 		if (rail === "none") continue;
 		for (const sg of [1, -1]) {
 			let open = false;
@@ -25772,14 +26090,38 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick) {
 			}
 			const wood = rail === "wood";
 			const key = wood ? "f.wood" : metal;
+			const last = run.length - 1;
+			const seg = wood ? Math.max(1, Math.round(last / 2)) : Math.max(1, Math.round(last / 4));
+			const idx = [...new Set(Array.from({ length: seg + 1 }, (_, j) => Math.round(last * j / seg)))];
+			const postOff = !wood && build === "steel" && !centerStringer ? sg * (treadW / 2 - .006) : off;
 			const posts = [];
-			run.forEach((p, k) => {
-				if (k % 2 && k !== run.length - 1) return;
-				const base = center(p).setY(y0 + rh * p.i).addScaledVector(perp, off);
-				mb.box(key, base.clone(), d, .04, .9, wood ? .04 : .012);
+			for (const k of idx) {
+				const p = run[k];
+				const base = center(p).setY(y0 + rh * p.i).addScaledVector(perp, postOff);
+				if (wood) mb.box(key, base.clone(), d, .04, .9, .04);
+				else mb.box(key, base.clone(), d, .012, .9, .038);
 				posts.push(base.clone().setY(base.y + .9));
-			});
-			for (let k = 0; k + 1 < posts.length; k++) mb.tube(key, posts[k], posts[k + 1], wood ? .022 : .016, wood ? .022 : .016, 10);
+			}
+			if (wood) for (let k = 0; k + 1 < posts.length; k++) mb.tube(key, posts[k], posts[k + 1], .022, .022, 10);
+			else if (posts.length >= 2) {
+				const p0 = posts[0];
+				const p1 = posts[posts.length - 1];
+				const bar = (drop, t, w) => {
+					const a0 = p0.clone().setY(p0.y - drop);
+					const a1 = p1.clone().setY(p1.y - drop);
+					const ax = a1.clone().sub(a0);
+					const L = ax.length();
+					ax.normalize();
+					const ay = new THREE.Vector3().crossVectors(z, ax).normalize();
+					const geo = new THREE.BoxGeometry(L + .012, t, w);
+					const m = new THREE.Matrix4().makeBasis(ax, ay, z);
+					m.setPosition(a0.clone().add(a1).multiplyScalar(.5));
+					mb.addGeometry(key, geo, m);
+					geo.dispose();
+				};
+				bar(.006, .012, .04);
+				bar(.45, .009, .025);
+			}
 		}
 	}
 }
@@ -26791,8 +27133,23 @@ function coffeeTable(fr, u, v) {
 	fr.box("f.fabric2", u - .25, v + .16, .26, .2, .34, .035);
 	fr.cyl("f.white", u + .28, v + .27, .07, .34, .1, 18);
 }
+/** 家具まわりの間接照明（納まりの「間接照明」と同じ設定。浮かせたテレビボードの下の光）。組み立て前に設定する */
+var furnitureLighting = { indirect: true };
+/**
+* 浮かせた家具の下の間接照明（御社の施工事例: テレビボードを床から浮かせて、下に光を仕込む）。
+* 奥の光る帯と、床・壁に落ちる光（加算の薄い帯。壁際から手前へ弱くなる）。平面図・当たり判定には入れない
+* @param y 家具の下端の高さ (m)
+*/
+function underGlow(fr, u, v, w, d, y) {
+	if (!furnitureLighting.indirect || w < .4) return;
+	fr.mb.box("f.cove", fr.point(u, v + .04, y - .014), fr.along, w - .08, .012, .02);
+	const reach = d + .3;
+	fr.mb.glowPlane("f.coveGlow", fr.point(u, v + reach / 2, .003), fr.along, fr.inward.clone().negate(), w - .06, reach);
+	fr.mb.glowPlane("f.coveGlow", fr.point(u, v + .004, (y - .02) / 2), fr.along, new THREE.Vector3(0, 1, 0), w - .06, y - .02);
+}
 function tvSet(fr, u, v, w = 1.8) {
 	fr.box("f.cabinet", u, v, w, .38, .28, .3);
+	underGlow(fr, u, v, w, .38, .28);
 	fr.box("f.screen", u, v + 0, 1.3, .035, .95, .75);
 	fr.box("f.fabric2", u + w / 2 - .22, v + .2, .24, .18, .58, .022);
 	fr.box("f.white", u + w / 2 - .2, v + .21, .2, .15, .602, .02);
@@ -27050,6 +27407,7 @@ function builtinFurniture(fr, it, ceilingY) {
 			break;
 		case "floatTv":
 			fr.box("f.cabinet", 0, 0, w, d, .25, .35);
+			underGlow(fr, 0, 0, w, d, .25);
 			fr.box("f.handle", 0, d - .003, w - .02, .006, .57, .01);
 			for (let k = 1; k < 3; k++) fr.box("f.handle", -w / 2 + w / 3 * k, d - .003, .004, .006, .27, .3);
 			fr.box("f.screen", 0, .12, Math.min(1.45, w * .6), .04, .85, .82);
@@ -32852,6 +33210,18 @@ var CATEGORIES = [
 				on: "both"
 			},
 			{
+				id: "ib.stairBox",
+				spec: "階段",
+				desc: "箱階段（蹴込みあり）木踏板 手摺",
+				unit: "式",
+				cost: 4e5,
+				round: -2,
+				qty: (a) => a.stairs,
+				qtyNote: "階段数",
+				group: "stair",
+				on: "none"
+			},
+			{
 				id: "ib.handrail",
 				spec: "手摺",
 				desc: "St手摺",
@@ -35176,7 +35546,24 @@ var FINISH_CATEGORIES = [
 			{
 				id: "ceil.cloth",
 				maker: "サンゲツ",
-				name: "ビニールクロス（壁と同じ）",
+				name: "ビニールクロス（壁と同じ色）",
+				code: "SP シリーズ（壁と同じ品番）",
+				color: "壁と同じ",
+				swatch: ["#dcdad5"],
+				apply: (s) => {
+					s.int.ceiling = {
+						...s.int.wall,
+						roughness: .96,
+						normalStrength: Math.min(.12, s.int.wall.normalStrength ?? .12)
+					};
+					s.int.ceilingMain = void 0;
+				},
+				note: "壁と天井を同じ色でつなげます（御社の施工事例で最も多い納まり）"
+			},
+			{
+				id: "ceil.white",
+				maker: "サンゲツ",
+				name: "ビニールクロス",
 				code: "SP シリーズ",
 				color: "ホワイト",
 				swatch: ["#f1efeb"],
@@ -35188,19 +35575,9 @@ var FINISH_CATEGORIES = [
 						roughness: .96,
 						normalStrength: .12
 					};
-				}
-			},
-			{
-				id: "ceil.sugi",
-				maker: "チャネルオリジナル",
-				name: "杉羽目板（天井）",
-				code: "木板 杉板",
-				color: "自然塗装",
-				swatch: ["#b08d66"],
-				apply: (s) => {
-					s.int.ceiling = sugi();
+					s.int.ceilingMain = void 0;
 				},
-				note: "LDK・吹抜の天井に。勾配天井と相性がよい"
+				note: "壁に色があっても、天井は白く明るく"
 			},
 			{
 				id: "ceil.dark",
@@ -35217,8 +35594,21 @@ var FINISH_CATEGORIES = [
 						roughness: .95,
 						normalStrength: .12
 					};
+					s.int.ceilingMain = void 0;
 				},
 				note: "天井を暗くすると落ち着いた「こもり感」が出ます（天井高 2,400 以上で）"
+			},
+			{
+				id: "ceil.sugi",
+				maker: "チャネルオリジナル",
+				name: "杉羽目板（LDK の天井だけ）",
+				code: "木板 杉板",
+				color: "自然塗装",
+				swatch: ["#b08d66"],
+				apply: (s) => {
+					s.int.ceilingMain = sugi();
+				},
+				note: "LDK の天井だけに張ります（ほかの部屋・廊下は壁と同じ色のまま）。家じゅうの天井を板張りにはしません。勾配天井と相性がよい"
 			}
 		]
 	},
@@ -35425,9 +35815,9 @@ var FINISH_CATEGORIES = [
 				swatch: ["#c9a97c", "#ece9e2"],
 				estimate: {
 					group: "stair",
-					line: "ib.stairSt"
+					line: "ib.stairBox"
 				},
-				note: "階段下を収納・トイレに使うときに。見積は鉄骨階段の行で仮置き（金額は別途確認）"
+				note: "階段下を収納・トイレに使うときに。見積は箱階段の行（お客様への金額で約 57 万円。目安 55〜60 万円）"
 			},
 			{
 				id: "stair.cantilever",
@@ -35440,7 +35830,7 @@ var FINISH_CATEGORIES = [
 					group: "stair",
 					line: "ib.stairSt"
 				},
-				note: "リビング階段を軽く見せたいときに。見積は鉄骨階段の行で仮置き（金額は別途確認）。壁の中の下地・構造の検討が要ります"
+				note: "リビング階段を軽く見せたいときに。見積は鉄骨階段と同額。壁の中の下地・構造の検討が要ります"
 			}
 		]
 	},

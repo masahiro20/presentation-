@@ -137,7 +137,8 @@ export interface Room {
 /** 吹抜の落下防止: 腰壁／腰壁＋ガラス／スチール手すり／アイアン手すり／ガラス手すり／天井までの壁 */
 export type VoidGuard = 'half' | 'halfGlass' | 'steel' | 'iron' | 'glass' | 'wall';
 export const VOID_GUARDS: readonly VoidGuard[] = ['half', 'halfGlass', 'steel', 'iron', 'glass', 'wall'];
-export const VOID_GUARD_LABEL: Record<VoidGuard, string> = { half: '腰壁', halfGlass: '腰壁＋ガラス', steel: 'スチール手すり（縦桟）', iron: 'アイアン手すり（細い丸棒）', glass: 'ガラス手すり', wall: '壁（天井まで）' };
+// steel = 御社の施工事例の形（黒の細いフラットバーの支柱＋上の手すり＋横桟 1 本）。iron = 縦の細い丸棒を 100mm 間隔で並べた形（小さなお子さまのいるご家庭向け）
+export const VOID_GUARD_LABEL: Record<VoidGuard, string> = { half: '腰壁', halfGlass: '腰壁＋ガラス', steel: '鉄骨手すり（細い黒のフレーム＋横桟）', iron: '鉄骨手すり（縦格子・細い丸棒）', glass: 'ガラス手すり', wall: '壁（天井まで）' };
 /** 床の段差のプリセット（FL からの mm） */
 export const FLOOR_OFFSET_PRESETS: { label: string; v: number }[] = [
   { label: '段差なし', v: 0 },
@@ -181,17 +182,29 @@ export interface Stair {
 }
 
 /**
- * 階段のつくり: 鉄骨（中央の桁に踏板）／木のスケルトン（両側の側板）／箱階段（蹴込みあり）／片持ち（踏板だけ）。
+ * 階段のつくり: 鉄骨（両側の黒い鋼板のささら桁に踏板。御社の施工事例の形）／木のスケルトン（両側の側板）／箱階段（蹴込みあり）／片持ち（踏板だけ）。
  * 家に 1 つ: コーディネートの「階段」の品目で決まる（coordinate/catalog の stairBuildOf）。3D・説明文・仕様書・見積が同じ選択を見る
  */
 export type StairBuild = 'steel' | 'woodSkeleton' | 'box' | 'cantilever';
-/** 階段の手すり: アイアン（フラットバー＋丸パイプ）／ガラス／腰壁／木／なし */
+/** 階段の手すり: アイアン（細いフラットバーの支柱＋上の手すり＋横桟 1 本）／ガラス／腰壁／木／なし */
 export type StairRail = 'bar' | 'glass' | 'wall' | 'wood' | 'none';
+/** 鉄骨階段の桁: 両側のささら桁（鋼板。御社の施工事例の形 = 既定）／中央の力桁 1 本 */
+export type StairStringer = 'side' | 'center';
+/** 踏板の色: 床に合わせる（既定）／オーク／ウォールナット／白／黒／モルタル（左官調） */
+export type StairTread = 'floor' | 'oak' | 'walnut' | 'white' | 'black' | 'mortar';
+/** 鉄の骨組み・手すりの色: 黒（既定）／白 */
+export type StairFrame = 'black' | 'white';
 /** 階段ごとの指定（こだわりの参考資料から）。つくりは家に 1 つなのでここには入れない */
 export interface StairLook {
   rail?: StairRail;
   /** 指定の段数（図面の読み取り・階高からの推定より優先） */
   steps?: number;
+  /** 鉄骨階段の桁（省略 = 両側のささら桁） */
+  stringer?: StairStringer;
+  /** 踏板の色（省略 = 床に合わせる） */
+  tread?: StairTread;
+  /** 鉄の骨組み・手すりの色（省略 = 黒） */
+  frame?: StairFrame;
 }
 
 export interface Floor {

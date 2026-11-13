@@ -21,9 +21,9 @@ export const SEGMENTS: { id: string; ja: string; color: string; test: (k: string
   { id: 'frame', ja: 'サッシ枠', color: '#ff00ff', test: (k) => k === 'ext.frame' },
   { id: 'door', ja: '扉', color: '#ff8000', test: (k) => k === 'ext.door' || k === 'int.door' || k === 'ext.shutter' },
   { id: 'int_wall', ja: '内壁', color: '#ffff00', test: (k) => /^int\.(wall|accent|bathWall|wallTop|trim|shadowGap)/.test(k) },
-  { id: 'ceiling', ja: '天井', color: '#80ff00', test: (k) => k === 'int.ceiling' },
+  { id: 'ceiling', ja: '天井', color: '#80ff00', test: (k) => k.startsWith('int.ceiling') },
   { id: 'floor', ja: '床', color: '#00ff00', test: (k) => /^int\.(floor|wetFloor|entranceFloor|tatami|slab)/.test(k) || k === 'ext.balcony' || k === 'ext.terrace' },
-  { id: 'stairs', ja: '階段', color: '#008080', test: (k) => k === 'int.stairs' },
+  { id: 'stairs', ja: '階段', color: '#008080', test: (k) => k.startsWith('int.stairs') },
   { id: 'cut', ja: '切り口', color: '#ffffff', test: (k) => k === 'cut.face' },
   { id: 'furniture', ja: '家具・設備', color: '#8000ff', test: (k) => k.startsWith('f.') },
   { id: 'ground', ja: '地面・外構', color: '#808000', test: (k) => /^l\.(ground|approach|driveway|far|paving|deck|gravel)/.test(k) || k === 'ext.concrete' },
@@ -108,8 +108,8 @@ function drawPass<T>(viewer: Viewer, kind: PassKind, width: number, height: numb
         }
       }
       const m = o as THREE.Mesh;
-      // 空の球・札は形ではないので描かない
-      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel || o.name === 'skydome' || o.name === 'studioSky') {
+      // 空の球・札・間接照明の光の帯（加算の薄い面）は形ではないので描かない
+      if ((o as THREE.Sprite).isSprite || o.userData.roomLabel || o.name === 'skydome' || o.name === 'studioSky' || String(o.userData.matKey ?? '').startsWith('f.coveGlow')) {
         hidden.push(o);
         o.visible = false;
         return;

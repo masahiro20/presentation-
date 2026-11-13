@@ -12,7 +12,7 @@ import type { BuildingModel, Room } from '../core/types';
 import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
-import { buildFurniture, setKitchenFinish, setFurnitureVocab, type LightPoint, type Footprint } from './furniture';
+import { buildFurniture, setKitchenFinish, setFurnitureLighting, setFurnitureVocab, type LightPoint, type Footprint } from './furniture';
 import { contactShadows } from './contactShadow';
 import { placeModels } from './models';
 import { distantTreeBand } from './distant';
@@ -378,7 +378,7 @@ export class Viewer {
       }
       const hit = this.pickHit(ndc);
       const k = hit?.matKey ?? '';
-      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || k === 'int.stairs' || (!this.cut && /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k)));
+      const touchable = !!hit && (hit.group === 'furniture' || (hit.group === 'landscape' && k.startsWith('x.')) || k.startsWith('int.stairs') || (!this.cut && /^(ext|int)\.(door|glass\w*|shutter|frame)/.test(k)));
       const want = touchable ? 'pointer' : this.navMode === 'pan' ? 'grab' : '';
       if (el.style.cursor !== want) el.style.cursor = want;
     });
@@ -876,7 +876,7 @@ export class Viewer {
     // 上向きの面（床・家具の天板）か家具の面。下向きの面（天井）は飛ばす
     const h = hits.find((x) => {
       const k = String(x.object.userData.matKey ?? '');
-      if (k.startsWith('ext.glass') || k === 'int.ceiling' || k === 'ext.soffit') return false;
+      if (k.startsWith('ext.glass') || k.startsWith('int.ceiling') || k === 'ext.soffit') return false;
       return true;
     });
     if (h) return h.point.clone();
@@ -923,6 +923,7 @@ export class Viewer {
     const resolve = (k: string) => this.registry.get(k);
     setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
     setFurnitureVocab(interiorFor(this.design));
+    setFurnitureLighting({ indirect: resolveSpec(this.design.specId, this.design.specPatch).indirectLighting });
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
     this.groups.furniture.add(contactShadows(fur.occupancy));
@@ -1468,6 +1469,7 @@ export class Viewer {
     this.rebuildEdges([this.groups.building, this.groups.roof]);
     setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
     setFurnitureVocab(interiorFor(this.design));
+    setFurnitureLighting({ indirect: resolveSpec(this.design.specId, this.design.specPatch).indirectLighting });
     const fur = buildFurniture(model);
     this.groups.furniture.add(fur.mb.build(resolve, { name: 'furniture' }));
     this.groups.furniture.add(contactShadows(fur.occupancy));
@@ -1638,6 +1640,13 @@ export class Viewer {
       return;
     }
     this.registry.apply(this.root);
+    // 家具の形に関わる選択（ダイニングのペンダント・椅子・テーブル、キッチンの扉の濃淡）が変わったら、家具だけ作り直す
+    // （素材の入れ替えだけでは、ペンダントの形が前のまま残る）
+    const furnKey = (d: DesignOptions) => {
+      const i = interiorFor(d);
+      return JSON.stringify([i.id.startsWith('hl-'), i.vocab ?? null, isDarkColor(i.furniture.cabinet.color)]);
+    };
+    if (furnKey(prev) !== furnKey(design)) this.rebuildFurniture(this.state.model);
     if (prev.clay !== design.clay) this.applyEdgeVisibility();
     this.groups.furniture.visible = design.furniture && this.cut == null;
     if (this.cut && prev.furniture !== design.furniture) this.setCut(this.cut);
@@ -1835,7 +1844,7 @@ export class Viewer {
       const m = o as THREE.Mesh;
       if (!m.isMesh || !m.geometry) return;
       const key = (m.userData.matKey as string | undefined) ?? '';
-      if (!key || key.startsWith('ext.glass') || key.startsWith('f.') || key === 'cut.north' || key === 'int.ceiling') return;
+      if (!key || key.startsWith('ext.glass') || key.startsWith('f.') || key === 'cut.north' || key.startsWith('int.ceiling')) return;
       let p: THREE.Object3D | null = m.parent;
       let skip = false;
       while (p && p !== group) {
@@ -2156,6 +2165,7 @@ export class Viewer {
         if (this.design.furniture) {
           setKitchenFinish({ dark: isDarkColor(interiorFor(this.design).furniture.cabinet.color) });
     setFurnitureVocab(interiorFor(this.design));
+    setFurnitureLighting({ indirect: resolveSpec(this.design.specId, this.design.specPatch).indirectLighting });
           const fur = buildFurniture(model, { cut: f ? { level: level!, y: cutY } : undefined, clip: sec ? clip : undefined });
           this.groups.cut.add(fur.mb.build(resolve, { name: 'cut-furniture' }));
           if (f) this.groups.cut.add(contactShadows(fur.occupancy, new Set(f.rooms.map((r) => r.id))));

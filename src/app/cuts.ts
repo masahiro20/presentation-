@@ -21,8 +21,7 @@ import { imageBytes } from './officeAssets';
 import { exposureFor } from './draftCapture';
 import { resolveSpec } from '../styles/spec';
 import { cutToken, saveCutManifest } from './finishImport';
-import { FOCUS_MAX_IMAGES, FOCUS_PART_LABEL, focusForShot, focusImageName, focusPromptLines, stairLookAt, stairRailText, type FocusNote, type FocusShot } from '../core/focus';
-import type { StairRail } from '../core/types';
+import { FOCUS_MAX_IMAGES, FOCUS_PART_LABEL, focusForShot, focusImageName, focusPromptLines, stairLookAt, stairTailText, type FocusNote, type FocusShot } from '../core/focus';
 import { bboxOf, pointInPolygon } from '../core/geometry';
 
 // ---- ZIP（無圧縮） ----
@@ -92,7 +91,12 @@ const LOOK_EN: [RegExp, string][] = [
   [/^ext\.soton/, 'Shirasu volcanic plaster (Soton-kabe), scratched "kakiotoshi" finish, warm off-white'],
   [/^ext\.gl\./, 'vertical standing-rib galvalume steel siding (K-span), narrow ribs'],
   [/^acc\.solido\./, 'SOLIDO fiber-cement lap siding, horizontal boards with a mottled, cement-like, slightly uneven surface'],
-  [/^acc\.wood|^soffit\.cedar|^aw\.sugi|^ceil\.sugi/, 'Japanese cedar (sugi) boards, natural clear finish with visible grain'],
+  // 天井: 御社は壁と同じ色・同じ仕上げの平らな天井（板張り・梁の現しを AI が足さないように、はっきり書く）
+  [/^ceil\.cloth/, 'flat matte ceiling in the same colour and finish as the walls (no wood boards, no exposed beams)'],
+  [/^ceil\.white/, 'flat matte white ceiling (no wood boards, no exposed beams)'],
+  [/^ceil\.dark/, 'flat matte charcoal ceiling (no wood boards, no exposed beams)'],
+  [/^ceil\.sugi/, 'Japanese cedar (sugi) boards on the living / dining / kitchen ceiling only; every other ceiling is flat and finished like the walls'],
+  [/^acc\.wood|^soffit\.cedar|^aw\.sugi/, 'Japanese cedar (sugi) boards, natural clear finish with visible grain'],
   [/^roof\.gl\./, 'standing-seam galvalume metal roof, thin edge, almost no eaves'],
   [/^soffit\./, 'flat painted calcium-silicate soffit board'],
   [/^sash\./, 'slim aluminium-resin composite window frames, flush glazing'],
@@ -103,7 +107,7 @@ const LOOK_EN: [RegExp, string][] = [
   [/^floor\.(channel|iemon|prairie|ioc)/, 'wide-plank oak flooring with natural grain, matte oil finish'],
   [/^floor\.sangetsu/, 'matte vinyl floor tile with a mortar / concrete look'],
   [/^floor\.mortex|^aw\.mortex/, 'Mortex micro-cement (seamless, trowel marks, soft cloudy grey)'],
-  [/^wall\.cloth|^ceil\.cloth|^ceil\.dark|^aw\.cloth/, 'smooth matte wallpaper, very fine texture'],
+  [/^wall\.cloth|^aw\.cloth/, 'smooth matte wallpaper, very fine texture'],
   [/^wall\.porters|^aw\.porters/, 'Porter\'s Paints matte mineral paint with subtle brush movement'],
   [/^aw\.solido/, 'SOLIDO fiber-cement panels used on an interior wall, mottled cement surface'],
   [/^door\.kamiya\.glass/, 'full-height frameless glass door with a slim black frame'],
@@ -111,8 +115,8 @@ const LOOK_EN: [RegExp, string][] = [
   [/^door\.custom/, 'custom oak veneer door, flush, no casing'],
   [/^bb\./, 'very thin baseboard, almost invisible'],
   // 階段はつくり（品目）だけを書く。手すりは別（こだわりの参考資料で決めていなければ、標準のアイアン: STAIR_RAIL_DEFAULT_EN）
-  [/^stair\.steel/, 'open-riser steel stair: thick oak treads on a single black steel center stringer'],
-  [/^stair\.wood/, 'open-riser wooden stair: thick oak treads between two black side stringers'],
+  [/^stair\.steel/, 'open-riser steel stair: thick timber treads between two slim black steel plate side stringers'],
+  [/^stair\.wood/, 'open-riser wooden stair: thick timber treads between two black-painted wooden side stringers'],
   [/^stair\.box/, 'closed-riser boxed wooden stair: oak treads with risers, enclosed underneath'],
   [/^stair\.cantilever/, 'cantilevered stair: thick oak treads projecting from the wall, no visible stringer'],
   [/^kit\.|^kitchen/, 'minimal flat-front kitchen with a thin counter, no visible handles, integrated hood'],
@@ -251,9 +255,11 @@ function cutPromptBase(shot: Shot, index: number): { ja: string; en: string } {
     const fs = focusShotOf(shot);
     const notes = state.focus ?? [];
     const partsShown = parts.filter(([id]) => id !== 'stair' || !room || !!fs.hasStair || stairy);
-    // 階段の手すり: こだわりの参考資料で決めてあればその手すり（その階から上がる階段 → 下の階から上がってくる階段）、無ければ標準のアイアン
-    const rail: StairRail = (fs.level != null ? stairLookAt(notes, fs.level)?.rail ?? stairLookAt(notes, fs.level - 1)?.rail : notes.find((n) => n.part === 'stair' && n.level == null && n.stair?.rail)?.stair?.rail) ?? 'bar';
-    const tail = { stair: { ja: `、${stairRailText(rail, 'ja')}`, en: `, ${stairRailText(rail, 'en')}` } };
+    // 階段の桁・踏板の色・鉄の色・手すり: こだわりの参考資料で決めてあればその指定（その階から上がる階段 → 下の階から上がってくる階段）、無ければ標準（アイアンの手すり）
+    const allStairs = notes.filter((n) => n.part === 'stair' && n.level == null);
+    const lookHere = fs.level != null ? stairLookAt(notes, fs.level) ?? stairLookAt(notes, fs.level - 1) : stairLookAt(allStairs, 1);
+    const build = stairBuildOf(state.design);
+    const tail = { stair: { ja: `、${stairTailText(lookHere, 'ja', build)}`, en: `, ${stairTailText(lookHere, 'en', build)}` } };
     const ja = `${common.ja}\n内観: ${name}。${list(partsShown, 'ja', tail)}。建具は${spec.doors.fullHeight ? '天井までのフルハイト・枠無し' : '標準の枠付き'}、窓は${spec.windows.interiorReveal === 'plaster' ? '塗り回しのステルス枠' : '標準の枠'}。テイスト「${int.name}」: ${int.catch}。時間帯は${TOD_JA[tod]}。写真のような柔らかい自然光、レンズ 20〜24mm 相当の広角、建築写真の垂直線は垂直のまま、窓の外は明るく白飛びさせず緑と空を薄く見せる。`;
     const en = `${common.en}\nInterior: ${room?.name ?? shot.title}. ${list(partsShown, 'en', tail)}. Doors are ${spec.doors.fullHeight ? 'full-height and frameless' : 'standard with casing'}; window reveals are ${spec.windows.interiorReveal === 'plaster' ? 'plastered (no visible frame)' : 'standard'}. Style: ${int.name}. Lighting: ${TOD_EN[tod]}. Photorealistic architectural interior photography, 20–24 mm lens, vertical lines kept vertical, soft natural light with gentle contact shadows, exterior through the windows slightly bright with greenery and sky, not blown out.`;
     return { ja, en };

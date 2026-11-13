@@ -391,6 +391,22 @@ export class MeshBuilder {
     geo.dispose();
   }
 
+  /**
+   * 光の面（間接照明が壁・床を照らす光。素材 f.coveGlow を加算で重ねる）:
+   * 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）
+   */
+  glowPlane(key: string, c: V3, along: V3, toLight: V3, w: number, h: number) {
+    if (w < 0.05 || h < 0.02) return;
+    const x = along.clone().normalize();
+    const y = toLight.clone().normalize();
+    const z = new THREE.Vector3().crossVectors(x, y).normalize();
+    const geo = new THREE.PlaneGeometry(w, h);
+    const m = new THREE.Matrix4().makeBasis(x, y, z);
+    m.setPosition(c);
+    this.addGeometry(key, geo, m, true);
+    geo.dispose();
+  }
+
   /** 葉のカード（アルファ付きテクスチャを貼る両面の板） */
   card(key: string, c: V3, size: number, rot: THREE.Euler) {
     const geo = new THREE.PlaneGeometry(size, size);
@@ -440,6 +456,13 @@ export class MeshBuilder {
       m.userData.matKey = key;
       m.castShadow = opts.castShadow ?? true;
       m.receiveShadow = opts.receiveShadow ?? true;
+      // 間接照明の光の帯（加算の薄い面）は物ではない: 影を落とさず、クリック・歩行の当たり判定にも掛からない
+      if (key.startsWith('f.coveGlow')) {
+        m.castShadow = false;
+        m.receiveShadow = false;
+        m.raycast = () => {};
+        m.renderOrder = 2;
+      }
       g.add(m);
     }
     return g;

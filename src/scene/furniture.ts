@@ -927,9 +927,32 @@ function coffeeTable(fr: Frame, u: number, v: number) {
   fr.cyl('f.white', u + 0.28, v + 0.27, 0.07, 0.34, 0.1, 18);
 }
 
+/** 家具まわりの間接照明（納まりの「間接照明」と同じ設定。浮かせたテレビボードの下の光）。組み立て前に設定する */
+let furnitureLighting = { indirect: true };
+export function setFurnitureLighting(o: { indirect: boolean }) {
+  furnitureLighting = o;
+}
+
+/**
+ * 浮かせた家具の下の間接照明（御社の施工事例: テレビボードを床から浮かせて、下に光を仕込む）。
+ * 奥の光る帯と、床・壁に落ちる光（加算の薄い帯。壁際から手前へ弱くなる）。平面図・当たり判定には入れない
+ * @param y 家具の下端の高さ (m)
+ */
+function underGlow(fr: Frame, u: number, v: number, w: number, d: number, y: number) {
+  if (!furnitureLighting.indirect || w < 0.4) return;
+  // 奥の光る帯（家具の下の、壁際）
+  fr.mb.box('f.cove', fr.point(u, v + 0.04, y - 0.014), fr.along, w - 0.08, 0.012, 0.02);
+  // 床に落ちる光: 壁際がいちばん明るく、家具の前 30cm で消える
+  const reach = d + 0.3;
+  fr.mb.glowPlane('f.coveGlow', fr.point(u, v + reach / 2, 0.003), fr.along, fr.inward.clone().negate(), w - 0.06, reach);
+  // 家具の下の壁に当たる光: 家具の下端がいちばん明るい
+  fr.mb.glowPlane('f.coveGlow', fr.point(u, v + 0.004, (y - 0.02) / 2), fr.along, new THREE.Vector3(0, 1, 0), w - 0.06, y - 0.02);
+}
+
 function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
   // 壁付けの浮いた薄いボードと、壁掛けのテレビ（脚や台座を見せない）
   fr.box('f.cabinet', u, v, w, 0.38, 0.28, 0.3);
+  underGlow(fr, u, v, w, 0.38, 0.28);
   fr.box('f.screen', u, v + 0.0, 1.3, 0.035, 0.95, 0.75);
   // ボードの上: 本を 3 冊重ねた束と小さな器（テレビの脇）
   fr.box('f.fabric2', u + w / 2 - 0.22, v + 0.2, 0.24, 0.18, 0.58, 0.022);
@@ -1179,8 +1202,9 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       break;
     }
     case 'floatTv': {
-      // 床から浮かせた箱（H250〜600）、上部に浮き棚 2 段、テレビ
+      // 床から浮かせた箱（H250〜600）、上部に浮き棚 2 段、テレビ。箱の下に間接照明
       fr.box('f.cabinet', 0, 0, w, d, 0.25, 0.35);
+      underGlow(fr, 0, 0, w, d, 0.25);
       fr.box('f.handle', 0, d - 0.003, w - 0.02, 0.006, 0.57, 0.01);
       for (let k = 1; k < 3; k++) fr.box('f.handle', -w / 2 + (w / 3) * k, d - 0.003, 0.004, 0.006, 0.27, 0.3);
       fr.box('f.screen', 0, 0.12, Math.min(1.45, w * 0.6), 0.04, 0.85, 0.82);

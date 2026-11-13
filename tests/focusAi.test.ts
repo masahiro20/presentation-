@@ -117,3 +117,51 @@ describe('お客様に渡すデータ（体験リンク）', () => {
     expect((p as unknown as { focus: unknown[] }).focus).toHaveLength(1);
   });
 });
+
+// 2026-11-12 のご要望: 階段の細部・吹抜の手すり・造作・照明の雰囲気も画像から読む
+describe('階段の細部・吹抜・造作・照明を読んでもらう', () => {
+  it('階段: 桁・踏板の色・鉄の色の選択肢も伝え、答えから取り出す', () => {
+    const p = buildFocusReadPrompt({ part: 'stair', images: [IMG] });
+    expect(p).toContain('stringer');
+    expect(p).toContain('"center"');
+    expect(p).toContain('"walnut"');
+    expect(p).toContain('"white"');
+    const r = parseFocusReadText('{"stair":{"build":"steel","stringer":"center","rail":"bar","tread":"walnut","frame":"white","steps":15},"note":"白い鉄骨に濃い踏板"}', 'stair', 'm');
+    expect(r.build).toBe('steel');
+    expect(r.stair).toEqual({ rail: 'bar', steps: 15, stringer: 'center', tread: 'walnut', frame: 'white' });
+    // 既定と同じ値は持たない
+    expect(parseFocusReadText('{"stair":{"build":"steel","stringer":"side","tread":"floor","frame":"black"},"note":"x"}', 'stair', 'm').stair).toBeUndefined();
+  });
+
+  it('吹抜: 落下防止の種類を選んでもらう（知らない値は落とす。ほかの部位では受け取らない）', () => {
+    const p = buildFocusReadPrompt({ part: 'void', images: [IMG] });
+    expect(p).toContain('guard: "rail"');
+    expect(p).toContain('"glass" = ガラスの手すり');
+    expect(p).toContain('{"guard":"rail"');
+    expect(parseFocusReadText('{"guard":"glass","note":"抜けを邪魔しない"}', 'void', 'm').guard).toBe('glass');
+    expect(parseFocusReadText('{"guard":"net","note":"x"}', 'void', 'm').guard).toBeUndefined();
+    expect(parseFocusReadText('{"guard":"glass","note":"x"}', 'stair', 'm').guard).toBeUndefined();
+  });
+
+  it('造作: 3D に置ける 8 つの形から、いちばん近い形を選んでもらう', () => {
+    const p = buildFocusReadPrompt({ part: 'joinery', images: [IMG] });
+    expect(p).toContain('joinery: "floatTv" = 浮かせたテレビボード＋飾り棚');
+    expect(p).toContain('joinery: "wallShelf"');
+    expect(p).toContain('{"joinery":"floatTv"');
+    const r = parseFocusReadText('{"joinery":"wallShelf","note":"オークの本棚を壁一面に","reason":"天井までの棚"}', 'joinery', 'm');
+    expect(r.joinery).toBe('wallShelf');
+    expect(r.note).toBe('オークの本棚を壁一面に');
+    expect(parseFocusReadText('{"joinery":"piano","note":"x"}', 'joinery', 'm').joinery).toBeUndefined();
+  });
+
+  it('照明: 間接照明・ペンダント・光の色・時間帯を読んでもらう', () => {
+    const p = buildFocusReadPrompt({ part: 'lighting', images: [IMG] });
+    expect(p).toContain('indirect');
+    expect(p).toContain('"dome"');
+    expect(p).toContain('2700');
+    expect(p).toContain('"evening"');
+    const r = parseFocusReadText('{"lighting":{"indirect":true,"pendant":"globes","kelvin":2700,"tod":"night","lux":300},"note":"暗めに落として間接光で"}', 'lighting', 'm');
+    expect(r.lighting).toEqual({ indirect: true, pendant: 'globes', kelvin: 2700, tod: 'night' });
+    expect(parseFocusReadText('{"lighting":{"indirect":true},"note":"x"}', 'living', 'm').lighting).toBeUndefined();
+  });
+});

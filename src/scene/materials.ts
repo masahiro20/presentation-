@@ -101,6 +101,8 @@ export class MaterialRegistry {
     set('cut.face', color('#f6f4f0', 0.95));
     set('cut.north', color('#2a2d33', 0.8));
     set('int.ceiling', M(i.ceiling));
+    // LDK だけの天井（板張りなど）。指定が無ければ ceiling と同じ
+    set('int.ceilingMain', M(i.ceilingMain ?? i.ceiling));
     set('int.floor', M(i.floor));
     set('int.wetFloor', M(i.wetFloor));
     set('int.entranceFloor', M(i.entranceFloor));
@@ -109,6 +111,12 @@ export class MaterialRegistry {
     set('int.door', M(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 }));
     set('int.trim', color(i.trim, 0.5));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
+    // 踏板の色（こだわりの参考資料で階段ごとに選べる。指定が無ければ int.stairs = 床に合わせた木）
+    set('int.stairs@oak', M({ pattern: 'wood', color: '#c2a071', color2: '#ad8c5f', roughness: 0.5 }));
+    set('int.stairs@walnut', M({ pattern: 'wood', color: '#5e4634', color2: '#4e3a2b', roughness: 0.5 }));
+    set('int.stairs@white', M({ pattern: 'wood', color: '#e9e4da', color2: '#dfd9cd', roughness: 0.55 }));
+    set('int.stairs@black', M({ pattern: 'wood', color: '#2e2b29', color2: '#252321', roughness: 0.55 }));
+    set('int.stairs@mortar', M({ pattern: 'plaster', color: '#9d9b95', color2: '#95938d', roughness: 0.62, normalStrength: 0.16 }));
     set('int.slab', color('#b9b5ae', 0.95));
 
     // 家具
@@ -129,6 +137,8 @@ export class MaterialRegistry {
     set('f.handle', color('#262626', 0.4, 0.6));
     // 黒の塗りつぶし塗装（木製スケルトン階段の側板など。金属の光り方をさせない）
     set('f.paintBlack', color('#242424', 0.62, 0.05));
+    // 白く塗った鉄（階段の骨組み・手すりを白にする指定）
+    set('f.steelWhite', color('#eceae5', 0.5, 0.15));
     set('f.hood', color('#e9e7e3', 0.45, 0.2));
     // LINE KITCHEN: ステンレス（バイブレーション）のシンク、レンジフードのシルバー／ブラック、キャビネット内部のチャコールグレー
     set('f.stainless', color('#b9bbbd', 0.32, 0.9));
@@ -146,7 +156,22 @@ export class MaterialRegistry {
     set('int.shadowGap', color('#3a3836', 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
     set('f.downlight', color('#fffaf0', 0.2, 0, { emissive: new THREE.Color('#fff1dc'), emissiveIntensity: night ? 14 : 1.2 }));
-    set('f.cove', color('#fff6e8', 0.3, 0, { emissive: new THREE.Color('#ffdcaa'), emissiveIntensity: night ? 18 : 0.6 }));
+    // 間接照明の光る帯（昼も、灯っていることが分かる明るさに）
+    set('f.cove', color('#fff6e8', 0.3, 0, { emissive: new THREE.Color('#ffdcaa'), emissiveIntensity: night ? 18 : 1.6 }));
+    // 間接照明が壁・床を照らす光: 加算で重ねる面。光源の側（UV の v = 1）から離れるほど弱くなる（v = 0 で消える）
+    {
+      const N = 32;
+      const data = new Uint8Array(4 * N);
+      for (let k = 0; k < N; k++) {
+        const t = k / (N - 1);
+        data.set([255, 255, 255, Math.round(255 * t * t)], k * 4);
+      }
+      const tex = new THREE.DataTexture(data, 1, N, THREE.RGBAFormat);
+      tex.magFilter = THREE.LinearFilter;
+      tex.minFilter = THREE.LinearFilter;
+      tex.needsUpdate = true;
+      set('f.coveGlow', new THREE.MeshBasicMaterial({ color: '#ffcf96', map: tex, transparent: true, opacity: night ? 0.5 : 0.14, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    }
     set('f.chrome', color('#d9dadc', 0.15, 1));
     set('f.counter', M(F.counter));
     set('f.cabinet', M(F.cabinet));
@@ -220,9 +245,15 @@ export class MaterialRegistry {
       const clayM = color('#edebe6', 0.92, 0, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
       const clayGround = color('#d6d3cd', 1);
       const clayRoad = color('#c9c6c0', 1);
+      const hidden = new THREE.MeshBasicMaterial({ visible: false });
       for (const [k, m] of [...this.map]) {
         if ((m as THREE.Material).userData?.isGlass) continue;
         if (k.startsWith('l.leaf') || k === 'l.trunk') continue;
+        // 光の帯（加算の薄い面）は白模型では出さない
+        if (k.startsWith('f.coveGlow')) {
+          this.map.set(k, hidden);
+          continue;
+        }
         if (k === 'l.road' || k === 'l.curb') this.map.set(k, clayRoad);
         else if (k.startsWith('l.')) this.map.set(k, clayGround);
         else if (k === 'cut.north' || k === 'int.shadowGap') this.map.set(k, color('#55575b', 0.9));

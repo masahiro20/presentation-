@@ -1,6 +1,6 @@
 // こだわり指定（参考資料）: 階段のつくり・手すり・段数を 3D と図面に入れる／写るカットの説明文に足す
 import { describe, expect, it } from 'vitest';
-import { applyFocus, cleanStairLook, focusForShot, focusFromModel, focusImageName, focusPromptLines, normalizeFocus, stairLookAt, stairLookShort, stairLookText, stairNoteFor, stairNoteIndexToEdit, type FocusNote } from '../src/core/focus';
+import { applyFocus, cleanLighting, cleanStairLook, FOCUS_PARTS, focusForShot, focusFromModel, focusImageName, focusLookShort, focusPromptLines, normalizeFocus, stairLookAt, stairLookShort, stairLookText, stairNoteFor, stairNoteIndexToEdit, stairTailText, type FocusNote } from '../src/core/focus';
 import { effectiveStepCount, stairStepCount } from '../src/core/stairs';
 import type { BuildingModel, Floor, Stair } from '../src/core/types';
 
@@ -180,9 +180,10 @@ describe('写るカットの説明文に足す', () => {
     // つくりは家に 1 つ（コーディネートの「階段」の品目）。渡すと階段の行の先頭に入る
     const [s, k] = focusPromptLines(notes, hits, 'ja', true, 'steel');
     expect(s).toContain('階段のこだわり');
-    expect(s).toContain('ストリップ階段');
+    expect(s).toContain('ささら桁');
+    expect(s).toContain('鉄骨階段');
     expect(s).toContain('ガラス');
-    expect(k).not.toContain('ストリップ階段');
+    expect(k).not.toContain('鉄骨階段');
     expect(focusPromptLines(notes, hits, 'ja', true, 'box')[0]).toContain('箱階段');
     expect(focusPromptLines(notes, hits, 'ja')[0]).not.toContain('階段（段の下');
     expect(s).toContain('踏板は無垢のオーク');
@@ -191,7 +192,7 @@ describe('写るカットの説明文に足す', () => {
     expect(k).toContain('00_参考_キッチン_1.jpg');
     const en = focusPromptLines(notes, hits, 'en', true, 'steel')[0];
     expect(en).toContain('Staircase');
-    expect(en).toContain('steel center stringer');
+    expect(en).toContain('steel plate side stringers');
     expect(en).toContain('glass balustrade');
     expect(en).toContain('keep its position');
   });
@@ -214,5 +215,94 @@ describe('言葉にする', () => {
     expect(stairLookShort({ rail: 'glass', steps: 15 }, 'steel')).toBe('鉄骨・ガラス・15 段');
     expect(stairLookShort(undefined, 'woodSkeleton')).toBe('木のスケルトン');
     expect(stairLookText(undefined)).toBe('');
+  });
+});
+
+// 2026-11-12 のご要望: 階段・造作・照明の雰囲気を、参考資料から 3D の表現に効かせる
+describe('階段の桁・踏板の色・鉄の色（Stair.look）', () => {
+  it('既定と同じ値（両側の桁・床に合わせる・黒）は持たない。知らない値は落とす', () => {
+    expect(cleanStairLook({ stringer: 'side', tread: 'floor', frame: 'black' })).toBeUndefined();
+    expect(cleanStairLook({ stringer: 'center', tread: 'walnut', frame: 'white' })).toEqual({ stringer: 'center', tread: 'walnut', frame: 'white' });
+    expect(cleanStairLook({ tread: 'gold' as never, rail: 'glass' })).toEqual({ rail: 'glass' });
+  });
+
+  it('指定を当てると階段に入り、外すと消える（同じ中身なら触らない）', () => {
+    const st = (level: number): Stair => ({ id: `F${level}-S1`, minX: 0, minY: 0, maxX: 910, maxY: 3000, kind: 'straight', entry: 's', goesUp: level === 1 });
+    const fl = (level: number): Floor => ({ level, elevation: 500 + (level - 1) * 2900, height: 2900, ceilingHeight: 2400, walls: [], openings: [], rooms: [], stairs: [st(level)], outline: [] });
+    const m = { name: 't', floors: [fl(1), fl(2)], northAngleDeg: 0, report: {} } as unknown as BuildingModel;
+    const notes: FocusNote[] = [{ id: 'a', part: 'stair', note: '', images: [], stair: { tread: 'walnut', stringer: 'center' }, at: '' }];
+    expect(applyFocus(m, notes)).toBe(1);
+    const look = m.floors[0].stairs[0].look;
+    expect(look).toEqual({ tread: 'walnut', stringer: 'center' });
+    applyFocus(m, notes);
+    expect(m.floors[0].stairs[0].look).toBe(look);
+    // 3D で元に戻したとき: モデルの階段に合わせて、指定のほうを直す
+    m.floors[0].stairs[0].look = { tread: 'white' };
+    const back = focusFromModel(m, notes, () => 'new', '');
+    expect(back[0].stair).toEqual({ tread: 'white' });
+    applyFocus(m, []);
+    expect(m.floors[0].stairs[0].look).toBeUndefined();
+  });
+
+  it('言葉にする: 中央の力桁・踏板の色・白い鉄', () => {
+    expect(stairLookText({ stringer: 'center', tread: 'walnut', frame: 'white', rail: 'bar' }, 'ja', 'steel')).toBe('黒い鉄骨の中央の力桁 1 本に木の踏板を載せた、蹴込みの無い鉄骨階段、踏板はウォールナット（濃い茶）、鉄骨と手すりは白、手すりは細い鉄のフラットバー（支柱は少なく、上の手すりと横桟 1 本）');
+    // 桁の指定は鉄骨階段だけに効く
+    expect(stairLookText({ stringer: 'center' }, 'ja', 'box')).toBe('蹴込み板のある箱階段（段の下は閉じている）');
+    expect(stairLookShort({ stringer: 'center', tread: 'mortar', frame: 'white' }, 'steel')).toBe('鉄骨・中央の桁・踏板 モルタル・鉄は白');
+    expect(stairLookText({ tread: 'oak' }, 'en', 'steel')).toContain('oak treads');
+  });
+
+  it('仕上げの説明文の「階段」の項に足す言葉: 指定が無ければ標準のアイアンの手すりだけ', () => {
+    expect(stairTailText(undefined, 'ja', 'steel')).toBe('手すりは細い鉄のフラットバー（支柱は少なく、上の手すりと横桟 1 本）');
+    expect(stairTailText({ stringer: 'center', tread: 'black', rail: 'glass' }, 'ja', 'steel')).toBe('桁は両側ではなく中央の力桁 1 本、踏板は黒、手すりは透明なガラスのパネル');
+    expect(stairTailText({ stringer: 'center' }, 'ja', 'woodSkeleton')).not.toContain('力桁');
+    expect(stairTailText(undefined, 'en')).toContain('single horizontal mid rail');
+  });
+});
+
+describe('造作・照明の雰囲気（部位）', () => {
+  it('部位の一覧に、階段の次に「造作」「照明の雰囲気」がある', () => {
+    expect(FOCUS_PARTS.slice(0, 3)).toEqual(['stair', 'joinery', 'lighting']);
+  });
+
+  it('造作の形は、知っている形だけを持つ。形だけの指定も残る', () => {
+    const list = normalizeFocus([
+      { id: 'j', part: 'joinery', note: '', images: [], joinery: 'floatTv' },
+      { id: 'x', part: 'joinery', note: '', images: [], joinery: 'spaceship' },
+      { id: 'k', part: 'kitchen', note: 'オープン棚', images: [], joinery: 'openShelf' },
+    ]);
+    expect(list.map((n) => n.id)).toEqual(['j', 'k']);
+    expect(list[0].joinery).toBe('floatTv');
+    expect(list[1].joinery).toBeUndefined();
+    expect(focusLookShort(list[0])).toBe('浮かせたテレビボード＋飾り棚');
+    expect(focusLookShort(list[1])).toBe('');
+  });
+
+  it('造作・照明は内観のカットすべてに効く（外観・断面には入れない）', () => {
+    const notes: FocusNote[] = [
+      { id: 'j', part: 'joinery', note: '下に間接照明', images: [{ url: 'data:image/jpeg;base64,AA' }], joinery: 'floatTv', at: '' },
+      { id: 'l', part: 'lighting', note: 'ダウンライトは少なく', images: [{ url: 'data:image/jpeg;base64,BB' }], at: '' },
+    ];
+    const ids = (shot: Parameters<typeof focusForShot>[1]) => focusForShot(notes, shot).map((n) => n.id);
+    expect(ids({ kind: 'interior', roomType: 'ldk', title: 'LDK', level: 1 })).toEqual(['j', 'l']);
+    expect(ids({ kind: 'interior', roomType: 'bedroom', title: '寝室', level: 2 })).toEqual(['j', 'l']);
+    expect(ids({ kind: 'exterior', title: '外観' })).toEqual([]);
+    expect(ids({ kind: 'section', title: '断面' })).toEqual([]);
+    const [j, l] = focusPromptLines(notes, notes, 'ja');
+    expect(j).toContain('造作のこだわり: 浮かせたテレビボード＋飾り棚。下に間接照明');
+    expect(j).toContain('00_参考_造作_1.jpg');
+    // 照明の参考画像からは、光の雰囲気だけを借りる（器具の位置と数は下絵のまま）
+    expect(l).toContain('照明のこだわり: ダウンライトは少なく');
+    expect(l).toContain('光の雰囲気');
+    expect(l).toContain('照明器具の位置と数・部屋の形は下絵のまま');
+    expect(focusPromptLines(notes, notes, 'en')[0]).toContain('a wall-hung floating TV board');
+    expect(focusPromptLines(notes, notes, 'en')[1]).toContain('lighting mood only');
+  });
+
+  it('照明の読み取り結果は、知っている値だけに整える', () => {
+    expect(cleanLighting({ indirect: true, pendant: 'dome', kelvin: 2700, tod: 'evening' })).toEqual({ indirect: true, pendant: 'dome', kelvin: 2700, tod: 'evening' });
+    expect(cleanLighting({ indirect: 'yes', pendant: 'chandelier', kelvin: 5000, tod: 'noon' })).toBeUndefined();
+    expect(cleanLighting({ kelvin: '3000' })).toEqual({ kelvin: 3000 });
+    expect(cleanLighting(null)).toBeUndefined();
   });
 });

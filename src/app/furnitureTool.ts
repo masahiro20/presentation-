@@ -10,7 +10,7 @@ import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDE
 import { furnitureGaps, mmText } from '../core/dims';
 import type { DimLine3D, Handle3D, Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
-import { state } from './state';
+import { on, state } from './state';
 
 /** 幅（w）をハンドルで変えられる家具。キッチンは長さ（len = w + 0.3） */
 const WIDTH_KINDS = new Set<FurnitureKind>(['sofa', 'bed', 'tv', 'rug', 'cupboard', 'dining', 'hanger', 'builtin', 'washstand', 'kitchen']);
@@ -575,6 +575,19 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
     render();
     btn.classList.toggle('on', on);
   }
+
+  // こだわりの参考資料（造作）から「この形を 3D に置く」: この道具を開いて、その形を置く状態にする
+  on('place-builtin', (payload) => {
+    const p = payload as { variant?: BuiltinVariant; done?: () => void } | undefined;
+    if (!p?.variant || !BUILTIN_VARIANTS[p.variant] || !model() || !host.isConnected) return;
+    if (!active) setActive(true);
+    sel = null;
+    moving = false;
+    add = { kind: 'builtin', variant: p.variant };
+    render();
+    toast(`「${BUILTIN_VARIANTS[p.variant].label.replace(/（.*$/, '')}」を置きます。置きたい壁の近くの床をクリックしてください`, 'info', 8000);
+    p.done?.();
+  });
 
   const btn = h('button', { class: 'nav-btn', title: '家具・造作（パースを見ながら造作本棚を置く、キッチンの型を変える）\n床をクリックで置く、家具をクリックで選ぶ、選んだ家具はドラッグで動かす', onclick: () => setActive(!active) }, h('span', { class: 'ic' }, '▦'), '家具');
   /** 元に戻した後: 消えた家具の選択を外して、枠・つまみ・パネルを今のモデルに合わせる */

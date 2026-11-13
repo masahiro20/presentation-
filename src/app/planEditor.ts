@@ -1710,7 +1710,7 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
                   h(
                     'select',
                     { onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value as VoidGuard | ''; pushUndo(); if (v) l.voidGuard = v; else delete l.voidGuard; rebuild(); draw(); } },
-                    h('option', { value: '', selected: !(l.voidGuard ?? room?.voidGuard) }, 'テイストの既定'),
+                    h('option', { value: '', selected: !(l.voidGuard ?? room?.voidGuard) }, '家全体の設定のまま（パースの「納まり」）'),
                     ...VOID_GUARDS.map((g) => h('option', { value: g, selected: (l.voidGuard ?? room?.voidGuard) === g }, VOID_GUARD_LABEL[g])),
                   ),
                 ),

@@ -55,6 +55,8 @@ export interface InteriorStyle {
   wall: MatSpec;
   accentWall?: MatSpec;
   ceiling: MatSpec;
+  /** LDK（リビング・ダイニング・キッチン）だけの天井。無ければ ceiling と同じ。板張りは主室だけに使う（家じゅうの天井を板張りにはしない） */
+  ceilingMain?: MatSpec;
   door: MatSpec;
   trim: string;
   furniture: {
@@ -699,17 +701,17 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   int({
     id: 'hl-grey-oak',
     vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
-    name: 'グレー壁 × オーク × 木の天井',
-    catch: '中間グレーの壁、オークの床、杢の天井',
-    description: '中間グレーの壁に、幅広のオークの床と木の天井。黒の細い建具とトラック照明、線状の間接光で陰影をつくる、落ち着いた LDK。',
-    swatch: ['#9c9a95', '#b4956e', '#cdb898', '#2b2b2b'],
-    // 床は幅広のオーク（黄味を抑えたナチュラル）、天井の羽目板は淡いオーク（施工写真は赤味・黄味の少ない木）
+    name: 'グレーの塗り壁 × オーク',
+    catch: '中間グレーの壁と天井、幅広のオークの床',
+    description: '中間グレーの塗り壁と、同じ色でつなげた平らな天井。幅広のオークの床に、黒の細い建具と手すり、小さなダウンライトと線状の間接光で陰影をつくる、落ち着いた LDK。',
+    swatch: ['#9c9a95', '#b4956e', '#6f6e6b', '#2b2b2b'],
+    // 床は幅広のオーク（黄味を抑えたナチュラル）。天井は壁と同じ色・同じ仕上げ（御社の施工事例 11 件のうち、天井に木が出るのは 3 件だけで、家じゅう板張りの家は無い。docs/HOMELANDICK_STYLE.md）
     floor: { pattern: 'woodFloor', color: '#b4956e', color2: '#a2855f', roughness: 0.5, size: 0.19 },
     wetFloor: { pattern: 'tileFloor', color: '#8d8b87', roughness: 0.4, size: 0.6, size2: 0.6, tile: 1.2 },
     entranceFloor: { pattern: 'tileFloor', color: '#7d7b78', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
     wall: { pattern: 'plaster', color: '#9c9a95', color2: '#929089', roughness: 0.95, normalStrength: 0.2 },
     accentWall: { pattern: 'concrete', color: '#7f7d79', color2: '#74726e', roughness: 0.85 },
-    ceiling: { pattern: 'woodSiding', color: '#cdb898', color2: '#bda886', roughness: 0.7, size: 0.12 },
+    ceiling: { pattern: 'plaster', color: '#9c9a95', color2: '#95938e', roughness: 0.96, normalStrength: 0.12 },
     door: { pattern: 'paint', color: '#4a4947', roughness: 0.55 },
     trim: '#2b2b2b',
     furniture: {
@@ -750,20 +752,20 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     },
     lightKelvin: 3000,
   }),
-  // 施工・設計事例（服部様・池本様など）のパースに多い構成: 黒の大判スレートタイル床、白の塗り壁、明るい木の羽目板天井、黒サッシ
+  // 黒の大判スレートタイル床、白の塗り壁と平らな白い天井、黒サッシ（天井は板張りにしない。木は家具・造作で入れる）
   int({
     id: 'hl-slate-cedar',
     vocab: { pendant: 'dome', chair: 'y', table: 'plank' },
-    name: '黒スレート床 × 白壁 × 木の羽目板天井',
-    catch: '大判の黒いタイル床、白い塗り壁、明るい木の天井',
-    description: '600×1200 の黒いスレート調タイルの床に、白の塗り壁と明るい木の羽目板天井。黒の細いサッシと木の柱、中庭の緑を引き立てる、ホームランディックらしい陰影のある空間。',
+    name: '黒スレート床 × 白壁',
+    catch: '大判の黒いタイル床、白い塗り壁と天井、木の造作',
+    description: '600×1200 の黒いスレート調タイルの床に、白の塗り壁と平らな白い天井。黒の細いサッシと木の造作、中庭の緑を引き立てる、ホームランディックらしい陰影のある空間。',
     swatch: ['#e8e6e1', '#3c3e41', '#c8a678', '#1f1f1f'],
     floor: { pattern: 'tileFloor', color: '#3c3e41', roughness: 0.5, size: 0.6, size2: 1.2, tile: 2.4 },
     wetFloor: { pattern: 'tileFloor', color: '#45474a', roughness: 0.45, size: 0.3, size2: 0.6, tile: 1.2 },
     entranceFloor: { pattern: 'tileFloor', color: '#3a3c3f', roughness: 0.55, size: 0.6, size2: 1.2, tile: 2.4 },
     wall: { pattern: 'plaster', color: '#e8e6e1', color2: '#e1dfd9', roughness: 0.95, normalStrength: 0.18 },
     accentWall: { pattern: 'stone', color: '#7d7b77', color2: '#6b6966', roughness: 0.8, size: 0.4, size2: 0.25 },
-    ceiling: { pattern: 'woodSiding', color: '#d2b991', color2: '#c4a97f', roughness: 0.7, size: 0.075 },
+    ceiling: { pattern: 'plaster', color: '#eceae5', color2: '#e6e4de', roughness: 0.96, normalStrength: 0.1 },
     door: { pattern: 'paint', color: '#e8e6e1', roughness: 0.6 },
     trim: '#1f1f1f',
     furniture: {
@@ -865,7 +867,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     entranceFloor: { pattern: 'stone', color: '#8f8a82', color2: '#7f7a72', roughness: 0.8, size: 0.6, size2: 0.6 },
     wall: { pattern: 'plaster', color: '#efe9dc', color2: '#e9e2d4', roughness: 0.98, normalStrength: 0.15 },
     accentWall: { pattern: 'woodSiding', color: '#c9b088', color2: '#b89f78', roughness: 0.7, size: 0.06 },
-    ceiling: { pattern: 'woodSiding', color: '#d8c39c', color2: '#cbb48d', roughness: 0.7, size: 0.09 },
+    ceiling: { pattern: 'plaster', color: '#f1ece1', color2: '#ebe5d9', roughness: 0.97, normalStrength: 0.1 },
     door: { pattern: 'wood', color: '#cdb589', color2: '#bea77c', roughness: 0.55 },
     trim: '#3a3a3a',
     furniture: {
@@ -1142,7 +1144,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
     entranceFloor: { pattern: 'stone', color: '#6d6a64', color2: '#5a5752', roughness: 0.8 },
     wall: { pattern: 'plaster', color: '#ece4d4', roughness: 0.95, normalStrength: 0.6 },
     accentWall: { pattern: 'plaster', color: '#9b8a6e', roughness: 0.95, normalStrength: 0.6 },
-    ceiling: { pattern: 'woodSiding', color: '#caa77c', color2: '#b8946a', roughness: 0.7 },
+    ceiling: { pattern: 'plaster', color: '#eee7d8', color2: '#e8e0d0', roughness: 0.96, normalStrength: 0.2 },
     door: { pattern: 'wood', color: '#b08a60', color2: '#98734b', roughness: 0.6 },
     trim: '#8a6a47',
     furniture: {
@@ -1188,7 +1190,7 @@ export interface DesignOptions {
 export const DEFAULT_DESIGN: DesignOptions = {
   specId: 'minimal-lines',
   exteriorId: 'hl-jolypat-grey',
-  // 事例写真では内装はグレーの塗り壁 × オーク × 木の天井が最多（docs/HOMELANDICK_STYLE.md）
+  // 施工事例の内装は、グレーの塗り壁 × オーク（天井は壁と同じ色の平らな天井）が最多（docs/HOMELANDICK_STYLE.md）
   interiorId: 'hl-grey-oak',
   timeOfDay: 'day',
   furniture: true,

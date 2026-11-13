@@ -14,19 +14,29 @@ import {
   FOCUS_PART_LABEL,
   FOCUS_PARTS,
   focusFromModel,
+  focusLookShort,
   focusTitle,
+  JOINERY_LABEL,
+  JOINERY_VARIANTS,
   normalizeFocus,
   STAIR_BUILD_LABEL,
   STAIR_BUILDS,
+  STAIR_FRAME_LABEL,
+  STAIR_FRAMES,
   STAIR_RAIL_LABEL,
   STAIR_RAILS,
+  STAIR_STRINGER_LABEL,
+  STAIR_STRINGERS,
+  STAIR_TREAD_LABEL,
+  STAIR_TREADS,
   stairLevels,
-  stairLookShort,
   stairNoteIndexToEdit,
   type FocusNote,
   type FocusPart,
 } from '../core/focus';
-import type { StairBuild, StairLook, StairRail } from '../core/types';
+import type { BuiltinVariant, StairBuild, StairFrame, StairLook, StairRail, StairStringer, StairTread } from '../core/types';
+import type { DesignOptions, TimeOfDay } from '../styles/presets';
+import { resolveSpec, VOID_GUARD_SPECS, type VoidGuardSpec } from '../styles/spec';
 import { shrinkPhoto } from '../coordinate/samples';
 import { selectedProduct, STAIR_PRODUCT_OF_BUILD, stairBuildOf } from '../coordinate/catalog';
 import { categoryById, decide, itemOf } from '../coordinate/decisions';
@@ -85,25 +95,56 @@ export function setStairLookAt(level: number, patch: Partial<StairLook>): void {
 export const stairBuildNow = (): StairBuild => stairBuildOf(state.design);
 
 /**
- * 階段のつくりを変える = コーディネートの「階段」の品目を選ぶ。
- * つくりは家に 1 つで、3D・仕上げの説明文・仕様書・見積が同じ品目を見る（別々に持つと、3D は箱階段なのに仕様書はスチール階段、が起きる）。
+ * コーディネートの品目を選び直す（こだわりの参考資料の画面・3D のパネルから）。
+ * 品目は家に 1 つで、3D・仕上げの説明文・仕様書・見積が同じ品目を見る（別々に持つと、3D は箱階段なのに仕様書はスチール階段、が起きる）。
  * 戻り値: 変わったか
  */
-export function setStairBuild(build: StairBuild): boolean {
-  const cat = categoryById('stair');
-  const id = STAIR_PRODUCT_OF_BUILD[build];
-  if (!cat || selectedProduct(cat, state.design).id === id) return false;
-  state.design = { ...state.design, finishes: { ...(state.design.finishes ?? {}), stair: id } };
+export function setFinish(catId: string, productId: string): boolean {
+  const cat = categoryById(catId);
+  if (!cat || !cat.products.some((p) => p.id === productId) || selectedProduct(cat, state.design).id === productId) return false;
+  state.design = { ...state.design, finishes: { ...(state.design.finishes ?? {}), [catId]: productId } };
   // お客様と「決定」にしていた品目を変えたら、決定を外す（コーディネートで選び直したときと同じ）
-  if (itemOf(state.coord, 'stair').status === 'decided') {
-    state.coord = decide(state.coord, 'stair', false);
-    toast('階段の「決定」を外しました（つくりを変えたため）', 'info');
+  if (itemOf(state.coord, catId).status === 'decided') {
+    state.coord = decide(state.coord, catId, false);
+    toast(`${cat.label}の「決定」を外しました（選び直したため）`, 'info');
   }
   emit('design');
   emit('coord');
-  // 3D を作り直す（app.ts が受けて、開いている 3D に今のデザインを渡す）
-  emit('stair-build');
+  // 開いている 3D に今のデザインを渡す（app.ts が受ける）
+  emit('design-3d');
   return true;
+}
+
+/** 階段のつくりを変える = コーディネートの「階段」の品目を選ぶ。戻り値: 変わったか */
+export const setStairBuild = (build: StairBuild): boolean => setFinish('stair', STAIR_PRODUCT_OF_BUILD[build]);
+
+/**
+ * デザイン（納まり・時間帯）を変える（こだわりの参考資料の画面から）。
+ * 吹抜の手すり・間接照明は「納まり」に 1 つだけ持つ: ここで変えると、パースの右のパネルも同じ設定になる
+ */
+export function patchDesign(patch: Partial<DesignOptions>): void {
+  state.design = { ...state.design, ...patch };
+  emit('design');
+  emit('design-3d');
+}
+
+/** いまの納まり（標準仕様に、細かな調整を重ねたもの） */
+const specNow = () => resolveSpec(state.design.specId, state.design.specPatch);
+
+/**
+ * こだわりの参考資料の画面・3D のパネルからデザインを変えたときに fn を呼ぶ（パースの右のパネルの描き直し）。
+ * el が画面から外れたら自分で止まる。fn の中で画面を作り直してよいように、知らせの処理が終わってから呼ぶ
+ */
+export function onDesignFromFocus(el: HTMLElement, fn: () => void): void {
+  const off = on('design-3d', () => {
+    if (!el.isConnected) {
+      off();
+      return;
+    }
+    queueMicrotask(() => {
+      if (el.isConnected) fn();
+    });
+  });
 }
 
 /**
@@ -120,8 +161,10 @@ export function syncFocusFromModel(): void {
 
 const PLACEHOLDER: Record<FocusPart, string> = {
   stair: '例: 黒い鉄骨に無垢のオークの踏板。手すりは細いフラットバーで軽く見せたい',
+  joinery: '例: テレビボードは床から浮かせて下に間接照明。壁一面はオークのオープン棚',
+  lighting: '例: ダウンライトは少なく、下がり天井の縁とテレビボードの下の間接照明で落ち着いた明るさに',
   kitchen: '例: 黒のセラミック天板のアイランド。背面は造作のオープン棚',
-  living: '例: 天井は板張り、テレビの壁はグレーの左官',
+  living: '例: 壁と天井は同じグレーの塗り、テレビの壁はグレーの左官',
   entrance: '例: 土間は 600 角のグレーのタイル。正面に飾り棚',
   void: '例: 吹抜の手すりは透明なガラス。天井にシーリングファン',
   bath: '例: 洗面は造作のカウンターに置き型のボウル。壁はモザイクタイル',
@@ -142,7 +185,7 @@ export function onFocusChange(el: HTMLElement, fn: () => void): void {
     }
     fn();
   };
-  for (const ev of ['focus', 'stair-build']) offs.push(on(ev, run));
+  for (const ev of ['focus', 'design-3d']) offs.push(on(ev, run));
 }
 
 /** 読み込みの画面・3D のパネルに置く、いまの指定の一覧（小さく） */
@@ -155,10 +198,10 @@ export function focusChips(onOpen: (editId?: string) => void): HTMLElement {
     ...list.map((n) =>
       h(
         'button',
-        { class: 'focus-chip', title: [n.part === 'stair' ? stairLookShort(n.stair, stairBuildNow()) : '', n.note].filter(Boolean).join(' ／ ') || '参考画像', onclick: () => onOpen(n.id) },
+        { class: 'focus-chip', title: [focusLookShort(n, stairBuildNow()), n.note].filter(Boolean).join(' ／ ') || '参考画像', onclick: () => onOpen(n.id) },
         n.images[0] ? h('img', { src: n.images[0].url, alt: '' }) : null,
         h('span', null, focusTitle(n)),
-        n.part === 'stair' ? h('small', null, stairLookShort(n.stair, stairBuildNow())) : null,
+        focusLookShort(n, stairBuildNow()) ? h('small', null, focusLookShort(n, stairBuildNow())) : null,
       ),
     ),
   );
@@ -190,13 +233,12 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
     });
     obs.observe(document.body, { childList: true });
   }
-  void closeModal;
 
   const showList = () => {
     clear(body);
     const list = focusNotes();
     body.append(
-      h('p', { class: 'hint keep' }, '階段・キッチン・外観など、こだわりたい所に「この仕様・この写真のように提案したい」を添えます。階段はつくり・手すり・段数が 3D と図面に入り、どの部位も、パースの仕上げ（カット集・AI 仕上げ）の説明文と同梱の参考画像になります。図面を読み直しても残ります。'),
+      h('p', { class: 'hint keep' }, '階段・造作・照明・吹抜など、こだわりたい所に「この仕様・この写真のように提案したい」を添えます。階段（つくり・桁・手すり・踏板の色・段数）、吹抜の手すり、照明（間接照明・ペンダント・光の色）は 3D に入り、造作は 3D に置けます。どの部位も、パースの仕上げ（カット集・AI 仕上げ）の説明文と同梱の参考画像になります。図面を読み直しても残ります。'),
       h('p', { class: 'hint' }, '参考画像は社内の作業用です。お客様の体験リンク・提案資料には出ません（カタログ・他社の写真を使うときの権利にご注意ください）。'),
       list.length
         ? h(
@@ -211,7 +253,7 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
                   'div',
                   { class: 'focus-text' },
                   h('b', null, focusTitle(n)),
-                  n.part === 'stair' ? h('div', { class: 'focus-look' }, stairLookShort(n.stair, stairBuildNow())) : null,
+                  focusLookShort(n, stairBuildNow()) ? h('div', { class: 'focus-look' }, focusLookShort(n, stairBuildNow())) : null,
                   n.note ? h('div', { class: 'focus-note' }, n.note) : null,
                 ),
                 h(
@@ -243,12 +285,27 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
       : { id: uid('fc'), part: preset?.part ?? 'stair', ...(preset?.level != null ? { level: preset.level } : {}), note: '', images: [], at: new Date().toISOString() };
     // 階段のつくりは家に 1 つ（コーディネートの「階段」の品目）。ここで選び直したら、登録のときに品目を入れ替える
     let draftBuild: StairBuild = stairBuildNow();
+    // 吹抜の縁（落下防止）は家全体の「納まり」に 1 つ。ここで選び直したら、登録のときに入れ替える
+    let draftGuard: VoidGuardSpec = specNow().voidGuard;
+    // 照明の雰囲気: 間接照明（納まり）・ダイニングのペンダントと光の色（コーディネートの品目）・時間帯。登録のときに入れ替える
+    const pendantCat = categoryById('pendant');
+    const lightCat = categoryById('light');
+    const lightNow = () => ({
+      indirect: specNow().indirectLighting,
+      pendant: pendantCat ? selectedProduct(pendantCat, state.design).id : '',
+      light: lightCat ? selectedProduct(lightCat, state.design).id : '',
+      tod: state.design.timeOfDay,
+    });
+    const draftLight = lightNow();
     const form = h('div', { class: 'focus-form' });
     body.append(form);
 
     const render = () => {
       clear(form);
       const isStair = draft.part === 'stair';
+      const isVoid = draft.part === 'void';
+      const isJoinery = draft.part === 'joinery';
+      const isLighting = draft.part === 'lighting';
       // 部位
       const partSel = h(
         'select',
@@ -259,6 +316,7 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
               delete draft.level;
               delete draft.stair;
             }
+            if (draft.part !== 'joinery') delete draft.joinery;
             render();
           },
         },
@@ -352,9 +410,20 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
             'div',
             { class: 'focus-stair' },
             h('div', { class: 'field-label' }, 'つくり（3D に反映。家じゅうの階段に共通）'),
-            segmented<StairBuild>(STAIR_BUILDS.map((b) => ({ value: b, label: short(STAIR_BUILD_LABEL[b]) })), draftBuild, (v) => { draftBuild = v; }),
+            segmented<StairBuild>(STAIR_BUILDS.map((b) => ({ value: b, label: short(STAIR_BUILD_LABEL[b]) })), draftBuild, (v) => { draftBuild = v; draft.note = noteIn.value; render(); }),
+            // 鉄骨階段だけ: 桁を両側のささら桁（御社の施工事例の形）か、中央の力桁 1 本か
+            ...(draftBuild === 'steel'
+              ? [
+                  h('div', { class: 'field-label', style: 'margin-top:8px' }, '鉄骨の桁（3D に反映）'),
+                  segmented<StairStringer>(STAIR_STRINGERS.map((k) => ({ value: k, label: STAIR_STRINGER_LABEL[k] })), look().stringer ?? 'side', (v) => setLook({ stringer: v })),
+                ]
+              : []),
             h('div', { class: 'field-label', style: 'margin-top:8px' }, '手すり（3D に反映）'),
             segmented<string>([{ value: '', label: '標準のまま' }, ...STAIR_RAILS.map((r) => ({ value: r as string, label: short(STAIR_RAIL_LABEL[r]) }))], look().rail ?? '', (v) => setLook({ rail: (v || undefined) as StairRail | undefined })),
+            h('div', { class: 'field-label', style: 'margin-top:8px' }, '踏板の色（3D に反映）'),
+            segmented<StairTread>(STAIR_TREADS.map((k) => ({ value: k, label: short(STAIR_TREAD_LABEL[k]) })), look().tread ?? 'floor', (v) => setLook({ tread: v })),
+            h('div', { class: 'field-label', style: 'margin-top:8px' }, '鉄の色（桁とアイアンの手すり。3D に反映）'),
+            segmented<StairFrame>(STAIR_FRAMES.map((k) => ({ value: k, label: STAIR_FRAME_LABEL[k] })), look().frame ?? 'black', (v) => setLook({ frame: v })),
             h(
               'label',
               { class: 'field', style: 'margin-top:8px;max-width:260px' },
@@ -372,7 +441,86 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
                 },
               }),
             ),
-            h('p', { class: 'hint' }, 'つくりは、コーディネートの「階段」の品目と同じものです（ここで変えると仕様書・見積の品目も同じになります）。手すり・段数は階段ごとに決められます。手すりの標準はアイアンです。'),
+            h('p', { class: 'hint' }, 'つくりは、コーディネートの「階段」の品目と同じものです（ここで変えると仕様書・見積の品目も同じになります）。桁・手すり・踏板の色・段数は階段ごとに決められます。標準は、両側の黒い鋼板の桁に床と同じ色の踏板、細いアイアンの手すりです。'),
+          )
+        : null;
+      // 吹抜: 2 階側の縁（落下防止）。家全体の「納まり」の設定を、ここからも選べる
+      const overrides = (state.model?.floors ?? []).reduce((n, f) => n + f.rooms.filter((r) => r.type === 'void' && r.voidGuard).length, 0);
+      const voidBox = isVoid
+        ? h(
+            'div',
+            { class: 'focus-stair' },
+            h('div', { class: 'field-label' }, '吹抜の 2 階側の縁（落下防止。3D に反映・家全体の設定）'),
+            segmented<VoidGuardSpec>(VOID_GUARD_SPECS.map((g) => ({ value: g.value, label: g.label })), draftGuard, (v) => { draftGuard = v; draft.note = noteIn.value; render(); }),
+            h('p', { class: 'hint keep', style: 'margin:4px 0 0' }, VOID_GUARD_SPECS.find((g) => g.value === draftGuard)?.note ?? ''),
+            h('p', { class: 'hint' }, `パースの「納まり」と同じ設定です（ここで変えると、そちらも同じになります）。吹抜ごとに変えるときは、3D で吹抜の縁（手すり）をクリックして選びます。${overrides ? `いま、個別に変えた吹抜が ${overrides} か所あります（そこは個別の指定のまま）。` : ''}`),
+          )
+        : null;
+      // 造作: 形（仕上げの説明文に入る）。3D には「家具」の道具で置く
+      const joinBox = isJoinery
+        ? h(
+            'div',
+            { class: 'focus-stair' },
+            h(
+              'label',
+              { class: 'field', style: 'max-width:420px' },
+              h('span', { class: 'field-label' }, '造作の形（仕上げの説明文に入ります）'),
+              h(
+                'select',
+                {
+                  onchange: (e: Event) => {
+                    const v = (e.target as HTMLSelectElement).value as BuiltinVariant | '';
+                    if (v) draft.joinery = v;
+                    else delete draft.joinery;
+                    draft.note = noteIn.value;
+                    render();
+                  },
+                },
+                h('option', { value: '', selected: !draft.joinery }, '決めない（ひとこと・参考画像だけ）'),
+                ...JOINERY_VARIANTS.map((k) => h('option', { value: k, selected: draft.joinery === k }, JOINERY_LABEL[k])),
+              ),
+            ),
+            draft.joinery
+              ? h(
+                  'div',
+                  { class: 'btn-row', style: 'margin-top:8px' },
+                  h('button', { class: 'btn sm', title: 'この指定を保存して画面を閉じ、3D の「家具」の道具を、この形を置く状態にします', onclick: () => save(draft.joinery) }, '保存して、この形を 3D に置く'),
+                )
+              : null,
+            h('p', { class: 'hint' }, '3D では「家具」の道具の「造作家具を置く」と同じ物です。置きたい壁の近くの床をクリックすると壁に付き、置いたあとドラッグで動かして、幅・高さ・木の色を変えられます。'),
+          )
+        : null;
+      // 照明の雰囲気: 3D に反映できる 4 つ（どれもデザインの設定そのもの）
+      const lightBox = isLighting
+        ? h(
+            'div',
+            { class: 'focus-stair' },
+            h('div', { class: 'field-label' }, '間接照明（天井際の光の線。3D に反映）'),
+            segmented<string>([{ value: '1', label: 'あり' }, { value: '0', label: 'なし' }], draftLight.indirect ? '1' : '0', (v) => { draftLight.indirect = v === '1'; }),
+            ...(pendantCat
+              ? [
+                  h('div', { class: 'field-label', style: 'margin-top:8px' }, 'ダイニングのペンダント（3D に反映）'),
+                  segmented<string>(pendantCat.products.map((p) => ({ value: p.id, label: short(p.name) })), draftLight.pendant, (v) => { draftLight.pendant = v; }),
+                ]
+              : []),
+            ...(lightCat
+              ? [
+                  h('div', { class: 'field-label', style: 'margin-top:8px' }, '光の色（夜景・夕景の 3D に反映）'),
+                  segmented<string>(lightCat.products.map((p) => ({ value: p.id, label: p.code })), draftLight.light, (v) => { draftLight.light = v; }),
+                ]
+              : []),
+            h('div', { class: 'field-label', style: 'margin-top:8px' }, 'パースの時間帯（3D に反映）'),
+            segmented<TimeOfDay>(
+              [
+                { value: 'morning', label: '朝' },
+                { value: 'day', label: '昼' },
+                { value: 'evening', label: '夕景' },
+                { value: 'night', label: '夜景' },
+              ],
+              draftLight.tod,
+              (v) => { draftLight.tod = v; },
+            ),
+            h('p', { class: 'hint' }, 'どれもデザインの設定そのものです: 間接照明はパースの「納まり」、ペンダントと光の色はコーディネートの「ダイニングの照明」「照明の色」、時間帯はパースの「時間帯」（ここで変えると、そちらも同じになります）。照明の雰囲気は夕景・夜景でよく伝わります。'),
           )
         : null;
       // AI に読んでもらう
@@ -383,7 +531,15 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
         {
           class: 'btn sm',
           disabled: !key || !draft.images.length,
-          title: isStair ? '参考画像から、つくり・手すり・段数とひとことを読み取ります' : '参考画像から、仕上げの担当に伝えるひとことを読み取ります',
+          title: isStair
+            ? '参考画像から、つくり・桁・手すり・踏板の色・段数とひとことを読み取ります'
+            : isVoid
+              ? '参考画像から、吹抜の手すりの種類とひとことを読み取ります'
+              : isJoinery
+                ? '参考画像から、造作の形とひとことを読み取ります'
+                : isLighting
+                  ? '参考画像から、間接照明・ペンダント・光の色・時間帯とひとことを読み取ります'
+                  : '参考画像から、仕上げの担当に伝えるひとことを読み取ります',
           onclick: async () => {
             aiBtn.disabled = true;
             aiBtn.textContent = '読んでいます…';
@@ -394,6 +550,14 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
               } else {
                 if (r.build && isStair) draftBuild = r.build;
                 if (r.stair && isStair) draft.stair = cleanStairLook({ ...look(), ...r.stair });
+                if (r.guard && isVoid) draftGuard = r.guard;
+                if (r.joinery && isJoinery) draft.joinery = r.joinery;
+                if (r.lighting && isLighting) {
+                  if (r.lighting.indirect != null) draftLight.indirect = r.lighting.indirect;
+                  if (r.lighting.pendant && pendantCat?.products.some((p) => p.id === `pend.${r.lighting!.pendant}`)) draftLight.pendant = `pend.${r.lighting.pendant}`;
+                  if (r.lighting.kelvin && lightCat?.products.some((p) => p.id === `light.${r.lighting!.kelvin}`)) draftLight.light = `light.${r.lighting.kelvin}`;
+                  if (r.lighting.tod) draftLight.tod = r.lighting.tod;
+                }
                 if (r.note && !draft.note.trim()) draft.note = r.note;
                 else if (r.note && !draft.note.includes(r.note)) draft.note = `${draft.note.trim()}\n${r.note}`;
                 toast(`画像から読み取りました${r.reason ? `: ${r.reason}` : ''}（確かめてから保存してください）`, 'ok', 8000);
@@ -407,26 +571,69 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
         '画像から読み取る（AI）',
       ) as HTMLButtonElement;
 
-      const save = () => {
+      /** @param place 造作: 保存したあと、この形を 3D に置く状態にする */
+      const save = (place?: BuiltinVariant) => {
         draft.note = noteIn.value.trim();
         const stair = isStair ? cleanStairLook(draft.stair) : undefined;
+        const joinery = isJoinery ? draft.joinery : undefined;
         const buildChanged = isStair && draftBuild !== stairBuildNow();
-        if (!draft.note && !draft.images.length && !stair && !buildChanged) {
-          toast('参考画像・ひとこと・階段の仕様のどれかを入れてください', 'info');
+        const guardChanged = isVoid && draftGuard !== specNow().voidGuard;
+        const now = lightNow();
+        const lightChanged = isLighting && (draftLight.indirect !== now.indirect || draftLight.pendant !== now.pendant || draftLight.light !== now.light || draftLight.tod !== now.tod);
+        const hasNote = !!(draft.note || draft.images.length || stair || joinery);
+        if (!hasNote && !buildChanged && !guardChanged && !lightChanged) {
+          toast('参考画像・ひとこと・仕様のどれかを入れてください', 'info');
           return;
         }
-        if (buildChanged) setStairBuild(draftBuild);
-        const buildMsg = buildChanged ? `階段のつくりを「${short(STAIR_BUILD_LABEL[draftBuild])}」にしました（コーディネートの「階段」も同じ品目です）。` : '';
-        if (!draft.note && !draft.images.length && !stair) {
-          // つくりだけを変えた: 指定（参考資料）は作らない。元からあった指定の中身を空にしたのなら、その指定は消す
+        // デザインの設定（家に 1 つ）を入れ替える: 階段のつくり・吹抜の縁・照明
+        const msgs: string[] = [];
+        if (buildChanged) {
+          setStairBuild(draftBuild);
+          msgs.push(`階段のつくりを「${short(STAIR_BUILD_LABEL[draftBuild])}」にしました（コーディネートの「階段」も同じ品目です）。`);
+        }
+        if (guardChanged) {
+          patchDesign({ specPatch: { ...state.design.specPatch, voidGuard: draftGuard } });
+          msgs.push(`吹抜の縁を「${VOID_GUARD_SPECS.find((g) => g.value === draftGuard)?.label ?? draftGuard}」にしました（家全体の設定。パースの「納まり」も同じです）。`);
+        }
+        if (lightChanged) {
+          const patch: Partial<DesignOptions> = {};
+          if (draftLight.indirect !== now.indirect) patch.specPatch = { ...state.design.specPatch, indirectLighting: draftLight.indirect };
+          if (draftLight.tod !== now.tod) patch.timeOfDay = draftLight.tod;
+          if (Object.keys(patch).length) patchDesign(patch);
+          if (draftLight.pendant !== now.pendant) setFinish('pendant', draftLight.pendant);
+          if (draftLight.light !== now.light) setFinish('light', draftLight.light);
+          msgs.push('照明の設定を 3D に反映しました（間接照明・ペンダント・光の色・時間帯）。');
+        }
+        if (!hasNote) {
+          // 設定だけを変えた: 指定（参考資料）は作らない。元からあった指定の中身を空にしたのなら、その指定は消す
           if (orig) setFocus(focusNotes().filter((x) => x.id !== orig.id));
-          toast(buildMsg, 'ok', 6000);
+          toast(msgs.join(''), 'ok', 6000);
           showList();
           return;
         }
-        const note: FocusNote = { id: draft.id, part: draft.part, ...(isStair && draft.level != null ? { level: draft.level } : {}), note: draft.note, images: draft.images, ...(stair ? { stair } : {}), at: draft.at || new Date().toISOString() };
+        const note: FocusNote = {
+          id: draft.id,
+          part: draft.part,
+          ...(isStair && draft.level != null ? { level: draft.level } : {}),
+          note: draft.note,
+          images: draft.images,
+          ...(stair ? { stair } : {}),
+          ...(joinery ? { joinery } : {}),
+          at: draft.at || new Date().toISOString(),
+        };
         const n = upsertFocus(note);
-        toast(buildMsg + (isStair && stair ? (state.model ? `階段 ${n} か所の 3D に反映しました（パースの仕上げの説明文にも入ります）` : '登録しました。図面を読み込むと階段の 3D に反映します') : `${FOCUS_PART_LABEL[draft.part]}のこだわりを登録しました（パースの仕上げの説明文と参考画像に入ります）`), 'ok', 6000);
+        const partName = FOCUS_PART_LABEL[draft.part].replace(/（.*）/, '');
+        toast(msgs.join('') + (isStair && stair ? (state.model ? `階段 ${n} か所の 3D に反映しました（パースの仕上げの説明文にも入ります）` : '登録しました。図面を読み込むと階段の 3D に反映します') : `${partName}のこだわりを登録しました（パースの仕上げの説明文と参考画像に入ります）`), 'ok', 6000);
+        if (place) {
+          // 画面を閉じて、3D の「家具」の道具を、この形を置く状態にする（道具が受け取ると done を呼ぶ）
+          closed = true;
+          closeModal();
+          opts.onClose?.();
+          let taken = false;
+          emit('place-builtin', { variant: place, done: () => { taken = true; } });
+          if (!taken) toast('造作は、パース（3D）の画面で、左の「家具」→「造作家具を置く」から置けます', 'info', 8000);
+          return;
+        }
         showList();
       };
 
@@ -438,9 +645,9 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
         fileIn,
         h('div', { class: 'btn-row', style: 'margin:6px 0 10px;align-items:center' }, aiBtn, aiNote),
         h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'ひとこと（設計の意図。仕上げの AI にもそのまま伝えます）'), noteIn),
-        ...(stairBox ? [stairBox] : []),
+        ...[stairBox, voidBox, joinBox, lightBox].flatMap((x) => (x ? [x] : [])),
         // 保存のボタンは、縦に長くなっても見えている所に（「閉じる」を押して書きかけを失わないように）
-        h('div', { class: 'btn-row focus-save' }, h('button', { class: 'btn primary', onclick: save }, orig ? '保存' : '登録'), h('button', { class: 'btn ghost', onclick: showList }, 'やめる（一覧へ戻る）')),
+        h('div', { class: 'btn-row focus-save' }, h('button', { class: 'btn primary', onclick: () => save() }, orig ? '保存' : '登録'), h('button', { class: 'btn ghost', onclick: showList }, 'やめる（一覧へ戻る）')),
       );
     };
     render();

@@ -38,11 +38,20 @@ export interface BuilderSpec {
   /** 巾木: 入り巾木（ほぼ見えない）/ 一般 */
   baseboard: 'recessed' | 'standard';
   /**
-   * 吹抜に面する上階の縁（落下防止）: 'rail' = 黒皮鉄のフラットバー手すり（御社の標準）／'half' = 腰壁 H1100／
-   * 'halfGlass' = 腰壁 H900 ＋ ガラス H300／'wall' = 天井までの壁（吹抜を見せない）
+   * 吹抜に面する上階の縁（落下防止）: 'rail' = 鉄骨手すり（黒の細いフラットバーのフレーム＋横桟 1 本。御社の標準）／'half' = 腰壁 H1100／
+   * 'glass' = ガラス手すり（細い支柱＋ガラス）／'halfGlass' = 腰壁 H900 ＋ ガラス H300／'wall' = 天井までの壁（吹抜を見せない）
    */
-  voidGuard: 'rail' | 'half' | 'halfGlass' | 'wall';
+  voidGuard: VoidGuardSpec;
 }
+export type VoidGuardSpec = 'rail' | 'half' | 'glass' | 'halfGlass' | 'wall';
+/** 家全体の吹抜の縁の選択肢（画面の並び順: 御社で多い順） */
+export const VOID_GUARD_SPECS: { value: VoidGuardSpec; label: string; note: string }[] = [
+  { value: 'rail', label: '鉄骨手すり', note: '黒の細いフラットバーのフレームに横桟 1 本（御社の標準）' },
+  { value: 'half', label: '腰壁', note: '壁と同じ仕上げの腰壁 H1100' },
+  { value: 'glass', label: 'ガラス手すり', note: '細い支柱に透明なガラス。吹抜の抜けを邪魔しない' },
+  { value: 'halfGlass', label: '腰壁＋ガラス', note: '腰壁 H900 の上にガラス H300' },
+  { value: 'wall', label: '壁', note: '天井までの壁（吹抜を見せない）' },
+];
 
 export const BUILDER_SPECS: BuilderSpec[] = [
   {

@@ -59,7 +59,7 @@ const of = (c: { n: Record<string, number> }, key: string) => c.n[key] ?? 0;
 describe('階段のつくり（BuildOptions.stairBuild）', () => {
   const base = census();
 
-  it('指定なし = 鉄骨: 踏板・中央の桁・アイアンの手すり。ガラスは無い', () => {
+  it('指定なし = 鉄骨: 踏板・両側の黒い鋼板のささら桁・アイアンの手すり。ガラスは無い', () => {
     expect(of(base, 'int.stairs')).toBeGreaterThan(0);
     expect(of(base, 'f.metal')).toBeGreaterThan(0);
     expect(of(base, 'ext.glass')).toBe(0);
@@ -78,7 +78,6 @@ describe('階段のつくり（BuildOptions.stairBuild）', () => {
     const c = census({ rail: 'none' }, 'box');
     expect(of(c, 'int.wall')).toBeGreaterThan(of(base, 'int.wall'));
     expect(of(c, 'f.metal')).toBe(0);
-    expect(of(c, 'ext.frame')).toBeLessThan(of(base, 'ext.frame') || 1);
   });
 
   it('片持ち: 踏板だけ（厚み 60）。桁・側板・受け材が無い', () => {
@@ -93,7 +92,7 @@ describe('階段のつくり（BuildOptions.stairBuild）', () => {
 describe('階段の手すり（Stair.look.rail）', () => {
   const none = census({ rail: 'none' });
 
-  it('なし: 鉄は中央の桁だけ', () => {
+  it('なし: 鉄は桁と受け材だけ', () => {
     expect(of(none, 'f.metal')).toBeGreaterThan(0);
     expect(of(none, 'f.metal')).toBeLessThan(of(census(), 'f.metal'));
   });
@@ -114,6 +113,59 @@ describe('階段の手すり（Stair.look.rail）', () => {
     const c = census({ rail: 'wood' });
     expect(of(c, 'f.wood')).toBeGreaterThan(0);
     expect(of(c, 'f.metal')).toBe(of(none, 'f.metal'));
+  });
+});
+
+describe('鉄骨階段の桁・踏板の色・鉄の色（Stair.look.stringer / tread / frame）', () => {
+  /** 階段の範囲の、ある素材の頂点の x（階段の幅の向き。階段は x 0.1〜1.01m）の集まり */
+  const xsOf = (look: StairLook | undefined, key: string, yMin = 0.52): number[] => {
+    const { mb } = buildBuilding(model(look), { exterior: style });
+    const g = mb.build(() => new THREE.MeshBasicMaterial());
+    const xs: number[] = [];
+    for (const mesh of g.children as THREE.Mesh[]) {
+      if (mesh.name !== key) continue;
+      const pos = mesh.geometry.getAttribute('position');
+      for (let i = 0; i < pos.count; i++) {
+        const [x, y, z] = [pos.getX(i), pos.getY(i), pos.getZ(i)];
+        if (x < 0.05 || x > 1.5 || z < 0.9 || z > 4.3 || y < yMin || y > 4.6) continue;
+        xs.push(x);
+      }
+    }
+    return xs;
+  };
+
+  it('標準は両側のささら桁: 鉄は階段の両脇（幅の端から 5cm 以内）にあり、中央には無い', () => {
+    const xs = xsOf({ rail: 'none' }, 'f.metal');
+    expect(xs.length).toBeGreaterThan(0);
+    expect(xs.some((x) => x < 0.15)).toBe(true);
+    expect(xs.some((x) => x > 0.96)).toBe(true);
+    expect(xs.some((x) => x > 0.3 && x < 0.8)).toBe(false);
+  });
+
+  it('中央の力桁にすると、鉄は階段の中央（幅 100 の角形鋼管と受け板）に集まる', () => {
+    const xs = xsOf({ rail: 'none', stringer: 'center' }, 'f.metal');
+    expect(xs.length).toBeGreaterThan(0);
+    expect(Math.min(...xs)).toBeGreaterThan(0.4);
+    expect(Math.max(...xs)).toBeLessThan(0.72);
+  });
+
+  it('踏板の色を選ぶと、踏板はその色の素材になる（床に合わせる = 指定なしと同じ）', () => {
+    const c = census({ rail: 'none', tread: 'walnut' });
+    expect(of(c, 'int.stairs@walnut')).toBe(of(census({ rail: 'none' }), 'int.stairs'));
+    expect(of(c, 'int.stairs')).toBe(0);
+    expect(census({ rail: 'none', tread: 'floor' }).n).toEqual(census({ rail: 'none' }).n);
+  });
+
+  it('鉄の色を白にすると、桁と手すりが白い鉄になる（黒い鉄は残らない）', () => {
+    const c = census({ frame: 'white' });
+    expect(of(c, 'f.steelWhite')).toBe(of(census(), 'f.metal'));
+    expect(of(c, 'f.metal')).toBe(0);
+  });
+
+  it('アイアンの手すり: 支柱は約 1m ごと（直階段 13 段で 4 本）。上の手すりと横桟 1 本で、縦桟は並べない', () => {
+    // 手すりの鉄 = 手すりありの鉄 − 手すりなしの鉄。支柱 4 本 ＋ 横材 2 本 = 箱 6 個（箱 1 個 = 三角形 12 枚 = 頂点 36）
+    const rail = of(census(), 'f.metal') - of(census({ rail: 'none' }), 'f.metal');
+    expect(rail).toBe(6 * 36);
   });
 });
 

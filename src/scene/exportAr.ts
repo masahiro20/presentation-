@@ -94,6 +94,12 @@ export async function exportAr(
     // スマホで開く重さにする: 色の画像だけ残し（凹凸・艶の画像は外す）、glb は JPEG で小さく
     const undo: (() => void)[] = [];
     holder.traverse((o) => {
+      // 間接照明の光の帯（加算の薄い面）は AR では半透明の板に見えるので書き出さない
+      if (String(o.userData.matKey ?? '').startsWith('f.coveGlow') && o.visible) {
+        o.visible = false;
+        undo.push(() => (o.visible = true));
+        return;
+      }
       const mats = (o as THREE.Mesh).material;
       if (!mats) return;
       for (const m of Array.isArray(mats) ? mats : [mats]) {

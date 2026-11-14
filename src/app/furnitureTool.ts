@@ -8,6 +8,7 @@ import { FABRIC_COLORS, WOOD_TONES, roomFloorOffsetMm, type BuildingModel, type 
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { BUILTIN_VARIANTS, FURNITURE_LABEL, KITCHEN_TYPES, SOFA_SHAPES, LEG_SIDES, WASH_STYLES, furnitureDims, furnitureItems } from '../scene/furniture';
 import { furnitureGaps, mmText } from '../core/dims';
+import { fitAlongWall, placeForMemo, relatedItem, viewpointFor } from '../core/memoPlace';
 import type { DimLine3D, Handle3D, Viewer } from '../scene/viewer';
 import { h, clear, toast } from './dom';
 import { on, state } from './state';
@@ -577,15 +578,73 @@ export function createFurnitureTool(v: Viewer, host: HTMLElement, onModelEdited:
   }
 
   // こだわりの参考資料（造作）から「この形を 3D に置く」: この道具を開いて、その形を置く状態にする
+  // at があれば（図面のメモの場所）、その部屋の壁ぎわにそのまま置いて、見える位置へ寄る。置けなければクリックで置く状態にする
   on('place-builtin', (payload) => {
-    const p = payload as { variant?: BuiltinVariant; done?: () => void } | undefined;
+    const p = payload as { variant?: BuiltinVariant; at?: { level: number; x: number; y: number }; w?: number; d?: number; done?: () => void } | undefined;
     if (!p?.variant || !BUILTIN_VARIANTS[p.variant] || !model() || !host.isConnected) return;
     if (!active) setActive(true);
     sel = null;
     moving = false;
+    const label = BUILTIN_VARIANTS[p.variant].label.replace(/（.*$/, '');
+    const f = p.at ? floorOf(p.at.level) : null;
+    /** 置いた造作が見える位置へ寄る（部屋の中から、壁に向かって。家具との間に壁が入らない所まで下がる） */
+    const lookAt = (fl: Floor, at: { x: number; y: number; rot: number; roomId?: string }, w: number) => {
+      const room = fl.rooms.find((x) => x.id === at.roomId);
+      // 視線をさえぎる背の高い家具（本棚・壁面収納・冷蔵庫・キッチン）の外形。その後ろ・中には立たない
+      const TALL = new Set<FurnitureKind>(['bookshelf', 'fridge', 'cupboard', 'kitchen', 'hanger', 'cabinet']);
+      const blockers = itemsOf(fl.level)
+        .filter((it) => !(it.x === at.x && it.y === at.y) && (TALL.has(it.kind) || (it.kind === 'builtin' && ['wallShelf', 'tallStorage', 'shelfDesk'].includes(it.variant ?? 'wallShelf'))))
+        .map((it) => {
+          const { w: iw, d: id, v0 } = furnitureDims(it);
+          const rr = (it.rot * Math.PI) / 180;
+          const al = { x: Math.cos(rr), y: Math.sin(rr) };
+          const inw = { x: -Math.sin(rr), y: Math.cos(rr) };
+          const pt = (u: number, vv: number) => ({ x: it.x + (al.x * u + inw.x * vv) * 1000, y: it.y + (al.y * u + inw.y * vv) * 1000 });
+          return [pt(-iw / 2, v0), pt(iw / 2, v0), pt(iw / 2, v0 + id), pt(-iw / 2, v0 + id)];
+        });
+      const vp = viewpointFor(fl, room, at, w, blockers);
+      const y0 = fl.elevation / 1000 + (room ? roomFloorOffsetMm(room) : 0) / 1000;
+      v.setCutaway(null);
+      v.flyTo({ pos: new THREE.Vector3(vp.x / 1000, y0 + 1.5, vp.y / 1000), target: new THREE.Vector3(at.x / 1000, y0 + 0.9, at.y / 1000), fov: 72 });
+      return room;
+    };
+    // メモのそばに、同じ役目の家具がすでに読めている（「机 W2500」のそばの机）→ 新しく置かず、その家具を造作に置き換える
+    const room0 = f && p.at ? f.rooms.find((r) => pointInPolygon(p.at!, r.polygon)) : null;
+    const rel = f && p.at && room0 ? relatedItem(itemsOf(f.level), p.at, room0.id, p.variant, furnitureDims) : null;
+    if (f && rel && room0) {
+      const x = explicit(f.level).find((q) => q.id === rel.id);
+      if (x) {
+        const was = x.kind === 'builtin' ? BUILTIN_VARIANTS[x.variant ?? 'wallShelf'].label.replace(/（.*$/, '') : FURNITURE_LABEL[x.kind];
+        const fit = fitAlongWall(room0, x, p.w ?? Math.max(furnitureDims(x).w, BUILTIN_VARIANTS[p.variant].w));
+        // 机 → 造作のカウンターにするときは、椅子を 1 脚残す
+        const seats = x.kind === 'desk' && (p.variant === 'counter' || p.variant === 'shelfDesk') ? 1 : x.seats;
+        Object.assign(x, { kind: 'builtin', variant: p.variant, x: fit.x, y: fit.y, w: fit.w, roomId: room0.id, ...(p.d ? { d: p.d } : {}), ...(seats ? { seats } : {}) });
+        sel = { level: f.level, id: x.id };
+        add = null;
+        commit();
+        lookAt(f, x, fit.w);
+        toast(`図面の「${was}」を「${label}」に置き換えました（幅 ${Math.round(fit.w * 1000).toLocaleString()}${p.d ? `・奥行 ${Math.round(p.d * 1000)}` : ''}）。ドラッグで動かし、寸法はパネルで変えられます`, 'ok', 8000);
+        p.done?.();
+        return;
+      }
+    }
+    const spot = f && p.at ? placeForMemo(f, p.at, p.w ?? BUILTIN_VARIANTS[p.variant].w) : null;
+    if (f && spot) {
+      const list = explicit(f.level);
+      const id = `u${Date.now().toString(36)}`;
+      const base = BUILTIN_VARIANTS[p.variant];
+      list.push({ id, kind: 'builtin', x: spot.x, y: spot.y, rot: spot.rot, roomId: spot.roomId, variant: p.variant, ...(Math.abs(spot.w - base.w) > 0.01 ? { w: spot.w } : {}), ...(p.d && Math.abs(p.d - base.d) > 0.01 ? { d: p.d } : {}) });
+      sel = { level: f.level, id };
+      add = null;
+      commit();
+      const room = lookAt(f, spot, spot.w);
+      toast(`「${label}」を、図面のメモの場所（${room?.name.normalize('NFKC') ?? ''}の壁ぎわ）に置きました。ドラッグで動かし、幅・奥行はパネルで変えられます`, 'ok', 8000);
+      p.done?.();
+      return;
+    }
     add = { kind: 'builtin', variant: p.variant };
     render();
-    toast(`「${BUILTIN_VARIANTS[p.variant].label.replace(/（.*$/, '')}」を置きます。置きたい壁の近くの床をクリックしてください`, 'info', 8000);
+    toast(`${p.at ? 'メモの場所には、この幅が入る壁が見つかりませんでした。' : ''}「${label}」を置きます。置きたい壁の近くの床をクリックしてください`, 'info', 8000);
     p.done?.();
   });
 

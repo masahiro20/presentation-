@@ -286,7 +286,21 @@ export interface ContextResult {
  * 部屋ごとに長方形を文脈で分類して家具にする。
  * walls は壁の芯（向き・距離の判定に使う）、outline は建物外形。
  */
-export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls: Wall[], level: number, dict?: SymbolSignature[], prior: FurnitureItem[] = [], extraRects: Omit<PlanRect, 'id'>[] = []): ContextResult {
+/** 図面のメモから分かる家具の手がかり（「TV 周り作りこむ」→ そのそばの壁沿いの台はテレビ台） */
+export interface MemoHint {
+  x: number;
+  y: number;
+  kind: FurnitureKind;
+}
+
+/** 図面のメモの文から、そのそばにある家具の種類を読む（決められる言葉だけ） */
+export function memoHintKind(text: string): FurnitureKind | null {
+  const t = text.normalize('NFKC');
+  if (/テレビ|TV/i.test(t)) return 'tv';
+  return null;
+}
+
+export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls: Wall[], level: number, dict?: SymbolSignature[], prior: FurnitureItem[] = [], extraRects: Omit<PlanRect, 'id'>[] = [], hints: MemoHint[] = []): ContextResult {
   const items: FurnitureItem[] = [];
   const trace: string[] = [];
   const candidates: ContextResult['candidates'] = [];
@@ -410,10 +424,11 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
   // ---- 向き・位置を FurnitureItem に変換 ----
   const roomOf = (c: Cand) => c.room;
   /** 長方形の「壁側」の向き: 接している辺（複数なら部屋の中心から遠い方）。接していなければ部屋の中心から遠い辺 */
-  const wallSideOf = (c: Cand, alongLong: boolean): { along: Vec2; inward: Vec2; back: number } => {
+  /** @param faceTo 壁に付いていない家具を向ける先（ソファをテレビ・ローテーブルの側へ）。無ければ部屋の中央へ向ける */
+  const wallSideOf = (c: Cand, alongLong: boolean, faceTo?: Vec2): { along: Vec2; inward: Vec2; back: number } => {
     const bb = roomBBox(c.room);
-    const rcx = (bb.minX + bb.maxX) / 2;
-    const rcy = (bb.minY + bb.maxY) / 2;
+    const rcx = faceTo ? faceTo.x : (bb.minX + bb.maxX) / 2;
+    const rcy = faceTo ? faceTo.y : (bb.minY + bb.maxY) / 2;
     // 候補の向き（inward = 壁から部屋へ）
     const opts: { inward: Vec2; touch: boolean; far: number }[] = [
       { inward: { x: 0, y: 1 }, touch: c.touch.top, far: rcy - c.cy },
@@ -438,9 +453,9 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
       if (ix * iy >= o.w * o.h * 0.6) o.kind = 'consumed' as FurnitureKind;
     }
   };
-  const push = (c: Cand, kind: FurnitureKind, extra: Partial<FurnitureItem> = {}, alongLong = true) => {
+  const push = (c: Cand, kind: FurnitureKind, extra: Partial<FurnitureItem> = {}, alongLong = true, faceTo?: Vec2) => {
     consume(c);
-    const { along, inward, back } = wallSideOf(c, alongLong);
+    const { along, inward, back } = wallSideOf(c, alongLong, faceTo);
     const origin = { x: c.cx - inward.x * back, y: c.cy - inward.y * back };
     let rot = Math.atan2(along.y, along.x) * DEG;
     rot = Math.round(((rot % 360) + 360) % 360);
@@ -493,15 +508,21 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
       // 壁沿いの浅いカウンター（550〜700）と、その前に平行な深いカウンター（650〜1,100）の組 → 対面キッチン
       let kitchenDone = false;
       if (t !== 'japanese' && t !== 'other') {
+        /** 手前のカウンターのまわりの椅子（長方形の椅子＋丸く描いた椅子） */
+        const chairsAround = (c: Cand) =>
+          dinnerChairs(c, cands).length + ringsIn(c.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !(((g.minX + g.maxX) / 2 > c.rect.minX && (g.minX + g.maxX) / 2 < c.rect.maxX && (g.minY + g.maxY) / 2 > c.rect.minY && (g.minY + g.maxY) / 2 < c.rect.maxY))).length;
         for (const back of counters.filter((c) => longAgainstWall(c) && c.S <= 760)) {
-          const front = counters.find((c) => c !== back && !longAgainstWall(c) && c.S >= 600 && (parallelGap(back, c) ?? -1) >= 600 && (parallelGap(back, c) ?? 9e9) <= 1600);
+          // 壁沿いのカウンターの前に平行な台が 2 つあるとき（食卓と、シンクのある島。伊藤様邸）: 椅子に囲まれていない方がキッチン
+          // （最初に見つけた食卓を「手前の食卓」にして、島を読み落としていた → 壁付け I 型になっていた）
+          const fronts = counters.filter((c) => c !== back && !longAgainstWall(c) && c.S >= 600 && (parallelGap(back, c) ?? -1) >= 600 && (parallelGap(back, c) ?? 9e9) <= 1600);
+          const front = fronts.length > 1 ? (fronts.find((c) => chairsAround(c) < 2 && (ringsIn(c.rect).length >= 1 || c.rect.inner >= 8)) ?? fronts.find((c) => chairsAround(c) < 2) ?? fronts[0]) : fronts[0];
           if (!front) continue;
           // どちらにシンク・コンロの丸い記号があるか、手前に椅子が並ぶか、で型を決める
           const frontRings = ringsIn(front.rect).length;
           const backRings = ringsIn(back.rect).length;
           // シンクは丸い排水口の輪か、線の多い長方形（水栓・槽の線）で描かれる
           const frontSink = frontRings >= 1 || front.rect.inner >= 8;
-          const frontChairs = dinnerChairs(front, cands).length + ringsIn(front.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !(((g.minX + g.maxX) / 2 > front.rect.minX && (g.minX + g.maxX) / 2 < front.rect.maxX && (g.minY + g.maxY) / 2 > front.rect.minY && (g.minY + g.maxY) / 2 < front.rect.maxY))).length;
+          const frontChairs = chairsAround(front);
           used.add(back);
           used.add(front);
           if (frontChairs >= 2 && frontRings === 0) {
@@ -563,6 +584,23 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
         push(c, 'sofa', { w: +(c.L / 1000).toFixed(2) });
         sofasL.push(c);
       }
+      // --- 図面のメモ（「TV 周り作りこむ」）のそばの、壁沿いの台 → テレビ台 ---
+      // 奥行 750 の造作のテレビ台は「壁沿いのソファ」と読まれ、本物のソファ（壁から離れて置いた長方形）が読み落とされていた（伊藤様邸）
+      const hintTvs: Cand[] = [];
+      for (const hn of hints) {
+        if (hn.kind !== 'tv' || !pointInPolygon(hn, room.polygon)) continue;
+        const distTo = (c: Cand) => Math.hypot(Math.max(c.rect.minX - hn.x, 0, hn.x - c.rect.maxX), Math.max(c.rect.minY - hn.y, 0, hn.y - c.rect.maxY));
+        const near = free()
+          .filter((c) => longAgainstWall(c) && within(c.S, 300, 1150) && within(c.L, 1000, 3600) && distTo(c) <= 1500)
+          .sort((a, b) => distTo(a) - distTo(b))[0];
+        if (!near) continue;
+        near.note = '図面のメモ（TV）のそば';
+        used.add(near);
+        push(near, 'tv', { w: +(near.L / 1000).toFixed(2) });
+        hintTvs.push(near);
+      }
+      /** メモで決まったテレビ台のそば（3.8 m 以内）にある、壁から離れたソファの形 → そのテレビ台の側を向くソファ */
+      const nearHintTv = (c: Cand) => hintTvs.find((tv) => Math.hypot(tv.cx - c.cx, tv.cy - c.cy) <= 3800);
       // --- ソファ: 奥行 750〜1,100・長さ 1,500〜3,400。壁沿い、または L 字（2 本が角を共有） ---
       const sofaish = free().filter((c) => within(c.S, 700, 1150) && within(c.L, 1400, 3400) && !(within(c.S, 700, 1000) && within(c.L, 1200, 2400) && c.rect.innerRects === 0 && !longAgainstWall(c) && dinnerChairs(c, cands).length >= 2));
       const sofas: Cand[] = [...sofasL];
@@ -581,6 +619,12 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
           c.note = longAgainstWall(c) ? '壁沿い' : c.rect.dashed ? '破線の輪郭' : 'テレビ向き';
           used.add(c);
           push(c, 'sofa', { w: +(c.L / 1000).toFixed(2) });
+          sofas.push(c);
+        } else if (nearHintTv(c) && dinnerChairs(c, cands).length < 2) {
+          const tv = nearHintTv(c)!;
+          c.note = 'テレビ（図面のメモ）のそば';
+          used.add(c);
+          push(c, 'sofa', { w: +(c.L / 1000).toFixed(2) }, true, { x: tv.cx, y: tv.cy });
           sofas.push(c);
         }
       }

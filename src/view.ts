@@ -21,6 +21,7 @@ import { ROUNDS, shotFor, deltaText, type CustomerPicks, type CustomerInbox } fr
 import { yenMan } from './core/planDiff';
 import { lookOf } from './coordinate/samples';
 import { buildShareContextGroup, type ShareContext } from './sun/shareContext';
+import { designerNotes } from './core/planNotes';
 
 type Project = ProjectFile & { share?: { id: string; videos: { title: string; url: string }[]; ar?: ArFiles; deltas?: Record<string, Record<string, number | null>>; grand?: number; context?: ShareContext; designer?: string; tel?: string; email?: string; url?: string } };
 
@@ -49,6 +50,9 @@ async function main() {
     loading.replaceChildren(h('div', null, 'データが入っていません'));
     return;
   }
+  // 図面のメモは、設計士が書いたものだけ（読み取りが足した社内向けの注記・仕様の決まり文句は、お客様には出さない。
+  // 前に渡したリンクのデータにも入っているので、ここでも外す）
+  for (const f of proj.model.floors) if (f.notes) f.notes = designerNotes(f);
   document.title = `${proj.customer ?? ''}　ご提案の家`;
   head.append(
     h('div', { class: 'office' }, proj.logo ? h('img', { src: proj.logo, alt: '' }) : proj.company || 'HOME LANDICK'),
@@ -383,7 +387,11 @@ async function main() {
       pane.append(ta, send, status);
     });
   // 設計士のメモ（図面の吹き出し）: タップでその場所へ
-  const notes = proj.model.floors.flatMap((f) => (f.notes ?? []).map((n) => ({ ...n, level: f.level })));
+  // 同じ文が何か所にも書かれているとき（窓の種類の書き込みなど）は、最初の 1 つだけ出す
+  const seenNote = new Set<string>();
+  const notes = proj.model.floors
+    .flatMap((f) => (f.notes ?? []).map((n) => ({ ...n, level: f.level })))
+    .filter((n) => (seenNote.has(n.text) ? false : (seenNote.add(n.text), true)));
   if (notes.length)
     addTab('notes', '設計士のメモ', (pane) => {
       for (const n of notes) {

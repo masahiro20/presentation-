@@ -1,5 +1,5 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
-import { focusChips, focusNotes, onFocusChange, openFocusDialog } from '../focusNotes';
+import { focusChips, focusNotes, onFocusChange, openFocusDialog, pendingMemoIntents } from '../focusNotes';
 import { zoomPane } from '../zoomPane';
 import { readDesignIntents } from '../../core/designIntent';
 import { state, emit } from '../state';
@@ -1394,7 +1394,28 @@ function renderResult(ctx: StepCtx) {
   };
   renderFocus();
   onFocusChange(focusBody, renderFocus);
+  // 図面のメモ（設計士の書き込み）を読めたら、いちばん上で知らせる: こだわりに取り込むと 3D と仕上げの説明文に効く
+  const memoCard = h('div');
+  const renderMemoCard = () => {
+    clear(memoCard);
+    const pend = pendingMemoIntents();
+    if (!pend.length) return;
+    const act = pend.filter((it) => it.actionable).length;
+    const short = (t: string) => `${t.slice(0, 16)}${t.length > 16 ? '…' : ''}`;
+    memoCard.append(
+      h(
+        'div',
+        { class: 'src-card memo-card' },
+        h('div', null, h('b', null, `図面のメモ ${pend.length} 件を読みました`), h('span', { class: 'hint keep' }, `　設計士の書き込みです。${act ? `うち ${act} 件は 3D に反映できます。` : 'パースの仕上げの説明文に入れられます。'}`)),
+        h('div', { class: 'memo-quotes' }, ...pend.slice(0, 3).map((it) => h('span', null, `「${short(it.text)}」`)), pend.length > 3 ? h('small', null, `ほか ${pend.length - 3} 件`) : null),
+        h('div', { class: 'btn-row', style: 'margin-top:0' }, h('button', { class: 'btn sm', title: 'メモを 1 件ずつ確かめて、こだわりの参考資料に取り込みます（見送ることもできます）', onclick: () => openFocusDialog({ onClose: () => { renderMemoCard(); renderFocus(); } }) }, 'こだわりに取り込む')),
+      ),
+    );
+  };
+  renderMemoCard();
+  onFocusChange(memoCard, renderMemoCard);
   guideHost.append(
+    memoCard,
     sourcesCard(model, {
       addElevation: () => elevIn.click(),
       add3d: () => ext3dIn.click(),

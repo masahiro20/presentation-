@@ -10438,6 +10438,27 @@ function translateSite(site, dx, dy) {
 	if (b.bottom != null) b.bottom += dy;
 }
 //#endregion
+//#region src/core/planNotes.ts
+/** 読み取りが足した注記の言い回し（parser/ensureOpenings.ts・assemble.ts の文面） */
+var TOOL_NOTE = /違えば方眼|図面の注記|読めなかったので|として扱いました|壁で閉じていたので/;
+/**
+* 仕様書・申請図の決まり文句。設計士の「見せ場のメモ」とは別物なので、メモとして扱わない
+* （申請図: 「くぎ N50・@150mm以下」「サッシ性能値: 別紙自己宣言書による…」「全ての配管系を 13A 以下とする」）
+*/
+var SPEC_NOTE = /くぎ|釘[:：\s]|配管|排水|給水|給湯|トラップ|点検口|PB\s?\d|準不燃|不燃|認定|石綿|クロルピリホス|ロックウール|F☆|性能|仕様とする|とする[。)）]*$|とする[。※]|打設|接合|支持金物|アンダーカット|気流|\d+A以下|自己宣言|各階共通|別紙|告示|建築基準法|施行令|耐力壁|筋かい|ホールダウン|換気回数|シックハウス|24時間換気|省エネ|等級|非常用進入口|代替進入口|排煙|延焼|防火設備|[＠@]\s?\d{2,3}/;
+/**
+* 設計の作業メモ（検討中のこと・納まりの申し送り）。図面には書いてあるが、お客様へ「設計士のメモ」として出す言葉ではない
+* （「建具は柱の位置で何枚割りにするか検討」「階段は 1〜2、2〜3F の蹴上をそろえる」「袖壁控える。」「乾太くんダクト経路」）
+*/
+var WORK_NOTE = /検討|要確認|確認中|かもしれません|可能性があります|蹴上|そろえる|揃える|(天端|高さ|芯|通り|ライン|レベル)合わせ|面にする|面一|ツライチ|経路|控える|未定|要相談|打合せ|打ち合わせ|変更になる|にしてあります|心配なため/;
+function noteKind(n) {
+	const text = (typeof n === "string" ? n : n.text).normalize("NFKC");
+	if (TOOL_NOTE.test(text)) return "tool";
+	if (SPEC_NOTE.test(text)) return "spec";
+	if (WORK_NOTE.test(text)) return "work";
+	return "memo";
+}
+//#endregion
 //#region src/parser/symbols.ts
 /**
 * 図面の「記号」を読む: 家具・設備・車・植栽
@@ -12096,10 +12117,20 @@ var NOTE_NG = /境界線|帖|㎡|m2|面積|平面図|立面図|断面図|四捨�
 /**
 * 室名より小さい文字で書かれた「文（ひらがなを含む）」をメモとして拾い、行が続くものはつなぐ。
 * roomLabelSize は室名の文字の大きさ（mm）。
+*
+* 室名と同じ大きさで書かれた文も拾う（吉田様邸の次の版: 「デザイン性の高い階段で素敵に！」「奥行きのある広々玄関」が
+* 室名と同じ大きさで、メモから落ちていた）。室名と取り違えないように、ひらがなを 2 文字以上含む 8 文字以上の文で、
+* 部屋の名札として使われていないものだけ。
+* 仕様書・申請図の決まり文句（くぎ・配管・性能値）はメモではないので拾わない（core/planNotes.ts）。
 */
 function detectNotes(texts, roomLabelSize, rooms) {
 	const hira = /[ぁ-ゟ]/;
-	const cands = texts.filter((t) => t.str.trim().length >= 4 && hira.test(t.str) && !NOTE_NG.test(t.str) && t.size <= roomLabelSize * .92 && Math.abs((t.angle % 360 + 360) % 360) < 2).map((t) => ({
+	const sentence = (t) => {
+		const str = t.str.trim().normalize("NFKC");
+		if (str.length < 8 || (str.match(/[ぁ-ゟ]/g)?.length ?? 0) < 2) return false;
+		return !rooms.some((r) => Math.abs(r.labelPos.x - t.x) < 80 && Math.abs(r.labelPos.y - t.y) < 80);
+	};
+	const cands = texts.filter((t) => t.str.trim().length >= 4 && hira.test(t.str) && !NOTE_NG.test(t.str) && (t.size <= roomLabelSize * .92 || t.size <= roomLabelSize * 1.12 && sentence(t)) && Math.abs((t.angle % 360 + 360) % 360) < 2).map((t) => ({
 		...t,
 		str: t.str.trim().normalize("NFKC")
 	})).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -12122,7 +12153,7 @@ function detectNotes(texts, roomLabelSize, rooms) {
 			last = t;
 		}
 		const text = lines.map((l) => l.str).join("");
-		if (text.length < 5) continue;
+		if (text.length < 5 || noteKind(text) === "spec") continue;
 		const x = lines.reduce((a, l) => a + l.x, 0) / lines.length;
 		const y = lines.reduce((a, l) => a + l.y, 0) / lines.length;
 		const room = rooms.find((r) => pointInPolygon({
@@ -12446,11 +12477,13 @@ function findLoops(segs, minSize = 120, maxSize = 700, maxSeg = 400) {
 	return out;
 }
 var DEG$1 = 180 / Math.PI;
-/**
-* 部屋ごとに長方形を文脈で分類して家具にする。
-* walls は壁の芯（向き・距離の判定に使う）、outline は建物外形。
-*/
-function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], extraRects = []) {
+/** 図面のメモの文から、そのそばにある家具の種類を読む（決められる言葉だけ） */
+function memoHintKind(text) {
+	const t = text.normalize("NFKC");
+	if (/テレビ|TV/i.test(t)) return "tv";
+	return null;
+}
+function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], extraRects = [], hints = []) {
 	const items = [];
 	const trace = [];
 	const candidates = [];
@@ -12646,10 +12679,11 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 	const contains = (a, b) => b.rect.minX >= a.rect.minX - EPS && b.rect.maxX <= a.rect.maxX + EPS && b.rect.minY >= a.rect.minY - EPS && b.rect.maxY <= a.rect.maxY + EPS;
 	const roomOf = (c) => c.room;
 	/** 長方形の「壁側」の向き: 接している辺（複数なら部屋の中心から遠い方）。接していなければ部屋の中心から遠い辺 */
-	const wallSideOf = (c, alongLong) => {
+	/** @param faceTo 壁に付いていない家具を向ける先（ソファをテレビ・ローテーブルの側へ）。無ければ部屋の中央へ向ける */
+	const wallSideOf = (c, alongLong, faceTo) => {
 		const bb = roomBBox(c.room);
-		const rcx = (bb.minX + bb.maxX) / 2;
-		const rcy = (bb.minY + bb.maxY) / 2;
+		const rcx = faceTo ? faceTo.x : (bb.minX + bb.maxX) / 2;
+		const rcy = faceTo ? faceTo.y : (bb.minY + bb.maxY) / 2;
 		const opts = [
 			{
 				inward: {
@@ -12703,9 +12737,9 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			if (Math.max(0, Math.min(o.rect.maxX, c.rect.maxX) - Math.max(o.rect.minX, c.rect.minX)) * Math.max(0, Math.min(o.rect.maxY, c.rect.maxY) - Math.max(o.rect.minY, c.rect.minY)) >= o.w * o.h * .6) o.kind = "consumed";
 		}
 	};
-	const push = (c, kind, extra = {}, alongLong = true) => {
+	const push = (c, kind, extra = {}, alongLong = true, faceTo) => {
 		consume(c);
-		const { along, inward, back } = wallSideOf(c, alongLong);
+		const { along, inward, back } = wallSideOf(c, alongLong, faceTo);
 		const origin = {
 			x: c.cx - inward.x * back,
 			y: c.cy - inward.y * back
@@ -12767,13 +12801,16 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 			const counters = free().filter((c) => within(c.S, 550, 1100) && within(c.L, 1600, 9e3) && c.rect.innerRects <= 8);
 			let kitchenDone = false;
 			if (t !== "japanese" && t !== "other") {
+				/** 手前のカウンターのまわりの椅子（長方形の椅子＋丸く描いた椅子） */
+				const chairsAround = (c) => dinnerChairs(c, cands).length + ringsIn(c.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !((g.minX + g.maxX) / 2 > c.rect.minX && (g.minX + g.maxX) / 2 < c.rect.maxX && (g.minY + g.maxY) / 2 > c.rect.minY && (g.minY + g.maxY) / 2 < c.rect.maxY)).length;
 				for (const back of counters.filter((c) => longAgainstWall(c) && c.S <= 760)) {
-					const front = counters.find((c) => c !== back && !longAgainstWall(c) && c.S >= 600 && (parallelGap(back, c) ?? -1) >= 600 && (parallelGap(back, c) ?? 9e9) <= 1600);
+					const fronts = counters.filter((c) => c !== back && !longAgainstWall(c) && c.S >= 600 && (parallelGap(back, c) ?? -1) >= 600 && (parallelGap(back, c) ?? 9e9) <= 1600);
+					const front = fronts.length > 1 ? fronts.find((c) => chairsAround(c) < 2 && (ringsIn(c.rect).length >= 1 || c.rect.inner >= 8)) ?? fronts.find((c) => chairsAround(c) < 2) ?? fronts[0] : fronts[0];
 					if (!front) continue;
 					const frontRings = ringsIn(front.rect).length;
 					const backRings = ringsIn(back.rect).length;
 					const frontSink = frontRings >= 1 || front.rect.inner >= 8;
-					const frontChairs = dinnerChairs(front, cands).length + ringsIn(front.rect, 700).filter((g) => Math.max(g.maxX - g.minX, g.maxY - g.minY) >= 300 && !((g.minX + g.maxX) / 2 > front.rect.minX && (g.minX + g.maxX) / 2 < front.rect.maxX && (g.minY + g.maxY) / 2 > front.rect.minY && (g.minY + g.maxY) / 2 < front.rect.maxY)).length;
+					const frontChairs = chairsAround(front);
 					used.add(back);
 					used.add(front);
 					if (frontChairs >= 2 && frontRings === 0) {
@@ -12833,6 +12870,19 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 				push(c, "sofa", { w: +(c.L / 1e3).toFixed(2) });
 				sofasL.push(c);
 			}
+			const hintTvs = [];
+			for (const hn of hints) {
+				if (hn.kind !== "tv" || !pointInPolygon(hn, room.polygon)) continue;
+				const distTo = (c) => Math.hypot(Math.max(c.rect.minX - hn.x, 0, hn.x - c.rect.maxX), Math.max(c.rect.minY - hn.y, 0, hn.y - c.rect.maxY));
+				const near = free().filter((c) => longAgainstWall(c) && within(c.S, 300, 1150) && within(c.L, 1e3, 3600) && distTo(c) <= 1500).sort((a, b) => distTo(a) - distTo(b))[0];
+				if (!near) continue;
+				near.note = "図面のメモ（TV）のそば";
+				used.add(near);
+				push(near, "tv", { w: +(near.L / 1e3).toFixed(2) });
+				hintTvs.push(near);
+			}
+			/** メモで決まったテレビ台のそば（3.8 m 以内）にある、壁から離れたソファの形 → そのテレビ台の側を向くソファ */
+			const nearHintTv = (c) => hintTvs.find((tv) => Math.hypot(tv.cx - c.cx, tv.cy - c.cy) <= 3800);
 			const sofaish = free().filter((c) => within(c.S, 700, 1150) && within(c.L, 1400, 3400) && !(within(c.S, 700, 1e3) && within(c.L, 1200, 2400) && c.rect.innerRects === 0 && !longAgainstWall(c) && dinnerChairs(c, cands).length >= 2));
 			const sofas = [...sofasL];
 			for (const c of sofaish) {
@@ -12849,6 +12899,15 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 					c.note = longAgainstWall(c) ? "壁沿い" : c.rect.dashed ? "破線の輪郭" : "テレビ向き";
 					used.add(c);
 					push(c, "sofa", { w: +(c.L / 1e3).toFixed(2) });
+					sofas.push(c);
+				} else if (nearHintTv(c) && dinnerChairs(c, cands).length < 2) {
+					const tv = nearHintTv(c);
+					c.note = "テレビ（図面のメモ）のそば";
+					used.add(c);
+					push(c, "sofa", { w: +(c.L / 1e3).toFixed(2) }, true, {
+						x: tv.cx,
+						y: tv.cy
+					});
 					sofas.push(c);
 				}
 			}
@@ -18301,7 +18360,15 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		dashed: true
 	}));
 	if (g.__dashTrace) for (const o of dashed) g.__dashTrace.push(`${level}F 破線の輪郭 ${Math.round(o.maxX - o.minX)}x${Math.round(o.maxY - o.minY)} n=${o.n} @${Math.round((o.minX + o.maxX) / 2)},${Math.round((o.minY + o.maxY) / 2)}`);
-	const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects);
+	const memoHints = notes.flatMap((n) => {
+		const kind = memoHintKind(n.text);
+		return kind ? [{
+			x: n.x,
+			y: n.y,
+			kind
+		}] : [];
+	});
+	const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects, memoHints);
 	if (ctx) {
 		ctx.items = ctx.items.filter((it) => !inStair({
 			x: it.x,
@@ -18314,7 +18381,9 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	}
 	if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
 	const taken = new Set((ctx?.items ?? []).flatMap((it) => it.kind === "kitchen" ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`]));
-	const sensed = senseFurniture([...ctx?.items ?? [], ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))], rooms);
+	const tables = (ctx?.items ?? []).filter((it) => it.kind === "coffeeTable" || it.kind === "dining" || it.kind === "lowTable");
+	const onTable = (it) => it.kind === "plant" && tables.some((tb) => tb.roomId === it.roomId && Math.hypot(tb.x - it.x, tb.y - it.y) <= 650);
+	const sensed = senseFurniture([...ctx?.items ?? [], ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)) && !onTable(it))], rooms);
 	if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));
 	const mergedItems = sensed.items;
 	for (const r of rooms) {
@@ -28088,6 +28157,11 @@ function findSpot(ctx, s, w, len, prefer = 0) {
 	const cands = [];
 	for (let u = -len / 2 + w / 2 + .05; u <= len / 2 - w / 2 - .05; u += .05) cands.push(u);
 	cands.sort((a, b) => Math.abs(a - prefer) - Math.abs(b - prefer));
+	const open = ctx.open?.[s];
+	if (open?.length) {
+		const backed = (u0, u1) => !open.some(([a, b]) => a < u1 - .05 && b > u0 + .05);
+		for (const u of cands) if (isFree(ctx, s, u - w / 2, u + w / 2) && backed(u - w / 2, u + w / 2)) return u;
+	}
 	for (const u of cands) if (isFree(ctx, s, u - w / 2, u + w / 2)) return u;
 	return null;
 }
@@ -28674,6 +28748,7 @@ function emitItemBody(it, env) {
 			break;
 		case "shoeCabinet":
 			fr.box("f.cabinet", 0, 0, 1.2, .38, .25, .85);
+			underGlow(fr, 0, 0, 1.2, .38, .25);
 			fr.box("f.counter", 0, 0, 1.22, .4, 1.1, .03);
 	}
 }
@@ -28751,6 +28826,29 @@ function collectBlocked(ctx, f, inner) {
 	for (const w of f.walls) {
 		if (w.topMm == null || w.topMm >= 1500 || w.exterior) continue;
 		span(w.a, w.b, true, .05, 0, true);
+	}
+	for (const side of [
+		"n",
+		"s",
+		"e",
+		"w"
+	]) {
+		const { f: fr, len } = sideFrame(ctx, side);
+		const horiz = side === "n" || side === "s";
+		const line = side === "n" ? inner.minY : side === "s" ? inner.maxY : side === "w" ? inner.minX : inner.maxX;
+		const cover = [];
+		for (const w of f.walls) {
+			const dx = Math.abs(w.b.x - w.a.x);
+			const dy = Math.abs(w.b.y - w.a.y);
+			const L = Math.hypot(dx, dy) || 1;
+			if (horiz ? dy / L >= .1 : dx / L >= .1) continue;
+			if (Math.abs((horiz ? w.a.y : w.a.x) - line) > tol) continue;
+			const a = horiz ? (w.a.x * MM - fr.origin.x) * fr.along.x : (w.a.y * MM - fr.origin.z) * fr.along.z;
+			const b = horiz ? (w.b.x * MM - fr.origin.x) * fr.along.x : (w.b.y * MM - fr.origin.z) * fr.along.z;
+			cover.push([Math.min(a, b), Math.max(a, b)]);
+		}
+		const gaps = subtractIntervals([-len / 2, len / 2], mergeIntervals(cover, .15)).filter(([a, b]) => b - a >= .3);
+		if (gaps.length) (ctx.open ??= {})[side] = gaps;
 	}
 }
 /** 辺 s の区間 u0〜u1 が腰壁・手すり壁に掛かるか（壁掛けのテレビは、壁の上にはみ出すので付けない） */

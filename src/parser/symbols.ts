@@ -9,6 +9,7 @@
  */
 import { OUTDOOR_TYPES, type FurnitureItem, type FurnitureKind, type Room, type RoomType, type Vec2, type Wall } from '../core/types';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
+import { noteKind } from '../core/planNotes';
 import type { Seg } from './walls';
 import type { MmText } from './assemble';
 
@@ -1254,11 +1255,21 @@ const NOTE_NG = /境界線|帖|㎡|m2|面積|平面図|立面図|断面図|四�
 /**
  * 室名より小さい文字で書かれた「文（ひらがなを含む）」をメモとして拾い、行が続くものはつなぐ。
  * roomLabelSize は室名の文字の大きさ（mm）。
+ *
+ * 室名と同じ大きさで書かれた文も拾う（吉田様邸の次の版: 「デザイン性の高い階段で素敵に！」「奥行きのある広々玄関」が
+ * 室名と同じ大きさで、メモから落ちていた）。室名と取り違えないように、ひらがなを 2 文字以上含む 8 文字以上の文で、
+ * 部屋の名札として使われていないものだけ。
+ * 仕様書・申請図の決まり文句（くぎ・配管・性能値）はメモではないので拾わない（core/planNotes.ts）。
  */
 export function detectNotes(texts: MmText[], roomLabelSize: number, rooms: Room[]): PlanNote[] {
   const hira = /[ぁ-ゟ]/;
+  const sentence = (t: MmText) => {
+    const str = t.str.trim().normalize('NFKC');
+    if (str.length < 8 || (str.match(/[ぁ-ゟ]/g)?.length ?? 0) < 2) return false;
+    return !rooms.some((r) => Math.abs(r.labelPos.x - t.x) < 80 && Math.abs(r.labelPos.y - t.y) < 80);
+  };
   const cands = texts
-    .filter((t) => t.str.trim().length >= 4 && hira.test(t.str) && !NOTE_NG.test(t.str) && t.size <= roomLabelSize * 0.92 && Math.abs(((t.angle % 360) + 360) % 360) < 2)
+    .filter((t) => t.str.trim().length >= 4 && hira.test(t.str) && !NOTE_NG.test(t.str) && (t.size <= roomLabelSize * 0.92 || (t.size <= roomLabelSize * 1.12 && sentence(t))) && Math.abs(((t.angle % 360) + 360) % 360) < 2)
     .map((t) => ({ ...t, str: t.str.trim().normalize('NFKC') }))
     .sort((a, b) => a.y - b.y || a.x - b.x);
   const used = new Set<number>();
@@ -1281,7 +1292,7 @@ export function detectNotes(texts: MmText[], roomLabelSize: number, rooms: Room[
       last = t;
     }
     const text = lines.map((l) => l.str).join('');
-    if (text.length < 5) continue;
+    if (text.length < 5 || noteKind(text) === 'spec') continue;
     // 位置: 1 行目の中心（吹き出しの文字の中心）
     const x = lines.reduce((a, l) => a + l.x, 0) / lines.length;
     const y = lines.reduce((a, l) => a + l.y, 0) / lines.length;

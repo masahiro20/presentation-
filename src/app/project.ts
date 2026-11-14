@@ -9,6 +9,7 @@
  */
 import { state, emit, type ProjectState, type GalleryItem } from './state';
 import { normalizeFocus } from '../core/focus';
+import { designerNotes } from '../core/planNotes';
 import { toast } from './dom';
 
 export const PROJECT_FORMAT = 'madori-project-v1';
@@ -49,6 +50,7 @@ export interface ProjectFile {
   siteStudy?: ProjectState['siteStudy'];
   /** こだわり指定（参考資料）: 部位ごとのひとこと・参考画像・階段のつくり */
   focus?: ProjectState['focus'];
+  focusSkip?: ProjectState['focusSkip'];
 }
 
 /** blob: の URL をファイルに入れられる data: URL にする（既に data: ならそのまま） */
@@ -115,6 +117,7 @@ export async function serializeProject(): Promise<ProjectFile> {
     revisions: state.revisions,
     siteStudy: state.siteStudy,
     focus: state.focus,
+    focusSkip: state.focusSkip,
   };
 }
 
@@ -125,8 +128,13 @@ export async function serializeProject(): Promise<ProjectFile> {
  * 階段の手すり・段数はモデルに、つくりはコーディネートの品目に入っているので、お客様の 3D は変わらない
  */
 export function publicProject(p: ProjectFile): ProjectFile {
-  const { focus: _focus, ...rest } = p;
+  const { focus: _focus, focusSkip: _skip, ...rest } = p;
   void _focus;
+  void _skip;
+  // 図面のメモは、設計士が書いたものだけ渡す（読み取りが足した「戸が読めなかったので…」などは社内の作業用）
+  if (rest.model?.floors.some((f) => f.notes?.length)) {
+    rest.model = { ...rest.model, floors: rest.model.floors.map((f) => (f.notes ? { ...f, notes: designerNotes(f) } : f)) };
+  }
   return rest;
 }
 
@@ -165,6 +173,7 @@ export function applyProject(p: ProjectFile) {
   state.siteStudy = p.siteStudy;
   // こだわり指定: 開いたプロジェクトのもので置き換える（モデルへは emit('model') の直前に当たる）
   state.focus = normalizeFocus(p.focus);
+  state.focusSkip = Array.isArray(p.focusSkip) ? p.focusSkip.filter((x): x is string => typeof x === 'string').slice(0, 200) : undefined;
   emit('model');
   emit('project');
   emit('project-loaded');

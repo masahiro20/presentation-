@@ -43,6 +43,7 @@ import { categoryById, decide, itemOf } from '../coordinate/decisions';
 import { getGeminiKey } from './aiFinish';
 import { getReviewModel } from './aiDesigner';
 import { readFocusImages } from './focusAi';
+import { intentToFocus, pendingIntents, type MemoIntent } from '../core/memoIntent';
 
 /** いまのプロジェクトのこだわり指定 */
 export const focusNotes = (): FocusNote[] => state.focus ?? [];
@@ -188,13 +189,23 @@ export function onFocusChange(el: HTMLElement, fn: () => void): void {
   for (const ev of ['focus', 'design-3d']) offs.push(on(ev, run));
 }
 
+/** 図面のメモ（設計士の吹き出し）から作れる下書きのうち、まだ取り込んでいない・見送っていないもの */
+export const pendingMemoIntents = (): MemoIntent[] => pendingIntents(state.model, focusNotes(), state.focusSkip ?? []);
+
 /** 読み込みの画面・3D のパネルに置く、いまの指定の一覧（小さく） */
 export function focusChips(onOpen: (editId?: string) => void): HTMLElement {
   const list = focusNotes();
+  const memo = pendingMemoIntents();
+  // 図面のメモから下書きを作れるときは、先に知らせる（押すと一覧が開く）
+  const memoChip = memo.length
+    ? h('button', { class: 'focus-chip memo', title: memo.slice(0, 4).map((it) => `「${it.text}」`).join('\n'), onclick: () => onOpen() }, h('span', null, `図面のメモ ${memo.length} 件`), h('small', null, 'こだわりに取り込めます'))
+    : null;
+  if (!list.length && memoChip) return h('div', { class: 'focus-chips' }, memoChip);
   if (!list.length) return h('p', { class: 'hint keep', style: 'margin:0 0 6px' }, 'まだありません。階段・キッチン・外観など、こだわりたい所に参考画像と仕様を添えられます。');
   return h(
     'div',
     { class: 'focus-chips' },
+    memoChip,
     ...list.map((n) =>
       h(
         'button',
@@ -234,12 +245,96 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
     obs.observe(document.body, { childList: true });
   }
 
+  /** 図面のメモ（設計士の吹き出し）から作れる下書き: 確かめて取り込む・説明文に入れる・見送る */
+  const memoSection = (): HTMLElement | null => {
+    const pend = pendingMemoIntents();
+    if (!pend.length) return null;
+    const stairAt = (lv: number) => stairLevels(state.model).includes(lv);
+    const skip = (ids: string[]) => {
+      state.focusSkip = [...new Set([...(state.focusSkip ?? []), ...ids])].slice(-200);
+      emit('focus');
+    };
+    const short = (t: string) => `${t.slice(0, 18)}${t.length > 18 ? '…' : ''}`;
+    const card = (it: MemoIntent) =>
+      h(
+        'div',
+        { class: 'focus-card memo' },
+        h(
+          'div',
+          { class: 'focus-text' },
+          h('div', { class: 'focus-note' }, `「${it.text}」`),
+          h('div', { class: 'focus-look' }, h('span', { class: 'focus-where' }, `${it.level} 階 ${FOCUS_PART_LABEL[it.part]}`), ` ${it.reading}`),
+        ),
+        h(
+          'div',
+          { class: 'focus-actions' },
+          h(
+            'button',
+            {
+              class: `btn sm ${it.actionable ? 'primary' : ''}`,
+              title: it.actionable ? '部位・仕様を確かめてから登録します（3D と仕上げの説明文に効きます）' : 'この言葉を、その部位が写るカットの仕上げの説明文に入れます',
+              onclick: () => {
+                if (it.actionable) {
+                  showEditor(null, undefined, it);
+                  return;
+                }
+                upsertFocus(intentToFocus(it, new Date().toISOString(), stairAt));
+                toast(`「${short(it.text)}」を${FOCUS_PART_LABEL[it.part]}のこだわりに入れました`, 'ok');
+                showList();
+              },
+            },
+            it.actionable ? '確かめて取り込む' : '説明文に入れる',
+          ),
+          h('button', { class: 'btn sm ghost', title: 'この下書きを一覧から外します（図面のメモ自体は消えません）', onclick: () => { skip([it.id]); showList(); } }, '見送る'),
+        ),
+      );
+    const act = pend.filter((it) => it.actionable);
+    const plain = pend.filter((it) => !it.actionable);
+    return h(
+      'div',
+      { class: 'focus-memo' },
+      h('div', { class: 'field-label' }, `図面のメモから（${pend.length} 件）`),
+      h('p', { class: 'hint keep', style: 'margin:0 0 6px' }, '設計士が図面に書いた言葉です。取り込むと、その部位のこだわりとして 3D と仕上げの説明文に効きます（言葉からの受け取りなので、確かめてから）。'),
+      ...act.map(card),
+      plain.length
+        ? h(
+            'details',
+            { class: 'focus-memo-more', ...(act.length ? {} : { open: '' }) },
+            h('summary', null, `${act.length ? 'そのほかのメモ' : 'メモ'} ${plain.length} 件（仕上げの説明文に入れられます）`),
+            ...plain.map(card),
+            plain.length >= 2
+              ? h(
+                  'div',
+                  { class: 'btn-row' },
+                  h(
+                    'button',
+                    {
+                      class: 'btn sm',
+                      onclick: () => {
+                        const at = new Date().toISOString();
+                        setFocus([...focusNotes(), ...plain.map((it) => intentToFocus(it, at, stairAt))]);
+                        toast(`メモ ${plain.length} 件を説明文に入れました`, 'ok');
+                        showList();
+                      },
+                    },
+                    `${plain.length} 件をまとめて入れる`,
+                  ),
+                  h('button', { class: 'btn sm ghost', onclick: () => { skip(plain.map((it) => it.id)); showList(); } }, 'まとめて見送る'),
+                )
+              : null,
+          )
+        : null,
+    );
+  };
+
   const showList = () => {
     clear(body);
     const list = focusNotes();
+    const memo = memoSection();
     body.append(
       h('p', { class: 'hint keep' }, '階段・造作・照明・吹抜など、こだわりたい所に「この仕様・この写真のように提案したい」を添えます。階段（つくり・桁・手すり・踏板の色・段数）、吹抜の手すり、照明（間接照明・ペンダント・光の色）は 3D に入り、造作は 3D に置けます。どの部位も、パースの仕上げ（カット集・AI 仕上げ）の説明文と同梱の参考画像になります。図面を読み直しても残ります。'),
       h('p', { class: 'hint' }, '参考画像は社内の作業用です。お客様の体験リンク・提案資料には出ません（カタログ・他社の写真を使うときの権利にご注意ください）。'),
+      ...(memo ? [memo] : []),
       list.length
         ? h(
             'div',
@@ -277,14 +372,17 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
     );
   };
 
-  const showEditor = (orig: FocusNote | null, preset?: { part?: FocusPart; level?: number }) => {
+  /** @param seed 図面のメモから読んだ下書き（部位・ひとこと・仕様の初期値。登録すると、そのメモは下書きの一覧から消える） */
+  const showEditor = (orig: FocusNote | null, preset?: { part?: FocusPart; level?: number }, seed?: MemoIntent) => {
     clear(body);
     const levels = stairLevels(state.model);
     const draft: FocusNote = orig
       ? { ...orig, images: orig.images.slice(), stair: orig.stair ? { ...orig.stair } : undefined }
-      : { id: uid('fc'), part: preset?.part ?? 'stair', ...(preset?.level != null ? { level: preset.level } : {}), note: '', images: [], at: new Date().toISOString() };
+      : seed
+        ? intentToFocus(seed, new Date().toISOString(), (lv) => levels.includes(lv))
+        : { id: uid('fc'), part: preset?.part ?? 'stair', ...(preset?.level != null ? { level: preset.level } : {}), note: '', images: [], at: new Date().toISOString() };
     // 階段のつくりは家に 1 つ（コーディネートの「階段」の品目）。ここで選び直したら、登録のときに品目を入れ替える
-    let draftBuild: StairBuild = stairBuildNow();
+    let draftBuild: StairBuild = seed?.stairBuild ?? stairBuildNow();
     // 吹抜の縁（落下防止）は家全体の「納まり」に 1 つ。ここで選び直したら、登録のときに入れ替える
     let draftGuard: VoidGuardSpec = specNow().voidGuard;
     // 照明の雰囲気: 間接照明（納まり）・ダイニングのペンダントと光の色（コーディネートの品目）・時間帯。登録のときに入れ替える
@@ -297,6 +395,11 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
       tod: state.design.timeOfDay,
     });
     const draftLight = lightNow();
+    // 図面のメモが部屋の中に書かれているとき: その場所（階と位置）へ造作を置ける
+    const memoAt = seed && seed.roomId && seed.x != null && seed.y != null ? { level: seed.level, x: seed.x, y: seed.y } : null;
+    const memoSize = seed?.size ? [seed.size.w ? `幅 ${Math.round(seed.size.w * 1000).toLocaleString()}` : '', seed.size.d ? `奥行 ${Math.round(seed.size.d * 1000)}` : ''].filter(Boolean).join('・') : '';
+    if (seed?.lighting?.indirect != null) draftLight.indirect = seed.lighting.indirect;
+    if (seed?.lighting?.pendant && pendantCat?.products.some((p) => p.id === `pend.${seed.lighting!.pendant}`)) draftLight.pendant = `pend.${seed.lighting.pendant}`;
     const form = h('div', { class: 'focus-form' });
     body.append(form);
 
@@ -484,7 +587,11 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
               ? h(
                   'div',
                   { class: 'btn-row', style: 'margin-top:8px' },
-                  h('button', { class: 'btn sm', title: 'この指定を保存して画面を閉じ、3D の「家具」の道具を、この形を置く状態にします', onclick: () => save(draft.joinery) }, '保存して、この形を 3D に置く'),
+                  // 図面のメモから: メモが書かれている部屋の壁ぎわに、そのまま置ける（寸法が書いてあれば、その寸法で）
+                  memoAt
+                    ? h('button', { class: 'btn sm primary', title: 'この指定を保存して画面を閉じ、図面でメモが書かれている場所の壁ぎわに、この形を置きます。メモのそばに同じ役目の家具（机・テレビ台・棚）が読めているときは、それをこの形に置き換えます（置いたあと、ドラッグで動かせます）', onclick: () => save(draft.joinery, true) }, `保存して、メモの場所に置く${memoSize ? `（${memoSize}）` : ''}`)
+                    : null,
+                  h('button', { class: 'btn sm', title: 'この指定を保存して画面を閉じ、3D の「家具」の道具を、この形を置く状態にします', onclick: () => save(draft.joinery) }, memoAt ? '保存して、場所は 3D でクリックして決める' : '保存して、この形を 3D に置く'),
                 )
               : null,
             h('p', { class: 'hint' }, '3D では「家具」の道具の「造作家具を置く」と同じ物です。置きたい壁の近くの床をクリックすると壁に付き、置いたあとドラッグで動かして、幅・高さ・木の色を変えられます。'),
@@ -572,7 +679,8 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
       ) as HTMLButtonElement;
 
       /** @param place 造作: 保存したあと、この形を 3D に置く状態にする */
-      const save = (place?: BuiltinVariant) => {
+      /** @param atMemo true = 図面のメモの場所へ置く（置けなければ、クリックで置く状態にする） */
+      const save = (place?: BuiltinVariant, atMemo = false) => {
         draft.note = noteIn.value.trim();
         const stair = isStair ? cleanStairLook(draft.stair) : undefined;
         const joinery = isJoinery ? draft.joinery : undefined;
@@ -629,6 +737,11 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
           closed = true;
           closeModal();
           opts.onClose?.();
+          if (atMemo && memoAt) {
+            // 図面のメモの場所へ: パースの画面でなければ先に開いてから置く（app.ts が受ける）
+            emit('place-builtin-at', { variant: place, at: memoAt, ...(seed?.size ?? {}) });
+            return;
+          }
           let taken = false;
           emit('place-builtin', { variant: place, done: () => { taken = true; } });
           if (!taken) toast('造作は、パース（3D）の画面で、左の「家具」→「造作家具を置く」から置けます', 'info', 8000);

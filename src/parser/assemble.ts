@@ -24,7 +24,7 @@ import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate, ROOM_KNOW
 import { splitEntranceFloor } from './entranceFloor';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
 import { detectSymbols, dashedOutlines, dashedCarSymbols, symbolsToItems, detectNotes } from './symbols';
-import { readContextItems } from './context';
+import { memoHintKind, readContextItems } from './context';
 import { northCandidates, pickNorth } from './north';
 import { senseFurniture } from './furnitureSense';
 import type { SymbolSignature } from './symbolDict';
@@ -3798,7 +3798,12 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     })
     .map((o) => ({ minX: o.minX, minY: o.minY, maxX: o.maxX, maxY: o.maxY, inner: 0, innerRects: 0, arcs: 0, width: 0, dashed: true }));
   if (g.__dashTrace) for (const o of dashed) g.__dashTrace.push(`${level}F 破線の輪郭 ${Math.round(o.maxX - o.minX)}x${Math.round(o.maxY - o.minY)} n=${o.n} @${Math.round((o.minX + o.maxX) / 2)},${Math.round((o.minY + o.maxY) / 2)}`);
-  const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects);
+  // 図面のメモから分かる家具の手がかり（「TV 周り作りこむ」→ そのそばの壁沿いの台はテレビ台）
+  const memoHints = notes.flatMap((n) => {
+    const kind = memoHintKind(n.text);
+    return kind ? [{ x: n.x, y: n.y, kind }] : [];
+  });
+  const ctx = plan.scan || plan.loose ? null : readContextItems(uniqueSegs(plan.segs), plan.arcs, rooms, outWalls, level, g.__symbolDict, sym.items, dashRects, memoHints);
   if (ctx) {
     ctx.items = ctx.items.filter((it) => !inStair({ x: it.x, y: it.y }));
     ctx.candidates = ctx.candidates.filter((cd) => !inStair({ x: cd.cx, y: cd.cy }));
@@ -3806,7 +3811,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   if (ctx && g.__ctxTrace) g.__ctxTrace.push(...ctx.trace.map((t) => `${level}F ${t}`));
   // 同じ部屋で同じ種類を文脈読みが読めたら、形の決め打ちの方は外す（食卓はキッチンと兼ねて読むことがあるので、キッチンを読んだ部屋の食卓も）
   const taken = new Set((ctx?.items ?? []).flatMap((it) => (it.kind === 'kitchen' ? [`${it.roomId}:kitchen`, `${it.roomId}:dining`] : [`${it.roomId}:${it.kind}`])));
-  const merged0 = [...(ctx?.items ?? []), ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)))];
+  // 文脈読みが丸テーブル・食卓と読んだ円を、形の決め打ちが「植物」とも読んでいたら、植物の方は外す
+  // （伊藤様邸の LDK: ソファの前の丸いローテーブルの上に、幅 1.3 m の木が立っていた）
+  const tables = (ctx?.items ?? []).filter((it) => it.kind === 'coffeeTable' || it.kind === 'dining' || it.kind === 'lowTable');
+  const onTable = (it: { kind: FurnitureKind; x: number; y: number; roomId?: string }) => it.kind === 'plant' && tables.some((tb) => tb.roomId === it.roomId && Math.hypot(tb.x - it.x, tb.y - it.y) <= 650);
+  const merged0 = [...(ctx?.items ?? []), ...sym.items.filter((it) => !(it.roomId && taken.has(`${it.roomId}:${it.kind}`)) && !onTable(it))];
   // 常識で整理（LDK に食卓 2 つ、玄関に便器…は読み違い）
   const sensed = senseFurniture(merged0, rooms);
   if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));

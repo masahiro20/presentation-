@@ -158,6 +158,13 @@ export class App {
     });
     // こだわりの参考資料・3D の階段のパネルからデザインを変えた（階段のつくり = コーディネートの「階段」の品目、
     // 吹抜の縁・間接照明 = 納まり、ペンダント・光の色 = コーディネートの品目、時間帯）: 開いている 3D に渡す
+    // 図面のメモの場所へ造作を置く（こだわりの画面から）: パースの画面でなければ先に開いてから、家具の道具へ渡す
+    on('place-builtin-at', (payload) => {
+      void (async () => {
+        if (this.currentId !== 'design') await this.go('design');
+        emit('place-builtin', payload);
+      })();
+    });
     on('design-3d', () => {
       this._viewer?.setDesign(state.design);
     });

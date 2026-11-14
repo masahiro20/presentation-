@@ -7,6 +7,7 @@ import { parseWishes, checkWishes, type WishResult } from '../../core/wishes';
 import { planSummary, diffPlans } from '../../core/planDiff';
 import { dailyRoutes, overlayRoutes, routeColor } from '../../core/circulation';
 import { readDesignIntents } from '../../core/designIntent';
+import { designerNotes } from '../../core/planNotes';
 import { overlaySightlines, sightColor } from '../../core/sightlines';
 import { state, type GalleryItem } from '../state';
 import { openMeetingMemo } from '../docs';
@@ -395,7 +396,7 @@ export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): 
             h('div', { class: 'floor-area serif' }, `${f.level}F　約 ${area.toFixed(1)}㎡`),
             h('table', { class: 'schedule' }, h('tbody', null, ...list.slice(0, 12).map((r) => h('tr', null, h('td', null, r.name.normalize('NFKC')), h('td', { class: 'a' }, `${tatami(r)}帖`))))),
             storageLine(f),
-            f.notes?.length ? h('div', { class: 'plan-notes' }, h('div', { class: 'label' }, '設計士のメモ'), ...f.notes.slice(0, 6).map((n) => h('p', null, n.text))) : null,
+            designerNotes(f).length ? h('div', { class: 'plan-notes' }, h('div', { class: 'label' }, '設計士のメモ'), ...designerNotes(f).slice(0, 6).map((n) => h('p', null, n.text))) : null,
           ),
           h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) })),
         ),

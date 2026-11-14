@@ -1387,9 +1387,26 @@ body.text-lg aside, body.text-lg .pe-panel, body.text-lg .furn-tool, body.text-l
 .focus-stair { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
 .focus-stair .segmented { flex-wrap: wrap; }
 .focus-save { position: sticky; bottom: -14px; margin: 10px -18px -14px; padding: 10px 18px 12px; background: #fff; border-top: 1px solid var(--line); z-index: 1; }
+.focus-memo { margin: 12px 0 14px; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+.focus-memo .field-label { margin: 0; }
+.focus-card.memo { grid-template-columns: 1fr auto; padding: 8px 10px; }
+.focus-card.memo .focus-note { color: var(--ink); font-weight: 600; }
+.focus-card.memo .focus-look { font-weight: 400; color: var(--ink2); font-size: 13.5px; }
+.focus-where { display: inline-block; padding: 0 6px; margin-right: 4px; border: 1px solid var(--accent); border-radius: 3px; color: var(--accent); font-weight: 600; font-size: 12.5px; line-height: 1.5; }
+.focus-memo-more { display: flex; flex-direction: column; gap: 6px; }
+.focus-memo-more > summary { cursor: pointer; color: var(--ink2); padding: 4px 0; }
+.focus-memo-more[open] > summary { margin-bottom: 6px; }
+.focus-memo-more > .focus-card { margin-bottom: 6px; }
+.focus-chip.memo { border-style: dashed; border-color: var(--accent); background: var(--panel); }
+.focus-chip.memo span { grid-column: 1 / -1; font-weight: 600; }
+.focus-chip.memo small { grid-column: 1 / -1; }
+.memo-card { border-left: 3px solid var(--accent); }
+.memo-quotes { display: flex; flex-wrap: wrap; gap: 4px 6px; color: var(--ink2); font-size: 13.5px; }
+.memo-quotes span { padding: 1px 6px; background: #fff; border: 1px solid var(--line); border-radius: 4px; }
+.memo-quotes small { align-self: center; color: var(--ink3); }
 .focus-chips { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; }
 .focus-chip { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; text-align: left; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
 .focus-chip:hover { border-color: var(--accent); }
 .focus-chip img { grid-row: span 2; width: 44px; height: 33px; object-fit: cover; border-radius: 3px; }
 .focus-chip small { color: var(--accent); grid-column: 2; }
-@media (max-width: 720px) { .focus-card { grid-template-columns: 1fr; } .focus-row { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .focus-card, .focus-card.memo { grid-template-columns: 1fr; } .focus-row { grid-template-columns: 1fr; } }

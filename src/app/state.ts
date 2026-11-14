@@ -92,6 +92,8 @@ export interface ProjectState {
    * 図面を読み直しても残り、モデルが変わるたびに階段のつくり・手すり・段数を当て直す（core/focus.ts・app/focusNotes.ts）
    */
   focus?: FocusNote[];
+  /** 図面のメモから作ったこだわりの下書きのうち、見送ったもの（core/memoIntent.ts の id。もう一度は出さない） */
+  focusSkip?: string[];
 }
 
 /**

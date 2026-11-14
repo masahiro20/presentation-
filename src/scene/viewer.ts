@@ -27,6 +27,7 @@ import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLigh
 import { MaterialRegistry } from './materials';
 import { roomProbeUniforms } from './roomProbe';
 import { pointInPolygon } from '../core/geometry';
+import { labelNotes } from '../core/planNotes';
 import { makeNeutralEnvTexture, makeSkyTexture } from './sky';
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle } from '../styles/presets';
 import { exteriorFor, interiorFor, stairBuildOf } from '../coordinate/catalog';
@@ -2809,7 +2810,8 @@ export class Viewer {
             this.groups.cut.add(sp);
           }
           // 設計士のメモ（図面の吹き出し）: 薄い生成りの札。部屋名より優先して残す
-          for (const n of f.notes ?? []) {
+          // （読み取りが足した注記も、補った場所に気づけるように出す。お客様の画面では、渡す前に外してある。仕様の決まり文句は出さない）
+          for (const n of labelNotes(f, true)) {
             const sp = tagSprite(n.text, '', 0.02, true, true);
             if (!sp) continue;
             sp.position.set(n.x * MM, cutY + 0.3, n.y * MM);

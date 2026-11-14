@@ -4,7 +4,7 @@
  */
 import * as THREE from 'three';
 import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type BuiltinVariant, type Floor, type Room, type FurnitureItem, type FurnitureKind, type Wall, type Vec2 } from '../core/types';
-import { pointInPolygon } from '../core/geometry';
+import { mergeIntervals, pointInPolygon, subtractIntervals } from '../core/geometry';
 import { isSpecialRoomName } from '../parser/labels';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
@@ -134,6 +134,8 @@ interface RoomCtx {
   blocked: Record<Side, [number, number][]>;
   /** 腰壁・手すり壁（天端 1.5m 未満）の区間: 壁掛けのテレビは付けない */
   low?: Partial<Record<Side, [number, number][]>>;
+  /** 壁の無い区間（L 字の部屋の続き・間仕切りの無い境）: 壁付けの家具は、壁のある所を先に探す */
+  open?: Partial<Record<Side, [number, number][]>>;
   windows: Record<Side, number>;
   lights: LightPoint[];
   room: Room;
@@ -307,6 +309,13 @@ function findSpot(ctx: RoomCtx, s: Side, w: number, len: number, prefer = 0): nu
   const cands: number[] = [];
   for (let u = -len / 2 + w / 2 + 0.05; u <= len / 2 - w / 2 - 0.05; u += 0.05) cands.push(u);
   cands.sort((a, b) => Math.abs(a - prefer) - Math.abs(b - prefer));
+  // 壁のある所を先に探す（L 字の部屋で、壁の無い所に本棚が浮いていた。有本様邸 1 階の趣味部屋）
+  const open = ctx.open?.[s];
+  if (open?.length) {
+    const backed = (u0: number, u1: number) => !open.some(([a, b]) => a < u1 - 0.05 && b > u0 + 0.05);
+    for (const u of cands) if (isFree(ctx, s, u - w / 2, u + w / 2) && backed(u - w / 2, u + w / 2)) return u;
+  }
+  // 壁のある所に入らなければ、今までどおり（壁が読めていない部屋で、家具が消えないように）
   for (const u of cands) if (isFree(ctx, s, u - w / 2, u + w / 2)) return u;
   return null;
 }
@@ -734,7 +743,9 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
       fr.box('f.chrome', 0.28, 0.4, 0.12, 0.1, 0.7, 0.05);
       break;
     case 'shoeCabinet':
+      // 床から浮かせた靴入れ。下に間接照明（図面のメモ「かまち下靴入れ・間接照明」。納まりの「間接照明」を切ると消える）
       fr.box('f.cabinet', 0, 0, 1.2, 0.38, 0.25, 0.85);
+      underGlow(fr, 0, 0, 1.2, 0.38, 0.25);
       fr.box('f.counter', 0, 0, 1.22, 0.4, 1.1, 0.03);
       break;
   }
@@ -815,6 +826,25 @@ function collectBlocked(ctx: RoomCtx, f: Floor, inner: Rect) {
   for (const w of f.walls) {
     if (w.topMm == null || w.topMm >= 1500 || w.exterior) continue;
     span(w.a, w.b, true, 0.05, 0, true);
+  }
+  // 壁の無い区間: 部屋の辺（内側の長方形の辺）のうち、その線の上に壁が無い所
+  for (const side of ['n', 's', 'e', 'w'] as Side[]) {
+    const { f: fr, len } = sideFrame(ctx, side);
+    const horiz = side === 'n' || side === 's';
+    const line = side === 'n' ? inner.minY : side === 's' ? inner.maxY : side === 'w' ? inner.minX : inner.maxX;
+    const cover: [number, number][] = [];
+    for (const w of f.walls) {
+      const dx = Math.abs(w.b.x - w.a.x);
+      const dy = Math.abs(w.b.y - w.a.y);
+      const L = Math.hypot(dx, dy) || 1;
+      if (horiz ? dy / L >= 0.1 : dx / L >= 0.1) continue;
+      if (Math.abs((horiz ? w.a.y : w.a.x) - line) > tol) continue;
+      const a = horiz ? (w.a.x * MM - fr.origin.x) * fr.along.x : (w.a.y * MM - fr.origin.z) * fr.along.z;
+      const b = horiz ? (w.b.x * MM - fr.origin.x) * fr.along.x : (w.b.y * MM - fr.origin.z) * fr.along.z;
+      cover.push([Math.min(a, b), Math.max(a, b)]);
+    }
+    const gaps = subtractIntervals([-len / 2, len / 2], mergeIntervals(cover, 0.15)).filter(([a, b]) => b - a >= 0.3);
+    if (gaps.length) (ctx.open ??= {})[side] = gaps;
   }
 }
 

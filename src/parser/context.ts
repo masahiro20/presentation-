@@ -200,7 +200,7 @@ export function findLShapes(segs: Seg[], minSize = 1200, maxSize = 4200): PlanRe
  * 短い線がつながって閉じた「輪」（丸い記号: コンロの輪・シンクの排水口・丸い椅子・便器など）。
  * CAD の PDF は円を短い折れ線で描くことが多く、円弧として取れないので線の連なりから拾う
  */
-export function findLoops(segs: Seg[], minSize = 120, maxSize = 700, maxSeg = 400): { minX: number; minY: number; maxX: number; maxY: number; n: number }[] {
+export function findLoops(segs: Seg[], minSize = 120, maxSize = 700, maxSeg = 400): { minX: number; minY: number; maxX: number; maxY: number; n: number; round: number }[] {
   const sh = segs.filter((s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) <= maxSeg);
   const key = (p: Vec2) => `${Math.round(p.x / 8)},${Math.round(p.y / 8)}`;
   const byEnd = new Map<string, number[]>();
@@ -213,7 +213,7 @@ export function findLoops(segs: Seg[], minSize = 120, maxSize = 700, maxSeg = 40
     }
   });
   const seen = new Uint8Array(sh.length);
-  const out: { minX: number; minY: number; maxX: number; maxY: number; n: number }[] = [];
+  const out: { minX: number; minY: number; maxX: number; maxY: number; n: number; round: number }[] = [];
   for (let i = 0; i < sh.length; i++) {
     if (seen[i]) continue;
     // 連結成分を集める
@@ -238,7 +238,20 @@ export function findLoops(segs: Seg[], minSize = 120, maxSize = 700, maxSeg = 40
     let open = 0;
     for (const j of comp) for (const p of [sh[j].a, sh[j].b]) if ((byEnd.get(key(p)) ?? []).length < 2) open++;
     if (open > 2) continue;
-    out.push({ minX, minY, maxX, maxY, n: comp.length });
+    // 丸さ: 輪の線のうち、外形に内接する円（だ円）の上に乗っている割合（円なら 1 に近い。戸の開きの扇形は 0.3 ほど）
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    let on = 0;
+    let all = 0;
+    for (const j of comp) {
+      const s = sh[j];
+      for (const q of [s.a, s.b, { x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 }]) {
+        const d = Math.hypot((q.x - cx) / (w / 2), (q.y - cy) / (h / 2));
+        all++;
+        if (d > 0.8 && d < 1.15) on++;
+      }
+    }
+    out.push({ minX, minY, maxX, maxY, n: comp.length, round: all ? on / all : 0 });
   }
   return out;
 }
@@ -616,6 +629,8 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
       for (const g of findLoops(segs, 600, 1100, 400)) {
         const gc = { x: (g.minX + g.maxX) / 2, y: (g.minY + g.maxY) / 2 };
         if (!pointInPolygon(gc, room.polygon)) continue;
+        // 丸くない輪（戸の開きの弧と戸の線が閉じた扇形・引き出し線で閉じた形）はテーブルではない
+        if (g.round < 0.6) continue;
         const nearSofa = sofas.some((sf) => Math.hypot(sf.cx - gc.x, sf.cy - gc.y) < 2600) || prior.some((p) => p.kind === 'sofa' && p.roomId === room.id && Math.hypot(p.x - gc.x, p.y - gc.y) < 2600);
         if (!nearSofa || items.some((it) => it.roomId === room.id && it.kind === 'coffeeTable')) continue;
         const dia = Math.max(g.maxX - g.minX, g.maxY - g.minY);

@@ -55,14 +55,14 @@ function zipStored(files: Record<string, string>): Buffer {
 }
 
 const serial = (y: number, m: number, d: number) => Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
-const strings = ['お客様名', '吉田 大仁様', '施工面積', '延床面積', '１階床面積', '２階床面積', '外部ポーチ・テラス面積', '内部ポーチ・テラス面積', '建築面積', '外壁面積', '吹き抜け', '1.仮設工事', '2.基礎工事', '小計', '税額', '金額(税込)', '屋根面積'];
+const strings = ['お客様名', '山田 太郎様', '施工面積', '延床面積', '１階床面積', '２階床面積', '外部ポーチ・テラス面積', '内部ポーチ・テラス面積', '建築面積', '外壁面積', '吹き抜け', '1.仮設工事', '2.基礎工事', '小計', '税額', '金額(税込)', '屋根面積'];
 const s = (ref: string, text: string) => `<c r="${ref}" t="s"><v>${strings.indexOf(text)}</v></c>`;
 const n = (ref: string, v: number, f?: string) => `<c r="${ref}">${f ? `<f>${f}</f>` : ''}<v>${v}</v></c>`;
 const sheetXml = (rows: Record<number, string>) => `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${Object.entries(rows)
   .map(([r, cells]) => `<row r="${r}">${cells}</row>`)
   .join('')}</sheetData></worksheet>`;
 const men = sheetXml({
-  2: s('B2', 'お客様名') + s('F2', '吉田 大仁様') + n('X2', serial(2026, 11, 6)),
+  2: s('B2', 'お客様名') + s('F2', '山田 太郎様') + n('X2', serial(2026, 11, 6)),
   5: s('B5', '施工面積') + n('F5', 49.03) + n('L5', 162.09),
   6: s('B6', '延床面積') + n('F6', 34.78) + n('L6', 115),
   8: s('B8', '１階床面積') + n('P8', 83.12),
@@ -117,7 +117,7 @@ describe('積算ブックの読み取り', () => {
   it('「面」の数量と「見積もり書」の工事種別を拾う', () => {
     const sk = readSekisanWorkbook(readXlsxBuffer(xlsx), '/x/yoshida.xlsx');
     expect(sk.file).toBe('yoshida.xlsx');
-    expect(sk.customer).toBe('吉田 大仁様');
+    expect(sk.customer).toBe('山田 太郎様');
     expect(sk.submitted).toBe('2026-11-06');
     expect(excelDate(serial(2026, 10, 3))).toBe('2026-10-03');
     expect(sk.constTsubo).toBe(49.03);
@@ -145,7 +145,7 @@ describe('積算ブックの読み取り', () => {
     expect(r.cats.find((x) => /^1\./.test(x.label))!.sekisan).toBe(2060580);
     expect(r.cats.find((x) => /^3\./.test(x.label))!.sekisan).toBeUndefined();
     const text = formatCompare(r);
-    expect(text).toMatch(/吉田 大仁様 提出 2026-11-06/);
+    expect(text).toMatch(/山田 太郎様 提出 2026-11-06/);
     expect(text).toMatch(/1階床面積 ㎡\s+83\.12\s+80\s+-3\.12\s+-3\.8%/);
   });
 });

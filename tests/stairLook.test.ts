@@ -80,12 +80,12 @@ describe('階段のつくり（BuildOptions.stairBuild）', () => {
     expect(of(c, 'f.metal')).toBe(0);
   });
 
-  it('片持ち: 踏板だけ（厚み 60）。桁・側板・受け材が無い', () => {
+  it('片持ち: 踏板だけ（厚み 90）。桁・側板・受け材が無い', () => {
     const c = census({ rail: 'none' }, 'cantilever');
     expect(of(c, 'f.metal')).toBe(0);
     expect(of(c, 'int.stairs')).toBe(of(base, 'int.stairs'));
-    // 厚い踏板のぶん、いちばん下の段の下端が 20mm 低い
-    expect(base.minTreadY - c.minTreadY).toBeCloseTo(0.02, 3);
+    // 厚い踏板（御社のご提案パースの、壁から浮いて並ぶ厚い板）のぶん、いちばん下の段の下端が 50mm 低い
+    expect(base.minTreadY - c.minTreadY).toBeCloseTo(0.05, 3);
   });
 });
 
@@ -106,7 +106,9 @@ describe('階段の手すり（Stair.look.rail）', () => {
     const c = census({ rail: 'wall' });
     expect(of(c, 'int.wall')).toBeGreaterThan(of(none, 'int.wall'));
     expect(of(c, 'f.wood')).toBeGreaterThan(0);
-    expect(of(c, 'f.metal')).toBe(of(none, 'f.metal'));
+    // 腰壁の付く側の桁は、腰壁の中に隠れるので描かない（鉄は減る）。手すりの鉄は増えない
+    expect(of(c, 'f.metal')).toBeLessThan(of(none, 'f.metal'));
+    expect(of(c, 'f.metal')).toBeGreaterThan(0);
   });
 
   it('木: 木の支柱と手すり（鉄は桁だけ）', () => {

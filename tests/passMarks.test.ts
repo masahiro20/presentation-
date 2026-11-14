@@ -130,7 +130,7 @@ describe('壁の角の結び直しで開口の位置を保つ', () => {
     const t = (o.t0 + o.t1) / 2;
     return { x: w.a.x + ((w.b.x - w.a.x) * t) / L, y: w.a.y + ((w.b.y - w.a.y) * t) / L };
   };
-  it('斜めの壁（右上 → 左下）の始点寄りの窓が、反対の端へ押しやられない（吉田大仁様邸 1st のテラス窓）', async () => {
+  it('斜めの壁（右上 → 左下）の始点寄りの窓が、反対の端へ押しやられない（吉田様邸 1st のテラス窓）', async () => {
     const { rejoinFloorWalls } = await import('../src/parser/assemble');
     const k = Math.SQRT1_2;
     // 斜めの壁: 右上 (5000, 1000) から左下へ 3600。始点の先（右上）に横の壁があり、角を結ぶと始点が少し伸びる

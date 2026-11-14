@@ -16,7 +16,7 @@ import { excludedFromFloorArea, type BuildingModel, type Floor, type Opening, ty
 import { isStandardSashWidth, nearestSashWidth, sashWidthLabel } from '../core/sash';
 import { distPointSegment, pointInPolygon } from '../core/geometry';
 import { largestInnerRect } from '../core/rects';
-import { effectiveStair, effectiveStepCount, stairFrame } from '../core/stairs';
+import { effectiveStair, effectiveStepCount, stairFrame, stairTreadDepth, wrapFlights } from '../core/stairs';
 import { classifyRoomName } from './labels';
 import { mustSeparate } from './roomKnowledge';
 import { livingCheck } from './livingCheck';
@@ -542,6 +542,7 @@ export function woodCheck(model: BuildingModel): WoodIssue[] {
         const p = st0.treadPitch;
         if (p != null && p >= 180 && p <= 300 && tread < p && tread >= p * 0.75) tread = p;
       }
+      else if (wrapFlights(st)) tread = stairTreadDepth(st, n);
       else if (st.kind === 'u' || st.kind === 'uOpen') {
         const land = Math.min(F.Ls * 0.4, F.Lt / 2);
         tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));

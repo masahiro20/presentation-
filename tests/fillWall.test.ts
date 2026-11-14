@@ -1,7 +1,7 @@
 // 壁を塗りで描き、開口を白抜きで描く図面（ARCHITREND のカラー・グレーの平面図）:
 // 壁の塗りが続いていて白抜きの無い所にある平行線は、窓・引戸ではなく壁の中を通る線（土間のタイルの見切り・壁芯の線）。
 // 林様邸 1 階: 玄関と土間収納の間の柱と壁 52cm が「引戸」、土間収納の外壁 1.8m が「窓」。
-// 吉田大仁様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」。坂井様邸・伊藤様邸: 外壁に 6m・2.8m の「窓」
+// 吉田様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」。坂井様邸・伊藤様邸: 外壁に 6m・2.8m の「窓」
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildFloor, detectPlans, type MmText, type PageMm } from '../src/parser/assemble';
 import { detectWalls, type Seg } from '../src/parser/walls';

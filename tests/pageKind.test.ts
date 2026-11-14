@@ -4,7 +4,7 @@ import { pageDrawingKind } from '../src/parser/assemble';
 const T = (...s: string[]) => s.map((str) => ({ str }));
 
 describe('ページが何の図面か（立面図のページを階として読まない）', () => {
-  it('立面図 4 面のページ（吉田大仁様邸 1st プランの 2 ページ目）は elevation', () => {
+  it('立面図 4 面のページ（吉田様邸 1st プランの 2 ページ目）は elevation', () => {
     const texts = T('南側', '立面図', '東側', '立面図', '北側', '立面図', '西側', '立面図', '2階軒高', '1階ＦＬ', '2階ＦＬ', '3,200（階高）', '2,800（階高）', '7,009（最高高さ）', 'ＧＬ', '立面図', 'R8.11.07', '1/100');
     expect(pageDrawingKind(texts, { docHasRooms: true, multiPage: true })).toBe('elevation');
     // 1 ページだけの PDF でも立面図は立面図

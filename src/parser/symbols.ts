@@ -221,7 +221,7 @@ function assembleCars(clusters: Cluster[]): Cluster[] {
 
 /**
  * 点線で描いた丸（植栽）: 15mm 以下の点が 60mm 以内で連なり、中心からの距離がそろう輪（半径 0.25〜1.3m）。
- * 点どうしは端点がつながらないので clusterSegments では拾えない（吉田大仁様邸: 植栽 7 本のうち 1 本しか読めていなかった）
+ * 点どうしは端点がつながらないので clusterSegments では拾えない（吉田様邸: 植栽 7 本のうち 1 本しか読めていなかった）
  */
 export function dottedRings(segs: Seg[]): PlanSymbol[] {
   const len = (s: Seg) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
@@ -417,10 +417,25 @@ export function detectSymbols(segs: Seg[]): PlanSymbol[] {
     const lEmpty = within(L, 1600, 4600) && within(S, 1200, 3600) && n >= 20 ? lShapeOf(c) : null;
     let kind: SymbolKind | null = null;
     // 確かめ用の記録: 家具ほどの大きさの線のまとまりの形（長さ・幅・線の数・短い線の割合・でこぼこ）
-    if (L >= 600) (globalThis as { __symRaw?: string[] }).__symRaw?.push(`${Math.round(L)}x${Math.round(S)} n=${n} short=${shortFrac.toFixed(2)} bump=${bump.toFixed(3)} long=${Math.round(longLen)} @${Math.round(cx)},${Math.round(cy)}`);
+    if (L >= ((globalThis as { __symRawMin?: number }).__symRawMin ?? 600)) (globalThis as { __symRaw?: string[] }).__symRaw?.push(`${Math.round(L)}x${Math.round(S)} n=${n} short=${shortFrac.toFixed(2)} bump=${bump.toFixed(3)} long=${Math.round(longLen)} @${Math.round(cx)},${Math.round(cy)}`);
     // 車: 普通車 4.3〜5.3m。線の多い詳しい記号なら軽自動車・コンパクト（3.3m〜）も
     if ((within(L, 4300, 5300) || (within(L, 3300, 4300) && n >= 150)) && within(S, 1450, 2350) && n >= 50) kind = 'car';
     else if (within(L, 270, 310) && within(S, 40, 70) && n >= 14 && shortFrac > 0.8) kind = 'chairBack';
+    // 椅子（背の弧だけが線で、座面は円弧で描かれた記号）: 背の弧は 343 × 100・線 10〜22 本で、弧の両端が座面の側を向く。
+    // 御社のご提案の図面（スタディカウンターの椅子・食卓の椅子）がこの記号で、椅子として読めていなかった。
+    // 座面の中心（弧の両端の側へ 170）を椅子の位置にする。1 脚だけのものは、下の「同じ大きさの仲間が近くにいない」で落ちる
+    else if (!(globalThis as { __NO_BACK_CHAIR?: boolean }).__NO_BACK_CHAIR && within(L, 320, 370) && within(S, 80, 120) && n >= 10 && n <= 22 && shortFrac > 0.75 && bump > 0.35) {
+      const longX = w >= h;
+      const pts = c.segs.flatMap((sg) => [sg.a, sg.b]);
+      const end0 = pts.reduce((p, q) => ((longX ? q.x < p.x : q.y < p.y) ? q : p));
+      const end1 = pts.reduce((p, q) => ((longX ? q.x > p.x : q.y > p.y) ? q : p));
+      const endC = longX ? (end0.y + end1.y) / 2 : (end0.x + end1.x) / 2;
+      const midC = longX ? cy : cx;
+      const sgn = endC < midC ? -1 : 1;
+      const seat = rotPt(longX ? { x: cx, y: midC + sgn * 170 } : { x: midC + sgn * 170, y: cy }, pivot, rot);
+      out.push({ kind: 'chair', x: seat.x, y: seat.y, w: 480, h: 480, n: 60, flat: { a: seat, b: ctr }, bump: +bump.toFixed(3), shortFrac: +shortFrac.toFixed(2), longLen: Math.round(longLen), ...extra });
+      continue;
+    }
     else if (within(L, 400, 720) && within(S, 330, 720) && n >= 55 && shortFrac > 0.55 && bump > 0.08) kind = 'chair';
     else if (lEmpty && shortFrac > 0.5) {
       out.push({ kind: 'sofa', ...base, lEmpty, bump: +bump.toFixed(3), shortFrac: +shortFrac.toFixed(2), longLen: Math.round(longLen) });
@@ -921,6 +936,55 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     }
   }
 
+  /**
+   * 椅子の集まりが「壁に向かうカウンター席」か。条件:
+   *  - 1 列（列と直交する向きの広がりが 200 以内）で、隣どうしの間隔が 420〜980（食卓をはさんで向かい合う椅子は 1,000 以上離れる）
+   *  - 列から 380〜1,020 の所に、列の中央・両端とも壁がある（カウンターの奥行 400〜650 ＋ 椅子）。片側だけ
+   * 戻り値: 列の向き・壁へ向かう向き・列から壁の面までの距離・両端の椅子の間隔
+   */
+  const counterRowOf = (group: PlanSymbol[], cx: number, cy: number, maxPitch = 980): { along: Vec2; toWall: Vec2; dist: number; span: number; endGaps: [number | null, number | null] } | null => {
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const g of group) { sxx += (g.x - cx) ** 2; syy += (g.y - cy) ** 2; sxy += (g.x - cx) * (g.y - cy); }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    const along = snapAxis(unit(Math.cos(th), Math.sin(th)));
+    const n = perp(along);
+    if (Math.max(...group.map((g) => Math.abs((g.x - cx) * n.x + (g.y - cy) * n.y))) > 200) return null;
+    const ts = group.map((g) => (g.x - cx) * along.x + (g.y - cy) * along.y).sort((a, b) => a - b);
+    for (let i = 0; i + 1 < ts.length; i++) if (ts[i + 1] - ts[i] < 420 || ts[i + 1] - ts[i] > maxPitch) return null;
+    const sides: { toWall: Vec2; dist: number }[] = [];
+    for (const sg of [1, -1]) {
+      const dir = { x: n.x * sg, y: n.y * sg };
+      const hit = (t0: number): number | null => {
+        const p = { x: cx + along.x * t0, y: cy + along.y * t0 };
+        for (let t = 380; t <= 1020; t += 20) if (wallDist({ x: p.x + dir.x * t, y: p.y + dir.y * t }) < 70) return t;
+        return null;
+      };
+      const ds = [hit(ts[0]), hit(0), hit(ts[ts.length - 1])];
+      if (ds.some((v) => v == null)) continue;
+      const vals = ds as number[];
+      if (Math.max(...vals) - Math.min(...vals) > 120) continue;
+      sides.push({ toWall: dir, dist: vals[1] });
+    }
+    // 両側に壁がある（奥行 1.3m ほどの書斎など）ときは、外壁の側（窓に向かうカウンター）。どちらも外壁・どちらも室内の壁なら決めない
+    if (sides.length === 2) {
+      const ext = sides.filter((sd) => !inside({ x: cx + sd.toWall.x * (sd.dist + 260), y: cy + sd.toWall.y * (sd.dist + 260) }));
+      if (ext.length === 1) sides.splice(0, 2, ext[0]);
+    }
+    if (sides.length !== 1) return null;
+    // 列の両端の椅子から、並びの向きにカウンターの端までの距離（1.6m まで）: 突き当たりの壁か、背にする壁の途切れる所。
+    // 造作のカウンターは、壁から壁（または壁の角）まで渡す
+    const back = sides[0];
+    const endGap = (t0: number, sg: number): number | null => {
+      for (let t = 200; t <= 1600; t += 20) {
+        const p = { x: cx + along.x * (t0 + sg * t), y: cy + along.y * (t0 + sg * t) };
+        if (wallDist(p) < 70) return t;
+        if (wallDist({ x: p.x + back.toWall.x * back.dist, y: p.y + back.toWall.y * back.dist }) > 140) return t - 20;
+      }
+      return null;
+    };
+    return { along, toWall: sides[0].toWall, dist: sides[0].dist, span: ts[ts.length - 1] - ts[0], endGaps: [endGap(ts[0], -1), endGap(ts[ts.length - 1], 1)] };
+  };
+
   // 食卓: 椅子の集まり（互いに 1.4m 以内）→ 中心に食卓、並び方向は椅子の広がる方向
   const chairs = symbols.filter((s) => s.kind === 'chair');
   const usedChair = new Set<PlanSymbol>();
@@ -932,6 +996,30 @@ export function symbolsToItems(symbols: PlanSymbol[], rooms: Room[], walls: Wall
     if (group.length < 2) continue;
     const cx = group.reduce((a, g) => a + g.x, 0) / group.length;
     const cy = group.reduce((a, g) => a + g.y, 0) / group.length;
+    // カウンター席: 椅子が壁に向かって 1 列に並ぶ（スタディカウンター・書斎の造作デスク）→ 壁付けの造作カウンター＋椅子。
+    // 御社のご提案（窓に沿った造作のスタディカウンターに椅子 4 脚）を、食卓と読んで落としていた
+    {
+      const room = roomAt({ x: cx, y: cy });
+      // 椅子の間隔: LDK は 980 まで（それより広い 2 脚は、壁際の小さなテーブルに向かい合う席）。書斎・ホールなどは 1,300 まで
+      // （書斎の幅いっぱいの造作デスクに、椅子 2 脚が 1.1m あけて並ぶ: 林様邸）
+      const wide = room && !['ldk', 'dining', 'kitchen', 'living'].includes(room.type);
+      const row = counterRowOf(group, cx, cy, wide ? 1300 : 980);
+      if (row) {
+        const NG: RoomType[] = ['bath', 'toilet', 'washroom', 'garage', 'stairs', 'void', 'closet', 'storage', ...OUTDOOR_TYPES];
+        if (room && !NG.includes(room.type)) {
+          const inward = { x: -row.toWall.x, y: -row.toWall.y };
+          // 幅: 両端の椅子の先 1.6m 以内に、突き当たりの壁か背の壁の角があれば、そこからそこまで（造作のカウンターは壁の間に渡す）。無ければ椅子の並び＋両脇 350
+          const [g0, g1] = row.endGaps;
+          const wall2wall = g0 != null && g1 != null;
+          const w = +Math.min(4.6, Math.max(1.2, wall2wall ? (row.span + g0! + g1! - 20) / 1000 : (row.span + 700) / 1000)).toFixed(2);
+          const shift = wall2wall ? (g1! - g0!) / 2 : 0;
+          const d = +Math.min(0.65, Math.max(0.45, (row.dist - 270) / 1000)).toFixed(2);
+          push('builtin', { x: cx + row.along.x * shift, y: cy + row.along.y * shift }, row.along, inward, row.dist, { variant: 'counter', w, d, seats: group.length });
+          trace?.push(`counter row@${Math.round(cx)},${Math.round(cy)} seats=${group.length} w=${w} d=${d} room=${room.name}${wall2wall ? ' 壁から壁' : ''}`);
+          continue;
+        }
+      }
+    }
     // 椅子 2 脚だけなら、食卓として扱うのは LDK・ダイニングに限る（書斎の机の椅子などを食卓にしない）
     if (group.length < 3 && !['ldk', 'dining', 'kitchen', 'living'].includes(roomAt({ x: cx, y: cy })?.type ?? 'other')) continue;
     // 椅子に囲まれた長方形（テーブル）があれば、その中心と向き・長さを使う

@@ -22,6 +22,24 @@ export interface StairCandidate {
   walk?: 'center' | 'columns';
   /** 段の線の間隔（mm。等間隔の並びの平均 = 図面の踏面） */
   pitch?: number;
+  /** まとめた列（段の線の等間隔の並び）ごとの範囲・向き・本数 */
+  runs?: StairRunBox[];
+}
+
+/** 段の線の並び 1 つ（列）: 範囲（線の両端〜最初と最後の線）・線の向き・本数 */
+export interface StairRunBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  orient: 'h' | 'v';
+  n: number;
+  /**
+   * 列の線にいちばん多い両端の位置（線の長さの向き。h の列なら x、v の列なら y の [小, 大]）= 段の線の本来の幅。
+   * ひな壇の台の縁など、段の線より長い線が同じ間隔で混ざると、範囲（minX…）は長い線まで膨らむ（吉田様邸 1st PLAN）。
+   * 範囲が列の幅として長すぎるときにだけ、こちらで見る
+   */
+  core?: [number, number];
 }
 
 interface Tread {
@@ -130,9 +148,26 @@ export function detectStairs(segs: Seg[], within: { minX: number; minY: number; 
     const t1 = Math.max(...r.items.map((i) => i.t1));
     const pitch = (Math.max(...os) - Math.min(...os)) / Math.max(1, r.items.length - 1);
     const treadLen = t1 - t0;
+    // 列の線にいちばん多い両端の位置（30mm 以内を同じ位置と見る。同数なら内側）= 列の幅。
+    // 長い線（ひな壇の台の縁）や短い線（切断線で切れた段・手すりの間の線）が混ざっても、段の線の本来の幅が残る
+    const modeOf = (vals: number[], inner: 'max' | 'min') => {
+      let best = vals[0];
+      let bestN = 0;
+      for (const v of vals) {
+        const n = vals.filter((x) => Math.abs(x - v) <= 30).length;
+        if (n > bestN || (n === bestN && (inner === 'max' ? v > best : v < best))) {
+          best = v;
+          bestN = n;
+        }
+      }
+      return best;
+    };
+    const c0 = modeOf(r.items.map((i) => i.t0), 'max');
+    const c1 = modeOf(r.items.map((i) => i.t1), 'min');
+    const core: [number, number] = c1 - c0 >= 400 ? [c0, c1] : [t0, t1];
     return r.orient === 'h'
-      ? { minX: t0, maxX: t1, minY: Math.min(...os), maxY: Math.max(...os), n: r.items.length, orient: r.orient, pitch, treadLen }
-      : { minX: Math.min(...os), maxX: Math.max(...os), minY: t0, maxY: t1, n: r.items.length, orient: r.orient, pitch, treadLen };
+      ? { minX: t0, maxX: t1, minY: Math.min(...os), maxY: Math.max(...os), n: r.items.length, orient: r.orient, pitch, treadLen, core }
+      : { minX: Math.min(...os), maxX: Math.max(...os), minY: t0, maxY: t1, n: r.items.length, orient: r.orient, pitch, treadLen, core };
   };
   // 玄関・土間のタイル目地は階段ではない（舟橋様邸: 玄関の 300 角タイルが段として読まれ、階段の範囲が玄関に広がった）
   const boxes = runs.map(boxOf).filter((b) => !isTileGrid(b, segs));
@@ -224,9 +259,298 @@ export function detectStairs(segs: Seg[], within: { minX: number; minY: number; 
       ...(merged.mixed ? { mixed: true } : {}),
       ...(walk ? { walk } : {}),
       ...(b.pitch >= 150 && b.pitch <= 330 ? { pitch: b.pitch } : {}),
+      runs: members.map((m) => ({ minX: m.minX, minY: m.minY, maxX: m.maxX, maxY: m.maxY, orient: m.orient, n: m.n, core: m.core })),
     });
   });
   return out;
+}
+
+/** コの字階段（3 方回り）の形: 奥の辺・列の幅・脇の列が見えている端・角の段数 */
+export interface WrapShape {
+  /** 奥の列が沿っている辺（昇り口はその反対の辺） */
+  back: Side;
+  /** 列の幅（角の升の大きさ。mm） */
+  fw: number;
+  /** 奥の列の長さ（段の線の並びの範囲。mm） */
+  mid: number;
+  /** この階の図で脇の列（段の線）が見えている端: lo = 座標の小さい側、hi = 大きい側。脇の列が無い・見えないなら null */
+  sideEnd: 'lo' | 'hi' | null;
+  /** 脇の列を取れない奥行（奥の列の両端の角で直角に出入りする形） */
+  flat: boolean;
+  /** 角 1 つの段数（角の升の中の斜めの線から）: 斜めの線なし = 1（踊り場）、1 方向 = 2、2 方向 = 3 */
+  cornerSteps: 1 | 2 | 3;
+  /**
+   * 昇り口の広い段（ひな壇）の読み取り。最初の列がどちらの端かで分けて持つ（lo = 座標の小さい側の壁から始まる線、hi = 大きい側）。
+   *  n = 段数（0 = 無し）: 脇の列の帯を、壁から列の幅より長く横切る線の数 ＋ 1。
+   *      図面では、段ごとの台が「奥の壁から手前の縁まで」の入れ子の四角で描かれ、手前の縁が段の間隔で並ぶ
+   *  shape: full = どの線も階段室の幅いっぱい／corner = 奥へ行くほど 1 段ぶんずつ短くなる（角から 2 方向に下りる）
+   */
+  wide: Record<'lo' | 'hi', { n: number; shape: 'full' | 'corner' }>;
+  /**
+   * 吹抜の側が腰壁か: 奥の列の吹抜側の縁の先（60〜240）に、列に沿う線が 2 本、60〜140 離れて通っている（壁の厚みの二重線）。
+   * 細い手すり（アイアン・ガラス）は 1 本か、30 以内の二重線で描かれる
+   */
+  guardWall: boolean;
+}
+
+/**
+ * 候補の列と、壁まで広げた範囲 r から「コの字階段（3 方回り）」を見分ける。
+ *  - 奥の辺に沿う列（P）: 段の線が奥の辺に直交し、線の長さ（列の幅）600〜1,100。
+ *    列の両端と範囲の端との間に、角の升（550〜1,250）が 1 つずつ残る。
+ *    （かね折れは片方の端まで列が続く。折り返しは列が奥の辺に沿わない）
+ *  - 奥行に余裕がある（脇の列を取れる）ときは、角の升の手前に、P と直交する向きの列（脇の列）が 1 つ以上あること
+ * 御社の図面: 1.5 間 × 1 間の階段室を、左 4 段 → 角（斜めの線 = 回り段）→ 奥 4 段 → 角 → 右 4 段と回る。
+ * 1 階の図は切断線より下（最初の脇の列と奥の列）だけ、2 階の図は奥の列と最後の脇の列だけが描かれる
+ */
+export function wrapShape(runs: StairRunBox[], r: { minX: number; minY: number; maxX: number; maxY: number }, segs: Seg[]): WrapShape | null {
+  let bestShape: WrapShape | null = null;
+  let bestN = 0;
+  for (const P of runs) {
+    if (P.n < 4) continue;
+    const alongX = P.orient === 'v'; // 段の線が縦 = 列は横（x の向き）に進む
+    // 列の幅: 範囲が列の幅として長すぎる（1,100 超）ときは、段の線の本来の幅（core）で見る
+    // （ひな壇の台の縁が混ざった列は、範囲が長い線まで膨らんでいる）
+    const bLo = alongX ? P.minY : P.minX;
+    const bHi = alongX ? P.maxY : P.maxX;
+    const useCore = bHi - bLo > 1100 && !!P.core;
+    const pLo = useCore ? P.core![0] : bLo;
+    const pHi = useCore ? P.core![1] : bHi;
+    const treadLen = pHi - pLo;
+    if (treadLen < 600 || treadLen > 1100) continue;
+    const lo = alongX ? P.minX - r.minX : P.minY - r.minY;
+    const hi = alongX ? r.maxX - P.maxX : r.maxY - P.maxY;
+    if (lo < 550 || lo > 1250 || hi < 550 || hi > 1250) continue;
+    const dNear = pLo - (alongX ? r.minY : r.minX);
+    const dFar = (alongX ? r.maxY : r.maxX) - pHi;
+    const depth = alongX ? r.maxY - r.minY : r.maxX - r.minX;
+    const fw = Math.round(Math.min(1000, Math.max(700, (lo + hi) / 2)));
+    const flat = depth - fw < 400;
+    for (const nearSide of [true, false]) {
+      if ((nearSide ? dNear : dFar) > 220) continue;
+      const back: Side = alongX ? (nearSide ? 'n' : 's') : nearSide ? 'w' : 'e';
+      let sideEnd: 'lo' | 'hi' | null = null;
+      let noSideRun = false;
+      if (!flat) {
+        // 脇の列: P と直交する向きの列で、角の升の手前（奥の帯の外）・端の列の中。列の幅は、どの線にも共通する範囲
+        let seenLo = false;
+        let seenHi = false;
+        for (const S of runs) {
+          if (S === P || S.orient === P.orient || S.n < 3) continue;
+          const sNear = alongX ? S.minY - r.minY : S.minX - r.minX;
+          const sFar = alongX ? r.maxY - S.maxY : r.maxX - S.maxX;
+          if ((nearSide ? sNear : sFar) < fw - 220) continue;
+          // 端の列の中にあるか。範囲で外れたら、段の線の本来の幅（core）でもう一度（台の縁が混ざって膨らんだ列）
+          const within = (a0: number, a1: number): 'lo' | 'hi' | null => (a1 - (alongX ? r.minX : r.minY) <= fw + 220 ? 'lo' : (alongX ? r.maxX : r.maxY) - a0 <= fw + 220 ? 'hi' : null);
+          const end = within(alongX ? S.minX : S.minY, alongX ? S.maxX : S.maxY) ?? (S.core ? within(S.core[0], S.core[1]) : null);
+          if (end === 'lo') seenLo = true;
+          else if (end === 'hi') seenHi = true;
+        }
+        // 脇の列が列として読めない（2 段だけなど）ときは、角の升の斜めの線（回り段）があれば コの字（下で確かめる）
+        if (!seenLo && !seenHi) sideEnd = null;
+        // 両方の脇の列が見えている図（切断線の上の列も描いてある）は、どちらが最初の列かを図形からは決めない（文字の位置で決める）
+        else sideEnd = seenLo && seenHi ? null : seenLo ? 'lo' : 'hi';
+        noSideRun = !seenLo && !seenHi;
+      }
+      // 角の升の中の斜めの線（回り段）
+      const sq = (end: 'lo' | 'hi') => {
+        const a0 = end === 'lo' ? (alongX ? r.minX : r.minY) : (alongX ? r.maxX : r.maxY) - fw;
+        const b0 = nearSide ? (alongX ? r.minY : r.minX) : (alongX ? r.maxY : r.maxX) - Math.min(fw, depth);
+        return alongX ? { minX: a0, maxX: a0 + fw, minY: b0, maxY: b0 + Math.min(fw, depth) } : { minX: b0, maxX: b0 + Math.min(fw, depth), minY: a0, maxY: a0 + fw };
+      };
+      const diagDirs = (q: { minX: number; minY: number; maxX: number; maxY: number }) => {
+        const angs: number[] = [];
+        for (const sg of segs) {
+          if (sg.dashed) continue;
+          const dx = sg.b.x - sg.a.x;
+          const dy = sg.b.y - sg.a.y;
+          const L = Math.hypot(dx, dy);
+          if (L < 300) continue;
+          const mx = (sg.a.x + sg.b.x) / 2;
+          const my = (sg.a.y + sg.b.y) / 2;
+          if (mx < q.minX - 60 || mx > q.maxX + 60 || my < q.minY - 60 || my > q.maxY + 60) continue;
+          // 軸からの角度（0〜90°）
+          const ang = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+          if (ang < 18 || ang > 72) continue;
+          if (!angs.some((x) => Math.abs(x - ang) < 10)) angs.push(ang);
+        }
+        return angs.length;
+      };
+      const nd = Math.max(diagDirs(sq('lo')), diagDirs(sq('hi')));
+      // 脇の列も、角の升の回り段の線も無い形は、コの字と決めない
+      if (noSideRun && nd === 0) continue;
+      // 昇り口の広い段（ひな壇）: 奥の帯の手前（脇の列の帯）を横切る線で、脇の列のある側の壁から始まり、列の幅より長いもの。
+      // 昇り口の縁（範囲の端）の線は数えない（部屋の境の線と区別できない）。線の位置が、昇り口の縁から段の間隔（150〜330）で並ぶときだけ。
+      //  - どの線も階段室の幅いっぱい → full（入れ子の四角がどれも幅いっぱい）
+      //  - 奥へ行くほど 1 段ぶん（150〜330）ずつ短くなる → corner（角から 2 方向に下りるひな壇。いちばん奥の線は列の幅 = ふつうの段の線と同じ長さ）
+      const wideOf = (end: 'lo' | 'hi'): { n: number; shape: 'full' | 'corner' } => {
+        const none = { n: 0, shape: 'full' as const };
+        if (flat) return none;
+        const width = alongX ? r.maxX - r.minX : r.maxY - r.minY;
+        // 最初の列の側の壁の位置（列に沿う向きの座標）
+        const wallAt = end === 'lo' ? (alongX ? r.minX : r.minY) : alongX ? r.maxX : r.maxY;
+        const byPos: { pos: number; len: number }[] = [];
+        for (const sg of segs) {
+          if (sg.dashed) continue;
+          const along = alongX ? Math.abs(sg.b.x - sg.a.x) : Math.abs(sg.b.y - sg.a.y);
+          const across = alongX ? Math.abs(sg.b.y - sg.a.y) : Math.abs(sg.b.x - sg.a.x);
+          if (across > 3 || along < fw - 60 || along > width + 250) continue;
+          const e0 = alongX ? Math.min(sg.a.x, sg.b.x) : Math.min(sg.a.y, sg.b.y);
+          const e1 = alongX ? Math.max(sg.a.x, sg.b.x) : Math.max(sg.a.y, sg.b.y);
+          if (Math.abs((end === 'lo' ? e0 : e1) - wallAt) > 120) continue;
+          const c = alongX ? (sg.a.y + sg.b.y) / 2 : (sg.a.x + sg.b.x) / 2;
+          const fromBack = nearSide ? c - (alongX ? r.minY : r.minX) : (alongX ? r.maxY : r.maxX) - c;
+          if (fromBack < fw + 100 || fromBack > depth - 80) continue;
+          const hit = byPos.find((q) => Math.abs(q.pos - fromBack) < 40);
+          if (hit) hit.len = Math.max(hit.len, along);
+          else byPos.push({ pos: fromBack, len: along });
+        }
+        // 昇り口の縁（depth）から奥へ、段の間隔で並ぶ所まで
+        byPos.sort((a, b) => b.pos - a.pos);
+        let prev = depth;
+        const rows: { pos: number; len: number }[] = [];
+        for (const q of byPos) {
+          if (prev - q.pos < 150 || prev - q.pos > 330) break;
+          rows.push(q);
+          prev = q.pos;
+        }
+        // いちばん手前の線が、列の幅より長いこと（ふつうの段の線は列の幅）
+        if (!rows.length || rows[0].len < fw + 150) return none;
+        if (rows.every((q) => q.len >= width * 0.85)) return { n: rows.length + 1, shape: 'full' };
+        // corner: 幅いっぱいでない線が、奥へ 1 段ぶんずつ短くなり、最後は列の幅
+        const stag: number[] = [];
+        for (const q of rows) {
+          if (q.len >= width * 0.85 && !stag.length) continue; // 手前の幅いっぱいの線（1 段目と同じ大きさの台）は飛ばす
+          if (stag.length && (stag[stag.length - 1] - q.len < 150 || stag[stag.length - 1] - q.len > 330)) break;
+          stag.push(q.len);
+        }
+        if (stag.length >= 2 && Math.abs(stag[stag.length - 1] - fw) <= 160) return { n: stag.length + 1, shape: 'corner' };
+        // 幅いっぱいの線だけを数える
+        let full = 0;
+        for (const q of rows) {
+          if (q.len < width * 0.85) break;
+          full++;
+        }
+        return full ? { n: full + 1, shape: 'full' } : none;
+      };
+      // 吹抜を囲む腰壁: 奥の列の、段の線の吹抜側の端（edge）の先に、列に沿う長い線（列の長さの 7 割以上）の位置を集める
+      const guardWall = ((): boolean => {
+        if (flat) return false;
+        const edge = nearSide ? pHi : pLo;
+        const sign = nearSide ? 1 : -1;
+        const runLen = alongX ? P.maxX - P.minX : P.maxY - P.minY;
+        const r0 = alongX ? P.minX : P.minY;
+        const r1 = alongX ? P.maxX : P.maxY;
+        const offs: number[] = [];
+        for (const sg of segs) {
+          if (sg.dashed) continue;
+          const along = alongX ? Math.abs(sg.b.x - sg.a.x) : Math.abs(sg.b.y - sg.a.y);
+          const across = alongX ? Math.abs(sg.b.y - sg.a.y) : Math.abs(sg.b.x - sg.a.x);
+          if (across > 3 || along < runLen * 0.7) continue;
+          const e0 = alongX ? Math.min(sg.a.x, sg.b.x) : Math.min(sg.a.y, sg.b.y);
+          const e1 = alongX ? Math.max(sg.a.x, sg.b.x) : Math.max(sg.a.y, sg.b.y);
+          if (Math.min(e1, r1) - Math.max(e0, r0) < runLen * 0.7) continue;
+          const c = alongX ? (sg.a.y + sg.b.y) / 2 : (sg.a.x + sg.b.x) / 2;
+          const off = (c - edge) * sign;
+          if (off < -10 || off > 260) continue;
+          if (!offs.some((o) => Math.abs(o - off) < 8)) offs.push(off);
+        }
+        offs.sort((a, b) => a - b);
+        for (let i = 0; i < offs.length; i++) for (let j = i + 1; j < offs.length; j++) if (offs[j] - offs[i] >= 60 && offs[j] - offs[i] <= 140 && offs[j] >= 60) return true;
+        return false;
+      })();
+      const shape: WrapShape = { back, fw, mid: alongX ? P.maxX - P.minX : P.maxY - P.minY, sideEnd, flat, cornerSteps: nd >= 2 ? 3 : nd === 1 ? 2 : 1, wide: { lo: wideOf('lo'), hi: wideOf('hi') }, guardWall };
+      if (P.n > bestN) {
+        bestN = P.n;
+        bestShape = shape;
+      }
+    }
+  }
+  return bestShape;
+}
+
+/**
+ * 1 列だけの候補（奥の列）の両端の先に「回り段の升」があるかを見る（コの字の 3 方回りで、脇の列が 2 段ほどしか無い形）。
+ * r = 列の範囲、alongX = 列が横（x の向き）に進む、dLo / dHi = 列の両端から壁までの距離（升の大きさ。呼ぶ側が壁を探す）。
+ *  - diag: どちらかの升（列の端〜壁 × 列の幅）に、斜めの線（長さ 500 以上・25〜65°）がある = 回り段
+ *  - side / sideLen: 升の先へ続く脇の列（升の列の中の、列と同じ向きに並ぶ段の線。段の間隔 150〜330）のある側と、
+ *    列の縁から昇り口の縁までの長さ。脇の列に沿う線（側桁・歩行線）が最後の段の線より先へ伸びていれば、そこまで
+ * 御社の図面（林様邸）: 2 間 × 0.75 間に、左 2 段 → 回り段 → 奥 8 段 → 回り段 → 右 2 段。脇の列は線が 2〜3 本で列にならず、
+ * 奥の列だけが直階段と読まれていた
+ */
+export function cornerSquares(
+  r: { minX: number; minY: number; maxX: number; maxY: number },
+  alongX: boolean,
+  dLo: number,
+  dHi: number,
+  segs: Seg[],
+): { diag: boolean; side: 'n' | 's' | 'e' | 'w' | null; sideLen: number } {
+  // 列に沿う向き（a）と幅の向き（c）の座標で見る
+  const a0 = alongX ? r.minX : r.minY;
+  const a1 = alongX ? r.maxX : r.maxY;
+  const c0 = alongX ? r.minY : r.minX;
+  const c1 = alongX ? r.maxY : r.maxX;
+  const A = (p: Vec2) => (alongX ? p.x : p.y);
+  const C = (p: Vec2) => (alongX ? p.y : p.x);
+  const cols: [number, number][] = [
+    [a0 - dLo, a0],
+    [a1, a1 + dHi],
+  ];
+  let diag = false;
+  // 升の先の段の線: 幅の向きの位置ごと（手前 = c0 より小さい側 / c1 より大きい側）
+  const below: number[] = [];
+  const above: number[] = [];
+  const alongLines: { lo: number; hi: number }[] = [];
+  for (const sg of segs) {
+    if (sg.dashed) continue;
+    const dx = sg.b.x - sg.a.x;
+    const dy = sg.b.y - sg.a.y;
+    const L = Math.hypot(dx, dy);
+    if (L < 150) continue;
+    const ma = (A(sg.a) + A(sg.b)) / 2;
+    const col = cols.find(([lo, hi]) => ma > lo - 60 && ma < hi + 60);
+    if (!col) continue;
+    const da = Math.abs(A(sg.b) - A(sg.a));
+    const dc = Math.abs(C(sg.b) - C(sg.a));
+    const ang = (Math.atan2(Math.min(da, dc), Math.max(da, dc)) * 180) / Math.PI;
+    const mc = (C(sg.a) + C(sg.b)) / 2;
+    if (ang >= 25 && L >= 500) {
+      // 斜めの線: 升（列の幅の中）にある
+      if (mc > c0 - 100 && mc < c1 + 100 && Math.min(A(sg.a), A(sg.b)) > col[0] - 100 && Math.max(A(sg.a), A(sg.b)) < col[1] + 100) diag = true;
+      continue;
+    }
+    if (ang > 2) continue;
+    if (dc < 3 && da >= 400 && da <= 1100 && Math.min(A(sg.a), A(sg.b)) > col[0] - 80 && Math.max(A(sg.a), A(sg.b)) < col[1] + 80) {
+      // 列と同じ向きの線（脇の列の段の線）
+      if (mc > c1 + 60) above.push(mc);
+      else if (mc < c0 - 60) below.push(mc);
+    } else if (da < 3 && dc >= 150) alongLines.push({ lo: Math.min(C(sg.a), C(sg.b)), hi: Math.max(C(sg.a), C(sg.b)) });
+  }
+  /** 列の縁（edge）から外へ、段の間隔で並ぶ線の最後の位置までの長さ（最初の線は縁から 450 以内） */
+  const chain = (vals: number[], edge: number, sign: 1 | -1): number => {
+    const ds = [...new Set(vals.map((v) => Math.round((v - edge) * sign)))].filter((d) => d > 0).sort((p, q) => p - q);
+    let last = 0;
+    let n = 0;
+    for (const d of ds) {
+      if (d - last < 40) continue;
+      if (n === 0 ? d > 450 : d - last < 150 || d - last > 330) break;
+      last = d;
+      n++;
+    }
+    if (!n) return 0;
+    // 脇の列に沿う線（側桁・歩行線）が、最後の段の線より先へ 80〜330 伸びていれば、そこまで
+    let end = last;
+    for (const ln of alongLines) {
+      const from = sign > 0 ? ln.lo - edge : edge - ln.hi;
+      const to = sign > 0 ? ln.hi - edge : edge - ln.lo;
+      if (from <= last + 20 && to >= last + 80 && to <= last + 330) end = Math.max(end, to);
+    }
+    return end;
+  };
+  const lenAbove = chain(above, c1, 1);
+  const lenBelow = chain(below, c0, -1);
+  if (!lenAbove && !lenBelow) return { diag, side: null, sideLen: 0 };
+  const up = lenAbove >= lenBelow;
+  return { diag, side: alongX ? (up ? 's' : 'n') : up ? 'e' : 'w', sideLen: up ? lenAbove : lenBelow };
 }
 
 /**

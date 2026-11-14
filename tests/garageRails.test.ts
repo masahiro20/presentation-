@@ -17,7 +17,7 @@ function garage(extra: W[]) {
 const near = () => true;
 
 describe('ガレージのレール', () => {
-  it('出入口の端から車庫の中へ伸びる「全長が窓の壁」はレール。外へ出た袖壁の実体だけ残す（吉田大仁様邸 1st-2）', () => {
+  it('出入口の端から車庫の中へ伸びる「全長が窓の壁」はレール。外へ出た袖壁の実体だけ残す（吉田様邸 1st-2）', () => {
     const rail = hWall(13771, 17021, 12740, [{ t0: 13790, t1: 16570, kind: 'window' }]);
     const walls = garage([rail]);
     expect(cutGarageRails(walls, near)).toBe(1);

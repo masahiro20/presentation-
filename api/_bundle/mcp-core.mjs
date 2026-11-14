@@ -1038,7 +1038,7 @@ function findElevationTitles(texts) {
 * 見出しごとの図の範囲: 上の段の見出しの下から自分の見出しの上まで。同じ段の隣の図との境は、図と図の間の空き（線の無い縦の帯）の真ん中。
 *
 * 以前は見出しどうしの中間で切っていたが、見出しは図の真下にあるとは限らず、幅の違う図が並ぶと広い方の図の端が隣の範囲に入る
-* （吉田大仁様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
+* （吉田様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
 * 東面は窓の位置が 1.9m ずれて照合できず、南面も端が欠けていた）。空きが見つからないときだけ見出しの中間を使う
 */
 function regionsOf(titles, page) {
@@ -2179,7 +2179,7 @@ var manualLoopsOf = (patches, level) => (patches ?? []).filter((p) => p.level ==
 /**
 * 屋根の格子: 輪郭の頂点で座標を圧縮し、この範囲（上の範囲が載らず、除く範囲にも入らない所）と上の範囲をマスクにする。
 * 格子の目が範囲に入るかは、中心 1 点ではなく 3 × 3 の点で見る（斜めの外壁の目は中心がちょうど辺の上に乗り、
-* 入らない扱いになって屋根に穴が開いていた: 吉田大仁様邸の隅切りの LDK）。3 点以上入れば屋根を掛け、斜めの辺で切り落とす
+* 入らない扱いになって屋根に穴が開いていた: 吉田様邸の隅切りの LDK）。3 点以上入れば屋根を掛け、斜めの辺で切り落とす
 */
 function gridOfLoops(polys, higher, exclude = [], open = []) {
 	const all = [
@@ -5893,12 +5893,876 @@ function railsFromLines(mask, g, lines, walls, open) {
 	})).filter((r) => Math.hypot(r.b.x - r.a.x, r.b.y - r.a.y) >= 300);
 }
 //#endregion
+//#region src/core/stairs.ts
+/** コの字階段で中央に吹抜を取れる最小の幅（段の幅 910 × 2 ＋ 吹抜 300） */
+var U_OPEN_MIN_WIDTH = 2100;
+/**
+* コの字階段の「3 方回り」: 幅に余裕がある（奥の列を 400 以上取れる）コの字階段は、
+* 両脇の列（幅 fw）＋ 奥の辺に沿う列 ＋ 2 つの角（踊り場か回り段）で、3 方の壁沿いに回る。
+* 御社の図面のコの字階段はこの形（1.5 間 × 1 間に、左 4 段 → 角 → 奥 4 段 → 角 → 右 4 段）。
+* 以前は「両脇の 2 列＋奥いっぱいの踊り場 1 枚」で、段が脇の 2 列に詰まり、踏面が 150 台になっていた。
+* 戻り値: 列の幅 fw・脇の列の長さ len1・奥の列の長さ len2。3 方回りにできない幅なら null
+*/
+function wrapFlights(s) {
+	if (s.kind !== "uOpen") return null;
+	const { Ls, Lt } = stairFrame(s);
+	if (s.midRun == null && Lt < 2500) return null;
+	const want = s.midRun != null && s.midRun > 0 ? Math.round((Lt - s.midRun) / 10) * 5 : s.flightWidth ?? 910;
+	const fw = Math.min(Math.max(700, Math.min(1e3, want)), (Lt - 400) / 2);
+	if (fw < 650 || Ls < 650) return null;
+	return {
+		fw,
+		len1: Ls - fw < 200 ? 0 : Ls - fw,
+		len2: Lt - 2 * fw
+	};
+}
+/**
+* 昇り口の広い段（ひな壇）の段数（0 = 無し）。最初の列の段数 k1 まで（脇の列のあるコの字階段だけ）。
+* 最初の列を全部ひな壇にしてもよい（御社の図面: 4 段とも幅いっぱい、5 段目から回り段）
+*/
+var wideStepsOf = (s, k1) => Math.max(0, Math.min(k1, Math.round(s.wideSteps ?? 0) || 0));
+/** 角 1 つの段数（1 = 踊り場、2 = 斜めの線 1 本で 2 段、3 = 3 段回り） */
+var cornerStepsOf = (s) => s.cornerSteps === 2 || s.cornerSteps === 3 ? s.cornerSteps : 1;
+/**
+* かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めていれば（Stair.flightWidth）その幅、無ければ 1,000 まで。
+* 半間（910）の列の階段を 1,000 で作ると、段の端が隣の壁から 3cm ほどはみ出して見える
+*/
+function lFlightWidth(s, Ls, Lt) {
+	const base = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
+	return s.flightWidth != null ? Math.max(600, Math.min(s.flightWidth, Math.min(Ls, Lt))) : base;
+}
+/** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
+function stairFrame(s) {
+	const W = s.maxX - s.minX;
+	const H = s.maxY - s.minY;
+	switch (s.entry) {
+		case "n": return {
+			u: {
+				x: 0,
+				y: 1
+			},
+			r: {
+				x: -1,
+				y: 0
+			},
+			o: {
+				x: s.maxX,
+				y: s.minY
+			},
+			Ls: H,
+			Lt: W
+		};
+		case "s": return {
+			u: {
+				x: 0,
+				y: -1
+			},
+			r: {
+				x: 1,
+				y: 0
+			},
+			o: {
+				x: s.minX,
+				y: s.maxY
+			},
+			Ls: H,
+			Lt: W
+		};
+		case "w": return {
+			u: {
+				x: 1,
+				y: 0
+			},
+			r: {
+				x: 0,
+				y: 1
+			},
+			o: {
+				x: s.minX,
+				y: s.minY
+			},
+			Ls: W,
+			Lt: H
+		};
+		default: return {
+			u: {
+				x: -1,
+				y: 0
+			},
+			r: {
+				x: 0,
+				y: -1
+			},
+			o: {
+				x: s.maxX,
+				y: s.maxY
+			},
+			Ls: W,
+			Lt: H
+		};
+	}
+}
+/**
+* 図面の読み取りで「折り返し・かね折れ」となっていても、幅（昇る向きと直交する寸法）が 1.4m に満たない矩形では
+* 2 列に段を並べられない（1 列 45cm の段になり、人が通れない）。そういう階段は直階段として段を割る
+*/
+function effectiveStair(s) {
+	if (s.kind === "straight") return s;
+	const { Lt } = stairFrame(s);
+	if (Lt < 1400) return {
+		...s,
+		kind: "straight"
+	};
+	if (s.kind === "uOpen" && Lt < U_OPEN_MIN_WIDTH) return {
+		...s,
+		kind: "u"
+	};
+	return s;
+}
+/** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
+/** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
+function stairStepCount(riseMm, s) {
+	const fixed = s?.look?.steps ?? s?.steps;
+	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
+	return Math.max(10, Math.round(riseMm / 200));
+}
+/** 矩形（kind・entry を考慮）に踏面 MIN_TREAD で納まる最大の段数 */
+function maxStepsInRect(s0) {
+	const s = effectiveStair(s0);
+	const { Ls, Lt } = stairFrame(s);
+	if (s.kind === "straight") return Math.max(2, Math.floor(Ls / 240));
+	const wrap = wrapFlights(s);
+	if (wrap) return Math.max(wrap.len1 > 0 ? 5 : 3, 2 * Math.floor(wrap.len1 / 240) + Math.floor(wrap.len2 / 240) + 2 * cornerStepsOf(s));
+	if (s.kind === "u" || s.kind === "uOpen") {
+		const fw = s.kind === "uOpen" ? Math.min(1e3, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
+		const land = Math.min(Ls * .4, s.kind === "uOpen" ? fw : Lt / 2);
+		const k = Math.floor((Ls - land) / 240);
+		return Math.max(3, 2 * k + 1);
+	}
+	const fw = lFlightWidth(s, Ls, Lt);
+	const len1 = Math.max(0, Ls - fw);
+	const len2 = Math.max(0, Lt - fw);
+	return Math.max(3, Math.floor(len1 / 240) + Math.floor(len2 / 240) + 1);
+}
+/**
+* 実際に使う段数: 図面の段数があればそれ。無ければ階高 ÷ 200 前後を目安に、矩形に踏面 240 で納まる段数まで減らす
+* （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
+*/
+function effectiveStepCount(riseMm, s) {
+	const fixed = s.look?.steps ?? s.steps;
+	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
+	const n0 = stairStepCount(riseMm);
+	const nMin = Math.max(6, Math.ceil(riseMm / 230));
+	const e = effectiveStair(s);
+	if (e.kind === "straight" && s.treadPitch != null && s.treadPitch >= 180 && s.treadPitch <= 300) {
+		const k = stairFrame(e).Ls / s.treadPitch;
+		const n = Math.round(k) + 1;
+		if (Math.abs(k - Math.round(k)) <= .12 && n >= nMin && n <= 22) return n;
+	}
+	const wrap = wrapFlights(e);
+	if (wrap && s.treadPitch != null && s.treadPitch >= 180 && s.treadPitch <= 300) {
+		const k1 = wrap.len1 / s.treadPitch;
+		const k2 = wrap.len2 / s.treadPitch;
+		const n = 2 * Math.round(k1) + Math.round(k2) + 2 * cornerStepsOf(s);
+		if (Math.abs(k1 - Math.round(k1)) <= .15 && Math.abs(k2 - Math.round(k2)) <= .15 && n >= nMin && n <= 24) return n;
+	}
+	return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
+}
+/** 踏面の奥行の目安 (mm): 直線の列の長さ ÷ その列の段数（木造チェック・説明用） */
+function stairTreadDepth(s0, n) {
+	const lay = stairLayout(s0, n);
+	let best = Infinity;
+	for (const p of lay.pieces) {
+		if (p.kind !== "tread") continue;
+		best = Math.min(best, Math.abs(p.dir.x) > .5 ? p.maxX - p.minX : p.maxY - p.minY);
+	}
+	return Number.isFinite(best) ? best : 0;
+}
+function stairLayout(s0, n = 14) {
+	const s = effectiveStair(s0);
+	const F = stairFrame(s);
+	const P = (sv, tv) => ({
+		x: F.o.x + F.u.x * sv + F.r.x * tv,
+		y: F.o.y + F.u.y * sv + F.r.y * tv
+	});
+	const rect = (s0, s1, t0, t1) => {
+		const a = P(s0, t0);
+		const b = P(s1, t1);
+		return {
+			minX: Math.min(a.x, b.x),
+			minY: Math.min(a.y, b.y),
+			maxX: Math.max(a.x, b.x),
+			maxY: Math.max(a.y, b.y)
+		};
+	};
+	const pieces = [];
+	const { Ls, Lt } = F;
+	const neg = (v) => ({
+		x: -v.x || 0,
+		y: -v.y || 0
+	});
+	if (s.kind === "straight") {
+		const st = Ls / n;
+		for (let i = 1; i <= n; i++) pieces.push({
+			kind: "tread",
+			...rect(st * (i - 1), st * i, 0, Lt),
+			i,
+			dir: F.u
+		});
+		return {
+			n,
+			pieces
+		};
+	}
+	const wrap = wrapFlights(s);
+	if (wrap) {
+		const turn = s.turn ?? "left";
+		const { fw, len1, len2 } = wrap;
+		const c = cornerStepsOf(s);
+		const A = turn === "left" ? [Lt - fw, Lt] : [0, fw];
+		const B = turn === "left" ? [0, fw] : [Lt - fw, Lt];
+		/** 列の中央寄りの縁（吹抜の側）と、壁の側の縁 */
+		const innerA = turn === "left" ? Lt - fw : fw;
+		const outerA = turn === "left" ? Lt : 0;
+		const innerB = turn === "left" ? fw : Lt - fw;
+		const outerB = turn === "left" ? 0 : Lt;
+		const r = Math.max(len1 > 0 ? 3 : 1, n - 2 * c);
+		let k2 = len1 > 0 ? Math.max(1, Math.round(r * len2 / (2 * len1 + len2))) : r;
+		let k1 = len1 > 0 ? Math.max(1, Math.round((r - k2) / 2)) : 0;
+		let k3 = r - k2 - k1;
+		if (len1 > 0 && k3 < 1) {
+			k3 = 1;
+			if (k1 > 1) k1--;
+			else if (k2 > 1) k2--;
+		}
+		const dirMid = turn === "left" ? neg(F.r) : F.r;
+		const poly = (pts, i, dir) => {
+			const ps = pts.map(([sv, tv]) => P(sv, tv));
+			return {
+				kind: "winder",
+				minX: Math.min(...ps.map((q) => q.x)),
+				minY: Math.min(...ps.map((q) => q.y)),
+				maxX: Math.max(...ps.map((q) => q.x)),
+				maxY: Math.max(...ps.map((q) => q.y)),
+				i,
+				dir,
+				poly: ps
+			};
+		};
+		/**
+		* 角の段: 軸（中央寄りの角）pivot から放射に割る。in0→in1 が上がってくる縁、out0→out1 が出ていく縁、far が壁の角。
+		* 多角形の最初の 2 点は、その段に上がる縁
+		*/
+		const corner = (pivot, inEdge, far, outEdge, i0, dIn, dOut) => {
+			if (c === 1) {
+				const a = P(Math.min(pivot[0], far[0]), Math.min(pivot[1], far[1]));
+				const b = P(Math.max(pivot[0], far[0]), Math.max(pivot[1], far[1]));
+				pieces.push({
+					kind: "landing",
+					minX: Math.min(a.x, b.x),
+					minY: Math.min(a.y, b.y),
+					maxX: Math.max(a.x, b.x),
+					maxY: Math.max(a.y, b.y),
+					i: i0,
+					dir: dIn
+				});
+				return;
+			}
+			const lerp = (p, q, t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+			if (c === 2) {
+				pieces.push(poly([
+					pivot,
+					inEdge,
+					far
+				], i0, dIn));
+				pieces.push(poly([
+					pivot,
+					far,
+					outEdge
+				], i0 + 1, dOut));
+				return;
+			}
+			const q1 = lerp(inEdge, far, Math.tan(Math.PI / 6));
+			const q2 = lerp(outEdge, far, Math.tan(Math.PI / 6));
+			pieces.push(poly([
+				pivot,
+				inEdge,
+				q1
+			], i0, dIn));
+			pieces.push(poly([
+				pivot,
+				q1,
+				far,
+				q2
+			], i0 + 1, dIn));
+			pieces.push(poly([
+				pivot,
+				q2,
+				outEdge
+			], i0 + 2, dOut));
+		};
+		let i = 0;
+		const st1 = k1 ? len1 / k1 : 0;
+		const w = wideStepsOf(s, k1);
+		const pyramid = w > 0 && s.wideShape === "corner";
+		const NOSE = 20;
+		const plinths = [];
+		const seg = (s0, t0, s1, t1) => ({
+			a: P(s0, t0),
+			b: P(s1, t1)
+		});
+		for (let k = 1; k <= w; k++) {
+			const ext = !pyramid || k === 1 ? Lt : Math.min(Lt, fw + (w - k) * st1);
+			const free = ext < Lt - 1;
+			const t0 = turn === "left" ? Lt - ext : 0;
+			const t1 = turn === "left" ? Lt : ext;
+			const s0 = st1 * (k - 1);
+			const tFree = turn === "left" ? t0 : t1;
+			const lines = [seg(s0, t0, s0, t1)];
+			if (free) lines.push(seg(s0, tFree, pyramid && w === k1 ? len1 : Ls, tFree));
+			plinths.push({
+				i: k,
+				top: rect(s0, Ls, t0, t1),
+				base: rect(s0 + NOSE, Ls, free && turn === "left" ? t0 + NOSE : t0, free && turn !== "left" ? t1 - NOSE : t1),
+				lines
+			});
+		}
+		if (pyramid && w === k1) plinths.push({
+			i: w,
+			top: rect(len1, Ls, 0, Lt),
+			base: rect(len1 + NOSE, Ls, 0, Lt),
+			lines: [seg(len1, 0, len1, Lt)]
+		});
+		for (let j = 1; j <= k1; j++) pieces.push({
+			kind: "tread",
+			...rect(st1 * (j - 1), st1 * j, A[0], A[1]),
+			i: ++i,
+			dir: F.u,
+			...j <= w ? { wide: plinths[j - 1].top } : {}
+		});
+		corner([len1, innerA], [len1, outerA], [Ls, outerA], [Ls, innerA], i + 1, F.u, dirMid);
+		i += c;
+		len2 / k2;
+		for (let j = 1; j <= k2; j++) {
+			const t0 = innerA + (innerB - innerA) * ((j - 1) / k2);
+			const t1 = innerA + (innerB - innerA) * (j / k2);
+			pieces.push({
+				kind: "tread",
+				...rect(len1, Ls, t0, t1),
+				i: ++i,
+				dir: dirMid
+			});
+		}
+		corner([len1, innerB], [Ls, innerB], [Ls, outerB], [len1, outerB], i + 1, dirMid, neg(F.u));
+		i += c;
+		const st3 = k3 ? len1 / k3 : 0;
+		for (let j = 1; j <= k3; j++) pieces.push({
+			kind: "tread",
+			...rect(len1 - st3 * (j - 1), len1 - st3 * j, B[0], B[1]),
+			i: ++i,
+			dir: neg(F.u)
+		});
+		return len1 > 0 ? {
+			n: i,
+			pieces,
+			well: rect(0, len1, Math.min(innerA, innerB), Math.max(innerA, innerB)),
+			...plinths.length ? { plinths } : {}
+		} : {
+			n: i,
+			pieces
+		};
+	}
+	if (s.kind === "u" || s.kind === "uOpen") {
+		const turn = s.turn ?? "left";
+		const fw = s.kind === "uOpen" ? Math.min(1e3, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
+		const first = turn === "left" ? [Lt - fw, Lt] : [0, fw];
+		const second = turn === "left" ? [0, fw] : [Lt - fw, Lt];
+		const run = Ls - Math.min(Ls * .4, s.kind === "uOpen" ? fw : Lt / 2);
+		const n1 = Math.floor(n / 2);
+		const n2 = n - n1 - 1;
+		const st1 = run / n1;
+		const st2 = run / Math.max(1, n2);
+		for (let i = 1; i <= n1; i++) pieces.push({
+			kind: "tread",
+			...rect(st1 * (i - 1), st1 * i, first[0], first[1]),
+			i,
+			dir: F.u
+		});
+		pieces.push({
+			kind: "landing",
+			...rect(run, Ls, 0, Lt),
+			i: n1 + 1,
+			dir: F.u
+		});
+		for (let j = 1; j <= n2; j++) pieces.push({
+			kind: "tread",
+			...rect(run - st2 * (j - 1), run - st2 * j, second[0], second[1]),
+			i: n1 + 1 + j,
+			dir: neg(F.u)
+		});
+		if (s.kind === "uOpen") return {
+			n,
+			pieces,
+			well: rect(0, run, fw, Lt - fw)
+		};
+		return {
+			n,
+			pieces,
+			wall: rect(0, run, Lt / 2 - 50, Lt / 2 + 50)
+		};
+	}
+	const turn = s.turn ?? "right";
+	const fw = lFlightWidth(s, Ls, Lt);
+	const strip = turn === "right" ? [0, fw] : [Lt - fw, Lt];
+	const len1 = Math.max(0, Ls - fw);
+	const len2 = Math.max(0, Lt - fw);
+	const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))));
+	const n2 = n - 1 - n1;
+	const st1 = len1 / Math.max(1, n1);
+	for (let i = 1; i <= n1; i++) pieces.push({
+		kind: "tread",
+		...rect(st1 * (i - 1), st1 * i, strip[0], strip[1]),
+		i,
+		dir: F.u
+	});
+	pieces.push({
+		kind: "landing",
+		...rect(len1, Ls, strip[0], strip[1]),
+		i: n1 + 1,
+		dir: F.u
+	});
+	const st2 = len2 / Math.max(1, n2);
+	const dir2 = turn === "right" ? F.r : neg(F.r);
+	for (let j = 1; j <= n2; j++) {
+		const t0 = turn === "right" ? fw + st2 * (j - 1) : Lt - fw - st2 * (j - 1);
+		const t1 = turn === "right" ? fw + st2 * j : Lt - fw - st2 * j;
+		pieces.push({
+			kind: "tread",
+			...rect(len1, Ls, t0, t1),
+			i: n1 + 1 + j,
+			dir: dir2
+		});
+	}
+	return {
+		n,
+		pieces
+	};
+}
+/**
+* 階段が実際に占める範囲（上の階の床にあける穴）。直階段・折り返しは矩形そのもの。
+* かね折れは L 字なので、最初の列の帯と、奥の辺に沿う帯の 2 つ（矩形の残りの角は上の階の床が残る）
+*/
+function stairFootprint(s0) {
+	const s = effectiveStair(s0);
+	if (s.kind !== "l") return [{
+		minX: s.minX,
+		minY: s.minY,
+		maxX: s.maxX,
+		maxY: s.maxY
+	}];
+	const F = stairFrame(s);
+	const { Ls, Lt } = F;
+	const P = (sv, tv) => ({
+		x: F.o.x + F.u.x * sv + F.r.x * tv,
+		y: F.o.y + F.u.y * sv + F.r.y * tv
+	});
+	const rect = (a0, a1, t0, t1) => {
+		const a = P(a0, t0);
+		const b = P(a1, t1);
+		return {
+			minX: Math.min(a.x, b.x),
+			minY: Math.min(a.y, b.y),
+			maxX: Math.max(a.x, b.x),
+			maxY: Math.max(a.y, b.y)
+		};
+	};
+	const fw = lFlightWidth(s, Ls, Lt);
+	const strip = (s.turn ?? "right") === "right" ? [0, fw] : [Lt - fw, Lt];
+	return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];
+}
+/**
+* 階段の表記を作る。
+*  - 段鼻は段の幅の線、側桁は外形の線。歩行線は段の中央（踏板の幅の中心）を通り、踊り場では丸く回る
+*  - 上階へ昇る階段は、床から 1,400 ほどの段で切断線（ジグザグ）を入れ、その上の段は破線
+*  - 昇り口に○、終わりに矢じり。UP／DN と段数
+*/
+function stairDrawing(st, riseMm, opts = {}) {
+	const n = effectiveStepCount(riseMm, st);
+	const lay = stairLayout(st, n);
+	const pieces = lay.pieces;
+	const riser = riseMm / Math.max(1, n);
+	const cutAt = opts.cut !== false && st.goesUp ? Math.min(pieces.length - 1, Math.max(2, Math.ceil(1400 / riser))) : -1;
+	const ctr = (p) => p.poly?.length ? {
+		x: p.poly.reduce((a, q) => a + q.x, 0) / p.poly.length,
+		y: p.poly.reduce((a, q) => a + q.y, 0) / p.poly.length
+	} : {
+		x: (p.minX + p.maxX) / 2,
+		y: (p.minY + p.maxY) / 2
+	};
+	const risers = [];
+	const edges = [];
+	pieces.forEach((p, k) => {
+		const above = cutAt >= 0 && k > cutAt;
+		const d = p.dir;
+		if (p.poly && p.poly.length >= 3) {
+			risers.push({
+				a: p.poly[0],
+				b: p.poly[1],
+				above
+			});
+			for (let q = 1; q + 1 < p.poly.length; q++) edges.push({
+				a: p.poly[q],
+				b: p.poly[q + 1],
+				above
+			});
+			return;
+		}
+		const horiz = Math.abs(d.x) > .5;
+		if (p.kind === "tread") {
+			if (p.wide) return;
+			const front = horiz ? d.x > 0 ? p.maxX : p.minX : d.y > 0 ? p.maxY : p.minY;
+			risers.push(horiz ? {
+				a: {
+					x: front,
+					y: p.minY
+				},
+				b: {
+					x: front,
+					y: p.maxY
+				},
+				above
+			} : {
+				a: {
+					x: p.minX,
+					y: front
+				},
+				b: {
+					x: p.maxX,
+					y: front
+				},
+				above
+			});
+			if (k === 0 || pieces[k - 1].wide) {
+				const back = horiz ? d.x > 0 ? p.minX : p.maxX : d.y > 0 ? p.minY : p.maxY;
+				risers.push(horiz ? {
+					a: {
+						x: back,
+						y: p.minY
+					},
+					b: {
+						x: back,
+						y: p.maxY
+					},
+					above
+				} : {
+					a: {
+						x: p.minX,
+						y: back
+					},
+					b: {
+						x: p.maxX,
+						y: back
+					},
+					above
+				});
+			}
+			if (horiz) edges.push({
+				a: {
+					x: p.minX,
+					y: p.minY
+				},
+				b: {
+					x: p.maxX,
+					y: p.minY
+				},
+				above
+			}, {
+				a: {
+					x: p.minX,
+					y: p.maxY
+				},
+				b: {
+					x: p.maxX,
+					y: p.maxY
+				},
+				above
+			});
+			else edges.push({
+				a: {
+					x: p.minX,
+					y: p.minY
+				},
+				b: {
+					x: p.minX,
+					y: p.maxY
+				},
+				above
+			}, {
+				a: {
+					x: p.maxX,
+					y: p.minY
+				},
+				b: {
+					x: p.maxX,
+					y: p.maxY
+				},
+				above
+			});
+		} else edges.push({
+			a: {
+				x: p.minX,
+				y: p.minY
+			},
+			b: {
+				x: p.maxX,
+				y: p.minY
+			},
+			above
+		}, {
+			a: {
+				x: p.maxX,
+				y: p.minY
+			},
+			b: {
+				x: p.maxX,
+				y: p.maxY
+			},
+			above
+		}, {
+			a: {
+				x: p.maxX,
+				y: p.maxY
+			},
+			b: {
+				x: p.minX,
+				y: p.maxY
+			},
+			above
+		}, {
+			a: {
+				x: p.minX,
+				y: p.maxY
+			},
+			b: {
+				x: p.minX,
+				y: p.minY
+			},
+			above
+		});
+	});
+	for (const pl of lay.plinths ?? []) for (const ln of pl.lines) risers.push({
+		a: ln.a,
+		b: ln.b,
+		above: false
+	});
+	let walkPath = "";
+	const treads = pieces.map((p, k) => ({
+		p,
+		k,
+		c: ctr(p)
+	}));
+	const sameDir = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
+	let prev = null;
+	/** 回り段で始まる・終わる階段の、昇り口（角の升に入る縁の中央）と降り口（出る縁の中央） */
+	let startPt = null;
+	let endPt = null;
+	const mid2 = (a, b) => ({
+		x: (a.x + b.x) / 2,
+		y: (a.y + b.y) / 2
+	});
+	for (let k = 0; k < treads.length; k++) {
+		const t = treads[k];
+		if (t.p.kind === "landing") {
+			const nxt = treads[k + 1];
+			if (!nxt || !prev) continue;
+			const d1 = t.p.dir;
+			const ext = Math.abs(d1.x) > .5 ? t.p.maxX - t.p.minX : t.p.maxY - t.p.minY;
+			if (sameDir({
+				x: -d1.x,
+				y: -d1.y
+			}, nxt.p.dir)) {
+				const adv = Math.max(0, ext * .5 - Math.hypot(nxt.c.x - prev.x, nxt.c.y - prev.y) / 2);
+				const p1 = {
+					x: prev.x + d1.x * adv,
+					y: prev.y + d1.y * adv
+				};
+				const p2 = {
+					x: nxt.c.x + d1.x * adv,
+					y: nxt.c.y + d1.y * adv
+				};
+				const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
+				const sweep = d1.x * (p2.y - p1.y) - d1.y * (p2.x - p1.x) > 0 ? 1 : 0;
+				walkPath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${sweep} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)} L${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+			} else walkPath += ` Q${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)} ${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
+			prev = nxt.c;
+			k++;
+			continue;
+		}
+		if (t.p.kind === "winder" && t.p.poly) {
+			let e = k;
+			while (e + 1 < treads.length && treads[e + 1].p.kind === "winder") e++;
+			const nxt = treads[e + 1];
+			const lp = treads[e].p.poly ?? t.p.poly;
+			const inPt = prev ?? mid2(t.p.poly[0], t.p.poly[1]);
+			const outPt = nxt ? nxt.c : mid2(lp[0], lp[lp.length - 1]);
+			const d1 = k > 0 ? treads[k - 1].p.dir : t.p.dir;
+			const d2 = nxt ? nxt.p.dir : treads[e].p.dir;
+			const det = d1.x * d2.y - d1.y * d2.x;
+			if (Math.abs(det) > .5) {
+				const rx = outPt.x - inPt.x;
+				const ry = outPt.y - inPt.y;
+				const a = (rx * d2.y - ry * d2.x) / det;
+				const b = (d1.y * rx - d1.x * ry) / det;
+				const r = Math.min(a - (prev ? 0 : 80), -b - (nxt ? 0 : 170));
+				if (r > 60) {
+					const corner = {
+						x: inPt.x + d1.x * a,
+						y: inPt.y + d1.y * a
+					};
+					const p1 = {
+						x: corner.x - d1.x * r,
+						y: corner.y - d1.y * r
+					};
+					const p2 = {
+						x: corner.x + d2.x * r,
+						y: corner.y + d2.y * r
+					};
+					if (!prev) {
+						walkPath = `M${inPt.x.toFixed(0)} ${inPt.y.toFixed(0)}`;
+						startPt = inPt;
+					}
+					walkPath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${det > 0 ? 1 : 0} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)}`;
+					prev = p2;
+					if (!nxt) endPt = outPt;
+					k = e;
+					continue;
+				}
+			}
+		}
+		walkPath += prev ? ` L${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}` : `M${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}`;
+		prev = t.c;
+	}
+	const first = pieces[0];
+	const last = pieces[pieces.length - 1];
+	const c0 = startPt ?? ctr(first);
+	const c1 = ctr(last);
+	const dl = last.dir;
+	const lastFront = Math.abs(dl.x) > .5 ? Math.abs((dl.x > 0 ? last.maxX : last.minX) - c1.x) : Math.abs((dl.y > 0 ? last.maxY : last.minY) - c1.y);
+	const tipLen = Math.max(120, lastFront - 20);
+	const tip = endPt ? {
+		x: endPt.x - dl.x * 20,
+		y: endPt.y - dl.y * 20
+	} : {
+		x: c1.x + dl.x * tipLen,
+		y: c1.y + dl.y * tipLen
+	};
+	const aw = 70;
+	const al = 180;
+	const arrow = [
+		tip,
+		{
+			x: tip.x - dl.x * al - dl.y * aw,
+			y: tip.y - dl.y * al + dl.x * aw
+		},
+		{
+			x: tip.x - dl.x * al + dl.y * aw,
+			y: tip.y - dl.y * al - dl.x * aw
+		}
+	];
+	walkPath += ` L${(tip.x - dl.x * al * .6).toFixed(0)} ${(tip.y - dl.y * al * .6).toFixed(0)}`;
+	const d0 = first.dir;
+	let angle = Math.atan2(d0.y, d0.x) * 180 / Math.PI;
+	if (angle > 90) angle -= 180;
+	else if (angle <= -90) angle += 180;
+	if (angle === 90) angle = -90;
+	const perp = {
+		x: -d0.y,
+		y: d0.x
+	};
+	const lead = startPt ? 240 : 60;
+	const label = {
+		x: c0.x + perp.x * 230 + d0.x * lead,
+		y: c0.y + perp.y * 230 + d0.y * lead,
+		angle,
+		text: `${st.goesUp ? "UP" : "DN"} ${n}`
+	};
+	let cut;
+	if (cutAt >= 0 && pieces[cutAt]) {
+		const p = pieces[cutAt];
+		const d = p.dir;
+		const px = {
+			x: -d.y,
+			y: d.x
+		};
+		const c = ctr(p);
+		const halfW = Math.abs(px.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+		const halfD = Math.abs(d.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
+		const A = {
+			x: c.x - px.x * halfW * 1.08 - d.x * halfD * .9,
+			y: c.y - px.y * halfW * 1.08 - d.y * halfD * .9
+		};
+		const B = {
+			x: c.x + px.x * halfW * 1.08 + d.x * halfD * .9,
+			y: c.y + px.y * halfW * 1.08 + d.y * halfD * .9
+		};
+		const m = {
+			x: (A.x + B.x) / 2,
+			y: (A.y + B.y) / 2
+		};
+		const v = {
+			x: B.x - A.x,
+			y: B.y - A.y
+		};
+		const L = Math.hypot(v.x, v.y) || 1;
+		const u = {
+			x: v.x / L,
+			y: v.y / L
+		};
+		const nn = {
+			x: -u.y,
+			y: u.x
+		};
+		const z = Math.min(90, halfW * .25);
+		cut = [
+			A,
+			{
+				x: m.x - u.x * z,
+				y: m.y - u.y * z
+			},
+			{
+				x: m.x - u.x * z * .4 + nn.x * z,
+				y: m.y - u.y * z * .4 + nn.y * z
+			},
+			{
+				x: m.x + u.x * z * .4 - nn.x * z,
+				y: m.y + u.y * z * .4 - nn.y * z
+			},
+			{
+				x: m.x + u.x * z,
+				y: m.y + u.y * z
+			},
+			B
+		];
+	}
+	return {
+		risers,
+		edges,
+		walkPath,
+		start: c0,
+		arrow,
+		label,
+		cut,
+		wall: lay.wall,
+		well: lay.well
+	};
+}
+//#endregion
 //#region src/parser/walls.ts
 /**
 * 白抜き（マスク）の多角形を壁の軸に沿って区切り、区間ごとに「壁厚のうち白く抜けている割合」を返す。
 * ARCHITREND の引込み戸（片引き戸）は、壁の塗りの上に「開口部は全幅・戸袋は半幅（戸の通る溝）」の
 * L 字／T 字の白抜きを重ねて描くので、全幅の区間が開口、半幅の区間が戸袋（壁のまま）になる。
-* 吉田大仁様邸: トイレの戸（開口 840 + 戸袋 800）が 1,626 の引違い戸として読まれ、洗面の戸も戸袋ごと 1,528 になっていた
+* 吉田様邸: トイレの戸（開口 840 + 戸袋 800）が 1,626 の引違い戸として読まれ、洗面の戸も戸袋ごと 1,528 になっていた
 */
 function maskSpans(poly, grp, o, d) {
 	const ts = poly.map((q) => q.x * grp.u.x + q.y * grp.u.y);
@@ -8030,6 +8894,21 @@ function detectStairs(segs, within) {
 		const t1 = Math.max(...r.items.map((i) => i.t1));
 		const pitch = (Math.max(...os) - Math.min(...os)) / Math.max(1, r.items.length - 1);
 		const treadLen = t1 - t0;
+		const modeOf = (vals, inner) => {
+			let best = vals[0];
+			let bestN = 0;
+			for (const v of vals) {
+				const n = vals.filter((x) => Math.abs(x - v) <= 30).length;
+				if (n > bestN || n === bestN && (inner === "max" ? v > best : v < best)) {
+					best = v;
+					bestN = n;
+				}
+			}
+			return best;
+		};
+		const c0 = modeOf(r.items.map((i) => i.t0), "max");
+		const c1 = modeOf(r.items.map((i) => i.t1), "min");
+		const core = c1 - c0 >= 400 ? [c0, c1] : [t0, t1];
 		return r.orient === "h" ? {
 			minX: t0,
 			maxX: t1,
@@ -8038,7 +8917,8 @@ function detectStairs(segs, within) {
 			n: r.items.length,
 			orient: r.orient,
 			pitch,
-			treadLen
+			treadLen,
+			core
 		} : {
 			minX: Math.min(...os),
 			maxX: Math.max(...os),
@@ -8047,7 +8927,8 @@ function detectStairs(segs, within) {
 			n: r.items.length,
 			orient: r.orient,
 			pitch,
-			treadLen
+			treadLen,
+			core
 		};
 	};
 	const boxes = runs.map(boxOf).filter((b) => !isTileGrid(b, segs));
@@ -8137,10 +9018,288 @@ function detectStairs(segs, within) {
 			treadLen: merged.treadLen,
 			...merged.mixed ? { mixed: true } : {},
 			...walk ? { walk } : {},
-			...b.pitch >= 150 && b.pitch <= 330 ? { pitch: b.pitch } : {}
+			...b.pitch >= 150 && b.pitch <= 330 ? { pitch: b.pitch } : {},
+			runs: members.map((m) => ({
+				minX: m.minX,
+				minY: m.minY,
+				maxX: m.maxX,
+				maxY: m.maxY,
+				orient: m.orient,
+				n: m.n,
+				core: m.core
+			}))
 		});
 	});
 	return out;
+}
+/**
+* 候補の列と、壁まで広げた範囲 r から「コの字階段（3 方回り）」を見分ける。
+*  - 奥の辺に沿う列（P）: 段の線が奥の辺に直交し、線の長さ（列の幅）600〜1,100。
+*    列の両端と範囲の端との間に、角の升（550〜1,250）が 1 つずつ残る。
+*    （かね折れは片方の端まで列が続く。折り返しは列が奥の辺に沿わない）
+*  - 奥行に余裕がある（脇の列を取れる）ときは、角の升の手前に、P と直交する向きの列（脇の列）が 1 つ以上あること
+* 御社の図面: 1.5 間 × 1 間の階段室を、左 4 段 → 角（斜めの線 = 回り段）→ 奥 4 段 → 角 → 右 4 段と回る。
+* 1 階の図は切断線より下（最初の脇の列と奥の列）だけ、2 階の図は奥の列と最後の脇の列だけが描かれる
+*/
+function wrapShape(runs, r, segs) {
+	let bestShape = null;
+	let bestN = 0;
+	for (const P of runs) {
+		if (P.n < 4) continue;
+		const alongX = P.orient === "v";
+		const bLo = alongX ? P.minY : P.minX;
+		const bHi = alongX ? P.maxY : P.maxX;
+		const useCore = bHi - bLo > 1100 && !!P.core;
+		const pLo = useCore ? P.core[0] : bLo;
+		const pHi = useCore ? P.core[1] : bHi;
+		const treadLen = pHi - pLo;
+		if (treadLen < 600 || treadLen > 1100) continue;
+		const lo = alongX ? P.minX - r.minX : P.minY - r.minY;
+		const hi = alongX ? r.maxX - P.maxX : r.maxY - P.maxY;
+		if (lo < 550 || lo > 1250 || hi < 550 || hi > 1250) continue;
+		const dNear = pLo - (alongX ? r.minY : r.minX);
+		const dFar = (alongX ? r.maxY : r.maxX) - pHi;
+		const depth = alongX ? r.maxY - r.minY : r.maxX - r.minX;
+		const fw = Math.round(Math.min(1e3, Math.max(700, (lo + hi) / 2)));
+		const flat = depth - fw < 400;
+		for (const nearSide of [true, false]) {
+			if ((nearSide ? dNear : dFar) > 220) continue;
+			const back = alongX ? nearSide ? "n" : "s" : nearSide ? "w" : "e";
+			let sideEnd = null;
+			let noSideRun = false;
+			if (!flat) {
+				let seenLo = false;
+				let seenHi = false;
+				for (const S of runs) {
+					if (S === P || S.orient === P.orient || S.n < 3) continue;
+					const sNear = alongX ? S.minY - r.minY : S.minX - r.minX;
+					const sFar = alongX ? r.maxY - S.maxY : r.maxX - S.maxX;
+					if ((nearSide ? sNear : sFar) < fw - 220) continue;
+					const within = (a0, a1) => a1 - (alongX ? r.minX : r.minY) <= fw + 220 ? "lo" : (alongX ? r.maxX : r.maxY) - a0 <= fw + 220 ? "hi" : null;
+					const end = within(alongX ? S.minX : S.minY, alongX ? S.maxX : S.maxY) ?? (S.core ? within(S.core[0], S.core[1]) : null);
+					if (end === "lo") seenLo = true;
+					else if (end === "hi") seenHi = true;
+				}
+				if (!seenLo && !seenHi) sideEnd = null;
+				else sideEnd = seenLo && seenHi ? null : seenLo ? "lo" : "hi";
+				noSideRun = !seenLo && !seenHi;
+			}
+			const sq = (end) => {
+				const a0 = end === "lo" ? alongX ? r.minX : r.minY : (alongX ? r.maxX : r.maxY) - fw;
+				const b0 = nearSide ? alongX ? r.minY : r.minX : (alongX ? r.maxY : r.maxX) - Math.min(fw, depth);
+				return alongX ? {
+					minX: a0,
+					maxX: a0 + fw,
+					minY: b0,
+					maxY: b0 + Math.min(fw, depth)
+				} : {
+					minX: b0,
+					maxX: b0 + Math.min(fw, depth),
+					minY: a0,
+					maxY: a0 + fw
+				};
+			};
+			const diagDirs = (q) => {
+				const angs = [];
+				for (const sg of segs) {
+					if (sg.dashed) continue;
+					const dx = sg.b.x - sg.a.x;
+					const dy = sg.b.y - sg.a.y;
+					if (Math.hypot(dx, dy) < 300) continue;
+					const mx = (sg.a.x + sg.b.x) / 2;
+					const my = (sg.a.y + sg.b.y) / 2;
+					if (mx < q.minX - 60 || mx > q.maxX + 60 || my < q.minY - 60 || my > q.maxY + 60) continue;
+					const ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
+					if (ang < 18 || ang > 72) continue;
+					if (!angs.some((x) => Math.abs(x - ang) < 10)) angs.push(ang);
+				}
+				return angs.length;
+			};
+			const nd = Math.max(diagDirs(sq("lo")), diagDirs(sq("hi")));
+			if (noSideRun && nd === 0) continue;
+			const wideOf = (end) => {
+				const none = {
+					n: 0,
+					shape: "full"
+				};
+				if (flat) return none;
+				const width = alongX ? r.maxX - r.minX : r.maxY - r.minY;
+				const wallAt = end === "lo" ? alongX ? r.minX : r.minY : alongX ? r.maxX : r.maxY;
+				const byPos = [];
+				for (const sg of segs) {
+					if (sg.dashed) continue;
+					const along = alongX ? Math.abs(sg.b.x - sg.a.x) : Math.abs(sg.b.y - sg.a.y);
+					if ((alongX ? Math.abs(sg.b.y - sg.a.y) : Math.abs(sg.b.x - sg.a.x)) > 3 || along < fw - 60 || along > width + 250) continue;
+					const e0 = alongX ? Math.min(sg.a.x, sg.b.x) : Math.min(sg.a.y, sg.b.y);
+					const e1 = alongX ? Math.max(sg.a.x, sg.b.x) : Math.max(sg.a.y, sg.b.y);
+					if (Math.abs((end === "lo" ? e0 : e1) - wallAt) > 120) continue;
+					const c = alongX ? (sg.a.y + sg.b.y) / 2 : (sg.a.x + sg.b.x) / 2;
+					const fromBack = nearSide ? c - (alongX ? r.minY : r.minX) : (alongX ? r.maxY : r.maxX) - c;
+					if (fromBack < fw + 100 || fromBack > depth - 80) continue;
+					const hit = byPos.find((q) => Math.abs(q.pos - fromBack) < 40);
+					if (hit) hit.len = Math.max(hit.len, along);
+					else byPos.push({
+						pos: fromBack,
+						len: along
+					});
+				}
+				byPos.sort((a, b) => b.pos - a.pos);
+				let prev = depth;
+				const rows = [];
+				for (const q of byPos) {
+					if (prev - q.pos < 150 || prev - q.pos > 330) break;
+					rows.push(q);
+					prev = q.pos;
+				}
+				if (!rows.length || rows[0].len < fw + 150) return none;
+				if (rows.every((q) => q.len >= width * .85)) return {
+					n: rows.length + 1,
+					shape: "full"
+				};
+				const stag = [];
+				for (const q of rows) {
+					if (q.len >= width * .85 && !stag.length) continue;
+					if (stag.length && (stag[stag.length - 1] - q.len < 150 || stag[stag.length - 1] - q.len > 330)) break;
+					stag.push(q.len);
+				}
+				if (stag.length >= 2 && Math.abs(stag[stag.length - 1] - fw) <= 160) return {
+					n: stag.length + 1,
+					shape: "corner"
+				};
+				let full = 0;
+				for (const q of rows) {
+					if (q.len < width * .85) break;
+					full++;
+				}
+				return full ? {
+					n: full + 1,
+					shape: "full"
+				} : none;
+			};
+			const guardWall = (() => {
+				if (flat) return false;
+				const edge = nearSide ? pHi : pLo;
+				const sign = nearSide ? 1 : -1;
+				const runLen = alongX ? P.maxX - P.minX : P.maxY - P.minY;
+				const r0 = alongX ? P.minX : P.minY;
+				const r1 = alongX ? P.maxX : P.maxY;
+				const offs = [];
+				for (const sg of segs) {
+					if (sg.dashed) continue;
+					const along = alongX ? Math.abs(sg.b.x - sg.a.x) : Math.abs(sg.b.y - sg.a.y);
+					if ((alongX ? Math.abs(sg.b.y - sg.a.y) : Math.abs(sg.b.x - sg.a.x)) > 3 || along < runLen * .7) continue;
+					const e0 = alongX ? Math.min(sg.a.x, sg.b.x) : Math.min(sg.a.y, sg.b.y);
+					const e1 = alongX ? Math.max(sg.a.x, sg.b.x) : Math.max(sg.a.y, sg.b.y);
+					if (Math.min(e1, r1) - Math.max(e0, r0) < runLen * .7) continue;
+					const off = ((alongX ? (sg.a.y + sg.b.y) / 2 : (sg.a.x + sg.b.x) / 2) - edge) * sign;
+					if (off < -10 || off > 260) continue;
+					if (!offs.some((o) => Math.abs(o - off) < 8)) offs.push(off);
+				}
+				offs.sort((a, b) => a - b);
+				for (let i = 0; i < offs.length; i++) for (let j = i + 1; j < offs.length; j++) if (offs[j] - offs[i] >= 60 && offs[j] - offs[i] <= 140 && offs[j] >= 60) return true;
+				return false;
+			})();
+			const shape = {
+				back,
+				fw,
+				mid: alongX ? P.maxX - P.minX : P.maxY - P.minY,
+				sideEnd,
+				flat,
+				cornerSteps: nd >= 2 ? 3 : nd === 1 ? 2 : 1,
+				wide: {
+					lo: wideOf("lo"),
+					hi: wideOf("hi")
+				},
+				guardWall
+			};
+			if (P.n > bestN) {
+				bestN = P.n;
+				bestShape = shape;
+			}
+		}
+	}
+	return bestShape;
+}
+/**
+* 1 列だけの候補（奥の列）の両端の先に「回り段の升」があるかを見る（コの字の 3 方回りで、脇の列が 2 段ほどしか無い形）。
+* r = 列の範囲、alongX = 列が横（x の向き）に進む、dLo / dHi = 列の両端から壁までの距離（升の大きさ。呼ぶ側が壁を探す）。
+*  - diag: どちらかの升（列の端〜壁 × 列の幅）に、斜めの線（長さ 500 以上・25〜65°）がある = 回り段
+*  - side / sideLen: 升の先へ続く脇の列（升の列の中の、列と同じ向きに並ぶ段の線。段の間隔 150〜330）のある側と、
+*    列の縁から昇り口の縁までの長さ。脇の列に沿う線（側桁・歩行線）が最後の段の線より先へ伸びていれば、そこまで
+* 御社の図面（林様邸）: 2 間 × 0.75 間に、左 2 段 → 回り段 → 奥 8 段 → 回り段 → 右 2 段。脇の列は線が 2〜3 本で列にならず、
+* 奥の列だけが直階段と読まれていた
+*/
+function cornerSquares(r, alongX, dLo, dHi, segs) {
+	const a0 = alongX ? r.minX : r.minY;
+	const a1 = alongX ? r.maxX : r.maxY;
+	const c0 = alongX ? r.minY : r.minX;
+	const c1 = alongX ? r.maxY : r.maxX;
+	const A = (p) => alongX ? p.x : p.y;
+	const C = (p) => alongX ? p.y : p.x;
+	const cols = [[a0 - dLo, a0], [a1, a1 + dHi]];
+	let diag = false;
+	const below = [];
+	const above = [];
+	const alongLines = [];
+	for (const sg of segs) {
+		if (sg.dashed) continue;
+		const dx = sg.b.x - sg.a.x;
+		const dy = sg.b.y - sg.a.y;
+		const L = Math.hypot(dx, dy);
+		if (L < 150) continue;
+		const ma = (A(sg.a) + A(sg.b)) / 2;
+		const col = cols.find(([lo, hi]) => ma > lo - 60 && ma < hi + 60);
+		if (!col) continue;
+		const da = Math.abs(A(sg.b) - A(sg.a));
+		const dc = Math.abs(C(sg.b) - C(sg.a));
+		const ang = Math.atan2(Math.min(da, dc), Math.max(da, dc)) * 180 / Math.PI;
+		const mc = (C(sg.a) + C(sg.b)) / 2;
+		if (ang >= 25 && L >= 500) {
+			if (mc > c0 - 100 && mc < c1 + 100 && Math.min(A(sg.a), A(sg.b)) > col[0] - 100 && Math.max(A(sg.a), A(sg.b)) < col[1] + 100) diag = true;
+			continue;
+		}
+		if (ang > 2) continue;
+		if (dc < 3 && da >= 400 && da <= 1100 && Math.min(A(sg.a), A(sg.b)) > col[0] - 80 && Math.max(A(sg.a), A(sg.b)) < col[1] + 80) {
+			if (mc > c1 + 60) above.push(mc);
+			else if (mc < c0 - 60) below.push(mc);
+		} else if (da < 3 && dc >= 150) alongLines.push({
+			lo: Math.min(C(sg.a), C(sg.b)),
+			hi: Math.max(C(sg.a), C(sg.b))
+		});
+	}
+	/** 列の縁（edge）から外へ、段の間隔で並ぶ線の最後の位置までの長さ（最初の線は縁から 450 以内） */
+	const chain = (vals, edge, sign) => {
+		const ds = [...new Set(vals.map((v) => Math.round((v - edge) * sign)))].filter((d) => d > 0).sort((p, q) => p - q);
+		let last = 0;
+		let n = 0;
+		for (const d of ds) {
+			if (d - last < 40) continue;
+			if (n === 0 ? d > 450 : d - last < 150 || d - last > 330) break;
+			last = d;
+			n++;
+		}
+		if (!n) return 0;
+		let end = last;
+		for (const ln of alongLines) {
+			const from = sign > 0 ? ln.lo - edge : edge - ln.hi;
+			const to = sign > 0 ? ln.hi - edge : edge - ln.lo;
+			if (from <= last + 20 && to >= last + 80 && to <= last + 330) end = Math.max(end, to);
+		}
+		return end;
+	};
+	const lenAbove = chain(above, c1, 1);
+	const lenBelow = chain(below, c0, -1);
+	if (!lenAbove && !lenBelow) return {
+		diag,
+		side: null,
+		sideLen: 0
+	};
+	const up = lenAbove >= lenBelow;
+	return {
+		diag,
+		side: alongX ? up ? "s" : "n" : up ? "e" : "w",
+		sideLen: up ? lenAbove : lenBelow
+	};
 }
 /**
 * 等間隔の線の並びが「格子（タイル目地）」か: 並びに直交する線が、段の幅を 150〜480mm のほぼ同じ間隔で 3 つ以上に割っている。
@@ -9223,7 +10382,7 @@ function assembleCars(clusters) {
 }
 /**
 * 点線で描いた丸（植栽）: 15mm 以下の点が 60mm 以内で連なり、中心からの距離がそろう輪（半径 0.25〜1.3m）。
-* 点どうしは端点がつながらないので clusterSegments では拾えない（吉田大仁様邸: 植栽 7 本のうち 1 本しか読めていなかった）
+* 点どうしは端点がつながらないので clusterSegments では拾えない（吉田様邸: 植栽 7 本のうち 1 本しか読めていなかった）
 */
 function dottedRings(segs) {
 	const len = (s) => Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
@@ -9481,10 +10640,42 @@ function detectSymbols(segs) {
 		};
 		const lEmpty = within(L, 1600, 4600) && within(S, 1200, 3600) && n >= 20 ? lShapeOf(c) : null;
 		let kind = null;
-		if (L >= 600) globalThis.__symRaw?.push(`${Math.round(L)}x${Math.round(S)} n=${n} short=${shortFrac.toFixed(2)} bump=${bump.toFixed(3)} long=${Math.round(longLen)} @${Math.round(cx)},${Math.round(cy)}`);
+		if (L >= (globalThis.__symRawMin ?? 600)) globalThis.__symRaw?.push(`${Math.round(L)}x${Math.round(S)} n=${n} short=${shortFrac.toFixed(2)} bump=${bump.toFixed(3)} long=${Math.round(longLen)} @${Math.round(cx)},${Math.round(cy)}`);
 		if ((within(L, 4300, 5300) || within(L, 3300, 4300) && n >= 150) && within(S, 1450, 2350) && n >= 50) kind = "car";
 		else if (within(L, 270, 310) && within(S, 40, 70) && n >= 14 && shortFrac > .8) kind = "chairBack";
-		else if (within(L, 400, 720) && within(S, 330, 720) && n >= 55 && shortFrac > .55 && bump > .08) kind = "chair";
+		else if (!globalThis.__NO_BACK_CHAIR && within(L, 320, 370) && within(S, 80, 120) && n >= 10 && n <= 22 && shortFrac > .75 && bump > .35) {
+			const longX = w >= h;
+			const pts = c.segs.flatMap((sg) => [sg.a, sg.b]);
+			const end0 = pts.reduce((p, q) => (longX ? q.x < p.x : q.y < p.y) ? q : p);
+			const end1 = pts.reduce((p, q) => (longX ? q.x > p.x : q.y > p.y) ? q : p);
+			const endC = longX ? (end0.y + end1.y) / 2 : (end0.x + end1.x) / 2;
+			const midC = longX ? cy : cx;
+			const sgn = endC < midC ? -1 : 1;
+			const seat = rotPt(longX ? {
+				x: cx,
+				y: midC + sgn * 170
+			} : {
+				x: midC + sgn * 170,
+				y: cy
+			}, pivot, rot);
+			out.push({
+				kind: "chair",
+				x: seat.x,
+				y: seat.y,
+				w: 480,
+				h: 480,
+				n: 60,
+				flat: {
+					a: seat,
+					b: ctr
+				},
+				bump: +bump.toFixed(3),
+				shortFrac: +shortFrac.toFixed(2),
+				longLen: Math.round(longLen),
+				...extra
+			});
+			continue;
+		} else if (within(L, 400, 720) && within(S, 330, 720) && n >= 55 && shortFrac > .55 && bump > .08) kind = "chair";
 		else if (lEmpty && shortFrac > .5) {
 			out.push({
 				kind: "sofa",
@@ -10143,6 +11334,86 @@ function symbolsToItems(symbols, rooms, walls, outline, level, trace) {
 			});
 		}
 	}
+	/**
+	* 椅子の集まりが「壁に向かうカウンター席」か。条件:
+	*  - 1 列（列と直交する向きの広がりが 200 以内）で、隣どうしの間隔が 420〜980（食卓をはさんで向かい合う椅子は 1,000 以上離れる）
+	*  - 列から 380〜1,020 の所に、列の中央・両端とも壁がある（カウンターの奥行 400〜650 ＋ 椅子）。片側だけ
+	* 戻り値: 列の向き・壁へ向かう向き・列から壁の面までの距離・両端の椅子の間隔
+	*/
+	const counterRowOf = (group, cx, cy, maxPitch = 980) => {
+		let sxx = 0, syy = 0, sxy = 0;
+		for (const g of group) {
+			sxx += (g.x - cx) ** 2;
+			syy += (g.y - cy) ** 2;
+			sxy += (g.x - cx) * (g.y - cy);
+		}
+		const th = .5 * Math.atan2(2 * sxy, sxx - syy);
+		const along = snapAxis(unit(Math.cos(th), Math.sin(th)));
+		const n = perp(along);
+		if (Math.max(...group.map((g) => Math.abs((g.x - cx) * n.x + (g.y - cy) * n.y))) > 200) return null;
+		const ts = group.map((g) => (g.x - cx) * along.x + (g.y - cy) * along.y).sort((a, b) => a - b);
+		for (let i = 0; i + 1 < ts.length; i++) if (ts[i + 1] - ts[i] < 420 || ts[i + 1] - ts[i] > maxPitch) return null;
+		const sides = [];
+		for (const sg of [1, -1]) {
+			const dir = {
+				x: n.x * sg,
+				y: n.y * sg
+			};
+			const hit = (t0) => {
+				const p = {
+					x: cx + along.x * t0,
+					y: cy + along.y * t0
+				};
+				for (let t = 380; t <= 1020; t += 20) if (wallDist({
+					x: p.x + dir.x * t,
+					y: p.y + dir.y * t
+				}) < 70) return t;
+				return null;
+			};
+			const ds = [
+				hit(ts[0]),
+				hit(0),
+				hit(ts[ts.length - 1])
+			];
+			if (ds.some((v) => v == null)) continue;
+			const vals = ds;
+			if (Math.max(...vals) - Math.min(...vals) > 120) continue;
+			sides.push({
+				toWall: dir,
+				dist: vals[1]
+			});
+		}
+		if (sides.length === 2) {
+			const ext = sides.filter((sd) => !inside({
+				x: cx + sd.toWall.x * (sd.dist + 260),
+				y: cy + sd.toWall.y * (sd.dist + 260)
+			}));
+			if (ext.length === 1) sides.splice(0, 2, ext[0]);
+		}
+		if (sides.length !== 1) return null;
+		const back = sides[0];
+		const endGap = (t0, sg) => {
+			for (let t = 200; t <= 1600; t += 20) {
+				const p = {
+					x: cx + along.x * (t0 + sg * t),
+					y: cy + along.y * (t0 + sg * t)
+				};
+				if (wallDist(p) < 70) return t;
+				if (wallDist({
+					x: p.x + back.toWall.x * back.dist,
+					y: p.y + back.toWall.y * back.dist
+				}) > 140) return t - 20;
+			}
+			return null;
+		};
+		return {
+			along,
+			toWall: sides[0].toWall,
+			dist: sides[0].dist,
+			span: ts[ts.length - 1] - ts[0],
+			endGaps: [endGap(ts[0], -1), endGap(ts[ts.length - 1], 1)]
+		};
+	};
 	const chairs = symbols.filter((s) => s.kind === "chair");
 	const usedChair = /* @__PURE__ */ new Set();
 	for (const ch of chairs) {
@@ -10156,6 +11427,53 @@ function symbolsToItems(symbols, rooms, walls, outline, level, trace) {
 		if (group.length < 2) continue;
 		const cx = group.reduce((a, g) => a + g.x, 0) / group.length;
 		const cy = group.reduce((a, g) => a + g.y, 0) / group.length;
+		{
+			const room = roomAt({
+				x: cx,
+				y: cy
+			});
+			const row = counterRowOf(group, cx, cy, room && ![
+				"ldk",
+				"dining",
+				"kitchen",
+				"living"
+			].includes(room.type) ? 1300 : 980);
+			if (row) {
+				const NG = [
+					"bath",
+					"toilet",
+					"washroom",
+					"garage",
+					"stairs",
+					"void",
+					"closet",
+					"storage",
+					...OUTDOOR_TYPES
+				];
+				if (room && !NG.includes(room.type)) {
+					const inward = {
+						x: -row.toWall.x,
+						y: -row.toWall.y
+					};
+					const [g0, g1] = row.endGaps;
+					const wall2wall = g0 != null && g1 != null;
+					const w = +Math.min(4.6, Math.max(1.2, wall2wall ? (row.span + g0 + g1 - 20) / 1e3 : (row.span + 700) / 1e3)).toFixed(2);
+					const shift = wall2wall ? (g1 - g0) / 2 : 0;
+					const d = +Math.min(.65, Math.max(.45, (row.dist - 270) / 1e3)).toFixed(2);
+					push("builtin", {
+						x: cx + row.along.x * shift,
+						y: cy + row.along.y * shift
+					}, row.along, inward, row.dist, {
+						variant: "counter",
+						w,
+						d,
+						seats: group.length
+					});
+					trace?.push(`counter row@${Math.round(cx)},${Math.round(cy)} seats=${group.length} w=${w} d=${d} room=${room.name}${wall2wall ? " 壁から壁" : ""}`);
+					continue;
+				}
+			}
+		}
 		if (group.length < 3 && ![
 			"ldk",
 			"dining",
@@ -10837,12 +12155,32 @@ function findLoops(segs, minSize = 120, maxSize = 700, maxSeg = 400) {
 		let open = 0;
 		for (const j of comp) for (const p of [sh[j].a, sh[j].b]) if ((byEnd.get(key(p)) ?? []).length < 2) open++;
 		if (open > 2) continue;
+		const cx = (minX + maxX) / 2;
+		const cy = (minY + maxY) / 2;
+		let on = 0;
+		let all = 0;
+		for (const j of comp) {
+			const s = sh[j];
+			for (const q of [
+				s.a,
+				s.b,
+				{
+					x: (s.a.x + s.b.x) / 2,
+					y: (s.a.y + s.b.y) / 2
+				}
+			]) {
+				const d = Math.hypot((q.x - cx) / (w / 2), (q.y - cy) / (h / 2));
+				all++;
+				if (d > .8 && d < 1.15) on++;
+			}
+		}
 		out.push({
 			minX,
 			minY,
 			maxX,
 			maxY,
-			n: comp.length
+			n: comp.length,
+			round: all ? on / all : 0
 		});
 	}
 	return out;
@@ -11326,6 +12664,7 @@ function readContextItems(segs, arcs, rooms, walls, level, dict, prior = [], ext
 					y: (g.minY + g.maxY) / 2
 				};
 				if (!pointInPolygon(gc, room.polygon)) continue;
+				if (g.round < .6) continue;
 				if (!(sofas.some((sf) => Math.hypot(sf.cx - gc.x, sf.cy - gc.y) < 2600) || prior.some((p) => p.kind === "sofa" && p.roomId === room.id && Math.hypot(p.x - gc.x, p.y - gc.y) < 2600)) || items.some((it) => it.roomId === room.id && it.kind === "coffeeTable")) continue;
 				const dia = Math.max(g.maxX - g.minX, g.maxY - g.minY);
 				const bb = roomBBox(room);
@@ -13707,7 +15046,7 @@ function collinearGaps(walls, maxGap, axisTol = 30) {
 /**
 * オーバースライダー（ガレージのドア）のレールを壁から外す。
 * レールは車の出入口の両端・中央から車庫の中へ直角に伸びる細い二重線で、帯の中の平行線なので「全長が窓の壁」として読まれる。
-* そのままだと車庫の中を仕切り、出入口の前を塞ぐ壁にもなって、車庫が部屋として閉じない（吉田大仁様邸 1st-2: 車庫 27 帖が消えていた）。
+* そのままだと車庫の中を仕切り、出入口の前を塞ぐ壁にもなって、車庫が部屋として閉じない（吉田様邸 1st-2: 車庫 27 帖が消えていた）。
 * 条件: 2.4m 以上の切れ目（出入口）に直交し、「窓」が出入口の線から 450mm 以内で始まって 1.5m 以上伸び、その先で壁が終わっている
 * （先に壁の実体が続くものは、窓のある本物の側壁）。戻り値は外したレールの数
 */
@@ -15727,6 +17066,81 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const d = wallAhead(sd, 400);
 			if (d != null && d > 0) growBy(sd, d);
 		}
+		if (c.flights === 1 && !c.mixed && c.treadCount >= 5 && !globalThis.__NO_WRAP_STAIR) {
+			const alongX = c.treadOrient === "v";
+			const sLo = alongX ? "w" : "n";
+			const sHi = alongX ? "e" : "s";
+			const gapBeyond = (side, max) => {
+				const out = [];
+				for (const fr of [.25, .75]) {
+					const at = (k) => side === "n" ? {
+						x: r.minX + (r.maxX - r.minX) * fr,
+						y: r.minY - k * res
+					} : side === "s" ? {
+						x: r.minX + (r.maxX - r.minX) * fr,
+						y: r.maxY + k * res
+					} : side === "w" ? {
+						x: r.minX - k * res,
+						y: r.minY + (r.maxY - r.minY) * fr
+					} : {
+						x: r.maxX + k * res,
+						y: r.minY + (r.maxY - r.minY) * fr
+					};
+					let k = 1;
+					while (k <= 3 && sideState(at(k)) !== 0) k++;
+					const thin = k > 1;
+					if (sideState(at(k)) !== 0) {
+						out.push({
+							d: 0,
+							thin: false
+						});
+						continue;
+					}
+					let d = null;
+					for (; k * res <= max; k++) if (sideState(at(k)) !== 0) {
+						d = (k - 1) * res;
+						break;
+					}
+					if (d == null) return null;
+					out.push({
+						d,
+						thin
+					});
+				}
+				return Math.abs(out[0].d - out[1].d) <= 160 ? {
+					d: Math.min(out[0].d, out[1].d),
+					thin: out[0].thin && out[1].thin
+				} : null;
+			};
+			const gLo = gapBeyond(sLo, 1250);
+			const gHi = gapBeyond(sHi, 1250);
+			if (gLo && gHi && gLo.d >= 550 && gHi.d >= 550) {
+				const sq = cornerSquares(r, alongX, gLo.d, gHi.d, nonWallSegs);
+				if (sq.diag) {
+					const run = c.runs?.[0];
+					if (run && c.pitch) {
+						const p0 = alongX ? run.minX : run.minY;
+						const p1 = alongX ? run.maxX : run.maxY;
+						const e0 = alongX ? r.minX : r.minY;
+						const e1 = alongX ? r.maxX : r.maxY;
+						if (gLo.thin && Math.abs(p0 - e0 - c.pitch) <= 45) {
+							if (alongX) run.minX = p0 - c.pitch;
+							else run.minY = p0 - c.pitch;
+							run.n++;
+						}
+						if (gHi.thin && Math.abs(e1 - p1 - c.pitch) <= 45) {
+							if (alongX) run.maxX = p1 + c.pitch;
+							else run.maxY = p1 + c.pitch;
+							run.n++;
+						}
+					}
+					growBy(sLo, gLo.d);
+					growBy(sHi, gHi.d);
+					if (sq.side && sq.sideLen > 0) growBy(sq.side, sq.sideLen);
+					globalThis.__stairTrace?.push(`${level}F grow 回り段の升: ${sLo} +${Math.round(gLo.d)} ${sHi} +${Math.round(gHi.d)}${sq.side ? ` 脇の列 ${sq.side} +${Math.round(sq.sideLen)}` : ""} → r ${Math.round(r.minX)},${Math.round(r.minY)}-${Math.round(r.maxX)},${Math.round(r.maxY)}`);
+				}
+			}
+		}
 		for (const sd of [
 			"e",
 			"w",
@@ -15939,6 +17353,85 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const d = wallAhead(far, 1200);
 			if (d != null && d >= 300) growBy(far, d);
 		}
+		let midRun;
+		let cornerSteps;
+		let wideSteps;
+		let wideShape;
+		let guardRail;
+		if (!globalThis.__NO_WRAP_STAIR) {
+			const ws = wrapShape(c.runs ?? [], r, nonWallSegs);
+			const opp = {
+				n: "s",
+				s: "n",
+				e: "w",
+				w: "e"
+			};
+			const markNow = goesUp ? upMark : dnMark;
+			const markSideRaw = goesUp ? upSide : dnSide;
+			let back = ws ? ws.back : null;
+			if (ws?.flat) {
+				const alongX = ws.back === "n" || ws.back === "s";
+				back = markSideRaw != null && (alongX ? markSideRaw === "n" || markSideRaw === "s" : markSideRaw === "e" || markSideRaw === "w") && markNow && stairMarkDist(r, markNow) > 50 ? opp[markSideRaw] : null;
+			}
+			if (ws && back) {
+				const alongX = back === "n" || back === "s";
+				let loFirst = true;
+				if (ws.sideEnd) loFirst = goesUp ? ws.sideEnd === "lo" : ws.sideEnd !== "lo";
+				else if (markNow) {
+					const nearLo = (alongX ? markNow.x : markNow.y) < (alongX ? (r.minX + r.maxX) / 2 : (r.minY + r.maxY) / 2);
+					loFirst = goesUp ? nearLo : !nearLo;
+				}
+				kindOut = "uOpen";
+				entry = opp[back];
+				turn = loFirst === (entry === "s" || entry === "w") ? "right" : "left";
+				midRun = Math.round(ws.mid);
+				if (ws.cornerSteps > 1) cornerSteps = ws.cornerSteps;
+				if (!ws.flat) {
+					const alongRun = back === "n" || back === "s";
+					const P = (c.runs ?? []).filter((q) => q.n >= 4 && (alongRun ? q.orient === "v" : q.orient === "h")).sort((p, q) => q.n - p.n)[0];
+					let band = ws.guardWall;
+					if (P && !band) {
+						const big = (alongRun ? P.maxY - P.minY : P.maxX - P.minX) > 1100 && !!P.core;
+						const lo = big ? P.core[0] : alongRun ? P.minY : P.minX;
+						const hi = big ? P.core[1] : alongRun ? P.maxY : P.maxX;
+						const sign = back === "n" || back === "w" ? 1 : -1;
+						const edge = sign > 0 ? hi : lo;
+						const a0 = alongRun ? P.minX : P.minY;
+						const a1 = alongRun ? P.maxX : P.maxY;
+						let hits = 0;
+						const N = 12;
+						for (let i = 0; i < N; i++) {
+							const a = a0 + (a1 - a0) * (i + .5) / N;
+							let start = -1;
+							let thick = 0;
+							for (let d = 0; d <= 460; d += res) {
+								const wall = sideState(alongRun ? {
+									x: a,
+									y: edge + sign * d
+								} : {
+									x: edge + sign * d,
+									y: a
+								}) !== 0;
+								if (wall && start < 0) start = d;
+								if (start >= 0) {
+									if (!wall) break;
+									thick += res;
+								}
+							}
+							if (start >= 0 && start <= 280 && thick >= 60 && thick <= 180) hits++;
+						}
+						band = hits >= N * .7;
+					}
+					if (band) guardRail = "wall";
+				}
+				const wd = ws.wide[loFirst ? "lo" : "hi"];
+				if (goesUp && wd.n >= 2) {
+					wideSteps = wd.n;
+					if (wd.shape === "corner") wideShape = "corner";
+				}
+				globalThis.__stairTrace?.push(`${level}F コの字（3 方回り）: 奥=${back} 奥の列=${midRun} 列の幅≒${ws.fw} 脇の列=${ws.sideEnd ?? "-"} 角=${ws.cornerSteps} 段 昇り口=${entry} 回り=${turn}${ws.flat ? "（脇の列なし）" : ""}${wideSteps ? ` 広い段=${wideSteps}${wideShape === "corner" ? "（角から 2 方向）" : ""}` : ""}${guardRail ? " 吹抜側=腰壁" : ""}`);
+			}
+		}
 		const stepNote = plan.texts.map((t) => ({
 			n: parseStepCount(t.str),
 			d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY))
@@ -15954,7 +17447,12 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			entry,
 			goesUp,
 			...stepNote ? { steps: stepNote.n } : {},
-			...c.pitch ? { treadPitch: Math.round(c.pitch * 10) / 10 } : {}
+			...c.pitch ? { treadPitch: Math.round(c.pitch * 10) / 10 } : {},
+			...midRun ? { midRun } : {},
+			...cornerSteps ? { cornerSteps } : {},
+			...wideSteps ? { wideSteps } : {},
+			...wideShape ? { wideShape } : {},
+			...guardRail ? { rail: guardRail } : {}
 		};
 		stairMarkSides.set(stair, {
 			up: upSide,
@@ -16514,10 +18012,11 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 	const nearTexts = plan.siteTexts.filter((t) => t.x > plan.bbox.minX - 3e3 && t.x < plan.bbox.maxX + 3e3 && t.y > plan.bbox.minY - 3e3 && t.y < plan.bbox.maxY + 3e3 && !plan.texts.some((u) => u.x === t.x && u.y === t.y));
 	const notes = plan.scan ? [] : detectNotes([...plan.texts, ...nearTexts], labelSize, rooms);
 	const inStair = (p) => stairs.some((st) => p.x > st.minX - 100 && p.x < st.maxX + 100 && p.y > st.minY - 100 && p.y < st.maxY + 100);
+	const treeInWell = (s) => s.kind === "plant" && Math.max(s.w, s.h) >= 760 && stairs.some((st) => st.kind === "uOpen" && s.x > st.minX - 100 && s.x < st.maxX + 100 && s.y > st.minY - 100 && s.y < st.maxY + 100);
 	const symbolsOut = symbols.filter((s) => s.kind === "car" || !inStair({
 		x: s.x,
 		y: s.y
-	}));
+	}) || treeInWell(s));
 	const sym = plan.scan || plan.loose ? {
 		items: [],
 		exterior: {
@@ -16768,7 +18267,7 @@ function wallStripCoverage(fills, wallColors, walls) {
 }
 /**
 * ページが何の図面か（見出しと室名から）。
-* 吉田大仁様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
+* 吉田様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
 * - elevation: 「立面図・断面図・矩計図・展開図」の見出しがあり「平面図」が無く、室名がほとんど無い → 平面図としては読まない（高さの寸法は別に読む）
 * - other: 他のページに室名があるのに、このページには室名も「平面図」の見出しも無い（表・図面枠・配置図など）
 * - plan: それ以外
@@ -17394,6 +18893,141 @@ function reconcileStairs(floors, warnings) {
 	}
 }
 /**
+* コの字階段（3 方回り）を上下階でそろえる: 下の階の図は切断線より下、上の階の図は上からの見え方で、
+* 片方の階でしかコの字と読めないことがある（脇の列が見えない・範囲が列だけ）。重なる階段どうしで、
+* コの字と読めた側の形（昇り口・回る向き・奥の列の長さ・角の段数）をもう片方へ写す。
+* 範囲の大きさが大きく違う（500 以上）ときは写さない（別の階段・読み違い）
+*/
+function finishWrapStairs(floors) {
+	const area = (s) => Math.max(1, (s.maxX - s.minX) * (s.maxY - s.minY));
+	for (let i = 0; i + 1 < floors.length; i++) for (const lo of floors[i].stairs) {
+		if (!lo.goesUp) continue;
+		let up = null;
+		let best = 0;
+		for (const u of floors[i + 1].stairs) {
+			if (u.goesUp) continue;
+			const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
+			const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
+			if (ix <= 0 || iy <= 0) continue;
+			const ov = ix * iy / Math.min(area(lo), area(u));
+			if (ov >= .5 && ov > best) {
+				up = u;
+				best = ov;
+			}
+		}
+		if (!up) continue;
+		const wrapOf = (s) => s.kind === "uOpen" && s.midRun != null;
+		if (!wrapOf(lo) && !wrapOf(up)) continue;
+		if (Math.abs(lo.maxX - lo.minX - (up.maxX - up.minX)) > 500 || Math.abs(lo.maxY - lo.minY - (up.maxY - up.minY)) > 500) continue;
+		const src = wrapOf(lo) ? lo : up;
+		const corner = Math.max(lo.cornerSteps ?? 1, up.cornerSteps ?? 1);
+		const rail = lo.rail ?? up.rail;
+		const wideSrc = lo.wideSteps ? lo : up.wideSteps ? up : null;
+		const wide = wideSrc?.wideSteps;
+		const wideShape = wideSrc?.wideShape;
+		for (const st of [lo, up]) {
+			if (wide) st.wideSteps = wide;
+			else delete st.wideSteps;
+			if (wide && wideShape) st.wideShape = wideShape;
+			else delete st.wideShape;
+			if (rail) st.rail = rail;
+			else delete st.rail;
+			st.kind = "uOpen";
+			st.entry = src.entry;
+			if (src.turn) st.turn = src.turn;
+			st.midRun = src.midRun;
+			if (corner > 1) st.cornerSteps = corner;
+			else delete st.cornerSteps;
+			if (st.treadPitch == null && src.treadPitch != null) st.treadPitch = src.treadPitch;
+		}
+	}
+}
+/**
+* カウンター席の前の窓: 造作のカウンター（図面で、椅子が壁に向かって並ぶ）が付く壁の窓は、
+* カウンターの天端のすぐ上から立ち上がる横長の窓（腰高 780・高さ 900）にする。
+* 御社のご提案の「横長の連窓に沿ったスタディカウンター」。以前は、仕様の「サッシ上端＝天井」で天井際の高窓になり、
+* カウンターの前が壁になっていた。立面図・設計の 3D データで高さが分かっている窓、室内窓は変えない
+*/
+function windowsOverCounters(floors) {
+	for (const f of floors) for (const it of f.planItems ?? []) {
+		if (it.kind !== "builtin" || it.variant !== "counter" || !it.seats) continue;
+		const half = (it.w ?? 1.8) * 1e3 / 2;
+		const rad = it.rot * Math.PI / 180;
+		const ax = {
+			x: Math.cos(rad),
+			y: Math.sin(rad)
+		};
+		for (const wall of f.walls) {
+			const L = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) || 1;
+			const u = {
+				x: (wall.b.x - wall.a.x) / L,
+				y: (wall.b.y - wall.a.y) / L
+			};
+			if (Math.abs(u.x * ax.x + u.y * ax.y) < .98) continue;
+			const t = (it.x - wall.a.x) * u.x + (it.y - wall.a.y) * u.y;
+			if (Math.abs(-(it.x - wall.a.x) * u.y + (it.y - wall.a.y) * u.x) > 250 || t < -half || t > L + half) continue;
+			for (const o of f.openings) {
+				if (o.wallId !== wall.id || o.kind !== "window" || o.heightFrom || o.interior) continue;
+				if (Math.min(o.t1, t + half) - Math.max(o.t0, t - half) < Math.min(1e3, (o.t1 - o.t0) * .5)) continue;
+				o.sill = 780;
+				o.height = 900;
+				o.windowStyle = "koshi";
+				o.heightFrom = "joinery";
+			}
+		}
+	}
+}
+/**
+* 階段の範囲にすっぽり入る小さな区画（4 帖以下。範囲の 7 割以上が階段の中）は、名前が何であっても階段の一部。
+* 「階段ヌック」の名前から書斎と読んだ区画（奥の列の下の 1.4 帖）に、机と椅子を置いていた（林様邸）。
+* コの字（3 方回り）と読めた階段だけ（ほかの形の階段の区画分けは、これまでの読み取りのまま）
+*/
+function roomsUnderStairs(floors) {
+	for (const f of floors) for (const st of f.stairs) {
+		if (st.kind !== "uOpen" || st.midRun == null) continue;
+		for (const rm of f.rooms) {
+			if (rm.type === "stairs" || rm.area > 6.48) continue;
+			const bx = bboxOf$2(rm.polygon);
+			const ix = Math.min(bx.maxX, st.maxX) - Math.max(bx.minX, st.minX);
+			const iy = Math.min(bx.maxY, st.maxY) - Math.max(bx.minY, st.minY);
+			if (ix <= 0 || iy <= 0) continue;
+			if (ix * iy / Math.max(1, (bx.maxX - bx.minX) * (bx.maxY - bx.minY)) < .7) continue;
+			rm.type = "stairs";
+		}
+	}
+}
+/**
+* 階段の吹抜の木（シンボルツリー）: コの字階段の中央の吹抜に掛かる大きな植物の記号（直径 760 以上）は、
+* 吹抜の中に地植えした木として読む（位置を吹抜の中へ寄せ、高さを上の階の腰の高さまで）。
+* 御社のご提案の「階段ヌック」: 階段が木を囲んで回り、玄関からも 2 階からも木が見える。
+* 以前は鉢植えの観葉植物（高さ 1.7m）を、階段の昇り口の前の床に置いていた。
+* ひな壇のある階段（吹抜の底が台）は対象外
+*/
+function treesInStairWells(floors) {
+	for (const f of floors) for (const it of f.planItems ?? []) {
+		if (it.kind !== "plant" || (it.w ?? 1) < 1.08 || (it.h ?? 0) >= 2) continue;
+		const r = (it.w ?? 1) * 350;
+		for (const st of f.stairs) {
+			if (!st.goesUp || st.kind !== "uOpen" || st.wideSteps) continue;
+			const w = stairLayout(st, effectiveStepCount(f.height || 2900, st)).well;
+			if (!w || w.maxX - w.minX < 700 || w.maxY - w.minY < 350) continue;
+			const dx = Math.max(w.minX - it.x, 0, it.x - w.maxX);
+			const dy = Math.max(w.minY - it.y, 0, it.y - w.maxY);
+			if (Math.hypot(dx, dy) > r) continue;
+			const inset = (lo, hi, v) => hi - lo < 500 ? (lo + hi) / 2 : Math.min(hi - 250, Math.max(lo + 250, v));
+			it.x = Math.round(inset(w.minX, w.maxX, it.x));
+			it.y = Math.round(inset(w.minY, w.maxY, it.y));
+			it.h = +Math.min(4.2, (f.height || 2900) / 1e3 + .9).toFixed(2);
+			const room = f.rooms.find((rm) => pointInPolygon({
+				x: it.x,
+				y: it.y
+			}, rm.polygon));
+			if (room) it.roomId = room.id;
+			break;
+		}
+	}
+}
+/**
 * 上下階の階段が「同じ大きさなのに半間の倍数だけずれて重なっている」とき、上の階を動かす量（ぴったり重なる位置へ）。
 * 動かさない（すでに重なっている・大きさが違う・壁の乗りが悪くなる・上の階が下の階からはみ出す）ときは null
 */
@@ -17617,7 +19251,7 @@ function fixTopEntry(fUp, up, lo) {
 }
 /**
 * 同じ階段を 2 つに読まない: コの字階段の 2 つの折り返しが別々の候補になり、壁まで広げた矩形が重なる
-* （吉田大仁様邸 1st-2: 2,275×1,820 の階段の中に 1,365 角の「階段」がもう 1 つでき、3D に二重の階段が出ていた）。
+* （吉田様邸 1st-2: 2,275×1,820 の階段の中に 1,365 角の「階段」がもう 1 つでき、3D に二重の階段が出ていた）。
 * 小さいほうの 5 割以上が大きいほうに入っていれば、大きいほうだけ残す。id は F{階}-S{番号} で振り直す
 */
 function dedupeStairs(stairs, level) {
@@ -18599,6 +20233,10 @@ function assembleModel(pages, name, warnings, opts = {}) {
 	finishTopFloorStairs(floors);
 	splitStackedStairs(floors);
 	reconcileStairs(floors);
+	finishWrapStairs(floors);
+	roomsUnderStairs(floors);
+	treesInStairWells(floors);
+	windowsOverCounters(floors);
 	const o1 = floors[0]?.outline.flat() ?? [];
 	if (o1.length) {
 		const dx = -Math.min(...o1.map((p) => p.x));
@@ -19841,592 +21479,6 @@ function norm(x, y) {
 	return {
 		x: x / l,
 		y: y / l
-	};
-}
-//#endregion
-//#region src/core/stairs.ts
-/** コの字階段で中央に吹抜を取れる最小の幅（段の幅 910 × 2 ＋ 吹抜 300） */
-var U_OPEN_MIN_WIDTH = 2100;
-/**
-* かね折れ階段の 1 列の幅（mm）。図面で列の幅が読めていれば（Stair.flightWidth）その幅、無ければ 1,000 まで。
-* 半間（910）の列の階段を 1,000 で作ると、段の端が隣の壁から 3cm ほどはみ出して見える
-*/
-function lFlightWidth(s, Ls, Lt) {
-	const base = Math.min(1e3, Math.max(Ls, Lt) / 2, Math.min(Ls, Lt));
-	return s.flightWidth != null ? Math.max(600, Math.min(s.flightWidth, Math.min(Ls, Lt))) : base;
-}
-/** 昇り口の辺から奥へ進む向き・右向き・原点（昇る人の左手側の角） */
-function stairFrame(s) {
-	const W = s.maxX - s.minX;
-	const H = s.maxY - s.minY;
-	switch (s.entry) {
-		case "n": return {
-			u: {
-				x: 0,
-				y: 1
-			},
-			r: {
-				x: -1,
-				y: 0
-			},
-			o: {
-				x: s.maxX,
-				y: s.minY
-			},
-			Ls: H,
-			Lt: W
-		};
-		case "s": return {
-			u: {
-				x: 0,
-				y: -1
-			},
-			r: {
-				x: 1,
-				y: 0
-			},
-			o: {
-				x: s.minX,
-				y: s.maxY
-			},
-			Ls: H,
-			Lt: W
-		};
-		case "w": return {
-			u: {
-				x: 1,
-				y: 0
-			},
-			r: {
-				x: 0,
-				y: 1
-			},
-			o: {
-				x: s.minX,
-				y: s.minY
-			},
-			Ls: W,
-			Lt: H
-		};
-		default: return {
-			u: {
-				x: -1,
-				y: 0
-			},
-			r: {
-				x: 0,
-				y: -1
-			},
-			o: {
-				x: s.maxX,
-				y: s.maxY
-			},
-			Ls: W,
-			Lt: H
-		};
-	}
-}
-/**
-* 図面の読み取りで「折り返し・かね折れ」となっていても、幅（昇る向きと直交する寸法）が 1.4m に満たない矩形では
-* 2 列に段を並べられない（1 列 45cm の段になり、人が通れない）。そういう階段は直階段として段を割る
-*/
-function effectiveStair(s) {
-	if (s.kind === "straight") return s;
-	const { Lt } = stairFrame(s);
-	if (Lt < 1400) return {
-		...s,
-		kind: "straight"
-	};
-	if (s.kind === "uOpen" && Lt < U_OPEN_MIN_WIDTH) return {
-		...s,
-		kind: "u"
-	};
-	return s;
-}
-/** 段数の目安（階高から。1 段 200mm 前後、最低 10 段） */
-/** 段数: 図面に書かれた段数があればそれを、無ければ階高 ÷ 200mm 前後で推定 */
-function stairStepCount(riseMm, s) {
-	const fixed = s?.look?.steps ?? s?.steps;
-	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
-	return Math.max(10, Math.round(riseMm / 200));
-}
-/** 矩形（kind・entry を考慮）に踏面 MIN_TREAD で納まる最大の段数 */
-function maxStepsInRect(s0) {
-	const s = effectiveStair(s0);
-	const { Ls, Lt } = stairFrame(s);
-	if (s.kind === "straight") return Math.max(2, Math.floor(Ls / 240));
-	if (s.kind === "u" || s.kind === "uOpen") {
-		const fw = s.kind === "uOpen" ? Math.min(1e3, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
-		const land = Math.min(Ls * .4, s.kind === "uOpen" ? fw : Lt / 2);
-		const k = Math.floor((Ls - land) / 240);
-		return Math.max(3, 2 * k + 1);
-	}
-	const fw = lFlightWidth(s, Ls, Lt);
-	const len1 = Math.max(0, Ls - fw);
-	const len2 = Math.max(0, Lt - fw);
-	return Math.max(3, Math.floor(len1 / 240) + Math.floor(len2 / 240) + 1);
-}
-/**
-* 実際に使う段数: 図面の段数があればそれ。無ければ階高 ÷ 200 前後を目安に、矩形に踏面 240 で納まる段数まで減らす
-* （蹴上は 230 を超えない範囲）。矩形は延ばさない（以前は昇り口側へ延ばしていて、方眼で奥行を変えても表記が変わらなかった）
-*/
-function effectiveStepCount(riseMm, s) {
-	const fixed = s.look?.steps ?? s.steps;
-	if (fixed && fixed >= 6 && fixed <= 30) return fixed;
-	const n0 = stairStepCount(riseMm);
-	const nMin = Math.max(6, Math.ceil(riseMm / 230));
-	const e = effectiveStair(s);
-	if (e.kind === "straight" && s.treadPitch != null && s.treadPitch >= 180 && s.treadPitch <= 300) {
-		const k = stairFrame(e).Ls / s.treadPitch;
-		const n = Math.round(k) + 1;
-		if (Math.abs(k - Math.round(k)) <= .12 && n >= nMin && n <= 22) return n;
-	}
-	return Math.max(nMin, Math.min(n0, maxStepsInRect(s)));
-}
-function stairLayout(s0, n = 14) {
-	const s = effectiveStair(s0);
-	const F = stairFrame(s);
-	const P = (sv, tv) => ({
-		x: F.o.x + F.u.x * sv + F.r.x * tv,
-		y: F.o.y + F.u.y * sv + F.r.y * tv
-	});
-	const rect = (s0, s1, t0, t1) => {
-		const a = P(s0, t0);
-		const b = P(s1, t1);
-		return {
-			minX: Math.min(a.x, b.x),
-			minY: Math.min(a.y, b.y),
-			maxX: Math.max(a.x, b.x),
-			maxY: Math.max(a.y, b.y)
-		};
-	};
-	const pieces = [];
-	const { Ls, Lt } = F;
-	const neg = (v) => ({
-		x: -v.x,
-		y: -v.y
-	});
-	if (s.kind === "straight") {
-		const st = Ls / n;
-		for (let i = 1; i <= n; i++) pieces.push({
-			kind: "tread",
-			...rect(st * (i - 1), st * i, 0, Lt),
-			i,
-			dir: F.u
-		});
-		return {
-			n,
-			pieces
-		};
-	}
-	if (s.kind === "u" || s.kind === "uOpen") {
-		const turn = s.turn ?? "left";
-		const fw = s.kind === "uOpen" ? Math.min(1e3, Math.max(910, (Lt - 300) / 2)) : Lt / 2;
-		const first = turn === "left" ? [Lt - fw, Lt] : [0, fw];
-		const second = turn === "left" ? [0, fw] : [Lt - fw, Lt];
-		const run = Ls - Math.min(Ls * .4, s.kind === "uOpen" ? fw : Lt / 2);
-		const n1 = Math.floor(n / 2);
-		const n2 = n - n1 - 1;
-		const st1 = run / n1;
-		const st2 = run / Math.max(1, n2);
-		for (let i = 1; i <= n1; i++) pieces.push({
-			kind: "tread",
-			...rect(st1 * (i - 1), st1 * i, first[0], first[1]),
-			i,
-			dir: F.u
-		});
-		pieces.push({
-			kind: "landing",
-			...rect(run, Ls, 0, Lt),
-			i: n1 + 1,
-			dir: F.u
-		});
-		for (let j = 1; j <= n2; j++) pieces.push({
-			kind: "tread",
-			...rect(run - st2 * (j - 1), run - st2 * j, second[0], second[1]),
-			i: n1 + 1 + j,
-			dir: neg(F.u)
-		});
-		if (s.kind === "uOpen") return {
-			n,
-			pieces,
-			well: rect(0, run, fw, Lt - fw)
-		};
-		return {
-			n,
-			pieces,
-			wall: rect(0, run, Lt / 2 - 50, Lt / 2 + 50)
-		};
-	}
-	const turn = s.turn ?? "right";
-	const fw = lFlightWidth(s, Ls, Lt);
-	const strip = turn === "right" ? [0, fw] : [Lt - fw, Lt];
-	const len1 = Math.max(0, Ls - fw);
-	const len2 = Math.max(0, Lt - fw);
-	const n1 = len2 <= 1 ? n - 1 : Math.max(1, Math.min(n - 2, Math.round((n - 1) * len1 / Math.max(1, len1 + len2))));
-	const n2 = n - 1 - n1;
-	const st1 = len1 / Math.max(1, n1);
-	for (let i = 1; i <= n1; i++) pieces.push({
-		kind: "tread",
-		...rect(st1 * (i - 1), st1 * i, strip[0], strip[1]),
-		i,
-		dir: F.u
-	});
-	pieces.push({
-		kind: "landing",
-		...rect(len1, Ls, strip[0], strip[1]),
-		i: n1 + 1,
-		dir: F.u
-	});
-	const st2 = len2 / Math.max(1, n2);
-	const dir2 = turn === "right" ? F.r : neg(F.r);
-	for (let j = 1; j <= n2; j++) {
-		const t0 = turn === "right" ? fw + st2 * (j - 1) : Lt - fw - st2 * (j - 1);
-		const t1 = turn === "right" ? fw + st2 * j : Lt - fw - st2 * j;
-		pieces.push({
-			kind: "tread",
-			...rect(len1, Ls, t0, t1),
-			i: n1 + 1 + j,
-			dir: dir2
-		});
-	}
-	return {
-		n,
-		pieces
-	};
-}
-/**
-* 階段が実際に占める範囲（上の階の床にあける穴）。直階段・折り返しは矩形そのもの。
-* かね折れは L 字なので、最初の列の帯と、奥の辺に沿う帯の 2 つ（矩形の残りの角は上の階の床が残る）
-*/
-function stairFootprint(s0) {
-	const s = effectiveStair(s0);
-	if (s.kind !== "l") return [{
-		minX: s.minX,
-		minY: s.minY,
-		maxX: s.maxX,
-		maxY: s.maxY
-	}];
-	const F = stairFrame(s);
-	const { Ls, Lt } = F;
-	const P = (sv, tv) => ({
-		x: F.o.x + F.u.x * sv + F.r.x * tv,
-		y: F.o.y + F.u.y * sv + F.r.y * tv
-	});
-	const rect = (a0, a1, t0, t1) => {
-		const a = P(a0, t0);
-		const b = P(a1, t1);
-		return {
-			minX: Math.min(a.x, b.x),
-			minY: Math.min(a.y, b.y),
-			maxX: Math.max(a.x, b.x),
-			maxY: Math.max(a.y, b.y)
-		};
-	};
-	const fw = lFlightWidth(s, Ls, Lt);
-	const strip = (s.turn ?? "right") === "right" ? [0, fw] : [Lt - fw, Lt];
-	return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];
-}
-/**
-* 階段の表記を作る。
-*  - 段鼻は段の幅の線、側桁は外形の線。歩行線は段の中央（踏板の幅の中心）を通り、踊り場では丸く回る
-*  - 上階へ昇る階段は、床から 1,400 ほどの段で切断線（ジグザグ）を入れ、その上の段は破線
-*  - 昇り口に○、終わりに矢じり。UP／DN と段数
-*/
-function stairDrawing(st, riseMm, opts = {}) {
-	const n = effectiveStepCount(riseMm, st);
-	const lay = stairLayout(st, n);
-	const pieces = lay.pieces;
-	const riser = riseMm / Math.max(1, n);
-	const cutAt = opts.cut !== false && st.goesUp ? Math.min(pieces.length - 1, Math.max(2, Math.ceil(1400 / riser))) : -1;
-	const ctr = (p) => ({
-		x: (p.minX + p.maxX) / 2,
-		y: (p.minY + p.maxY) / 2
-	});
-	const risers = [];
-	const edges = [];
-	pieces.forEach((p, k) => {
-		const above = cutAt >= 0 && k > cutAt;
-		const d = p.dir;
-		const horiz = Math.abs(d.x) > .5;
-		if (p.kind === "tread") {
-			const front = horiz ? d.x > 0 ? p.maxX : p.minX : d.y > 0 ? p.maxY : p.minY;
-			risers.push(horiz ? {
-				a: {
-					x: front,
-					y: p.minY
-				},
-				b: {
-					x: front,
-					y: p.maxY
-				},
-				above
-			} : {
-				a: {
-					x: p.minX,
-					y: front
-				},
-				b: {
-					x: p.maxX,
-					y: front
-				},
-				above
-			});
-			if (k === 0) {
-				const back = horiz ? d.x > 0 ? p.minX : p.maxX : d.y > 0 ? p.minY : p.maxY;
-				risers.push(horiz ? {
-					a: {
-						x: back,
-						y: p.minY
-					},
-					b: {
-						x: back,
-						y: p.maxY
-					},
-					above
-				} : {
-					a: {
-						x: p.minX,
-						y: back
-					},
-					b: {
-						x: p.maxX,
-						y: back
-					},
-					above
-				});
-			}
-			if (horiz) edges.push({
-				a: {
-					x: p.minX,
-					y: p.minY
-				},
-				b: {
-					x: p.maxX,
-					y: p.minY
-				},
-				above
-			}, {
-				a: {
-					x: p.minX,
-					y: p.maxY
-				},
-				b: {
-					x: p.maxX,
-					y: p.maxY
-				},
-				above
-			});
-			else edges.push({
-				a: {
-					x: p.minX,
-					y: p.minY
-				},
-				b: {
-					x: p.minX,
-					y: p.maxY
-				},
-				above
-			}, {
-				a: {
-					x: p.maxX,
-					y: p.minY
-				},
-				b: {
-					x: p.maxX,
-					y: p.maxY
-				},
-				above
-			});
-		} else edges.push({
-			a: {
-				x: p.minX,
-				y: p.minY
-			},
-			b: {
-				x: p.maxX,
-				y: p.minY
-			},
-			above
-		}, {
-			a: {
-				x: p.maxX,
-				y: p.minY
-			},
-			b: {
-				x: p.maxX,
-				y: p.maxY
-			},
-			above
-		}, {
-			a: {
-				x: p.maxX,
-				y: p.maxY
-			},
-			b: {
-				x: p.minX,
-				y: p.maxY
-			},
-			above
-		}, {
-			a: {
-				x: p.minX,
-				y: p.maxY
-			},
-			b: {
-				x: p.minX,
-				y: p.minY
-			},
-			above
-		});
-	});
-	let walkPath = "";
-	const treads = pieces.map((p, k) => ({
-		p,
-		k,
-		c: ctr(p)
-	}));
-	const sameDir = (a, b) => Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
-	let prev = null;
-	for (let k = 0; k < treads.length; k++) {
-		const t = treads[k];
-		if (t.p.kind === "landing") {
-			const nxt = treads[k + 1];
-			if (!nxt || !prev) continue;
-			const d1 = t.p.dir;
-			const ext = Math.abs(d1.x) > .5 ? t.p.maxX - t.p.minX : t.p.maxY - t.p.minY;
-			if (sameDir({
-				x: -d1.x,
-				y: -d1.y
-			}, nxt.p.dir)) {
-				const adv = Math.max(0, ext * .5 - Math.hypot(nxt.c.x - prev.x, nxt.c.y - prev.y) / 2);
-				const p1 = {
-					x: prev.x + d1.x * adv,
-					y: prev.y + d1.y * adv
-				};
-				const p2 = {
-					x: nxt.c.x + d1.x * adv,
-					y: nxt.c.y + d1.y * adv
-				};
-				const r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
-				const sweep = d1.x * (p2.y - p1.y) - d1.y * (p2.x - p1.x) > 0 ? 1 : 0;
-				walkPath += ` L${p1.x.toFixed(0)} ${p1.y.toFixed(0)} A${r.toFixed(0)} ${r.toFixed(0)} 0 0 ${sweep} ${p2.x.toFixed(0)} ${p2.y.toFixed(0)} L${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
-			} else walkPath += ` Q${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)} ${nxt.c.x.toFixed(0)} ${nxt.c.y.toFixed(0)}`;
-			prev = nxt.c;
-			k++;
-			continue;
-		}
-		walkPath += prev ? ` L${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}` : `M${t.c.x.toFixed(0)} ${t.c.y.toFixed(0)}`;
-		prev = t.c;
-	}
-	const first = pieces[0];
-	const last = pieces[pieces.length - 1];
-	const c0 = ctr(first);
-	const c1 = ctr(last);
-	const dl = last.dir;
-	const lastFront = Math.abs(dl.x) > .5 ? Math.abs((dl.x > 0 ? last.maxX : last.minX) - c1.x) : Math.abs((dl.y > 0 ? last.maxY : last.minY) - c1.y);
-	const tipLen = Math.max(120, lastFront - 20);
-	const tip = {
-		x: c1.x + dl.x * tipLen,
-		y: c1.y + dl.y * tipLen
-	};
-	const aw = 70;
-	const al = 180;
-	const arrow = [
-		tip,
-		{
-			x: tip.x - dl.x * al - dl.y * aw,
-			y: tip.y - dl.y * al + dl.x * aw
-		},
-		{
-			x: tip.x - dl.x * al + dl.y * aw,
-			y: tip.y - dl.y * al - dl.x * aw
-		}
-	];
-	walkPath += ` L${(tip.x - dl.x * al * .6).toFixed(0)} ${(tip.y - dl.y * al * .6).toFixed(0)}`;
-	const d0 = first.dir;
-	let angle = Math.atan2(d0.y, d0.x) * 180 / Math.PI;
-	if (angle > 90) angle -= 180;
-	else if (angle <= -90) angle += 180;
-	if (angle === 90) angle = -90;
-	const perp = {
-		x: -d0.y,
-		y: d0.x
-	};
-	const label = {
-		x: c0.x + perp.x * 230 + d0.x * 60,
-		y: c0.y + perp.y * 230 + d0.y * 60,
-		angle,
-		text: `${st.goesUp ? "UP" : "DN"} ${n}`
-	};
-	let cut;
-	if (cutAt >= 0 && pieces[cutAt]) {
-		const p = pieces[cutAt];
-		const d = p.dir;
-		const px = {
-			x: -d.y,
-			y: d.x
-		};
-		const c = ctr(p);
-		const halfW = Math.abs(px.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
-		const halfD = Math.abs(d.x) > .5 ? (p.maxX - p.minX) / 2 : (p.maxY - p.minY) / 2;
-		const A = {
-			x: c.x - px.x * halfW * 1.08 - d.x * halfD * .9,
-			y: c.y - px.y * halfW * 1.08 - d.y * halfD * .9
-		};
-		const B = {
-			x: c.x + px.x * halfW * 1.08 + d.x * halfD * .9,
-			y: c.y + px.y * halfW * 1.08 + d.y * halfD * .9
-		};
-		const m = {
-			x: (A.x + B.x) / 2,
-			y: (A.y + B.y) / 2
-		};
-		const v = {
-			x: B.x - A.x,
-			y: B.y - A.y
-		};
-		const L = Math.hypot(v.x, v.y) || 1;
-		const u = {
-			x: v.x / L,
-			y: v.y / L
-		};
-		const nn = {
-			x: -u.y,
-			y: u.x
-		};
-		const z = Math.min(90, halfW * .25);
-		cut = [
-			A,
-			{
-				x: m.x - u.x * z,
-				y: m.y - u.y * z
-			},
-			{
-				x: m.x - u.x * z * .4 + nn.x * z,
-				y: m.y - u.y * z * .4 + nn.y * z
-			},
-			{
-				x: m.x + u.x * z * .4 - nn.x * z,
-				y: m.y + u.y * z * .4 - nn.y * z
-			},
-			{
-				x: m.x + u.x * z,
-				y: m.y + u.y * z
-			},
-			B
-		];
-	}
-	return {
-		risers,
-		edges,
-		walkPath,
-		start: c0,
-		arrow,
-		label,
-		cut,
-		wall: lay.wall,
-		well: lay.well
 	};
 }
 //#endregion
@@ -21745,7 +22797,8 @@ function woodCheck(model) {
 				tread = F.Ls / Math.max(1, n - 1);
 				const p = st0.treadPitch;
 				if (p != null && p >= 180 && p <= 300 && tread < p && tread >= p * .75) tread = p;
-			} else if (st.kind === "u" || st.kind === "uOpen") {
+			} else if (wrapFlights(st)) tread = stairTreadDepth(st, n);
+			else if (st.kind === "u" || st.kind === "uOpen") {
 				const land = Math.min(F.Ls * .4, F.Lt / 2);
 				tread = (F.Ls - land) / Math.max(1, Math.floor(n / 2));
 			} else tread = (F.Ls + F.Lt - Math.min(F.Lt, F.Ls / 2) * 2) / Math.max(1, n - 2);
@@ -24103,7 +25156,16 @@ function buildBuilding(model, opts) {
 		buildCeilingDetails(mb, f, fl, spec, ceilVoids);
 		for (const s of f.stairs) {
 			if (!s.goesUp || !upper) continue;
-			buildStairs(mb, s, fl, upper.elevation * MM, f, opts.stairBuild);
+			buildStairs(mb, s, fl, upper.elevation * MM, f, opts.stairBuild, { glow: spec.indirectLighting });
+			const holeBelow = model.floors.find((q) => q.level === f.level - 1)?.stairs.some((q) => q.goesUp && Math.min(q.maxX, s.maxX) - Math.max(q.minX, s.minX) > 100 && Math.min(q.maxY, s.maxY) - Math.max(q.minY, s.minY) > 100);
+			if (s.kind === "uOpen" && s.midRun != null && !holeBelow) {
+				const c = {
+					x: (s.minX + s.maxX) / 2,
+					y: (s.minY + s.maxY) / 2
+				};
+				const host = f.rooms.filter((r) => r.type !== "stairs" && !isDomaRoom(r) && pointInPolygon(c, r.polygon))[0] ?? f.rooms.find((r) => MAIN_CEILING_ROOMS.has(r.type));
+				mb.aabb(host ? floorKeyFor(host) : "int.floor", V(s.minX * MM + .03, fl - .02, s.minY * MM + .03), V(s.maxX * MM - .03, fl - .003, s.maxY * MM - .03));
+			}
 		}
 	}
 	const f1 = model.floors[0];
@@ -25950,6 +27012,34 @@ function buildCeilingDetails(mb, f, fl, spec, ceilVoids = []) {
 		}
 	}
 }
+/** 平面の多角形 pts（y は無視）を、高さ y0〜y1 の柱（上面・下面・側面）にする */
+function prism(mb, key, pts, y0, y1) {
+	const up = V(0, 1, 0);
+	const top = pts.map((q) => q.clone().setY(y1));
+	const bot = pts.map((q) => q.clone().setY(y0));
+	mb.polygon(key, top, up, V(1, 0, 0), V(0, 0, 1));
+	mb.polygon(key, bot, V(0, -1, 0), V(1, 0, 0), V(0, 0, 1));
+	const c = pts.reduce((a, q) => a.add(q), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+	for (let i = 0; i < pts.length; i++) {
+		const a = pts[i];
+		const b = pts[(i + 1) % pts.length];
+		const n = V(b.z - a.z, 0, -(b.x - a.x));
+		if (n.lengthSq() < 1e-10) continue;
+		const midP = a.clone().add(b).multiplyScalar(.5);
+		const out = n.dot(midP.clone().sub(c).setY(0)) >= 0;
+		const [p, q] = out ? [a, b] : [b, a];
+		const quad = [
+			p.clone().setY(y0),
+			q.clone().setY(y0),
+			q.clone().setY(y1),
+			p.clone().setY(y1)
+		];
+		const nn = new THREE.Vector3().subVectors(quad[1], quad[0]).cross(new THREE.Vector3().subVectors(quad[2], quad[0]));
+		const want = out ? n : n.clone().negate();
+		if (nn.dot(want) >= 0) mb.quad(key, quad[0], quad[1], quad[2], quad[3]);
+		else mb.quad(key, quad[1], quad[0], quad[3], quad[2]);
+	}
+}
 /** 踏板の素材のキー（指定が無い・「床に合わせる」は int.stairs） */
 var treadKeyOf = (look) => look?.tread && look.tread !== "floor" ? `int.stairs@${look.tread}` : "int.stairs";
 /** 鉄の骨組み・手すりの素材のキー（黒 = テイストの金物の色、白 = 白く塗った鉄） */
@@ -25961,22 +27051,38 @@ var frameKeyOf = (look) => look?.frame === "white" ? "f.steelWhite" : "f.metal";
 *  - steel: 厚さ 40 の踏板を、両側のささら桁（黒皮鉄の鋼板 t12 × 250）で支える。蹴込みなし。look.stringer = 'center' なら中央の力桁 1 本
 *  - woodSkeleton: 厚さ 40 の踏板を、両側の木の側板（36 × 260。黒の塗りつぶし = コーディネートの「木製スケルトン階段」）で支える。蹴込みなし
 *  - box: 箱階段。蹴込み板があり、段の両脇は床まで閉じる（下は収納・壁）
-*  - cantilever: 片持ち。厚さ 60 の踏板だけ（桁・側板は見せない）
+*  - cantilever: 片持ち。厚さ 90 の踏板だけ（桁・側板は見せない）。手すりは上の 1 本だけ（横桟なし）。
+*    御社のご提案パースの片持ち階段は、厚い板（蹴上の半分ほど）が壁から浮いて並び、細い手すりが 1 本通る
 */
-function buildStairs(mb, s, y0, y1, f, build = "steel") {
+function buildStairs(mb, s, y0, y1, f, build = "steel", opts = {}) {
 	const rise = y1 - y0;
 	const n = effectiveStepCount(rise / MM, s);
 	const rh = rise / n;
 	const tread = treadKeyOf(s.look);
 	const frame = frameKeyOf(s.look);
-	const rail = s.look?.rail ?? "bar";
+	const rail = s.look?.rail ?? s.rail ?? "bar";
 	const centerStringer = build === "steel" && s.look?.stringer === "center";
-	const thick = build === "cantilever" ? .06 : build === "box" ? .03 : .04;
+	const thick = build === "cantilever" ? Math.min(.09, rh * .5) : build === "box" ? .03 : .04;
 	const put = (p, yTop) => {
 		const min = V(p.minX * MM, yTop - thick, p.minY * MM);
 		const max = V(p.maxX * MM, yTop, p.maxY * MM);
 		if (max.x - min.x < .01 || max.z - min.z < .01) return;
-		mb.aabb(tread, min, max);
+		if (p.poly && p.poly.length >= 3) {
+			const pts = p.poly.map((q) => V(q.x * MM, 0, q.y * MM));
+			prism(mb, tread, pts, yTop - thick, yTop);
+			if (build === "box") {
+				const lo = Math.max(y0, yTop - rh);
+				const hi = yTop - thick;
+				if (hi - lo > .01) {
+					const a = pts[0];
+					const b = pts[1];
+					mb.quad("int.wall", a.clone().setY(lo), b.clone().setY(lo), b.clone().setY(hi), a.clone().setY(hi));
+					mb.quad("int.wall", b.clone().setY(lo), a.clone().setY(lo), a.clone().setY(hi), b.clone().setY(hi));
+				}
+			}
+			return;
+		}
+		mb.roundedBox(tread, V((min.x + max.x) / 2, yTop - thick, (min.z + max.z) / 2), V(1, 0, 0), max.x - min.x, thick, max.z - min.z, .004, 2);
 		if (build === "steel") {
 			const longX = max.x - min.x >= max.z - min.z;
 			const plateT = .012;
@@ -26009,9 +27115,17 @@ function buildStairs(mb, s, y0, y1, f, build = "steel") {
 		}
 	};
 	const lay = stairLayout(s, n);
-	for (const p of lay.pieces) put(p, y0 + rh * p.i);
+	for (const pl of lay.plinths ?? []) {
+		const yTop = y0 + rh * pl.i;
+		const t = pl.top;
+		const b = pl.base;
+		if (t.maxX - t.minX < 50 || t.maxY - t.minY < 50) continue;
+		mb.roundedBox(tread, V((t.minX + t.maxX) / 2 * MM, yTop - thick, (t.minY + t.maxY) / 2 * MM), V(1, 0, 0), (t.maxX - t.minX) * MM, thick, (t.maxY - t.minY) * MM, .004, 2);
+		if (yTop - thick - y0 > .005 && b.maxX - b.minX > 5 && b.maxY - b.minY > 5) mb.aabb(build === "box" ? "int.wall" : tread, V(b.minX * MM, y0, b.minY * MM), V(b.maxX * MM, yTop - thick, b.maxY * MM));
+	}
+	for (const p of lay.pieces) if (!p.wide) put(p, y0 + rh * p.i);
 	if (lay.wall) mb.aabb("int.wall", V(lay.wall.minX * MM, y0, lay.wall.minY * MM), V(lay.wall.maxX * MM, y0 + rise * .5 + .9, lay.wall.maxY * MM));
-	stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer, frame);
+	stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer, frame, !!opts.glow);
 	if (lay.well && rail !== "none") {
 		const w = lay.well;
 		const first = lay.pieces[0];
@@ -26043,12 +27157,14 @@ function buildStairs(mb, s, y0, y1, f, build = "steel") {
 * 段の列（直線の区間）ごとの骨組みと手すり。
 * 骨組み: 鉄骨 = 両側のささら桁（黒皮鉄の鋼板）を勾配なりに（指定で中央の力桁 1 本）／木のスケルトン = 両側の側板／箱階段・片持ち = なし。
 * 手すりは壁の無い側にだけ: アイアン（細いフラットバーの支柱 @ 約 1m ＋ 上の手すり ＋ 横桟 1 本）・ガラス・腰壁・木。
+* 両脇とも壁の列（手すりが 1 本も付かない列）には、壁付けの手すりを 1 本（階段には手すりが要る。無いと作りかけに見える）。
+* glow = 間接照明あり: 壁に沿う列の壁に、勾配なりの細い光の線と、踏板へ落ちる光（階段の壁の間接照明。御社のご提案パースの形）
 */
-function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer = false, metal = "f.metal") {
+function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer = false, metal = "f.metal", glow = false) {
 	const center = (p) => V((p.minX + p.maxX) / 2 * MM, 0, (p.minY + p.maxY) / 2 * MM);
 	const runs = [];
 	for (const p of lay.pieces) {
-		if (p.kind !== "tread") {
+		if (p.kind !== "tread" || p.wide) {
 			runs.push([]);
 			continue;
 		}
@@ -26057,6 +27173,8 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer 
 		else runs.push([p]);
 	}
 	const up = new THREE.Vector3(0, 1, 0);
+	/** 列ごとの、吹抜側の手すりの両端（支柱の天端）。角でつなぐのに使う（列の最初の段 → 端） */
+	const railEnds = /* @__PURE__ */ new Map();
 	for (const run of runs.filter((r) => r.length >= 2)) {
 		const a = run[0];
 		const b = run[run.length - 1];
@@ -26088,20 +27206,78 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer 
 			mb.addGeometry(key, geo, m);
 			geo.dispose();
 		};
-		if (build === "steel") {
-			if (centerStringer) sloped(metal, .18, .1, .11, 0);
-			else for (const sg of [1, -1]) sloped(metal, .25, .012, 0, sg * (treadW / 2 - .003));
-		}
-		if (build === "woodSkeleton") for (const sg of [1, -1]) sloped("f.paintBlack", .26, .036, .09, sg * (treadW / 2 - .015));
-		if (rail === "none") continue;
-		for (const sg of [1, -1]) {
+		/** 列の脇（sg）に、天井まで立つ壁が沿っているか（列の長さの 6 割以上） */
+		const wallAlong = (sg) => {
+			if (!f) return false;
+			const e0 = center(a).addScaledVector(perp, sg * treadW / 2).addScaledVector(d, -treadD / 2);
+			const e1 = center(b).addScaledVector(perp, sg * treadW / 2).addScaledVector(d, treadD / 2);
+			const L = e0.distanceTo(e1);
+			if (L < .3) return false;
+			return solidWallRuns(f, {
+				x: e0.x / MM,
+				y: e0.z / MM
+			}, {
+				x: e1.x / MM,
+				y: e1.z / MM
+			}).reduce((sum, [t0, t1]) => sum + (t1 - t0), 0) >= L * .6;
+		};
+		const sides = [1, -1].map((sg) => {
+			const wall = wallAlong(sg);
 			let open = false;
 			const q = center(run[Math.floor(run.length / 2)]).clone().addScaledVector(perp, sg * (treadW / 2 + .3));
 			if (lay.well && q.x / .001 > lay.well.minX && q.x / .001 < lay.well.maxX && q.z / .001 > lay.well.minY && q.z / .001 < lay.well.maxY) open = true;
-			else if (f) {
+			else if (f && !wall) {
 				const r = roomAt(f, q.x / MM, q.z / MM);
 				open = !!r && r.type !== "stairs" && r.type !== "closet" && r.type !== "storage";
 			}
+			return {
+				sg,
+				open,
+				wall: wall && !open
+			};
+		});
+		const behindGuardWall = (sg) => rail === "wall" && !!sides.find((sd) => sd.sg === sg)?.open;
+		if (build === "steel") {
+			if (centerStringer) sloped(metal, .18, .1, .11, 0);
+			else for (const sg of [1, -1]) if (!behindGuardWall(sg)) sloped(metal, .25, .012, 0, sg * (treadW / 2 - .003));
+		}
+		if (build === "woodSkeleton") {
+			for (const sg of [1, -1]) if (!behindGuardWall(sg)) sloped("f.paintBlack", .26, .036, .09, sg * (treadW / 2 - .015));
+		}
+		/** 段鼻の線（踏板の天端を結ぶ線）から h 上を通る、勾配なりの棒（せい hgt・幅 t）。列の両端は踏板半分ずつ延ばす */
+		const railBar = (key, h, hgt, t, off) => {
+			const geo = new THREE.BoxGeometry(len, hgt, t);
+			const m = new THREE.Matrix4().makeBasis(x, y, z);
+			m.setPosition(mid.clone().addScaledVector(up, thick + h).addScaledVector(z, off));
+			mb.addGeometry(key, geo, m);
+			geo.dispose();
+		};
+		const railSide = rail !== "none" && !sides.some((sd) => sd.open) ? sides.find((sd) => sd.wall) : void 0;
+		if (railSide) {
+			const wood = rail === "wood" || rail === "wall";
+			const key = wood ? "f.wood" : metal;
+			const off = railSide.sg * (treadW / 2 - .05);
+			if (wood) railBar(key, .8, .034, .034, off);
+			else railBar(key, .8, .038, .009, off);
+			const nb = Math.max(2, Math.round(len / .9) + 1);
+			for (let k = 0; k < nb; k++) {
+				const t = -len / 2 + .12 + (len - .24) * k / (nb - 1);
+				const at = mid.clone().addScaledVector(up, thick + .8 - .02).addScaledVector(x, t).addScaledVector(z, off);
+				mb.tube(metal, at, at.clone().addScaledVector(z, railSide.sg * .05), .005, .005, 6);
+			}
+		}
+		if (glow) {
+			const ws = railSide ?? sides.find((sd) => sd.wall);
+			if (ws) {
+				const h = railSide ? .76 : .28;
+				const face = ws.sg * (treadW / 2 - .006);
+				railBar("f.cove", h, .012, .006, railSide ? ws.sg * (treadW / 2 - .05) : face);
+				const washH = railSide ? .62 : .26;
+				mb.glowPlane("f.coveGlow", mid.clone().addScaledVector(up, thick + h - .01 - washH / 2).addScaledVector(z, face), x, up, len, washH);
+			}
+		}
+		if (rail === "none") continue;
+		for (const { sg, open } of sides) {
 			if (!open) continue;
 			const off = sg * (treadW / 2 - .05);
 			if (rail === "glass") {
@@ -26128,6 +27304,12 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer 
 				else mb.box(key, base.clone(), d, .012, .9, .038);
 				posts.push(base.clone().setY(base.y + .9));
 			}
+			if (posts.length) railEnds.set(run[0], {
+				first: posts[0],
+				last: posts[posts.length - 1],
+				wood,
+				key
+			});
 			if (wood) for (let k = 0; k + 1 < posts.length; k++) mb.tube(key, posts[k], posts[k + 1], .022, .022, 10);
 			else if (posts.length >= 2) {
 				const p0 = posts[0];
@@ -26146,7 +27328,76 @@ function stairRunDetails(mb, lay, rh, y0, f, build, rail, thick, centerStringer 
 					geo.dispose();
 				};
 				bar(.006, .012, .04);
-				bar(.45, .009, .025);
+				if (build !== "cantilever") bar(.45, .009, .025);
+			}
+		}
+	}
+	if (lay.well) {
+		const w = lay.well;
+		const wc = {
+			x: (w.minX + w.maxX) / 2,
+			y: (w.minY + w.maxY) / 2
+		};
+		const ps = lay.pieces;
+		for (let k = 0; k < ps.length; k++) {
+			if (ps[k].kind === "tread") continue;
+			let e = k;
+			while (e + 1 < ps.length && ps[e + 1].kind !== "tread") e++;
+			const prev = ps[k - 1];
+			const next = ps[e + 1];
+			const first = ps[k];
+			k = e;
+			if (!prev || !next) continue;
+			const pv = first.poly?.[0] ?? [
+				{
+					x: first.minX,
+					y: first.minY
+				},
+				{
+					x: first.maxX,
+					y: first.minY
+				},
+				{
+					x: first.maxX,
+					y: first.maxY
+				},
+				{
+					x: first.minX,
+					y: first.maxY
+				}
+			].sort((p, q) => Math.hypot(p.x - wc.x, p.y - wc.y) - Math.hypot(q.x - wc.x, q.y - wc.y))[0];
+			const runOf = (p) => runs.find((r) => r.includes(p));
+			const rIn = runOf(prev);
+			const rOut = runOf(next);
+			const eIn = rIn ? railEnds.get(rIn[0]) : void 0;
+			const eOut = rOut ? railEnds.get(rOut[0]) : void 0;
+			const yLow = y0 + rh * prev.i;
+			const yHigh = y0 + rh * next.i;
+			const at = V(pv.x * MM, 0, pv.y * MM);
+			const framed = build === "steel" || build === "woodSkeleton";
+			if (rail === "wall") {
+				const lo = yLow - .25 - thick;
+				const hi = yHigh + .9;
+				mb.box("int.wall", at.clone().setY(lo), V(1, 0, 0), .12, hi - lo, .12);
+				mb.box("f.wood", at.clone().setY(hi), V(1, 0, 0), .14, .03, .14);
+				continue;
+			}
+			if (framed) {
+				const size = build === "steel" ? .06 : .09;
+				mb.box(build === "steel" ? metal : "f.paintBlack", at.clone().setY(y0), V(1, 0, 0), size, yHigh - y0, size);
+			}
+			if (rail === "none" || rail === "glass" || !eIn || !eOut) continue;
+			const key = eIn.key;
+			const top0 = yLow + rh * .5 + .9;
+			const top1 = yHigh - rh * .5 + .9;
+			const baseY = framed ? yHigh : y0 + rh * first.i;
+			if (eIn.wood) mb.box(key, at.clone().setY(baseY), V(1, 0, 0), .04, top1 - baseY, .04);
+			else mb.box(key, at.clone().setY(baseY), V(1, 0, 0), .02, top1 - baseY, .02);
+			const link = (p, q, r) => mb.tube(key, p, q, r, r, 8);
+			const r0 = eIn.wood ? .022 : .007;
+			for (const drop of eIn.wood ? [0] : build === "cantilever" ? [.006] : [.006, .45]) {
+				link(eIn.last.clone().setY(eIn.last.y - drop), at.clone().setY(top0 - drop), r0);
+				link(at.clone().setY(top1 - drop), eOut.first.clone().setY(eOut.first.y - drop), r0);
 			}
 		}
 	}
@@ -26832,6 +28083,10 @@ function emitItemBody(it, env) {
 		case "plant": {
 			const p = fr.point(0, 0, 0);
 			const under = (currentOcc ?? []).filter((o) => o.maxY > .3 && p.x > o.minX && p.x < o.maxX && p.z > o.minZ && p.z < o.maxZ);
+			if ((it.h ?? 0) >= 2) {
+				indoorTree(fr, it.h);
+				break;
+			}
 			if (under.some((o) => o.maxY > 1.15)) break;
 			if (under.length) branchVase(fr, Math.max(...under.map((o) => o.maxY)));
 			else plant(fr, 0, 0, it.w ?? 1);
@@ -27212,6 +28467,60 @@ function plant(fr, u, v, scale = 1) {
 		grow(P(.34).add(new THREE.Vector3(Math.cos(az) * .03, 0, Math.sin(az) * .03).multiplyScalar(scale)), d0, (.52 + rnd() * .08) * scale, .011 * scale, 0);
 	}
 }
+/**
+* 室内の木（地植えの株立ち。アオダモ・シマトネリコ風）: 床の丸い土（砂利）から細い幹が 3 本立ち、上で枝分かれして葉を付ける。
+* 高さ h (m)。階段の吹抜・階段ヌックに立つシンボルツリー（御社のご提案: 階段が木を囲んで回り、玄関からも見える）
+*/
+function indoorTree(fr, h) {
+	const p = fr.point(0, 0, 0);
+	if (currentPlan) currentPlan.push({
+		key: "f.pot",
+		shape: "circle",
+		cx: p.x,
+		cz: p.z,
+		w: 0,
+		d: 0,
+		ax: 1,
+		az: 0,
+		r: .42,
+		top: 1,
+		roomId: currentRoomId
+	});
+	fr.mb.tube("f.metal", p.clone().setY(p.y), p.clone().setY(p.y + .016), .362, .362, 28);
+	fr.mb.cylinder("f.soil", p.clone().setY(p.y + .012), .35, .02, 28);
+	let seed = Math.floor((Math.sin(p.x * 12.9898 + p.z * 78.233) * .5 + .5) * 233279) + 1;
+	const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+	const up = new THREE.Vector3(0, 1, 0);
+	const turn = (d, minA, maxA) => {
+		const ax = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < .95 ? up : new THREE.Vector3(1, 0, 0)).normalize();
+		ax.applyAxisAngle(d, rnd() * Math.PI * 2);
+		return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, .2).normalize();
+	};
+	const leafSize = Math.max(.3, h * .105);
+	const leaves = (a, b, n) => {
+		for (let i = 0; i < n; i++) {
+			const q = a.clone().lerp(b, .3 + .7 * rnd()).add(new THREE.Vector3((rnd() - .5) * .14, (rnd() - .5) * .1, (rnd() - .5) * .14));
+			fr.mb.card("l.leafSpray", q, leafSize * (.75 + rnd() * .5), new THREE.Euler((rnd() - .5) * 1.5, rnd() * Math.PI * 2, (rnd() - .5) * 1.5));
+		}
+	};
+	const grow = (a, dir, len, r, level) => {
+		const b = a.clone().addScaledVector(dir, len);
+		fr.mb.tube("l.trunk", a, b, r, r * .72, 7);
+		if (level >= 3) {
+			leaves(a, b, 4);
+			return;
+		}
+		if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, .4 + .55 * rnd()), turn(dir, .4, .8), len * (.48 + rnd() * .14), r * .55, level + 1);
+		grow(b, turn(dir, .05, .28), len * (.58 + rnd() * .1), r * .72, level + 1);
+		if (level >= 2) leaves(a, b, 3);
+	};
+	for (let i = 0; i < 3; i++) {
+		const az = i / 3 * Math.PI * 2 + rnd() * .9;
+		const lean = .07 + rnd() * .09;
+		const d0 = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
+		grow(p.clone().add(new THREE.Vector3(Math.cos(az) * .07, .01, Math.sin(az) * .07)), d0, h * (.44 + rnd() * .06), .02 * (h / 3.2), 0);
+	}
+}
 /** 花器の枝もの（天板・収納の上に置く。高さ 約 60cm）。y0 = 置く面の高さ */
 function branchVase(fr, y0) {
 	const base = fr.point(0, 0, y0);
@@ -27480,11 +28789,25 @@ function builtinFurniture(fr, it, ceilingY) {
 			fr.box("f.fabric", 0, .02, w - .04, d - .04, .4, .05);
 			for (const du of [-w / 3, w / 3]) fr.box("f.fabric2", du, .02, .45, .14, .45, .38);
 			break;
-		case "counter":
-			fr.box("f.wood", 0, 0, w, d, .7, .03);
-			for (const du of [-w / 2 + .1, w / 2 - .1]) fr.box("f.metal", du, 0, .02, d - .05, .62, .08);
-			fr.box("f.cabinet", w / 2 - .25, 0, .45, d - .02, 0, .62);
+		case "counter": {
+			const seats = Math.max(0, Math.min(8, Math.round(it.seats ?? 0)));
+			if (!seats) {
+				fr.box("f.wood", 0, 0, w, d, .7, .03);
+				for (const du of [-w / 2 + .1, w / 2 - .1]) fr.box("f.metal", du, 0, .02, d - .05, .62, .08);
+				fr.box("f.cabinet", w / 2 - .25, 0, .45, d - .02, 0, .62);
+			} else {
+				fr.box("f.wood", 0, 0, w, d, .7, .04);
+				fr.box("f.wood", 0, 0, w - .04, .03, .655, .045);
+				const nb = Math.max(2, Math.round(w / 1.2) + 1);
+				for (let k = 0; k < nb; k++) {
+					const du = -w / 2 + .06 + (w - .12) * k / (nb - 1);
+					fr.box("f.metal", du, 0, .006, d * .7, .67, .03);
+				}
+				const pitch = seats > 1 ? Math.min(1.15, (w - .7) / (seats - 1)) : 0;
+				for (let k = 0; k < seats; k++) yChair(fr, (k - (seats - 1) / 2) * pitch, d + .2, 1);
+			}
 			break;
+		}
 		case "tallStorage": {
 			const n = Math.max(2, Math.round(w / .6));
 			fr.box("int.shadowGap", 0, .04, w - .04, d - .06, 0, .06);

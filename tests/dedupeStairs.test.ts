@@ -5,7 +5,7 @@ import type { Stair } from '../src/core/types';
 const st = (id: string, minX: number, minY: number, maxX: number, maxY: number, kind: Stair['kind'] = 'u'): Stair => ({ id, minX, minY, maxX, maxY, kind, entry: 's', goesUp: true });
 
 describe('重なった階段の整理', () => {
-  it('コの字階段の中にできた小さな「階段」は消え、番号が振り直される（吉田大仁様邸 1st-2）', () => {
+  it('コの字階段の中にできた小さな「階段」は消え、番号が振り直される（吉田様邸 1st-2）', () => {
     const stairs = [st('F1-S1', 5199, 1820, 7474, 3640), st('F1-S2', 6564, 2275, 7929, 3640)];
     dedupeStairs(stairs, 1);
     expect(stairs.map((s) => s.id)).toEqual(['F1-S1']);

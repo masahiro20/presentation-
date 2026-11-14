@@ -114,7 +114,7 @@ export function findElevationTitles(texts: RawText[]): ElevationTitle[] {
  * 見出しごとの図の範囲: 上の段の見出しの下から自分の見出しの上まで。同じ段の隣の図との境は、図と図の間の空き（線の無い縦の帯）の真ん中。
  *
  * 以前は見出しどうしの中間で切っていたが、見出しは図の真下にあるとは限らず、幅の違う図が並ぶと広い方の図の端が隣の範囲に入る
- * （吉田大仁様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
+ * （吉田様邸: 南面 16.9m の右端 45cm が東面 13.6m の範囲に入り、東面の外形が 15.5m・南面が 16.8m と読めていた。
  * 東面は窓の位置が 1.9m ずれて照合できず、南面も端が欠けていた）。空きが見つからないときだけ見出しの中間を使う
  */
 function regionsOf(titles: ElevationTitle[], page: { width: number; height: number; segments?: RawSegment[] }): Map<ElevationTitle, Box> {
@@ -464,7 +464,7 @@ export function readElevationViews(pages: PageVectors[], mmHint: number, heights
     }
     // 同じ段に並ぶ図は、同じ GL の線の上に描かれる。「GL」の文字は段の端の図にしか無いので、文字の無い図は
     // 壁の縦線がいちばん多く立つ横線（= 基礎の天端。GL より 40〜50cm 高い）を GL と取り違える。
-    // 同じ段の、文字で GL を決めた図と同じ高さに横線があれば、それを GL にする（吉田大仁様邸: 東面・西面の窓の高さが 470mm 低かった）
+    // 同じ段の、文字で GL を決めた図と同じ高さに横線があれば、それを GL にする（吉田様邸: 東面・西面の窓の高さが 470mm 低かった）
     if (!(globalThis as { __NO_ELEV_ROW_GL?: boolean }).__NO_ELEV_ROW_GL)
       for (const g of got) {
         if (g.v.glInfo.byText) continue;

@@ -270,7 +270,7 @@ export const CATEGORIES: CategoryDef[] = [
       { id: 'eq.vent3lufro', spec: '換気設備', desc: '第三種換気 ダクト式 ルフロ', unit: '式', cost: 300000, group: 'vent', on: ['P'] },
       { id: 'eq.vent1lossnay', spec: '換気設備', desc: '第一種換気 ダクト式 ロスナイ', unit: '式', cost: 600000, group: 'vent', on: 'none' },
       { id: 'eq.vent1sumika', spec: '換気設備', desc: '第一種換気 ダクト式 澄家', unit: '式', cost: 1400000, group: 'vent', on: 'none' },
-      // S 仕様の既定（吉田大仁様邸 積算S）: 空調なし・エコジョーズ・太陽光なし
+      // S 仕様の既定（吉田様邸 積算S）: 空調なし・エコジョーズ・太陽光なし
       { id: 'eq.acFloor', spec: '空調', desc: '床下エアコン ※ガラリ・エアコン設置工事 基礎断熱は別途', unit: '式', cost: 420000, group: 'ac', on: ['P'] },
       { id: 'eq.acDaikin', spec: '空調', desc: 'ダイキン アメニティ エアコン', unit: '式', cost: 1300000, group: 'ac', on: 'none' },
       { id: 'eq.acNone', spec: '空調', desc: '空調なし（エアコンは別途）', unit: '式', cost: 0, group: 'ac', on: ['S'] },

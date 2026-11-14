@@ -9,7 +9,7 @@
  */
 import { POST_KIND_LABEL, OUTDOOR_TYPES, type BuildingModel, type BuiltinVariant, type Floor, type FurnitureItem, type FurnitureKind, type Opening, type Post, type PostKind, type Room, type Vec2, type Wall, FLOOR_OFFSET_PRESETS, VOID_GUARDS, VOID_GUARD_LABEL, type VoidGuard } from '../core/types';
 import { overhangPoints, suggestOverhangPosts, hasPostNear, OVERHANG_POST_MIN, postLabel } from '../core/posts';
-import { STAIR_KIND_LABEL, STAIR_ENTRY_LABEL } from '../core/stairs';
+import { STAIR_KIND_LABEL, STAIR_ENTRY_LABEL, wrapFlights } from '../core/stairs';
 import { furnitureSymbol } from './furnitureSymbols';
 import type { Stair } from '../core/types';
 import { buildFurniture, furnitureDims, FURNITURE_LABEL, BUILTIN_VARIANTS, KITCHEN_TYPES } from '../scene/furniture';
@@ -1401,6 +1401,52 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
               ]),
             ),
             ...(st.kind === 'uOpen' && st.maxX - st.minX < 2100 && st.maxY - st.minY < 2100 ? [h('p', { class: 'warn' }, 'コの字階段は幅 2,100 以上（段 910 × 2 ＋ 吹抜 300）が要ります。狭いので折り返しとして描いています')] : []),
+            ...(st.kind === 'uOpen'
+              ? [
+                  h(
+                    'label',
+                    { class: 'field' },
+                    h('span', { class: 'field-label' }, '角（踊り場・回り段）'),
+                    h('select', { onchange: (e: Event) => edit((x) => { const v = Number((e.target as HTMLSelectElement).value); if (v === 2 || v === 3) x.cornerSteps = v; else delete x.cornerSteps; }) }, [
+                      h('option', { value: '1', selected: (st.cornerSteps ?? 1) === 1 }, '四角い踊り場'),
+                      h('option', { value: '2', selected: st.cornerSteps === 2 }, '回り段 2 段（斜めの線 1 本）'),
+                      h('option', { value: '3', selected: st.cornerSteps === 3 }, '3 段回り'),
+                    ]),
+                  ),
+                ]
+              : []),
+            // 昇り口の広い段（ひな壇）: 最初の列の段を、床からの台にする（脇の列のあるコの字階段）
+            ...((wrapFlights(st)?.len1 ?? 0) > 0
+              ? [
+                  h(
+                    'label',
+                    { class: 'field' },
+                    h('span', { class: 'field-label', title: '図面では、最初の列の段の線が列の外まで伸びた入れ子の四角で描かれます' }, '昇り口の広い段（ひな壇）'),
+                    h(
+                      'select',
+                      {
+                        onchange: (e: Event) =>
+                          edit((x) => {
+                            const [n, shape] = (e.target as HTMLSelectElement).value.split(':');
+                            if (Number(n) > 0) {
+                              x.wideSteps = Number(n);
+                              if (shape === 'corner') x.wideShape = 'corner';
+                              else delete x.wideShape;
+                            } else {
+                              delete x.wideSteps;
+                              delete x.wideShape;
+                            }
+                          }),
+                      },
+                      [
+                        h('option', { value: '0', selected: !st.wideSteps }, 'なし'),
+                        ...[1, 2, 3, 4].map((n) => h('option', { value: `${n}:full`, selected: st.wideSteps === n && st.wideShape !== 'corner' }, `${n} 段（幅いっぱい）`)),
+                        ...[2, 3, 4].map((n) => h('option', { value: `${n}:corner`, selected: st.wideSteps === n && st.wideShape === 'corner' }, `${n} 段（角から 2 方向）`)),
+                      ],
+                    ),
+                  ),
+                ]
+              : []),
           );
         panel.append(
           h(

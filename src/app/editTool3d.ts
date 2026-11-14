@@ -21,7 +21,7 @@ import { exteriorById } from '../styles/presets';
 import { emit } from './state';
 import { massName, massSourceTag, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
 import type { Stair, StairBuild, StairFrame, StairLook, StairRail, StairStringer, StairTread } from '../core/types';
-import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL } from '../core/stairs';
+import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL, wrapFlights } from '../core/stairs';
 import { STAIR_BUILD_LABEL, STAIR_BUILDS, STAIR_FRAME_LABEL, STAIR_FRAMES, STAIR_RAIL_LABEL, STAIR_RAILS, STAIR_STRINGER_LABEL, STAIR_STRINGERS, STAIR_TREAD_LABEL, STAIR_TREADS, stairLevels, stairNoteFor, stairNoteIndexToEdit } from '../core/focus';
 import { focusNotes, openFocusDialog, setStairBuild, setStairLookAt, stairBuildNow } from './focusNotes';
 import { keepInsideFloor, linkedStairs, movedCorner, placeStair, rotateStair, stairAtPoint, wallsThroughStair, type StairGrid, type StairRef } from '../core/stairEdit';
@@ -1337,6 +1337,61 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
         (val) => editStair((x) => { x.kind = val as Stair['kind']; }, `${STAIR_SHORT[val as Stair['kind']]}にしました`),
       ),
       ...(st.kind === 'uOpen' && w < 2100 && d < 2100 ? [h('p', { class: 'warn' }, 'コの字階段は幅 2,100 以上（段 910 × 2 ＋ 吹抜 300）が要ります。狭いので折り返しとして描いています')] : []),
+      // コの字階段の角: 四角い踊り場か、回り段（図面の角の斜めの線の数）
+      ...(st.kind === 'uOpen'
+        ? [
+            h('div', { class: 'field-label', style: 'margin-top:8px', title: '図面の角に斜めの線が 1 本なら「回り段 2 段」、2 本なら「3 段回り」です' }, '角（コの字の 2 つの角）'),
+            segButtons(
+              [
+                { v: '1', label: '踊り場', title: '四角い踊り場（1 段ぶん）' },
+                { v: '2', label: '回り段 2 段', title: '斜めの線 1 本で 2 段に割る' },
+                { v: '3', label: '3 段回り', title: '30°ずつ 3 段に割る' },
+              ],
+              String(st.cornerSteps ?? 1),
+              (val) => editStair((x) => { if (val === '1') delete x.cornerSteps; else x.cornerSteps = Number(val) as 2 | 3; }, `角を「${val === '1' ? '踊り場' : val === '2' ? '回り段 2 段' : '3 段回り'}」にしました`),
+            ),
+          ]
+        : []),
+      // 昇り口の広い段（ひな壇）: 最初の列の段を、床からの台にする（脇の列のあるコの字階段）
+      ...((wrapFlights(st)?.len1 ?? 0) > 0
+        ? [
+            h('div', { class: 'field-label', style: 'margin-top:8px', title: '最初の数段を、床からの厚い板の台にします。図面では、最初の列の段の線が列の外まで伸びた入れ子の四角で描かれます' }, '昇り口の広い段（ひな壇）'),
+            segButtons(
+              [
+                { v: '0', label: 'なし' },
+                { v: '1', label: '1 段' },
+                { v: '2', label: '2 段' },
+                { v: '3', label: '3 段' },
+                { v: '4', label: '4 段' },
+              ],
+              String(Math.min(4, st.wideSteps ?? 0)),
+              (val) =>
+                editStair(
+                  (x) => {
+                    const n = Number(val);
+                    if (n > 0) x.wideSteps = n;
+                    else {
+                      delete x.wideSteps;
+                      delete x.wideShape;
+                    }
+                  },
+                  val === '0' ? '昇り口の広い段をやめました' : `最初の ${val} 段を広い段（ひな壇）にしました`,
+                ),
+            ),
+            ...(st.wideSteps
+              ? [
+                  segButtons(
+                    [
+                      { v: 'full', label: '幅いっぱい', title: 'どの段も階段室の幅いっぱいの台' },
+                      { v: 'corner', label: '角から 2 方向', title: '2 段目から上は、手前と脇の 2 方向に下りる角のひな壇' },
+                    ],
+                    st.wideShape ?? 'full',
+                    (val) => editStair((x) => { if (val === 'corner') x.wideShape = 'corner'; else delete x.wideShape; }, `ひな壇を「${val === 'corner' ? '角から 2 方向' : '幅いっぱい'}」にしました`),
+                  ),
+                ]
+              : []),
+          ]
+        : []),
       // 階段のつくり = コーディネートの「階段」の品目（家に 1 つ。3D・説明文・仕様書・見積が同じ品目を見る）
       h('div', { class: 'field-label', style: 'margin-top:8px', title: 'コーディネートの「階段」と同じ品目です。家じゅうの階段に共通で、仕様書・見積の品目も同じになります' }, 'つくり（家じゅうの階段に共通）'),
       segButtons(
@@ -1362,7 +1417,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
       h('div', { class: 'field-label', style: 'margin-top:8px' }, '手すり'),
       segButtons(
         STAIR_RAILS.map((k) => ({ v: k, label: STAIR_RAIL_LABEL[k].replace(/（.*）/, ''), title: STAIR_RAIL_LABEL[k] })),
-        st.look?.rail ?? 'bar',
+        st.look?.rail ?? st.rail ?? 'bar',
         (val) => changeLook(f.level, { rail: val as StairRail }, `${f.level}階の階段の手すりを「${STAIR_RAIL_LABEL[val as StairRail].replace(/（.*）/, '')}」にしました`),
       ),
       h('div', { class: 'field-label', style: 'margin-top:8px' }, '踏板の色'),

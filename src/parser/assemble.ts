@@ -12,12 +12,13 @@ import { findBalconyRails } from './balconyRails';
 import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floorAlign';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
+import { effectiveStepCount, stairLayout } from '../core/stairs';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
 import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './raster';
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
-import { detectStairs, stairEntryFromArrow, stairSideOf, stairMarkDist, stairMarkReach, STAIR_MARK_RANGE } from './stairs';
+import { cornerSquares, detectStairs, stairEntryFromArrow, stairSideOf, stairMarkDist, stairMarkReach, STAIR_MARK_RANGE, wrapShape } from './stairs';
 import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate, ROOM_KNOWLEDGE } from './roomKnowledge';
 import { splitEntranceFloor } from './entranceFloor';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
@@ -62,7 +63,7 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     segs,
     // 折れ線から円弧（開き戸の軌跡）を復元して足す。
     // 以前は「ベジェ曲線が 8 本未満の図面だけ」だったが、ARCHITREND の提案図は戸の円弧を折れ線で、植栽・車・家具の記号をベジェで描く。
-    // 植栽や車のある図面（14 件中 7 件）では戸の記号が 1 つも読めず、開き戸が窓・開口になっていた（吉田大仁様邸 1st-2 の玄関ドア・田中様邸・酒井様邸・市岡様邸・伊藤様邸・有元様邸）
+    // 植栽や車のある図面（14 件中 7 件）では戸の記号が 1 つも読めず、開き戸が窓・開口になっていた（吉田様邸 1st-2 の玄関ドア・田中様邸・酒井様邸・市岡様邸・伊藤様邸・有元様邸）
     arcs: [...curves, ...polylineArcs(segs.filter((s) => s.source !== 'fill'))],
     texts: p.texts.map((t) => ({ str: t.str, x: t.cx * k, y: t.cy * k, size: t.size * k, angle: t.angle })),
     fills: p.fills.map((f) => ({ polygon: f.polygon.map(sc) })),
@@ -156,7 +157,7 @@ interface WWall {
   joinedB: boolean;
   /**
    * 弱い壁: 壁片は柱の塗り（壁厚の正方形）だけで、残りは帯の中の線だけを根拠にした「窓」（確信度 0.7）が 2m 超。
-   * 窓と窓の間の柱と直交する壁の柱が一直線に並び、その間にベッドの縁が入ると生まれる（吉田大仁様邸 2 階の洋室 5.3 帖が 2 つに割れた）。
+   * 窓と窓の間の柱と直交する壁の柱が一直線に並び、その間にベッドの縁が入ると生まれる（吉田様邸 2 階の洋室 5.3 帖が 2 つに割れた）。
    * 室名の無い断片を作っているだけなら部屋に戻す（収納の前の引戸のように部屋を分けているなら残す）
    */
   weak?: boolean;
@@ -1062,7 +1063,7 @@ function collinearGaps(walls: WWall[], maxGap: number, axisTol = 30): { a: Vec2;
 /**
  * オーバースライダー（ガレージのドア）のレールを壁から外す。
  * レールは車の出入口の両端・中央から車庫の中へ直角に伸びる細い二重線で、帯の中の平行線なので「全長が窓の壁」として読まれる。
- * そのままだと車庫の中を仕切り、出入口の前を塞ぐ壁にもなって、車庫が部屋として閉じない（吉田大仁様邸 1st-2: 車庫 27 帖が消えていた）。
+ * そのままだと車庫の中を仕切り、出入口の前を塞ぐ壁にもなって、車庫が部屋として閉じない（吉田様邸 1st-2: 車庫 27 帖が消えていた）。
  * 条件: 2.4m 以上の切れ目（出入口）に直交し、「窓」が出入口の線から 450mm 以内で始まって 1.5m 以上伸び、その先で壁が終わっている
  * （先に壁の実体が続くものは、窓のある本物の側壁）。戻り値は外したレールの数
  */
@@ -1626,7 +1627,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
           // 結ぶ線は片方の壁の延長上（袖壁をそのまま伸ばした線）にあること
           if (L < 2400 || L > 7500) continue;
           // 伸ばすのは壁の端から外へ。壁の本体の上を戻っていく線は「延長」ではない
-          // （吉田大仁様邸 1st-2: 袖壁の外の端から車庫の中へ 5m 戻る線が引かれ、車庫の南の帯が別の区画になっていた）
+          // （吉田様邸 1st-2: 袖壁の外の端から車庫の中へ 5m 戻る線が引かれ、車庫の南の帯が別の区画になっていた）
           const outward = (w: WWall, end: Vec2, other: Vec2) => {
             const mid = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
             return (other.x - end.x) * (end.x - mid.x) + (other.y - end.y) * (end.y - mid.y) > 0;
@@ -2226,7 +2227,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const A = (cells * res * res) / 1e6 - excluded;
     const err0 = (A - expectedArea) / expectedArea;
     if ((globalThis as { __alignDebug?: boolean }).__alignDebug) console.log(`[area] level ${level} A=${A.toFixed(2)} expected=${expectedArea} err0=${(err0 * 100).toFixed(1)}% unnamed=${JSON.stringify(rooms.filter((r) => r.name === '室').map((r) => +r.area.toFixed(2)))}`);
-    // 2.5% 以上多ければ探す（吉田大仁様邸: 斜めの外壁の外側の庭の隅 3.4 ㎡ を室内と読んで 1 階が 3.8% 多かった）
+    // 2.5% 以上多ければ探す（吉田様邸: 斜めの外壁の外側の庭の隅 3.4 ㎡ を室内と読んで 1 階が 3.8% 多かった）
     if (err0 > 0.025) {
       const cand = rooms.map((r, idx) => ({ r, idx })).filter(({ r }) => r.name === '室' && r.area >= 1.5).slice(0, 12);
       let best: { set: number[]; err: number } | null = null;
@@ -2936,9 +2937,78 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const d = wallAhead(sd, 400);
       if (d != null && d > 0) growBy(sd, d);
     }
+    // 回り段の升（コの字の 3 方回りで、脇の列が 2 段ほどしか無い形）: 1 列だけの候補（奥の列）の両端の先に、壁まで 550〜1,250 の升があり、
+    // どちらかの升に斜めの線（回り段の線）があれば、両端の升まで階段。升の先へ続く脇の列（段の線 1〜3 本）のぶん、昇り口の側へも広げる。
+    // 脇の列は線が少なくて列にならず、奥の列だけが直階段と読まれていた（林様邸: 2 間 × 0.75 間に、左 2 段 → 回り段 → 奥 8 段 → 回り段 → 右 2 段）
+    if (c.flights === 1 && !c.mixed && c.treadCount >= 5 && !(globalThis as { __NO_WRAP_STAIR?: boolean }).__NO_WRAP_STAIR) {
+      const alongX = c.treadOrient === 'v';
+      const sLo: Sd = alongX ? 'w' : 'n';
+      const sHi: Sd = alongX ? 'e' : 's';
+      // 列の端のすぐ外の細い線（3 升目まで）は通り抜けて、その先の壁までの距離を測る。
+      // 列の最初と最後の段の線が、階段の外形の線として壁の升目に入っていることがある（列はその 1 本内側から始まる）
+      const gapBeyond = (side: Sd, max: number): { d: number; thin: boolean } | null => {
+        const out: { d: number; thin: boolean }[] = [];
+        for (const fr of [0.25, 0.75]) {
+          const at = (k: number): Vec2 =>
+            side === 'n'
+              ? { x: r.minX + (r.maxX - r.minX) * fr, y: r.minY - k * res }
+              : side === 's'
+                ? { x: r.minX + (r.maxX - r.minX) * fr, y: r.maxY + k * res }
+                : side === 'w'
+                  ? { x: r.minX - k * res, y: r.minY + (r.maxY - r.minY) * fr }
+                  : { x: r.maxX + k * res, y: r.minY + (r.maxY - r.minY) * fr };
+          let k = 1;
+          while (k <= 3 && sideState(at(k)) !== FREE) k++;
+          const thin = k > 1;
+          if (sideState(at(k)) !== FREE) {
+            out.push({ d: 0, thin: false });
+            continue;
+          }
+          let d: number | null = null;
+          for (; k * res <= max; k++) {
+            if (sideState(at(k)) !== FREE) {
+              d = (k - 1) * res;
+              break;
+            }
+          }
+          if (d == null) return null;
+          out.push({ d, thin });
+        }
+        return Math.abs(out[0].d - out[1].d) <= 160 ? { d: Math.min(out[0].d, out[1].d), thin: out[0].thin && out[1].thin } : null;
+      };
+      const gLo = gapBeyond(sLo, 1250);
+      const gHi = gapBeyond(sHi, 1250);
+      if (gLo && gHi && gLo.d >= 550 && gHi.d >= 550) {
+        const sq = cornerSquares(r, alongX, gLo.d, gHi.d, nonWallSegs);
+        if (sq.diag) {
+          // 列の端の細い線が、段の間隔ちょうどの位置なら、列の最初・最後の段の線（列を 1 本ぶん延ばす）
+          const run = c.runs?.[0];
+          if (run && c.pitch) {
+            const p0 = alongX ? run.minX : run.minY;
+            const p1 = alongX ? run.maxX : run.maxY;
+            const e0 = alongX ? r.minX : r.minY;
+            const e1 = alongX ? r.maxX : r.maxY;
+            if (gLo.thin && Math.abs(p0 - e0 - c.pitch) <= 45) {
+              if (alongX) run.minX = p0 - c.pitch;
+              else run.minY = p0 - c.pitch;
+              run.n++;
+            }
+            if (gHi.thin && Math.abs(e1 - p1 - c.pitch) <= 45) {
+              if (alongX) run.maxX = p1 + c.pitch;
+              else run.maxY = p1 + c.pitch;
+              run.n++;
+            }
+          }
+          growBy(sLo, gLo.d);
+          growBy(sHi, gHi.d);
+          if (sq.side && sq.sideLen > 0) growBy(sq.side, sq.sideLen);
+          (globalThis as { __stairTrace?: string[] }).__stairTrace?.push(`${level}F grow 回り段の升: ${sLo} +${Math.round(gLo.d)} ${sHi} +${Math.round(gHi.d)}${sq.side ? ` 脇の列 ${sq.side} +${Math.round(sq.sideLen)}` : ''} → r ${Math.round(r.minX)},${Math.round(r.minY)}-${Math.round(r.maxX)},${Math.round(r.maxY)}`);
+        }
+      }
+    }
     // 切断線の先の列: コの字に回る階段の 3 列目は、切断線より上なので段の線が 1〜2 本しか描かれず候補に入らない。
     // 範囲の横に、段の線（その辺に直交する線）が 2 本以上、1.2m 以内の壁まで続いていれば、そこまでが階段
-    // （吉田大仁様邸 1st 1 階: 2,730×1,820 の階段が 1,820 角と読まれ、右の 910 が LDK の床になっていた）
+    // （吉田様邸 1st 1 階: 2,730×1,820 の階段が 1,820 角と読まれ、右の 910 が LDK の床になっていた）
     for (const sd of ['e', 'w', 's', 'n'] as const) {
       const d = wallAhead(sd, 1200);
       if (d == null || d < 500) continue;
@@ -3127,6 +3197,87 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const d = wallAhead(far, 1200);
       if (d != null && d >= 300) growBy(far, d);
     }
+    // コの字階段（3 方回り）: 奥の辺に沿う列の両端に、角の升（踊り場か回り段）が 1 つずつ残る形。
+    // 以前は「折り返し（幅を 2 等分した 2 列＋中央の腰壁）」と読み、1.5 間幅の階段が幅 1,365 の段 2 列（踏面 150 台）になっていた。
+    // 図面は、幅 910 の列が 左 → 角 → 奥 → 角 → 右 と 3 方の壁沿いに回る（吉田様邸）。
+    // 奥行が列の幅しか無い形（壁沿いの長い列の両端の角で、直角に出入りする: 堀様邸）は、UP／DN の文字が奥の辺の反対側にあるときだけ
+    let midRun: number | undefined;
+    let cornerSteps: Stair['cornerSteps'];
+    let wideSteps: number | undefined;
+    let wideShape: Stair['wideShape'];
+    let guardRail: Stair['rail'];
+    if (!(globalThis as { __NO_WRAP_STAIR?: boolean }).__NO_WRAP_STAIR) {
+      const ws = wrapShape(c.runs ?? [], r, nonWallSegs);
+      const opp: Record<Sd, Sd> = { n: 's', s: 'n', e: 'w', w: 'e' };
+      const markNow = goesUp ? upMark : dnMark;
+      const markSideRaw = goesUp ? upSide : dnSide;
+      let back: Sd | null = ws ? ws.back : null;
+      if (ws?.flat) {
+        // 奥の辺は図形からは決まらない（列が範囲の奥行いっぱい）: 文字のある側が出入り口、その反対が奥
+        const alongX = ws.back === 'n' || ws.back === 's';
+        const perp = markSideRaw != null && (alongX ? markSideRaw === 'n' || markSideRaw === 's' : markSideRaw === 'e' || markSideRaw === 'w');
+        back = perp && markNow && stairMarkDist(r, markNow) > 50 ? opp[markSideRaw!] : null;
+      }
+      if (ws && back) {
+        const alongX = back === 'n' || back === 's';
+        // 最初の列・角のある端: 脇の列が見えていれば、昇る階段（下の階の図）はそこが最初、降りる階段（上の階の図）はそこが最後。
+        // 見えなければ文字に近い端（昇る階段は最初、降りる階段は最後）
+        let loFirst = true;
+        if (ws.sideEnd) loFirst = goesUp ? ws.sideEnd === 'lo' : ws.sideEnd !== 'lo';
+        else if (markNow) {
+          const nearLo = (alongX ? markNow.x : markNow.y) < (alongX ? (r.minX + r.maxX) / 2 : (r.minY + r.maxY) / 2);
+          loFirst = goesUp ? nearLo : !nearLo;
+        }
+        kindOut = 'uOpen';
+        entry = opp[back];
+        // 昇る人から見て右に回る = 最初の列は左（core/stairs.ts の stairFrame: 昇り口が南・西なら座標の小さい側が左）
+        turn = loFirst === (entry === 's' || entry === 'w') ? 'right' : 'left';
+        midRun = Math.round(ws.mid);
+        if (ws.cornerSteps > 1) cornerSteps = ws.cornerSteps;
+        // 昇り口の広い段（ひな壇）は、昇る階段の図（下の階）にだけ描かれる。上の階の同じ階段へは finishWrapStairs が写す
+        // 吹抜を囲む腰壁: 奥の列の吹抜側に、列に沿う細い壁の帯（厚み 60〜180。二重線で描かれた腰壁）が、列の長さの 7 割以上続く。
+        // 二重線は壁の升目に入っていて線としては残っていないことが多いので、升目でも見る。細い手すり（アイアン・ガラス）は帯にならない
+        if (!ws.flat) {
+          const alongRun = back === 'n' || back === 's';
+          const P = (c.runs ?? []).filter((q) => q.n >= 4 && (alongRun ? q.orient === 'v' : q.orient === 'h')).sort((p, q) => q.n - p.n)[0];
+          let band = ws.guardWall;
+          if (P && !band) {
+            const big = (alongRun ? P.maxY - P.minY : P.maxX - P.minX) > 1100 && !!P.core;
+            const lo = big ? P.core![0] : alongRun ? P.minY : P.minX;
+            const hi = big ? P.core![1] : alongRun ? P.maxY : P.maxX;
+            const sign = back === 'n' || back === 'w' ? 1 : -1;
+            const edge = sign > 0 ? hi : lo;
+            const a0 = alongRun ? P.minX : P.minY;
+            const a1 = alongRun ? P.maxX : P.maxY;
+            let hits = 0;
+            const N = 12;
+            for (let i = 0; i < N; i++) {
+              const a = a0 + ((a1 - a0) * (i + 0.5)) / N;
+              let start = -1;
+              let thick = 0;
+              for (let d = 0; d <= 460; d += res) {
+                const q = alongRun ? { x: a, y: edge + sign * d } : { x: edge + sign * d, y: a };
+                const wall = sideState(q) !== FREE;
+                if (wall && start < 0) start = d;
+                if (start >= 0) {
+                  if (!wall) break;
+                  thick += res;
+                }
+              }
+              if (start >= 0 && start <= 280 && thick >= 60 && thick <= 180) hits++;
+            }
+            band = hits >= N * 0.7;
+          }
+          if (band) guardRail = 'wall';
+        }
+        const wd = ws.wide[loFirst ? 'lo' : 'hi'];
+        if (goesUp && wd.n >= 2) {
+          wideSteps = wd.n;
+          if (wd.shape === 'corner') wideShape = 'corner';
+        }
+        (globalThis as { __stairTrace?: string[] }).__stairTrace?.push(`${level}F コの字（3 方回り）: 奥=${back} 奥の列=${midRun} 列の幅≒${ws.fw} 脇の列=${ws.sideEnd ?? '-'} 角=${ws.cornerSteps} 段 昇り口=${entry} 回り=${turn}${ws.flat ? '（脇の列なし）' : ''}${wideSteps ? ` 広い段=${wideSteps}${wideShape === 'corner' ? '（角から 2 方向）' : ''}` : ''}${guardRail ? ' 吹抜側=腰壁' : ''}`);
+      }
+    }
     // 「14段」などの段数注記（階段の近く）
     const stepNote = plan.texts
       .map((t) => ({ n: parseStepCount(t.str), d: Math.hypot(Math.max(0, r.minX - t.x, t.x - r.maxX), Math.max(0, r.minY - t.y, t.y - r.maxY)) }))
@@ -3144,6 +3295,11 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       goesUp,
       ...(stepNote ? { steps: stepNote.n! } : {}),
       ...(c.pitch ? { treadPitch: Math.round(c.pitch * 10) / 10 } : {}),
+      ...(midRun ? { midRun } : {}),
+      ...(cornerSteps ? { cornerSteps } : {}),
+      ...(wideSteps ? { wideSteps } : {}),
+      ...(wideShape ? { wideShape } : {}),
+      ...(guardRail ? { rail: guardRail } : {}),
     };
     stairMarkSides.set(stair, { up: upSide, down: dnSide, arrowTail, downPos: dnMark ? { x: dnMark.x, y: dnMark.y } : null });
     stairs.push(stair);
@@ -3627,7 +3783,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 家具・設備・車・植栽の記号（スキャン図面には無い）。階段の範囲の線（段・手すり）は家具の記号ではない
   // （コの字階段の段の線が「ソファ＋丸テーブル」として読まれ、本物の L 型ソファが「LDK にソファは 1 つ」で落ちていた）
   const inStair = (p: Vec2) => stairs.some((st) => p.x > st.minX - 100 && p.x < st.maxX + 100 && p.y > st.minY - 100 && p.y < st.maxY + 100);
-  const symbolsOut = symbols.filter((s) => s.kind === 'car' || !inStair({ x: s.x, y: s.y }));
+  // 大きな植物の記号（直径 760 以上）は、コの字階段の範囲の中でも残す（吹抜・階段ヌックのシンボルツリー。treesInStairWells が吹抜の中へ寄せる）
+  const treeInWell = (s: (typeof symbols)[number]) => s.kind === 'plant' && Math.max(s.w, s.h) >= 760 && stairs.some((st) => st.kind === 'uOpen' && s.x > st.minX - 100 && s.x < st.maxX + 100 && s.y > st.minY - 100 && s.y < st.maxY + 100);
+  const symbolsOut = symbols.filter((s) => s.kind === 'car' || !inStair({ x: s.x, y: s.y }) || treeInWell(s));
   const sym = plan.scan || plan.loose ? { items: [], exterior: { cars: [], trees: [] } } : symbolsToItems(symbolsOut, rooms, outWalls, outline, level, (globalThis as { __symTrace?: string[] }).__symTrace);
   // 文脈読み（部屋の種類・大きさ・壁からの位置・隣の物との関係）。同じ部屋で同じ種類を読めたら、形の決め打ちの結果より優先する
   const g = globalThis as { __symbolDict?: SymbolSignature[]; __ctxTrace?: string[]; __dashTrace?: string[] };
@@ -3859,7 +4017,7 @@ export function wallStripCoverage(fills: { poly: Vec2[]; color: string }[], wall
 
 /**
  * ページが何の図面か（見出しと室名から）。
- * 吉田大仁様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
+ * 吉田様邸 1st プラン: 2 ページ目の立面図 4 面の外壁の線が平面図の区画のように見え、3〜7 階として読まれていた（「4 階・6 階」が残った）。
  * - elevation: 「立面図・断面図・矩計図・展開図」の見出しがあり「平面図」が無く、室名がほとんど無い → 平面図としては読まない（高さの寸法は別に読む）
  * - other: 他のページに室名があるのに、このページには室名も「平面図」の見出しも無い（表・図面枠・配置図など）
  * - plan: それ以外
@@ -4424,7 +4582,7 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
         continue;
       }
       // 伸ばしてよい側: 昇り口の反対（切断線より上の段）。かね折れは曲がっていく側も。
-      // 左右には伸ばさない（上下階の図面が半間ずれて重なっていると、隣のトイレまで階段になった: 吉田大仁様邸 1st-2）
+      // 左右には伸ばさない（上下階の図面が半間ずれて重なっていると、隣のトイレまで階段になった: 吉田様邸 1st-2）
       const right: Record<Stair['entry'], Stair['entry']> = { n: 'w', s: 'e', w: 's', e: 'n' };
       const sides: Stair['entry'][] = [opposite[lo.entry]];
       if (lo.kind === 'l') {
@@ -4442,6 +4600,155 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
       }
     }
   }
+  }
+}
+
+/**
+ * コの字階段（3 方回り）を上下階でそろえる: 下の階の図は切断線より下、上の階の図は上からの見え方で、
+ * 片方の階でしかコの字と読めないことがある（脇の列が見えない・範囲が列だけ）。重なる階段どうしで、
+ * コの字と読めた側の形（昇り口・回る向き・奥の列の長さ・角の段数）をもう片方へ写す。
+ * 範囲の大きさが大きく違う（500 以上）ときは写さない（別の階段・読み違い）
+ */
+export function finishWrapStairs(floors: Floor[]): void {
+  const area = (s: Stair) => Math.max(1, (s.maxX - s.minX) * (s.maxY - s.minY));
+  for (let i = 0; i + 1 < floors.length; i++) {
+    for (const lo of floors[i].stairs) {
+      if (!lo.goesUp) continue;
+      let up: Stair | null = null;
+      let best = 0;
+      for (const u of floors[i + 1].stairs) {
+        if (u.goesUp) continue;
+        const ix = Math.min(lo.maxX, u.maxX) - Math.max(lo.minX, u.minX);
+        const iy = Math.min(lo.maxY, u.maxY) - Math.max(lo.minY, u.minY);
+        if (ix <= 0 || iy <= 0) continue;
+        const ov = (ix * iy) / Math.min(area(lo), area(u));
+        if (ov >= 0.5 && ov > best) {
+          up = u;
+          best = ov;
+        }
+      }
+      if (!up) continue;
+      const wrapOf = (s: Stair) => s.kind === 'uOpen' && s.midRun != null;
+      if (!wrapOf(lo) && !wrapOf(up)) continue;
+      if (Math.abs(lo.maxX - lo.minX - (up.maxX - up.minX)) > 500 || Math.abs(lo.maxY - lo.minY - (up.maxY - up.minY)) > 500) continue;
+      // 下の階の図（昇り口の文字・最初の列が見える）を優先
+      const src = wrapOf(lo) ? lo : up;
+      const corner = Math.max(lo.cornerSteps ?? 1, up.cornerSteps ?? 1) as 1 | 2 | 3;
+      // 昇り口の広い段（ひな壇）は下の階の図にだけ描かれる
+      // 吹抜側の作り（腰壁）は、どちらかの階の図で読めたら両方に
+      const rail = lo.rail ?? up.rail;
+      const wideSrc = lo.wideSteps ? lo : up.wideSteps ? up : null;
+      const wide = wideSrc?.wideSteps;
+      const wideShape = wideSrc?.wideShape;
+      for (const st of [lo, up]) {
+        if (wide) st.wideSteps = wide;
+        else delete st.wideSteps;
+        if (wide && wideShape) st.wideShape = wideShape;
+        else delete st.wideShape;
+        if (rail) st.rail = rail;
+        else delete st.rail;
+        st.kind = 'uOpen';
+        st.entry = src.entry;
+        if (src.turn) st.turn = src.turn;
+        st.midRun = src.midRun;
+        if (corner > 1) st.cornerSteps = corner;
+        else delete st.cornerSteps;
+        if (st.treadPitch == null && src.treadPitch != null) st.treadPitch = src.treadPitch;
+      }
+    }
+  }
+}
+
+/**
+ * カウンター席の前の窓: 造作のカウンター（図面で、椅子が壁に向かって並ぶ）が付く壁の窓は、
+ * カウンターの天端のすぐ上から立ち上がる横長の窓（腰高 780・高さ 900）にする。
+ * 御社のご提案の「横長の連窓に沿ったスタディカウンター」。以前は、仕様の「サッシ上端＝天井」で天井際の高窓になり、
+ * カウンターの前が壁になっていた。立面図・設計の 3D データで高さが分かっている窓、室内窓は変えない
+ */
+export function windowsOverCounters(floors: Floor[]): void {
+  for (const f of floors) {
+    for (const it of f.planItems ?? []) {
+      if (it.kind !== 'builtin' || it.variant !== 'counter' || !it.seats) continue;
+      const half = ((it.w ?? 1.8) * 1000) / 2;
+      const rad = (it.rot * Math.PI) / 180;
+      const ax = { x: Math.cos(rad), y: Math.sin(rad) };
+      for (const wall of f.walls) {
+        const L = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) || 1;
+        const u = { x: (wall.b.x - wall.a.x) / L, y: (wall.b.y - wall.a.y) / L };
+        // カウンターに沿う壁で、カウンターの背がその壁に付いている（壁芯から 250 以内）
+        if (Math.abs(u.x * ax.x + u.y * ax.y) < 0.98) continue;
+        const t = (it.x - wall.a.x) * u.x + (it.y - wall.a.y) * u.y;
+        const off = Math.abs(-(it.x - wall.a.x) * u.y + (it.y - wall.a.y) * u.x);
+        if (off > 250 || t < -half || t > L + half) continue;
+        for (const o of f.openings) {
+          if (o.wallId !== wall.id || o.kind !== 'window' || o.heightFrom || o.interior) continue;
+          // 窓の半分以上（幅の広い窓は 1m 以上）がカウンターに掛かっている
+          const ov = Math.min(o.t1, t + half) - Math.max(o.t0, t - half);
+          if (ov < Math.min(1000, (o.t1 - o.t0) * 0.5)) continue;
+          o.sill = 780;
+          o.height = 900;
+          o.windowStyle = 'koshi';
+          o.heightFrom = 'joinery';
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 階段の範囲にすっぽり入る小さな区画（4 帖以下。範囲の 7 割以上が階段の中）は、名前が何であっても階段の一部。
+ * 「階段ヌック」の名前から書斎と読んだ区画（奥の列の下の 1.4 帖）に、机と椅子を置いていた（林様邸）。
+ * コの字（3 方回り）と読めた階段だけ（ほかの形の階段の区画分けは、これまでの読み取りのまま）
+ */
+export function roomsUnderStairs(floors: Floor[]): void {
+  for (const f of floors) {
+    for (const st of f.stairs) {
+      if (st.kind !== 'uOpen' || st.midRun == null) continue;
+      for (const rm of f.rooms) {
+        if (rm.type === 'stairs' || rm.area > 4 * 1.62) continue;
+        const bx = bboxOf(rm.polygon);
+        const ix = Math.min(bx.maxX, st.maxX) - Math.max(bx.minX, st.minX);
+        const iy = Math.min(bx.maxY, st.maxY) - Math.max(bx.minY, st.minY);
+        if (ix <= 0 || iy <= 0) continue;
+        if ((ix * iy) / Math.max(1, (bx.maxX - bx.minX) * (bx.maxY - bx.minY)) < 0.7) continue;
+        rm.type = 'stairs';
+        // 図面の記号から読んだ家具は残す（置き直さない）。区画の種類だけを直す
+      }
+    }
+  }
+}
+
+/**
+ * 階段の吹抜の木（シンボルツリー）: コの字階段の中央の吹抜に掛かる大きな植物の記号（直径 760 以上）は、
+ * 吹抜の中に地植えした木として読む（位置を吹抜の中へ寄せ、高さを上の階の腰の高さまで）。
+ * 御社のご提案の「階段ヌック」: 階段が木を囲んで回り、玄関からも 2 階からも木が見える。
+ * 以前は鉢植えの観葉植物（高さ 1.7m）を、階段の昇り口の前の床に置いていた。
+ * ひな壇のある階段（吹抜の底が台）は対象外
+ */
+export function treesInStairWells(floors: Floor[]): void {
+  for (const f of floors) {
+    for (const it of f.planItems ?? []) {
+      if (it.kind !== 'plant' || (it.w ?? 1) < 1.08 || (it.h ?? 0) >= 2) continue;
+      const r = (it.w ?? 1) * 350;
+      for (const st of f.stairs) {
+        if (!st.goesUp || st.kind !== 'uOpen' || st.wideSteps) continue;
+        const lay = stairLayout(st, effectiveStepCount(f.height || 2900, st));
+        const w = lay.well;
+        if (!w || w.maxX - w.minX < 700 || w.maxY - w.minY < 350) continue;
+        // 記号の円が吹抜に掛かっている（中心が、吹抜から半径ぶん以内）
+        const dx = Math.max(w.minX - it.x, 0, it.x - w.maxX);
+        const dy = Math.max(w.minY - it.y, 0, it.y - w.maxY);
+        if (Math.hypot(dx, dy) > r) continue;
+        // 幹は吹抜の縁から 250 以上内側（狭い吹抜は中央）
+        const inset = (lo: number, hi: number, v: number) => (hi - lo < 500 ? (lo + hi) / 2 : Math.min(hi - 250, Math.max(lo + 250, v)));
+        it.x = Math.round(inset(w.minX, w.maxX, it.x));
+        it.y = Math.round(inset(w.minY, w.maxY, it.y));
+        it.h = +Math.min(4.2, (f.height || 2900) / 1000 + 0.9).toFixed(2);
+        const room = f.rooms.find((rm) => pointInPolygon({ x: it.x, y: it.y }, rm.polygon));
+        if (room) it.roomId = room.id;
+        break;
+      }
+    }
   }
 }
 
@@ -4600,7 +4907,7 @@ function fixTopEntry(fUp: Floor, up: Stair, lo: Stair): void {
 
 /**
  * 同じ階段を 2 つに読まない: コの字階段の 2 つの折り返しが別々の候補になり、壁まで広げた矩形が重なる
- * （吉田大仁様邸 1st-2: 2,275×1,820 の階段の中に 1,365 角の「階段」がもう 1 つでき、3D に二重の階段が出ていた）。
+ * （吉田様邸 1st-2: 2,275×1,820 の階段の中に 1,365 角の「階段」がもう 1 つでき、3D に二重の階段が出ていた）。
  * 小さいほうの 5 割以上が大きいほうに入っていれば、大きいほうだけ残す。id は F{階}-S{番号} で振り直す
  */
 export function dedupeStairs(stairs: Stair[], level: number): void {
@@ -4649,7 +4956,7 @@ export function assignFloorTitles(plans: PlanData[], pages: PageMm[]) {
         const dy = Math.max(0, b.minY - t.y, t.y - b.maxY);
         const h = b.maxY - b.minY;
         const w = b.maxX - b.minX;
-        // 見出しと図の間に面積表・注記が入ると図の高さの 0.9 倍より離れる（吉田大仁様邸 1st-2: 5.6 m 角の 2 階の 6.6 m 下に「2階 平面図」）
+        // 見出しと図の間に面積表・注記が入ると図の高さの 0.9 倍より離れる（吉田様邸 1st-2: 5.6 m 角の 2 階の 6.6 m 下に「2階 平面図」）
         if (onPage.length > 1 && (dy > Math.max(h * 0.9, 7000) || dx > w * 0.6)) continue;
         // 図面名は図の「下」に書くのが決まり。上下に図が並ぶ図面では、上の図の見出しが下の図の真上に来るので、
         // 「図の上にある見出し」は図の高さ分だけ遠いものとして扱う（田中様邸: 3 階の見出しが 2 階の図に付き、2 階と 3 階が入れ替わっていた）
@@ -4785,10 +5092,10 @@ export function alignOffset(base: PlanData, other: PlanData, mode: 'walls' | 'st
     for (const dy of dys) {
       const wallScore = overlapScore(AV, BV, dx, dy) + overlapScore(AH, BH, dy, dx);
       // 階段は上下階で必ず同じ位置に通る → いちばん良く重なる階段の組で壁の点を重み付けし、さらに加点する
-      // （吉田大仁様邸: 2 階 5 × 6.4 m の壁は 1 階の玄関・ガレージの壁にも 910 の格子で良く重なり、階段から 6 m 離れた所に載っていた。
+      // （吉田様邸: 2 階 5 × 6.4 m の壁は 1 階の玄関・ガレージの壁にも 910 の格子で良く重なり、階段から 6 m 離れた所に載っていた。
       //   壁の重なりだけでは小さな 2 階の位置は決まらない。階段が読めていない図面は壁だけで決める）
       // 重なりは IoU（重なり ÷ 合わせた範囲）で見る: 同じ大きさの階段が同じ位置にあるときだけ 1 に近づき、
-      // 車の記号の縞（吉田大仁様邸のガレージで階段に見えた 1.3 × 0.9 m）に 2 階の階段 1.8 × 1.8 m が載っても 0.4 止まり
+      // 車の記号の縞（吉田様邸のガレージで階段に見えた 1.3 × 0.9 m）に 2 階の階段 1.8 × 1.8 m が載っても 0.4 止まり
       let stairBest = 0;
       let footAligned = false;
       for (let ai = 0; ai < sa.length; ai++) {
@@ -5164,7 +5471,7 @@ export function rejoinFloorWalls(f: Floor) {
     const newL = Math.hypot(nb.x - na.x, nb.y - na.y);
     // a 側（元の向きでの a）がどれだけ手前へ伸びたか。向きを入れ替えて計算した壁（右から左へ・下から上へ引かれた壁。斜めの壁に多い）も、
     // 元の a からの距離で測る（以前は入れ替えた壁で元の b から測っていて、開口が壁の反対の端まで押しやられていた:
-    // 吉田大仁様邸 1st の斜めの壁のテラス窓が 1.8 m ずれ、印のある出入口の位置が壁になっていた）
+    // 吉田様邸 1st の斜めの壁のテラス窓が 1.8 m ずれ、印のある出入口の位置が壁になっていた）
     const ext0 = Math.hypot(na.x - w.a.x, na.y - w.a.y);
     for (const op of f.openings) {
       if (op.wallId !== w.id) continue;
@@ -5308,7 +5615,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
     const err0 = Math.abs(outlineUnionArea(floors) - build) / build;
     if (err0 > 0.05) {
       for (let i = 1; i < floors.length; i++) {
-        // 候補: 半間・1 間のずらし と、階段の重なりを主にした位置合わせ（吉田大仁様邸: 2 階の壁が 1 階の玄関・ガレージの壁に良く重なり、階段から 6 m 離れて載っていた）
+        // 候補: 半間・1 間のずらし と、階段の重なりを主にした位置合わせ（吉田様邸: 2 階の壁が 1 階の玄関・ガレージの壁に良く重なり、階段から 6 m 離れて載っていた）
         const shifts = [-910, -455, 0, 455, 910];
         const cands: Vec2[] = [];
         for (const dx of shifts) for (const dy of shifts) if (dx || dy) cands.push({ x: dx, y: dy });
@@ -5320,7 +5627,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
         }
         // 上下階の階段がすでに重なっているなら、その重なりを崩すずらしは採らない。
         // 建築面積にはポーチ・庇の屋根も入るので、外形の重なりだけ合わせると階段が半間ずれた位置を選ぶことがある
-        // （吉田大仁様邸 1st-2: 車庫が読めて外形が広がったら、2 階が 910 南へ動いて階段が外れた）
+        // （吉田様邸 1st-2: 車庫が読めて外形が広がったら、2 階が 910 南へ動いて階段が外れた）
         const stairOverlap = (d: Vec2): number => {
           let ov = 0;
           for (const a of floors[i - 1].stairs)
@@ -5359,7 +5666,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   // 階段の重なりで上下階の重ね位置を検算: 読み終えた階段（切断線の先まで広げた範囲）が上下で同じ大きさなのに、
   // 半間・1 間ずれて重なっているなら、ぴったり重なる位置へ上の階を直す。910 の格子に乗った家は壁の重なりだけでは
   // 半間ずれた位置も同じくらい良く見え、図面の線だけで合わせた段階では階段の範囲が短くて決められないことがある
-  // （吉田大仁様邸 1st-2: 1 階も 2 階も 2,730×1,820 の階段が 910 ずれて重なっていた。直すと壁の乗りも 40 → 48%）
+  // （吉田様邸 1st-2: 1 階も 2 階も 2,730×1,820 の階段が 910 ずれて重なっていた。直すと壁の乗りも 40 → 48%）
   if (!samePageUnhinted && floors.length >= 2) {
     for (let i = 1; i < floors.length; i++) {
       const d = stairAlignShift(floors[i - 1], floors[i]);
@@ -5506,6 +5813,10 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   finishTopFloorStairs(floors);
   splitStackedStairs(floors);
   reconcileStairs(floors);
+  finishWrapStairs(floors);
+  roomsUnderStairs(floors);
+  treesInStairWells(floors);
+  windowsOverCounters(floors);
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];
   if (o1.length) {

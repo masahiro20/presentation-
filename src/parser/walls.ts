@@ -106,7 +106,7 @@ interface Pocket {
  * 白抜き（マスク）の多角形を壁の軸に沿って区切り、区間ごとに「壁厚のうち白く抜けている割合」を返す。
  * ARCHITREND の引込み戸（片引き戸）は、壁の塗りの上に「開口部は全幅・戸袋は半幅（戸の通る溝）」の
  * L 字／T 字の白抜きを重ねて描くので、全幅の区間が開口、半幅の区間が戸袋（壁のまま）になる。
- * 吉田大仁様邸: トイレの戸（開口 840 + 戸袋 800）が 1,626 の引違い戸として読まれ、洗面の戸も戸袋ごと 1,528 になっていた
+ * 吉田様邸: トイレの戸（開口 840 + 戸袋 800）が 1,626 の引違い戸として読まれ、洗面の戸も戸袋ごと 1,528 になっていた
  */
 function maskSpans(poly: Vec2[], grp: AngleGroup, o: number, d: number): { t0: number; t1: number; cover: number; sSign: number }[] {
   const ts = poly.map((q) => q.x * grp.u.x + q.y * grp.u.y);
@@ -805,7 +805,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   // 壁の塗りが両面とも続いていて白抜きの無い区間にある平行線は、窓・引戸の記号ではなく壁の中を通る線
   // （土間のタイルの見切り・壁芯の線・壁付けの造作の縁）なので、壁に戻す。開口は白抜きの幅どおりになる。
   // 林様邸 1 階: 玄関と土間収納の間の柱と壁 52cm が「引戸」、土間収納の外壁 1.8m が「窓」に。
-  // 吉田大仁様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」に。坂井様邸・伊藤様邸: 窓の無い外壁に 6m・2.8m の「窓」。
+  // 吉田様邸 1 階: LDK と玄関の間の壁 1.1m が「引戸」に。坂井様邸・伊藤様邸: 窓の無い外壁に 6m・2.8m の「窓」。
   // 窓の幅も、隣の壁の中の線まで延びて 2,180・2,780・5,010 などになっていた（白抜きは 1,690・2,600＋1,235）
   let maskStyle = false;
   if (masks.length && infills.length && !(globalThis as { __NO_FILLWALL?: boolean }).__NO_FILLWALL) {
@@ -1003,7 +1003,7 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
       const gap = ge - gs;
       if (gap < 250 || gap > 6000) continue;
       // 両側が柱の塗り（壁厚の正方形）だけで、2m を超えて離れている隙間は開口ではない。窓と窓の間の柱と直交する壁の柱が
-      // 並ぶと、その間が「隙間＝引戸」に分類されて部屋を横切る壁が生まれていた（吉田大仁様邸 2 階の洋室 5.3 帖がベッドの所で 2 つに割れた）
+      // 並ぶと、その間が「隙間＝引戸」に分類されて部屋を横切る壁が生まれていた（吉田様邸 2 階の洋室 5.3 帖がベッドの所で 2 つに割れた）
       const isPost = (q: { t0: number; t1: number; op: boolean }) => !q.op && q.t1 - q.t0 <= ax.d * 1.3;
       const op = classifyGap(ax.g, ax.o, ax.d, gs, ge, groups[ax.g], lines[ax.g], infills, isPost(occ[k]) && isPost(occ[k + 1]));
       if ((globalThis as any).__WALLDBG) console.log('GAP', Math.round(ax.o), Math.round(gs), Math.round(ge), op.kind, 'opEnds', occ[k].op, occ[k + 1].op, 'joined', endJoined(ax, gs), endJoined(ax, ge));

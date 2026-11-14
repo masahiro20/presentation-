@@ -104,7 +104,7 @@ export function applyElevationHeights(floors: { level: number; elevation: number
   for (let i = 0; i < fl.length; i++) {
     const h = elev.storyHeights[i];
     if (h) fl[i].height = h;
-    // 階高が標準（2,900）より高い階は天井も高い（吉田大仁様邸: 1 階 階高 3,200 → 天井 2,700。高天井の数量・3D の天井に効く。部屋ごとの注記が優先）
+    // 階高が標準（2,900）より高い階は天井も高い（吉田様邸: 1 階 階高 3,200 → 天井 2,700。高天井の数量・3D の天井に効く。部屋ごとの注記が優先）
     if (h && h > 2900) fl[i].ceilingHeight = Math.max(fl[i].ceilingHeight, h - 500);
     if (i > 0 && elev.storyHeights[i - 1]) fl[i].elevation = fl[i - 1].elevation + elev.storyHeights[i - 1];
   }

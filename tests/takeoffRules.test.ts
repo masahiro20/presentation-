@@ -1,4 +1,4 @@
-// 見積の拾いの規則（吉田大仁様邸の積算S との照合で直したもの）:
+// 見積の拾いの規則（吉田様邸の積算S との照合で直したもの）:
 // ガレージの土間は外部ポーチに入れない・ガレージとポーチの天井は軒天・パラペットは最上階の外周だけ・下屋の塊にも軒樋・S 仕様の床はフロアタイル・S の設備の既定
 import { describe, expect, it } from 'vitest';
 import { takeoff } from '../src/estimate/areas';
@@ -29,7 +29,7 @@ function model(): BuildingModel {
 }
 const opts = { grade: 'P' as const, eavesMm: 100, pitch: 0.5, roofType: 'shed' as const };
 
-describe('見積の拾い（吉田大仁様邸の積算と合わせた規則）', () => {
+describe('見積の拾い（吉田様邸の積算と合わせた規則）', () => {
   it('ガレージは施工面積に入り、外部ポーチには入らない。ガレージの天井は軒天に入り断熱には入らない', () => {
     const a = takeoff(model(), opts);
     expect(a.garageArea).toBeCloseTo(42, 1);

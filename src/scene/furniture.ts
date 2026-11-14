@@ -649,6 +649,11 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
       // 背の高い収納に重なる記号は読み違いなので置かない（以前は床から木を立てていて、キッチンの壁に葉が茂って見えていた）
       const p = fr.point(0, 0, 0);
       const under = (currentOcc ?? []).filter((o) => o.maxY > 0.3 && p.x > o.minX && p.x < o.maxX && p.z > o.minZ && p.z < o.maxZ);
+      // 高さ 2m 以上の指定は、地植えの室内の木（階段の吹抜・階段ヌックのシンボルツリー）
+      if ((it.h ?? 0) >= 2) {
+        indoorTree(fr, it.h!);
+        break;
+      }
       if (under.some((o) => o.maxY > 1.15)) break;
       if (under.length) branchVase(fr, Math.max(...under.map((o) => o.maxY)));
       else plant(fr, 0, 0, it.w ?? 1);
@@ -1017,6 +1022,52 @@ export function plant(fr: Frame, u: number, v: number, scale = 1) {
   }
 }
 
+/**
+ * 室内の木（地植えの株立ち。アオダモ・シマトネリコ風）: 床の丸い土（砂利）から細い幹が 3 本立ち、上で枝分かれして葉を付ける。
+ * 高さ h (m)。階段の吹抜・階段ヌックに立つシンボルツリー（御社のご提案: 階段が木を囲んで回り、玄関からも見える）
+ */
+export function indoorTree(fr: Frame, h: number) {
+  const p = fr.point(0, 0, 0);
+  if (currentPlan) currentPlan.push({ key: 'f.pot', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.42, top: 1, roomId: currentRoomId });
+  // 植え枡: 床と面一の丸い土（φ700）と、細い鉄の縁
+  fr.mb.tube('f.metal', p.clone().setY(p.y), p.clone().setY(p.y + 0.016), 0.362, 0.362, 28);
+  fr.mb.cylinder('f.soil', p.clone().setY(p.y + 0.012), 0.35, 0.02, 28);
+  let seed = Math.floor((Math.sin(p.x * 12.9898 + p.z * 78.233) * 0.5 + 0.5) * 233279) + 1;
+  const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  const up = new THREE.Vector3(0, 1, 0);
+  const turn = (d: THREE.Vector3, minA: number, maxA: number) => {
+    const ax = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.95 ? up : new THREE.Vector3(1, 0, 0)).normalize();
+    ax.applyAxisAngle(d, rnd() * Math.PI * 2);
+    return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, 0.2).normalize();
+  };
+  const leafSize = Math.max(0.3, h * 0.105);
+  const leaves = (a: THREE.Vector3, b: THREE.Vector3, n: number) => {
+    for (let i = 0; i < n; i++) {
+      const q = a.clone().lerp(b, 0.3 + 0.7 * rnd()).add(new THREE.Vector3((rnd() - 0.5) * 0.14, (rnd() - 0.5) * 0.1, (rnd() - 0.5) * 0.14));
+      fr.mb.card('l.leafSpray', q, leafSize * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.5, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.5));
+    }
+  };
+  const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
+    const b = a.clone().addScaledVector(dir, len);
+    fr.mb.tube('l.trunk', a, b, r, r * 0.72, 7);
+    if (level >= 3) {
+      leaves(a, b, 4);
+      return;
+    }
+    // 目の高さより下は枝を出さず、幹を見せる（階段の段越しに幹が見える軽い樹形）
+    if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, 0.4 + 0.55 * rnd()), turn(dir, 0.4, 0.8), len * (0.48 + rnd() * 0.14), r * 0.55, level + 1);
+    grow(b, turn(dir, 0.05, 0.28), len * (0.58 + rnd() * 0.1), r * 0.72, level + 1);
+    if (level >= 2) leaves(a, b, 3);
+  };
+  for (let i = 0; i < 3; i++) {
+    const az = (i / 3) * Math.PI * 2 + rnd() * 0.9;
+    const lean = 0.07 + rnd() * 0.09;
+    const d0 = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
+    const base = p.clone().add(new THREE.Vector3(Math.cos(az) * 0.07, 0.01, Math.sin(az) * 0.07));
+    grow(base, d0, h * (0.44 + rnd() * 0.06), 0.02 * (h / 3.2), 0);
+  }
+}
+
 /** 花器の枝もの（天板・収納の上に置く。高さ 約 60cm）。y0 = 置く面の高さ */
 function branchVase(fr: Frame, y0: number) {
   const base = fr.point(0, 0, y0);
@@ -1288,11 +1339,27 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       fr.box('f.fabric', 0, 0.02, w - 0.04, d - 0.04, 0.4, 0.05);
       for (const du of [-w / 3, w / 3]) fr.box('f.fabric2', du, 0.02, 0.45, 0.14, 0.45, 0.38);
       break;
-    case 'counter':
-      fr.box('f.wood', 0, 0, w, d, 0.7, 0.03);
-      for (const du of [-w / 2 + 0.1, w / 2 - 0.1]) fr.box('f.metal', du, 0, 0.02, d - 0.05, 0.62, 0.08);
-      fr.box('f.cabinet', w / 2 - 0.25, 0, 0.45, d - 0.02, 0, 0.62);
+    case 'counter': {
+      const seats = Math.max(0, Math.min(8, Math.round(it.seats ?? 0)));
+      if (!seats) {
+        fr.box('f.wood', 0, 0, w, d, 0.7, 0.03);
+        for (const du of [-w / 2 + 0.1, w / 2 - 0.1]) fr.box('f.metal', du, 0, 0.02, d - 0.05, 0.62, 0.08);
+        fr.box('f.cabinet', w / 2 - 0.25, 0, 0.45, d - 0.02, 0, 0.62);
+      } else {
+        // カウンター席（図面で、椅子が壁に向かって 1 列に並ぶ造作のカウンター）: 厚さ 40 の板を壁から持ち出す（脚は立てない。足元は空ける）。
+        // 壁際に受け桟、板の下に細い鉄の持ち送りを約 1.2m ごと。椅子は図面の数だけ、等間隔に
+        fr.box('f.wood', 0, 0, w, d, 0.7, 0.04);
+        fr.box('f.wood', 0, 0, w - 0.04, 0.03, 0.655, 0.045);
+        const nb = Math.max(2, Math.round(w / 1.2) + 1);
+        for (let k = 0; k < nb; k++) {
+          const du = -w / 2 + 0.06 + ((w - 0.12) * k) / (nb - 1);
+          fr.box('f.metal', du, 0, 0.006, d * 0.7, 0.67, 0.03);
+        }
+        const pitch = seats > 1 ? Math.min(1.15, (w - 0.7) / (seats - 1)) : 0;
+        for (let k = 0; k < seats; k++) yChair(fr, (k - (seats - 1) / 2) * pitch, d + 0.2, 1);
+      }
       break;
+    }
     case 'tallStorage': {
       const n = Math.max(2, Math.round(w / 0.6));
       fr.box('int.shadowGap', 0, 0.04, w - 0.04, d - 0.06, 0, 0.06);

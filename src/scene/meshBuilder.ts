@@ -139,6 +139,30 @@ export class MeshBuilder {
     this.tri(key, p0, p2, p3, u, v, n);
   }
 
+  /**
+   * 頂点ごとに法線を持つ四角形（曲面の帯: R 壁など）。p[0]→p[1]→p[2]→p[3] は表から見て反時計回り。uv は頂点ごと（m）。
+   * 切断面にかかるときだけ、平均の法線の平らな面として切る
+   */
+  quadN(key: string, p: [V3, V3, V3, V3], n: [V3, V3, V3, V3], uv: [number, number][]) {
+    if (this.clip) {
+      const fs = p.map((q) => this.cf(q));
+      if (Math.min(...fs) >= -1e-6) return;
+      if (Math.max(...fs) > 1e-6) {
+        const nm = n[0].clone().add(n[1]).add(n[2]).add(n[3]).normalize();
+        const [u, v] = autoAxes(nm);
+        this.pushClipped(key, [p[0], p[1], p[2]], nm, u, v);
+        this.pushClipped(key, [p[0], p[2], p[3]], nm, u, v);
+        return;
+      }
+    }
+    const bk = this.bucket(key);
+    for (const i of [0, 1, 2, 0, 2, 3]) {
+      bk.pos.push(p[i].x, p[i].y, p[i].z);
+      bk.nor.push(n[i].x, n[i].y, n[i].z);
+      bk.uv.push(uv[i][0], uv[i][1]);
+    }
+  }
+
   /** 平面多角形（穴なし・凸/凹どちらも可）。pts は表から見て反時計回り */
   polygon(key: string, pts: V3[], normal: V3, uAxis?: V3, vAxis?: V3, holes: V3[][] = []) {
     const [u, v] = uAxis && vAxis ? [uAxis, vAxis] : autoAxes(normal);
@@ -190,18 +214,23 @@ export class MeshBuilder {
       if (Math.min(...fs) >= -1e-6) return;
       straddles = Math.max(...fs) > 1e-6;
     }
+    // 木の部材（家具・造作・踏板）は、面ごとに長い辺の向きを u にして、木目を部材の長さの向きに流す
+    const grain = (key: string, a: V3, la: number, b: V3, lb: number): [V3, V3] | null => (GRAIN_KEY.test(key) ? (la >= lb ? [a, b] : [b, a]) : null);
+    const side = (key: string): [V3, V3] => grain(key, u, len, up, height) ?? [u, up];
+    const flat = (key: string): [V3 | undefined, V3 | undefined] => grain(key, u, len, n, depth) ?? [undefined, undefined];
+    const end = (key: string): [V3, V3] => grain(key, n, depth, up, height) ?? [n, up];
     // +n 面
-    if (k[0]) this.quad(k[0], c[3], c[2], c[6], c[7], u, up);
+    if (k[0]) this.quad(k[0], c[3], c[2], c[6], c[7], ...side(k[0]));
     // -n 面
-    if (k[1]) this.quad(k[1], c[1], c[0], c[4], c[5], u, up);
+    if (k[1]) this.quad(k[1], c[1], c[0], c[4], c[5], ...side(k[1]));
     // 上
-    if (k[2]) this.quad(k[2], c[4], c[7], c[6], c[5]);
+    if (k[2]) this.quad(k[2], c[4], c[7], c[6], c[5], ...flat(k[2]));
     // 下
-    if (k[3]) this.quad(k[3], c[0], c[1], c[2], c[3]);
+    if (k[3]) this.quad(k[3], c[0], c[1], c[2], c[3], ...flat(k[3]));
     // 始端
-    if (k[4]) this.quad(k[4], c[0], c[3], c[7], c[4], n, up);
+    if (k[4]) this.quad(k[4], c[0], c[3], c[7], c[4], ...end(k[4]));
     // 終端
-    if (k[5]) this.quad(k[5], c[2], c[1], c[5], c[6], n, up);
+    if (k[5]) this.quad(k[5], c[2], c[1], c[5], c[6], ...end(k[5]));
     if (straddles) this.capPolygon(c, BOX_EDGES);
   }
 
@@ -236,6 +265,8 @@ export class MeshBuilder {
       const n1 = new THREE.Vector3(Math.cos(a1), 0, Math.sin(a1));
       const u0 = a0 * radius;
       const u1 = a1 * radius;
+      // 木の丸棒（脚・1 本脚）は、木目を軸の向きに流す（u = 高さ、v = 周）。それ以外は壁と同じ（u = 周、v = 高さ）
+      const axial = GRAIN_KEY.test(key);
       const p0 = bot[i];
       const p1 = bot[j];
       const p2 = top[j];
@@ -252,12 +283,13 @@ export class MeshBuilder {
           bk.nor.push(n.x, n.y, n.z);
           bk.uv.push(uu, vv);
         };
-        push(p0, n0, u0, base.y);
-        push(p3, n0, u0, base.y + height);
-        push(p2, n1, u1, base.y + height);
-        push(p0, n0, u0, base.y);
-        push(p2, n1, u1, base.y + height);
-        push(p1, n1, u1, base.y);
+        const uv = (uu: number, vv: number): [number, number] => (axial ? [vv, uu] : [uu, vv]);
+        push(p0, n0, ...uv(u0, base.y));
+        push(p3, n0, ...uv(u0, base.y + height));
+        push(p2, n1, ...uv(u1, base.y + height));
+        push(p0, n0, ...uv(u0, base.y));
+        push(p2, n1, ...uv(u1, base.y + height));
+        push(p1, n1, ...uv(u1, base.y));
       }
       if (caps) {
         const ct = base.clone().setY(base.y + height);
@@ -376,19 +408,77 @@ export class MeshBuilder {
     const n = new THREE.Vector3().crossVectors(u, up).normalize();
     const m = new THREE.Matrix4().makeBasis(u, up, n);
     m.setPosition(base.clone().addScaledVector(up, height / 2));
-    this.addGeometry(key, geo, m);
+    // UV: 面ごとに、その面の長い辺の向きを u にする（木目は部材の長さの向きに流れる。板脚・柱は縦、天板・框は長手）。
+    // 以前は世界の軸に合わせた投影で、斜めに置いた食卓の木目が天板を斜めに横切っていた
+    if (this.clip) {
+      this.addGeometry(key, geo, m);
+      geo.dispose();
+      return;
+    }
+    const g = geo.toNonIndexed().applyMatrix4(m);
     geo.dispose();
+    const pos = g.getAttribute('position');
+    const nor = g.getAttribute('normal');
+    const bk = this.bucket(key);
+    const p = new THREE.Vector3();
+    const nn = new THREE.Vector3();
+    const axes: [V3, number][] = [[u, len], [up, height], [n, depth]];
+    for (let i = 0; i < pos.count; i += 3) {
+      // 三角形の面の向き（3 頂点の法線の平均）で、どの面かを決める（角の丸みの途中で UV が飛ばないよう、三角形ごとに）
+      nn.set(0, 0, 0);
+      for (let k = 0; k < 3; k++) nn.add(p.fromBufferAttribute(nor, i + k));
+      const d = axes.map(([a]) => Math.abs(nn.dot(a)));
+      const face = d[0] >= d[1] && d[0] >= d[2] ? 0 : d[1] >= d[2] ? 1 : 2;
+      const [pa, qa] = axes.filter((_, k) => k !== face);
+      const [ua, va] = pa[1] >= qa[1] ? [pa[0], qa[0]] : [qa[0], pa[0]];
+      for (let k = 0; k < 3; k++) {
+        p.fromBufferAttribute(pos, i + k);
+        bk.pos.push(p.x, p.y, p.z);
+        bk.uv.push(p.dot(ua), p.dot(va));
+        nn.fromBufferAttribute(nor, i + k);
+        bk.nor.push(nn.x, nn.y, nn.z);
+      }
+    }
+    g.dispose();
   }
 
-  /** 2点間の円柱（幹・枝） */
+  /** 2点間の円柱（幹・枝・家具の丸棒） */
   tube(key: string, a: V3, b: V3, r0: number, r1 = r0, seg = 7) {
     const len = a.distanceTo(b);
     if (len < 1e-4) return;
     const geo = new THREE.CylinderGeometry(r1, r0, len, seg, 1, true);
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
     const m = new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(1, 1, 1));
-    this.addGeometry(key, geo, m);
+    // 木の丸棒は、木目を軸の向きに流す（u = 長さ、v = 周）
+    const axial = GRAIN_KEY.test(key) && !this.clip;
+    if (axial) {
+      const uv = geo.getAttribute('uv');
+      const rm = (r0 + r1) / 2;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getY(i) * len + a.x + a.z, uv.getX(i) * 2 * Math.PI * rm);
+    }
+    this.addGeometry(key, geo, m, axial);
     geo.dispose();
+  }
+
+  /**
+   * 折れ線 pts をなめらかにつないだ丸棒（曲げ木の笠木・肘、丸い手すり）。短い円柱をつなぐと継ぎ目に節が見えるので、
+   * 点を通る曲線に沿って 1 本の管として作る。両端は丸く閉じる。UV は u = 長さの向き、v = 周
+   */
+  tubePath(key: string, pts: V3[], r: number, seg = 8) {
+    if (pts.length < 2) return;
+    if (pts.length === 2) {
+      this.tube(key, pts[0], pts[1], r, r, seg);
+    } else {
+      const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+      const len = curve.getLength();
+      const geo = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, Math.ceil(len / 0.035)), r, seg, false);
+      const uv = geo.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len + pts[0].x + pts[0].z, uv.getY(i) * 2 * Math.PI * r);
+      this.addGeometry(key, geo, new THREE.Matrix4(), !this.clip);
+      geo.dispose();
+    }
+    this.sphere(key, pts[0], r, 6);
+    this.sphere(key, pts[pts.length - 1], r, 6);
   }
 
   /**
@@ -468,6 +558,12 @@ export class MeshBuilder {
     return g;
   }
 }
+
+/**
+ * 木目の向きを持つ素材（家具・造作の木、カウンター、収納の面材、踏板）。これらは面ごとに「長い辺の向き = u」で UV を作る
+ * （戸・板張りの壁は、木目を縦に流す素材（MatSpec.grainV）を使うので含めない）
+ */
+const GRAIN_KEY = /^(f\.wood|f\.cabinet|f\.counter|int\.stairs)/;
 
 function autoAxes(n: V3): [V3, V3] {
   if (Math.abs(n.y) > 0.7) return [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1)];

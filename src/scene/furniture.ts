@@ -107,6 +107,19 @@ class Frame {
     c.y = this.origin.y + y;
     this.mb.sphere(key, c, r, 10, sy);
   }
+  /** 布もののふくらみ（掛け布団・枕。角の丸みを指定する）。平面図・当たり判定には載せない（本体の箱が載せる） */
+  soft(key: string, u: number, v: number, w: number, d: number, y0: number, h: number, r: number) {
+    const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v + d / 2);
+    c.y = this.origin.y + y0;
+    this.mb.roundedBox(key, c, this.along, w, h, d, r, 4);
+  }
+  /** 回転体（器・花器）: 断面 [半径, 高さ] の折れ線を軸のまわりに回す。y は底の高さ */
+  lathe(key: string, u: number, v: number, y: number, profile: [number, number][], seg = 28) {
+    const geo = new THREE.LatheGeometry(profile.map(([r, h]) => new THREE.Vector2(r, h)), seg);
+    const c = this.point(u, v, y);
+    this.mb.addGeometry(key, geo, new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+    geo.dispose();
+  }
   point(u: number, v: number, y: number): V3 {
     const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v);
     c.y = this.origin.y + y;
@@ -244,7 +257,7 @@ export function furnitureDims(it: FurnitureItem): { w: number; d: number; v0: nu
     case 'nightstand':
       return { w: 0.45, d: 0.4, v0: 0 };
     case 'desk':
-      return { w: 1.0, d: 1.2, v0: 0 };
+      return { w: Math.max(0.9, Math.min(2.4, it.w ?? 1.0)), d: 1.2, v0: 0 };
     case 'cabinet':
       return { w: 1.2, d: 0.45, v0: 0 };
     case 'bookshelf':
@@ -673,7 +686,7 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
       nightstand(fr, 0, 0, env.lights, roomId);
       break;
     case 'desk':
-      desk(fr, 0, 0);
+      desk(fr, 0, 0, it.w);
       break;
     case 'cabinet':
       fr.box('f.cabinet', 0, 0, 1.2, 0.45, 0, 0.75);
@@ -1040,7 +1053,7 @@ export function indoorTree(fr: Frame, h: number) {
     ax.applyAxisAngle(d, rnd() * Math.PI * 2);
     return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, 0.2).normalize();
   };
-  const leafSize = Math.max(0.3, h * 0.105);
+  const leafSize = Math.max(0.26, h * 0.085);
   const leaves = (a: THREE.Vector3, b: THREE.Vector3, n: number) => {
     for (let i = 0; i < n; i++) {
       const q = a.clone().lerp(b, 0.3 + 0.7 * rnd()).add(new THREE.Vector3((rnd() - 0.5) * 0.14, (rnd() - 0.5) * 0.1, (rnd() - 0.5) * 0.14));
@@ -1050,21 +1063,22 @@ export function indoorTree(fr: Frame, h: number) {
   const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
     const b = a.clone().addScaledVector(dir, len);
     fr.mb.tube('l.trunk', a, b, r, r * 0.72, 7);
-    if (level >= 3) {
-      leaves(a, b, 4);
+    if (level >= 4) {
+      leaves(a, b, 5);
       return;
     }
-    // 目の高さより下は枝を出さず、幹を見せる（階段の段越しに幹が見える軽い樹形）
-    if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, 0.4 + 0.55 * rnd()), turn(dir, 0.4, 0.8), len * (0.48 + rnd() * 0.14), r * 0.55, level + 1);
-    grow(b, turn(dir, 0.05, 0.28), len * (0.58 + rnd() * 0.1), r * 0.72, level + 1);
-    if (level >= 2) leaves(a, b, 3);
+    // 腰の高さより下は枝を出さず、幹を見せる（階段の段越しに幹が見える軽い樹形）。その上は、目の高さから葉が付く
+    // （以前は幹の半分の高さまで枝が無く、1 階から見ると裸の幹が 3 本立っているだけに見えていた）
+    if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, 0.35 + 0.6 * rnd()), turn(dir, 0.4, 0.85), len * (0.5 + rnd() * 0.16), r * 0.55, level + 1);
+    grow(b, turn(dir, 0.05, 0.28), len * (0.66 + rnd() * 0.1), r * 0.74, level + 1);
+    if (level >= 1) leaves(a, b, level >= 2 ? 4 : 2);
   };
   for (let i = 0; i < 3; i++) {
     const az = (i / 3) * Math.PI * 2 + rnd() * 0.9;
     const lean = 0.07 + rnd() * 0.09;
     const d0 = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
     const base = p.clone().add(new THREE.Vector3(Math.cos(az) * 0.07, 0.01, Math.sin(az) * 0.07));
-    grow(base, d0, h * (0.44 + rnd() * 0.06), 0.02 * (h / 3.2), 0);
+    grow(base, d0, h * (0.3 + rnd() * 0.05), 0.02 * (h / 3.2), 0);
   }
 }
 
@@ -1091,6 +1105,11 @@ function rug(fr: Frame, u: number, v: number, w: number, d: number) {
   fr.box('f.rug', u, v, w, d, 0.002, 0.012);
 }
 
+/** 器の断面 [半径, 高さ]（外側を底から縁へ、内側を縁から底へ） */
+const BOWL_WIDE: [number, number][] = [[0, 0], [0.05, 0], [0.058, 0.006], [0.1, 0.03], [0.135, 0.056], [0.148, 0.07], [0.1445, 0.0715], [0.131, 0.058], [0.097, 0.034], [0.055, 0.012], [0, 0.01]];
+const BOWL_SMALL: [number, number][] = [[0, 0], [0.026, 0], [0.03, 0.005], [0.05, 0.03], [0.058, 0.052], [0.0555, 0.053], [0.047, 0.031], [0.027, 0.009], [0, 0.007]];
+const PLATE: [number, number][] = [[0, 0], [0.075, 0], [0.085, 0.003], [0.125, 0.011], [0.132, 0.013], [0.131, 0.016], [0.123, 0.0145], [0.082, 0.007], [0, 0.006]];
+
 function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number, width?: number) {
   // v = テーブル中心までの距離。無垢の一枚板（厚 4cm）を 2 枚の板脚で受ける、設計事務所らしい端正なテーブル
   const tw = width ?? 1.8;
@@ -1109,11 +1128,13 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
   // 天板の上の小物: 中央に花器（実物モデル）、端に浅い器を 2 つ（写真の「生活感」）
   currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + (round ? 0 : 0.12), v, 0.72), rotY: 0.4, height: 0.24 });
-  if (!round)
-    for (const du of [-tw / 2 + 0.3, tw / 2 - 0.3]) {
-      fr.cyl('f.white', u + du, v - 0.08, 0.11, 0.72, 0.012, 20);
-      fr.cyl('f.white', u + du, v - 0.08, 0.075, 0.732, 0.04, 20);
-    }
+  if (!round) {
+    // 片側に浅い大鉢、反対側に重ねた皿と小さな碗（薄い縁の磁器。以前は厚い円柱を重ねていて、器に見えなかった）
+    fr.lathe('f.white', u - tw / 2 + 0.34, v - 0.06, 0.72, BOWL_WIDE);
+    fr.lathe('f.white', u + tw / 2 - 0.32, v - 0.1, 0.72, PLATE);
+    fr.lathe('f.white', u + tw / 2 - 0.32, v - 0.1, 0.729, PLATE.map(([r, h]) => [r * 0.8, h] as [number, number]));
+    fr.lathe('f.white', u + tw / 2 - 0.3, v - 0.09, 0.741, BOWL_SMALL);
+  }
   // 椅子: 御社の事例は Y チェア（曲げ木の笠木・Y の背・ペーパーコードの座）。従来は丸脚の軽い木椅子。長いテーブルは 3 脚ずつ
   const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;
   const chairUs = perSide === 3 ? [-pitch, 0, pitch] : round ? [-0.36, 0.36] : [-0.45, 0.45];
@@ -1214,31 +1235,38 @@ function yChair(fr: Frame, cu: number, cv: number, side: number) {
   const D = 0.5;
   const seatY = 0.43;
   const railY = 0.74;
-  // 座（紙紐の編み）と座枠
-  fr.box('f.cord', cu, cv - D / 2 + 0.03, W - 0.08, D - 0.08, seatY - 0.02, 0.025);
-  fr.box('f.wood', cu, cv - D / 2, W - 0.02, 0.03, seatY - 0.045, 0.03);
-  fr.box('f.wood', cu, cv + D / 2 - 0.03, W - 0.02, 0.03, seatY - 0.045, 0.03);
-  for (const lu of [-1, 1]) fr.box('f.wood', cu + lu * (W / 2 - 0.025), cv - D / 2, 0.03, D, seatY - 0.045, 0.03);
-  // 脚: 後ろ脚は笠木まで伸びる
-  for (const lu of [-1, 1]) {
-    fr.cyl('f.wood', cu + lu * (W / 2 - 0.035), cv - side * (D / 2 - 0.04), 0.015, 0, seatY - 0.02, 10);
-    fr.cyl('f.wood', cu + lu * (W / 2 - 0.035), cv + side * (D / 2 - 0.04), 0.015, 0, railY, 10);
-  }
-  // 笠木: 後ろから両肘へ回る半円（曲げ木）
+  const back = cv + side * (D / 2 - 0.04);
+  const front = cv - side * (D / 2 - 0.04);
+  const lx = W / 2 - 0.035;
+  // 座（紙紐の編み。前がわずかに広く、中ほどが少し沈む）と丸い座枠
+  fr.box('f.cord', cu, cv - D / 2 + 0.035, W - 0.09, D - 0.09, seatY - 0.018, 0.022);
+  for (const lu of [-1, 1]) fr.mb.tube('f.wood', fr.point(cu + lu * lx, front, seatY - 0.012), fr.point(cu + lu * lx, back, seatY - 0.012), 0.014, 0.014, 10);
+  for (const v of [front, back]) fr.mb.tube('f.wood', fr.point(cu - lx, v, seatY - 0.012), fr.point(cu + lx, v, seatY - 0.012), 0.014, 0.014, 10);
+  // 脚: 前脚は座まで（下へ細くなる）。後ろ脚は座を越えて、外へ開きながら笠木の肘へ伸びる
+  // 貫: 前後と左右に 1 本ずつ（脚の間をつなぐ細い丸棒）
   const R = W / 2 - 0.02;
-  const n = 9;
-  let prev: V3 | null = null;
+  for (const lu of [-1, 1]) {
+    fr.mb.tube('f.wood', fr.point(cu + lu * lx, front, 0), fr.point(cu + lu * lx, front, seatY - 0.012), 0.0125, 0.016, 10);
+    fr.mb.tubePath('f.wood', [fr.point(cu + lu * (lx - 0.012), back + side * 0.012, 0), fr.point(cu + lu * lx, back, seatY - 0.012), fr.point(cu + lu * (R * 0.94), cv + side * (D / 2 - 0.02) * 0.62, railY - 0.012)], 0.015, 8);
+    fr.mb.tube('f.wood', fr.point(cu + lu * lx, front, 0.2), fr.point(cu + lu * (lx - 0.006), back + side * 0.006, 0.2), 0.009, 0.009, 8);
+  }
+  fr.mb.tube('f.wood', fr.point(cu - lx, front, 0.27), fr.point(cu + lx, front, 0.27), 0.009, 0.009, 8);
+  fr.mb.tube('f.wood', fr.point(cu - lx + 0.008, back + side * 0.008, 0.16), fr.point(cu + lx - 0.008, back + side * 0.008, 0.16), 0.009, 0.009, 8);
+  // 笠木: 後ろから両肘へ回る半円（曲げ木）。1 本のなめらかな丸棒にする（短い円柱をつなぐと、継ぎ目が節に見えていた）
+  const n = 14;
+  const rail: V3[] = [];
   for (let k = 0; k <= n; k++) {
     const a = (Math.PI * k) / n;
-    const pt = fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - 0.02), railY);
-    if (prev) fr.mb.tube('f.wood', prev, pt, 0.017, 0.017, 8);
-    prev = pt;
+    // 肘の先はわずかに下がる
+    const drop = 0.012 * Math.pow(Math.abs(Math.cos(a)), 3);
+    rail.push(fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - 0.02), railY - drop));
   }
+  fr.mb.tubePath('f.wood', rail, 0.016, 8);
   // Y の背板: 座の後ろ中央から上へ 1 本、途中で 2 本に分かれて笠木へ
-  const b0 = fr.point(cu, cv + side * (D / 2 - 0.03), seatY);
-  const b1 = fr.point(cu, cv + side * (D / 2 - 0.02), seatY + 0.13);
-  fr.mb.tube('f.wood', b0, b1, 0.014, 0.012, 8);
-  for (const lu of [-1, 1]) fr.mb.tube('f.wood', b1, fr.point(cu + lu * 0.07, cv + side * (D / 2 - 0.015), railY - 0.01), 0.012, 0.01, 8);
+  const b0 = fr.point(cu, cv + side * (D / 2 - 0.04), seatY - 0.012);
+  const b1 = fr.point(cu, cv + side * (D / 2 - 0.026), seatY + 0.13);
+  fr.mb.tube('f.wood', b0, b1, 0.013, 0.011, 8);
+  for (const lu of [-1, 1]) fr.mb.tubePath('f.wood', [b1, fr.point(cu + lu * 0.04, cv + side * (D / 2 - 0.02), seatY + 0.2), fr.point(cu + lu * 0.075, cv + side * (D / 2 - 0.02), railY - 0.008)], 0.0105, 8);
 }
 
 /**
@@ -1766,18 +1794,29 @@ function dressLiving(ctx: RoomCtx) {
 
 function bed(fr: Frame, u: number, v: number, w: number) {
   const L = 2.0;
-  fr.box('f.wood', u, v, w + 0.06, L + 0.04, 0.08, 0.22);
-  fr.box('f.wood', u, v - 0.04, w + 0.06, 0.06, 0.08, 0.85); // ヘッドボード
-  fr.box('f.bedding', u, v + 0.02, w, L, 0.3, 0.2);
-  fr.box('f.fabric2', u, v + 0.75, w + 0.02, L - 0.72, 0.48, 0.05); // 掛け布団
-  fr.box('f.fabric2', u, v + 1.75, w + 0.04, 0.3, 0.3, 0.2);
-  // 足元に畳んだスロー（濃い色の布）を掛ける（写真の「生活感」。真っ平らな掛け布団だけだと展示場のベッドに見える）
-  fr.box('f.fabric', u, v + 1.4, w + 0.08, 0.55, 0.53, 0.035);
-  fr.box('f.fabric', u, v + 1.4, w + 0.08, 0.3, 0.565, 0.02);
+  // 低い台のフレームとヘッドボード
+  fr.box('f.wood', u, v, w + 0.06, L + 0.04, 0.08, 0.2);
+  fr.box('f.wood', u, v - 0.04, w + 0.06, 0.05, 0.08, 0.82); // ヘッドボード
+  // マットレス
+  fr.box('f.bedding', u, v + 0.02, w, L, 0.28, 0.22);
+  const top = 0.5;
+  // 掛け布団: ふくらみのある厚い 1 枚が、両脇と足元へ垂れる。枕元は折り返して、裏の白が帯に見える
+  // （以前は薄い板を載せた形で、板のように硬く見えていた）
+  const d0 = 0.66;
+  fr.soft('f.fabric2', u, v + d0, w + 0.1, L - d0 + 0.05, top - 0.02, 0.085, 0.04);
+  for (const sg of [-1, 1]) fr.soft('f.fabric2', u + sg * (w / 2 + 0.03), v + d0 + 0.02, 0.05, L - d0 + 0.02, top - 0.2, 0.25, 0.024);
+  fr.soft('f.fabric2', u, v + L + 0.005, w + 0.1, 0.05, top - 0.2, 0.25, 0.024);
+  fr.soft('f.bedding', u, v + d0 - 0.03, w + 0.1, 0.26, top + 0.035, 0.07, 0.034);
+  // 足元に畳んだスロー（濃い色の布）を掛ける（写真の「生活感」。両脇へ少し垂れる）
+  fr.soft('f.fabric', u, v + 1.38, w + 0.14, 0.5, top + 0.062, 0.03, 0.014);
+  for (const sg of [-1, 1]) fr.soft('f.fabric', u + sg * (w / 2 + 0.065), v + 1.38, 0.03, 0.5, top - 0.13, 0.215, 0.014);
+  // 枕: 奥に立て掛ける大きめの枕と、手前に寝かせる枕
   const np = w > 1.2 ? 2 : 1;
   for (let i = 0; i < np; i++) {
     const pu = np === 2 ? u + (i === 0 ? -w / 4 : w / 4) : u;
-    fr.box('f.bedding', pu, v + 0.1, np === 2 ? w / 2 - 0.1 : w - 0.2, 0.4, 0.5, 0.12);
+    const pw = np === 2 ? w / 2 - 0.08 : Math.min(0.7, w - 0.2);
+    fr.soft('f.bedding', pu, v + 0.03, pw, 0.16, top - 0.01, 0.36, 0.07);
+    fr.soft('f.fabric2', pu, v + 0.2, pw - 0.06, 0.38, top - 0.005, 0.13, 0.06);
   }
 }
 
@@ -1840,14 +1879,30 @@ function layoutBedroom(ctx: RoomCtx, big: boolean) {
   }
 }
 
-function desk(fr: Frame, u: number, v: number) {
-  fr.box('f.wood', u, v, 1.0, 0.55, 0.7, 0.03);
-  fr.box('f.wood', u - 0.48, v, 0.03, 0.55, 0, 0.7);
-  fr.box('f.wood', u + 0.48, v, 0.03, 0.55, 0, 0.7);
-  fr.box('f.screen', u, v + 0.08, 0.55, 0.03, 0.73, 0.34);
-  fr.box('f.fabric2', u, v + 0.75, 0.45, 0.45, 0.42, 0.08);
-  fr.box('f.fabric2', u, v + 0.95, 0.45, 0.06, 0.5, 0.45);
-  fr.cyl('f.metal', u, v + 0.75, 0.03, 0, 0.42);
+/** 机の幅（図面から読んだ幅。0.9〜2.4 m） */
+const deskWidth = (w?: number) => Math.max(0.9, Math.min(2.4, w ?? 1.0));
+
+function desk(fr: Frame, u: number, v: number, w?: number) {
+  const W = deskWidth(w);
+  // 天板と板脚、奥に配線を隠す幕板（造作のデスクの納まり）
+  fr.box('f.wood', u, v, W, 0.58, 0.7, 0.03);
+  for (const sg of [-1, 1]) fr.box('f.wood', u + sg * (W / 2 - 0.015), v, 0.03, 0.56, 0, 0.7);
+  fr.box('f.wood', u, v + 0.02, W - 0.06, 0.02, 0.45, 0.25);
+  // モニター（薄い板と細い脚）
+  fr.box('f.screen', u, v + 0.1, 0.56, 0.012, 0.82, 0.33);
+  fr.box('f.metal', u, v + 0.106, 0.03, 0.01, 0.732, 0.1);
+  fr.box('f.metal', u, v + 0.06, 0.2, 0.12, 0.73, 0.006);
+  // 椅子: 食卓と同じ椅子（御社の事例は Y チェア）。以前は布の板 2 枚に 1 本脚で、椅子に見えなかった
+  if (vocab.chair === 'y') {
+    yChair(fr, u, v + 0.58 + 0.2, 1);
+    return;
+  }
+  const cv = v + 0.58 + 0.2;
+  fr.box('f.fabric2', u, cv - 0.22, 0.43, 0.43, 0.42, 0.045);
+  fr.box('f.wood', u, cv - 0.21, 0.41, 0.41, 0.395, 0.025);
+  for (const lu of [-0.17, 0.17]) for (const lv of [-0.17, 0.17]) fr.cyl('f.wood', u + lu, cv + lv, 0.013, 0, 0.395, 10);
+  for (const lu of [-0.17, 0.17]) fr.cyl('f.wood', u + lu, cv + 0.17, 0.012, 0.395, 0.32, 10);
+  fr.box('f.wood', u, cv + 0.17 - 0.012, 0.4, 0.024, 0.6, 0.12);
 }
 
 function layoutStudy(ctx: RoomCtx) {

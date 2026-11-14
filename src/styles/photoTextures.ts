@@ -14,6 +14,13 @@ interface PhotoDef {
   tile: number;
   /** 写真の模様の強さ（1 = そのまま。汚れの目立つ素材は弱めて新築らしく） */
   detail?: number;
+  /**
+   * 木目の向き: 写真は木目が縦（v の向き）。部材の UV は「長さの向き = u」で作るので、ふつうは縦横を入れ替えて貼る。
+   * 戸・板張りの壁のように、木目を縦に流す素材は MatSpec.grainV で入れ替えずに使う
+   */
+  grainAlongV?: boolean;
+  /** 粗さのむらの強さ（1 = 写真のまま）。木の突板は、艶のむらが強いと斜めの光で濡れたような筋が出るので弱める */
+  roughDetail?: number;
 }
 
 /** パターン → 実写素材 */
@@ -36,6 +43,8 @@ const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   gravel: { id: 'gravel_concrete_03', tile: 2.0, detail: 0.8 },
   // 布もの（ソファ・クッション・ラグ・寝具）: ヘリンボーンのウール。平均色はテイストの色に合わせる
   fabric: { id: 'poly_wool_herringbone', tile: 0.5, detail: 0.9 },
+  // 家具・造作・階段の踏板・戸の木: オークの突板（板目）。手続き的な木目は近くで見るとぼやけて、木に見えなかった
+  wood: { id: 'oak_veneer_01', tile: 1.2, detail: 0.9, grainAlongV: true, roughDetail: 0.4 },
 };
 
 interface Loaded {
@@ -44,6 +53,42 @@ interface Loaded {
   rough: ImageData;
   mean: [number, number, number];
   meanRough: number;
+  /** 縦横を入れ替えた版（木目を u の向きに流すとき。使うときに 1 度だけ作る） */
+  swapped?: { diff: ImageData; nor: HTMLCanvasElement; rough: ImageData };
+}
+
+/** 画像の縦横を入れ替える（対角線で折り返す）。法線マップは、向きも入れ替わるので R と G を入れ替える */
+function transpose(src: ImageData, normal = false): ImageData {
+  const w = src.width;
+  const h = src.height;
+  const out = new ImageData(h, w);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const o = (x * h + y) * 4;
+      out.data[o] = src.data[normal ? i + 1 : i];
+      out.data[o + 1] = src.data[normal ? i : i + 1];
+      out.data[o + 2] = src.data[i + 2];
+      out.data[o + 3] = 255;
+    }
+  return out;
+}
+
+function swappedOf(L: Loaded): NonNullable<Loaded['swapped']> {
+  if (L.swapped) return L.swapped;
+  const img = L.nor as HTMLImageElement;
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth || img.width;
+  c.height = img.naturalHeight || img.height;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0);
+  const n = transpose(ctx.getImageData(0, 0, c.width, c.height), true);
+  const nc = document.createElement('canvas');
+  nc.width = n.width;
+  nc.height = n.height;
+  nc.getContext('2d')!.putImageData(n, 0, 0);
+  L.swapped = { diff: transpose(L.diff), nor: nc, rough: transpose(L.rough) };
+  return L.swapped;
 }
 
 const loaded = new Map<string, Loaded>();
@@ -133,13 +178,16 @@ export function photoSet(spec: MatSpec): PhotoSet | null {
   if (!def) return null;
   const L = loaded.get(def.id);
   if (!L) return null;
-  const key = `${def.id}|${spec.color}|${spec.roughness ?? ''}`;
+  // 木目の向き（上の grainAlongV）
+  const swap = !!def.grainAlongV && !spec.grainV;
+  const key = `${def.id}|${spec.color}|${spec.roughness ?? ''}|${swap ? 'u' : 'v'}`;
   const hit = setCache.get(key);
   if (hit) return hit;
+  const S = swap ? swappedOf(L) : null;
   // 写真の模様を残したまま、平均色をテイストの色に合わせる（線形空間で各チャンネルを倍率調整）
   const target = new THREE.Color(spec.color); // three の Color は線形
   const k = [target.r / Math.max(1e-4, L.mean[0]), target.g / Math.max(1e-4, L.mean[1]), target.b / Math.max(1e-4, L.mean[2])];
-  const src = L.diff;
+  const src = S ? S.diff : L.diff;
   const c = document.createElement('canvas');
   c.width = src.width;
   c.height = src.height;
@@ -163,11 +211,23 @@ export function photoSet(spec: MatSpec): PhotoSet | null {
     return t;
   };
   const map = wrap(new THREE.CanvasTexture(c), true);
-  const normalMap = wrap(new THREE.Texture(L.nor as HTMLImageElement), false);
+  const normalMap = wrap(S ? new THREE.CanvasTexture(S.nor) : new THREE.Texture(L.nor as HTMLImageElement), false);
+  let rough = S ? S.rough : L.rough;
+  if (def.roughDetail != null && def.roughDetail !== 1) {
+    // 粗さのむらを弱める（平均はそのまま）
+    const flat = new ImageData(rough.width, rough.height);
+    const m = L.meanRough * 255;
+    for (let i = 0; i < rough.data.length; i += 4) {
+      const v = Math.max(0, Math.min(255, Math.round(m + (rough.data[i + 1] - m) * def.roughDetail)));
+      flat.data[i] = flat.data[i + 1] = flat.data[i + 2] = v;
+      flat.data[i + 3] = 255;
+    }
+    rough = flat;
+  }
   const rc = document.createElement('canvas');
-  rc.width = L.rough.width;
-  rc.height = L.rough.height;
-  rc.getContext('2d')!.putImageData(L.rough, 0, 0);
+  rc.width = rough.width;
+  rc.height = rough.height;
+  rc.getContext('2d')!.putImageData(rough, 0, 0);
   const roughnessMap = wrap(new THREE.CanvasTexture(rc), false);
   const want = spec.roughness ?? L.meanRough;
   const set: PhotoSet = { map, normalMap, roughnessMap, tile: def.tile, roughnessScale: Math.min(2.5, want / Math.max(0.05, L.meanRough)) };

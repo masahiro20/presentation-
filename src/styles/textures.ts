@@ -51,6 +51,8 @@ export interface MatSpec {
   /** 発光（照明器具など） */
   emissive?: string;
   emissiveIntensity?: number;
+  /** 木目を縦（面の上下の向き）に流す: 戸・板張りの壁。省略時は部材の長さの向き（実写の木の素材にだけ効く） */
+  grainV?: boolean;
 }
 
 const DEFAULT_TILE: Record<Pattern, number> = {

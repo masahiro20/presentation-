@@ -8,6 +8,7 @@ import { takeoff } from '../estimate/areas';
 import { excludedFromFloorArea, type BuildingModel, type Floor, type RoomType, type Vec2, roomFloorOffsetMm } from '../core/types';
 import { stairDrawing } from '../core/stairs';
 import { pointInPolygon, polygonCentroid } from '../core/geometry';
+import { isArcChord } from '../core/arcWalls';
 import { planFurniture, type PlanItem } from '../scene/furniture';
 import { buildBuilding } from '../scene/building';
 import { buildLandscape, planExteriorOf, type LandscapePlan } from '../scene/landscape';
@@ -548,6 +549,28 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     // 腰壁・手すり壁（天端 1.5m 未満）: 平面図は床から 1m ほどで切った図なので、切られない低い壁は塗りつぶさず、
     // 薄い色の帯に輪郭線で描く（黒塗りにすると天井までの壁に見えて、開いた空間が閉じて読める）
     const low = !w.exterior && w.topMm != null && w.topMm < 1500;
+    // R 壁の弦: 両端を円の半径の向きに切って、隣の弦とすき間なくつなぐ（腰壁は、弦ごとの輪郭ではなく内外の 2 本の線で）
+    if (isArcChord(w) && ops.length === 0) {
+      const c = w.arc!;
+      const rad = (q: { x: number; y: number }) => {
+        const l = Math.hypot(q.x - c.cx, q.y - c.cy) || 1;
+        return { x: (q.x - c.cx) / l, y: (q.y - c.cy) / l };
+      };
+      const ra = rad(w.a);
+      const rb = rad(w.b);
+      const pt = (q: { x: number; y: number }, r: { x: number; y: number }, sgn: number) => `${(q.x + r.x * h * sgn).toFixed(0)},${(q.y + r.y * h * sgn).toFixed(0)}`;
+      const quad = `${pt(w.a, ra, 1)} ${pt(w.b, rb, 1)} ${pt(w.b, rb, -1)} ${pt(w.a, ra, -1)}`;
+      if (low) {
+        const ln = (p0: string, p1: string) => `<line x1="${p0.split(',')[0]}" y1="${p0.split(',')[1]}" x2="${p1.split(',')[0]}" y2="${p1.split(',')[1]}" stroke="#151515" stroke-width="10" stroke-linecap="round"/>`;
+        s += `<polygon points="${quad}" fill="#d9d2c4" stroke="#d9d2c4" stroke-width="3"/>`;
+        s += ln(pt(w.a, ra, 1), pt(w.b, rb, 1)) + ln(pt(w.a, ra, -1), pt(w.b, rb, -1));
+        if (!w.joinedA) s += ln(pt(w.a, ra, 1), pt(w.a, ra, -1));
+        if (!w.joinedB) s += ln(pt(w.b, rb, 1), pt(w.b, rb, -1));
+      } else {
+        s += hl ? `<polygon points="${quad}" fill="#151515" stroke="#151515" stroke-width="4"/>` : `<polygon points="${quad}" fill="#2b2b2b" stroke="#2b2b2b" stroke-width="3"/>`;
+      }
+      continue;
+    }
     for (const [t0, t1] of solid) {
       const p = (t: number, sgn: number) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
       if (low) {

@@ -4,3 +4,4 @@
 テイストの色に合わせて平均色を調整して使います（src/styles/photoTextures.ts）。
 
 - poly_wool_herringbone / rough_linen: 家具の布（ソファ・ラグ・寝具・カーテン。写真品質と Blender 連携で使用）
+- oak_veneer_01: 家具・造作・階段の踏板・戸の木（オークの突板。木目は部材の長さの向きに貼る。戸・板張りの壁は縦）

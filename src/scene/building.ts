@@ -10,6 +10,7 @@ import { isOpenSkyBalcony } from '../core/balcony';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
 import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
 import { stairLayout, effectiveStepCount, stairFootprint } from '../core/stairs';
+import { isArcChord, sameArc, withSmoothArcWalls } from '../core/arcWalls';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
@@ -501,6 +502,9 @@ function wallCeilingMm(f: Floor, w: Wall): number {
 }
 
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
+  // R 壁: 重なり合う短い壁の集まりを、円の上の弦に並べ直す（読み込みでも並べ直すが、前に保存した図面のために 3D でも）
+  const arcFloors = model.floors.map((f) => withSmoothArcWalls(f));
+  if (arcFloors.some((f, i) => f !== model.floors[i])) model = { ...model, floors: arcFloors };
   model = trimInteriorEnds(alignUpperWalls(model));
   const mb = new MeshBuilder();
   const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [], sashes: [] };
@@ -552,6 +556,8 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       return d;
     };
     const stub = (w: Wall) => {
+      // R 壁の弦は短くても壁の一部（ここで落とすと、外壁の R の所に穴が開く）
+      if (isArcChord(w)) return false;
       const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
       if (L > Math.max(160, w.thickness * 1.6) || !f.outline.length) return false;
       const m = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
@@ -739,9 +745,15 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       const L = A.distanceTo(B);
       if (L < 0.05) continue;
       const dir = new THREE.Vector3().subVectors(B, A).normalize();
+      // R 壁の弦: 壁と同じく、円の向きの法線でなめらかにつなぐ（弦ごとの箱だと、基礎が縦の筋の入ったじゃばらに見える）
+      const runs = splitByGaps(A, B);
+      if (isArcChord(w) && runs.length === 1 && runs[0][0] === 0 && runs[0][1] === L) {
+        buildArcChord(mb, w, A, B, w.thickness * MM - 0.03, -0.06, f1.elevation * MM - 0.1, 'ext.foundation', 'ext.foundation', 'ext.foundation', w.joinedA ? null : 'ext.foundation', w.joinedB ? null : 'ext.foundation');
+        continue;
+      }
       // 壁の軸線は接合先の壁の外面まで延ばしてあるので、帯は壁と同じ長さで角が閉じる。細くした分（片側 15mm）だけ
       // 端も引っ込め、接合先の帯の面と揃える（斜めの接合は下の丸柱で埋める）
-      for (const [s0, s1] of splitByGaps(A, B)) {
+      for (const [s0, s1] of runs) {
         const a0 = s0 === 0 ? 0.015 : s0;
         const a1 = s1 === L ? L - 0.015 : s1;
         if (a1 - a0 < 0.02) continue;
@@ -1173,6 +1185,13 @@ function diagonalJoints(walls: Wall[], onlyExterior = false): { p: { x: number; 
       let d = Math.abs(angOf(w) - angOf(v)) % (Math.PI / 2);
       d = Math.min(d, Math.PI / 2 - d);
       if (d < (3 * Math.PI) / 180) continue;
+      // R 壁の弦どうしは、面を突き合わせて作るので隙間が無い。円弧の端が直線の壁へなだらかに続く所（12° 未満）も、柱を立てると縦の帯に見える
+      if (sameArc(w, v)) continue;
+      if (isArcChord(w) || isArcChord(v)) {
+        let raw = Math.abs(angOf(w) - angOf(v)) % Math.PI;
+        raw = Math.min(raw, Math.PI - raw);
+        if (raw < (12 * Math.PI) / 180) continue;
+      }
       for (const e of [w.a, w.b]) {
         if (distToSeg(e, v) > w.thickness + v.thickness) continue;
         // 軸線の交点
@@ -1721,6 +1740,11 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
   // 他の壁とつながらない端の小口: 外壁は外装で閉じる（開口の小口と同じ室内の仕上げにすると、外から白い縦の帯に見える）
   const endKey = w.exterior || facesOutdoor ? extKey : jambKey;
   const firstCap = w.joinedA ? null : endKey;
+  // R 壁（円弧の弦）: 弦ごとの箱ではなく、円の向きの法線を持つ面でなめらかにつなぐ（窓・戸のある弦は箱のまま）
+  if (ops.length === 0 && isArcChord(w) && wallTop - bottom > 0.005) {
+    buildArcChord(mb, w, A, B, t, bottom, wallTop, kPlus, kMinus, topKey, firstCap, w.joinedB ? null : endKey);
+    return;
+  }
   for (let i = 0; i < ops.length; i++) {
     const o = ops[i];
     const s0 = Math.max(0, o.t0 * MM);
@@ -1735,6 +1759,53 @@ function buildWall(mb: MeshBuilder, f: Floor, w: Wall, ops: Opening[], fl: numbe
     cursor = s1;
   }
   seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : endKey);
+}
+
+/**
+ * R 壁の弦 1 本。円の中心から見た外側・内側の面を、弦の両端で円の半径の向きの法線にして作る
+ * （隣の弦と法線がそろうので、面の継ぎ目が見えない 1 枚の曲面になる）。面の端は半径の向きに切るので、隣の弦との間に隙間も重なりも無い。
+ */
+function buildArcChord(mb: MeshBuilder, w: Wall, A: THREE.Vector3, B: THREE.Vector3, t: number, y0: number, y1: number, kPlus: string, kMinus: string, topKey: string, capA: string | null, capB: string | null) {
+  const arc = w.arc!;
+  const C = V(arc.cx * MM, 0, arc.cy * MM);
+  const r = arc.r * MM;
+  const rho = (P: THREE.Vector3) => new THREE.Vector3(P.x - C.x, 0, P.z - C.z).normalize();
+  const rA = rho(A);
+  const rB = rho(B);
+  const at = (rv: THREE.Vector3, rad: number, y: number) => new THREE.Vector3(C.x + rv.x * rad, y, C.z + rv.z * rad);
+  // a→b の左（+1）の側が、円の外か内か
+  const plusIsOuter = -(B.z - A.z) * (rA.x + rB.x) + (B.x - A.x) * (rA.z + rB.z) > 0;
+  // 仕上げの模様が弦の継ぎ目で切れないよう、横方向は円弧の長さで送る
+  const wrap = (x: number) => Math.atan2(Math.sin(x), Math.cos(x));
+  const m0 = arc.mid ?? 0;
+  const uA = r * wrap(Math.atan2(rA.z, rA.x) - m0);
+  const uB = r * wrap(Math.atan2(rB.z, rB.x) - m0);
+  const side = (key: string, rad: number, sign: 1 | -1) => {
+    const pa0 = at(rA, rad, y0);
+    const pb0 = at(rB, rad, y0);
+    const pb1 = at(rB, rad, y1);
+    const pa1 = at(rA, rad, y1);
+    const nA = rA.clone().multiplyScalar(sign);
+    const nB = rB.clone().multiplyScalar(sign);
+    const geo = new THREE.Vector3().subVectors(pb0, pa0).cross(new THREE.Vector3().subVectors(pa1, pa0));
+    if (geo.dot(nA) >= 0) mb.quadN(key, [pa0, pb0, pb1, pa1], [nA, nB, nB, nA], [[uA, y0], [uB, y0], [uB, y1], [uA, y1]]);
+    else mb.quadN(key, [pb0, pa0, pa1, pb1], [nB, nA, nA, nB], [[uB, y0], [uA, y0], [uA, y1], [uB, y1]]);
+  };
+  const ro = r + t / 2;
+  const ri = Math.max(0.02, r - t / 2);
+  side(plusIsOuter ? kPlus : kMinus, ro, 1);
+  side(plusIsOuter ? kMinus : kPlus, ri, -1);
+  // 平らな面（天端・下端・小口）: 向きを確かめてから
+  const flat = (key: string, p: [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3], n: THREE.Vector3) => {
+    const geo = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
+    if (geo.dot(n) >= 0) mb.quad(key, p[0], p[1], p[2], p[3]);
+    else mb.quad(key, p[3], p[2], p[1], p[0]);
+  };
+  flat(topKey, [at(rA, ri, y1), at(rA, ro, y1), at(rB, ro, y1), at(rB, ri, y1)], V(0, 1, 0));
+  flat(topKey, [at(rA, ri, y0), at(rA, ro, y0), at(rB, ro, y0), at(rB, ri, y0)], V(0, -1, 0));
+  const dir = new THREE.Vector3().subVectors(B, A).normalize();
+  if (capA) flat(capA, [at(rA, ri, y0), at(rA, ro, y0), at(rA, ro, y1), at(rA, ri, y1)], dir.clone().negate());
+  if (capB) flat(capB, [at(rB, ri, y0), at(rB, ro, y0), at(rB, ro, y1), at(rB, ri, y1)], dir);
 }
 
 function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number, meta: BuildingMeta, spec: BuilderSpec, upperOutlines?: { x: number; y: number }[][]) {

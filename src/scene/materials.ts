@@ -42,6 +42,8 @@ export class MaterialRegistry {
     const e = this.ext;
     const i = this.int;
     const M = (s: MatSpec, side?: THREE.Side) => makeMaterial(s, { side });
+    /** 戸・板張りの壁: 木目を縦に流す（家具・踏板は部材の長さの向き） */
+    const vgrain = (s: MatSpec): MatSpec => (s.pattern === 'wood' ? { ...s, grainV: true } : s);
     const color = (c: string, rough = 0.6, metal = 0, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
       new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal, ...extra });
     const wall: MatSpec = this.opts.wallColor ? { ...e.wall, color: this.opts.wallColor } : e.wall;
@@ -57,7 +59,7 @@ export class MaterialRegistry {
     set('ext.wallTop', M(wall));
     set('ext.foundation', M(e.foundation));
     set('ext.frame', color(e.frame.color, 0.35, Math.max(0.5, e.frame.metalness)));
-    set('ext.door', M(e.entranceDoor));
+    set('ext.door', M(vgrain(e.entranceDoor)));
     set('ext.roof', M(e.roof.material));
     set('ext.fascia', color(e.roof.fascia, 0.6, 0.1));
     set('ext.soffit', M(e.roof.soffit));
@@ -98,7 +100,7 @@ export class MaterialRegistry {
 
     // 内装
     set('int.wall', M(i.wall));
-    set('int.accent', M(i.accentWall ?? i.wall));
+    set('int.accent', M(vgrain(i.accentWall ?? i.wall)));
     set('int.bathWall', M({ pattern: 'tileFloor', color: '#e9e7e2', roughness: 0.35, tile: 1.8 }));
     set('int.wallTop', color('#e9e6e0', 0.9));
     // 輪切り模型の切り口（白い断面）
@@ -112,7 +114,7 @@ export class MaterialRegistry {
     set('int.entranceFloor', M(i.entranceFloor));
     set('int.tatami', M(TATAMI));
     // 既定: 室内の壁と同じ色のフラット扉（KAMIYA フルハイトドアをクロスになじませる納まり）
-    set('int.door', M(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 }));
+    set('int.door', M(vgrain(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 })));
     set('int.trim', color(i.trim, 0.5));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
     // 踏板の色（こだわりの参考資料で階段ごとに選べる。指定が無ければ int.stairs = 床に合わせた木）

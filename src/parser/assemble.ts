@@ -13,6 +13,7 @@ import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floor
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import { effectiveStepCount, stairLayout } from '../core/stairs';
+import { smoothArcWalls } from '../core/arcWalls';
 import type { PageVectors } from './pdfExtract';
 import { detectWalls, heavyWidthThreshold, polylineArcs, type Arc, type DetectedOpening, type Seg, type WallDetection } from './walls';
 import { rasterizeSegments, dominantAngles, detectWallsRaster, detectWallsRasterAuto, type BinaryImage } from './rasterWalls';
@@ -5817,6 +5818,8 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   roomsUnderStairs(floors);
   treesInStairWells(floors);
   windowsOverCounters(floors);
+  // R 壁: 重なり合う短い壁の集まりを、円の上の端と端がつながる弦に並べ直す（3D でなめらかな曲面になる）
+  for (const f of floors) smoothArcWalls(f);
   // 原点を1階外壁芯の左上に揃える
   const o1 = floors[0]?.outline.flat() ?? [];
   if (o1.length) {
@@ -5849,6 +5852,7 @@ export function translateFloor(f: Floor, dx: number, dy: number) {
   for (const w of f.walls) {
     w.a = tr(w.a);
     w.b = tr(w.b);
+    if (w.arc) w.arc = { ...w.arc, cx: w.arc.cx + dx, cy: w.arc.cy + dy };
   }
   for (const r of f.rooms) {
     r.polygon = r.polygon.map(tr);

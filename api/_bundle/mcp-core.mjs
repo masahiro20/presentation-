@@ -272,7 +272,7 @@ function intervalsLength(iv) {
 }
 /** 張り出しの辺に立てる柱の間隔の上限（mm、1.5 間） */
 var OVERHANG_POST_SPACING = 2730;
-function segDist$1(p, a, b) {
+function segDist$2(p, a, b) {
 	const dx = b.x - a.x;
 	const dy = b.y - a.y;
 	const L2 = dx * dx + dy * dy || 1;
@@ -282,7 +282,7 @@ function segDist$1(p, a, b) {
 /** 点から外形（複数の輪）の辺までの最短距離 */
 function distToOutline(p, loops) {
 	let d = Infinity;
-	for (const l of loops) for (let i = 0; i < l.length; i++) d = Math.min(d, segDist$1(p, l[i], l[(i + 1) % l.length]));
+	for (const l of loops) for (let i = 0; i < l.length; i++) d = Math.min(d, segDist$2(p, l[i], l[(i + 1) % l.length]));
 	return d;
 }
 function insideOutline$2(p, loops) {
@@ -303,7 +303,7 @@ function overhangPoints(lower, upper) {
 	const low = lower.outline.filter((l) => l.length >= 3);
 	if (!low.length) return [];
 	const out = [];
-	const onWall = (p) => lower.walls.some((w) => segDist$1(p, w.a, w.b) <= w.thickness / 2 + 150);
+	const onWall = (p) => lower.walls.some((w) => segDist$2(p, w.a, w.b) <= w.thickness / 2 + 150);
 	const off = (p) => !insideOutline$2(p, low) && distToOutline(p, low) > 100;
 	const outside = (p) => off(p) && !onWall(p);
 	for (const loop of upper.outline) {
@@ -363,7 +363,7 @@ function suggestOverhangPosts(lower, upper, size = 105) {
 }
 /** 柱が壁の中に入っているか（壁の芯から壁厚の半分以内。端の少し外まで含む） */
 function postInWall(p, walls) {
-	return walls.some((w) => segDist$1(p, w.a, w.b) <= w.thickness / 2 + 5);
+	return walls.some((w) => segDist$2(p, w.a, w.b) <= w.thickness / 2 + 5);
 }
 /** 柱の高さの範囲（GL からの mm）: 床から、管柱・独立柱は上の階の床（最上階は壁の上端）まで、通し柱は最上階の上まで */
 function postSpan(model, f, p) {
@@ -418,7 +418,7 @@ var GLAZED = /* @__PURE__ */ new Set([
 function insideOutline$1(p, loops) {
 	return loops.filter((l) => l.length >= 3 && pointInPolygon(p, l)).length % 2 === 1;
 }
-function segDist(p, a, b) {
+function segDist$1(p, a, b) {
 	const dx = b.x - a.x;
 	const dy = b.y - a.y;
 	const L2 = dx * dx + dy * dy || 1;
@@ -538,7 +538,7 @@ function repairEnvelope(f) {
 	f.walls = walls;
 	const covered = (p, ux, uy) => f.walls.some((w) => {
 		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
-		return Math.abs((w.b.x - w.a.x) / L * ux + (w.b.y - w.a.y) / L * uy) > .97 && segDist(p, w.a, w.b) <= w.thickness / 2 + 90;
+		return Math.abs((w.b.x - w.a.x) / L * ux + (w.b.y - w.a.y) / L * uy) > .97 && segDist$1(p, w.a, w.b) <= w.thickness / 2 + 90;
 	});
 	const added = [];
 	for (const loop of loops) for (let i = 0; i < loop.length; i++) {
@@ -6755,6 +6755,266 @@ function stairDrawing(st, riseMm, opts = {}) {
 		wall: lay.wall,
 		well: lay.well
 	};
+}
+//#endregion
+//#region src/core/arcWalls.ts
+/** 弦 1 本の角度（rad）: 弦の長さ 180 mm を目安に、5〜10° の間で（面は法線でなめらかにつなぐので、輪郭が角ばらない細かさで足りる） */
+var stepOf = (r) => Math.min(10 * Math.PI / 180, Math.max(5 * Math.PI / 180, 180 / r));
+var len$3 = (w) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+/**
+* 円弧の弦として使える壁か: arc が付いていて、両端がその円の上にある（5 mm 以内）。
+* 弦を方眼で動かした・図面を回したあとは円から外れるので、ふつうの壁として扱う（次の整え直しで円を当てはめ直す）
+*/
+function isArcChord(w) {
+	const c = w.arc;
+	if (!c || !(c.r > 0)) return false;
+	return Math.abs(Math.hypot(w.a.x - c.cx, w.a.y - c.cy) - c.r) < 5 && Math.abs(Math.hypot(w.b.x - c.cx, w.b.y - c.cy) - c.r) < 5;
+}
+function segDist(a, b) {
+	const pd = (p, w) => {
+		const dx = w.b.x - w.a.x;
+		const dy = w.b.y - w.a.y;
+		const L2 = dx * dx + dy * dy || 1;
+		const u = Math.max(0, Math.min(1, ((p.x - w.a.x) * dx + (p.y - w.a.y) * dy) / L2));
+		return Math.hypot(p.x - w.a.x - dx * u, p.y - w.a.y - dy * u);
+	};
+	return Math.min(pd(a.a, b), pd(a.b, b), pd(b.a, a), pd(b.b, a));
+}
+/** 2 本の線の向きの差（0〜90°） */
+function lineAngle(a, b) {
+	const ta = Math.atan2(a.b.y - a.a.y, a.b.x - a.a.x);
+	const tb = Math.atan2(b.b.y - b.a.y, b.b.x - b.a.x);
+	let d = Math.abs(ta - tb) % Math.PI;
+	if (d > Math.PI / 2) d = Math.PI - d;
+	return d * 180 / Math.PI;
+}
+/** 点の集まりに円を当てはめる（最小二乗。Kåsa の方法） */
+function fitCircle(pts) {
+	const n = pts.length;
+	if (n < 3) return null;
+	const mx = pts.reduce((s, p) => s + p.x, 0) / n;
+	const my = pts.reduce((s, p) => s + p.y, 0) / n;
+	let sxx = 0;
+	let sxy = 0;
+	let syy = 0;
+	let sxz = 0;
+	let syz = 0;
+	let sz = 0;
+	for (const p of pts) {
+		const x = p.x - mx;
+		const y = p.y - my;
+		const z = x * x + y * y;
+		sxx += x * x;
+		sxy += x * y;
+		syy += y * y;
+		sxz += x * z;
+		syz += y * z;
+		sz += z;
+	}
+	const det = sxx * syy - sxy * sxy;
+	if (Math.abs(det) < 1e-6) return null;
+	const cx = (sxz * syy - syz * sxy) / (2 * det);
+	const cy = (syz * sxx - sxz * sxy) / (2 * det);
+	const r = Math.sqrt(cx * cx + cy * cy + sz / n);
+	if (!Number.isFinite(r)) return null;
+	return {
+		cx: cx + mx,
+		cy: cy + my,
+		r
+	};
+}
+/**
+* 円弧の壁になっている「短い壁の集まり」を探す。
+*  - 長さ 60〜520 の壁が、触れ合い（70 以内）ながら、向きを 1.5〜28° ずつ変えて 4 本以上つながる
+*  - 向きの変わる幅が 35° 以上、半径 350〜6,000、当てはめた円からのずれが小さい
+*  - 窓・戸の付いた壁、すでに円弧の弦になっている壁（isArcChord）は対象外
+*/
+function findArcClusters(walls, openings = []) {
+	const withOp = new Set(openings.map((o) => o.wallId));
+	const cand = walls.filter((w) => !isArcChord(w) && !withOp.has(w.id) && len$3(w) >= 60 && len$3(w) <= 520);
+	const n = cand.length;
+	const adj = Array.from({ length: n }, () => []);
+	for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+		const d = lineAngle(cand[i], cand[j]);
+		if (d < 1.5 || d > 28) continue;
+		if (Math.abs(cand[i].thickness - cand[j].thickness) > 40) continue;
+		if (segDist(cand[i], cand[j]) > 70) continue;
+		adj[i].push(j);
+		adj[j].push(i);
+	}
+	const seen = new Uint8Array(n);
+	const out = [];
+	for (let i = 0; i < n; i++) {
+		if (seen[i] || !adj[i].length) continue;
+		const comp = [];
+		const stack = [i];
+		seen[i] = 1;
+		while (stack.length) {
+			const j = stack.pop();
+			comp.push(j);
+			for (const k of adj[j]) if (!seen[k]) {
+				seen[k] = 1;
+				stack.push(k);
+			}
+		}
+		if (comp.length < 4) continue;
+		let ws = comp.map((k) => cand[k]);
+		let c = null;
+		const ptsOf = (list) => list.flatMap((w) => [
+			w.a,
+			w.b,
+			{
+				x: (w.a.x + w.b.x) / 2,
+				y: (w.a.y + w.b.y) / 2
+			}
+		]);
+		for (;;) {
+			c = fitCircle(ptsOf(ws));
+			if (!c) break;
+			const cc = c;
+			const tol = Math.max(45, cc.r * .05);
+			const badness = (w) => {
+				const dev = Math.max(...[
+					w.a,
+					w.b,
+					{
+						x: (w.a.x + w.b.x) / 2,
+						y: (w.a.y + w.b.y) / 2
+					}
+				].map((p) => Math.abs(Math.hypot(p.x - cc.cx, p.y - cc.cy) - cc.r)));
+				const m = {
+					x: (w.a.x + w.b.x) / 2 - cc.cx,
+					y: (w.a.y + w.b.y) / 2 - cc.cy
+				};
+				const ml = Math.hypot(m.x, m.y) || 1;
+				const radial = Math.abs(m.x / ml * ((w.b.x - w.a.x) / len$3(w)) + m.y / ml * ((w.b.y - w.a.y) / len$3(w)));
+				return Math.max(dev / tol, radial / .5);
+			};
+			const scored = ws.map((w) => ({
+				w,
+				b: badness(w)
+			})).sort((p, q) => q.b - p.b);
+			if (scored[0].b <= 1) break;
+			ws = ws.filter((w) => w !== scored[0].w);
+			if (ws.length < 4) {
+				c = null;
+				break;
+			}
+		}
+		if (!c || c.r < 350 || c.r > 6e3) continue;
+		const pts = ptsOf(ws);
+		const mid = {
+			x: pts.reduce((s, p) => s + p.x, 0) / pts.length - c.cx,
+			y: pts.reduce((s, p) => s + p.y, 0) / pts.length - c.cy
+		};
+		const base = Math.atan2(mid.y, mid.x);
+		const rel = (p) => {
+			const a = Math.atan2(p.y - c.cy, p.x - c.cx) - base;
+			return Math.atan2(Math.sin(a), Math.cos(a));
+		};
+		const angs = ws.flatMap((w) => [rel(w.a), rel(w.b)]);
+		const lo = Math.min(...angs);
+		const hi = Math.max(...angs);
+		if (hi - lo < 35 * Math.PI / 180 || hi - lo > Math.PI * 1.9) continue;
+		out.push({
+			walls: ws,
+			cx: c.cx,
+			cy: c.cy,
+			r: c.r,
+			a0: base + lo,
+			a1: base + hi
+		});
+	}
+	return out;
+}
+/**
+* 階の R 壁を、円の上の端と端がつながる弦に並べ直す（その場で書き換える）。戻り値は並べ直した円弧の数。
+* 何度呼んでも同じ結果（並べ直した弦には arc が付き、次からは対象外）。
+*/
+function smoothArcWalls(f) {
+	const clusters = findArcClusters(f.walls, f.openings);
+	if (!clusters.length) return 0;
+	for (const cl of clusters) {
+		const drop = new Set(cl.walls.map((w) => w.id));
+		const others = f.walls.filter((w) => !drop.has(w.id));
+		const at = Math.min(...cl.walls.map((w) => f.walls.indexOf(w)));
+		const span = cl.a1 - cl.a0;
+		const n = Math.max(3, Math.ceil(span / stepOf(cl.r)));
+		const P = (a) => ({
+			x: cl.cx + cl.r * Math.cos(a),
+			y: cl.cy + cl.r * Math.sin(a)
+		});
+		const ts = cl.walls.map((w) => w.thickness).sort((a, b) => a - b);
+		const thickness = ts[Math.floor(ts.length / 2)];
+		const exterior = cl.walls.filter((w) => w.exterior).length * 2 > cl.walls.length;
+		let outer = 0;
+		for (const w of cl.walls) {
+			if (!w.exterior || !w.outsideSign) continue;
+			const L = len$3(w) || 1;
+			const nx = -(w.b.y - w.a.y) / L;
+			const ny = (w.b.x - w.a.x) / L;
+			const mx = (w.a.x + w.b.x) / 2 - cl.cx;
+			const my = (w.a.y + w.b.y) / 2 - cl.cy;
+			outer += w.outsideSign * Math.sign(nx * mx + ny * my);
+		}
+		const tops = cl.walls.map((w) => w.topMm).filter((v) => v != null);
+		const topCount = /* @__PURE__ */ new Map();
+		for (const v of tops) topCount.set(v, (topCount.get(v) ?? 0) + 1);
+		const topBest = [...topCount.entries()].sort((a, b) => b[1] - a[1])[0];
+		const topMm = topBest && topBest[1] * 2 >= cl.walls.length ? topBest[0] : void 0;
+		const accent = cl.walls.find((w) => w.accent !== void 0)?.accent;
+		const joined = (p) => others.some((w) => {
+			const dx = w.b.x - w.a.x;
+			const dy = w.b.y - w.a.y;
+			const L2 = dx * dx + dy * dy || 1;
+			const u = Math.max(0, Math.min(1, ((p.x - w.a.x) * dx + (p.y - w.a.y) * dy) / L2));
+			return Math.hypot(p.x - w.a.x - dx * u, p.y - w.a.y - dy * u) < w.thickness / 2 + thickness / 2 + 30;
+		});
+		const ids = cl.walls.map((w) => w.id);
+		const made = [];
+		for (let k = 0; k < n; k++) {
+			const a = cl.a0 + span * k / n;
+			const b = cl.a0 + span * (k + 1) / n;
+			const w = {
+				id: ids[k] ?? `${ids[0]}-r${k}`,
+				a: P(a),
+				b: P(b),
+				thickness,
+				exterior,
+				joinedA: k > 0 || joined(P(a)),
+				joinedB: k < n - 1 || joined(P(b)),
+				arc: {
+					cx: cl.cx,
+					cy: cl.cy,
+					r: cl.r,
+					mid: (cl.a0 + cl.a1) / 2
+				}
+			};
+			if (exterior) w.outsideSign = outer >= 0 ? -1 : 1;
+			if (topMm != null) w.topMm = topMm;
+			if (accent !== void 0) w.accent = accent;
+			made.push(w);
+		}
+		const kept = f.walls.filter((w) => !drop.has(w.id));
+		kept.splice(Math.min(at, kept.length), 0, ...made);
+		f.walls.length = 0;
+		f.walls.push(...kept);
+	}
+	return clusters.length;
+}
+/** 同じ円弧の弦どうしか（3D の継ぎ目の丸柱を立てない・法線をなめらかにつなぐ判定に使う） */
+function sameArc(a, b) {
+	return isArcChord(a) && isArcChord(b) && Math.abs(a.arc.cx - b.arc.cx) < 1 && Math.abs(a.arc.cy - b.arc.cy) < 1 && Math.abs(a.arc.r - b.arc.r) < 1;
+}
+/** 保存してあった図面（弦に並べ直す前の読み取り）も 3D でなめらかに出すための、書き換えない版。R 壁が無ければ同じ物を返す */
+function withSmoothArcWalls(f) {
+	if (!findArcClusters(f.walls, f.openings).length) return f;
+	const copy = {
+		...f,
+		walls: f.walls.map((w) => ({ ...w }))
+	};
+	smoothArcWalls(copy);
+	return copy;
 }
 //#endregion
 //#region src/parser/walls.ts
@@ -20237,6 +20497,7 @@ function assembleModel(pages, name, warnings, opts = {}) {
 	roomsUnderStairs(floors);
 	treesInStairWells(floors);
 	windowsOverCounters(floors);
+	for (const f of floors) smoothArcWalls(f);
 	const o1 = floors[0]?.outline.flat() ?? [];
 	if (o1.length) {
 		const dx = -Math.min(...o1.map((p) => p.x));
@@ -20283,6 +20544,11 @@ function translateFloor(f, dx, dy) {
 	for (const w of f.walls) {
 		w.a = tr(w.a);
 		w.b = tr(w.b);
+		if (w.arc) w.arc = {
+			...w.arc,
+			cx: w.arc.cx + dx,
+			cy: w.arc.cy + dy
+		};
 	}
 	for (const r of f.rooms) {
 		r.polygon = r.polygon.map(tr);
@@ -24115,6 +24381,44 @@ var MeshBuilder = class {
 		this.tri(key, p0, p1, p2, u, v, n);
 		this.tri(key, p0, p2, p3, u, v, n);
 	}
+	/**
+	* 頂点ごとに法線を持つ四角形（曲面の帯: R 壁など）。p[0]→p[1]→p[2]→p[3] は表から見て反時計回り。uv は頂点ごと（m）。
+	* 切断面にかかるときだけ、平均の法線の平らな面として切る
+	*/
+	quadN(key, p, n, uv) {
+		if (this.clip) {
+			const fs = p.map((q) => this.cf(q));
+			if (Math.min(...fs) >= -1e-6) return;
+			if (Math.max(...fs) > 1e-6) {
+				const nm = n[0].clone().add(n[1]).add(n[2]).add(n[3]).normalize();
+				const [u, v] = autoAxes(nm);
+				this.pushClipped(key, [
+					p[0],
+					p[1],
+					p[2]
+				], nm, u, v);
+				this.pushClipped(key, [
+					p[0],
+					p[2],
+					p[3]
+				], nm, u, v);
+				return;
+			}
+		}
+		const bk = this.bucket(key);
+		for (const i of [
+			0,
+			1,
+			2,
+			0,
+			2,
+			3
+		]) {
+			bk.pos.push(p[i].x, p[i].y, p[i].z);
+			bk.nor.push(n[i].x, n[i].y, n[i].z);
+			bk.uv.push(uv[i][0], uv[i][1]);
+		}
+	}
 	/** 平面多角形（穴なし・凸/凹どちらも可）。pts は表から見て反時計回り */
 	polygon(key, pts, normal, uAxis, vAxis, holes = []) {
 		const [u, v] = uAxis && vAxis ? [uAxis, vAxis] : autoAxes(normal);
@@ -24168,12 +24472,16 @@ var MeshBuilder = class {
 			if (Math.min(...fs) >= -1e-6) return;
 			straddles = Math.max(...fs) > 1e-6;
 		}
-		if (k[0]) this.quad(k[0], c[3], c[2], c[6], c[7], u, up);
-		if (k[1]) this.quad(k[1], c[1], c[0], c[4], c[5], u, up);
-		if (k[2]) this.quad(k[2], c[4], c[7], c[6], c[5]);
-		if (k[3]) this.quad(k[3], c[0], c[1], c[2], c[3]);
-		if (k[4]) this.quad(k[4], c[0], c[3], c[7], c[4], n, up);
-		if (k[5]) this.quad(k[5], c[2], c[1], c[5], c[6], n, up);
+		const grain = (key, a, la, b, lb) => GRAIN_KEY.test(key) ? la >= lb ? [a, b] : [b, a] : null;
+		const side = (key) => grain(key, u, len, up, height) ?? [u, up];
+		const flat = (key) => grain(key, u, len, n, depth) ?? [void 0, void 0];
+		const end = (key) => grain(key, n, depth, up, height) ?? [n, up];
+		if (k[0]) this.quad(k[0], c[3], c[2], c[6], c[7], ...side(k[0]));
+		if (k[1]) this.quad(k[1], c[1], c[0], c[4], c[5], ...side(k[1]));
+		if (k[2]) this.quad(k[2], c[4], c[7], c[6], c[5], ...flat(k[2]));
+		if (k[3]) this.quad(k[3], c[0], c[1], c[2], c[3], ...flat(k[3]));
+		if (k[4]) this.quad(k[4], c[0], c[3], c[7], c[4], ...end(k[4]));
+		if (k[5]) this.quad(k[5], c[2], c[1], c[5], c[6], ...end(k[5]));
 		if (straddles) this.capPolygon(c, BOX_EDGES);
 	}
 	/** 軸平行の直方体（min/max 指定） */
@@ -24206,6 +24514,7 @@ var MeshBuilder = class {
 			const n1 = new THREE.Vector3(Math.cos(a1), 0, Math.sin(a1));
 			const u0 = a0 * radius;
 			const u1 = a1 * radius;
+			const axial = GRAIN_KEY.test(key);
 			const p0 = bot[i];
 			const p1 = bot[j];
 			const p2 = top[j];
@@ -24229,12 +24538,13 @@ var MeshBuilder = class {
 					bk.nor.push(n.x, n.y, n.z);
 					bk.uv.push(uu, vv);
 				};
-				push(p0, n0, u0, base.y);
-				push(p3, n0, u0, base.y + height);
-				push(p2, n1, u1, base.y + height);
-				push(p0, n0, u0, base.y);
-				push(p2, n1, u1, base.y + height);
-				push(p1, n1, u1, base.y);
+				const uv = (uu, vv) => axial ? [vv, uu] : [uu, vv];
+				push(p0, n0, ...uv(u0, base.y));
+				push(p3, n0, ...uv(u0, base.y + height));
+				push(p2, n1, ...uv(u1, base.y + height));
+				push(p0, n0, ...uv(u0, base.y));
+				push(p2, n1, ...uv(u1, base.y + height));
+				push(p1, n1, ...uv(u1, base.y));
 			}
 			if (caps) {
 				const ct = base.clone().setY(base.y + height);
@@ -24371,18 +24681,74 @@ var MeshBuilder = class {
 		const n = new THREE.Vector3().crossVectors(u, up).normalize();
 		const m = new THREE.Matrix4().makeBasis(u, up, n);
 		m.setPosition(base.clone().addScaledVector(up, height / 2));
-		this.addGeometry(key, geo, m);
+		if (this.clip) {
+			this.addGeometry(key, geo, m);
+			geo.dispose();
+			return;
+		}
+		const g = geo.toNonIndexed().applyMatrix4(m);
 		geo.dispose();
+		const pos = g.getAttribute("position");
+		const nor = g.getAttribute("normal");
+		const bk = this.bucket(key);
+		const p = new THREE.Vector3();
+		const nn = new THREE.Vector3();
+		const axes = [
+			[u, len],
+			[up, height],
+			[n, depth]
+		];
+		for (let i = 0; i < pos.count; i += 3) {
+			nn.set(0, 0, 0);
+			for (let k = 0; k < 3; k++) nn.add(p.fromBufferAttribute(nor, i + k));
+			const d = axes.map(([a]) => Math.abs(nn.dot(a)));
+			const face = d[0] >= d[1] && d[0] >= d[2] ? 0 : d[1] >= d[2] ? 1 : 2;
+			const [pa, qa] = axes.filter((_, k) => k !== face);
+			const [ua, va] = pa[1] >= qa[1] ? [pa[0], qa[0]] : [qa[0], pa[0]];
+			for (let k = 0; k < 3; k++) {
+				p.fromBufferAttribute(pos, i + k);
+				bk.pos.push(p.x, p.y, p.z);
+				bk.uv.push(p.dot(ua), p.dot(va));
+				nn.fromBufferAttribute(nor, i + k);
+				bk.nor.push(nn.x, nn.y, nn.z);
+			}
+		}
+		g.dispose();
 	}
-	/** 2点間の円柱（幹・枝） */
+	/** 2点間の円柱（幹・枝・家具の丸棒） */
 	tube(key, a, b, r0, r1 = r0, seg = 7) {
 		const len = a.distanceTo(b);
 		if (len < 1e-4) return;
 		const geo = new THREE.CylinderGeometry(r1, r0, len, seg, 1, true);
 		const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
 		const m = new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(.5), q, new THREE.Vector3(1, 1, 1));
-		this.addGeometry(key, geo, m);
+		const axial = GRAIN_KEY.test(key) && !this.clip;
+		if (axial) {
+			const uv = geo.getAttribute("uv");
+			const rm = (r0 + r1) / 2;
+			for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getY(i) * len + a.x + a.z, uv.getX(i) * 2 * Math.PI * rm);
+		}
+		this.addGeometry(key, geo, m, axial);
 		geo.dispose();
+	}
+	/**
+	* 折れ線 pts をなめらかにつないだ丸棒（曲げ木の笠木・肘、丸い手すり）。短い円柱をつなぐと継ぎ目に節が見えるので、
+	* 点を通る曲線に沿って 1 本の管として作る。両端は丸く閉じる。UV は u = 長さの向き、v = 周
+	*/
+	tubePath(key, pts, r, seg = 8) {
+		if (pts.length < 2) return;
+		if (pts.length === 2) this.tube(key, pts[0], pts[1], r, r, seg);
+		else {
+			const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+			const len = curve.getLength();
+			const geo = new THREE.TubeGeometry(curve, Math.max(pts.length * 2, Math.ceil(len / .035)), r, seg, false);
+			const uv = geo.getAttribute("uv");
+			for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len + pts[0].x + pts[0].z, uv.getY(i) * 2 * Math.PI * r);
+			this.addGeometry(key, geo, new THREE.Matrix4(), !this.clip);
+			geo.dispose();
+		}
+		this.sphere(key, pts[0], r, 6);
+		this.sphere(key, pts[pts.length - 1], r, 6);
 	}
 	/**
 	* 光の面（間接照明が壁・床を照らす光。素材 f.coveGlow を加算で重ねる）:
@@ -24455,6 +24821,11 @@ var MeshBuilder = class {
 		return g;
 	}
 };
+/**
+* 木目の向きを持つ素材（家具・造作の木、カウンター、収納の面材、踏板）。これらは面ごとに「長い辺の向き = u」で UV を作る
+* （戸・板張りの壁は、木目を縦に流す素材（MatSpec.grainV）を使うので含めない）
+*/
+var GRAIN_KEY = /^(f\.wood|f\.cabinet|f\.counter|int\.stairs)/;
 function autoAxes(n) {
 	if (Math.abs(n.y) > .7) return [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1)];
 	return [new THREE.Vector3(-n.z, 0, n.x).normalize(), new THREE.Vector3(0, 1, 0)];
@@ -24975,6 +25346,11 @@ function wallCeilingMm(f, w) {
 	return best || f.ceilingHeight;
 }
 function buildBuilding(model, opts) {
+	const arcFloors = model.floors.map((f) => withSmoothArcWalls(f));
+	if (arcFloors.some((f, i) => f !== model.floors[i])) model = {
+		...model,
+		floors: arcFloors
+	};
 	model = trimInteriorEnds(alignUpperWalls(model));
 	const mb = new MeshBuilder();
 	const meta = {
@@ -25039,6 +25415,7 @@ function buildBuilding(model, opts) {
 			return d;
 		};
 		const stub = (w) => {
+			if (isArcChord(w)) return false;
 			if (Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) > Math.max(160, w.thickness * 1.6) || !f.outline.length) return false;
 			const m = {
 				x: (w.a.x + w.b.x) / 2,
@@ -25203,7 +25580,12 @@ function buildBuilding(model, opts) {
 			const L = A.distanceTo(B);
 			if (L < .05) continue;
 			const dir = new THREE.Vector3().subVectors(B, A).normalize();
-			for (const [s0, s1] of splitByGaps(A, B)) {
+			const runs = splitByGaps(A, B);
+			if (isArcChord(w) && runs.length === 1 && runs[0][0] === 0 && runs[0][1] === L) {
+				buildArcChord(mb, w, A, B, w.thickness * MM - .03, -.06, f1.elevation * MM - .1, "ext.foundation", "ext.foundation", "ext.foundation", w.joinedA ? null : "ext.foundation", w.joinedB ? null : "ext.foundation");
+				continue;
+			}
+			for (const [s0, s1] of runs) {
 				const a0 = s0 === 0 ? .015 : s0;
 				const a1 = s1 === L ? L - .015 : s1;
 				if (a1 - a0 < .02) continue;
@@ -25704,6 +26086,12 @@ function diagonalJoints(walls, onlyExterior = false) {
 			let d = Math.abs(angOf(w) - angOf(v)) % (Math.PI / 2);
 			d = Math.min(d, Math.PI / 2 - d);
 			if (d < 3 * Math.PI / 180) continue;
+			if (sameArc(w, v)) continue;
+			if (isArcChord(w) || isArcChord(v)) {
+				let raw = Math.abs(angOf(w) - angOf(v)) % Math.PI;
+				raw = Math.min(raw, Math.PI - raw);
+				if (raw < 12 * Math.PI / 180) continue;
+			}
 			for (const e of [w.a, w.b]) {
 				if (distToSeg(e, v) > w.thickness + v.thickness) continue;
 				const r = {
@@ -26309,6 +26697,10 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 	let cursor = 0;
 	const endKey = w.exterior || facesOutdoor ? extKey : jambKey;
 	const firstCap = w.joinedA ? null : endKey;
+	if (ops.length === 0 && isArcChord(w) && wallTop - bottom > .005) {
+		buildArcChord(mb, w, A, B, t, bottom, wallTop, kPlus, kMinus, topKey, firstCap, w.joinedB ? null : endKey);
+		return;
+	}
 	for (let i = 0; i < ops.length; i++) {
 		const o = ops[i];
 		const s0 = Math.max(0, o.t0 * MM);
@@ -26322,6 +26714,97 @@ function buildWall(mb, f, w, ops, fl, top, extKey, isTop, spec) {
 		cursor = s1;
 	}
 	seg(cursor, L, bottom, wallTop, ops.length === 0 ? firstCap : jambKey, w.joinedB ? null : endKey);
+}
+/**
+* R 壁の弦 1 本。円の中心から見た外側・内側の面を、弦の両端で円の半径の向きの法線にして作る
+* （隣の弦と法線がそろうので、面の継ぎ目が見えない 1 枚の曲面になる）。面の端は半径の向きに切るので、隣の弦との間に隙間も重なりも無い。
+*/
+function buildArcChord(mb, w, A, B, t, y0, y1, kPlus, kMinus, topKey, capA, capB) {
+	const arc = w.arc;
+	const C = V(arc.cx * MM, 0, arc.cy * MM);
+	const r = arc.r * MM;
+	const rho = (P) => new THREE.Vector3(P.x - C.x, 0, P.z - C.z).normalize();
+	const rA = rho(A);
+	const rB = rho(B);
+	const at = (rv, rad, y) => new THREE.Vector3(C.x + rv.x * rad, y, C.z + rv.z * rad);
+	const plusIsOuter = -(B.z - A.z) * (rA.x + rB.x) + (B.x - A.x) * (rA.z + rB.z) > 0;
+	const wrap = (x) => Math.atan2(Math.sin(x), Math.cos(x));
+	const m0 = arc.mid ?? 0;
+	const uA = r * wrap(Math.atan2(rA.z, rA.x) - m0);
+	const uB = r * wrap(Math.atan2(rB.z, rB.x) - m0);
+	const side = (key, rad, sign) => {
+		const pa0 = at(rA, rad, y0);
+		const pb0 = at(rB, rad, y0);
+		const pb1 = at(rB, rad, y1);
+		const pa1 = at(rA, rad, y1);
+		const nA = rA.clone().multiplyScalar(sign);
+		const nB = rB.clone().multiplyScalar(sign);
+		if (new THREE.Vector3().subVectors(pb0, pa0).cross(new THREE.Vector3().subVectors(pa1, pa0)).dot(nA) >= 0) mb.quadN(key, [
+			pa0,
+			pb0,
+			pb1,
+			pa1
+		], [
+			nA,
+			nB,
+			nB,
+			nA
+		], [
+			[uA, y0],
+			[uB, y0],
+			[uB, y1],
+			[uA, y1]
+		]);
+		else mb.quadN(key, [
+			pb0,
+			pa0,
+			pa1,
+			pb1
+		], [
+			nB,
+			nA,
+			nA,
+			nB
+		], [
+			[uB, y0],
+			[uA, y0],
+			[uA, y1],
+			[uB, y1]
+		]);
+	};
+	const ro = r + t / 2;
+	const ri = Math.max(.02, r - t / 2);
+	side(plusIsOuter ? kPlus : kMinus, ro, 1);
+	side(plusIsOuter ? kMinus : kPlus, ri, -1);
+	const flat = (key, p, n) => {
+		if (new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0])).dot(n) >= 0) mb.quad(key, p[0], p[1], p[2], p[3]);
+		else mb.quad(key, p[3], p[2], p[1], p[0]);
+	};
+	flat(topKey, [
+		at(rA, ri, y1),
+		at(rA, ro, y1),
+		at(rB, ro, y1),
+		at(rB, ri, y1)
+	], V(0, 1, 0));
+	flat(topKey, [
+		at(rA, ri, y0),
+		at(rA, ro, y0),
+		at(rB, ro, y0),
+		at(rB, ri, y0)
+	], V(0, -1, 0));
+	const dir = new THREE.Vector3().subVectors(B, A).normalize();
+	if (capA) flat(capA, [
+		at(rA, ri, y0),
+		at(rA, ro, y0),
+		at(rA, ro, y1),
+		at(rA, ri, y1)
+	], dir.clone().negate());
+	if (capB) flat(capB, [
+		at(rB, ri, y0),
+		at(rB, ro, y0),
+		at(rB, ro, y1),
+		at(rB, ri, y1)
+	], dir);
 }
 function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 	const A = V(w.a.x * MM, 0, w.a.y * MM);
@@ -27493,6 +27976,19 @@ var Frame = class {
 		c.y = this.origin.y + y;
 		this.mb.sphere(key, c, r, 10, sy);
 	}
+	/** 布もののふくらみ（掛け布団・枕。角の丸みを指定する）。平面図・当たり判定には載せない（本体の箱が載せる） */
+	soft(key, u, v, w, d, y0, h, r) {
+		const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v + d / 2);
+		c.y = this.origin.y + y0;
+		this.mb.roundedBox(key, c, this.along, w, h, d, r, 4);
+	}
+	/** 回転体（器・花器）: 断面 [半径, 高さ] の折れ線を軸のまわりに回す。y は底の高さ */
+	lathe(key, u, v, y, profile, seg = 28) {
+		const geo = new THREE.LatheGeometry(profile.map(([r, h]) => new THREE.Vector2(r, h)), seg);
+		const c = this.point(u, v, y);
+		this.mb.addGeometry(key, geo, new THREE.Matrix4().makeTranslation(c.x, c.y, c.z));
+		geo.dispose();
+	}
 	point(u, v, y) {
 		const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v);
 		c.y = this.origin.y + y;
@@ -28130,7 +28626,7 @@ function emitItemBody(it, env) {
 			nightstand(fr, 0, 0, env.lights, roomId);
 			break;
 		case "desk":
-			desk(fr, 0, 0);
+			desk(fr, 0, 0, it.w);
 			break;
 		case "cabinet":
 			fr.box("f.cabinet", 0, 0, 1.2, .45, 0, .75);
@@ -28496,7 +28992,7 @@ function indoorTree(fr, h) {
 		ax.applyAxisAngle(d, rnd() * Math.PI * 2);
 		return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, .2).normalize();
 	};
-	const leafSize = Math.max(.3, h * .105);
+	const leafSize = Math.max(.26, h * .085);
 	const leaves = (a, b, n) => {
 		for (let i = 0; i < n; i++) {
 			const q = a.clone().lerp(b, .3 + .7 * rnd()).add(new THREE.Vector3((rnd() - .5) * .14, (rnd() - .5) * .1, (rnd() - .5) * .14));
@@ -28506,19 +29002,19 @@ function indoorTree(fr, h) {
 	const grow = (a, dir, len, r, level) => {
 		const b = a.clone().addScaledVector(dir, len);
 		fr.mb.tube("l.trunk", a, b, r, r * .72, 7);
-		if (level >= 3) {
-			leaves(a, b, 4);
+		if (level >= 4) {
+			leaves(a, b, 5);
 			return;
 		}
-		if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, .4 + .55 * rnd()), turn(dir, .4, .8), len * (.48 + rnd() * .14), r * .55, level + 1);
-		grow(b, turn(dir, .05, .28), len * (.58 + rnd() * .1), r * .72, level + 1);
-		if (level >= 2) leaves(a, b, 3);
+		if (level >= 1) for (let i = 0; i < 2; i++) grow(a.clone().lerp(b, .35 + .6 * rnd()), turn(dir, .4, .85), len * (.5 + rnd() * .16), r * .55, level + 1);
+		grow(b, turn(dir, .05, .28), len * (.66 + rnd() * .1), r * .74, level + 1);
+		if (level >= 1) leaves(a, b, level >= 2 ? 4 : 2);
 	};
 	for (let i = 0; i < 3; i++) {
 		const az = i / 3 * Math.PI * 2 + rnd() * .9;
 		const lean = .07 + rnd() * .09;
 		const d0 = new THREE.Vector3(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
-		grow(p.clone().add(new THREE.Vector3(Math.cos(az) * .07, .01, Math.sin(az) * .07)), d0, h * (.44 + rnd() * .06), .02 * (h / 3.2), 0);
+		grow(p.clone().add(new THREE.Vector3(Math.cos(az) * .07, .01, Math.sin(az) * .07)), d0, h * (.3 + rnd() * .05), .02 * (h / 3.2), 0);
 	}
 }
 /** 花器の枝もの（天板・収納の上に置く。高さ 約 60cm）。y0 = 置く面の高さ */
@@ -28542,6 +29038,42 @@ function branchVase(fr, y0) {
 function rug(fr, u, v, w, d) {
 	fr.box("f.rug", u, v, w, d, .002, .012);
 }
+/** 器の断面 [半径, 高さ]（外側を底から縁へ、内側を縁から底へ） */
+var BOWL_WIDE = [
+	[0, 0],
+	[.05, 0],
+	[.058, .006],
+	[.1, .03],
+	[.135, .056],
+	[.148, .07],
+	[.1445, .0715],
+	[.131, .058],
+	[.097, .034],
+	[.055, .012],
+	[0, .01]
+];
+var BOWL_SMALL = [
+	[0, 0],
+	[.026, 0],
+	[.03, .005],
+	[.05, .03],
+	[.058, .052],
+	[.0555, .053],
+	[.047, .031],
+	[.027, .009],
+	[0, .007]
+];
+var PLATE = [
+	[0, 0],
+	[.075, 0],
+	[.085, .003],
+	[.125, .011],
+	[.132, .013],
+	[.131, .016],
+	[.123, .0145],
+	[.082, .007],
+	[0, .006]
+];
 function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 	const tw = width ?? 1.8;
 	const td = .9;
@@ -28562,9 +29094,11 @@ function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 		rotY: .4,
 		height: .24
 	});
-	if (!round) for (const du of [-tw / 2 + .3, tw / 2 - .3]) {
-		fr.cyl("f.white", u + du, v - .08, .11, .72, .012, 20);
-		fr.cyl("f.white", u + du, v - .08, .075, .732, .04, 20);
+	if (!round) {
+		fr.lathe("f.white", u - tw / 2 + .34, v - .06, .72, BOWL_WIDE);
+		fr.lathe("f.white", u + tw / 2 - .32, v - .1, .72, PLATE);
+		fr.lathe("f.white", u + tw / 2 - .32, v - .1, .729, PLATE.map(([r, h]) => [r * .8, h]));
+		fr.lathe("f.white", u + tw / 2 - .3, v - .09, .741, BOWL_SMALL);
 	}
 	const pitch = perSide === 3 ? (tw - .5) / 2 : .9;
 	const chairUs = perSide === 3 ? [
@@ -28666,29 +29200,41 @@ function pendant(fr, u, v, y, ceilingY, kind) {
 function yChair(fr, cu, cv, side) {
 	const W = .54;
 	const D = .5;
-	const seatY = .43;
 	const railY = .74;
-	fr.box("f.cord", cu, cv - D / 2 + .03, .46, .42, .41, .025);
-	fr.box("f.wood", cu, cv - D / 2, .52, .03, .385, .03);
-	fr.box("f.wood", cu, cv + D / 2 - .03, .52, .03, .385, .03);
-	for (const lu of [-1, 1]) fr.box("f.wood", cu + lu * (W / 2 - .025), cv - D / 2, .03, D, .385, .03);
-	for (const lu of [-1, 1]) {
-		fr.cyl("f.wood", cu + lu * (W / 2 - .035), cv - side * (D / 2 - .04), .015, 0, .41, 10);
-		fr.cyl("f.wood", cu + lu * (W / 2 - .035), cv + side * (D / 2 - .04), .015, 0, railY, 10);
-	}
+	const back = cv + side * (D / 2 - .04);
+	const front = cv - side * (D / 2 - .04);
+	const lx = W / 2 - .035;
+	fr.box("f.cord", cu, cv - D / 2 + .035, .45000000000000007, .41000000000000003, .412, .022);
+	for (const lu of [-1, 1]) fr.mb.tube("f.wood", fr.point(cu + lu * lx, front, .418), fr.point(cu + lu * lx, back, .418), .014, .014, 10);
+	for (const v of [front, back]) fr.mb.tube("f.wood", fr.point(cu - lx, v, .418), fr.point(cu + lx, v, .418), .014, .014, 10);
 	const R = W / 2 - .02;
-	const n = 9;
-	let prev = null;
+	for (const lu of [-1, 1]) {
+		fr.mb.tube("f.wood", fr.point(cu + lu * lx, front, 0), fr.point(cu + lu * lx, front, .418), .0125, .016, 10);
+		fr.mb.tubePath("f.wood", [
+			fr.point(cu + lu * .223, back + side * .012, 0),
+			fr.point(cu + lu * lx, back, .418),
+			fr.point(cu + lu * (R * .94), cv + side * (D / 2 - .02) * .62, .728)
+		], .015, 8);
+		fr.mb.tube("f.wood", fr.point(cu + lu * lx, front, .2), fr.point(cu + lu * .229, back + side * .006, .2), .009, .009, 8);
+	}
+	fr.mb.tube("f.wood", fr.point(cu - lx, front, .27), fr.point(cu + lx, front, .27), .009, .009, 8);
+	fr.mb.tube("f.wood", fr.point(cu - lx + .008, back + side * .008, .16), fr.point(cu + lx - .008, back + side * .008, .16), .009, .009, 8);
+	const n = 14;
+	const rail = [];
 	for (let k = 0; k <= n; k++) {
 		const a = Math.PI * k / n;
-		const pt = fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - .02), railY);
-		if (prev) fr.mb.tube("f.wood", prev, pt, .017, .017, 8);
-		prev = pt;
+		const drop = .012 * Math.pow(Math.abs(Math.cos(a)), 3);
+		rail.push(fr.point(cu + Math.cos(a) * R, cv + side * Math.sin(a) * (D / 2 - .02), railY - drop));
 	}
-	const b0 = fr.point(cu, cv + side * (D / 2 - .03), seatY);
-	const b1 = fr.point(cu, cv + side * (D / 2 - .02), .56);
-	fr.mb.tube("f.wood", b0, b1, .014, .012, 8);
-	for (const lu of [-1, 1]) fr.mb.tube("f.wood", b1, fr.point(cu + lu * .07, cv + side * (D / 2 - .015), .73), .012, .01, 8);
+	fr.mb.tubePath("f.wood", rail, .016, 8);
+	const b0 = fr.point(cu, cv + side * (D / 2 - .04), .418);
+	const b1 = fr.point(cu, cv + side * (D / 2 - .026), .56);
+	fr.mb.tube("f.wood", b0, b1, .013, .011, 8);
+	for (const lu of [-1, 1]) fr.mb.tubePath("f.wood", [
+		b1,
+		fr.point(cu + lu * .04, cv + side * (D / 2 - .02), .63),
+		fr.point(cu + lu * .075, cv + side * (D / 2 - .02), .732)
+	], .0105, 8);
 }
 /**
 * LINE KITCHEN（ホームランディックの標準キッチン）。カタログ・プランニングシートの呼び寸法どおりに作る。
@@ -29233,17 +29779,22 @@ function dressLiving(ctx) {
 }
 function bed(fr, u, v, w) {
 	const L = 2;
-	fr.box("f.wood", u, v, w + .06, 2.04, .08, .22);
-	fr.box("f.wood", u, v - .04, w + .06, .06, .08, .85);
-	fr.box("f.bedding", u, v + .02, w, L, .3, .2);
-	fr.box("f.fabric2", u, v + .75, w + .02, 1.28, .48, .05);
-	fr.box("f.fabric2", u, v + 1.75, w + .04, .3, .3, .2);
-	fr.box("f.fabric", u, v + 1.4, w + .08, .55, .53, .035);
-	fr.box("f.fabric", u, v + 1.4, w + .08, .3, .565, .02);
+	fr.box("f.wood", u, v, w + .06, 2.04, .08, .2);
+	fr.box("f.wood", u, v - .04, w + .06, .05, .08, .82);
+	fr.box("f.bedding", u, v + .02, w, L, .28, .22);
+	const d0 = .66;
+	fr.soft("f.fabric2", u, v + d0, w + .1, 1.39, .48, .085, .04);
+	for (const sg of [-1, 1]) fr.soft("f.fabric2", u + sg * (w / 2 + .03), v + d0 + .02, .05, 1.3599999999999999, .3, .25, .024);
+	fr.soft("f.fabric2", u, v + L + .005, w + .1, .05, .3, .25, .024);
+	fr.soft("f.bedding", u, v + d0 - .03, w + .1, .26, .535, .07, .034);
+	fr.soft("f.fabric", u, v + 1.38, w + .14, .5, .562, .03, .014);
+	for (const sg of [-1, 1]) fr.soft("f.fabric", u + sg * (w / 2 + .065), v + 1.38, .03, .5, .37, .215, .014);
 	const np = w > 1.2 ? 2 : 1;
 	for (let i = 0; i < np; i++) {
 		const pu = np === 2 ? u + (i === 0 ? -w / 4 : w / 4) : u;
-		fr.box("f.bedding", pu, v + .1, np === 2 ? w / 2 - .1 : w - .2, .4, .5, .12);
+		const pw = np === 2 ? w / 2 - .08 : Math.min(.7, w - .2);
+		fr.soft("f.bedding", pu, v + .03, pw, .16, .49, .36, .07);
+		fr.soft("f.fabric2", pu, v + .2, pw - .06, .38, .495, .13, .06);
 	}
 }
 function nightstand(fr, u, v, lights, roomId) {
@@ -29319,14 +29870,26 @@ function layoutBedroom(ctx, big) {
 		return;
 	}
 }
-function desk(fr, u, v) {
-	fr.box("f.wood", u, v, 1, .55, .7, .03);
-	fr.box("f.wood", u - .48, v, .03, .55, 0, .7);
-	fr.box("f.wood", u + .48, v, .03, .55, 0, .7);
-	fr.box("f.screen", u, v + .08, .55, .03, .73, .34);
-	fr.box("f.fabric2", u, v + .75, .45, .45, .42, .08);
-	fr.box("f.fabric2", u, v + .95, .45, .06, .5, .45);
-	fr.cyl("f.metal", u, v + .75, .03, 0, .42);
+/** 机の幅（図面から読んだ幅。0.9〜2.4 m） */
+var deskWidth = (w) => Math.max(.9, Math.min(2.4, w ?? 1));
+function desk(fr, u, v, w) {
+	const W = deskWidth(w);
+	fr.box("f.wood", u, v, W, .58, .7, .03);
+	for (const sg of [-1, 1]) fr.box("f.wood", u + sg * (W / 2 - .015), v, .03, .56, 0, .7);
+	fr.box("f.wood", u, v + .02, W - .06, .02, .45, .25);
+	fr.box("f.screen", u, v + .1, .56, .012, .82, .33);
+	fr.box("f.metal", u, v + .106, .03, .01, .732, .1);
+	fr.box("f.metal", u, v + .06, .2, .12, .73, .006);
+	if (vocab.chair === "y") {
+		yChair(fr, u, v + .58 + .2, 1);
+		return;
+	}
+	const cv = v + .58 + .2;
+	fr.box("f.fabric2", u, cv - .22, .43, .43, .42, .045);
+	fr.box("f.wood", u, cv - .21, .41, .41, .395, .025);
+	for (const lu of [-.17, .17]) for (const lv of [-.17, .17]) fr.cyl("f.wood", u + lu, cv + lv, .013, 0, .395, 10);
+	for (const lu of [-.17, .17]) fr.cyl("f.wood", u + lu, cv + .17, .012, .395, .32, 10);
+	fr.box("f.wood", u, cv + .17 - .012, .4, .024, .6, .12);
 }
 function layoutStudy(ctx) {
 	const order = [
@@ -33635,6 +34198,28 @@ function floorPlanParts(model, f, opts = {}) {
 		if (cur < L) solid.push([cur, L]);
 		const h = w.thickness / 2;
 		const low = !w.exterior && w.topMm != null && w.topMm < 1500;
+		if (isArcChord(w) && ops.length === 0) {
+			const c = w.arc;
+			const rad = (q) => {
+				const l = Math.hypot(q.x - c.cx, q.y - c.cy) || 1;
+				return {
+					x: (q.x - c.cx) / l,
+					y: (q.y - c.cy) / l
+				};
+			};
+			const ra = rad(w.a);
+			const rb = rad(w.b);
+			const pt = (q, r, sgn) => `${(q.x + r.x * h * sgn).toFixed(0)},${(q.y + r.y * h * sgn).toFixed(0)}`;
+			const quad = `${pt(w.a, ra, 1)} ${pt(w.b, rb, 1)} ${pt(w.b, rb, -1)} ${pt(w.a, ra, -1)}`;
+			if (low) {
+				const ln = (p0, p1) => `<line x1="${p0.split(",")[0]}" y1="${p0.split(",")[1]}" x2="${p1.split(",")[0]}" y2="${p1.split(",")[1]}" stroke="#151515" stroke-width="10" stroke-linecap="round"/>`;
+				s += `<polygon points="${quad}" fill="#d9d2c4" stroke="#d9d2c4" stroke-width="3"/>`;
+				s += ln(pt(w.a, ra, 1), pt(w.b, rb, 1)) + ln(pt(w.a, ra, -1), pt(w.b, rb, -1));
+				if (!w.joinedA) s += ln(pt(w.a, ra, 1), pt(w.a, ra, -1));
+				if (!w.joinedB) s += ln(pt(w.b, rb, 1), pt(w.b, rb, -1));
+			} else s += hl ? `<polygon points="${quad}" fill="#151515" stroke="#151515" stroke-width="4"/>` : `<polygon points="${quad}" fill="#2b2b2b" stroke="#2b2b2b" stroke-width="3"/>`;
+			continue;
+		}
 		for (const [t0, t1] of solid) {
 			const p = (t, sgn) => `${(w.a.x + ux * t + nx * h * sgn).toFixed(0)},${(w.a.y + uy * t + ny * h * sgn).toFixed(0)}`;
 			if (low) {

@@ -24,7 +24,7 @@ import { buildOccluder, externalHasVisibleMesh } from '../sun/analysis';
 import { buildLandscape, planExteriorOf, type SiteInfo, type LandscapePlan } from './landscape';
 import { buildExteriorLights, windowPortals, type WindowPortal } from './interiorLights';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
-import { MaterialRegistry } from './materials';
+import { MaterialRegistry, lampTint } from './materials';
 import { roomProbeUniforms } from './roomProbe';
 import { pointInPolygon } from '../core/geometry';
 import { labelNotes } from '../core/planNotes';
@@ -66,6 +66,9 @@ export const DEFAULT_LOOK = {
   portalTilt: 0,
   /** 昼の室内の補助光（部屋の真ん中の点の光） */
   dayFill: 0.15,
+  /** 夕景・夜の室内: ダウンライト（下向きの光）の強さ・床からの照り返し（天井と壁の上を照らす） */
+  lampSpot: 11,
+  nightBounce: 0.5,
   /**
    * 室内の露出を壁の明るさに合わせる強さ（0 = 合わせない）。濃い壁の部屋は、カメラと同じように露出を上げる:
    * 均一な光を減らしたぶん、濃いグレーの壁の家は真っ暗になる。上げると窓の外は白く飛ぶが、写真の内観もそうなる
@@ -310,9 +313,10 @@ export class Viewer {
       this.bounce.intensity = b.bounce;
       this.scene.environmentIntensity = 0.55;
     } else {
+      // 夜の室内: 照明は下向き（updateInteriorLights）。天井と壁の上の方は、床・家具からの照り返しで明るくなる
       this.sun.intensity = b.sun;
       this.hemi.intensity = b.hemi;
-      this.bounce.intensity = b.bounce;
+      this.bounce.intensity = Math.max(b.bounce, this.look.nightBounce);
       this.scene.environmentIntensity = b.env;
     }
     // 露出: 室内（面の光あり）は壁の明るさに合わせる
@@ -405,6 +409,8 @@ export class Viewer {
     this.applyLightBalance(true);
     this.dirty = true;
   }
+  /** 室内の灯りの 2 組（室内から見るとき／外から見るとき）。updateInteriorLights が作る */
+  private lampSets: { inner: THREE.Group; outer: THREE.Group } | null = null;
   private portals: WindowPortal[] = [];
   private portalLights: THREE.RectAreaLight[] = [];
   private portalGroup = new THREE.Group();
@@ -1522,7 +1528,14 @@ export class Viewer {
     }
     const tod = this.design.timeOfDay;
     const needed = tod === 'evening' || tod === 'night';
-    this.groups.lights.visible = needed || (this.viewMode === 'finish' && this.cameraInside());
+    const inside = this.cameraInside();
+    this.groups.lights.visible = needed || (this.viewMode === 'finish' && inside);
+    // 室内の灯り: 室内から見るときは下向きの光、外から見るときは窓を灯す全方向の光
+    if (this.lampSets && (this.lampSets.inner.visible !== inside || this.lampSets.outer.visible === inside)) {
+      this.lampSets.inner.visible = inside;
+      this.lampSets.outer.visible = !inside;
+      this._dirty = true;
+    }
     this.portalGroup.visible = this.portalLights.length > 0 && tod !== 'night' && !this.cut && this.cameraInside();
     // 歩いて別の部屋へ入ったら、その部屋の窓に付け替える（止まった絵を待たない）
     if (this.portalGroup.visible && this.assignPortals(this.roomAtCamera()?.ri ?? null)) this.probeDirty = true;
@@ -2171,7 +2184,7 @@ export class Viewer {
     const evening = this.design.timeOfDay === 'evening';
     // 物理的な光の単位（拡散反射で 1/π になる）なので、天井を壁と同じ明るさにするには 2 前後が要る
     this.lightBase.bounce = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
-    this.bounce.color.set(evening ? '#f3d9bd' : '#f4efe8');
+    this.bounce.color.set(evening ? '#f3d9bd' : night ? '#f1e2cf' : '#f4efe8');
     if (envUpdate) this.updateEnvironment();
     else this.placePhotoSky();
     this.applyLightBalance(true);
@@ -2588,31 +2601,65 @@ export class Viewer {
   updateInteriorLights() {
     this.probeDirty = true;
     clearGroup(this.groups.lights);
+    this.lampSets = null;
     if (!this.state) return;
     const tod = this.design.timeOfDay;
     const night = tod === 'night' || tod === 'evening';
     const kelvin = interiorFor(this.design).lightKelvin;
-    const col = kelvinToColor(kelvin);
-    const used = new Set<string>();
     const dim = tod === 'evening' ? 0.75 : 1;
-    for (const l of this.state.lights) {
-      const key = `${l.roomId}:${l.kind}`;
-      if (!night && used.has(key)) continue;
-      used.add(key);
-      // 昼の補助光は弱く: 部屋の真ん中の点の光は、壁も天井も同じ明るさにしてしまう。昼の明るさは窓からの光（下の面の光）で作る
-      const intensity = night ? (l.kind === 'ceiling' ? 6 * dim : l.kind === 'pendant' ? 3 * dim : 1.2 * dim) : l.kind === 'ceiling' ? (this.portalLights.length ? this.look.dayFill : 2.2) : 0;
-      if (intensity <= 0) continue;
-      const p = new THREE.PointLight(night ? col : new THREE.Color('#fff6ea'), intensity, night ? 7 : 7, night ? 1.6 : 1.0);
-      p.position.copy(l.pos);
-      // 昼は部屋の中ほどに置いて天井・壁・床をまんべんなく照らす（間接光の近似）
-      if (l.kind === 'ceiling') p.position.y -= night ? 0.3 : 1.2;
-      this.groups.lights.add(p);
-    }
-    // 外部の照明（ポーチ・植栽のアップライト・フットライト）。室内の灯りは上で点けているので外す
+    // 室内の灯りは 2 組: 室内から見るとき（inner）と、外から見るとき（outer）。カメラの位置で切り替える（applyLightsVisibility）
+    const inner = new THREE.Group();
+    inner.name = 'lamps-inside';
+    const outer = new THREE.Group();
+    outer.name = 'lamps-outside';
     if (night) {
-      const ext = buildExteriorLights({ meta: this.state.meta, plan: this.state.plan, lights: [], mode: tod, skyE: 1, lampColor: col, physical: false });
-      this.groups.lights.add(ext);
+      // ---- 室内から: 天井の器具は下向きの光。床・家具と、壁の下の方を照らし、天井には直接当てない
+      // （以前は天井のすぐ下に置いた全方向の光で、天井に白い光の塊ができ、壁も天井も同じ明るさだった）。
+      // 色は、写真の白の基準（materials.ts の LAMP_WB）で見た色: 電球色をそのまま出すと、夜の室内が一面の橙になる
+      const col = lampTint(kelvin);
+      const down = (pos: THREE.Vector3, k: number) => {
+        const sp = new THREE.SpotLight(col, this.look.lampSpot * dim * k, 9, 1.22, 1, 1.5);
+        sp.position.set(pos.x, pos.y - 0.04, pos.z);
+        sp.target.position.set(pos.x, pos.y - 3, pos.z);
+        inner.add(sp, sp.target);
+      };
+      // ダウンライトの家は、見えている器具のまとまり（3 灯一列・1 灯）の位置から。光のだまりが器具の真下にできる
+      const downlights = this.state.meta.downlights;
+      const litRooms = new Set(downlights.map((d) => d.roomId));
+      for (const d of downlights) down(d.pos, d.lamps >= 3 ? 1 : d.lamps === 2 ? 0.8 : 0.6);
+      // ---- 外から: 天井のすぐ下の全方向の光（今までどおり）。窓越しに天井と壁が電球色に灯って見える
+      // （下向きの光だけにすると、外から見上げる窓は暗い天井しか写らず、夜景の「窓の灯り」が消える）
+      const warm = kelvinToColor(kelvin);
+      for (const l of this.state.lights) {
+        if (l.kind === 'ceiling') {
+          if (!litRooms.has(l.roomId)) down(l.pos, 1);
+        } else {
+          const p = new THREE.PointLight(col, (l.kind === 'pendant' ? 3 : 1.2) * dim, 7, 1.6);
+          p.position.copy(l.pos);
+          inner.add(p);
+        }
+        const q = new THREE.PointLight(warm, (l.kind === 'ceiling' ? 6 : l.kind === 'pendant' ? 3 : 1.2) * dim, 7, 1.6);
+        q.position.copy(l.pos);
+        if (l.kind === 'ceiling') q.position.y -= 0.3;
+        outer.add(q);
+      }
+      // 外部の照明（ポーチ・植栽のアップライト・フットライト）
+      this.groups.lights.add(buildExteriorLights({ meta: this.state.meta, plan: this.state.plan, lights: [], mode: tod, skyE: 1, lampColor: warm, physical: false }));
+    } else {
+      // 昼の補助光（部屋ごとに 1 つ）は弱く: 部屋の真ん中の点の光は、壁も天井も同じ明るさにしてしまう。
+      // 昼の明るさは窓からの光（面の光）で作る。部屋の中ほどに置いて天井・壁・床をまんべんなく照らす（間接光の近似）
+      const used = new Set<string>();
+      for (const l of this.state.lights) {
+        if (l.kind !== 'ceiling' || used.has(l.roomId)) continue;
+        used.add(l.roomId);
+        const p = new THREE.PointLight('#fff6ea', this.portalLights.length ? this.look.dayFill : 2.2, 7, 1.0);
+        p.position.copy(l.pos);
+        p.position.y -= 1.2;
+        inner.add(p);
+      }
     }
+    this.groups.lights.add(inner, outer);
+    this.lampSets = { inner, outer };
     this.syncDayLights();
     this.dirty = true;
   }

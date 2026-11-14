@@ -37,6 +37,7 @@ const meta = (): BuildingMeta => ({
   outlines: [],
   topY: 6.5,
   sashes: [],
+  downlights: [],
 });
 const style = exteriorById('hl-jolypat-grey');
 const yRange = (mb: MeshBuilder, key: string): { min: number; max: number } | null => {

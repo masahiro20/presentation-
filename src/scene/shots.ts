@@ -1006,7 +1006,7 @@ function kitchenInsideView(
     for (const sg of [-1, 1]) {
       // 天板をはさんで見る向き（長辺に直交）
       const across = alongX ? new THREE.Vector3(0, 0, -sg) : new THREE.Vector3(-sg, 0, 0);
-      for (const f of [0.3, 0.5, 0.7]) {
+      for (const f of [0.3, 0.4, 0.5, 0.6, 0.7]) {
         const pos = alongX
           ? new THREE.Vector3(t.minX + len * f, ri.floorY + eye, (sg > 0 ? t.maxZ : t.minZ) + sg * 0.55)
           : new THREE.Vector3((sg > 0 ? t.maxX : t.minX) + sg * 0.55, ri.floorY + eye, t.minZ + len * f);
@@ -1035,7 +1035,14 @@ function kitchenInsideView(
             const ang = Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir))));
             if (ang < halfH * 0.95) winIn += ang > halfH * 0.25 ? 1 : 0.3;
           }
-          const score = sum * 0.5 + facing * 6 + Math.min(winIn, 2) * 1.5 - Math.abs(deg) * 0.04 - Math.abs(f - 0.5) * 2;
+          // 水栓が画面の真ん中（±9°）に立つ構図は避ける（手前の水栓が、見せたいダイニング・リビングを縦に割る）
+          const tapMid = occ.some((o) => {
+            if (o.key !== 'f.chrome') return false;
+            const v = new THREE.Vector3((o.minX + o.maxX) / 2 - pos.x, 0, (o.minZ + o.maxZ) / 2 - pos.z);
+            const d = v.length();
+            return d > 0.2 && d < 1.6 && Math.acos(Math.max(-1, Math.min(1, v.normalize().dot(dir)))) < (9 * Math.PI) / 180;
+          });
+          const score = sum * 0.5 + facing * 6 + Math.min(winIn, 2) * 1.5 - Math.abs(deg) * 0.04 - Math.abs(f - 0.5) * 2 - (tapMid ? 2.5 : 0);
           if (!best || score > best.score) best = { pos, dir, score };
         }
       }

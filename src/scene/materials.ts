@@ -6,6 +6,71 @@ import { makeMaterial, leafCardTexture, leafSprayTexture, type MatSpec } from '.
 import { TATAMI, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 import { FABRIC_COLORS } from '../core/types';
 import { patchRoomProbe } from './roomProbe';
+import { SCALLOP } from './meshBuilder';
+
+let scallopTex: THREE.DataTexture | null = null;
+/**
+ * 壁に落ちるダウンライトの光の明るさの分布（アルファ）。真下を向いた器具（配光の半角 18°、52° で消える）から、
+ * 距離 1 の壁の点 (x, z)（x = 横、z = 器具からの下がり）の照度 = 配光 × 1 / (x² + 1 + z²)^1.5。
+ * 上の縁は双曲線になる（器具から近い壁ほど、天井のすぐ下から光が始まる）
+ */
+function scallopTexture(): THREE.DataTexture {
+  if (scallopTex) return scallopTex;
+  const W = 64;
+  const H = 128;
+  const sm = (a: number, b: number, x: number) => {
+    const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const cb = Math.cos((18 * Math.PI) / 180);
+  const cc = Math.cos((52 * Math.PI) / 180);
+  const e = new Float32Array(W * H);
+  let max = 0;
+  for (let j = 0; j < H; j++) {
+    const z = SCALLOP.z * (1 - j / (H - 1));
+    for (let k = 0; k < W; k++) {
+      const x = SCALLOP.u * ((2 * k) / (W - 1) - 1);
+      const d2 = x * x + 1 + z * z;
+      let v = sm(cc, cb, z / Math.sqrt(d2)) / Math.pow(d2, 1.5);
+      // 面の縁で途切れないよう、横と下の端で 0 にする
+      v *= 1 - sm(0.7, 1, Math.abs(x) / SCALLOP.u);
+      v *= 1 - sm(0.72, 1, z / SCALLOP.z);
+      e[j * W + k] = v;
+      if (v > max) max = v;
+    }
+  }
+  const data = new Uint8Array(W * H * 4);
+  for (let n = 0; n < W * H; n++) data.set([255, 255, 255, Math.round(255 * Math.pow(e[n] / max, 0.85))], n * 4);
+  const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  scallopTex = tex;
+  return tex;
+}
+
+/** 照明の色を見るときの、写真の白の基準（K） */
+const LAMP_WB = 3600;
+
+/**
+ * 照明の色（色温度 K）を、写真の色に直す。電球色（2,700K）をそのまま画面に出すと橙色（255, 167, 87）で、
+ * 夜の室内が一面の橙になる。建築写真はカメラの白の基準を照明に寄せて撮る（LAMP_WB）ので、暖かい白に見える
+ */
+export function lampTint(kelvin: number): THREE.Color {
+  const k2c = (k: number) => {
+    const t = k / 100;
+    const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    const b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+    const r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    const c = (x: number) => Math.max(0, Math.min(255, x)) / 255;
+    return new THREE.Color().setRGB(c(r), c(g), c(b), THREE.SRGBColorSpace);
+  };
+  const lamp = k2c(kelvin);
+  const wb = k2c(LAMP_WB);
+  const out = new THREE.Color(lamp.r / wb.r, lamp.g / wb.g, lamp.b / wb.b);
+  const m = Math.max(out.r, out.g, out.b) || 1;
+  return out.multiplyScalar(1 / m);
+}
 
 export class MaterialRegistry {
   private map = new Map<string, THREE.Material>();
@@ -179,6 +244,13 @@ export class MaterialRegistry {
       tex.needsUpdate = true;
       set('f.coveGlow', new THREE.MeshBasicMaterial({ color: '#ffcf96', map: tex, transparent: true, opacity: night ? 0.5 : 0.14, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
     }
+    // ダウンライトが壁に落とす光（スカラップ）: 器具の真下から広がる、放物線の縁の光のだまり。壁の色に染めて加算で重ねる
+    {
+      const lamp = lampTint(i.lightKelvin);
+      const wc = new THREE.Color(i.wall.color);
+      const tint = new THREE.Color(lamp.r * (0.3 + 0.7 * wc.r), lamp.g * (0.3 + 0.7 * wc.g), lamp.b * (0.3 + 0.7 * wc.b));
+      set('f.coveGlowScallop', new THREE.MeshBasicMaterial({ color: tint, map: scallopTexture(), transparent: true, opacity: night ? 0.62 : this.opts.evening ? 0.5 : 0.2, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    }
     set('f.chrome', color('#d9dadc', 0.15, 1));
     set('f.counter', M(F.counter));
     set('f.cabinet', M(F.cabinet));
@@ -187,6 +259,10 @@ export class MaterialRegistry {
     set('f.fridge', color('#e8e8e6', 0.25, 0.3));
     set('f.screen', color('#0c0d0f', 0.12, 0.2));
     set('f.bedding', M({ pattern: 'fabric', color: '#f4f2ee', roughness: 0.95 }));
+    // ローテーブルの石の天板（明るいトラバーチン調。つやは抑えめ）
+    set('f.stoneTop', M({ pattern: 'marble', color: '#e7e1d6', color2: '#c9bfae', roughness: 0.34, size: 1.6, tile: 1.6 }));
+    // 掛け布・小さな置きクッション（生成りのウール。薄い布なので両面を描く）
+    set('f.throw', M({ pattern: 'fabric', color: '#cfc4b0', roughness: 1, tile: 0.7 }, THREE.DoubleSide));
     set('f.curtain', M({ pattern: 'fabric', color: '#ebe6de', roughness: 1, tile: 1.2 }));
     set('f.leaf', color('#3f6b2e', 0.7));
     set('f.soil', color('#3a2b20', 1));
@@ -212,10 +288,11 @@ export class MaterialRegistry {
     set('l.nbRoofC', color('#6d7073', 0.5, 0.25));
     set('l.nbRoof', color('#45474a', 0.75));
     // 窓は空を映す暗いガラス、枠は白、玄関戸は濃い茶、基礎は明るいコンクリート色
-    set('l.nbGlass', color('#56636e', 0.1, 0.2, { envMapIntensity: 1.3 }));
+    // （つやを強くしすぎると、太陽の映り込みが白い点になって、室内から見た隣家の窓に明かりの粒が並ぶ）
+    set('l.nbGlass', color('#56636e', 0.26, 0.2, { envMapIntensity: 1.3 }));
     set('l.nbFrame', color('#d9d7d1', 0.6));
     // 夕景・夜景では、街並みの窓の一部に明かりが点く（昼は普通のガラス）
-    set('l.nbGlassLit', dusk ? color('#f1d7a6', 0.4, 0, { emissive: new THREE.Color('#ffcf8a'), emissiveIntensity: night ? 0.9 : 0.6 }) : color('#56636e', 0.1, 0.2, { envMapIntensity: 1.3 }));
+    set('l.nbGlassLit', dusk ? color('#f1d7a6', 0.4, 0, { emissive: new THREE.Color('#ffcf8a'), emissiveIntensity: night ? 0.9 : 0.6 }) : color('#56636e', 0.26, 0.2, { envMapIntensity: 1.3 }));
     // 生垣の芯（葉のカードの奥に見える濃い緑のかたまり）
     set('l.hedge', M({ pattern: 'grass', color: '#34482c', color2: '#3f5634', tile: 1.2, roughness: 0.95 }));
     set('l.nbDoor', color('#4a4038', 0.6));

@@ -7,7 +7,7 @@ import { excludedFromFloorArea, roomFloorOffsetMm, type BuildingModel, type Buil
 import { mergeIntervals, pointInPolygon, subtractIntervals } from '../core/geometry';
 import { isSpecialRoomName } from '../parser/labels';
 import { largestInnerRect, rectsMinus, type Rect } from '../core/rects';
-import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
+import { MeshBuilder, topClip, type ClipPlane, type CushionShape, V } from './meshBuilder';
 import { MM } from './building';
 
 export type Side = 'n' | 's' | 'e' | 'w';
@@ -112,6 +112,35 @@ class Frame {
     const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v + d / 2);
     c.y = this.origin.y + y0;
     this.mb.roundedBox(key, c, this.along, w, h, d, r, 4);
+  }
+  /**
+   * ふくらみのあるクッション（ソファの座・背・置きクッション）。中心 (u, v)・中心の高さ y。w = 幅、t = 厚み、d = 奥行（立てるときは高さ）。
+   *  - stand: 立てる（厚みが奥行の向き。ふくらみ crownTop が部屋側の面）
+   *  - lean: 奥（壁側）へもたせ掛ける角度、yaw: 上から見た回り、roll: 横への傾き（ラジアン）
+   *  - plan: 平面図・当たり判定に、同じ大きさの箱として載せる（座クッション）
+   */
+  cushion(key: string, u: number, v: number, y: number, w: number, t: number, d: number, o: CushionShape & { stand?: boolean; lean?: number; yaw?: number; roll?: number; plan?: boolean } = {}) {
+    const c = this.point(u, v, y);
+    const up = new THREE.Vector3(0, 1, 0);
+    const basis = o.stand ? new THREE.Matrix4().makeBasis(this.along, this.inward, up) : new THREE.Matrix4().makeBasis(this.along, up, this.inward);
+    const m = new THREE.Matrix4();
+    if (o.lean) {
+      // along のまわりに回すと、上端が壁側（−inward）へ倒れる向き
+      const s = new THREE.Vector3().crossVectors(this.along, up).dot(this.inward) >= 0 ? -1 : 1;
+      m.makeRotationAxis(this.along, s * o.lean);
+    }
+    if (o.roll) m.premultiply(new THREE.Matrix4().makeRotationAxis(this.inward, o.roll));
+    if (o.yaw) m.premultiply(new THREE.Matrix4().makeRotationAxis(up, o.yaw));
+    m.multiply(basis);
+    m.setPosition(c);
+    this.mb.cushion(key, m, w, t, d, o);
+    if (!o.plan || o.stand) return;
+    if (currentPlan) currentPlan.push({ key, shape: 'box', cx: c.x, cz: c.z, w, d, ax: this.along.x, az: this.along.z, r: 0, top: y + t / 2, roomId: currentRoomId });
+    if (currentOcc && y + t / 2 > 0.3) {
+      const ex = (Math.abs(this.along.x) * w) / 2 + (Math.abs(this.inward.x) * d) / 2;
+      const ez = (Math.abs(this.along.z) * w) / 2 + (Math.abs(this.inward.z) * d) / 2;
+      currentOcc.push({ minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, maxY: y + t / 2, baseY: this.origin.y, key });
+    }
   }
   /** 回転体（器・花器）: 断面 [半径, 高さ] の折れ線を軸のまわりに回す。y は底の高さ */
   lathe(key: string, u: number, v: number, y: number, profile: [number, number][], seg = 28) {
@@ -938,51 +967,107 @@ function cupboardRun(fr: Frame, u: number, v: number, cw: number, front: 1 | -1)
   for (let k = 1; k < n; k++) fr.box('f.handle', u - cw / 2 + (cw / n) * k, front > 0 ? v + 0.45 - 0.003 : v - 0.009, 0.004, 0.012, 0.12, 0.76);
 }
 
+/** ソファの寸法（m）: 奥行・台の高さ・背の台の厚み・座クッションの厚み・カウチの幅 */
+const SOFA = { d: 0.9, baseTop: 0.26, backT: 0.17, seatT: 0.15, chaiseW: 0.95 };
+
+/**
+ * 低く奥行きのある、肘のないモジュールソファ（ミノッティ・B&B イタリア系。設計事務所の提案でよく選ばれる形）。
+ * 張りぐるみの台（奥に引いた黒い台座で浮かせる）の上に、ふくらんだ座クッション・背にもたせた背クッション・置きクッション・掛け布。
+ * 以前は角を丸めた箱の組み合わせで、座も背もまっすぐな板、置きクッションは垂直に立った板だった（「CG の箱」に見えていた）
+ */
 function sofa(fr: Frame, u: number, v: number, w: number, chaise?: { side: 'left' | 'right'; depth: number }) {
-  // 低く奥行きのある、肘のないモジュールソファ（ミノッティ・B&B イタリア系の設計事務所でよく選ぶ形）
-  const d = 0.9;
+  const { d, baseTop, backT, seatT } = SOFA;
+  const seatY = baseTop - 0.01 + seatT / 2;
+  const seatTop = baseTop - 0.01 + seatT;
   // 奥に引いた黒い台座で浮いて見せる
-  fr.box('f.metal', u, v + 0.06, w - 0.12, d - 0.12, 0, 0.07);
-  fr.box('f.fabric', u, v, w, d, 0.07, 0.25); // 座の台
-  const n = w > 2.4 ? 3 : 2;
-  const sw = w / n;
-  for (let i = 0; i < n; i++) fr.box('f.fabric', u - w / 2 + sw * (i + 0.5), v + 0.2, sw - 0.012, d - 0.2, 0.32, 0.1); // 座クッション
-  fr.box('f.fabric', u, v, w, 0.2, 0.32, 0.36); // 低い背
-  // 背クッション（ゆったりと）とアクセントのクッション 2 つ
-  for (let i = 0; i < n; i++) fr.box('f.fabric', u - w / 2 + sw * (i + 0.5), v + 0.16, sw - 0.06, 0.16, 0.42, 0.34);
-  fr.box('f.fabric2', u - w / 2 + 0.35, v + 0.3, 0.42, 0.12, 0.42, 0.36);
-  fr.box('f.fabric2', u + w / 2 - 0.55, v + 0.3, 0.38, 0.12, 0.42, 0.32);
+  fr.box('f.metal', u, v + 0.07, w - 0.14, d - 0.14, 0, 0.06);
+  fr.box('f.fabric', u, v, w, d, 0.06, baseTop - 0.06); // 張りぐるみの台
+  fr.box('f.fabric', u, v, w, backT, baseTop - 0.02, 0.36); // 低い背の台
+  // 座の割り: カウチのある側は 1 台分（幅 0.95）、残りを等分
+  const sg = chaise ? (chaise.side === 'right' ? 1 : -1) : 0;
+  const cw = chaise ? Math.min(SOFA.chaiseW, w - 0.6) : 0;
+  const rest = w - cw;
+  const n = rest > 2.4 ? 3 : rest > 1.25 ? 2 : 1;
+  const sw = rest / n;
+  const mods: { cu: number; mw: number; chaise: boolean }[] = [];
+  for (let i = 0; i < n; i++) mods.push({ cu: u - sg * (cw / 2) - rest / 2 + sw * (i + 0.5), mw: sw, chaise: false });
+  if (chaise) mods.push({ cu: u + sg * (w / 2 - cw / 2), mw: cw, chaise: true });
+  const seatV0 = backT - 0.02;
+  for (const md of mods) {
+    // 座クッション（中央がふくらみ、前の縁は台から少し出る）。カウチは先まで 1 枚
+    const front = md.chaise ? chaise!.depth : d + 0.015;
+    fr.cushion('f.fabric', md.cu, v + (seatV0 + front) / 2, seatY, md.mw - 0.008, seatT, front - seatV0, { r: 0.045, crownTop: 0.022, crownSide: 0.006, plan: true });
+    // 背クッション（背の台にもたせ掛ける）
+    fr.cushion('f.fabric', md.cu, v + backT + 0.085, seatTop + 0.215, md.mw - 0.03, 0.18, 0.45, { stand: true, lean: 0.17, r: 0.06, crownTop: 0.035, crownBottom: 0.012, crownSide: 0.01 });
+  }
   if (chaise) {
-    // L 型: 片側の端に、部屋側へ伸びるカウチ（寝そべれる奥行き）。背は壁側のまま、肘側に低い袖
-    const sg = chaise.side === 'right' ? 1 : -1;
-    const cw = 0.95;
+    // L 型: 片側の端に、部屋側へ伸びるカウチ（寝そべれる奥行き）。背は壁側のまま、外側に低い肘
     const cu = u + sg * (w / 2 - cw / 2);
     const cd = chaise.depth - d;
-    fr.box('f.metal', cu, v + d + 0.02, cw - 0.12, cd - 0.1, 0, 0.07);
-    fr.box('f.fabric', cu, v + d, cw, cd, 0.07, 0.25);
-    fr.box('f.fabric', cu, v + d + 0.01, cw - 0.012, cd - 0.08, 0.32, 0.1);
-    // 外側の低い肘
-    fr.box('f.fabric', cu + sg * (cw / 2 - 0.09), v + d, 0.18, cd - 0.05, 0.32, 0.22);
-    fr.box('f.fabric2', cu - sg * 0.1, v + d + 0.3, 0.4, 0.14, 0.42, 0.3);
+    fr.box('f.metal', cu, v + d - 0.02, cw - 0.14, cd - 0.05, 0, 0.06);
+    fr.box('f.fabric', cu, v + d - 0.04, cw, cd + 0.04, 0.06, baseTop - 0.06);
+    fr.cushion('f.fabric', cu + sg * (cw / 2 - 0.085), v + d + (cd - 0.06) / 2, seatTop + 0.07, 0.17, 0.2, cd - 0.06, { r: 0.07, crownTop: 0.012, crownSide: 0.008 });
+  }
+  // 置きクッション: 片方の端に大小 2 つ、反対の端に 1 つ（縁が薄く、四隅が張った形。背クッションにもたせ掛ける）
+  const endL = u - w / 2;
+  const endR = u + w / 2;
+  const pillow = (key: string, pu: number, pv: number, size: number, h: number, lean: number, yaw: number, roll = 0) =>
+    fr.cushion(key, pu, v + pv, seatTop + (h / 2) * Math.cos(lean) + 0.012, size, 0.05, h, { stand: true, lean, yaw, roll, r: 0.024, crownTop: 0.05, crownBottom: 0.045, pinch: 0.055, seg: 8 });
+  pillow('f.fabric2', endL + 0.33, 0.43, 0.48, 0.48, 0.36, 0.1);
+  pillow('f.throw', endL + 0.52, 0.535, 0.5, 0.3, 0.3, -0.12, 0.03);
+  if (w >= 1.9) pillow('f.fabric2', endR - (chaise && sg > 0 ? 0.36 : 0.38), 0.43, 0.44, 0.44, 0.34, -0.14, -0.03);
+  // 掛け布: 座の前の縁から垂らす（カウチがあればその先に）。置きクッションの無い側の座に
+  if (w >= 1.9) {
+    const end = mods[mods.length - 1];
+    const front = end.chaise ? chaise!.depth : d + 0.015;
+    const tu = end.cu + (end.chaise ? -sg * 0.06 : 0.1);
+    const y0 = seatTop + 0.016;
+    fr.mb.drape('f.throw', [fr.point(tu, v + front - 0.5, y0 + 0.004), fr.point(tu, v + front - 0.3, y0 + 0.006), fr.point(tu, v + front - 0.1, y0 + 0.001), fr.point(tu, v + front + 0.012, y0 - 0.03), fr.point(tu, v + front + 0.03, y0 - 0.13), fr.point(tu, v + front + 0.034, y0 - 0.27)], fr.along, 0.46, { ripple: 0.007, skew: 0.05 });
   }
   // ソファの脇には何も置かない（御社の提案パースは、低いソファとローテーブルだけ。以前はサイドテーブルと花器を添えていて、
   // 手前のソファの横に茶色い台が大きく写っていた）
 }
 
 function coffeeTable(fr: Frame, u: number, v: number) {
-  // 実物のローテーブル（大理石の丸天板・スチール脚）と、その上の陶器の花器。読み込めない環境では下の簡易形状
+  // 石の丸天板（φ900・厚 24）を細い黒の鉄脚 3 本で受けるローテーブルと、縁に重ねた小さな黒いサイドテーブル（高さ違いの 2 台）。
+  // 以前は実物モデル（三角形を減らした 10 角形の天板）で、手前に大きく写ると角が見えていた。天板は 56 分割の回転体で作る
   const p = fr.point(u, v + 0.3, 0);
-  currentModels.push({ id: 'coffee_table_round_01', pos: p, rotY: 0.3, height: 0.4 });
-  currentModels.push({ id: 'ceramic_vase_01', pos: p.clone().setY(p.y + 0.4).addScaledVector(fr.along, 0.18), rotY: 1.1, height: 0.26 });
-  if (currentPlan) currentPlan.push({ key: 'f.counter', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.48, top: 0.4, roomId: currentRoomId });
-  if (currentOcc) currentOcc.push({ minX: p.x - 0.5, maxX: p.x + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5, maxY: p.y + 0.4, baseY: p.y });
-  if (modelsAvailable) return;
-  // 低い石の天板（トラバーチン調）を、ひと回り小さい台座で浮かせる
-  fr.box('f.counter', u, v, 1.1, 0.55, 0.28, 0.06);
-  fr.box('f.counter', u, v + 0.08, 0.8, 0.39, 0, 0.28);
-  // 小物（本と器）
-  fr.box('f.fabric2', u - 0.25, v + 0.16, 0.26, 0.2, 0.34, 0.035);
-  fr.cyl('f.white', u + 0.28, v + 0.27, 0.07, 0.34, 0.1, 18);
+  const cv = v + 0.3;
+  // 小さい方は、大きい天板の横（ソファにも TV にも寄らない向き）に、縁を少し重ねて置く
+  const su = u + 0.56;
+  const sv = cv + 0.06;
+  const q = fr.point(su, sv, 0);
+  if (currentPlan) {
+    currentPlan.push({ key: 'f.counter', shape: 'circle', cx: p.x, cz: p.z, w: 0, d: 0, ax: 1, az: 0, r: 0.45, top: 0.34, roomId: currentRoomId });
+    currentPlan.push({ key: 'f.counter', shape: 'circle', cx: q.x, cz: q.z, w: 0, d: 0, ax: 1, az: 0, r: 0.2, top: 0.43, roomId: currentRoomId });
+  }
+  if (currentOcc) {
+    currentOcc.push({ minX: p.x - 0.5, maxX: p.x + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5, maxY: p.y + 0.4, baseY: p.y });
+    currentOcc.push({ minX: q.x - 0.2, maxX: q.x + 0.2, minZ: q.z - 0.2, maxZ: q.z + 0.2, maxY: q.y + 0.43, baseY: q.y });
+  }
+  const table = (key: string, tu: number, tv: number, R: number, H: number, T: number, legR: number) => {
+    // 天板: 上の縁を丸め、下の縁は斜めに落として薄く見せる
+    fr.lathe(key, tu, tv, H - T, [[0, 0], [R - T * 0.9, 0], [R - 0.003, T * 0.55], [R, T * 0.8], [R - 0.004, T], [0, T]], 56);
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2 + 0.5;
+      const top = fr.point(tu + Math.cos(a) * R * 0.62, tv + Math.sin(a) * R * 0.62, H - T);
+      const foot = fr.point(tu + Math.cos(a) * R * 0.78, tv + Math.sin(a) * R * 0.78, 0);
+      fr.mb.tube('f.metal', foot, top, legR, legR, 10);
+    }
+  };
+  table('f.stoneTop', u, cv, 0.45, 0.34, 0.024, 0.009);
+  table('f.metal', su, sv, 0.2, 0.43, 0.01, 0.006);
+  // 小物: 本を 2 冊重ね、陶器の花器を添える
+  const book = (key: string, du: number, dv: number, w: number, d: number, y: number, yaw: number) => {
+    const m = new THREE.Matrix4().makeRotationY(yaw);
+    const ax = fr.along.clone().applyMatrix4(m);
+    fr.mb.roundedBox(key, fr.point(u + du, cv + dv, y), ax, w, 0.022, d, 0.004, 1);
+  };
+  book('f.book3', -0.16, 0.05, 0.27, 0.2, 0.34, 0.2);
+  book('f.book2', -0.15, 0.06, 0.23, 0.17, 0.362, -0.12);
+  currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + 0.17, cv - 0.08, 0.34), rotY: 1.1, height: 0.26 });
+  // 実物モデルを読み込めない環境（図面の作図・書き出しの検証）では、花器の代わりに器を置く
+  if (!modelsAvailable) fr.lathe('f.white', u + 0.17, cv - 0.08, 0.34, CUP);
 }
 
 /** 家具まわりの間接照明（納まりの「間接照明」と同じ設定。浮かせたテレビボードの下の光）。組み立て前に設定する */
@@ -1139,6 +1224,8 @@ function rug(fr: Frame, u: number, v: number, w: number, d: number) {
 const BOWL_WIDE: [number, number][] = [[0, 0], [0.05, 0], [0.058, 0.006], [0.1, 0.03], [0.135, 0.056], [0.148, 0.07], [0.1445, 0.0715], [0.131, 0.058], [0.097, 0.034], [0.055, 0.012], [0, 0.01]];
 const BOWL_SMALL: [number, number][] = [[0, 0], [0.026, 0], [0.03, 0.005], [0.05, 0.03], [0.058, 0.052], [0.0555, 0.053], [0.047, 0.031], [0.027, 0.009], [0, 0.007]];
 const PLATE: [number, number][] = [[0, 0], [0.075, 0], [0.085, 0.003], [0.125, 0.011], [0.132, 0.013], [0.131, 0.016], [0.123, 0.0145], [0.082, 0.007], [0, 0.006]];
+/** 湯のみ（口が少し開いた筒。薄い縁） */
+const CUP: [number, number][] = [[0, 0], [0.027, 0], [0.031, 0.004], [0.036, 0.05], [0.039, 0.085], [0.0375, 0.087], [0.0335, 0.05], [0.028, 0.009], [0, 0.007]];
 
 function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number, width?: number) {
   // v = テーブル中心までの距離。無垢の一枚板（厚 4cm）を 2 枚の板脚で受ける、設計事務所らしい端正なテーブル
@@ -1487,10 +1574,24 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     // 槽（ステンレス）: 天板より 10mm 下から H190
     fr.box('f.stainless', u, v + (topD - sd) / 2, sw, sd, H - 0.2, 0.19);
     fr.box('f.carcass', u, v + (topD - sd) / 2 + 0.01, sw - 0.02, sd - 0.02, H - 0.19, 0.17);
-    // 水栓（グースネック・クローム）
-    fr.cyl('f.chrome', u + 0.3, faucetV, 0.016, H, 0.3, 12);
-    fr.box('f.chrome', u + 0.3, faucetV - 0.1, 0.03, 0.2, H + 0.28, 0.025);
-    fr.cyl('f.chrome', u + 0.3, faucetV - 0.19, 0.012, H + 0.17, 0.12, 10);
+    // 水栓（グースネック・クローム）: 細い管を、立ち上がりから吐水口までひと続きの弧で曲げる。
+    // 以前は円柱と四角い箱の組み合わせで、キッチンの中から撮ると手前に角ばった箱が大きく写っていた
+    const fu = u + 0.3;
+    const dv = faucetV >= (topD - sd) / 2 + v + sd / 2 ? -1 : 1; // 槽のある側へ曲げる
+    fr.cyl('f.chrome', fu, faucetV, 0.024, H, 0.012, 20);
+    fr.mb.tubePath(
+      'f.chrome',
+      [fr.point(fu, faucetV, H + 0.01), fr.point(fu, faucetV, H + 0.2), fr.point(fu, faucetV + dv * 0.025, H + 0.285), fr.point(fu, faucetV + dv * 0.095, H + 0.325), fr.point(fu, faucetV + dv * 0.165, H + 0.295), fr.point(fu, faucetV + dv * 0.19, H + 0.225)],
+      0.0115,
+      10,
+    );
+    // レバー（横に出る細い棒）
+    fr.mb.tube('f.chrome', fr.point(fu + 0.012, faucetV, H + 0.075), fr.point(fu + 0.075, faucetV, H + 0.1), 0.006, 0.005, 8);
+    // 構図の手掛かり: 水栓の位置（キッチンの中からの構図で、水栓が画面の真ん中に来ないようにする）
+    if (currentOcc) {
+      const c = fr.point(fu, faucetV, 0);
+      currentOcc.push({ minX: c.x - 0.03, maxX: c.x + 0.03, minZ: c.z - 0.03, maxZ: c.z + 0.03, maxY: H + 0.33, baseY: fr.origin.y + H, key: 'f.chrome' });
+    }
   };
   /** IH 3 口（黒ガラス、天板に落とし込み） */
   const ih = (u: number, v: number, topD: number) => {
@@ -1508,11 +1609,14 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     fr.box(hoodKey, u, v - 0.25, 0.9, 0.5, 1.66, 0.22);
     fr.box(hoodKey, u, v - 0.11, 0.22, 0.22, 1.88, Math.max(0.05, ceilingY - 1.88));
   };
-  /** 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた） */
+  /**
+   * 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた）。
+   * 器は回転体（磁器の鉢と湯のみ）。以前は角の見える円柱で、手前に大きく写ると白い筒に見えていた
+   */
   const props = (u: number, v: number) => {
-    fr.box('f.handle', u - 0.1 * stoveSign, v, 0.4, 0.26, H, 0.015);
-    fr.cyl('f.white', u - 0.14 * stoveSign, v, 0.065, H + 0.015, 0.08);
-    fr.cyl('f.white', u + 0.02 * stoveSign, v + 0.02, 0.04, H + 0.015, 0.12);
+    fr.box('f.handle', u - 0.1 * stoveSign, v, 0.4, 0.26, H, 0.012);
+    fr.lathe('f.white', u - 0.15 * stoveSign, v + 0.13, H + 0.012, BOWL_SMALL.map(([r, h]) => [r * 1.5, h * 1.25] as [number, number]), 32);
+    fr.lathe('f.white', u + 0.03 * stoveSign, v + 0.15, H + 0.012, CUP, 28);
   };
   /** 冷蔵庫（扉面が平らな W680 D700 H1820） */
   const fridgeBox = (u: number) => {

@@ -24784,6 +24784,87 @@ var MeshBuilder = class {
 		}
 		g.dispose();
 	}
+	/**
+	* ふくらみのあるクッション（ソファの座・背、置きクッション）。
+	* 角の丸い直方体の各面を、中央がふくらむ形に押し出す（箱を並べただけのソファは、角が立って「CG の箱」に見える）。
+	* 形は中心を原点に作る: x = 幅 w、y = 厚み t、z = 奥行 d。向きと位置は m（立てる・もたせ掛けるのも m で）。
+	* 面どうしで頂点を共有し、法線はなめらかにつなぐ
+	*/
+	cushion(key, m, w, t, d, o = {}) {
+		const { pos, index } = cushionMesh(w, t, d, o);
+		const p = new THREE.Vector3();
+		for (let i = 0; i < pos.length; i += 3) {
+			p.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(m);
+			pos[i] = p.x;
+			pos[i + 1] = p.y;
+			pos[i + 2] = p.z;
+		}
+		const c = new THREE.Vector3().setFromMatrixPosition(m);
+		const A = new THREE.Vector3();
+		const B = new THREE.Vector3();
+		const C = new THREE.Vector3();
+		const n = new THREE.Vector3();
+		for (let i = 0; i < index.length; i += 3) {
+			A.fromArray(pos, index[i] * 3);
+			B.fromArray(pos, index[i + 1] * 3);
+			C.fromArray(pos, index[i + 2] * 3);
+			n.crossVectors(B.clone().sub(A), C.clone().sub(A));
+			if (n.dot(A.clone().add(B).add(C).multiplyScalar(1 / 3).sub(c)) < 0) {
+				const k = index[i + 1];
+				index[i + 1] = index[i + 2];
+				index[i + 2] = k;
+			}
+		}
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+		geo.setIndex(index);
+		geo.computeVertexNormals();
+		this.addGeometry(key, geo, new THREE.Matrix4());
+		geo.dispose();
+	}
+	/**
+	* 掛け布（ブランケット）: 断面の折れ線 path（掛ける物の上をなぞる）に沿った、幅 width の薄い布。
+	* 幅の向きに小さなうねり（たたみじわ）を付け、垂れた先ほど大きくする。両面を描く素材で使う
+	*/
+	drape(key, path, widthDir, width, o = {}) {
+		if (path.length < 2) return;
+		const curve = new THREE.CatmullRomCurve3(path, false, "centripetal");
+		const N = Math.max(8, Math.ceil(curve.getLength() / .035));
+		const M = o.seg ?? 12;
+		const ripple = o.ripple ?? .006;
+		const wd = widthDir.clone().normalize();
+		const pos = [];
+		const index = [];
+		const P = new THREE.Vector3();
+		const T = new THREE.Vector3();
+		const nrm = new THREE.Vector3();
+		for (let i = 0; i <= N; i++) {
+			const s = i / N;
+			curve.getPointAt(s, P);
+			curve.getTangentAt(s, T);
+			nrm.crossVectors(wd, T).normalize();
+			for (let j = 0; j <= M; j++) {
+				const a = j / M - .5;
+				const wave = Math.sin(a * Math.PI * 5 + s * 2.2) * ripple * (.35 + 1.5 * s * s);
+				const narrow = 1 - .07 * s * s;
+				const q = P.clone().addScaledVector(wd, a * width * narrow).addScaledVector(nrm, wave).addScaledVector(T, (o.skew ?? 0) * a * s);
+				pos.push(q.x, q.y, q.z);
+			}
+		}
+		for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) {
+			const a = i * (M + 1) + j;
+			const b = a + 1;
+			const c = a + M + 1;
+			const d2 = c + 1;
+			index.push(a, c, b, b, c, d2);
+		}
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+		geo.setIndex(index);
+		geo.computeVertexNormals();
+		this.addGeometry(key, geo, new THREE.Matrix4());
+		geo.dispose();
+	}
 	/** 2点間の円柱（幹・枝・家具の丸棒） */
 	tube(key, a, b, r0, r1 = r0, seg = 7) {
 		const len = a.distanceTo(b);
@@ -24821,14 +24902,19 @@ var MeshBuilder = class {
 	}
 	/**
 	* 光の面（間接照明が壁・床を照らす光。素材 f.coveGlow を加算で重ねる）:
-	* 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）
+	* 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）。
+	* uv を渡すと、絵のその範囲だけを貼る
 	*/
-	glowPlane(key, c, along, toLight, w, h) {
+	glowPlane(key, c, along, toLight, w, h, uv) {
 		if (w < .05 || h < .02) return;
 		const x = along.clone().normalize();
 		const y = toLight.clone().normalize();
 		const z = new THREE.Vector3().crossVectors(x, y).normalize();
 		const geo = new THREE.PlaneGeometry(w, h);
+		if (uv) {
+			const a = geo.getAttribute("uv");
+			for (let i = 0; i < a.count; i++) a.setXY(i, uv[0] + (uv[2] - uv[0]) * a.getX(i), uv[1] + (uv[3] - uv[1]) * a.getY(i));
+		}
 		const m = new THREE.Matrix4().makeBasis(x, y, z);
 		m.setPosition(c);
 		this.addGeometry(key, geo, m, true);
@@ -24900,6 +24986,286 @@ function autoAxes(n) {
 	return [new THREE.Vector3(-n.z, 0, n.x).normalize(), new THREE.Vector3(0, 1, 0)];
 }
 var V = (x, y, z) => new THREE.Vector3(x, y, z);
+/**
+* ダウンライトの光の形（スカラップ）の絵の範囲: 器具から壁までの距離 a を 1 として、横は ±u、下は z まで。
+* 絵（materials.ts）と光の面（building.ts）は、この比で大きさと UV を決める
+*/
+var SCALLOP = {
+	u: 2.2,
+	z: 4.4
+};
+/**
+* クッションの形を作る（中心が原点。x = 幅、y = 厚み、z = 奥行）。頂点は面どうしで共有する。
+* 角の丸みは、立方体の格子を「内側の箱 + 半径 r」へ射影して作る（丸みの所は 45° を 2 分割）。
+* ふくらみは、面の法線の向きへ (1 − s²)(1 − t²) で押し出す（縁で 0、中央で最大）
+*/
+function cushionMesh(w, t, d, o = {}) {
+	const hx = w / 2;
+	const hy = t / 2;
+	const hz = d / 2;
+	const r = Math.max(.003, Math.min(o.r ?? .04, hx - .002, hy - .002, hz - .002));
+	const ARC = 2;
+	const coords = (half, n) => {
+		const inner = half - r;
+		const out = [];
+		for (let k = ARC; k >= 1; k--) out.push(-(inner + r * Math.tan(k / ARC * Math.PI / 4)));
+		for (let i = 0; i <= n; i++) out.push(-inner + 2 * inner * i / n);
+		for (let k = 1; k <= ARC; k++) out.push(inner + r * Math.tan(k / ARC * Math.PI / 4));
+		return out;
+	};
+	const seg = Math.max(2, o.seg ?? 6);
+	const axes = [
+		coords(hx, seg),
+		coords(hy, 2),
+		coords(hz, seg)
+	];
+	const half = [
+		hx,
+		hy,
+		hz
+	];
+	const crownTop = o.crownTop ?? 0;
+	const crownBottom = o.crownBottom ?? 0;
+	const crownSide = o.crownSide ?? 0;
+	const pinch = o.pinch ?? 0;
+	const pos = [];
+	const index = [];
+	const ids = /* @__PURE__ */ new Map();
+	const clamp = (v, a) => Math.max(-a, Math.min(a, v));
+	const vert = (ix, iy, iz) => {
+		const key = `${ix},${iy},${iz}`;
+		const got = ids.get(key);
+		if (got != null) return got;
+		const q = [
+			axes[0][ix],
+			axes[1][iy],
+			axes[2][iz]
+		];
+		const inner = q.map((v, k) => clamp(v, half[k] - r));
+		let n = q.map((v, k) => v - inner[k]);
+		const l = Math.hypot(n[0], n[1], n[2]) || 1;
+		n = n.map((v) => v / l);
+		const p = inner.map((v, k) => v + n[k] * r);
+		const sx = clamp(p[0] / hx, 1);
+		const sy = clamp(p[1] / hy, 1);
+		const sz = clamp(p[2] / hz, 1);
+		const bx = 1 - sx * sx;
+		const by = 1 - sy * sy;
+		const bz = 1 - sz * sz;
+		p[1] += (n[1] > 0 ? crownTop : crownBottom) * n[1] * bx * bz;
+		p[0] += crownSide * n[0] * by * bz;
+		p[2] += crownSide * n[2] * bx * by;
+		if (pinch) {
+			p[0] *= 1 - pinch * bz;
+			p[2] *= 1 - pinch * bx;
+		}
+		const id = pos.length / 3;
+		pos.push(p[0], p[1], p[2]);
+		ids.set(key, id);
+		return id;
+	};
+	for (let a = 0; a < 3; a++) {
+		const b = (a + 1) % 3;
+		const c = (a + 2) % 3;
+		for (const end of [0, axes[a].length - 1]) for (let i = 0; i < axes[b].length - 1; i++) for (let j = 0; j < axes[c].length - 1; j++) {
+			const at = (ib, ic) => {
+				const ix = [
+					0,
+					0,
+					0
+				];
+				ix[a] = end;
+				ix[b] = ib;
+				ix[c] = ic;
+				return vert(ix[0], ix[1], ix[2]);
+			};
+			const v00 = at(i, j);
+			const v10 = at(i + 1, j);
+			const v11 = at(i + 1, j + 1);
+			const v01 = at(i, j + 1);
+			index.push(v00, v10, v11, v00, v11, v01);
+		}
+	}
+	return {
+		pos,
+		index
+	};
+}
+//#endregion
+//#region src/core/polyMinus.ts
+/** 辺の、高さ y での x */
+var xAt = (e, y) => e.a.x + (e.b.x - e.a.x) * (y - e.a.y) / (e.b.y - e.a.y);
+/** 線分 p1–p2 と p3–p4 が内側で交わる点の y（交わらなければ null） */
+function crossY(p1, p2, p3, p4) {
+	const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+	if (Math.abs(d) < 1e-9) return null;
+	const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+	const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+	if (t <= 1e-6 || t >= 1 - 1e-6 || u <= 1e-6 || u >= 1 - 1e-6) return null;
+	return p1.y + (p2.y - p1.y) * t;
+}
+/**
+* poly から holes を引いた残りを、台形（3〜4 頂点の凸多角形）の集まりで返す。
+* 穴は重なっていても、poly の外へはみ出していてもよい。eps = これより細い帯・台形は捨てる（mm）
+*/
+function polygonMinusPolygons(poly, holes, eps = .5) {
+	if (poly.length < 3) return [];
+	const edges = [];
+	const add = (pts, owner) => {
+		for (let i = 0; i < pts.length; i++) {
+			const a = pts[i];
+			const b = pts[(i + 1) % pts.length];
+			if (Math.abs(a.y - b.y) < 1e-9) continue;
+			edges.push({
+				a,
+				b,
+				owner
+			});
+		}
+	};
+	add(poly, -1);
+	holes.forEach((h, k) => {
+		if (h.length >= 3) add(h, k);
+	});
+	const y0 = Math.min(...poly.map((p) => p.y));
+	const y1 = Math.max(...poly.map((p) => p.y));
+	const levels = [y0, y1];
+	for (const p of poly) levels.push(p.y);
+	for (const h of holes) for (const p of h) if (p.y > y0 && p.y < y1) levels.push(p.y);
+	for (let i = 0; i < edges.length; i++) for (let j = i + 1; j < edges.length; j++) {
+		if (edges[i].owner === edges[j].owner) continue;
+		const y = crossY(edges[i].a, edges[i].b, edges[j].a, edges[j].b);
+		if (y != null && y > y0 && y < y1) levels.push(y);
+	}
+	levels.sort((p, q) => p - q);
+	const out = [];
+	let prev = levels[0];
+	for (const lv of levels) {
+		if (lv - prev < eps) continue;
+		const b0 = prev;
+		const b1 = lv;
+		prev = lv;
+		const ym = (b0 + b1) / 2;
+		const cross = edges.filter((e) => e.a.y > ym !== e.b.y > ym).map((e) => ({
+			e,
+			x: xAt(e, ym)
+		}));
+		cross.sort((p, q) => p.x - q.x);
+		let inside = false;
+		const inHole = /* @__PURE__ */ new Set();
+		for (let k = 0; k + 1 < cross.length; k++) {
+			const c = cross[k];
+			if (c.e.owner < 0) inside = !inside;
+			else if (inHole.has(c.e.owner)) inHole.delete(c.e.owner);
+			else inHole.add(c.e.owner);
+			if (!inside || inHole.size) continue;
+			const L = c.e;
+			const R = cross[k + 1].e;
+			const xl0 = xAt(L, b0);
+			const xr0 = xAt(R, b0);
+			const xl1 = xAt(L, b1);
+			const xr1 = xAt(R, b1);
+			if (xr0 - xl0 < eps && xr1 - xl1 < eps) continue;
+			const piece = [{
+				x: xl0,
+				y: b0
+			}];
+			if (xr0 - xl0 >= 1e-6) piece.push({
+				x: xr0,
+				y: b0
+			});
+			piece.push({
+				x: xr1,
+				y: b1
+			});
+			if (xr1 - xl1 >= 1e-6) piece.push({
+				x: xl1,
+				y: b1
+			});
+			if (piece.length >= 3) out.push(piece);
+		}
+	}
+	return out;
+}
+//#endregion
+//#region src/core/stubWalls.ts
+/** これより短い壁を「柱の記号」とみなす（mm） */
+var STUB_MAX = 220;
+/** 詰めたあとの開口の幅の下限（mm）。これより狭くなるなら触らない */
+var OPEN_MIN = 600;
+/** 短い壁 s が、長い壁の厚みの中に収まっているなら、その壁と範囲 */
+function hostOf(s, walls) {
+	const L = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+	for (const w of walls) {
+		if (w === s || w.arc) continue;
+		const wl = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+		if (wl < 600) continue;
+		const ux = (w.b.x - w.a.x) / wl;
+		const uy = (w.b.y - w.a.y) / wl;
+		const along = (p) => (p.x - w.a.x) * ux + (p.y - w.a.y) * uy;
+		const off = (p) => -(p.x - w.a.x) * uy + (p.y - w.a.y) * ux;
+		const ta = along(s.a);
+		const tb = along(s.b);
+		const da = off(s.a);
+		const db = off(s.b);
+		const perp = Math.abs(tb - ta) < L * .3;
+		const [n0, n1] = perp ? [Math.min(da, db), Math.max(da, db)] : [Math.min(da, db) - s.thickness / 2, Math.max(da, db) + s.thickness / 2];
+		const [t0, t1] = perp ? [Math.min(ta, tb) - s.thickness / 2, Math.max(ta, tb) + s.thickness / 2] : [Math.min(ta, tb), Math.max(ta, tb)];
+		if (n0 < -w.thickness / 2 - 5 || n1 > w.thickness / 2 + 5) continue;
+		if (t0 < -5 || t1 > wl + 5) continue;
+		return {
+			host: w,
+			t0,
+			t1
+		};
+	}
+	return null;
+}
+/** 壁の中の柱（短い壁）を外し、開口の端に掛かる柱のぶんは開口を詰める。変える所が無ければ同じ Floor を返す */
+function absorbStubWalls(f) {
+	const withOpening = new Set(f.openings.map((o) => o.wallId));
+	const drop = /* @__PURE__ */ new Set();
+	const trim = /* @__PURE__ */ new Map();
+	const cur = (o) => trim.get(o.id) ?? {
+		t0: o.t0,
+		t1: o.t1
+	};
+	for (const s of f.walls) {
+		if (s.arc || s.topMm != null || withOpening.has(s.id)) continue;
+		if (Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y) >= STUB_MAX) continue;
+		const hit = hostOf(s, f.walls);
+		if (!hit || hit.host.topMm != null) continue;
+		const over = f.openings.filter((o) => o.wallId === hit.host.id && cur(o).t0 < hit.t1 - 1 && cur(o).t1 > hit.t0 + 1);
+		if (!over.length) {
+			drop.add(s.id);
+			continue;
+		}
+		if (over.length > 1 || over[0].kind !== "open") continue;
+		const o = over[0];
+		const c = cur(o);
+		const fromStart = hit.t0 <= c.t0 + 1;
+		if (fromStart === hit.t1 >= c.t1 - 1) continue;
+		const next = fromStart ? {
+			t0: hit.t1,
+			t1: c.t1
+		} : {
+			t0: c.t0,
+			t1: hit.t0
+		};
+		if (next.t1 - next.t0 < OPEN_MIN) continue;
+		trim.set(o.id, next);
+		drop.add(s.id);
+	}
+	if (!drop.size) return f;
+	return {
+		...f,
+		walls: f.walls.filter((w) => !drop.has(w.id)),
+		openings: f.openings.map((o) => trim.has(o.id) ? {
+			...o,
+			...trim.get(o.id)
+		} : o)
+	};
+}
 //#endregion
 //#region src/styles/spec.ts
 var BUILDER_SPECS = [{
@@ -25162,8 +25528,45 @@ function shutterGaps(f) {
 	}
 	return out;
 }
-/** 上下階の階段（上階の床に穴をあける） */
-function stairVoidsFor(model, f) {
+/** 斜め・曲線の辺のある吹抜か（床・天井を、帯の近似ではなく形どおりに抜く） */
+var isCurvedVoid = (r) => r.type === "void" && r.polygon.length >= 3 && !isRectilinear(r.polygon, 2);
+function exactVoidsFor(model, f) {
+	const polys = f.rooms.filter(isCurvedVoid).map((r) => r.polygon);
+	return polys.length ? {
+		rects: stairVoidsFor(model, f, true),
+		polys
+	} : void 0;
+}
+/** 多角形の範囲に、斜め・曲線の吹抜が掛かるなら、形どおりに引いた残り（台形の集まり）。掛からなければ null（長方形で分ける今までの道） */
+function exactPieces(polyMm, exact) {
+	if (!exact) return null;
+	const bb = bboxOf$2(polyMm);
+	if (!exact.polys.some((h) => {
+		const hb = bboxOf$2(h);
+		return Math.min(bb.maxX, hb.maxX) - Math.max(bb.minX, hb.minX) > 1 && Math.min(bb.maxY, hb.maxY) - Math.max(bb.minY, hb.minY) > 1;
+	})) return null;
+	const toPoly = (r) => [
+		{
+			x: r.minX,
+			y: r.minY
+		},
+		{
+			x: r.maxX,
+			y: r.minY
+		},
+		{
+			x: r.maxX,
+			y: r.maxY
+		},
+		{
+			x: r.minX,
+			y: r.maxY
+		}
+	];
+	return polygonMinusPolygons(polyMm, [...exact.polys, ...exact.rects.map(toPoly)]);
+}
+/** 上下階の階段（上階の床に穴をあける）。skipCurved = 斜め・曲線の吹抜を入れない（形どおりに抜く側で扱う） */
+function stairVoidsFor(model, f, skipCurved = false) {
 	const idx = model.floors.indexOf(f);
 	const below = model.floors[idx - 1];
 	const out = [];
@@ -25171,7 +25574,7 @@ function stairVoidsFor(model, f) {
 		for (const s of below.stairs) if (s.goesUp) out.push(...stairFootprint(s));
 	}
 	for (const s of f.stairs) if (!s.goesUp && below && !below.stairs.some((b) => Math.abs(b.minX - s.minX) < 300 && Math.abs(b.minY - s.minY) < 300)) out.push(...stairFootprint(s));
-	for (const r of f.rooms) if (r.type === "void") out.push(...voidRects(r.polygon));
+	for (const r of f.rooms) if (r.type === "void" && !(skipCurved && isCurvedVoid(r))) out.push(...voidRects(r.polygon));
 	return out;
 }
 /**
@@ -25415,7 +25818,7 @@ function wallCeilingMm(f, w) {
 	return best || f.ceilingHeight;
 }
 function buildBuilding(model, opts) {
-	const arcFloors = model.floors.map((f) => withSmoothArcWalls(f));
+	const arcFloors = model.floors.map((f) => absorbStubWalls(withSmoothArcWalls(f)));
 	if (arcFloors.some((f, i) => f !== model.floors[i])) model = {
 		...model,
 		floors: arcFloors
@@ -25430,7 +25833,8 @@ function buildBuilding(model, opts) {
 		topY: 0,
 		doorLeaves: [],
 		doors: [],
-		sashes: []
+		sashes: [],
+		downlights: []
 	};
 	const ext = opts.exterior;
 	const spec = opts.spec ?? BUILDER_SPECS[0];
@@ -25525,6 +25929,7 @@ function buildBuilding(model, opts) {
 			mb.cylinder(key, V(j.p.x * MM, bottom, j.p.y * MM), j.t * MM / 2 - .002, wallTop - bottom, 24, false);
 		}
 		const voids = stairVoidsFor(model, f);
+		const exactV = exactVoidsFor(model, f);
 		const garageRects = f.level === 1 ? polygonToRects(f.rooms.filter(isBuiltinGarage).map((r) => r.polygon)) : [];
 		for (const r of f.rooms) {
 			if (r.type === "void") continue;
@@ -25540,12 +25945,12 @@ function buildBuilding(model, opts) {
 			const offMm = roomFloorOffsetMm(r);
 			if (offMm !== 0) {
 				const y = fl + offMm * MM;
-				emitFlat(mb, key, r.polygon, voids, y, true);
-				emitSlab(mb, "int.slab", r.polygon, voids, fl - .24, y - .005, offMm > 0 ? "int.wall" : "ext.wall");
+				emitFlat(mb, key, r.polygon, voids, y, true, exactV);
+				emitSlab(mb, "int.slab", r.polygon, voids, fl - .24, y - .005, offMm > 0 ? "int.wall" : "ext.wall", void 0, exactV);
 				buildStepEdges(mb, f, r, fl);
 				continue;
 			}
-			emitFlat(mb, key, r.polygon, voids, fl, true);
+			emitFlat(mb, key, r.polygon, voids, fl, true, exactV);
 		}
 		const holes = f.outline.filter((l) => isHoleLoop(l, f.outline));
 		const domaRects = polygonToRects(f.rooms.filter((r) => r.type !== "void" && roomFloorOffsetMm(r) !== 0).map((r) => r.polygon));
@@ -25563,22 +25968,34 @@ function buildBuilding(model, opts) {
 				rects: voids,
 				y0: fasciaY0,
 				y1: fl
-			} : void 0);
+			} : void 0, exactV && {
+				rects: [...exactV.rects, ...holeRects],
+				polys: exactV.polys,
+				faceRects: exactV.rects
+			});
 			if (lower) emitFlat(mb, "ext.soffit", poly, [
 				...voids,
 				...holeRects,
 				...lowerRects
-			], fl - .25, false);
+			], fl - .25, false, exactV && {
+				rects: [
+					...exactV.rects,
+					...holeRects,
+					...lowerRects
+				],
+				polys: exactV.polys
+			});
 		}
 		const upper = model.floors[model.floors.indexOf(f) + 1];
 		const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
+		const ceilExact = upper ? exactVoidsFor(model, upper) : void 0;
 		for (const r of f.rooms) {
 			if (f.level === 1 && (isSeparateGarage(r) || isExteriorWorks(r.type))) {
 				buildAnnexRoof(mb, f, r);
 				continue;
 			}
 			if (r.type === "void") {
-				if (f.level >= 2) emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+				if (f.level >= 2) emitFlat(mb, "int.ceiling", r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false, ceilExact);
 				continue;
 			}
 			if (r.type === "balcony" || r.type === "porch") {
@@ -25597,9 +26014,9 @@ function buildBuilding(model, opts) {
 				emitFlat(mb, "ext.soffit", r.polygon, [], top - (upper ? .25 : .02), false);
 				continue;
 			}
-			emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? "int.ceilingMain" : "int.ceiling", r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
+			emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? "int.ceilingMain" : "int.ceiling", r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false, ceilExact);
 		}
-		buildCeilingDetails(mb, f, fl, spec, ceilVoids);
+		buildCeilingDetails(mb, f, fl, spec, ceilVoids, meta.downlights);
 		for (const s of f.stairs) {
 			if (!s.goesUp || !upper) continue;
 			buildStairs(mb, s, fl, upper.elevation * MM, f, opts.stairBuild, { glow: spec.indirectLighting });
@@ -25904,10 +26321,15 @@ function floorKeyFor(r) {
 	}
 }
 /** 水平な面（床・天井）。直交多角形なら穴（階段・吹抜）を矩形で抜く */
-function emitFlat(mb, key, polyMm, voidsMm, y, faceUp) {
+function emitFlat(mb, key, polyMm, voidsMm, y, faceUp, exact) {
 	const n = faceUp ? up : up.clone().negate();
 	const uA = V(1, 0, 0);
 	const vA = V(0, 0, 1);
+	const pieces = exactPieces(polyMm, exact);
+	if (pieces) {
+		for (const piece of pieces) mb.polygon(key, piece.map((p) => V(p.x * MM, y, p.y * MM)), n, uA, vA);
+		return;
+	}
 	if (isRectilinear(polyMm, 2)) {
 		let rects = polygonToRects([polyMm], 3);
 		rects = rectsMinus(rects, voidsMm);
@@ -26028,10 +26450,15 @@ function polygonMinusRects(poly, rects) {
 * @param fascia 吹抜・階段の穴の縁に張る小口（幕板）: rects = 穴（この縁にだけ張る）、y0 = 下端（下の階の天井の高さ）、y1 = 上端（この階の床の高さ）。
 *   張らないと、下の階から穴の縁を見上げたときに、床の厚みと天井懐のすき間から上の階の部屋の中（家具の裏）が見える
 */
-function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key, fascia) {
-	emitFlat(mb, key, polyMm, voidsMm, y0, false);
+function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key, fascia, exact) {
+	emitFlat(mb, key, polyMm, voidsMm, y0, false, exact);
 	if (fascia?.rects.length) {
-		const inHole = (x, y) => fascia.rects.some((r) => x > r.minX && x < r.maxX && y > r.minY && y < r.maxY);
+		const exactPcs = exactPieces(polyMm, exact);
+		const inRects = (rs, x, y) => rs.some((r) => x > r.minX && x < r.maxX && y > r.minY && y < r.maxY);
+		const inHole = (x, y) => exactPcs ? exact.polys.some((h) => pointInPolygon({
+			x,
+			y
+		}, h)) || inRects(exact.faceRects ?? exact.rects, x, y) : inRects(fascia.rects, x, y);
 		const toPoly = (r) => [
 			{
 				x: r.minX,
@@ -26050,7 +26477,7 @@ function emitSlab(mb, key, polyMm, voidsMm, y0, y1, edgeKey = key, fascia) {
 				y: r.maxY
 			}
 		];
-		const pieces = isRectilinear(polyMm, 2) ? rectsMinus(polygonToRects([polyMm], 3), voidsMm).map(toPoly) : polygonMinusRects(polyMm, voidsMm);
+		const pieces = exactPcs ?? (isRectilinear(polyMm, 2) ? rectsMinus(polygonToRects([polyMm], 3), voidsMm).map(toPoly) : polygonMinusRects(polyMm, voidsMm));
 		for (const pc of pieces) for (let i = 0; i < pc.length; i++) {
 			const a = pc[i];
 			const b = pc[(i + 1) % pc.length];
@@ -27417,6 +27844,59 @@ function solidWallRuns(f, p, q) {
 	}
 	return mergeIntervals(out, 20).map(([a, b]) => [a * MM, b * MM]);
 }
+/**
+* ダウンライトが近くの壁に落とす光（スカラップ）。器具 (x, z)（m）から 0.3〜1.15 m の、天井まで立つ壁の面に、
+* 光の形の絵（f.coveGlowScallop）を加算で重ねる。設計事務所の内観パースは、壁際のダウンライトの光のだまりで壁に表情を付ける。
+* 以前は器具が白い点として天井に並ぶだけで、壁も床も一様な明るさだった。窓・戸の所と、隣の部屋の壁には出さない
+*/
+function lampScallops(mb, f, r, x, z, ceil, fl) {
+	for (const w of f.walls) {
+		if (w.arc) continue;
+		if (w.topMm != null && w.topMm < roomCeilingMm(f, r) - 100) continue;
+		const ax = w.a.x * MM;
+		const az = w.a.y * MM;
+		const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) * MM;
+		if (L < .6) continue;
+		const ux = (w.b.x - w.a.x) * MM / L;
+		const uz = (w.b.y - w.a.y) * MM / L;
+		const t = (x - ax) * ux + (z - az) * uz;
+		const s = -(x - ax) * uz + (z - az) * ux;
+		const a = Math.abs(s) - w.thickness * MM / 2;
+		if (a < .3 || a > 1.15 || t < .15 || t > L - .15) continue;
+		const sg = s >= 0 ? 1 : -1;
+		const nx = uz * sg;
+		const nz = -ux * sg;
+		if (!pointInPolygon({
+			x: (x + nx * (a - .05)) / .001,
+			y: (z + nz * (a - .05)) / .001
+		}, r.polygon)) continue;
+		let lo = Math.max(0, t - SCALLOP.u * a);
+		let hi = Math.min(L, t + SCALLOP.u * a);
+		let blocked = false;
+		for (const o of f.openings) {
+			if (o.wallId !== w.id) continue;
+			const o0 = o.t0 * MM - .05;
+			const o1 = o.t1 * MM + .05;
+			if (t > o0 && t < o1) {
+				blocked = true;
+				break;
+			}
+			if (o1 <= t) lo = Math.max(lo, o1);
+			else if (o0 >= t) hi = Math.min(hi, o0);
+		}
+		if (blocked || hi - lo < .3) continue;
+		const full = SCALLOP.z * a;
+		const h = Math.min(full, ceil - fl - .06);
+		const span = 2 * SCALLOP.u * a;
+		const c = V(ax + ux * ((lo + hi) / 2) - nx * (w.thickness * MM / 2 + .004), ceil - .012 - h / 2, az + uz * ((lo + hi) / 2) - nz * (w.thickness * MM / 2 + .004));
+		mb.glowPlane("f.coveGlowScallop", c, V(ux, 0, uz), V(0, 1, 0), hi - lo, h, [
+			.5 + (lo - t) / span,
+			1 - h / full,
+			.5 + (hi - t) / span,
+			1
+		]);
+	}
+}
 /** 主室（LDK）: 天井を別の素材にできる部屋 */
 var MAIN_CEILING_ROOMS = /* @__PURE__ */ new Set([
 	"ldk",
@@ -27425,7 +27905,7 @@ var MAIN_CEILING_ROOMS = /* @__PURE__ */ new Set([
 	"kitchen"
 ]);
 /** 天井のダウンライト・間接照明 */
-function buildCeilingDetails(mb, f, fl, spec, ceilVoids = []) {
+function buildCeilingDetails(mb, f, fl, spec, ceilVoids = [], out = []) {
 	const openAbove = (xMm, yMm, margin = 100) => ceilVoids.some((v) => xMm > v.minX - margin && xMm < v.maxX + margin && yMm > v.minY - margin && yMm < v.maxY + margin);
 	for (const r of f.rooms) {
 		const ceil = fl + roomCeilingMm(f, r) * MM;
@@ -27449,10 +27929,12 @@ function buildCeilingDetails(mb, f, fl, spec, ceilVoids = []) {
 				if (!pointInPolygon({
 					x: x / .001,
 					y: z / .001
-				}, r.polygon)) return;
-				if (openAbove(x / .001, z / .001)) return;
+				}, r.polygon)) return false;
+				if (openAbove(x / .001, z / .001)) return false;
 				mb.cylinder("f.downlightRing", V(x, ceil - .004, z), rr + .008, .003, 20);
 				mb.cylinder("f.downlight", V(x, ceil - .006, z), rr, .003, 20);
+				lampScallops(mb, f, r, x, z, ceil, fl);
+				return true;
 			};
 			const W = x1 - x0;
 			const Dp = z1 - z0;
@@ -27465,8 +27947,13 @@ function buildCeilingDetails(mb, f, fl, spec, ceilVoids = []) {
 				"hall",
 				"entrance",
 				"corridor"
-			].includes(r.type) || W * Dp < 7) lamp((x0 + x1) / 2, (z0 + z1) / 2, .04);
-			else {
+			].includes(r.type) || W * Dp < 7) {
+				if (lamp((x0 + x1) / 2, (z0 + z1) / 2, .04)) out.push({
+					pos: V((x0 + x1) / 2, ceil, (z0 + z1) / 2),
+					roomId: r.id,
+					lamps: 1
+				});
+			} else {
 				const alongX = W >= Dp;
 				const L = alongX ? W : Dp;
 				const S = alongX ? Dp : W;
@@ -27475,14 +27962,25 @@ function buildCeilingDetails(mb, f, fl, spec, ceilVoids = []) {
 				for (let i = 0; i < nL; i++) for (let j = 0; j < nS; j++) {
 					const cL = nL === 1 ? L / 2 : .9 + (L - 1.8) * i / (nL - 1);
 					const cS = nS === 1 ? S / 2 : .9 + (S - 1.8) * j / (nS - 1);
+					const sum = V(0, 0, 0);
+					let lit = 0;
 					for (const k of [
 						-1,
 						0,
 						1
 					]) {
 						const a = cL + k * .3;
-						lamp(alongX ? x0 + a : x0 + cS, alongX ? z0 + cS : z0 + a, .0375);
+						const x = alongX ? x0 + a : x0 + cS;
+						const z = alongX ? z0 + cS : z0 + a;
+						if (!lamp(x, z, .0375)) continue;
+						sum.add(V(x, ceil, z));
+						lit++;
 					}
+					if (lit) out.push({
+						pos: sum.multiplyScalar(1 / lit),
+						roomId: r.id,
+						lamps: lit
+					});
 				}
 			}
 		} else if (!["bath", "toilet"].includes(r.type) && !openAbove((x0 + x1) / 2 / .001, (z0 + z1) / 2 / .001)) mb.cylinder("f.lampShade", V((x0 + x1) / 2, ceil - .08, (z0 + z1) / 2), .28, .08, 28);
@@ -28050,6 +28548,54 @@ var Frame = class {
 		const c = this.origin.clone().addScaledVector(this.along, u).addScaledVector(this.inward, v + d / 2);
 		c.y = this.origin.y + y0;
 		this.mb.roundedBox(key, c, this.along, w, h, d, r, 4);
+	}
+	/**
+	* ふくらみのあるクッション（ソファの座・背・置きクッション）。中心 (u, v)・中心の高さ y。w = 幅、t = 厚み、d = 奥行（立てるときは高さ）。
+	*  - stand: 立てる（厚みが奥行の向き。ふくらみ crownTop が部屋側の面）
+	*  - lean: 奥（壁側）へもたせ掛ける角度、yaw: 上から見た回り、roll: 横への傾き（ラジアン）
+	*  - plan: 平面図・当たり判定に、同じ大きさの箱として載せる（座クッション）
+	*/
+	cushion(key, u, v, y, w, t, d, o = {}) {
+		const c = this.point(u, v, y);
+		const up = new THREE.Vector3(0, 1, 0);
+		const basis = o.stand ? new THREE.Matrix4().makeBasis(this.along, this.inward, up) : new THREE.Matrix4().makeBasis(this.along, up, this.inward);
+		const m = new THREE.Matrix4();
+		if (o.lean) {
+			const s = new THREE.Vector3().crossVectors(this.along, up).dot(this.inward) >= 0 ? -1 : 1;
+			m.makeRotationAxis(this.along, s * o.lean);
+		}
+		if (o.roll) m.premultiply(new THREE.Matrix4().makeRotationAxis(this.inward, o.roll));
+		if (o.yaw) m.premultiply(new THREE.Matrix4().makeRotationAxis(up, o.yaw));
+		m.multiply(basis);
+		m.setPosition(c);
+		this.mb.cushion(key, m, w, t, d, o);
+		if (!o.plan || o.stand) return;
+		if (currentPlan) currentPlan.push({
+			key,
+			shape: "box",
+			cx: c.x,
+			cz: c.z,
+			w,
+			d,
+			ax: this.along.x,
+			az: this.along.z,
+			r: 0,
+			top: y + t / 2,
+			roomId: currentRoomId
+		});
+		if (currentOcc && y + t / 2 > .3) {
+			const ex = Math.abs(this.along.x) * w / 2 + Math.abs(this.inward.x) * d / 2;
+			const ez = Math.abs(this.along.z) * w / 2 + Math.abs(this.inward.z) * d / 2;
+			currentOcc.push({
+				minX: c.x - ex,
+				maxX: c.x + ex,
+				minZ: c.z - ez,
+				maxZ: c.z + ez,
+				maxY: y + t / 2,
+				baseY: this.origin.y,
+				key
+			});
+		}
 	}
 	/** 回転体（器・花器）: 断面 [半径, 高さ] の折れ線を軸のまわりに回す。y は底の高さ */
 	lathe(key, u, v, y, profile, seg = 28) {
@@ -28921,69 +29467,189 @@ function cupboardRun(fr, u, v, cw, front) {
 	const n = Math.max(2, Math.round(cw / .6));
 	for (let k = 1; k < n; k++) fr.box("f.handle", u - cw / 2 + cw / n * k, front > 0 ? v + .45 - .003 : v - .009, .004, .012, .12, .76);
 }
+/** ソファの寸法（m）: 奥行・台の高さ・背の台の厚み・座クッションの厚み・カウチの幅 */
+var SOFA = {
+	d: .9,
+	baseTop: .26,
+	backT: .17,
+	seatT: .15,
+	chaiseW: .95
+};
+/**
+* 低く奥行きのある、肘のないモジュールソファ（ミノッティ・B&B イタリア系。設計事務所の提案でよく選ばれる形）。
+* 張りぐるみの台（奥に引いた黒い台座で浮かせる）の上に、ふくらんだ座クッション・背にもたせた背クッション・置きクッション・掛け布。
+* 以前は角を丸めた箱の組み合わせで、座も背もまっすぐな板、置きクッションは垂直に立った板だった（「CG の箱」に見えていた）
+*/
 function sofa(fr, u, v, w, chaise) {
-	const d = .9;
-	fr.box("f.metal", u, v + .06, w - .12, .78, 0, .07);
-	fr.box("f.fabric", u, v, w, d, .07, .25);
-	const n = w > 2.4 ? 3 : 2;
-	const sw = w / n;
-	for (let i = 0; i < n; i++) fr.box("f.fabric", u - w / 2 + sw * (i + .5), v + .2, sw - .012, .7, .32, .1);
-	fr.box("f.fabric", u, v, w, .2, .32, .36);
-	for (let i = 0; i < n; i++) fr.box("f.fabric", u - w / 2 + sw * (i + .5), v + .16, sw - .06, .16, .42, .34);
-	fr.box("f.fabric2", u - w / 2 + .35, v + .3, .42, .12, .42, .36);
-	fr.box("f.fabric2", u + w / 2 - .55, v + .3, .38, .12, .42, .32);
+	const { d, baseTop, backT, seatT } = SOFA;
+	const seatY = baseTop - .01 + seatT / 2;
+	const seatTop = baseTop - .01 + seatT;
+	fr.box("f.metal", u, v + .07, w - .14, d - .14, 0, .06);
+	fr.box("f.fabric", u, v, w, d, .06, baseTop - .06);
+	fr.box("f.fabric", u, v, w, backT, baseTop - .02, .36);
+	const sg = chaise ? chaise.side === "right" ? 1 : -1 : 0;
+	const cw = chaise ? Math.min(SOFA.chaiseW, w - .6) : 0;
+	const rest = w - cw;
+	const n = rest > 2.4 ? 3 : rest > 1.25 ? 2 : 1;
+	const sw = rest / n;
+	const mods = [];
+	for (let i = 0; i < n; i++) mods.push({
+		cu: u - sg * (cw / 2) - rest / 2 + sw * (i + .5),
+		mw: sw,
+		chaise: false
+	});
+	if (chaise) mods.push({
+		cu: u + sg * (w / 2 - cw / 2),
+		mw: cw,
+		chaise: true
+	});
+	const seatV0 = backT - .02;
+	for (const md of mods) {
+		const front = md.chaise ? chaise.depth : d + .015;
+		fr.cushion("f.fabric", md.cu, v + (seatV0 + front) / 2, seatY, md.mw - .008, seatT, front - seatV0, {
+			r: .045,
+			crownTop: .022,
+			crownSide: .006,
+			plan: true
+		});
+		fr.cushion("f.fabric", md.cu, v + backT + .085, seatTop + .215, md.mw - .03, .18, .45, {
+			stand: true,
+			lean: .17,
+			r: .06,
+			crownTop: .035,
+			crownBottom: .012,
+			crownSide: .01
+		});
+	}
 	if (chaise) {
-		const sg = chaise.side === "right" ? 1 : -1;
-		const cw = .95;
 		const cu = u + sg * (w / 2 - cw / 2);
 		const cd = chaise.depth - d;
-		fr.box("f.metal", cu, v + d + .02, .83, cd - .1, 0, .07);
-		fr.box("f.fabric", cu, v + d, cw, cd, .07, .25);
-		fr.box("f.fabric", cu, v + d + .01, .938, cd - .08, .32, .1);
-		fr.box("f.fabric", cu + sg * (cw / 2 - .09), v + d, .18, cd - .05, .32, .22);
-		fr.box("f.fabric2", cu - sg * .1, v + d + .3, .4, .14, .42, .3);
+		fr.box("f.metal", cu, v + d - .02, cw - .14, cd - .05, 0, .06);
+		fr.box("f.fabric", cu, v + d - .04, cw, cd + .04, .06, baseTop - .06);
+		fr.cushion("f.fabric", cu + sg * (cw / 2 - .085), v + d + (cd - .06) / 2, seatTop + .07, .17, .2, cd - .06, {
+			r: .07,
+			crownTop: .012,
+			crownSide: .008
+		});
+	}
+	const endL = u - w / 2;
+	const endR = u + w / 2;
+	const pillow = (key, pu, pv, size, h, lean, yaw, roll = 0) => fr.cushion(key, pu, v + pv, seatTop + h / 2 * Math.cos(lean) + .012, size, .05, h, {
+		stand: true,
+		lean,
+		yaw,
+		roll,
+		r: .024,
+		crownTop: .05,
+		crownBottom: .045,
+		pinch: .055,
+		seg: 8
+	});
+	pillow("f.fabric2", endL + .33, .43, .48, .48, .36, .1);
+	pillow("f.throw", endL + .52, .535, .5, .3, .3, -.12, .03);
+	if (w >= 1.9) pillow("f.fabric2", endR - (chaise && sg > 0 ? .36 : .38), .43, .44, .44, .34, -.14, -.03);
+	if (w >= 1.9) {
+		const end = mods[mods.length - 1];
+		const front = end.chaise ? chaise.depth : d + .015;
+		const tu = end.cu + (end.chaise ? -sg * .06 : .1);
+		const y0 = seatTop + .016;
+		fr.mb.drape("f.throw", [
+			fr.point(tu, v + front - .5, y0 + .004),
+			fr.point(tu, v + front - .3, y0 + .006),
+			fr.point(tu, v + front - .1, y0 + .001),
+			fr.point(tu, v + front + .012, y0 - .03),
+			fr.point(tu, v + front + .03, y0 - .13),
+			fr.point(tu, v + front + .034, y0 - .27)
+		], fr.along, .46, {
+			ripple: .007,
+			skew: .05
+		});
 	}
 }
 function coffeeTable(fr, u, v) {
 	const p = fr.point(u, v + .3, 0);
-	currentModels.push({
-		id: "coffee_table_round_01",
-		pos: p,
-		rotY: .3,
-		height: .4
-	});
+	const cv = v + .3;
+	const su = u + .56;
+	const sv = cv + .06;
+	const q = fr.point(su, sv, 0);
+	if (currentPlan) {
+		currentPlan.push({
+			key: "f.counter",
+			shape: "circle",
+			cx: p.x,
+			cz: p.z,
+			w: 0,
+			d: 0,
+			ax: 1,
+			az: 0,
+			r: .45,
+			top: .34,
+			roomId: currentRoomId
+		});
+		currentPlan.push({
+			key: "f.counter",
+			shape: "circle",
+			cx: q.x,
+			cz: q.z,
+			w: 0,
+			d: 0,
+			ax: 1,
+			az: 0,
+			r: .2,
+			top: .43,
+			roomId: currentRoomId
+		});
+	}
+	if (currentOcc) {
+		currentOcc.push({
+			minX: p.x - .5,
+			maxX: p.x + .5,
+			minZ: p.z - .5,
+			maxZ: p.z + .5,
+			maxY: p.y + .4,
+			baseY: p.y
+		});
+		currentOcc.push({
+			minX: q.x - .2,
+			maxX: q.x + .2,
+			minZ: q.z - .2,
+			maxZ: q.z + .2,
+			maxY: q.y + .43,
+			baseY: q.y
+		});
+	}
+	const table = (key, tu, tv, R, H, T, legR) => {
+		fr.lathe(key, tu, tv, H - T, [
+			[0, 0],
+			[R - T * .9, 0],
+			[R - .003, T * .55],
+			[R, T * .8],
+			[R - .004, T],
+			[0, T]
+		], 56);
+		for (let k = 0; k < 3; k++) {
+			const a = k / 3 * Math.PI * 2 + .5;
+			const top = fr.point(tu + Math.cos(a) * R * .62, tv + Math.sin(a) * R * .62, H - T);
+			const foot = fr.point(tu + Math.cos(a) * R * .78, tv + Math.sin(a) * R * .78, 0);
+			fr.mb.tube("f.metal", foot, top, legR, legR, 10);
+		}
+	};
+	table("f.stoneTop", u, cv, .45, .34, .024, .009);
+	table("f.metal", su, sv, .2, .43, .01, .006);
+	const book = (key, du, dv, w, d, y, yaw) => {
+		const m = new THREE.Matrix4().makeRotationY(yaw);
+		const ax = fr.along.clone().applyMatrix4(m);
+		fr.mb.roundedBox(key, fr.point(u + du, cv + dv, y), ax, w, .022, d, .004, 1);
+	};
+	book("f.book3", -.16, .05, .27, .2, .34, .2);
+	book("f.book2", -.15, .06, .23, .17, .362, -.12);
 	currentModels.push({
 		id: "ceramic_vase_01",
-		pos: p.clone().setY(p.y + .4).addScaledVector(fr.along, .18),
+		pos: fr.point(u + .17, cv - .08, .34),
 		rotY: 1.1,
 		height: .26
 	});
-	if (currentPlan) currentPlan.push({
-		key: "f.counter",
-		shape: "circle",
-		cx: p.x,
-		cz: p.z,
-		w: 0,
-		d: 0,
-		ax: 1,
-		az: 0,
-		r: .48,
-		top: .4,
-		roomId: currentRoomId
-	});
-	if (currentOcc) currentOcc.push({
-		minX: p.x - .5,
-		maxX: p.x + .5,
-		minZ: p.z - .5,
-		maxZ: p.z + .5,
-		maxY: p.y + .4,
-		baseY: p.y
-	});
-	if (modelsAvailable) return;
-	fr.box("f.counter", u, v, 1.1, .55, .28, .06);
-	fr.box("f.counter", u, v + .08, .8, .39, 0, .28);
-	fr.box("f.fabric2", u - .25, v + .16, .26, .2, .34, .035);
-	fr.cyl("f.white", u + .28, v + .27, .07, .34, .1, 18);
+	if (!modelsAvailable) fr.lathe("f.white", u + .17, cv - .08, .34, CUP);
 }
 /** 家具まわりの間接照明（納まりの「間接照明」と同じ設定。浮かせたテレビボードの下の光）。組み立て前に設定する */
 var furnitureLighting = { indirect: true };
@@ -29171,6 +29837,18 @@ var PLATE = [
 	[.123, .0145],
 	[.082, .007],
 	[0, .006]
+];
+/** 湯のみ（口が少し開いた筒。薄い縁） */
+var CUP = [
+	[0, 0],
+	[.027, 0],
+	[.031, .004],
+	[.036, .05],
+	[.039, .085],
+	[.0375, .087],
+	[.0335, .05],
+	[.028, .009],
+	[0, .007]
 ];
 function diningSet(fr, u, v, lights, roomId, ceilingY, width) {
 	const tw = width ?? 1.8;
@@ -29528,9 +30206,30 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 		const sd = .435;
 		fr.box("f.stainless", u, v + (topD - sd) / 2, sw, sd, .6499999999999999, .19);
 		fr.box("f.carcass", u, v + (topD - sd) / 2 + .01, .78, .415, .6599999999999999, .17);
-		fr.cyl("f.chrome", u + .3, faucetV, .016, H, .3, 12);
-		fr.box("f.chrome", u + .3, faucetV - .1, .03, .2, 1.13, .025);
-		fr.cyl("f.chrome", u + .3, faucetV - .19, .012, 1.02, .12, 10);
+		const fu = u + .3;
+		const dv = faucetV >= (topD - sd) / 2 + v + sd / 2 ? -1 : 1;
+		fr.cyl("f.chrome", fu, faucetV, .024, H, .012, 20);
+		fr.mb.tubePath("f.chrome", [
+			fr.point(fu, faucetV, .86),
+			fr.point(fu, faucetV, 1.05),
+			fr.point(fu, faucetV + dv * .025, 1.135),
+			fr.point(fu, faucetV + dv * .095, 1.175),
+			fr.point(fu, faucetV + dv * .165, 1.145),
+			fr.point(fu, faucetV + dv * .19, 1.075)
+		], .0115, 10);
+		fr.mb.tube("f.chrome", fr.point(fu + .012, faucetV, .9249999999999999), fr.point(fu + .075, faucetV, .95), .006, .005, 8);
+		if (currentOcc) {
+			const c = fr.point(fu, faucetV, 0);
+			currentOcc.push({
+				minX: c.x - .03,
+				maxX: c.x + .03,
+				minZ: c.z - .03,
+				maxZ: c.z + .03,
+				maxY: 1.18,
+				baseY: fr.origin.y + H,
+				key: "f.chrome"
+			});
+		}
 	};
 	/** IH 3 口（黒ガラス、天板に落とし込み） */
 	const ih = (u, v, topD) => {
@@ -29548,11 +30247,14 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 		fr.box(hoodKey, u, v - .25, .9, .5, 1.66, .22);
 		fr.box(hoodKey, u, v - .11, .22, .22, 1.88, Math.max(.05, ceilingY - 1.88));
 	};
-	/** 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた） */
+	/**
+	* 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた）。
+	* 器は回転体（磁器の鉢と湯のみ）。以前は角の見える円柱で、手前に大きく写ると白い筒に見えていた
+	*/
 	const props = (u, v) => {
-		fr.box("f.handle", u - .1 * stoveSign, v, .4, .26, H, .015);
-		fr.cyl("f.white", u - .14 * stoveSign, v, .065, .865, .08);
-		fr.cyl("f.white", u + .02 * stoveSign, v + .02, .04, .865, .12);
+		fr.box("f.handle", u - .1 * stoveSign, v, .4, .26, H, .012);
+		fr.lathe("f.white", u - .15 * stoveSign, v + .13, .862, BOWL_SMALL.map(([r, h]) => [r * 1.5, h * 1.25]), 32);
+		fr.lathe("f.white", u + .03 * stoveSign, v + .15, .862, CUP, 28);
 	};
 	/** 冷蔵庫（扉面が平らな W680 D700 H1820） */
 	const fridgeBox = (u) => {

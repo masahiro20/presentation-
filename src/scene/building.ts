@@ -8,9 +8,11 @@ import { DOMA_DROP_MM, isDomaRoom, isExteriorWorks, isSeparateGarage, roomFloorO
 import { pointInPolygon, isHoleLoop, bboxOf, mergeIntervals, subtractIntervals } from '../core/geometry';
 import { isOpenSkyBalcony } from '../core/balcony';
 import { isRectilinear, polygonToRects, rectsMinus, offsetPolygon, type Rect } from '../core/rects';
-import { MeshBuilder, topClip, type ClipPlane, V } from './meshBuilder';
+import { MeshBuilder, SCALLOP, topClip, type ClipPlane, V } from './meshBuilder';
 import { stairLayout, effectiveStepCount, stairFootprint } from '../core/stairs';
 import { isArcChord, sameArc, withSmoothArcWalls } from '../core/arcWalls';
+import { polygonMinusPolygons } from '../core/polyMinus';
+import { absorbStubWalls } from '../core/stubWalls';
 import type { ExteriorStyle } from '../styles/presets';
 import { BUILDER_SPECS, effectiveOpening, type BuilderSpec } from '../styles/spec';
 
@@ -64,6 +66,8 @@ export interface BuildingMeta {
   topY: number;
   /** 窓の障子 1 枚ごと（立面図の建具記号用）: ガラス面の 4 隅（ワールド）と、開く窓なら記号の三角（丁番側の中点が頂点） */
   sashes: SashInfo[];
+  /** 天井のダウンライトのまとまり（3 灯一列・1 灯）の中心。夕景・夜の下向きの光を、見えている器具の位置に置く */
+  downlights: { pos: THREE.Vector3; roomId: string; lamps: number }[];
 }
 
 export interface SashInfo {
@@ -271,8 +275,39 @@ function shutterGaps(f: Floor): { a: THREE.Vector3; b: THREE.Vector3; dir: THREE
   return out;
 }
 
-/** 上下階の階段（上階の床に穴をあける） */
-export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
+/** 斜め・曲線の辺のある吹抜か（床・天井を、帯の近似ではなく形どおりに抜く） */
+const isCurvedVoid = (r: Room) => r.type === 'void' && r.polygon.length >= 3 && !isRectilinear(r.polygon, 2);
+
+/**
+ * 形どおりに抜く穴: 斜め・曲線の辺のある吹抜の形そのもの（polys）と、それ以外の穴（階段・四角い吹抜。rects）。
+ * 丸い角の吹抜を 40mm の帯で近似して抜くと、下から見上げた天井の切り口と床の小口が、のこぎりの歯のようにギザギザに見える（林様邸）
+ */
+interface ExactVoids {
+  rects: Rect[];
+  polys: Vec2[][];
+  /** 縁に幕板を張る穴（吹抜・階段）の長方形。rects に中庭・土間など「幕板を張らない穴」を足したときに、元の分を入れる */
+  faceRects?: Rect[];
+}
+function exactVoidsFor(model: BuildingModel, f: Floor): ExactVoids | undefined {
+  const polys = f.rooms.filter(isCurvedVoid).map((r) => r.polygon);
+  return polys.length ? { rects: stairVoidsFor(model, f, true), polys } : undefined;
+}
+
+/** 多角形の範囲に、斜め・曲線の吹抜が掛かるなら、形どおりに引いた残り（台形の集まり）。掛からなければ null（長方形で分ける今までの道） */
+function exactPieces(polyMm: Vec2[], exact: ExactVoids | undefined): Vec2[][] | null {
+  if (!exact) return null;
+  const bb = bboxOf(polyMm);
+  const hit = exact.polys.some((h) => {
+    const hb = bboxOf(h);
+    return Math.min(bb.maxX, hb.maxX) - Math.max(bb.minX, hb.minX) > 1 && Math.min(bb.maxY, hb.maxY) - Math.max(bb.minY, hb.minY) > 1;
+  });
+  if (!hit) return null;
+  const toPoly = (r: Rect): Vec2[] => [{ x: r.minX, y: r.minY }, { x: r.maxX, y: r.minY }, { x: r.maxX, y: r.maxY }, { x: r.minX, y: r.maxY }];
+  return polygonMinusPolygons(polyMm, [...exact.polys, ...exact.rects.map(toPoly)]);
+}
+
+/** 上下階の階段（上階の床に穴をあける）。skipCurved = 斜め・曲線の吹抜を入れない（形どおりに抜く側で扱う） */
+export function stairVoidsFor(model: BuildingModel, f: Floor, skipCurved = false): Rect[] {
   const idx = model.floors.indexOf(f);
   const below = model.floors[idx - 1];
   const out: Rect[] = [];
@@ -283,7 +318,7 @@ export function stairVoidsFor(model: BuildingModel, f: Floor): Rect[] {
     if (!s.goesUp && below && !below.stairs.some((b) => Math.abs(b.minX - s.minX) < 300 && Math.abs(b.minY - s.minY) < 300)) out.push(...stairFootprint(s));
   }
   // 吹抜: 形どおりに抜く（L 字・角の丸い吹抜を外接の四角で抜くと、吹抜の脇の廊下の床と、その下の天井まで欠ける。林様邸 2 階）
-  for (const r of f.rooms) if (r.type === 'void') out.push(...voidRects(r.polygon));
+  for (const r of f.rooms) if (r.type === 'void' && !(skipCurved && isCurvedVoid(r))) out.push(...voidRects(r.polygon));
   return out;
 }
 
@@ -503,11 +538,12 @@ function wallCeilingMm(f: Floor, w: Wall): number {
 
 export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: MeshBuilder; meta: BuildingMeta } {
   // R 壁: 重なり合う短い壁の集まりを、円の上の弦に並べ直す（読み込みでも並べ直すが、前に保存した図面のために 3D でも）
-  const arcFloors = model.floors.map((f) => withSmoothArcWalls(f));
+  // 壁の中の柱（短い壁として読んだ □ の記号）は外す。建具の無い開口の端に掛かる柱は、壁を柱の先まで延ばして面を揃える
+  const arcFloors = model.floors.map((f) => absorbStubWalls(withSmoothArcWalls(f)));
   if (arcFloors.some((f, i) => f !== model.floors[i])) model = { ...model, floors: arcFloors };
   model = trimInteriorEnds(alignUpperWalls(model));
   const mb = new MeshBuilder();
-  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [], sashes: [] };
+  const meta: BuildingMeta = { bbox: new THREE.Box3(), rooms: [], wallTop: [], outlines: [], topY: 0, doorLeaves: [], doors: [], sashes: [], downlights: [] };
   const ext = opts.exterior;
   const spec = opts.spec ?? BUILDER_SPECS[0];
   const cutF = opts.cut ? model.floors.find((f) => f.level === opts.cut!.level) : undefined;
@@ -613,6 +649,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
 
     // ---- 床 ----
     const voids = stairVoidsFor(model, f);
+    const exactV = exactVoidsFor(model, f);
     // ビルトインガレージは土間（GL+40）。家の床（FL）の高さにすると車の乗り入れ口に基礎の立ち上がり分の段差ができる
     const garageRects = f.level === 1 ? polygonToRects(f.rooms.filter(isBuiltinGarage).map((r) => r.polygon)) : [];
     for (const r of f.rooms) {
@@ -631,12 +668,12 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (offMm !== 0) {
         // 床の段差（玄関の土間 −180・小上がり +400・ダウンリビング −400 など）: その高さに床を張り、縁に蹴込みと框
         const y = fl + offMm * MM;
-        emitFlat(mb, key, r.polygon, voids, y, true);
-        emitSlab(mb, 'int.slab', r.polygon, voids, fl - 0.24, y - 0.005, offMm > 0 ? 'int.wall' : 'ext.wall');
+        emitFlat(mb, key, r.polygon, voids, y, true, exactV);
+        emitSlab(mb, 'int.slab', r.polygon, voids, fl - 0.24, y - 0.005, offMm > 0 ? 'int.wall' : 'ext.wall', undefined, exactV);
         buildStepEdges(mb, f, r, fl);
         continue;
       }
-      emitFlat(mb, key, r.polygon, voids, fl, true);
+      emitFlat(mb, key, r.polygon, voids, fl, true, exactV);
     }
     // 構造スラブ（断面表示・光漏れ防止）
     // 中庭などの穴の部分・ガレージの土間にはスラブを張らない。玄関の土間は上で下げて張った
@@ -649,13 +686,14 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (holes.includes(poly)) continue;
       // 外周の小口は外から見える（2階の跳ね出しの下など）ので外壁の仕上げ。吹抜・階段の穴の縁には、下の階の天井からこの階の床まで幕板を張る
       const fasciaY0 = lower ? Math.min(fl - 0.24, lower.elevation * MM + lower.ceilingHeight * MM) : fl - 0.24;
-      emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005, 'ext.wall', lower ? { rects: voids, y0: fasciaY0, y1: fl } : undefined);
+      emitSlab(mb, 'int.slab', poly, [...voids, ...holeRects], fl - 0.24, fl - 0.005, 'ext.wall', lower ? { rects: voids, y0: fasciaY0, y1: fl } : undefined, exactV && { rects: [...exactV.rects, ...holeRects], polys: exactV.polys, faceRects: exactV.rects });
       // 下階からはみ出した部分（オーバーハング・ピロティの天井）は軒天の仕上げで見せる
-      if (lower) emitFlat(mb, 'ext.soffit', poly, [...voids, ...holeRects, ...lowerRects], fl - 0.25, false);
+      if (lower) emitFlat(mb, 'ext.soffit', poly, [...voids, ...holeRects, ...lowerRects], fl - 0.25, false, exactV && { rects: [...exactV.rects, ...holeRects, ...lowerRects], polys: exactV.polys });
     }
     // ---- 天井 ----
     const upper = model.floors[model.floors.indexOf(f) + 1];
     const ceilVoids = upper ? stairVoidsFor(model, upper) : [];
+    const ceilExact = upper ? exactVoidsFor(model, upper) : undefined;
     for (const r of f.rooms) {
       if (f.level === 1 && (isSeparateGarage(r) || isExteriorWorks(r.type))) {
         // 家と別に建つガレージ・物置の屋根、カーポートの屋根（デッキ・テラス・駐車場は空に開く）
@@ -665,7 +703,7 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
       if (r.type === 'void') {
         // 吹抜の上（この階の天井の高さ）にも天井を張る。以前は張っておらず、1 階から見上げると屋根の裏（黒い板金）が見えていた。
         // 1 階の中庭（空に開いた区画）には張らない
-        if (f.level >= 2) emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false);
+        if (f.level >= 2) emitFlat(mb, 'int.ceiling', r.polygon, ceilVoids, fl + f.ceilingHeight * MM, false, ceilExact);
         continue;
       }
       if (r.type === 'balcony' || r.type === 'porch') {
@@ -683,10 +721,10 @@ export function buildBuilding(model: BuildingModel, opts: BuildOptions): { mb: M
         continue;
       }
       // LDK の天井は別の素材にできる（コーディネートの「天井」で板張りを選ぶと LDK だけに張る）
-      emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? 'int.ceilingMain' : 'int.ceiling', r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false);
+      emitFlat(mb, MAIN_CEILING_ROOMS.has(r.type) ? 'int.ceilingMain' : 'int.ceiling', r.polygon, ceilVoids, fl + roomCeilingMm(f, r) * MM, false, ceilExact);
     }
     // ---- 天井の設備（ダウンライト・間接照明） ----
-    buildCeilingDetails(mb, f, fl, spec, ceilVoids);
+    buildCeilingDetails(mb, f, fl, spec, ceilVoids, meta.downlights);
     // ---- 階段 ----
     for (const s of f.stairs) {
       if (!s.goesUp || !upper) continue;
@@ -992,10 +1030,16 @@ export function floorKeyFor(r: Room): string {
 }
 
 /** 水平な面（床・天井）。直交多角形なら穴（階段・吹抜）を矩形で抜く */
-function emitFlat(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y: number, faceUp: boolean) {
+function emitFlat(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y: number, faceUp: boolean, exact?: ExactVoids) {
   const n = faceUp ? up : up.clone().negate();
   const uA = V(1, 0, 0);
   const vA = V(0, 0, 1);
+  const pieces = exactPieces(polyMm, exact);
+  if (pieces) {
+    // 斜め・曲線の吹抜が掛かる面: 形どおりに抜く（縁が折れ線のとおりにつながる）
+    for (const piece of pieces) mb.polygon(key, piece.map((p) => V(p.x * MM, y, p.y * MM)), n, uA, vA);
+    return;
+  }
   if (isRectilinear(polyMm, 2)) {
     let rects = polygonToRects([polyMm], 3);
     rects = rectsMinus(rects, voidsMm);
@@ -1082,12 +1126,15 @@ export function polygonMinusRects(poly: P2[], rects: Rect[]): P2[][] {
  * @param fascia 吹抜・階段の穴の縁に張る小口（幕板）: rects = 穴（この縁にだけ張る）、y0 = 下端（下の階の天井の高さ）、y1 = 上端（この階の床の高さ）。
  *   張らないと、下の階から穴の縁を見上げたときに、床の厚みと天井懐のすき間から上の階の部屋の中（家具の裏）が見える
  */
-function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y0: number, y1: number, edgeKey = key, fascia?: { rects: Rect[]; y0: number; y1: number }) {
-  emitFlat(mb, key, polyMm, voidsMm, y0, false);
+function emitSlab(mb: MeshBuilder, key: string, polyMm: { x: number; y: number }[], voidsMm: Rect[], y0: number, y1: number, edgeKey = key, fascia?: { rects: Rect[]; y0: number; y1: number }, exact?: ExactVoids) {
+  emitFlat(mb, key, polyMm, voidsMm, y0, false, exact);
   if (fascia?.rects.length) {
-    const inHole = (x: number, y: number) => fascia.rects.some((r) => x > r.minX && x < r.maxX && y > r.minY && y < r.maxY);
+    const exactPcs = exactPieces(polyMm, exact);
+    // 穴の中か: 形どおりに抜いた面では、吹抜の形そのもので確かめる（帯の近似は縁から 2cm ほどずれる）
+    const inRects = (rs: Rect[], x: number, y: number) => rs.some((r) => x > r.minX && x < r.maxX && y > r.minY && y < r.maxY);
+    const inHole = (x: number, y: number) => (exactPcs ? exact!.polys.some((h) => pointInPolygon({ x, y }, h)) || inRects(exact!.faceRects ?? exact!.rects, x, y) : inRects(fascia.rects, x, y));
     const toPoly = (r: Rect): P2[] => [{ x: r.minX, y: r.minY }, { x: r.maxX, y: r.minY }, { x: r.maxX, y: r.maxY }, { x: r.minX, y: r.maxY }];
-    const pieces: P2[][] = isRectilinear(polyMm, 2) ? rectsMinus(polygonToRects([polyMm], 3), voidsMm).map(toPoly) : polygonMinusRects(polyMm, voidsMm);
+    const pieces: P2[][] = exactPcs ?? (isRectilinear(polyMm, 2) ? rectsMinus(polygonToRects([polyMm], 3), voidsMm).map(toPoly) : polygonMinusRects(polyMm, voidsMm));
     for (const pc of pieces) {
       for (let i = 0; i < pc.length; i++) {
         const a = pc[i];
@@ -2341,11 +2388,60 @@ function solidWallRuns(f: Floor, p: Vec2, q: Vec2): [number, number][] {
   return mergeIntervals(out, 20).map(([a, b]): [number, number] => [a * MM, b * MM]);
 }
 
+/**
+ * ダウンライトが近くの壁に落とす光（スカラップ）。器具 (x, z)（m）から 0.3〜1.15 m の、天井まで立つ壁の面に、
+ * 光の形の絵（f.coveGlowScallop）を加算で重ねる。設計事務所の内観パースは、壁際のダウンライトの光のだまりで壁に表情を付ける。
+ * 以前は器具が白い点として天井に並ぶだけで、壁も床も一様な明るさだった。窓・戸の所と、隣の部屋の壁には出さない
+ */
+function lampScallops(mb: MeshBuilder, f: Floor, r: Room, x: number, z: number, ceil: number, fl: number) {
+  for (const w of f.walls) {
+    if (w.arc) continue;
+    if (w.topMm != null && w.topMm < roomCeilingMm(f, r) - 100) continue;
+    const ax = w.a.x * MM;
+    const az = w.a.y * MM;
+    const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) * MM;
+    if (L < 0.6) continue;
+    const ux = ((w.b.x - w.a.x) * MM) / L;
+    const uz = ((w.b.y - w.a.y) * MM) / L;
+    const t = (x - ax) * ux + (z - az) * uz;
+    const s = -(x - ax) * uz + (z - az) * ux;
+    const a = Math.abs(s) - (w.thickness * MM) / 2;
+    if (a < 0.3 || a > 1.15 || t < 0.15 || t > L - 0.15) continue;
+    // 器具から壁へ向かう向き
+    const sg = s >= 0 ? 1 : -1;
+    const nx = uz * sg;
+    const nz = -ux * sg;
+    // この部屋の壁か: 壁の面のすぐ手前（5cm）が、器具のある部屋の中
+    if (!pointInPolygon({ x: (x + nx * (a - 0.05)) / MM, y: (z + nz * (a - 0.05)) / MM }, r.polygon)) continue;
+    // 窓・戸: 光の中心が掛かるなら出さない。横の広がりは、いちばん近い開口の手前まで
+    let lo = Math.max(0, t - SCALLOP.u * a);
+    let hi = Math.min(L, t + SCALLOP.u * a);
+    let blocked = false;
+    for (const o of f.openings) {
+      if (o.wallId !== w.id) continue;
+      const o0 = o.t0 * MM - 0.05;
+      const o1 = o.t1 * MM + 0.05;
+      if (t > o0 && t < o1) {
+        blocked = true;
+        break;
+      }
+      if (o1 <= t) lo = Math.max(lo, o1);
+      else if (o0 >= t) hi = Math.min(hi, o0);
+    }
+    if (blocked || hi - lo < 0.3) continue;
+    const full = SCALLOP.z * a;
+    const h = Math.min(full, ceil - fl - 0.06);
+    const span = 2 * SCALLOP.u * a;
+    const c = V(ax + ux * ((lo + hi) / 2) - nx * ((w.thickness * MM) / 2 + 0.004), ceil - 0.012 - h / 2, az + uz * ((lo + hi) / 2) - nz * ((w.thickness * MM) / 2 + 0.004));
+    mb.glowPlane('f.coveGlowScallop', c, V(ux, 0, uz), V(0, 1, 0), hi - lo, h, [0.5 + (lo - t) / span, 1 - h / full, 0.5 + (hi - t) / span, 1]);
+  }
+}
+
 /** 主室（LDK）: 天井を別の素材にできる部屋 */
 const MAIN_CEILING_ROOMS = new Set<Room['type']>(['ldk', 'living', 'dining', 'kitchen']);
 
 /** 天井のダウンライト・間接照明 */
-function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec, ceilVoids: { minX: number; minY: number; maxX: number; maxY: number }[] = []) {
+function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: BuilderSpec, ceilVoids: { minX: number; minY: number; maxX: number; maxY: number }[] = [], out: BuildingMeta['downlights'] = []) {
   // 上が吹抜・階段で天井の無い所（mm）。そこには器具を付けない（以前は LDK の吹抜の空中に、1 階の天井の高さでダウンライトが浮いていた）
   const openAbove = (xMm: number, yMm: number, margin = 100) => ceilVoids.some((v) => xMm > v.minX - margin && xMm < v.maxX + margin && yMm > v.minY - margin && yMm < v.maxY + margin);
   for (const r of f.rooms) {
@@ -2360,17 +2456,20 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
     if (spec.lighting === 'downlight') {
       // 照明計画: 小さな（φ75）ダウンライトを 3 灯一列のまとまりにして点在させる（均等にばらまかない）。
       // 小さな部屋・水まわりは 1 灯
-      const lamp = (x: number, z: number, rr: number) => {
-        if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) return;
-        if (openAbove(x / MM, z / MM)) return;
+      const lamp = (x: number, z: number, rr: number): boolean => {
+        if (!pointInPolygon({ x: x / MM, y: z / MM }, r.polygon)) return false;
+        if (openAbove(x / MM, z / MM)) return false;
         mb.cylinder('f.downlightRing', V(x, ceil - 0.004, z), rr + 0.008, 0.003, 20);
         mb.cylinder('f.downlight', V(x, ceil - 0.006, z), rr, 0.003, 20);
+        lampScallops(mb, f, r, x, z, ceil, fl);
+        return true;
       };
       const W = x1 - x0;
       const Dp = z1 - z0;
       const small = ['bath', 'toilet', 'washroom', 'closet', 'storage', 'hall', 'entrance', 'corridor'].includes(r.type) || W * Dp < 7;
-      if (small) lamp((x0 + x1) / 2, (z0 + z1) / 2, 0.04);
-      else {
+      if (small) {
+        if (lamp((x0 + x1) / 2, (z0 + z1) / 2, 0.04)) out.push({ pos: V((x0 + x1) / 2, ceil, (z0 + z1) / 2), roomId: r.id, lamps: 1 });
+      } else {
         const alongX = W >= Dp;
         const L = alongX ? W : Dp;
         const S = alongX ? Dp : W;
@@ -2380,12 +2479,17 @@ function buildCeilingDetails(mb: MeshBuilder, f: Floor, fl: number, spec: Builde
           for (let j = 0; j < nS; j++) {
             const cL = nL === 1 ? L / 2 : 0.9 + ((L - 1.8) * i) / (nL - 1);
             const cS = nS === 1 ? S / 2 : 0.9 + ((S - 1.8) * j) / (nS - 1);
+            const sum = V(0, 0, 0);
+            let lit = 0;
             for (const k of [-1, 0, 1]) {
               const a = cL + k * 0.3;
               const x = alongX ? x0 + a : x0 + cS;
               const z = alongX ? z0 + cS : z0 + a;
-              lamp(x, z, 0.0375);
+              if (!lamp(x, z, 0.0375)) continue;
+              sum.add(V(x, ceil, z));
+              lit++;
             }
+            if (lit) out.push({ pos: sum.multiplyScalar(1 / lit), roomId: r.id, lamps: lit });
           }
       }
     } else if (!['bath', 'toilet'].includes(r.type) && !openAbove((x0 + x1) / 2 / MM, (z0 + z1) / 2 / MM)) {

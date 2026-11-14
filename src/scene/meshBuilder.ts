@@ -442,6 +442,95 @@ export class MeshBuilder {
     g.dispose();
   }
 
+  /**
+   * ふくらみのあるクッション（ソファの座・背、置きクッション）。
+   * 角の丸い直方体の各面を、中央がふくらむ形に押し出す（箱を並べただけのソファは、角が立って「CG の箱」に見える）。
+   * 形は中心を原点に作る: x = 幅 w、y = 厚み t、z = 奥行 d。向きと位置は m（立てる・もたせ掛けるのも m で）。
+   * 面どうしで頂点を共有し、法線はなめらかにつなぐ
+   */
+  cushion(key: string, m: THREE.Matrix4, w: number, t: number, d: number, o: CushionShape = {}) {
+    const { pos, index } = cushionMesh(w, t, d, o);
+    const p = new THREE.Vector3();
+    for (let i = 0; i < pos.length; i += 3) {
+      p.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(m);
+      pos[i] = p.x;
+      pos[i + 1] = p.y;
+      pos[i + 2] = p.z;
+    }
+    // 向き（鏡映の入る座標系でも、外から見て反時計回りに）: 三角形の向きを、中心から外へ向くようにそろえる
+    const c = new THREE.Vector3().setFromMatrixPosition(m);
+    const A = new THREE.Vector3();
+    const B = new THREE.Vector3();
+    const C = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (let i = 0; i < index.length; i += 3) {
+      A.fromArray(pos, index[i] * 3);
+      B.fromArray(pos, index[i + 1] * 3);
+      C.fromArray(pos, index[i + 2] * 3);
+      n.crossVectors(B.clone().sub(A), C.clone().sub(A));
+      if (n.dot(A.clone().add(B).add(C).multiplyScalar(1 / 3).sub(c)) < 0) {
+        const k = index[i + 1];
+        index[i + 1] = index[i + 2];
+        index[i + 2] = k;
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(index);
+    geo.computeVertexNormals();
+    this.addGeometry(key, geo, new THREE.Matrix4());
+    geo.dispose();
+  }
+
+  /**
+   * 掛け布（ブランケット）: 断面の折れ線 path（掛ける物の上をなぞる）に沿った、幅 width の薄い布。
+   * 幅の向きに小さなうねり（たたみじわ）を付け、垂れた先ほど大きくする。両面を描く素材で使う
+   */
+  drape(key: string, path: V3[], widthDir: V3, width: number, o: { ripple?: number; skew?: number; seg?: number } = {}) {
+    if (path.length < 2) return;
+    const curve = new THREE.CatmullRomCurve3(path, false, 'centripetal');
+    const N = Math.max(8, Math.ceil(curve.getLength() / 0.035));
+    const M = o.seg ?? 12;
+    const ripple = o.ripple ?? 0.006;
+    const wd = widthDir.clone().normalize();
+    const pos: number[] = [];
+    const index: number[] = [];
+    const P = new THREE.Vector3();
+    const T = new THREE.Vector3();
+    const nrm = new THREE.Vector3();
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      curve.getPointAt(s, P);
+      curve.getTangentAt(s, T);
+      nrm.crossVectors(wd, T).normalize();
+      for (let j = 0; j <= M; j++) {
+        const a = j / M - 0.5;
+        // うねり: 幅の向きに 2 山半。垂れた先（s → 1）ほど深く、端は少しすぼまる
+        const wave = Math.sin(a * Math.PI * 5 + s * 2.2) * ripple * (0.35 + 1.5 * s * s);
+        const narrow = 1 - 0.07 * s * s;
+        const q = P.clone()
+          .addScaledVector(wd, a * width * narrow)
+          .addScaledVector(nrm, wave)
+          .addScaledVector(T, (o.skew ?? 0) * a * s);
+        pos.push(q.x, q.y, q.z);
+      }
+    }
+    for (let i = 0; i < N; i++)
+      for (let j = 0; j < M; j++) {
+        const a = i * (M + 1) + j;
+        const b = a + 1;
+        const c = a + M + 1;
+        const d2 = c + 1;
+        index.push(a, c, b, b, c, d2);
+      }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(index);
+    geo.computeVertexNormals();
+    this.addGeometry(key, geo, new THREE.Matrix4());
+    geo.dispose();
+  }
+
   /** 2点間の円柱（幹・枝・家具の丸棒） */
   tube(key: string, a: V3, b: V3, r0: number, r1 = r0, seg = 7) {
     const len = a.distanceTo(b);
@@ -483,14 +572,20 @@ export class MeshBuilder {
 
   /**
    * 光の面（間接照明が壁・床を照らす光。素材 f.coveGlow を加算で重ねる）:
-   * 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）
+   * 中心 c、幅の向き along（長さ w）、光源へ向かう向き toLight（長さ h）。UV の v = 0（光源から遠い側）→ 1（光源の側）。
+   * uv を渡すと、絵のその範囲だけを貼る
    */
-  glowPlane(key: string, c: V3, along: V3, toLight: V3, w: number, h: number) {
+  glowPlane(key: string, c: V3, along: V3, toLight: V3, w: number, h: number, uv?: [number, number, number, number]) {
     if (w < 0.05 || h < 0.02) return;
     const x = along.clone().normalize();
     const y = toLight.clone().normalize();
     const z = new THREE.Vector3().crossVectors(x, y).normalize();
     const geo = new THREE.PlaneGeometry(w, h);
+    if (uv) {
+      // 絵の一部だけを貼る（[u0, v0, u1, v1]。壁の端・床で切れる光の面）
+      const a = geo.getAttribute('uv');
+      for (let i = 0; i < a.count; i++) a.setXY(i, uv[0] + (uv[2] - uv[0]) * a.getX(i), uv[1] + (uv[3] - uv[1]) * a.getY(i));
+    }
     const m = new THREE.Matrix4().makeBasis(x, y, z);
     m.setPosition(c);
     this.addGeometry(key, geo, m, true);
@@ -572,3 +667,108 @@ function autoAxes(n: V3): [V3, V3] {
 }
 
 export const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+/**
+ * ダウンライトの光の形（スカラップ）の絵の範囲: 器具から壁までの距離 a を 1 として、横は ±u、下は z まで。
+ * 絵（materials.ts）と光の面（building.ts）は、この比で大きさと UV を決める
+ */
+export const SCALLOP = { u: 2.2, z: 4.4 };
+
+/** クッションの形（MeshBuilder.cushion） */
+export interface CushionShape {
+  /** 角の丸み (m)。既定 0.04 */
+  r?: number;
+  /** 上の面（+y）の中央のふくらみ (m) */
+  crownTop?: number;
+  /** 下の面（−y）のふくらみ (m)。既定 0 */
+  crownBottom?: number;
+  /** 側面のふくらみ (m) */
+  crownSide?: number;
+  /** 辺の中ほどのくびれ（置きクッション: 0.04〜0.08）。四隅が張って、辺が内へ入る */
+  pinch?: number;
+  /** 面の分割（幅・奥行の向き）。既定 6 */
+  seg?: number;
+}
+
+/**
+ * クッションの形を作る（中心が原点。x = 幅、y = 厚み、z = 奥行）。頂点は面どうしで共有する。
+ * 角の丸みは、立方体の格子を「内側の箱 + 半径 r」へ射影して作る（丸みの所は 45° を 2 分割）。
+ * ふくらみは、面の法線の向きへ (1 − s²)(1 − t²) で押し出す（縁で 0、中央で最大）
+ */
+export function cushionMesh(w: number, t: number, d: number, o: CushionShape = {}): { pos: number[]; index: number[] } {
+  const hx = w / 2;
+  const hy = t / 2;
+  const hz = d / 2;
+  const r = Math.max(0.003, Math.min(o.r ?? 0.04, hx - 0.002, hy - 0.002, hz - 0.002));
+  const ARC = 2;
+  const coords = (half: number, n: number) => {
+    const inner = half - r;
+    const out: number[] = [];
+    for (let k = ARC; k >= 1; k--) out.push(-(inner + r * Math.tan(((k / ARC) * Math.PI) / 4)));
+    for (let i = 0; i <= n; i++) out.push(-inner + (2 * inner * i) / n);
+    for (let k = 1; k <= ARC; k++) out.push(inner + r * Math.tan(((k / ARC) * Math.PI) / 4));
+    return out;
+  };
+  const seg = Math.max(2, o.seg ?? 6);
+  const axes = [coords(hx, seg), coords(hy, 2), coords(hz, seg)];
+  const half = [hx, hy, hz];
+  const crownTop = o.crownTop ?? 0;
+  const crownBottom = o.crownBottom ?? 0;
+  const crownSide = o.crownSide ?? 0;
+  const pinch = o.pinch ?? 0;
+  const pos: number[] = [];
+  const index: number[] = [];
+  const ids = new Map<string, number>();
+  const clamp = (v: number, a: number) => Math.max(-a, Math.min(a, v));
+  const vert = (ix: number, iy: number, iz: number): number => {
+    const key = `${ix},${iy},${iz}`;
+    const got = ids.get(key);
+    if (got != null) return got;
+    const q = [axes[0][ix], axes[1][iy], axes[2][iz]];
+    const inner = q.map((v, k) => clamp(v, half[k] - r));
+    let n = q.map((v, k) => v - inner[k]);
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    n = n.map((v) => v / l);
+    const p = inner.map((v, k) => v + n[k] * r);
+    const sx = clamp(p[0] / hx, 1);
+    const sy = clamp(p[1] / hy, 1);
+    const sz = clamp(p[2] / hz, 1);
+    const bx = 1 - sx * sx;
+    const by = 1 - sy * sy;
+    const bz = 1 - sz * sz;
+    p[1] += (n[1] > 0 ? crownTop : crownBottom) * n[1] * bx * bz;
+    p[0] += crownSide * n[0] * by * bz;
+    p[2] += crownSide * n[2] * bx * by;
+    if (pinch) {
+      p[0] *= 1 - pinch * bz;
+      p[2] *= 1 - pinch * bx;
+    }
+    const id = pos.length / 3;
+    pos.push(p[0], p[1], p[2]);
+    ids.set(key, id);
+    return id;
+  };
+  // 6 面: 軸 a の両端の面を、残りの 2 軸の格子で張る
+  for (let a = 0; a < 3; a++) {
+    const b = (a + 1) % 3;
+    const c = (a + 2) % 3;
+    for (const end of [0, axes[a].length - 1]) {
+      for (let i = 0; i < axes[b].length - 1; i++)
+        for (let j = 0; j < axes[c].length - 1; j++) {
+          const at = (ib: number, ic: number) => {
+            const ix: number[] = [0, 0, 0];
+            ix[a] = end;
+            ix[b] = ib;
+            ix[c] = ic;
+            return vert(ix[0], ix[1], ix[2]);
+          };
+          const v00 = at(i, j);
+          const v10 = at(i + 1, j);
+          const v11 = at(i + 1, j + 1);
+          const v01 = at(i, j + 1);
+          index.push(v00, v10, v11, v00, v11, v01);
+        }
+    }
+  }
+  return { pos, index };
+}

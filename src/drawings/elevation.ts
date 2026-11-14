@@ -352,6 +352,67 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
     if (open >= 2) return 'opening';
     return 'fine';
   };
+  /** 線上の 1 点の種類（両側 3px の奥行き・材料から）。null = 同じ面の中の継ぎ目（描かない） */
+  const classAt = (x: number, y: number, nx: number, ny: number): keyof OrthoResult['weighted'] | null => {
+    const pa = [Math.round(x + nx * 3), Math.round(y + ny * 3)];
+    const pb = [Math.round(x - nx * 3), Math.round(y - ny * 3)];
+    const da = depthAt(pa[0], pa[1]);
+    const db = depthAt(pb[0], pb[1]);
+    if (da >= BG || db >= BG) return 'outline';
+    const gapM = Math.abs(da - db) * (dMax - dMin + 2);
+    if (gapM > 0.12) return 'step';
+    const ia = idAt(pa[0], pa[1]);
+    const ib = idAt(pb[0], pb[1]);
+    if ([ia, ib].some((i) => i === CAT_ID.glass || i === CAT_ID.frame || i === CAT_ID.door)) return 'opening';
+    if (ia === ib && (ia === CAT_ID.wall || ia === CAT_ID.accent || ia === CAT_ID.foundation) && gapM < 0.02) return null;
+    return 'fine';
+  };
+  /**
+   * 見えている 1 本の線を、場所ごとの種類で区切る。
+   * 前は 1 本をまとめて 1 つの種類にしていたので、窓の縦枠の位置にある壁の継ぎ目（3D の壁は窓の左右で分かれている）が、
+   * 窓の横だけでなく基礎から軒まで「開口まわりの線」として引かれていた（塗り壁に無い縦線）。窓に接する所だけを残す。
+   */
+  const classifyRun = (A: { x: number; y: number }, B: { x: number; y: number }, t0: number, t1: number): { t0: number; t1: number; cls: keyof OrthoResult['weighted'] | null }[] => {
+    const L = Math.hypot(B.x - A.x, B.y - A.y) || 1;
+    const lenPx = L * (t1 - t0);
+    if (lenPx < 14) return [{ t0, t1, cls: classify(A, B, t0, t1) }];
+    const nx = -(B.y - A.y) / L;
+    const ny = (B.x - A.x) / L;
+    const n = Math.max(3, Math.round(lenPx / 5));
+    const cls: (keyof OrthoResult['weighted'] | null)[] = [];
+    for (let k = 0; k < n; k++) {
+      const t = t0 + ((t1 - t0) * (k + 0.5)) / n;
+      cls.push(classAt(A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t, nx, ny));
+    }
+    // 1 点だけ違う種類はならす（画素の境目のゆらぎ）
+    for (let k = 1; k < n - 1; k++) if (cls[k] !== cls[k - 1] && cls[k - 1] === cls[k + 1]) cls[k] = cls[k - 1];
+    const out: { t0: number; t1: number; cls: keyof OrthoResult['weighted'] | null }[] = [];
+    for (let k = 0; k < n; k++) {
+      const a0 = t0 + ((t1 - t0) * k) / n;
+      const a1 = t0 + ((t1 - t0) * (k + 1)) / n;
+      const last = out[out.length - 1];
+      if (last && last.cls === cls[k]) last.t1 = a1;
+      else out.push({ t0: a0, t1: a1, cls: cls[k] });
+    }
+    // 短い切れ端（2 点 ≒ 10px 未満）は隣の種類に含める（線が点線のように途切れない）
+    const minT = ((t1 - t0) * 2) / n;
+    for (let i = 0; i < out.length; i++) {
+      if (out.length < 2 || out[i].t1 - out[i].t0 >= minT - 1e-9) continue;
+      const nb = i > 0 ? out[i - 1] : out[i + 1];
+      if (i > 0) nb.t1 = out[i].t1;
+      else nb.t0 = out[i].t0;
+      out.splice(i, 1);
+      i--;
+    }
+    // 同じ種類が隣り合ったらつなぐ
+    for (let i = 1; i < out.length; i++)
+      if (out[i].cls === out[i - 1].cls) {
+        out[i - 1].t1 = out[i].t1;
+        out.splice(i, 1);
+        i--;
+      }
+    return out;
+  };
   // 材料ごとに、その材料の面のいちばん内側の点（引き出し線の起点）
   const anchors: OrthoResult['anchors'] = {};
   {
@@ -399,8 +460,14 @@ function orthoDrawing(viewer: Viewer, p: OrthoParams): OrthoResult {
           const y1 = (A.y + (B.y - A.y) * tEnd) * mmPerPx;
           const seg = `M${x0.toFixed(0)} ${y0.toFixed(0)}L${x1.toFixed(0)} ${y1.toFixed(0)}`;
           lines.push(seg);
-          const cls = classify(A, B, runStart, tEnd);
-          if (cls) weighted[cls].push(seg);
+          for (const part of classifyRun(A, B, runStart, tEnd)) {
+            if (!part.cls) continue;
+            const px0 = (A.x + (B.x - A.x) * part.t0) * mmPerPx;
+            const py0 = (A.y + (B.y - A.y) * part.t0) * mmPerPx;
+            const px1 = (A.x + (B.x - A.x) * part.t1) * mmPerPx;
+            const py1 = (A.y + (B.y - A.y) * part.t1) * mmPerPx;
+            weighted[part.cls].push(`M${px0.toFixed(0)} ${py0.toFixed(0)}L${px1.toFixed(0)} ${py1.toFixed(0)}`);
+          }
         }
         runStart = null;
       }

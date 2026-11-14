@@ -75,8 +75,10 @@ export interface EstimateResult {
   cost: number;
   tax: number;
   total: number;
-  /** 坪単価（延床） */
+  /** 坪単価（延床あたり・税抜） */
   perTsubo: number;
+  /** 坪単価（施工面積あたり・税抜）。資金計画書の「施工面積 × 坪単価」と同じ基準 */
+  perTsuboConst: number;
 }
 
 export const TAX_RATE = 0.1;
@@ -171,7 +173,7 @@ export function computeEstimate(areasIn: Areas, choice: EstimateChoice): Estimat
   const subtotal = rawSubtotal + adjust;
   const cost = categories.reduce((s, c) => s + c.cost, 0);
   const tax = Math.floor(subtotal * TAX_RATE);
-  return { categories, rawSubtotal, adjust, subtotal, cost, tax, total: subtotal + tax, perTsubo: a.totalTsubo > 0 ? subtotal / a.totalTsubo : 0 };
+  return { categories, rawSubtotal, adjust, subtotal, cost, tax, total: subtotal + tax, perTsubo: a.totalTsubo > 0 ? subtotal / a.totalTsubo : 0, perTsuboConst: a.constTsubo > 0 ? subtotal / a.constTsubo : 0 };
 }
 
 export const yen = (v: number) => `${Math.round(v).toLocaleString('ja-JP')}`;

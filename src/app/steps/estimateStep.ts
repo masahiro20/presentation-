@@ -232,7 +232,20 @@ function quoteSheet(c: Computed): HTMLElement {
       h('tr', null, h('th', null, '工事名'), h('td', null, `${state.customer || '〇〇様'} 邸　新築工事（${est.categories.length ? areas.grade : ''}シリーズ）`)),
       h('tr', null, h('th', null, '施工場所'), h('td', null, documentAddress(state.site.address) ?? '')),
       h('tr', null, h('th', null, '金額（税込）'), h('td', { class: 'big' }, `¥${yen(est.total)}`)),
-      h('tr', null, h('th', null, '施工面積'), h('td', null, `${num(areas.constTsubo)} 坪（延床 ${num(areas.totalTsubo)} 坪）　坪単価 ¥${yen(Math.round(est.perTsubo))}`)),
+      // 坪単価は基準の面積で数字が変わるので、面積ごとに並べて出す（左が資金計画書の「施工面積 × 坪単価」と同じ数字）。
+      // 行は増やさない（御見積書は A4 1 枚に収める組みで、1 行足すと 2 枚目にあふれる）
+      h(
+        'tr',
+        null,
+        h('th', null, '面積・坪単価'),
+        h(
+          'td',
+          { class: 'per-cell' },
+          h('span', { class: 'per-item' }, '施工面積 ', h('b', null, `${num(areas.constTsubo)} 坪`), h('span', { class: 'per' }, `坪単価 ¥${yen(Math.round(est.perTsuboConst))}`)),
+          h('span', { class: 'per-item' }, '延床面積 ', h('b', null, `${num(areas.totalTsubo)} 坪`), h('span', { class: 'per' }, `坪単価 ¥${yen(Math.round(est.perTsubo))}`)),
+          h('span', { class: 'per-note' }, '※税抜'),
+        ),
+      ),
     ),
     h(
       'table',
@@ -352,6 +365,8 @@ function detailSheets(c: Computed, es: EstimateState, rerender: () => void): HTM
 
 /** 1mm の px（画面の 96dpi） */
 const MM_PX = 96 / 25.4;
+/** 資金計画書の幅合わせ（見積の画面を出している間だけ） */
+let widthWatch: ResizeObserver | null = null;
 
 /**
  * 内訳書を A4 縦のページに区切り直す: 実際の高さを測って、工事（表）の切れ目で改ページする。
@@ -380,6 +395,21 @@ function paginateDetail(view: HTMLElement) {
       page!.appendChild(b);
     }
   }
+}
+
+/**
+ * 資金計画書（A3 横）のプレビューを、入れ物の幅に合わせる。
+ * 決まった倍率（0.78）のままだと、側パネルを開いた画面・ノート PC で紙の右側（資金計画書の見方・備考・押印欄）が切れていた。
+ * 縦のスクロールバーが出たり消えたりで幅が行き来しないよう、スクロールバーの分はいつも引いておく。
+ */
+function fitFundingWidth(view: HTMLElement) {
+  const sheet = view.querySelector<HTMLElement>('.est-sheet.funding');
+  if (!sheet) return;
+  const cs = getComputedStyle(view);
+  const avail = view.getBoundingClientRect().width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - 18;
+  if (!(avail > 120)) return;
+  const k = Math.max(0.2, Math.min(0.9, avail / (420 * MM_PX)));
+  sheet.style.setProperty('--screen-fit', k.toFixed(4));
 }
 
 /** 資金計画書を A3 横 1 枚に収める（中身が高いときは全体を縮める） */
@@ -674,11 +704,17 @@ export const estimateStep: Step = {
   uses3d: false,
   unmount() {
     setPrintPage(null);
+    widthWatch?.disconnect();
+    widthWatch = null;
   },
   mount(ctx: StepCtx) {
     const es = ensure();
     const view = h('div', { class: 'est-view' });
     ctx.stage.appendChild(view);
+    // 画面の幅・側パネルの開閉が変わったら、資金計画書を幅に合わせ直す
+    widthWatch?.disconnect();
+    widthWatch = new ResizeObserver(() => fitFundingWidth(view));
+    widthWatch.observe(view);
     // 書類・根拠シートは拡大縮小できる入れ物に入れる（Ctrl＋ホイール・ピンチ・右下の ＋ －）
     const zp = zoomPane(view);
     const sheets = zp.content;
@@ -764,6 +800,7 @@ export const estimateStep: Step = {
       } else {
         sheets.appendChild(fundingSheet(c));
         fitFunding(sheets);
+        fitFundingWidth(view);
       }
       renderPanel(c);
       emit('estimate');
@@ -960,7 +997,7 @@ export const estimateStep: Step = {
         h('h2', null, '見積・資金計画'),
         section('シリーズ', segmented([{ value: 'P', label: 'Pシリーズ' }, { value: 'S', label: 'Sシリーズ' }], es.choice.grade, (g) => { es.choice = newChoice(g, baseAreas(g)); render(); })),
         section('表示', segmented([{ value: 'quote', label: '御見積書' }, { value: 'detail', label: '内訳書' }, { value: 'funding', label: '資金計画書' }, { value: 'basis', label: '数量の根拠' }], which, (w) => { which = w; render(); })),
-        h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　坪単価 ¥${yen(Math.round(est.perTsubo))}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`)),
+        h('div', { class: 'est-total-card' }, h('div', { class: 'k' }, '見積合計（税込）'), h('div', { class: 'v' }, `¥${yen(est.total)}`), h('div', { class: 's' }, `税抜 ¥${yen(est.subtotal)}　粗利 ${est.subtotal ? Math.round((1 - est.cost / est.subtotal) * 100) : 0}%`), h('div', { class: 's per', title: '坪単価 = 税抜の金額 ÷ 面積。施工面積はポーチ・バルコニー・吹抜・車庫を含む面積、延床は床面積の合計' }, `坪単価　施工 ¥${yen(Math.round(est.perTsuboConst))}　／　延床 ¥${yen(Math.round(est.perTsubo))}`)),
         h('div', { class: 'btn-row' }, h('button', { class: 'btn primary', onclick: () => window.print() }, '印刷・PDF'), h('button', { class: 'btn', onclick: () => download('data:text/csv;charset=utf-8,' + encodeURIComponent(csvOf(c)), `${state.name}_見積.csv`) }, 'CSV'), h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!es.showAll, onchange: (e: Event) => { es.showAll = (e.target as HTMLInputElement).checked; if (es.showAll) which = 'detail'; render(); } }), '内訳を編集（全行表示）')),
         field('端数調整', segmented([{ value: '10000', label: '万円単位' }, { value: '1000', label: '千円単位' }, { value: '0', label: 'なし' }], String(es.choice.roundUnit ?? 10000), (v) => { es.choice.roundUnit = Number(v); render(); }), est.adjust ? `税抜 ¥${yen(est.rawSubtotal)} → △${yen(-est.adjust)} 切り捨て` : '切り捨てなし'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: es.customerView !== false, onchange: (e: Event) => { es.customerView = (e.target as HTMLInputElement).checked; render(); } }), 'お客様向け（内訳書の数量・単位・単価を隠す）'),

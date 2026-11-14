@@ -4,9 +4,10 @@
  */
 import type { BuildingModel } from '../core/types';
 import { takeoff, type TakeoffOptions } from '../estimate/areas';
-import { svgTable } from './sheet';
+import { esc } from './sheet';
 
-export function exteriorQuantityTableSvg(model: BuildingModel, opts: TakeoffOptions, x: number, y: number): { svg: string; w: number; h: number } {
+/** 外部数量の行（項目・数量・備考）。拾えない図面では 1 行だけ */
+export function exteriorQuantityRows(model: BuildingModel, opts: TakeoffOptions): string[][] {
   const rows: string[][] = [];
   try {
     const a = takeoff(model, opts);
@@ -24,5 +25,38 @@ export function exteriorQuantityTableSvg(model: BuildingModel, opts: TakeoffOpti
   } catch {
     rows.push(['外壁面積', '—', '拾えませんでした']);
   }
-  return svgTable(x, y, '外部数量（見積の拾い）', [{ label: '項目', w: 3600 }, { label: '数量', w: 2600, align: 'right' }, { label: '備考', w: 3000 }], rows, { fontSize: 240, rowH: 420 });
+  return rows;
+}
+
+/**
+ * 外部数量の帯（立面図シートの外部仕上表のすぐ下に置く 1 段の表）。左上 (x, y)、幅 w。
+ * 右の列に縦長の表を置くと、立面図 4 面が 1/100 で入らず 1/150 に縮んで紙の右と下が大きく空いていた。
+ * 帯にして紙の幅いっぱいを立面図に使う（数字は同じ。備考は項目名の右に小さく）。
+ */
+export function exteriorQuantityStripSvg(model: BuildingModel, opts: TakeoffOptions, x: number, y: number, w: number): { svg: string; w: number; h: number } {
+  const rows = exteriorQuantityRows(model, opts);
+  const h = 760;
+  const headW = 2500;
+  const sw = 12;
+  const thin = 6;
+  const cw = (w - headW) / Math.max(1, rows.length);
+  const em = (t: string) => [...t].reduce((a, ch) => a + (/[\x20-\x7e｡-ﾟ]/.test(ch) ? 0.55 : 1), 0);
+  let s = `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#fff" stroke="#111" stroke-width="${sw}"/>`;
+  s += `<line x1="${x + headW}" y1="${y}" x2="${x + headW}" y2="${y + h}" stroke="#111" stroke-width="${sw}"/>`;
+  s += `<text x="${x + headW / 2}" y="${y + h * 0.44}" font-size="250" text-anchor="middle" fill="#111" letter-spacing="30">外部数量</text>`;
+  s += `<text x="${x + headW / 2}" y="${y + h * 0.82}" font-size="170" text-anchor="middle" fill="#555">（見積の拾い）</text>`;
+  rows.forEach((r, i) => {
+    const cx = x + headW + i * cw;
+    if (i > 0) s += `<line x1="${cx.toFixed(0)}" y1="${y}" x2="${cx.toFixed(0)}" y2="${y + h}" stroke="#111" stroke-width="${thin}"/>`;
+    const [label, value, note] = r;
+    // 項目名（左上）と備考（右上・小さく）。幅に収まらない備考は縮める
+    s += `<text x="${(cx + 90).toFixed(0)}" y="${y + h * 0.36}" font-size="190" fill="#444">${esc(label)}</text>`;
+    if (note) {
+      const room = cw - 180 - em(label) * 190 - 80;
+      const need = em(note) * 160;
+      if (room > 500) s += `<text x="${(cx + cw - 90).toFixed(0)}" y="${y + h * 0.36}" font-size="160" text-anchor="end" fill="#777"${need > room ? ` textLength="${room.toFixed(0)}" lengthAdjust="spacingAndGlyphs"` : ''}>${esc(note)}</text>`;
+    }
+    s += `<text x="${(cx + cw - 110).toFixed(0)}" y="${y + h * 0.84}" font-size="270" text-anchor="end" fill="#111">${esc(value)}</text>`;
+  });
+  return { svg: s, w, h };
 }

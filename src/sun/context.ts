@@ -2,7 +2,8 @@
  * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
  * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
-import { facadeMaterial, WALL_COLORS, type ShareContext, type ShareNeighbor, type ShareStreet } from './shareContext';
+import { facadeMaterial, ROOF_COLORS, WALL_COLORS, type ShareContext, type ShareNeighbor, type ShareStreet } from './shareContext';
+import { SunDiagram } from './sunDiagram';
 import { buildStreets, fetchGsiRoads, fetchOsmStreets, parseOsmStreets, type StreetData } from './streets';
 import * as THREE from 'three';
 import type { Viewer } from '../scene/viewer';
@@ -601,6 +602,8 @@ export class SunContext {
   private ghostsG = new THREE.Group();
   private pathG = new THREE.Group();
   private sunMarker = new THREE.Group();
+  /** 太陽の通り道の図（弧・時刻・方位の輪・いまの太陽） */
+  private diagram = new SunDiagram(this.pathG, this.sunMarker);
   private aerialInfo: { west: number; east: number; south: number; north: number; tex: THREE.Texture } | null = null;
   state: ContextState;
   year = new Date().getFullYear();
@@ -1804,7 +1807,8 @@ export class SunContext {
     let wallSeq = 0;
     // 航空写真があれば屋上に貼る（Google Earth のような見え方）
     const ai = this.aerialInfo;
-    const roofMat = ai ? new THREE.MeshStandardMaterial({ map: ai.tex, roughness: 0.85 }) : new THREE.MeshStandardMaterial({ color: '#8d8f93', roughness: 0.8 });
+    // 航空写真が無いときの屋根は、建物ごとに色をばらつかせる（どの屋根も同じグレーだと模型に見える）
+    const roofMats = ai ? [new THREE.MeshStandardMaterial({ map: ai.tex, roughness: 0.85 })] : ROOF_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8 }));
     const st = this.viewer.state!;
     const c0 = st.meta.bbox.getCenter(new THREE.Vector3());
     const a0 = (st.model.northAngleDeg * Math.PI) / 180;
@@ -1917,7 +1921,7 @@ export class SunContext {
         uv.needsUpdate = true;
       }
       // グループ: 0 = 屋根（ExtrudeGeometry は上下面、PLATEAU の実形状は上向きの面）, 1 = 壁（側面）
-      const base = [roofMat, b.source === 'manual' ? manualMat : wallMats[wallSeq++ % wallMats.length]];
+      const base = [roofMats[(wallSeq * 7 + 3) % roofMats.length], b.source === 'manual' ? manualMat : wallMats[wallSeq++ % wallMats.length]];
       const mesh = new THREE.Mesh(geo, base);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -2050,90 +2054,26 @@ export class SunContext {
       const m = o as THREE.Mesh;
       if (m.isMesh && (m.userData.matKey === 'l.far' || m.userData.matKey === 'l.road' || m.userData.matKey === 'l.curb')) m.visible = !groundShown;
     });
+    // 実際の周辺（建物・航空写真・地形・道路）をまだ取っていない間は、想定の区画の地面と道だけを下敷きに出す
+    // （家・塀・木は出さない = 影は実在の建物だけ。viewer.setTownGround）。取れたら実際の周辺に置き換わる
+    const real = groundShown || this.state.neighbors.some((b) => !b.planned) || this.hasStreets();
+    (this.viewer as Partial<Viewer>).setTownGround?.(!real);
     this.publishTerrainHooks();
     this.viewer.invalidate();
   }
 
-  /** 太陽軌道（冬至・春秋分・夏至）と方位 */
+  /** 太陽軌道（冬至・春秋分・夏至）と方位。図の作りは sunDiagram.ts */
   buildSunPath(radius = 22) {
-    clearGroup(this.pathG);
     const st = this.viewer.state!;
     const { lat, lon } = siteLatLon(this.state.site);
-    const center = this.center;
-    const colors: Record<string, string> = { winter: '#4ea3ff', spring: '#6ccf7a', summer: '#ffa53b' };
-    for (const d of keyDates(this.year)) {
-      if (d.id === 'autumn') continue;
-      const pts: THREE.Vector3[] = [];
-      const rs = sunriseSunset(d.year, d.month, d.day, lat, lon);
-      for (let h = rs.sunrise; h <= rs.sunset; h += 1 / 12) {
-        const sp = sunPosition(localDate(d.year, d.month, d.day, h), lat, lon);
-        if (sp.elevation < -0.5) continue;
-        pts.push(center.clone().addScaledVector(sunDirectionWorld(sp.azimuth, Math.max(0, sp.elevation), st.model.northAngleDeg), radius));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: colors[d.id], linewidth: 2, toneMapped: false, depthTest: true }));
-      this.pathG.add(line);
-      // 時刻の目盛り
-      for (let h = Math.ceil(rs.sunrise); h <= Math.floor(rs.sunset); h++) {
-        const sp = sunPosition(localDate(d.year, d.month, d.day, h), lat, lon);
-        if (sp.elevation < 0) continue;
-        const p = center.clone().addScaledVector(sunDirectionWorld(sp.azimuth, sp.elevation, st.model.northAngleDeg), radius);
-        const dot = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), new THREE.MeshBasicMaterial({ color: colors[d.id], toneMapped: false }));
-        dot.position.copy(p);
-        this.pathG.add(dot);
-        if (d.id === 'winter' ? h % 2 === 0 : h % 3 === 0) {
-          const label = textSprite(`${h}時`, { size: 40, color: '#fff', bg: 'rgba(0,0,0,0.45)', scale: 0.9 });
-          label.position.copy(p).add(new THREE.Vector3(0, 0.7, 0));
-          this.pathG.add(label);
-        }
-      }
-      // 日付ラベル（南中付近）
-      const noon = sunPosition(localDate(d.year, d.month, d.day, rs.noon), lat, lon);
-      const lp = center.clone().addScaledVector(sunDirectionWorld(noon.azimuth, noon.elevation, st.model.northAngleDeg), radius + 2.5);
-      const lab = textSprite(d.label, { size: 44, color: '#fff', bg: colors[d.id], scale: 1.3 });
-      lab.position.copy(lp);
-      this.pathG.add(lab);
-    }
-    // 方位リング
-    const ring = new THREE.Mesh(new THREE.RingGeometry(radius - 0.12, radius + 0.12, 128), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.8, side: THREE.DoubleSide, toneMapped: false }));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.copy(center).setY(0.05);
-    this.pathG.add(ring);
-    const dirs: [string, number][] = [
-      ['北', 0],
-      ['東', 90],
-      ['南', 180],
-      ['西', 270],
-    ];
-    for (const [label, az] of dirs) {
-      const d = sunDirectionWorld(az, 0, st.model.northAngleDeg);
-      const s = textSprite(label, { size: 56, color: '#fff', bg: label === '北' ? '#d9534f' : 'rgba(0,0,0,0.55)', scale: 1.6 });
-      s.position.copy(center).addScaledVector(d, radius + 1.8).setY(0.9);
-      this.pathG.add(s);
-      const tick = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.02, 1.4), new THREE.MeshBasicMaterial({ color: '#fff', toneMapped: false }));
-      tick.position.copy(center).addScaledVector(d, radius).setY(0.06);
-      tick.lookAt(center.clone().setY(0.06));
-      this.pathG.add(tick);
-    }
+    this.diagram.build({ lat, lon, year: this.year, center: this.center, radius, northAngleDeg: st.model.northAngleDeg });
     this.applyVisibility();
   }
 
-  /** 現在の太陽位置マーカー */
+  /** 現在の太陽位置マーカー（部品は作り直さず、位置だけ動かす） */
   updateSunMarker(dir: THREE.Vector3, radius = 22) {
-    clearGroup(this.sunMarker);
-    if (dir.y <= 0) return;
-    const p = this.center.addScaledVector(dir, radius);
-    const sun = new THREE.Mesh(new THREE.SphereGeometry(0.7, 20, 14), new THREE.MeshBasicMaterial({ color: '#fff1b0', toneMapped: false }));
-    sun.position.copy(p);
-    this.sunMarker.add(sun);
-    const glow = textSprite('☀', { size: 90, color: '#ffd24a', scale: 3 });
-    glow.position.copy(p);
-    this.sunMarker.add(glow);
-    const lineGeo = new THREE.BufferGeometry().setFromPoints([this.center.setY(0.1), p]);
-    this.sunMarker.add(new THREE.Line(lineGeo, new THREE.LineDashedMaterial({ color: '#ffd24a', dashSize: 0.6, gapSize: 0.4, toneMapped: false })));
-    (this.sunMarker.children[2] as THREE.Line).computeLineDistances();
-    this.sunMarker.visible = this.state.showSunPath;
+    this.diagram.setSun(dir.y > 0 ? dir : null, this.center, radius);
+    if (!this.state.showSunPath) this.sunMarker.visible = false;
     this.viewer.invalidate();
   }
 }
-

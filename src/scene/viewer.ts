@@ -709,7 +709,8 @@ export class Viewer {
     gt._overrideVisibility = () => {
       baseOverride();
       gt.scene.traverse((o) => {
-        if (o.visible && (o as THREE.Mesh).isMesh && String(o.userData.matKey ?? '').startsWith('l.leaf')) {
+        // 図の札・印（userData.noAO。日照の太陽の通り道など）も陰影の計算に入れない
+        if (o.visible && (o.userData.noAO || ((o as THREE.Mesh).isMesh && String(o.userData.matKey ?? '').startsWith('l.leaf')))) {
           o.visible = false;
           gt._visibilityCache.push(o);
         }
@@ -2380,13 +2381,28 @@ export class Viewer {
   /** 隣家（想定の街並み）の表示。日照では実際の周辺建物を使うので消す */
   setTownVisible(on: boolean) {
     this.townVisible = on;
+    // 「地面だけ」は日照の画面の間だけの表示。どの画面も入るときにここを通るので、ここで戻す
+    this.townGroundOnly = false;
+    this.cullTown();
+    this.dirty = true;
+  }
+  /**
+   * 想定の街並みのうち、区画の地面と道路だけを出す（家・塀・生垣・木・車は出さない）。
+   * 日照の画面で、実際の周辺（建物・航空写真・地形）を取る前の下敷きに使う: 平らな緑の地面だけだと殺風景だが、
+   * 想像の家を建てると「実在しない建物の影」が計画建物に落ちてしまう。地面と道だけなら影は変わらない。
+   */
+  private townGroundOnly = false;
+  setTownGround(on: boolean) {
+    if (this.townGroundOnly === on) return;
+    this.townGroundOnly = on;
     this.cullTown();
     this.dirty = true;
   }
   /** カメラと建物の間に入る隣家、カメラに近すぎる隣家は隠す（視界を塞がない） */
   private cullTown() {
-    if (this.townRoads && this.townRoads.visible !== this.townVisible) {
-      this.townRoads.visible = this.townVisible;
+    const ground = this.townVisible || this.townGroundOnly;
+    if (this.townRoads && this.townRoads.visible !== ground) {
+      this.townRoads.visible = ground;
       this.dirty = true;
     }
     if (!this.town.length) return;
@@ -2416,8 +2432,8 @@ export class Viewer {
         t.g.visible = show;
         this.dirty = true;
       }
-      if (t.flat.visible !== this.townVisible) {
-        t.flat.visible = this.townVisible;
+      if (t.flat.visible !== ground) {
+        t.flat.visible = ground;
         this.dirty = true;
       }
     }

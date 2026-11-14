@@ -10,6 +10,7 @@ import { stairDrawing } from '../core/stairs';
 import { pointInPolygon, polygonCentroid } from '../core/geometry';
 import { isArcChord } from '../core/arcWalls';
 import { planFurniture, type PlanItem } from '../scene/furniture';
+import { boxAt, boxInside, placeLabel, type LabelBox } from './labelPlace';
 import { buildBuilding } from '../scene/building';
 import { buildLandscape, planExteriorOf, type LandscapePlan } from '../scene/landscape';
 import { EXTERIOR_LABEL } from '../scene/exteriorItems';
@@ -384,6 +385,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   const pad = 2300;
   const vb = { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 + 900 };
   let s = '';
+  /** 上の階の吹抜の範囲（「上部吹抜」の文字を、室名のあとで置く） */
+  const voidLabels: Vec2[][] = [];
   const land = f.level === 1 && opts.showLandscape !== false ? landscapeOf(model) : null;
   // 外構の舗装（駐車場・アプローチ）と車
   if (land) {
@@ -444,8 +447,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
         if (v.type !== 'void' || v.polygon.length < 3) continue;
         const pts = v.polygon.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(' ');
         s += `<polygon points="${pts}" fill="none" stroke="#333" stroke-width="${hl ? 7 : 9}" stroke-dasharray="150 90"/>`;
-        const cc = polygonCentroid(v.polygon);
-        s += `<text x="${cc.x.toFixed(0)}" y="${(cc.y + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${haloS}>上部吹抜</text>`;
+        // 「上部吹抜」の文字は、室名を置いたあとで、室名・家具と重ならない所に置く（下の室名の所）
+        voidLabels.push(v.polygon);
       }
     // 手で足した庇: 壁の外面から出る範囲を破線で（平面図の庇の表記）
     for (const c of model.canopies ?? []) {
@@ -769,35 +772,130 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
       land.trees.forEach((t, i) => (s += treeSvg(t.x * 1000, t.z * 1000, t.r * 1000, i * 1.7 + 0.4)));
     }
   }
-  // 室名（全角英数字は半角に。部屋に収まる大きさで、家具に重なっても読めるよう白い縁取り）
+  // 室名（全角英数字は半角に。部屋に収まる大きさで、家具に重なっても読めるよう白い縁取り）。
+  // 置き場所は図面に書かれていた位置が基本。家具の記号・ほかの文字と重なるときは、部屋の中の空いた所へ少し動かす（labelPlace.ts）
+  const furnBoxes: LabelBox[] =
+    opts.showFurniture !== false
+      ? furnitureOf(model, f.level)
+          .filter((it) => it.key !== 'f.rug')
+          .map((it) => {
+            if (it.shape === 'circle') return { x0: (it.cx - it.r) * 1000, y0: (it.cz - it.r) * 1000, x1: (it.cx + it.r) * 1000, y1: (it.cz + it.r) * 1000 };
+            const ex = (Math.abs(it.ax) * it.w + Math.abs(it.az) * it.d) * 500;
+            const ey = (Math.abs(it.az) * it.w + Math.abs(it.ax) * it.d) * 500;
+            return { x0: it.cx * 1000 - ex, y0: it.cz * 1000 - ey, x1: it.cx * 1000 + ex, y1: it.cz * 1000 + ey };
+          })
+      : [];
+  const takenBoxes: LabelBox[] = [];
   for (const r of f.rooms) {
     if (r.type === 'stairs') continue;
     const name = r.name.normalize('NFKC');
     // 名前の無い区画（線の読み違いの隙間）は書かない
     if (!name.trim()) continue;
-    const c = r.labelPos ?? polygonCentroid(r.polygon);
+    const c0 = r.labelPos ?? polygonCentroid(r.polygon);
     const xs = r.polygon.map((p) => p.x);
     const ys = r.polygon.map((p) => p.y);
     const rw = Math.max(...xs) - Math.min(...xs);
     const rh = Math.max(...ys) - Math.min(...ys);
     const big = r.area > 4;
     // 室名は紙の上で 2.4〜3.1mm（1/100）。以前の 2.1〜2.7mm は画面で小さすぎた
-    const fs = Math.max(160, Math.min(big ? 310 : 240, (rw * 0.86) / textEm(name), rh * 0.3));
+    const fs1 = Math.max(160, Math.min(big ? 310 : 240, (rw * 0.86) / textEm(name), rh * 0.3));
     const tatami = r.labeledTatami ?? r.area / 1.62;
+    // 御社の図面: 室名の下に (7帖)・(29.4帖)。居室と LDK など広さを示す部屋だけ。整数なら小数を付けない
+    const showTatami = hl && TATAMI_ROOMS.has(r.type) && r.area >= 2.0 && rh >= 900;
+    const tj = Math.abs(tatami - Math.round(tatami)) < 0.08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
+    const chars = [...name];
+    const nameW = textEm(name) * fs1 + (chars.length - 1) * fs1 * (hl ? 0.08 : 0.06);
+    // 幅の狭い部屋（半間の物入など）で横書きが収まらないときは、縦に積む（英数字だけの名前は 90° 回す）
+    const vertical = !showTatami && !(big && !hl) && !r.floorOffset && chars.length >= 2 && nameW > rw - 130 && rh - 200 > chars.length * 170;
+    if (vertical) {
+      const fv = Math.max(150, Math.min(240, (rw - 130) * 0.8, (rh - 200) / (chars.length * 1.08)));
+      const hv = `stroke="#fff" stroke-width="${Math.round(fv * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
+      const cx = c0.x;
+      const fill = hl ? '#111' : '#2a2a2a';
+      if (/^[\x20-\x7e]+$/.test(name)) {
+        s += `<text x="${cx}" y="${c0.y + fv * 0.35}" font-size="${fv.toFixed(0)}" text-anchor="middle" fill="${fill}" transform="rotate(-90 ${cx} ${c0.y})" ${hv}>${esc(name)}</text>`;
+      } else {
+        chars.forEach((ch, i) => {
+          const y = c0.y + (i - (chars.length - 1) / 2) * fv * 1.08 + fv * 0.35;
+          s += `<text x="${cx}" y="${y.toFixed(0)}" font-size="${fv.toFixed(0)}" text-anchor="middle" fill="${fill}" ${hv}>${esc(ch === 'ー' || ch === '-' ? '｜' : ch)}</text>`;
+        });
+      }
+      takenBoxes.push({ x0: cx - fv * 0.6, x1: cx + fv * 0.6, y0: c0.y - chars.length * fv * 0.56, y1: c0.y + chars.length * fv * 0.56 });
+      continue;
+    }
+    // 横書きが部屋の幅に収まらない長い名前（脱衣ランドリー・ファミリークローゼット）は、字の種類の変わり目で 2 行に分ける
+    const ls = hl ? 0.08 : 0.06;
+    let lines = [name];
+    if (nameW > rw - 130 && chars.length >= 5 && rh > fs1 * 3.4) lines = splitRoomName(name) ?? lines;
+    // 2 行にしたら、その行の長さに合う大きさまで戻す（1 行に収めようとして最小まで縮んでいる）
+    const fsBase = lines.length > 1 ? Math.max(160, Math.min(big ? 310 : 240, (rw * 0.86) / Math.max(...lines.map(textEm)), rh * 0.22)) : fs1;
+    const two = showTatami || (big && !hl);
+    // 文字の大きさ → 文字の箱（基準点から見た範囲）: 室名・(帖)・FL±
+    const metrics = (fz: number) => {
+      const widthOf = (t: string) => textEm(t) * fz + ([...t].length - 1) * fz * ls;
+      const up = (lines.length - 1) * fz * 1.12;
+      const tatamiW = showTatami ? textEm(`(${tj}帖)`) * fz * 0.82 : big && !hl ? textEm(`${tatami.toFixed(1)}帖`) * fz * 0.68 : 0;
+      // 左右は壁の厚みの半分（部屋の輪郭は壁の芯）だけ余裕を見る: 字が壁の黒い帯に掛からない
+      const half = Math.max(...lines.map(widthOf), tatamiW) / 2 + fz * 0.12 + 70;
+      // 室名の最後の行のベースライン（基準点から）。(帖) の無い 2 行の名前は、2 行の中央を基準点に合わせる
+      const nameY = (hl ? (showTatami ? -fz * 0.15 : fz * 0.35) : big ? -30 : fz * 0.35) + (two ? 0 : up / 2);
+      const rel: LabelBox = { x0: -half, x1: half, y0: nameY - up - fz * 0.87, y1: r.floorOffset ? fz * (two ? (hl ? 1.8 : 1.86) : 1.3) : two ? fz * (hl ? 1.08 : 1.12) : nameY + fz * 0.25 };
+      return { nameY, rel };
+    };
+    const tryAt = (fz: number) => {
+      const m = metrics(fz);
+      const at = placeLabel({ at: c0, rel: m.rel, within: r.polygon, obstacles: furnBoxes, taken: takenBoxes });
+      return { fz, ...m, at, fits: boxInside(boxAt(at, m.rel), r.polygon) };
+    };
+    // 部屋の幅は外接の四角で測っているので、L 字の部屋・細い廊下では文字が壁に掛かることがある。
+    // そのときは遠くへ動かす前に、文字を小さくして元の位置の近くに収める（最小は 1.6 mm 相当）
+    let lay = tryAt(fsBase);
+    if (!lay.fits)
+      for (const k of [0.86, 0.74, 0.64, 0.55]) {
+        const fz = Math.max(160, fsBase * k);
+        if (fz > lay.fz - 1) continue;
+        const t = tryAt(fz);
+        if (t.fits) {
+          lay = t;
+          break;
+        }
+      }
+    const { fz: fs, nameY, rel, at: c } = lay;
     const halo = `stroke="#fff" stroke-width="${Math.round(fs * 0.22)}" stroke-linejoin="round" paint-order="stroke"`;
+    takenBoxes.push(boxAt(c, rel));
+    const nameSvg = (fill: string, extra: string) =>
+      lines.map((t, i) => `<text x="${c.x}" y="${(c.y + nameY - (lines.length - 1 - i) * fs * 1.12).toFixed(0)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="${fill}"${extra} letter-spacing="${(fs * ls).toFixed(0)}" ${halo}>${esc(t)}</text>`).join('');
     if (hl) {
-      // 御社の図面: 室名の下に (7帖)・(29.4帖)。居室と LDK など広さを示す部屋だけ。整数なら小数を付けない
-      const showTatami = TATAMI_ROOMS.has(r.type) && r.area >= 2.0 && rh >= 900;
-      const tj = Math.abs(tatami - Math.round(tatami)) < 0.08 ? `${Math.round(tatami)}` : tatami.toFixed(1);
-      s += `<text x="${c.x}" y="${c.y + (showTatami ? -fs * 0.15 : fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#111" letter-spacing="${(fs * 0.08).toFixed(0)}" ${halo}>${esc(name)}</text>`;
+      s += nameSvg('#111', '');
       if (showTatami) s += `<text x="${c.x}" y="${c.y + fs * 0.85}" font-size="${(fs * 0.82).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>(${tj}帖)</text>`;
       // 床の段差: 「FL+400」（小上がり・ダウンリビング・中二階。玄関の土間は書かない）
       if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (showTatami ? 1.6 : 1.1)).toFixed(0)}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#111" ${halo}>FL${r.floorOffset > 0 ? '+' : '−'}${Math.abs(r.floorOffset)}</text>`;
       continue;
     }
-    s += `<text x="${c.x}" y="${c.y - (big ? 30 : -fs * 0.35)}" font-size="${fs.toFixed(0)}" text-anchor="middle" fill="#2a2a2a" font-weight="500" letter-spacing="${(fs * 0.06).toFixed(0)}" ${halo}>${esc(name)}</text>`;
+    s += nameSvg('#2a2a2a', ' font-weight="500"');
     if (big) s += `<text x="${c.x}" y="${c.y + fs * 0.95}" font-size="${(fs * 0.68).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>${tatami.toFixed(1)}帖</text>`;
     if (r.floorOffset) s += `<text x="${c.x}" y="${(c.y + fs * (big ? 1.7 : 1.1)).toFixed(0)}" font-size="${(fs * 0.62).toFixed(0)}" text-anchor="middle" fill="#7a7a7a" ${halo}>FL${r.floorOffset > 0 ? '+' : '−'}${Math.abs(r.floorOffset)}</text>`;
+  }
+  // 「上部吹抜」: 吹抜の範囲の中で、室名・家具と重ならない所に（範囲の重心が基本）
+  for (const poly of voidLabels) {
+    const cc = polygonCentroid(poly);
+    const vx = poly.map((p) => p.x);
+    const vy = poly.map((p) => p.y);
+    const vw = Math.max(...vx) - Math.min(...vx);
+    const vh = Math.max(...vy) - Math.min(...vy);
+    const vHalo = `stroke="#fff" stroke-width="40" stroke-linejoin="round" paint-order="stroke"`;
+    // 幅の狭い吹抜（階段まわり・廊下の上）は縦に積む: 横書きのままだと、吹抜の外の室名に重なる
+    if (vw < 1000 && vh > 1300) {
+      const rel: LabelBox = { x0: -120, x1: 120, y0: -400, y1: 400 };
+      const at = placeLabel({ at: cc, rel, within: poly, obstacles: furnBoxes, taken: takenBoxes, reach: 3200 });
+      takenBoxes.push(boxAt(at, rel));
+      [...'上部吹抜'].forEach((ch, i) => (s += `<text x="${at.x.toFixed(0)}" y="${(at.y + (i - 1.5) * 190 + 60).toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" ${vHalo}>${ch}</text>`));
+      continue;
+    }
+    const rel: LabelBox = { x0: -420, x1: 420, y0: -130, y1: 110 };
+    const at = placeLabel({ at: { x: cc.x, y: cc.y + 60 }, rel, within: poly, obstacles: furnBoxes, taken: takenBoxes, reach: 3200 });
+    takenBoxes.push(boxAt(at, rel));
+    s += `<text x="${at.x.toFixed(0)}" y="${at.y.toFixed(0)}" font-size="170" text-anchor="middle" fill="#333" letter-spacing="14" ${vHalo}>上部吹抜</text>`;
   }
   // 寸法（外壁の通り芯ごとの寸法と全体寸法。道路・敷地境界と重なりにくい側に）
   let dimsBelow = false;
@@ -999,13 +1097,16 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
   if (hl) {
     // 御社の図面: 枠に入れた「1階 平面図 S:1/100」（図枠に入れるときは実際の縮尺に置き換わる）
     s += boxedTitle(tx, ty - 300, `${title} S:1/${opts.sheet ? '{{SCALE}}' : '100'}`, 300);
-    if (!opts.sheet) s += `<text x="${tx}" y="${ty + 720}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
+    // 床面積は図面名の枠と縮尺バーの間に（前は縮尺バーと同じ高さで、バーの上に字が重なっていた）
+    if (!opts.sheet) s += `<text x="${tx}" y="${ty + 430}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
   } else {
     s += `<text x="${tx}" y="${ty}" font-size="300" text-anchor="middle" fill="#222" font-weight="600" letter-spacing="40">${esc(title)}</text>`;
     s += `<text x="${tx}" y="${ty + 380}" font-size="170" text-anchor="middle" fill="#777">床面積（参考）約 ${area.toFixed(1)}㎡（${(area / 3.30579).toFixed(1)}坪）</text>`;
   }
-  s += scaleBar(tx - 2500, ty + 620);
-  vb.h = Math.max(vb.h, ty + 1100 - vb.y);
+  // 縮尺バー: 図枠に入れないとき（御社の表記）は、床面積の行の分だけ下げる
+  const barDown = hl && !opts.sheet ? 200 : 0;
+  s += scaleBar(tx - 2500, ty + 620 + barDown);
+  vb.h = Math.max(vb.h, ty + 1100 + barDown - vb.y);
   // 建具記号（建具表と対応）
   if (opts.tags === true) {
     for (const e of openingSchedule(f)) {
@@ -1090,6 +1191,32 @@ function esc(s: string) {
 }
 
 /** 文字幅の目安（全角 = 1、半角 = 0.6） */
+/**
+ * 長い室名を 2 行に分ける位置: 字の種類（漢字・カタカナ・ひらがな・英数字）が変わる所のうち、真ん中にいちばん近い所。
+ * 「脱衣ランドリー」→ 脱衣／ランドリー、「ファミリークローゼット」は字の種類が変わらないので分けない（null）
+ */
+export function splitRoomName(name: string): [string, string] | null {
+  const cs = [...name];
+  // 中黒は前の字と同じ種類として扱わず、区切りそのもの（中黒の前後どちらでも分けられる）
+  const cls = (ch: string) => (ch === '・' ? 'p' : /[\u30a0-\u30ff]/.test(ch) ? 'k' : /[\u3040-\u309f]/.test(ch) ? 'h' : /[\x20-\x7e]/.test(ch) ? 'a' : 'j');
+  let best = -1;
+  let bd = Infinity;
+  for (let i = 2; i <= cs.length - 2; i++) {
+    if (cls(cs[i - 1]) === cls(cs[i])) continue;
+    const d = Math.abs(i - cs.length / 2);
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  if (best < 0) return null;
+  // 行の変わり目に来た中黒・スペースは落とす（「キャットウォーク・」「猫部屋」→「キャットウォーク」「猫部屋」）
+  const trim = (t: string) => t.replace(/^[・\s]+|[・\s]+$/g, '');
+  const a = trim(cs.slice(0, best).join(''));
+  const b = trim(cs.slice(best).join(''));
+  return a && b ? [a, b] : null;
+}
+
 function textEm(t: string): number {
   let w = 0;
   for (const ch of t) w += /[\x20-\x7e｡-ﾟ]/.test(ch) ? 0.6 : 1;

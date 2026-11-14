@@ -345,6 +345,7 @@ export const TOOLS: ToolDef[] = [
         tax: Math.round(est.tax),
         total: Math.round(est.total),
         per_tsubo: Math.round(est.perTsubo),
+        per_tsubo_construction: Math.round(est.perTsuboConst),
         note: '既定仕様の概算です。仕上げ・設備を選ぶと金額が変わります（アプリのコーディネート・見積画面）',
       };
       return text(out, out);

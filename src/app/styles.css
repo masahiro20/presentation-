@@ -759,6 +759,13 @@ body.cinema .main { grid-template-columns: 1fr; }
 .est-summary-head th { text-align: left; width: 28mm; font-weight: 500; color: #555; padding: 1.6mm 2mm; border-bottom: 1px solid #ddd; }
 .est-summary-head td { padding: 1.6mm 2mm; border-bottom: 1px solid #ddd; }
 .est-summary-head td.big { font-size: 16pt; font-weight: 600; }
+/* 面積・坪単価: 施工面積あたり・延床あたりを 1 行に並べる（行を増やさない。A4 1 枚に収める） */
+.est-summary-head td.per-cell { font-variant-numeric: tabular-nums; }
+/* 1 つの面積と坪単価はひとまとまり（途中で折り返さない）。セル全体は折り返してよい（見出しの列を押しつぶさない） */
+.est-summary-head td .per-item { display: inline-block; white-space: nowrap; margin-right: 5mm; }
+.est-summary-head td .per-item b { font-weight: 600; }
+.est-summary-head td .per { margin-left: 2mm; font-size: 9.5pt; }
+.est-summary-head td .per-note { font-size: 8pt; color: #888; white-space: nowrap; }
 .est-table { border-collapse: collapse; width: 100%; }
 .est-table th, .est-table td { border: 0; border-bottom: 1px solid #ddd9d0; padding: 1.4mm 2mm; vertical-align: top; }
 .est-table th { background: transparent; font-weight: 500; text-align: left; color: #666; font-size: 8.5pt; letter-spacing: 0.08em; border-bottom: 1px solid #9a968e; }
@@ -840,6 +847,7 @@ body.cinema .main { grid-template-columns: 1fr; }
 .est-total-card .k { font-size: 13.5px; letter-spacing: 0.1em; opacity: 0.75; }
 .est-total-card .v { font-size: 28px; font-weight: 600; letter-spacing: 0.02em; margin: 2px 0; font-variant-numeric: tabular-nums; }
 .est-total-card .s { font-size: 14px; opacity: 0.8; }
+.est-total-card .s.per { margin-top: 3px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
 .area-grid { display: flex; flex-direction: column; gap: 4px; }
 .area-group { font-size: 13.5px; letter-spacing: 0.1em; color: var(--ink3); margin: 10px 0 4px; }
 .area-row { display: grid; grid-template-columns: 1fr 76px 28px 18px; align-items: center; gap: 6px; font-size: 14px; }
@@ -859,7 +867,8 @@ body.cinema .main { grid-template-columns: 1fr; }
 .loan-row { display: grid; grid-template-columns: 1fr 64px 44px 56px; gap: 6px; align-items: center; font-size: 14px; margin-bottom: 4px; }
 .loan-row input { font: inherit; font-size: 13.5px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; text-align: right; min-width: 0; }
 .chk { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; margin-left: 6px; }
-@media screen { .est-sheet.funding:not(.measuring) { zoom: 0.78; } }
+/* 資金計画書（A3 横）のプレビュー: 入れ物の幅に合わせる（--screen-fit は estimateStep の fitFundingWidth が入れる） */
+@media screen { .est-sheet.funding:not(.measuring) { zoom: var(--screen-fit, 0.72); } }
 /* 資金計画書: A3 横 1 枚（中身が高いときは --fit で縮める。fitFunding が測って入れる） */
 .est-sheet.funding { height: 297mm; min-height: 0; overflow: hidden; }
 .est-sheet.funding.measuring { height: auto; overflow: visible; zoom: 1; }

@@ -139,6 +139,10 @@ export interface ComposeOpts {
   offsets?: ({ x: number; y: number } | undefined)[];
   /** パネルを掴める印（data-panel と透明の当たり面）を付ける（画面でドラッグして配置を直す用） */
   draggable?: boolean;
+  /** 横に並べて入らないとき、最後の図を右上の表の下に入れる並べ方を試す（既定: 試す）。手で配置を直した図面では false */
+  tuck?: boolean;
+  /** 段ごとの枚数をそろえる（3 枚＋1 枚にせず 2 枚＋2 枚に）。立面図のシート用 */
+  balance?: boolean;
 }
 
 /** この内容が収まる縮尺（分母）。scales のどれにも収まらなければ 0 */
@@ -159,18 +163,23 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
   // 上の帯（外部仕上表など）は 1/100 の幅で作ってあり、縮尺に合わせて k 倍（紙の上で同じ大きさ）
   const topH = (d: number) => (opts.top ? (opts.top.h * d) / 100 + gap * 0.6 : 0);
   type Placed = { p: Panel; x: number; y: number };
-  const layout = (availW: number): { placed: Placed[]; w: number; h: number } => {
+  /** tuck = 最後の図を、右上の表の下（右の列）に置く並べ方。colW はその列の幅 */
+  type Lay = { placed: Placed[]; w: number; h: number; tuck?: { colW: number } };
+  const layoutOf = (list: Panel[], availW: number, maxPerRow = Infinity): Lay => {
     const placed: Placed[] = [];
     let x = 0;
     let y = 0;
     let rowH = 0;
     let maxW = 0;
-    for (const p of panels) {
-      if (x > 0 && (opts.stack === 'col' || x + p.vb.w > availW)) {
+    let inRow = 0;
+    for (const p of list) {
+      if (x > 0 && (opts.stack === 'col' || x + p.vb.w > availW || inRow >= maxPerRow)) {
         y += rowH + gap;
         x = 0;
         rowH = 0;
+        inRow = 0;
       }
+      inRow++;
       placed.push({ p, x, y });
       x += p.vb.w + gap;
       rowH = Math.max(rowH, p.vb.h);
@@ -178,6 +187,22 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
     }
     return { placed, w: maxW, h: y + rowH };
   };
+  /**
+   * 段ごとの枚数をそろえる並べ方（balance）: 入るだけ横に並べると 3 枚＋1 枚のように片寄るとき、段の数はそのままで 2 枚＋2 枚にする
+   * （立面図 4 面。そろえても紙に入るときだけ）
+   */
+  const layout = (availW: number, availH = Infinity): Lay => {
+    const L = layoutOf(panels, availW);
+    if (!opts.balance || opts.stack === 'col' || !L.placed.length) return L;
+    const rows = new Set(L.placed.map((pl) => pl.y)).size;
+    if (rows < 2) return L;
+    const per = Math.ceil(panels.length / rows);
+    const B = layoutOf(panels, availW, per);
+    // そろえた並べ方が紙の高さに入るとき（または、もとの並べ方も入らないとき）だけ使う
+    return B.w <= availW && (B.h <= availH || L.h > availH) ? B : L;
+  };
+  /** 右の列で、表と図の間に空ける高さ */
+  const tuckGap = Math.max(gap, 900);
   let denom = scales[scales.length - 1];
   let lay = layout(Infinity);
   let fits = false;
@@ -186,12 +211,28 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
     const titleH = TITLE_H * d;
     const availW = 420 * d - margin * 2 - (opts.right ? rightW + rgap : 0);
     const availH = 297 * d - margin * 2 - titleH - topH(d);
-    const L = layout(availW);
+    const L = layout(availW, availH);
     if (L.w <= availW && L.h <= availH && (opts.right?.h ?? 0) <= availH) {
       denom = d;
       lay = L;
       fits = true;
       break;
+    }
+    // 横に並べると入らないとき: 最後の図（2 階の平面図など）を右上の表の下に入れると、この縮尺で入ることがある。
+    // 表の列を丸ごと空けておくより紙を広く使える（敷地ごと描いた 1 階＋2 階が 1/150 に落ちて、紙の下半分が空いていた）
+    if (opts.tuck !== false && opts.right && panels.length >= 2 && opts.stack !== 'col') {
+      const last = panels[panels.length - 1];
+      const colW = Math.max(rightW, last.vb.w);
+      const availMain = 420 * d - margin * 2 - colW - rgap;
+      const Lm = layoutOf(panels.slice(0, -1), availMain);
+      // 表は領域の上端から少し下げて置いている（下の ry）。その分も入れて、表題欄に掛からないことを確かめる
+      const tableTop = Math.max(16, d * 0.18) * 10;
+      if (Lm.w <= availMain && Lm.h <= availH && tableTop + opts.right.h + tuckGap + last.vb.h <= availH) {
+        denom = d;
+        lay = { ...Lm, tuck: { colW } };
+        fits = true;
+        break;
+      }
     }
     lay = L;
   }
@@ -209,7 +250,7 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
   // 御社の図面: 図と右の表（面積表・建築概要）をひとまとまりとして紙の中央に置く（図だけを左の領域の中央に置くと左に寄って小さく見える）
   // 右の表（面積表など）は、どのシートでも図枠の右上の同じ位置に置く（図に合わせて上下させると、シートごとに位置が変わって見づらい）。
   // 図はその左の領域の中央
-  const areaW = W - margin * 2 - (opts.right ? rightW + rgap : 0);
+  const areaW = W - margin * 2 - (lay.tuck ? lay.tuck.colW + rgap : opts.right ? rightW + rgap : 0);
   const areaH = H - margin * 2 - titleH - topH(denom);
   const ox = margin + Math.max(0, (areaW - lay.w) / 2);
   const oy = margin + topH(denom) + Math.max(0, (areaH - lay.h) / 2);
@@ -221,14 +262,20 @@ export function composeSheet(panels: Panel[], info: SheetInfo, opts: ComposeOpts
   // 図枠（二重線）
   s += `<rect x="${margin * 0.5}" y="${margin * 0.5}" width="${W - margin}" height="${H - margin}" fill="none" stroke="#111" stroke-width="${sw * 2}"/>`;
   s += `<rect x="${margin * 0.5 + sw * 6}" y="${margin * 0.5 + sw * 6}" width="${W - margin - sw * 12}" height="${H - margin - sw * 12}" fill="none" stroke="#111" stroke-width="${sw * 0.6}"/>`;
-  lay.placed.forEach((pl, i) => {
+  const emitPanel = (p: Panel, i: number, x0: number, y0: number) => {
     // 手直しのずらし（紙の mm → 図面の mm）
     const off = opts.offsets?.[i];
-    const tx = ox + pl.x - pl.p.vb.x + (off?.x ?? 0) * denom;
-    const ty = oy + pl.y - pl.p.vb.y + (off?.y ?? 0) * denom;
-    const hit = opts.draggable ? `<rect x="${pl.p.vb.x}" y="${pl.p.vb.y}" width="${pl.p.vb.w}" height="${pl.p.vb.h}" fill="none" pointer-events="all"/>` : '';
-    s += `<g${opts.draggable ? ` data-panel="${i}"` : ''} transform="translate(${tx.toFixed(0)} ${ty.toFixed(0)})">${hit}${pl.p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
-  });
+    const tx = x0 - p.vb.x + (off?.x ?? 0) * denom;
+    const ty = y0 - p.vb.y + (off?.y ?? 0) * denom;
+    const hit = opts.draggable ? `<rect x="${p.vb.x}" y="${p.vb.y}" width="${p.vb.w}" height="${p.vb.h}" fill="none" pointer-events="all"/>` : '';
+    s += `<g${opts.draggable ? ` data-panel="${i}"` : ''} transform="translate(${tx.toFixed(0)} ${ty.toFixed(0)})">${hit}${p.inner.replace(/\{\{SCALE\}\}/g, String(denom))}</g>`;
+  };
+  lay.placed.forEach((pl, i) => emitPanel(pl.p, i, ox + pl.x, oy + pl.y));
+  // 最後の図を右上の表の下に（列の中で左右中央）
+  if (lay.tuck && opts.right) {
+    const last = panels[panels.length - 1];
+    emitPanel(last, panels.length - 1, W - margin - lay.tuck.colW + (lay.tuck.colW - last.vb.w) / 2, ry + opts.right.h + tuckGap);
+  }
   if (opts.right) s += `<g transform="translate(${rx.toFixed(0)} ${ry.toFixed(0)})">${opts.right.svg}</g>`;
   if (opts.top) {
     const k = (W - margin * 2) / opts.top.w;

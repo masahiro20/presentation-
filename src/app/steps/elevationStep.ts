@@ -8,7 +8,7 @@ import { renderElevation, type ElevationDir } from '../../drawings/elevation';
 import { floorPlanSvg, floorPlanParts, areaTableSvg, type PlanParts } from '../../drawings/plan';
 import { composeSheet, sheetScale, SHEET_TOP_W } from '../../drawings/sheet';
 import { exteriorFinishTableSvg } from '../../drawings/finishTable';
-import { exteriorQuantityTableSvg } from '../../drawings/quantities';
+import { exteriorQuantityStripSvg } from '../../drawings/quantities';
 import { exteriorById } from '../../styles/presets';
 import { modelToDxf } from '../../drawings/dxf';
 import { sheetInfo } from '../sheetInfo';
@@ -32,7 +32,9 @@ function generate(ctx: StepCtx, color: boolean) {
 function composePlanSheets(model: BuildingModel, parts: PlanParts[], at: { svg: string; w: number; h: number }, startNo: number): { title: string; svg: string; floors: number[] }[] {
   const lay = state.sheetLayout?.plan ?? {};
   const gap = Math.max(0, lay.gapM ?? PLAN_GAP_M) * 1000;
-  const base = { right: { svg: at.svg, w: at.w, h: at.h }, gap, stack: lay.stack ?? 'row', draggable: true } as const;
+  // 手でずらした配置は、ずらす前の並べ方を基準にしている。並べ方が変わると位置が合わなくなるので、そのときは表の下に入れる並べ方を使わない
+  const moved = Object.values(lay.offsets ?? {}).some((o) => o && (o.x || o.y));
+  const base = { right: { svg: at.svg, w: at.w, h: at.h }, gap, stack: lay.stack ?? 'row', draggable: true, tuck: !moved } as const;
   const oneSheet = lay.scale ? [lay.scale] : model.floors.length <= 2 ? [100, 150, 200] : [100];
   const fits = sheetScale(parts, { ...base, defs: parts.map((p) => p.defs ?? '').join(''), scales: oneSheet });
   const groups = fits || lay.scale ? [model.floors.map((_, i) => i)] : model.floors.map((_, i) => [i]);
@@ -77,11 +79,13 @@ export function buildSheets(app: StepCtx['app'], color = false) {
   planCache = { model, parts, at };
   const sheets: { title: string; svg: string; floors?: number[] }[] = composePlanSheets(model, parts, at, 1);
   // 立面図は御社の立面図シートと同じ構成: 上に外部仕上表の帯、その下に 4 面を 2 × 2（南・東／北・西）
-  const top = exteriorFinishTableSvg(state.design, 0, 0, SHEET_TOP_W);
-  // 右上に外部数量表（外壁面積・屋根面積など。見積の拾いと同じ計算。テイストの屋根・軒の出に合わせる）
+  const finish = exteriorFinishTableSvg(state.design, 0, 0, SHEET_TOP_W);
+  // 外部仕上表のすぐ下に外部数量の帯（外壁面積・屋根面積など。見積の拾いと同じ計算。テイストの屋根・軒の出に合わせる）。
+  // 前は右の列に縦長の表を置いていたので、4 面が 1/100 で入らず 1/150 に縮み、紙の右と下が大きく空いていた
   const ext = exteriorById(state.design.exteriorId);
-  const qt = exteriorQuantityTableSvg(model, { grade: 'P', eavesMm: state.design.eaves ?? ext.roof.eaves, pitch: state.design.roofPitch ?? ext.roof.pitch, roofType: state.design.roofOverride ?? ext.roof.type, solido: ext.accent ? ext.accentRule : 'none' }, 0, 0);
-  sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${sheets.length + 1}`), { top, gap: 1200, right: { svg: qt.svg, w: qt.w, h: qt.h } }) });
+  const qt = exteriorQuantityStripSvg(model, { grade: 'P', eavesMm: state.design.eaves ?? ext.roof.eaves, pitch: state.design.roofPitch ?? ext.roof.pitch, roofType: state.design.roofOverride ?? ext.roof.type, solido: ext.accent ? ext.accentRule : 'none' }, 0, finish.h + 120, SHEET_TOP_W);
+  const top = { svg: finish.svg + qt.svg, w: SHEET_TOP_W, h: finish.h + 120 + qt.h };
+  sheets.push({ title: '立面図', svg: composeSheet(elevs.map((r) => ({ inner: r.inner, vb: r.vb })), sheetInfo('立面図', `A-${sheets.length + 1}`), { top, gap: 1200, balance: true }) });
   state.sheets = sheets;
 }
 

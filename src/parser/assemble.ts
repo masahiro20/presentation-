@@ -10,6 +10,9 @@ import { detectPassMarks, marksCrossing } from './passMarks';
 import { absorbStairRing, carveStairRegion, stairPartsInOtherRegions } from './stairRooms';
 import { findBalconyRails } from './balconyRails';
 import { matchStairs, overhangArea, stairIoU, wallFitRatio } from '../core/floorAlign';
+import { readSashMark, type SashMark } from './windowMarks';
+import { isWoodFillColor, joineryRectOf, readJoineryFills, type JoineryFill } from './joineryFills';
+import { readWallTvs } from './wallTv';
 import { OUTDOOR_TYPES, excludedFromFloorArea, isExteriorWorks, type BuildingModel, type Floor, type FurnitureKind, type Opening, type PlanSide, type Room, type RoomType, type Stair, type Vec2, type Wall, type WindowStyle, type GarageKind, floorOffsetByName, type VoidGuard, type FloorFinish } from '../core/types';
 import { bboxGap, bboxOf, distPointSegment, pointInPolygon, polygonArea, polygonCentroid, type BBox } from '../core/geometry';
 import { effectiveStepCount, stairLayout } from '../core/stairs';
@@ -397,6 +400,8 @@ export interface PlanData {
   sashPolys: Vec2[][];
   /** 室名の入った色塗り（カラー平面図の部屋の塗り）: 輪郭を部屋の区切りに使う */
   roomFills: Vec2[][];
+  /** 木の色で塗られた四角（造作の棚・カウンター。parser/joineryFills.ts） */
+  joineryFills?: JoineryFill[];
   /** 手描き風の図面（太線を画像にして壁を検出した）: 太線を内外判定の仕切りに使う */
   sketchLines?: Seg[];
   /** 画像から壁を検出した図面（手描き風・スキャン）: 線の揺れ・途切れを許容する */
@@ -446,6 +451,9 @@ function windowStyleFor(room: RoomType | null, widthMm: number, facingSouth: boo
   void facingSouth;
 }
 
+/** 「掃き出しは 1 か所だけ」の決まりで、掃き出しから高窓・腰窓に変えた窓（窓の記号を描き分けている図面では、家全体を見てから戻す: windowsBySashMarks） */
+const vocabDemoted = new WeakSet<Opening>();
+
 /**
  * ホームランディックの窓の語彙: 掃き出し窓は LDK（庭側）に 1 ヵ所だけ。残りの大きな窓は天井付けの横長 FIX、細い窓は縦すべり出しにする。
  * 図面にサッシ記号・FL 注記で寸法が書かれた窓はそのまま。
@@ -462,6 +470,7 @@ function applyWindowVocabulary(openings: Opening[], info: Map<number, { room: Ro
   cands.sort((a, b) => b.o.t1 - b.o.t0 + b.inf!.south * 1500 - (a.o.t1 - a.o.t0 + a.inf!.south * 1500));
   for (const x of cands.slice(hasMarked ? 0 : 1)) {
     const w = x.o.t1 - x.o.t0;
+    vocabDemoted.add(x.o);
     if (w >= 1400) {
       x.o.windowStyle = 'high';
       x.o.sill = 1300;
@@ -2587,6 +2596,8 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     return { x: -nx, y: -ny };
   })();
 
+  // 窓の記号（すべり出しの三角・FIX・引違い）を読む線: 建物のまわりの線も見る（三角は外壁の外に描かれる）
+  const markSegs = plan.scan || plan.loose ? [] : [...plan.segs, ...plan.siteSegs];
   walls.forEach((w, wi) => {
     const mid = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
     const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
@@ -2669,6 +2680,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       let sill = 0;
       let height = 2000;
       let windowStyle: WindowStyle | undefined;
+      let sash: SashMark | undefined;
       let interiorWindow = false;
       // 外壁扱いの壁でも、両側が室内（中庭に面する壁の、ホール側の区間など）なら室内の建具として扱う
       const outdoorType = (t: RoomType | undefined) => !t || OUTDOOR_TYPES.includes(t);
@@ -2693,6 +2705,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
           sill = ws.sill;
           height = ws.height;
           windowStyle = ws.style;
+          sash = readSashMark(markSegs, w.a, w.u, w.n, t0, t1, w.d)?.mark;
           winInfo.set(openings.length, { room: inRoom?.type ?? null, south: Math.max(0, southDot), drawn: !!(noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) || (noteFl != null && noteFl < 1600) });
           // 図面に書かれたサッシ記号（例 16511 = W1650×H1170）があれば、その寸法を優先する
           if (noteSash && Math.abs(noteSash.width - width) <= Math.max(300, width * 0.35)) {
@@ -2766,6 +2779,7 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         sill,
         height,
         windowStyle,
+        ...(sash ? { sash } : {}),
         ...(interiorWindow ? { interior: true } : {}),
         // 引戸は「引き込む側」を hingeAtStart に持つ（false = 始点側へ、true = 終点側へ）。図面の戸袋が読めたらその側
         hingeAtStart: kind === 'sliding' && op.pocketSide != null ? op.pocketSide > 0 : op.hingeAtStart,
@@ -3819,8 +3833,26 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
   // 常識で整理（LDK に食卓 2 つ、玄関に便器…は読み違い）
   const sensed = senseFurniture(merged0, rooms);
   if (sensed.removed.length && g.__ctxTrace) g.__ctxTrace.push(...sensed.removed.map((t) => `${level}F 整理: ${t}`));
-  const mergedItems = sensed.items;
+  let mergedItems = sensed.items;
   void (null as FurnitureKind | null);
+  // 木の色で塗られた四角 = 造作のカウンター・可動棚（図面の色が意味を持つ。大崎様邸のスタディコーナー・収納・シューズクローク）
+  if (plan.joineryFills?.length && !(globalThis as { __NO_JOINERY_FILLS?: boolean }).__NO_JOINERY_FILLS) {
+    const seatPts = (ctx?.candidates ?? []).filter((cd) => !cd.kind && cd.w >= 350 && cd.w <= 720 && cd.h >= 350 && cd.h <= 720 && Math.abs(cd.w - cd.h) <= 200).map((cd) => ({ x: cd.cx, y: cd.cy }));
+    const jn = readJoineryFills(plan.joineryFills, rooms, stairs, mergedItems, seatPts, level);
+    if (jn.items.length) {
+      const drop = new Set([...jn.consumed, ...jn.replaced]);
+      mergedItems = [...mergedItems.filter((it) => !drop.has(it.id)), ...jn.items];
+      if (g.__ctxTrace) g.__ctxTrace.push(...jn.trace);
+    }
+  }
+  // 壁に平行な細長い四角 = 壁掛けテレビ（斜めの壁でも。大崎様邸の LDK）
+  if (!plan.scan && !plan.loose && !(globalThis as { __NO_WALL_TV?: boolean }).__NO_WALL_TV) {
+    const tv = readWallTvs(plan.segs, outWalls, openings, rooms, mergedItems, level, stairs);
+    if (tv.items.length) {
+      mergedItems = [...mergedItems, ...tv.items];
+      if (g.__ctxTrace) g.__ctxTrace.push(...tv.trace);
+    }
+  }
   // 車の記号からガレージと分かった区画も含める（記号の読み取りの後）
   // ガレージの建て方: 家の外形の中ならビルトイン、外形に接していれば後付け、離れていれば離れのガレージ
   for (const r of rooms) {
@@ -4252,10 +4284,15 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
             })
             .map((f) => f.poly)
         : [];
+      // 木の色で塗られた四角（造作の棚・カウンター）。壁の色・細い帯（框・笠木）は除く
+      const joineryFills = page.colorFills
+        .filter((f) => !wallColors.has(f.color) && isWoodFillColor(f.color) && !isStripFill(f.poly) && f.poly.every((q) => inBox(q.x, q.y, margin)))
+        .map((f) => joineryRectOf(f.poly))
+        .filter((r): r is JoineryFill => !!r);
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
       // 開口を白抜きで描く図面で、この図の範囲の白抜きがすべて開口として読めた（窓の無い部屋は図面どおり、と言える）
       const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}) });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}), ...(joineryFills.length ? { joineryFills } : {}) });
     }
   }
   assignFloorTitles(plans, pages);
@@ -4303,6 +4340,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
     q.wallPolys.push(...p.wallPolys);
     q.sashPolys.push(...p.sashPolys);
     q.roomFills.push(...p.roomFills);
+    if (p.joineryFills?.length) q.joineryFills = [...(q.joineryFills ?? []), ...p.joineryFills];
     if (p.trimBands?.length) q.trimBands = [...(q.trimBands ?? []), ...p.trimBands];
     if (p.sketchLines) q.sketchLines = [...(q.sketchLines ?? []), ...p.sketchLines];
     if (p.loose) q.loose = true;
@@ -4608,6 +4646,20 @@ export function reconcileStairs(floors: Floor[], warnings?: string[]): void {
         else lo.maxX += d;
         changed = true;
       }
+      // 折り返し階段で、上の階の範囲が昇り口の側へ長い（幅は同じ）= 折り返した先の列が、下の階のホール・LDK の上を渡って上の階に着く。
+      // 階段室の範囲は変えずに、先の列の伸び（overrun）として持つ。以前は 1 階の範囲（1 間角）に全部の段を詰めていて、
+      // 踏面が 150 台の急な階段になっていた（大崎様邸: 1 階 1,820 角・2 階は 910 長い → 昇り口 5 段 → 踊り場 → 折り返して 8 段）
+      if (lo.kind === 'u' && lo.overrun == null && !(globalThis as { __NO_STAIR_OVERRUN?: boolean }).__NO_STAIR_OVERRUN) {
+        const sd = lo.entry;
+        const d = sd === 'n' ? lo.minY - up.minY : sd === 's' ? up.maxY - lo.maxY : sd === 'w' ? lo.minX - up.minX : up.maxX - lo.maxX;
+        const across = sd === 'n' || sd === 's' ? Math.abs(lo.minX - up.minX) + Math.abs(lo.maxX - up.maxX) : Math.abs(lo.minY - up.minY) + Math.abs(lo.maxY - up.maxY);
+        if (d >= 400 && d <= 1900 && across <= 400) {
+          // 半間の割（455）に近ければそろえる（この時点の範囲は、まだ方眼にそろえる前）
+          const snap = Math.round(d / 455) * 455;
+          lo.overrun = Math.abs(snap - d) <= 100 ? snap : Math.round(d);
+          warnings?.push(`${floors[i].level}階: 階段は、折り返した先の列が${floors[i + 1].level}階の図の範囲まで（昇り口の側へ ${lo.overrun.toLocaleString()}mm）伸びる形で読みました`);
+        }
+      }
     }
   }
   }
@@ -4700,6 +4752,76 @@ export function windowsOverCounters(floors: Floor[]): void {
           o.windowStyle = 'koshi';
           o.heightFrom = 'joinery';
         }
+      }
+    }
+  }
+}
+
+/**
+ * 窓の開き方を記号で描き分けている図面（外に三角のあるすべり出し窓が家に 2 つ以上）での、窓の高さの決め直し。
+ *  - すべり出し窓は人が出入りしない → 居間でも掃き出しにしない（幅が広ければ高い位置の横長、細ければ腰窓）
+ *  - 三角の無い幅の広い窓（FIX・引違い）は庭を見る大きな窓。「掃き出しは 1 か所だけ」の決まりで高窓に変えたものを戻す
+ *  - 小上がり（床の段差のある部屋）の FIX は、その床の高さから立ち上げる
+ *  - 小上がりに面した幅の広い室内窓は、その床の高さから鴨居（2,100）まで。戸のすぐ脇の室内窓は床から戸の高さまで（袖のガラス）
+ * 大崎様邸: LDK の南の 3 連はすべり出し = 高い位置のスリット、畳コーナーの東の 2 枚は FIX = 畳の高さからの大きな窓、
+ * ホールと畳コーナーの間は大きな額縁の室内窓。記号を見ないと、畳コーナーが高窓・LDK の南の 1 つが掃き出しと、逆に立ち上がっていた。
+ * 立面図・設計の 3D データ・造作で高さが分かっている窓は変えない
+ */
+export function windowsBySashMarks(floors: Floor[]): void {
+  if ((globalThis as { __NO_SASH_MARKS?: boolean }).__NO_SASH_MARKS) return;
+  const living: RoomType[] = ['ldk', 'living', 'dining', 'japanese'];
+  const marks = floors.reduce((n, f) => n + f.openings.filter((o) => o.kind === 'window' && o.sash === 'awning').length, 0);
+  for (const f of floors) {
+    const wallById = new Map(f.walls.map((w) => [w.id, w]));
+    const sides = (o: Opening): { a: Room | null; b: Room | null; inside: Room | null } | null => {
+      const w = wallById.get(o.wallId);
+      if (!w) return null;
+      const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
+      const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+      const n = { x: -u.y, y: u.x };
+      const t = (o.t0 + o.t1) / 2;
+      const c = { x: w.a.x + u.x * t, y: w.a.y + u.y * t };
+      const at = (sg: number) => f.rooms.find((r) => pointInPolygon({ x: c.x + n.x * sg * (w.thickness / 2 + 150), y: c.y + n.y * sg * (w.thickness / 2 + 150) }, r.polygon)) ?? null;
+      const a = at(1);
+      const b = at(-1);
+      const inside = w.exterior && w.outsideSign ? (w.outsideSign > 0 ? b : a) : (a && !OUTDOOR_TYPES.includes(a.type) ? a : b);
+      return { a, b, inside };
+    };
+    for (const o of f.openings) {
+      if (o.kind !== 'window' || o.heightFrom) continue;
+      const sd = sides(o);
+      if (!sd) continue;
+      const width = o.t1 - o.t0;
+      if (o.interior) {
+        const raised = Math.max(sd.a?.floorOffset ?? 0, sd.b?.floorOffset ?? 0);
+        // 戸のすぐ脇の室内窓は、床から戸の高さまでの袖のガラス
+        const byDoor = f.openings.some((d) => d !== o && d.wallId === o.wallId && (d.kind === 'door' || d.kind === 'sliding') && (Math.abs(d.t0 - o.t1) <= 250 || Math.abs(o.t0 - d.t1) <= 250));
+        if (byDoor && width <= 900) {
+          o.sill = 0;
+          o.height = 2000;
+          o.windowStyle = 'hakidashi';
+        } else if (raised >= 150 && raised <= 600 && width >= 1200) {
+          o.sill = raised;
+          o.height = 2100 - raised;
+          o.windowStyle = 'koshi';
+        }
+        continue;
+      }
+      if (marks < 2) continue;
+      const room = sd.inside;
+      if (o.sash === 'awning') {
+        if (o.windowStyle !== 'hakidashi') continue;
+        if (width >= 1400) Object.assign(o, { windowStyle: 'high', sill: 1300, height: 700 });
+        else Object.assign(o, { windowStyle: 'koshi', sill: 900, height: 1100 });
+        continue;
+      }
+      if (!room || !living.includes(room.type)) continue;
+      if (vocabDemoted.has(o) && width >= 1500) Object.assign(o, { windowStyle: 'hakidashi', sill: 0, height: 2200 });
+      // 小上がりの大きな窓は、その床の高さから
+      const off = room.floorOffset ?? 0;
+      if (o.windowStyle === 'hakidashi' && o.sill === 0 && off >= 150 && off <= 600) {
+        o.sill = off;
+        o.height = Math.max(900, o.height - off);
       }
     }
   }
@@ -5173,6 +5295,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.wallPolys = p.wallPolys.map((poly) => poly.map(tr));
   p.sashPolys = p.sashPolys.map((poly) => poly.map(tr));
   p.roomFills = p.roomFills.map((poly) => poly.map(tr));
+  if (p.joineryFills) p.joineryFills = p.joineryFills.map((r) => ({ minX: r.minX + d.x, minY: r.minY + d.y, maxX: r.maxX + d.x, maxY: r.maxY + d.y }));
   if (p.trimBands) p.trimBands = p.trimBands.map((poly) => poly.map(tr));
   if (p.sketchLines) p.sketchLines = p.sketchLines.map((sg) => ({ ...sg, a: tr(sg.a), b: tr(sg.b) }));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
@@ -5496,6 +5619,77 @@ export function rejoinFloorWalls(f: Floor) {
   }
 }
 
+/**
+ * 斜めの壁を突き抜けた、縦・横の壁の端を、斜めの壁の芯まで戻す。
+ * 斜めの壁に突き当たる壁は、端を格子へ寄せると斜めの壁の向こう側（部屋の中）へ 100〜400mm はみ出すことがある
+ * （大崎様邸 1 階: 斜めの外壁の外にある袖壁の端が、LDK の中へ 180mm はみ出して、外壁の色の縦の帯が室内に見えていた）。
+ * はみ出した先に別の壁がつながっているとき（斜めの壁を横切って続く壁）は触らない
+ */
+export function trimEndsThroughDiagonals(f: Floor): number {
+  if ((globalThis as { __NO_DIAG_TRIM?: boolean }).__NO_DIAG_TRIM) return 0;
+  const lenOf = (w: Wall) => Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+  const diags = f.walls.filter((w) => {
+    const L = lenOf(w);
+    return L >= 600 && !w.arc && Math.abs(w.b.x - w.a.x) > L * 0.1 && Math.abs(w.b.y - w.a.y) > L * 0.1;
+  });
+  if (!diags.length) return 0;
+  let n = 0;
+  for (const w of f.walls) {
+    const L = lenOf(w);
+    if (L < 300 || w.arc) continue;
+    const horiz = Math.abs(w.b.y - w.a.y) < L * 0.02;
+    const vert = Math.abs(w.b.x - w.a.x) < L * 0.02;
+    if (!horiz && !vert) continue;
+    const u = { x: (w.b.x - w.a.x) / L, y: (w.b.y - w.a.y) / L };
+    for (const d of diags) {
+      if (d === w) continue;
+      const Ld = lenOf(d);
+      const v = { x: (d.b.x - d.a.x) / Ld, y: (d.b.y - d.a.y) / Ld };
+      const den = u.x * v.y - u.y * v.x;
+      if (Math.abs(den) < 0.15) continue;
+      // 交点（w の上の距離 t・d の上の距離 s）
+      const rx = d.a.x - w.a.x;
+      const ry = d.a.y - w.a.y;
+      const t = (rx * v.y - ry * v.x) / den;
+      const sD = (rx * u.y - ry * u.x) / den;
+      if (sD < 60 || sD > Ld - 60) continue;
+      // どちらの端が、斜めの壁の向こうへ 40〜450mm はみ出しているか（残る側は 300mm 以上）
+      const overA = t;
+      const overB = L - t;
+      const end: 'a' | 'b' | null = overA > 40 && overA <= 450 && overB >= 300 ? 'a' : overB > 40 && overB <= 450 && overA >= 300 ? 'b' : null;
+      if (!end) continue;
+      const tip = end === 'a' ? w.a : w.b;
+      // はみ出した端に別の壁（斜めの壁・短い柱の印 以外）がつながっていれば、斜めの壁を横切って続く壁
+      const attached = f.walls.some((o) => {
+        if (o === w || o === d || lenOf(o) < 250) return false;
+        return distPointSegment(tip, o.a, o.b) < Math.max(w.thickness, o.thickness) / 2 + 40;
+      });
+      if (attached) continue;
+      // その区間に建具があれば触らない
+      const cut = end === 'a' ? overA : overB;
+      const hasOp = f.openings.some((o) => o.wallId === w.id && (end === 'a' ? o.t0 < cut + 20 : o.t1 > L - cut - 20));
+      if (hasOp) continue;
+      const p = { x: Math.round((w.a.x + u.x * t) * 10) / 10, y: Math.round((w.a.y + u.y * t) * 10) / 10 };
+      if (end === 'a') {
+        for (const o of f.openings) {
+          if (o.wallId !== w.id) continue;
+          o.t0 -= cut;
+          o.t1 -= cut;
+        }
+        w.a = p;
+        w.joinedA = true;
+      } else {
+        w.b = p;
+        w.joinedB = true;
+      }
+      n++;
+      (globalThis as { __diagTrimTrace?: string[] }).__diagTrimTrace?.push(`${f.level}F ${w.id}: 斜めの壁 ${d.id} を ${Math.round(cut)}mm 突き抜けた端を戻した`);
+      break;
+    }
+  }
+  return n;
+}
+
 export interface AssembleOptions {
   /** 木造のモジュール: auto = 図面から判定（尺／メーター）, shaku = 910, meter = 1000, none = 寄せない */
   module?: ModuleMode;
@@ -5794,6 +5988,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
       snapStairs(f, moduleInfo);
     }
   }
+  for (const f of floors) trimEndsThroughDiagonals(f);
   // 接道・敷地（1階の図面の周囲から）
   const site = base ? detectSite(base.siteTexts, base.siteSegs, base.bbox, north) : null;
   if (site?.warning) warnings.push(site.warning);
@@ -5826,6 +6021,7 @@ export function assembleModel(pages: PageMm[], name: string, warnings: string[],
   finishWrapStairs(floors);
   roomsUnderStairs(floors);
   treesInStairWells(floors);
+  windowsBySashMarks(floors);
   windowsOverCounters(floors);
   // R 壁: 重なり合う短い壁の集まりを、円の上の端と端がつながる弦に並べ直す（3D でなめらかな曲面になる）
   for (const f of floors) smoothArcWalls(f);

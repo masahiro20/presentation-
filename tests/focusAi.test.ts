@@ -129,8 +129,9 @@ describe('階段の細部・吹抜・造作・照明を読んでもらう', () =
     const r = parseFocusReadText('{"stair":{"build":"steel","stringer":"center","rail":"bar","tread":"walnut","frame":"white","steps":15},"note":"白い鉄骨に濃い踏板"}', 'stair', 'm');
     expect(r.build).toBe('steel');
     expect(r.stair).toEqual({ rail: 'bar', steps: 15, stringer: 'center', tread: 'walnut', frame: 'white' });
-    // 既定と同じ値は持たない
-    expect(parseFocusReadText('{"stair":{"build":"steel","stringer":"side","tread":"floor","frame":"black"},"note":"x"}', 'stair', 'm').stair).toBeUndefined();
+    // 既定と同じ値（床に合わせる・黒）は持たない。桁は、読み取ったものをそのまま持つ（既定がテイストで変わるため）
+    expect(parseFocusReadText('{"stair":{"build":"steel","tread":"floor","frame":"black"},"note":"x"}', 'stair', 'm').stair).toBeUndefined();
+    expect(parseFocusReadText('{"stair":{"build":"steel","stringer":"side","tread":"floor","frame":"black"},"note":"x"}', 'stair', 'm').stair).toEqual({ stringer: 'side' });
   });
 
   it('吹抜: 落下防止の種類を選んでもらう（知らない値は落とす。ほかの部位では受け取らない）', () => {

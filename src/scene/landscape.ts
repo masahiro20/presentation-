@@ -363,6 +363,28 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     }
     return true;
   }
+  /**
+   * ホームランディックの塀: グレーに塗ったブロックの基壇（高さ 0.5）の上に、木の縦ルーバー（幅 60・厚 30・隙間 30、高さ 1.2）。
+   * 施工写真の「ブロック＋木の縦格子」。笠木と中段の胴縁で締める
+   */
+  function woodFence(a: THREE.Vector3, c: THREE.Vector3, baseY: number) {
+    const dir = c.clone().sub(a);
+    const L = dir.length();
+    if (L < 0.3) return;
+    dir.normalize();
+    const mid = a.clone().add(c).multiplyScalar(0.5);
+    mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.5, 0.15);
+    const pitch = 0.09;
+    const n = Math.max(1, Math.floor((L - 0.03) / pitch));
+    const off = (L - n * pitch) / 2;
+    for (let i = 0; i < n; i++) {
+      const p = a.clone().addScaledVector(dir, off + (i + 0.5) * pitch).setY(baseY + 0.5);
+      mb.box('l.fenceWood', p, dir, 0.06, 1.2, 0.03);
+    }
+    // 笠木（上）と胴縁（裏側、中段）
+    mb.box('l.fenceWood', mid.clone().setY(baseY + 1.7), dir, L, 0.04, 0.09);
+    mb.box('l.fenceWood', mid.clone().setY(baseY + 1.06), dir, L, 0.045, 0.03);
+  }
   // フェンス・生垣（道路側以外の3辺）
   const rnd = mulberry32(42);
   const fenceType = style.landscape.fence;
@@ -410,21 +432,8 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     if (L < 0.3) continue;
     dir.normalize();
     if (fenceType === 'block' || fenceType === 'wood') {
-      if (fenceType === 'wood') {
-        // ホームランディックの塀: グレーに塗ったブロックの基壇（高さ 0.5）の上に、木の縦ルーバー（幅 60・厚 30・隙間 30、高さ 1.2）。
-        // 施工写真の「ブロック＋木の縦格子」。笠木と中段の胴縁で締める
-        mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.5, 0.15);
-        const pitch = 0.09;
-        const n = Math.max(1, Math.floor((L - 0.03) / pitch));
-        const off = (L - n * pitch) / 2;
-        for (let i = 0; i < n; i++) {
-          const p = a.clone().addScaledVector(dir, off + (i + 0.5) * pitch).setY(baseY + 0.5);
-          mb.box('l.fenceWood', p, dir, 0.06, 1.2, 0.03);
-        }
-        // 笠木（上）と胴縁（裏側、中段）
-        mb.box('l.fenceWood', mid.clone().setY(baseY + 1.7), dir, L, 0.04, 0.09);
-        mb.box('l.fenceWood', mid.clone().setY(baseY + 1.06), dir, L, 0.045, 0.03);
-      } else mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.4, 0.12);
+      if (fenceType === 'wood') woodFence(a, c, baseY);
+      else mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.4, 0.12);
     } else if (fenceType === 'hedge') {
       const n = Math.max(1, Math.floor(L / 0.9));
       for (let i = 0; i < n; i++) {
@@ -569,6 +578,112 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     addTree(bpos.clone().addScaledVector(along, -(alongMax - alongMin) * 0.38), 3.0, kind);
   }
   for (let i = 0; i < 5; i++) shrub(bpos.clone().addScaledVector(along, (rnd() - 0.5) * (alongMax - alongMin) * 0.8), 0.3 + rnd() * 0.2);
+  // 庭のしつらえ（1 階の居間の、床に近い大きな窓の前）: ウッドデッキ → 芝と株立ち → 目隠しの塀。
+  // 窓の外がただの砂利だと、室内に合わせた露出では日の当たる砂利が真っ白に飛び、雪の庭のように見えていた。
+  // 御社のご提案は、大きな窓の外に、株立ちの木と塀を見せる（道路側には大きな窓を向けない）
+  if (!(globalThis as { __NO_GARDEN_COURT?: boolean }).__NO_GARDEN_COURT) {
+    const LIVING = new Set(['ldk', 'living', 'dining', 'japanese']);
+    const groups = new Map<string, (typeof meta.sashes)[number][]>();
+    for (const sh of meta.sashes) {
+      if (sh.level !== 1) continue;
+      const g0 = groups.get(sh.openingId);
+      if (g0) g0.push(sh);
+      else groups.set(sh.openingId, [sh]);
+    }
+    const lv1 = meta.outlines.find((o) => o.level === 1);
+    const mainRooms = meta.rooms.filter((ri) => ri.floor.level === 1 && LIVING.has(ri.room.type));
+    const fy = mainRooms.length ? Math.min(...mainRooms.map((ri) => ri.floorY)) : (lv1?.y ?? 0.5);
+    /** 候補の窓: 外向き（軸に平行）・壁の面の位置・壁に沿った範囲 */
+    type GW = { n: THREE.Vector3; d: number; u0: number; u1: number };
+    const wins: GW[] = [];
+    for (const g0 of groups.values()) {
+      const n = g0[0].outN.clone().setY(0);
+      if (n.lengthSq() < 0.5) continue;
+      n.normalize();
+      // 縦・横の壁の窓だけ（斜めの壁の前には作らない）
+      if (Math.abs(n.x) < 0.98 && Math.abs(n.z) < 0.98) continue;
+      n.set(Math.abs(n.x) > 0.5 ? Math.sign(n.x) : 0, 0, Math.abs(n.z) > 0.5 ? Math.sign(n.z) : 0);
+      const uAx = V(-n.z, 0, n.x);
+      const pts = g0.flatMap((sh) => sh.corners);
+      const us = pts.map((q) => q.dot(uAx));
+      const u0 = Math.min(...us);
+      const u1 = Math.max(...us);
+      const y0 = Math.min(...pts.map((q) => q.y));
+      if (u1 - u0 < 1.5 || y0 - fy > 0.6) continue;
+      // 道路に面した窓の前には作らない（外観の正面を塞ぐ）
+      if (n.dot(road) > 0.5) continue;
+      const d = pts[0].dot(n);
+      const mid = uAx.clone().multiplyScalar((u0 + u1) / 2).addScaledVector(n, d);
+      // 居間の窓か（窓の 0.6m 内側の部屋）
+      const ri = roomAt(mid.clone().addScaledVector(n, -0.6));
+      if (!ri || !LIVING.has(ri.room.type)) continue;
+      // 窓の外 1.5m が建物の中（中庭・入隅の向かいの壁）なら作らない
+      const outP = mid.clone().addScaledVector(n, 1.5);
+      if (lv1?.polys.some((pl) => insideInset(outP, pl, 0))) continue;
+      wins.push({ n, d, u0, u1 });
+    }
+    // 同じ面（向きが同じ・面の位置の差 0.4m 以内）の窓をまとめ、幅の合計がいちばん大きい面を庭にする
+    let bestG: { n: THREE.Vector3; d: number; u0: number; u1: number; w: number } | null = null;
+    for (const w0 of wins) {
+      const same = wins.filter((o) => o.n.dot(w0.n) > 0.9 && Math.abs(o.d - w0.d) < 0.4);
+      const tot = same.reduce((a0, o) => a0 + (o.u1 - o.u0), 0);
+      if (!bestG || tot > bestG.w) bestG = { n: w0.n, d: Math.max(...same.map((o) => o.d)), u0: Math.min(...same.map((o) => o.u0)), u1: Math.max(...same.map((o) => o.u1)), w: tot };
+    }
+    if (bestG) {
+      const { n, d } = bestG;
+      const uAx = V(-n.z, 0, n.x);
+      // 敷地の際までの奥行（壁の面から）
+      const edge = n.x > 0 ? max.x : n.x < 0 ? -min.x : n.z > 0 ? max.y : -min.y;
+      const room = edge - d;
+      const at = (u: number, v: number, y: number) => uAx.clone().multiplyScalar(u).addScaledVector(n, d + v).setY(y);
+      const u0 = bestG.u0 - 0.35;
+      const u1 = bestG.u1 + 0.35;
+      const deckD = Math.min(1.8, room - 0.5);
+      const rect = (v0: number, v1: number, a0: number, a1: number, y: number) => [at(a0, v0, y), at(a1, v0, y), at(a1, v1, y), at(a0, v1, y)];
+      const free = (pts: THREE.Vector3[]) => {
+        // 駐車場・アプローチ（舗装）と重ならない
+        const xs = pts.map((q) => q.x);
+        const zs = pts.map((q) => q.z);
+        return !plan.paving.some((pv) => {
+          const px = pv.pts.map((q) => q.x);
+          const pz = pv.pts.map((q) => q.z);
+          return Math.min(...xs) < Math.max(...px) && Math.max(...xs) > Math.min(...px) && Math.min(...zs) < Math.max(...pz) && Math.max(...zs) > Math.min(...pz);
+        });
+      };
+      if (deckD >= 1.2 && free(rect(0.02, deckD, u0, u1, 0))) {
+        // ウッドデッキ: 室内の床から 30 下がり。幕板で地面まで塞ぐ
+        const top = fy - 0.03;
+        mb.box('l.deck', at((u0 + u1) / 2, 0.02 + deckD / 2, 0), uAx, u1 - u0, top, deckD - 0.02);
+        plan.paving.push({ key: 'l.deck', pts: rect(0.02, deckD, u0, u1, 0) });
+        // 芝と株立ち: デッキの先に奥行 3.2m まで（敷地の際の 0.4m 手前まで）
+        const lawnD = Math.min(3.2, room - deckD - 0.4);
+        if (lawnD >= 1.2) {
+          const l0 = u0 - 0.8;
+          const l1 = u1 + 0.8;
+          const lawn = rect(deckD, deckD + lawnD, l0, l1, 0.02);
+          if (free(lawn)) {
+            // 敷地の外・建物の中へはみ出さない幅に
+            const inSite = lawn.every((q) => q.x >= min.x - 0.01 && q.x <= max.x + 0.01 && q.z >= min.y - 0.01 && q.z <= max.y + 0.01);
+            const pl = inSite ? lawn : rect(deckD, deckD + lawnD, u0, u1, 0.02);
+            mb.polygon('l.lawn', pl, V(0, 1, 0), V(1, 0, 0), V(0, 0, 1));
+            // 株立ち（窓の幅の 1/4 と 3/4 の所。2 本目は幅 4m 以上のとき）と低木
+            const span = u1 - u0;
+            const t1 = at(u0 + span * 0.24, deckD + Math.min(1.3, lawnD * 0.5), 0);
+            addTree(t1, 3.8, kind, true);
+            if (span >= 4) addTree(at(u0 + span * 0.8, deckD + Math.min(2.2, lawnD * 0.75), 0), 3.2, kind, true);
+            for (const [fu, fv, sz] of [[0.42, 0.5, 0.32], [0.6, 0.85, 0.4], [0.08, 0.7, 0.3]] as const) shrub(at(u0 + span * fu, deckD + lawnD * fv, 0), sz);
+          }
+          // 目隠しの塀: 敷地の際が遠い（塀まで 7.5m 以上）とき、芝の先に塀を立てて庭を囲む（隣家・道路が丸見えにならないように）
+          const far = deckD + lawnD + 0.25;
+          if (fenceType === 'wood' && room - far >= 2.5) {
+            const f0 = at(u0 - 1.6, far, 0);
+            const f1 = at(u1 + 1.6, far, 0);
+            if (free([f0, f1, f1.clone().addScaledVector(n, 0.2), f0.clone().addScaledVector(n, 0.2)])) woodFence(f0, f1, 0);
+          }
+        }
+      }
+    }
+  }
   // 庭木が足りなければ、敷地の空いている所（建物・舗装から離れた場所）に植える
   for (let guard = 0; plan.trees.length < 3 && guard < 3; guard++) {
     let best: { p: THREE.Vector3; score: number } | null = null;

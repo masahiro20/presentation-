@@ -171,8 +171,8 @@ export function flipSwing(op: Opening) {
 
 /** 引違いか（幅 1.2m 以上の掃き出し・腰窓）。FIX・すべり出しは false */
 export function isSlidingWindow(op: Opening): boolean {
-  // 室内窓は FIX のガラス
-  if (op.interior) return false;
+  // 室内窓は FIX のガラス。図面の記号で FIX・すべり出しと分かっている窓も引違いではない
+  if (op.interior || op.sash === 'fix' || op.sash === 'awning') return false;
   const len = op.t1 - op.t0;
   const style = op.windowStyle ?? (len >= 1600 ? 'hakidashi' : len >= 1200 ? 'koshi' : 'small');
   return style === 'hakidashi' || style === 'koshi';
@@ -185,7 +185,7 @@ export function openingSummary(op: Opening): string {
     // 室内窓（部屋と部屋の間のガラス）
     if (op.interior) return `室内窓（FIX）W${w}　腰 ${op.sill}　高さ ${op.height}`;
     const st = op.windowStyle && op.windowStyle !== 'none' ? WINDOW_SHAPES[op.windowStyle].short : isSlidingWindow(op) ? '引違い' : 'FIX';
-    const how = isSlidingWindow(op) ? '引違い' : op.windowStyle === 'small' || op.windowStyle === 'slit' ? (op.windowStyle === 'slit' ? 'FIX' : '縦すべり出し') : 'FIX';
+    const how = op.sash === 'awning' ? 'すべり出し' : isSlidingWindow(op) ? '引違い' : op.windowStyle === 'small' || op.windowStyle === 'slit' ? (op.windowStyle === 'slit' ? 'FIX' : '縦すべり出し') : 'FIX';
     return `${st}（${how}）W${w}　腰 ${op.sill}　高さ ${op.height}`;
   }
   if (op.kind === 'door' || op.kind === 'entrance') return `${openingLabel(op)} W${w}　${op.hingeAtStart !== false ? '始点側' : '終点側'}吊元・${op.kind === 'entrance' || op.service ? '外開き' : (op.swingSide ?? 1) === 1 ? '表側へ開く' : '裏側へ開く'}`;

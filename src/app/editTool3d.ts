@@ -19,6 +19,7 @@ import { SASH_MIN_CHECK, SASH_QUICK_WIDTHS, isStandardSashWidth, nearestSashWidt
 import { wallTopOf } from '../scene/building';
 import { exteriorById } from '../styles/presets';
 import { emit } from './state';
+import { stairStringerOf } from '../coordinate/catalog';
 import { massName, massSourceTag, massState, roofPatchControls, segButtons, sideLabel } from './roofPatchPanel';
 import type { Stair, StairBuild, StairFrame, StairLook, StairRail, StairStringer, StairTread } from '../core/types';
 import { STAIR_ENTRY_LABEL, STAIR_KIND_LABEL, wrapFlights } from '../core/stairs';
@@ -1409,7 +1410,7 @@ export function createEditTool3d(v: Viewer, host: HTMLElement, onModelEdited: ()
             h('div', { class: 'field-label', style: 'margin-top:8px', title: '御社の施工事例は、両側の黒い鋼板のささら桁で踏板を挟む形です' }, '鉄骨の桁'),
             segButtons(
               STAIR_STRINGERS.map((k) => ({ v: k, label: STAIR_STRINGER_LABEL[k] })),
-              st.look?.stringer ?? 'side',
+              st.look?.stringer ?? stairStringerOf(state.design),
               (val) => changeLook(f.level, { stringer: val as StairStringer }, `${f.level}階の階段の桁を「${STAIR_STRINGER_LABEL[val as StairStringer]}」にしました`),
             ),
           ]

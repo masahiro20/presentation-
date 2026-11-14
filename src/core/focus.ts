@@ -60,6 +60,7 @@ export const STAIR_RAIL_LABEL: Record<StairRail, string> = {
 export const STAIR_STRINGER_LABEL: Record<StairStringer, string> = {
   side: '両側のささら桁',
   center: '中央の力桁 1 本',
+  zigzag: '稲妻ささら（蹴込み板あり）',
 };
 export const STAIR_TREAD_LABEL: Record<StairTread, string> = {
   floor: '床に合わせる',
@@ -79,7 +80,7 @@ export const STAIR_STRINGERS = Object.keys(STAIR_STRINGER_LABEL) as StairStringe
 export const STAIR_TREADS = Object.keys(STAIR_TREAD_LABEL) as StairTread[];
 export const STAIR_FRAMES = Object.keys(STAIR_FRAME_LABEL) as StairFrame[];
 
-/** 造作の形（3D の「家具」の道具で置ける造作家具と同じ 8 つ）。言葉は仕上げの説明文と一覧に使う */
+/** 造作の形（3D の「家具」の道具で置ける造作家具と同じ 9 つ）。言葉は仕上げの説明文と一覧に使う */
 export const JOINERY_LABEL: Record<BuiltinVariant, string> = {
   floatTv: '浮かせたテレビボード＋飾り棚',
   wallShelf: '壁一面の造作本棚',
@@ -89,6 +90,7 @@ export const JOINERY_LABEL: Record<BuiltinVariant, string> = {
   bench: '造作ベンチ（収納付き）',
   tallStorage: '壁面収納（扉付き・天井まで）',
   lowShelf: '腰高のオープン棚',
+  shelves: '可動棚（収納の中）',
 };
 const JOINERY_EN: Record<BuiltinVariant, string> = {
   floatTv: 'a wall-hung floating TV board with floating shelves above it',
@@ -99,6 +101,7 @@ const JOINERY_EN: Record<BuiltinVariant, string> = {
   bench: 'a built-in bench with storage underneath',
   tallStorage: 'full-height flush-door wall storage that blends into the wall',
   lowShelf: 'a waist-high open shelf',
+  shelves: 'adjustable open storage shelves',
 };
 export const JOINERY_VARIANTS = Object.keys(JOINERY_LABEL) as BuiltinVariant[];
 
@@ -170,8 +173,9 @@ export function cleanStairLook(l: StairLook | undefined | null): StairLook | und
   if (l.rail && STAIR_RAILS.includes(l.rail)) out.rail = l.rail;
   const steps = validSteps(l.steps);
   if (steps) out.steps = steps;
-  // 既定と同じ値（両側の桁・床に合わせる・黒）は持たない: 「指定なし」と同じ見た目なので、空の指定として扱う
-  if (l.stringer === 'center') out.stringer = 'center';
+  // 既定と同じ値（床に合わせる・黒）は持たない: 「指定なし」と同じ見た目なので、空の指定として扱う。
+  // 桁は、指定が無ければテイストの決まり（両側のささら桁か稲妻ささら）なので、選んだ値はそのまま持つ
+  if (l.stringer && STAIR_STRINGERS.includes(l.stringer)) out.stringer = l.stringer;
   if (l.tread && l.tread !== 'floor' && STAIR_TREADS.includes(l.tread)) out.tread = l.tread;
   if (l.frame === 'white') out.frame = 'white';
   return Object.keys(out).length ? out : undefined;
@@ -350,6 +354,7 @@ export function stairTailText(look: StairLook | undefined, lang: 'ja' | 'en' = '
   const ja = lang === 'ja';
   const parts: string[] = [];
   if (build === 'steel' && l?.stringer === 'center') parts.push(ja ? '桁は両側ではなく中央の力桁 1 本' : 'with a single centre stringer instead of the two side stringers');
+  if (build === 'steel' && l?.stringer === 'zigzag') parts.push(ja ? '桁は段の形に折れた細い鋼板（稲妻ささら）で、木の蹴込み板が付く' : 'with thin zigzag steel stringers following the steps and timber risers');
   if (l?.tread) parts.push(ja ? TREAD_JA[l.tread] : TREAD_EN[l.tread]);
   if (l?.frame === 'white') parts.push(ja ? '鉄骨と手すりは白' : 'steel stringers and balustrade painted white');
   const rail = l?.rail ?? 'bar';
@@ -363,7 +368,7 @@ export function stairLookShort(look: StairLook | undefined, build?: StairBuild):
   const short = (s: string) => s.replace(/（.*）/, '');
   return [
     build ? short(STAIR_BUILD_LABEL[build]) : '',
-    build === 'steel' && l?.stringer === 'center' ? '中央の桁' : '',
+    build === 'steel' && l?.stringer === 'center' ? '中央の桁' : build === 'steel' && l?.stringer === 'zigzag' ? '稲妻ささら' : '',
     l?.tread ? `踏板 ${short(STAIR_TREAD_LABEL[l.tread])}` : '',
     l?.frame === 'white' ? '鉄は白' : '',
     l?.rail ? short(STAIR_RAIL_LABEL[l.rail]) : '',

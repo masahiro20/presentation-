@@ -350,18 +350,19 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'tatami': {
-          // 半畳 910x910 に斜めの目
+          // 縁なしの半畳 910x910 を市松に（目の向きを 1 枚ごとに変える）。御社のご提案の畳コーナーは、縁の無い淡い色の畳
+          // （以前は緑の畳に黒い縁を描いていて、昔ながらの和室に見えていた）。畳と畳の間は細い目地だけ
           const cx = mx / 0.91;
           const cy = my / 0.91;
-          const gx = groove(cx % 1, 0.012);
-          const gy = groove(cy % 1, 0.012);
-          const heri = Math.min(cx % 1, 1 - (cx % 1)) < 0.028 ? 1 : 0; // 縁
+          const fx = cx - Math.floor(cx);
+          const fy = cy - Math.floor(cy);
+          const seam = Math.min(fx, 1 - fx, fy, 1 - fy) < 0.0045 ? 1 : 0;
           const dir = (Math.floor(cx) + Math.floor(cy)) % 2;
           const weave = 0.5 + 0.5 * Math.sin(((dir ? mx : my) / 0.006) * Math.PI);
-          const c = heri ? tint(alt, 0.9) : lerp3(base, tint(base, 0.85), weave * 0.5 + n2 * 0.2);
-          set(i, c, heri ? 0.9 : 0.4 + 0.3 * weave, baseRough);
-          void gx;
-          void gy;
+          // 目の向きで、光の当たり方がわずかに変わる（市松の濃淡）
+          const c = seam ? tint(base, 0.72) : lerp3(tint(base, dir ? 1.0 : 0.955), tint(base, dir ? 0.93 : 0.89), weave * 0.5 + n2 * 0.12);
+          set(i, c, seam ? 0.15 : 0.45 + 0.3 * weave, baseRough);
+          void alt;
           break;
         }
         case 'slate': {

@@ -73,11 +73,13 @@ export interface InteriorStyle {
   /**
    * 家具・照明の語彙（ホームランディックの施工事例から）。省略時は id が hl- で始まるテイストは HL の語彙、それ以外は従来。
    * - pendant: 'ph5' = 白い多層シェード（PH 5 風）1〜2 灯／'dome' = 黒い大きなドーム 1 灯／'globes' = 乳白ガラスの小さな球 2〜3 灯
-   *   'none' = 描かない（御社の最初の提案パースは、食卓の上に器具を下げずダウンライトだけ。器具はコーディネートの「ダイニングの照明」で足す）
+   *   'paper' = 和紙（布）の大きな球 1 灯／'none' = 描かない（暗い内装の最初の提案パースは、食卓の上に器具を下げずダウンライトだけ）
+   * - cupboard: 'counter' = 背面は腰の高さのカウンター＋壁の棚板（既定）／'mix' = 吊戸＋背の高い収納のミックスタイプ
+   * - stair: 鉄骨階段の桁。'side' = 両側のまっすぐな鋼板（既定。御社の施工事例）／'zigzag' = 段の形に折れた細い鋼板＋木の蹴込み板（ご提案パースの形）
    * - chair: 'y' = Y チェア風（曲げ木の笠木＋Y の背＋ペーパーコードの座）／'light' = 軽い木椅子
    * - table: 'round' = 4 人なら丸テーブル／'plank' = 一枚板
    */
-  vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank' };
+  vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'paper' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank'; cupboard?: 'counter' | 'mix'; stair?: 'side' | 'zigzag'; woodTrim?: boolean };
 }
 
 const ext = (s: ExteriorStyle) => s;
@@ -729,7 +731,9 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   // ホームランディックの標準仕様: オークのフローリング、白の塗り壁、平らな白い天井（木は張らない）、黒の細いサッシ、黒皮鉄の階段。玄関と水まわりはグレーの大判タイル
   int({
     id: 'hl-standard',
-    vocab: { pendant: 'none', chair: 'y', table: 'round' },
+    // 食卓の上に和紙の球を 1 灯（御社のご提案: 大崎様邸・堀様邸。白い内装の明るい LDK）
+    // 窓は木の額縁・腰壁は木の笠木（サッシの黒い枠を室内に見せない）
+    vocab: { pendant: 'paper', chair: 'y', table: 'round', stair: 'zigzag', woodTrim: true },
     name: 'オークの床 × 白壁 × 白天井（標準）',
     catch: '明るいオークのフローリング、白い塗り壁、黒のサッシ',
     description: 'オークのフローリングに、白の塗り壁と平らな白い天井。黒の細いサッシと黒皮鉄の階段、天井際の間接光で陰影をつくる、ホームランディックの標準的な内観。',
@@ -748,7 +752,8 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
       // ソファは暖かいベージュ（御社の提案パース: 堀様の内観は、白い壁・オークの床に、木の枠とキャメル〜ベージュの布のソファ）
       fabric: { pattern: 'fabric', color: '#b9a58d', roughness: 0.95 },
       fabric2: { pattern: 'fabric', color: '#8c7f70', roughness: 0.95 },
-      metal: '#1c1c1c',
+      // 鉄（階段の桁・手すり・家具の脚）は黒ではなく暖かいグレー（御社のご提案: 大崎様邸・堀様邸。白い内装では、黒い鉄は重く見える）
+      metal: '#a3a09a',
       counter: { pattern: 'marble', color: '#d9d7d2', color2: '#cdcbc5', roughness: 0.3, size: 3.2, size2: 3.2 },
       cabinet: { pattern: 'paint', color: '#e6e4df', roughness: 0.5 },
       rug: { pattern: 'fabric', color: '#6a675f', roughness: 1 },
@@ -1164,7 +1169,8 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   }),
 ];
 
-export const TATAMI: MatSpec = { pattern: 'tatami', color: '#b9b77e', color2: '#3b3a33', roughness: 0.85 };
+// 縁なしの淡い色の畳（和紙畳の白茶〜乳白。御社のご提案の小上がり・畳コーナー）
+export const TATAMI: MatSpec = { pattern: 'tatami', color: '#d8d0bb', color2: '#bdb49d', roughness: 0.88 };
 
 export type TimeOfDay = 'morning' | 'day' | 'evening' | 'night';
 

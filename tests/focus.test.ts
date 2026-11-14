@@ -220,8 +220,11 @@ describe('言葉にする', () => {
 
 // 2026-11-12 のご要望: 階段・造作・照明の雰囲気を、参考資料から 3D の表現に効かせる
 describe('階段の桁・踏板の色・鉄の色（Stair.look）', () => {
-  it('既定と同じ値（両側の桁・床に合わせる・黒）は持たない。知らない値は落とす', () => {
-    expect(cleanStairLook({ stringer: 'side', tread: 'floor', frame: 'black' })).toBeUndefined();
+  it('既定と同じ値（床に合わせる・黒）は持たない。知らない値は落とす。桁は選んだものをそのまま持つ', () => {
+    expect(cleanStairLook({ tread: 'floor', frame: 'black' })).toBeUndefined();
+    // 桁の既定はテイストで変わる（白い塗り壁 × オークは稲妻ささら）ので、「両側のささら桁」を選んだことも持つ
+    expect(cleanStairLook({ stringer: 'side', tread: 'floor', frame: 'black' })).toEqual({ stringer: 'side' });
+    expect(cleanStairLook({ stringer: 'zigzag' })).toEqual({ stringer: 'zigzag' });
     expect(cleanStairLook({ stringer: 'center', tread: 'walnut', frame: 'white' })).toEqual({ stringer: 'center', tread: 'walnut', frame: 'white' });
     expect(cleanStairLook({ tread: 'gold' as never, rail: 'glass' })).toEqual({ rail: 'glass' });
   });

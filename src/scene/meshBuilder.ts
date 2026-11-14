@@ -655,10 +655,10 @@ export class MeshBuilder {
 }
 
 /**
- * 木目の向きを持つ素材（家具・造作の木、カウンター、収納の面材、踏板）。これらは面ごとに「長い辺の向き = u」で UV を作る
+ * 木目の向きを持つ素材（家具・造作の木、カウンター、収納の面材、踏板、窓の額縁・腰壁の笠木）。これらは面ごとに「長い辺の向き = u」で UV を作る
  * （戸・板張りの壁は、木目を縦に流す素材（MatSpec.grainV）を使うので含めない）
  */
-const GRAIN_KEY = /^(f\.wood|f\.cabinet|f\.counter|int\.stairs)/;
+const GRAIN_KEY = /^(f\.wood|f\.cabinet|f\.counter|int\.woodTrim|int\.stairs(?!Mass))/;
 
 function autoAxes(n: V3): [V3, V3] {
   if (Math.abs(n.y) > 0.7) return [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1)];

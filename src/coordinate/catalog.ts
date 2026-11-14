@@ -5,7 +5,7 @@
  */
 import { exteriorById, interiorById, type DesignOptions, type ExteriorStyle, type InteriorStyle } from '../styles/presets';
 import type { MatSpec } from '../styles/textures';
-import type { StairBuild } from '../core/types';
+import type { StairBuild, StairStringer } from '../core/types';
 
 export interface Product {
   id: string;
@@ -273,7 +273,7 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     defaultFor: (d) => (/slate|grey|cedar|dark/.test(d.interiorId) ? 'kitchen.hl.line.mortablack' : 'kitchen.hl.line.mortalight'),
     products: [
       // LINE KITCHEN（ホームランディック標準）: カタログの GROUP1 メラミン化粧板・ステンレス、GROUP2 木目。天板はステンレス バイブレーション or 扉同色
-      { id: 'kitchen.hl.line.mortalight', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'モルタライト（天板・扉同色）', swatch: ['#b3a995', '#b3a995'], apply: (s) => { s.int.furniture.counter = mortar('#b3a995', '#a89e8a'); s.int.furniture.cabinet = mortar('#b3a995', '#a89e8a'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, used: '天板・扉：モルタライト（定番）' },
+      { id: 'kitchen.hl.line.mortalight', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'モルタライト（天板・扉同色）', swatch: ['#cdc7ba', '#cdc7ba'], apply: (s) => { s.int.furniture.counter = mortar('#c6c0b3', '#bcb6a9'); s.int.furniture.cabinet = mortar('#d3cdc1', '#c9c3b6'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' }, used: '天板・扉：モルタライト（定番）' },
       { id: 'kitchen.hl.line.mortablack', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'モルタブラック（天板・扉同色）', swatch: ['#3a3a36', '#3a3a36'], apply: (s) => { s.int.furniture.counter = mortar('#3a3a36', '#33332f'); s.int.furniture.cabinet = mortar('#3a3a36', '#33332f'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
       { id: 'kitchen.hl.line.darkgrey', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'ダークグレー × ステンレス バイブレーション天板', swatch: ['#b9bbbd', '#2f3a40'], apply: (s) => { s.int.furniture.counter = stainless(); s.int.furniture.cabinet = paint('#2f3a40', 0.5); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
       { id: 'kitchen.hl.line.greystone', maker: 'ホームランディック', name: 'LINE KITCHEN ペニンシュラ', code: 'W2590 H850 カウンタースタイル', color: 'グレーストーン（天板・扉同色）', swatch: ['#5e6165', '#5e6165'], apply: (s) => { s.int.furniture.counter = mortar('#5e6165', '#55585c'); s.int.furniture.cabinet = mortar('#5e6165', '#55585c'); }, estimate: { group: 'kitchen', line: 'eq.kitchenHl' } },
@@ -294,18 +294,22 @@ export const FINISH_CATEGORIES: FinishCategory[] = [
     label: 'カップボード（背面収納）',
     part: '内部',
     products: [
-      { id: 'cup.line.same', maker: 'ホームランディック', name: 'LINE KITCHEN カップボード ミックスタイプ', code: 'W2440〜2740 D450 H850 ＋ 吊戸 ＋ トール', color: 'キッチン扉と同色', swatch: ['#b3a995'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; }, note: '扉はキッチンと同じ面材。取っ手なし' },
-      { id: 'cup.custom.oak', maker: '造作（家具工事）', name: '造作カップボード', code: 'オーク突板 ＋ 石目カウンター', color: 'オーク', swatch: ['#c3a06f'], apply: (s) => { s.int.furniture.cabinet = { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 }; } },
-      { id: 'cup.custom.white', maker: '造作（家具工事）', name: '造作カップボード', code: 'メラミン ホワイト ＋ 石目カウンター', color: 'ホワイト', swatch: ['#ecebe8'], apply: (s) => { s.int.furniture.cabinet = paint('#ecebe8', 0.5); } },
-      { id: 'cup.lixil.richelle', maker: 'LIXIL', name: 'リシェルSI カップボード', code: 'W2700 トール＋カウンター', color: 'キッチン同色', swatch: ['#6e5542'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; } },
+      { id: 'cup.counter.shelf', maker: 'ホームランディック', name: 'LINE KITCHEN カップボード カウンタータイプ ＋ 飾り棚', code: 'W2440〜2740 D450 H850 ＋ 壁の棚板 2 枚（吊戸・トールなし）', color: 'キッチン扉と同色', swatch: ['#b3a995'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; s.int.vocab = { ...(s.int.vocab ?? {}), cupboard: 'counter' }; }, note: '最初のご提案のパースは、背面を腰の高さのカウンターと棚板だけにして、壁を見せます。吊戸・トールが要るときは、下のミックスタイプに' },
+      { id: 'cup.line.same', maker: 'ホームランディック', name: 'LINE KITCHEN カップボード ミックスタイプ', code: 'W2440〜2740 D450 H850 ＋ 吊戸 ＋ トール', color: 'キッチン扉と同色', swatch: ['#b3a995'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; s.int.vocab = { ...(s.int.vocab ?? {}), cupboard: 'mix' }; }, note: '扉はキッチンと同じ面材。取っ手なし' },
+      { id: 'cup.custom.oak', maker: '造作（家具工事）', name: '造作カップボード', code: 'オーク突板 ＋ 石目カウンター', color: 'オーク', swatch: ['#c3a06f'], apply: (s) => { s.int.furniture.cabinet = { pattern: 'wood', color: '#c3a06f', color2: '#ae8b5d', roughness: 0.5 }; s.int.vocab = { ...(s.int.vocab ?? {}), cupboard: 'mix' }; } },
+      { id: 'cup.custom.white', maker: '造作（家具工事）', name: '造作カップボード', code: 'メラミン ホワイト ＋ 石目カウンター', color: 'ホワイト', swatch: ['#ecebe8'], apply: (s) => { s.int.furniture.cabinet = paint('#ecebe8', 0.5); s.int.vocab = { ...(s.int.vocab ?? {}), cupboard: 'mix' }; } },
+      { id: 'cup.lixil.richelle', maker: 'LIXIL', name: 'リシェルSI カップボード', code: 'W2700 トール＋カウンター', color: 'キッチン同色', swatch: ['#6e5542'], apply: (s) => { s.int.furniture.cabinet = { ...s.int.furniture.cabinet }; s.int.vocab = { ...(s.int.vocab ?? {}), cupboard: 'mix' }; } },
     ],
   },
   {
     id: 'pendant',
     label: 'ダイニングの照明',
     part: '内部',
+    // 既定: 白い塗り壁 × オークの内観は和紙の球 1 灯、ほかはペンダントなし（御社のご提案パース）
+    defaultFor: (d) => (d.interiorId === 'hl-standard' ? 'pend.paper' : 'pend.none'),
     products: [
       { id: 'pend.none', maker: '—', name: 'ペンダントなし（ダウンライトだけ）', code: '照明計画で決めるまで、パースには描きません', color: '—', swatch: ['#dcdad5'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'none' }; }, note: '最初のご提案のパースは、食卓の上に器具を下げずに、窓の外と部屋の奥行きを見せます' },
+      { id: 'pend.paper', maker: '—', name: '和紙の球のペンダント（大・1 灯）', code: '照明計画の器具 ※品番は品番メモに', color: '白（和紙・布）', swatch: ['#f1ece3'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'paper' }; }, note: '白い内装の明るい LDK に、大きな球を 1 灯だけ下げます' },
       { id: 'pend.ph5', maker: 'Louis Poulsen', name: 'PH 5', code: 'ペンダント', color: 'ホワイト', swatch: ['#f2f0ea'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'ph5' }; }, note: '施主支給・照明計画の器具で。白い多層シェードで手元に柔らかい光' },
       { id: 'pend.dome', maker: '—', name: 'ドーム型ペンダント（大）', code: '照明計画の器具 ※品番は品番メモに', color: 'ブラック', swatch: ['#2a2a2a'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'dome' }; } },
       { id: 'pend.globes', maker: '—', name: 'ガラスの小さな球 2〜3 灯', code: '照明計画の器具 ※品番は品番メモに', color: '乳白ガラス', swatch: ['#efece4'], apply: (s) => { s.int.vocab = { ...(s.int.vocab ?? {}), pendant: 'globes' }; } },
@@ -474,6 +478,16 @@ export function stairBuildOf(d: DesignOptions): StairBuild {
   const cat = FINISH_CATEGORIES.find((c) => c.id === 'stair');
   const id = cat ? selectedProduct(cat, d).id : '';
   return (Object.keys(STAIR_PRODUCT_OF_BUILD) as StairBuild[]).find((k) => STAIR_PRODUCT_OF_BUILD[k] === id) ?? 'steel';
+}
+
+/** 鉄骨階段の桁の、テイストの決まり（階段ごとの指定が無いとき）: 白い塗り壁 × オークは稲妻ささら、ほかは両側のささら桁 */
+export function stairStringerOf(d: DesignOptions): StairStringer {
+  return interiorById(d.interiorId).vocab?.stair ?? 'side';
+}
+
+/** 木の見切り（窓の木の額縁・腰壁の木の笠木）の、テイストの決まり: 白い塗り壁 × オークだけ */
+export function woodTrimOf(d: DesignOptions): boolean {
+  return !!interiorById(d.interiorId).vocab?.woodTrim;
 }
 
 function clone<T>(v: T): T {

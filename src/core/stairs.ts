@@ -36,6 +36,8 @@ export interface StairLayout {
   well?: { minX: number; minY: number; maxX: number; maxY: number };
   /** 昇り口の広い段（ひな壇）の台。入れ子に重なる（図面の描き方と同じ: どの台も、手前の縁から奥の壁まで） */
   plinths?: StairPlinth[];
+  /** 折り返し階段で中央に腰壁を立てない形（先の列が、階段の範囲を越えて伸びる折り返し）: 先の列の両脇は開いていて、手すりが付く */
+  innerOpen?: boolean;
 }
 
 /** ひな壇の台 1 枚: i 段目の高さの板。top = 板の範囲、base = 板の下の箱の範囲（空いている縁は段鼻の出 20mm ぶん引っ込む） */
@@ -327,14 +329,18 @@ export function stairLayout(s0: Stair, n = 14): StairLayout {
     const second: [number, number] = turn === 'left' ? [0, fw] : [Lt - fw, Lt];
     const land = Math.min(Ls * 0.4, s.kind === 'uOpen' ? fw : Lt / 2);
     const run = Ls - land;
-    const n1 = Math.floor(n / 2);
+    // 先の列が長い折り返し: 折り返した先の列は、範囲の昇り口の縁を越えて e だけ手前へ伸びる（下の階のホール・LDK の上を渡る）
+    const e = s.kind === 'u' ? Math.max(0, Math.min(2000, s.overrun ?? 0)) : 0;
+    // 段の割り振りは列の長さに比例（同じ長さなら半分ずつ）
+    const n1 = e > 0 ? Math.max(2, Math.min(n - 3, Math.round(((n - 1) * run) / (2 * run + e)))) : Math.floor(n / 2);
     const n2 = n - n1 - 1;
     const st1 = run / n1;
-    const st2 = run / Math.max(1, n2);
+    const st2 = (run + e) / Math.max(1, n2);
     for (let i = 1; i <= n1; i++) pieces.push({ kind: 'tread', ...rect(st1 * (i - 1), st1 * i, first[0], first[1]), i, dir: F.u });
     pieces.push({ kind: 'landing', ...rect(run, Ls, 0, Lt), i: n1 + 1, dir: F.u });
     for (let j = 1; j <= n2; j++) pieces.push({ kind: 'tread', ...rect(run - st2 * (j - 1), run - st2 * j, second[0], second[1]), i: n1 + 1 + j, dir: neg(F.u) });
     if (s.kind === 'uOpen') return { n, pieces, well: rect(0, run, fw, Lt - fw) };
+    if (e > 0) return { n, pieces, innerOpen: true };
     return { n, pieces, wall: rect(0, run, Lt / 2 - 50, Lt / 2 + 50) };
   }
   // かね折れ: 最初の列は矩形の片側の帯、角で踊り場、奥の辺に沿って曲がる
@@ -364,7 +370,6 @@ export function stairLayout(s0: Stair, n = 14): StairLayout {
  */
 export function stairFootprint(s0: Stair): { minX: number; minY: number; maxX: number; maxY: number }[] {
   const s = effectiveStair(s0);
-  if (s.kind !== 'l') return [{ minX: s.minX, minY: s.minY, maxX: s.maxX, maxY: s.maxY }];
   const F = stairFrame(s);
   const { Ls, Lt } = F;
   const P = (sv: number, tv: number) => ({ x: F.o.x + F.u.x * sv + F.r.x * tv, y: F.o.y + F.u.y * sv + F.r.y * tv });
@@ -373,6 +378,15 @@ export function stairFootprint(s0: Stair): { minX: number; minY: number; maxX: n
     const b = P(a1, t1);
     return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
   };
+  if (s.kind !== 'l') {
+    const out = [{ minX: s.minX, minY: s.minY, maxX: s.maxX, maxY: s.maxY }];
+    // 先の列が範囲を越えて伸びる折り返し: 伸びた分（先の列の幅）も、上の階の床の穴
+    if (s.kind === 'u' && (s.overrun ?? 0) > 0) {
+      const second: [number, number] = (s.turn ?? 'left') === 'left' ? [0, Lt / 2] : [Lt / 2, Lt];
+      out.push(rect(-Math.min(2000, s.overrun!), 0, second[0], second[1]));
+    }
+    return out;
+  }
   const fw = lFlightWidth(s, Ls, Lt);
   const strip: [number, number] = (s.turn ?? 'right') === 'right' ? [0, fw] : [Lt - fw, Lt];
   return [rect(0, Ls, strip[0], strip[1]), rect(Math.max(0, Ls - fw), Ls, 0, Lt)];

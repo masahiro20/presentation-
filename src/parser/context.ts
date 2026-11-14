@@ -530,14 +530,14 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
             back.note = `壁付け（手前は食卓・椅子 ${frontChairs}）`;
             pushKitchen(back, cands, used);
             front.note = `椅子 ${frontChairs}`;
-            push(front, 'dining', { w: +(Math.min(front.L, 2600) / 1000).toFixed(2) });
+            push(front, 'dining', { w: +(Math.min(front.L, 2600) / 1000).toFixed(2), round: false });
           } else if (backRings >= 1 && !frontSink) {
             // 壁付けキッチン ＋ 手前のカウンター（食卓）
             back.note = `壁付け（丸い記号 ${backRings}）`;
             pushKitchen(back, cands, used);
             if (front.S >= 750) {
               front.note = 'キッチン前のカウンター';
-              push(front, 'dining', { w: +(Math.min(front.L, 2600) / 1000).toFixed(2) });
+              push(front, 'dining', { w: +(Math.min(front.L, 2600) / 1000).toFixed(2), round: false });
             }
           } else {
             const two = backRings >= 1 && frontSink;
@@ -648,7 +648,8 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
           c.note = `椅子 ${chairs.length}・弧 ${chairArcs}`;
           used.add(c);
           chairs.forEach((ch) => used.add(ch));
-          push(c, t === 'japanese' ? 'lowTable' : 'dining', { w: +(c.L / 1000).toFixed(2) });
+          // 長方形で描かれた食卓は一枚板（丸テーブルにしない）
+          push(c, t === 'japanese' ? 'lowTable' : 'dining', { w: +(c.L / 1000).toFixed(2), ...(t === 'japanese' ? {} : { round: false }) });
         }
       }
       for (const ci of circles) {
@@ -657,7 +658,7 @@ export function readContextItems(segs: Seg[], arcs: Arc[], rooms: Room[], walls:
         if (ci.r < 450 || ci.r > 800) continue;
         const bb = roomBBox(room);
         const fake: Cand = { rect: { id: -1, minX: ci.x - ci.r, maxX: ci.x + ci.r, minY: ci.y - ci.r, maxY: ci.y + ci.r, inner: 0, innerRects: 0, arcs: 0, width: 0, dashed: false }, room, cx: ci.x, cy: ci.y, w: ci.r * 2, h: ci.r * 2, L: ci.r * 2, S: ci.r * 2, longX: bb.maxX - bb.minX >= bb.maxY - bb.minY, touch: { top: false, bottom: false, left: false, right: false }, note: '丸テーブル' };
-        push(fake, 'dining', { w: +((ci.r * 2) / 1000).toFixed(2) });
+        push(fake, 'dining', { w: +((ci.r * 2) / 1000).toFixed(2), round: true });
       }
       // --- 机・お化粧スペース: 壁沿いの 1,100〜1,700 × 550〜900 のカウンターに椅子が 1 脚 ---
       for (const c of free()) {

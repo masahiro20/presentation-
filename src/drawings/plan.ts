@@ -393,7 +393,8 @@ export function floorPlanParts(model: BuildingModel, f: Floor, opts: PlanSvgOpti
     if (!sheetMode)
       for (const pv of land.paving) {
         const pts = pv.pts.map((q) => `${(q.x * 1000).toFixed(0)},${(q.z * 1000).toFixed(0)}`).join(' ');
-        s += pv.key === 'l.approach' ? `<polygon points="${pts}" fill="url(#mp-stone)" stroke="#c9c4bc" stroke-width="10"/>` : `<polygon points="${pts}" fill="#ebe9e5" stroke="#cfcbc4" stroke-width="10"/>`;
+        // 庭のウッドデッキは木の色（板の向きまでは描かない）
+        s += pv.key === 'l.approach' ? `<polygon points="${pts}" fill="url(#mp-stone)" stroke="#c9c4bc" stroke-width="10"/>` : pv.key === 'l.deck' ? `<polygon points="${pts}" fill="#e8dccb" stroke="#c4b49c" stroke-width="10"/>` : `<polygon points="${pts}" fill="#ebe9e5" stroke="#cfcbc4" stroke-width="10"/>`;
       }
     for (const c of land.cars) s += carSvg(c.x * 1000, c.z * 1000, c.dirX, c.dirZ, hl);
     // 手で置いた外構の物（フェンス・BBQ・ベンチ・物置など）: 向きに沿った長方形と名前

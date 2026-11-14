@@ -108,6 +108,7 @@ const FAMILY: Record<BuiltinVariant, { kinds: FurnitureKind[]; variants: Builtin
   lowShelf: { kinds: ['bookshelf', 'cabinet'], variants: ['wallShelf', 'tallStorage', 'lowShelf', 'openShelf'] },
   openShelf: { kinds: ['bookshelf', 'cabinet'], variants: ['wallShelf', 'tallStorage', 'lowShelf', 'openShelf'] },
   bench: { kinds: [], variants: ['bench'] },
+  shelves: { kinds: [], variants: ['shelves'] },
 };
 
 /**

@@ -106,6 +106,11 @@ export interface Opening {
    */
   heightFrom?: 'elevation' | '3d' | 'joinery';
   /**
+   * 図面の窓の記号から読んだ開き方: awning = すべり出し（外に三角の記号。人は出入りしない）／fix = FIX（ガラスの線が端から端まで）／slide = 引違い。
+   * 高さは平面図に無いが、設計の意図は記号に出る: すべり出しは高い位置の横長、居間・畳コーナーの FIX は床に近い高さからの大きな窓
+   */
+  sash?: 'awning' | 'fix' | 'slide';
+  /**
    * 室内窓（部屋と部屋の間の壁のガラス: FIX・引違い。図面で通り口の印が無い窓の記号）。kind は 'window'。
    * 仕様の「サッシ上端＝天井」でそろえ直さず、カーテン・水切りも付けない。採光の窓にも数えない
    */
@@ -184,6 +189,13 @@ export interface Stair {
   treadPitch?: number;
   /** 角 1 つの段数（コの字階段の角）: 1 = 四角い踊り場（既定）、2 = 斜めの線 1 本で 2 段の回り段、3 = 3 段回り。図面の角の斜めの線から読む */
   cornerSteps?: 1 | 2 | 3;
+  /**
+   * 折り返し階段で、折り返した先の列が、階段の範囲の昇り口の縁を越えて手前へ伸びる長さ（mm）。
+   * 上の階の図面の階段の範囲が、下の階より昇り口の側へ長いとき = 先の列が、下の階のホール・LDK の上を渡って上の階に着く階段
+   * （大崎様邸: 1 階の階段室は 1 間角、2 階の図では 910 長い。昇り口の数段 → 踊り場 → 折り返して、ホールの上を渡る）。
+   * 階段室の範囲（minX…）は変えない。中央の腰壁は立てず、先の列の両脇に手すりが付く。上の階の床の穴は、伸びた分だけ広がる
+   */
+  overrun?: number;
   /** コの字階段の奥の列の長さ（mm。図面の段の線の並びの範囲）。列の幅（角の升の大きさ）=（階段の幅 − これ）÷ 2。無ければ列の幅 910 */
   midRun?: number;
   /**
@@ -213,8 +225,11 @@ export interface Stair {
 export type StairBuild = 'steel' | 'woodSkeleton' | 'box' | 'cantilever';
 /** 階段の手すり: アイアン（細いフラットバーの支柱＋上の手すり＋横桟 1 本）／ガラス／腰壁／木／なし */
 export type StairRail = 'bar' | 'glass' | 'wall' | 'wood' | 'none';
-/** 鉄骨階段の桁: 両側のささら桁（鋼板。御社の施工事例の形 = 既定）／中央の力桁 1 本 */
-export type StairStringer = 'side' | 'center';
+/**
+ * 鉄骨階段の桁: 両側のささら桁（まっすぐな鋼板。御社の施工事例の形）／中央の力桁 1 本／
+ * 稲妻ささら（段の形に折れた細い鋼板＋木の蹴込み板。御社のご提案パースの形）。指定が無ければテイストの決まり
+ */
+export type StairStringer = 'side' | 'center' | 'zigzag';
 /** 踏板の色: 床に合わせる（既定）／オーク／ウォールナット／白／黒／モルタル（左官調） */
 export type StairTread = 'floor' | 'oak' | 'walnut' | 'white' | 'black' | 'mortar';
 /** 鉄の骨組み・手すりの色: 黒（既定）／白 */
@@ -224,7 +239,7 @@ export interface StairLook {
   rail?: StairRail;
   /** 指定の段数（図面の読み取り・階高からの推定より優先） */
   steps?: number;
-  /** 鉄骨階段の桁（省略 = 両側のささら桁） */
+  /** 鉄骨階段の桁（省略 = テイストの決まり: 白い内装は稲妻ささら、ほかは両側のささら桁） */
   stringer?: StairStringer;
   /** 踏板の色（省略 = 床に合わせる） */
   tread?: StairTread;
@@ -399,7 +414,7 @@ export type FurnitureKind =
   | 'builtin';
 
 /** 造作家具の形 */
-export type BuiltinVariant = 'wallShelf' | 'shelfDesk' | 'floatTv' | 'openShelf' | 'bench' | 'counter' | 'tallStorage' | 'lowShelf';
+export type BuiltinVariant = 'wallShelf' | 'shelfDesk' | 'floatTv' | 'openShelf' | 'bench' | 'counter' | 'tallStorage' | 'lowShelf' | 'shelves';
 
 /** 家具の木の色味（3D で選んだ物の「素材」。標準はテイストの色） */
 export type WoodTone = 'natural' | 'light' | 'dark';
@@ -450,6 +465,10 @@ export interface FurnitureItem {
   hood?: boolean;
   /** 形: I 型（既定）か L 型（ソファのカウチ、カップボードの袖） */
   shape?: 'i' | 'l';
+  /** 食卓の天板の形（図面から）: true = 丸テーブル（円＋椅子）、false = 長方形。無ければテイストの決まり（4 人掛けは丸） */
+  round?: boolean;
+  /** テレビの置き方（図面から）: 'wall' = 壁掛け（台なし。壁に平行な細長い四角で描かれたもの）。省略 = 浮かせた薄いボード＋壁掛け */
+  mount?: 'wall';
   /** L 型の袖が付く側（部屋側から見て。既定: 右） */
   legSide?: 'left' | 'right';
   /** L 型の袖の長さ (m)（ソファ: カウチの奥行 1.6、カップボード: 袖の長さ 1.8） */

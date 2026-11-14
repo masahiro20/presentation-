@@ -251,6 +251,7 @@ export const BUILTIN_VARIANTS: Record<BuiltinVariant, { label: string; w: number
   counter: { label: 'スタディカウンター（壁付け）', w: 2.0, d: 0.5, note: '天板 H720 の持ち出しカウンター' },
   tallStorage: { label: '壁面収納（扉付き・天井まで）', w: 2.4, d: 0.45, note: 'クロスになじむフラット扉、目地だけ見せる' },
   lowShelf: { label: '腰高のオープン棚', w: 1.8, d: 0.35, note: '窓下・吹抜の手すり際。H900' },
+  shelves: { label: '可動棚（収納の中）', w: 1.8, d: 0.4, note: '側板と棚板 5 段。扉なし' },
 };
 
 /** 平面に描くときの外形 (m): 幅 w（並び方向）、奥行 d、基準点から奥行方向への始まり v0 */
@@ -456,7 +457,7 @@ export function buildFurniture(
           lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
           break;
         case 'entrance':
-          layoutEntrance(ctx);
+          layoutEntrance(ctx, f);
           lights.push({ pos: center, kind: 'ceiling', roomId: room.id });
           break;
         case 'hall':
@@ -681,7 +682,7 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
       hangerPipe(fr, it.w ?? 1.8);
       break;
     case 'dining':
-      diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY, it.w);
+      diningSet(fr, 0, 0, env.lights, roomId, env.ceilingY, it.w, it.round);
       break;
     case 'sofa':
       sofa(fr, 0, 0, it.w ?? 2.1, it.shape === 'l' ? { side: it.legSide ?? 'right', depth: Math.max(1.2, it.leg ?? 1.6) } : undefined);
@@ -690,7 +691,8 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
       coffeeTable(fr, 0, 0);
       break;
     case 'tv':
-      tvSet(fr, 0, 0, it.w ?? 1.8);
+      if (it.mount === 'wall') wallTv(fr, 0, 0, it.w ?? 1.45);
+      else tvSet(fr, 0, 0, it.w ?? 1.8);
       break;
     case 'rug':
       rug(fr, 0, 0, it.w ?? 2.2, it.d ?? 1.6);
@@ -1101,6 +1103,20 @@ function tvSet(fr: Frame, u: number, v: number, w = 1.8) {
 }
 
 /**
+ * 壁掛けのテレビ（台なし）: 図面の四角の長さを画面の幅に（16:9）。画面の中心は床から 1.2m。
+ * 御社のご提案（大崎様邸）は、LDK の斜めの壁に黒い画面だけを掛け、下に台を置かない
+ */
+function wallTv(fr: Frame, u: number, v: number, w = 1.45) {
+  const sw = Math.max(0.9, Math.min(2.0, w));
+  const sh = sw * 0.5625 + 0.02;
+  // 画面の板だけ（床に置く家具ではないので、足元の影・平面図の外形には数えない。
+  // 斜めの壁に掛けたテレビは、外接の四角が大きくなり、画面の下の宙に影の板が浮いて見えていた）
+  const c = fr.origin.clone().addScaledVector(fr.along, u).addScaledVector(fr.inward, v + 0.02 + 0.0175);
+  c.y = fr.origin.y + 1.2 - sh / 2;
+  fr.mb.box('f.screen', c, fr.along, sw, sh, 0.035);
+}
+
+/**
  * 鉢植えの細い木（オリーブ・シマトネリコのように、幹が細く葉がまばらな木）を、丸いつや消しの鉢に。
  * 御社の提案パースの室内の緑は、丸い白い鉢の細い木か、花器の枝もの。以前は小さな多肉植物の実物モデルを 1m に拡大していて、
  * 巨大なアロエのように見えていた。scale 1 で高さ 約 1.7m
@@ -1227,24 +1243,39 @@ const PLATE: [number, number][] = [[0, 0], [0.075, 0], [0.085, 0.003], [0.125, 0
 /** 湯のみ（口が少し開いた筒。薄い縁） */
 const CUP: [number, number][] = [[0, 0], [0.027, 0], [0.031, 0.004], [0.036, 0.05], [0.039, 0.085], [0.0375, 0.087], [0.0335, 0.05], [0.028, 0.009], [0, 0.007]];
 
-function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number, width?: number) {
+function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId: string, ceilingY: number, width?: number, drawnRound?: boolean) {
   // v = テーブル中心までの距離。無垢の一枚板（厚 4cm）を 2 枚の板脚で受ける、設計事務所らしい端正なテーブル
   const tw = width ?? 1.8;
   const td = 0.9;
   const perSide = tw >= 2.3 ? 3 : 2;
-  // 御社の事例: 4 人掛けは丸テーブル（φ1.2、1 本脚）に Y チェア。6 人掛けは一枚板
-  const round = vocab.table === 'round' && perSide === 2;
+  // 御社の事例: 4 人掛けは丸テーブル（φ1.2、1 本脚）に Y チェア。6 人掛けは一枚板。
+  // 図面に形が描かれていれば（円＋椅子 4 脚 = 丸テーブル／長方形 = 一枚板）、テイストの決まりより図面が先
+  const round = drawnRound ?? (vocab.table === 'round' && perSide === 2);
+  const RT = Math.min(0.62, Math.max(0.52, tw / 2));
   if (round) {
-    const R = Math.min(0.62, Math.max(0.52, tw / 2));
-    fr.cyl('f.wood', u, v, R, 0.68, 0.04, 40);
-    fr.cyl('f.wood', u, v, 0.055, 0.02, 0.66, 14);
-    fr.cyl('f.metal', u, v, 0.3, 0, 0.02, 32);
+    // 薄い天板（縁を下へ絞る）を、細い柱と十字の脚で受ける（御社のご提案: 淡いオークの丸い天板に白い 4 本足の脚）
+    fr.lathe('f.wood', u, v, 0.685, [[0, 0], [RT - 0.03, 0], [RT - 0.004, 0.014], [RT, 0.024], [RT, 0.034], [RT - 0.003, 0.037], [0, 0.037]], 56);
+    fr.cyl('f.tableLeg', u, v, 0.032, 0.02, 0.665, 16);
+    fr.cyl('f.tableLeg', u, v, 0.06, 0.655, 0.03, 16);
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + (Math.PI / 2) * k;
+      fr.mb.tube('f.tableLeg', fr.point(u, v, 0.03), fr.point(u + Math.cos(a) * 0.34, v + Math.sin(a) * 0.34, 0.014), 0.02, 0.013, 10);
+    }
+    if (currentPlan) {
+      const c = fr.point(u, v, 0);
+      currentPlan.push({ key: 'f.wood', shape: 'circle', cx: c.x, cz: c.z, w: 0, d: 0, ax: 1, az: 0, r: RT, top: 0.72, roomId: currentRoomId });
+    }
+    if (currentOcc) {
+      const c = fr.point(u, v, 0);
+      currentOcc.push({ minX: c.x - RT, maxX: c.x + RT, minZ: c.z - RT, maxZ: c.z + RT, maxY: 0.72, baseY: fr.origin.y, key: 'f.wood' });
+    }
   } else {
     fr.box('f.wood', u, v - td / 2, tw, td, 0.68, 0.04);
     for (const du of [-tw / 2 + 0.22, tw / 2 - 0.22]) fr.box('f.wood', u + du, v - td / 2 + 0.12, 0.04, td - 0.24, 0, 0.68);
   }
   // 天板の上の小物: 中央に花器（実物モデル）、端に浅い器を 2 つ（写真の「生活感」）
-  currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + (round ? 0 : 0.12), v, 0.72), rotY: 0.4, height: 0.24 });
+  // 丸テーブルの上には何も置かない（御社のご提案: 天板だけを見せる）
+  if (!round) currentModels.push({ id: 'ceramic_vase_01', pos: fr.point(u + 0.12, v, 0.72), rotY: 0.4, height: 0.24 });
   if (!round) {
     // 片側に浅い大鉢、反対側に重ねた皿と小さな碗（薄い縁の磁器。以前は厚い円柱を重ねていて、器に見えなかった）
     fr.lathe('f.white', u - tw / 2 + 0.34, v - 0.06, 0.72, BOWL_WIDE);
@@ -1254,11 +1285,30 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
   // 椅子: 御社の事例は Y チェア（曲げ木の笠木・Y の背・ペーパーコードの座）。従来は丸脚の軽い木椅子。長いテーブルは 3 脚ずつ
   const pitch = perSide === 3 ? (tw - 0.5) / 2 : 0.9;
-  const chairUs = perSide === 3 ? [-pitch, 0, pitch] : round ? [-0.36, 0.36] : [-0.45, 0.45];
-  for (const du of chairUs)
+  const chairUs = perSide === 3 ? [-pitch, 0, pitch] : [-0.45, 0.45];
+  if (round) {
+    // 丸テーブルの椅子は 4 方（斜め）から中心を向く（図面の丸テーブルの椅子の並び）
+    const c0 = fr.point(u, v, 0);
+    c0.y = fr.origin.y;
+    for (let k = 0; k < 4; k++) {
+      const a = Math.PI / 4 + (Math.PI / 2) * k;
+      const al = fr.along.clone().multiplyScalar(Math.cos(a)).addScaledVector(fr.inward, Math.sin(a));
+      const inw = fr.along.clone().multiplyScalar(-Math.sin(a)).addScaledVector(fr.inward, Math.cos(a));
+      const cf = new Frame(fr.mb, c0, al, inw);
+      if (vocab.chair === 'y') yChair(cf, 0, RT + 0.17, 1);
+      else {
+        cf.box('f.fabric2', 0, RT + 0.17 - 0.22, 0.43, 0.43, 0.42, 0.045);
+        cf.box('f.wood', 0, RT + 0.17 - 0.21, 0.41, 0.41, 0.395, 0.025);
+        for (const lu of [-0.17, 0.17]) for (const lv of [-0.17, 0.17]) cf.cyl('f.wood', lu, RT + 0.17 + lv, 0.013, 0, 0.395, 10);
+        for (const lu of [-0.17, 0.17]) cf.cyl('f.wood', lu, RT + 0.17 + 0.17, 0.012, 0.395, 0.32, 10);
+        cf.box('f.wood', 0, RT + 0.17 + 0.17 - 0.012, 0.4, 0.024, 0.6, 0.12);
+      }
+    }
+  }
+  for (const du of round ? [] : chairUs)
     for (const side of [-1, 1]) {
       const cu = u + du;
-      const cv = v + side * ((round ? 0.5 : td / 2) + 0.2);
+      const cv = v + side * (td / 2 + 0.2);
       if (vocab.chair === 'y') {
         yChair(fr, cu, cv, side);
         continue;
@@ -1280,9 +1330,10 @@ function diningSet(fr: Frame, u: number, v: number, lights: LightPoint[], roomId
   }
   // ペンダント: 御社の事例は PH 5 風（白）か黒いドームを 1 灯（長いテーブルは 2 灯）。従来は乳白ガラスの球（実物モデル）を 2〜3 灯
   if (vocab.pendant !== 'globes') {
-    const us = tw >= 2.3 && !round ? [-tw / 4, tw / 4] : [0];
+    // 和紙の球は大きいので、長いテーブルでも 1 灯
+    const us = tw >= 2.3 && !round && vocab.pendant !== 'paper' ? [-tw / 4, tw / 4] : [0];
     for (const du of us) {
-      const y = 1.5;
+      const y = vocab.pendant === 'paper' ? 1.62 : 1.5;
       pendant(fr, u + du, v, y, ceilingY, vocab.pendant);
       lights.push({ pos: fr.point(u + du, v, y - 0.12), kind: 'pendant', roomId });
     }
@@ -1313,19 +1364,53 @@ export function setKitchenFinish(f: { dark: boolean }) {
 }
 
 /** 家具・照明の語彙（テイストごと）。組み立て前に設定する */
-let vocab: { pendant: 'ph5' | 'dome' | 'globes' | 'none'; chair: 'y' | 'light'; table: 'round' | 'plank' } = { pendant: 'globes', chair: 'light', table: 'plank' };
-export function setFurnitureVocab(style: { id: string; vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank' } }) {
+let vocab: { pendant: 'ph5' | 'dome' | 'globes' | 'paper' | 'none'; chair: 'y' | 'light'; table: 'round' | 'plank'; cupboard: 'counter' | 'mix' } = { pendant: 'globes', chair: 'light', table: 'plank', cupboard: 'counter' };
+export function setFurnitureVocab(style: { id: string; vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'paper' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank'; cupboard?: 'counter' | 'mix' } }) {
   const hl = style.id.startsWith('hl-');
   vocab = {
     pendant: style.vocab?.pendant ?? (hl ? 'ph5' : 'globes'),
     chair: style.vocab?.chair ?? (hl ? 'y' : 'light'),
     table: style.vocab?.table ?? (hl ? 'round' : 'plank'),
+    cupboard: style.vocab?.cupboard ?? 'counter',
   };
 }
 
 /** 天井から吊る照明（御社の事例の語彙）。y = 器具の下端 */
-function pendant(fr: Frame, u: number, v: number, y: number, ceilingY: number, kind: 'ph5' | 'dome') {
+function pendant(fr: Frame, u: number, v: number, y: number, ceilingY: number, kind: 'ph5' | 'dome' | 'paper') {
   const P = (yy: number) => fr.point(u, v, yy);
+  if (kind === 'paper') {
+    // 和紙（布）の球: 少しつぶれた球 φ500・高さ 410 に、縦の細い骨。上は黒い口金、下は開いた口に黒い輪。細いコードで吊る
+    // （御社のご提案: 大崎様邸の食卓の上・堀様邸の吹抜。白い内装の明るい LDK に、1 灯だけ大きく下げる）
+    const R = 0.25;
+    const Hh = 0.41;
+    const t0 = Math.asin(0.075 / R);
+    const t1 = Math.PI - Math.asin(0.04 / R);
+    const prof: [number, number][] = [];
+    for (let k = 0; k <= 22; k++) {
+      const t = t0 + ((t1 - t0) * k) / 22;
+      prof.push([R * Math.sin(t), (Hh / 2) * (1 - Math.cos(t))]);
+    }
+    const yb = y - (Hh / 2) * (1 - Math.cos(t0));
+    fr.lathe('f.shade', u, v, yb, prof, 40);
+    // 骨（16 本）: 球の面のすぐ外をなぞる細い線
+    for (let m = 0; m < 16; m++) {
+      const a = (Math.PI * 2 * m) / 16;
+      const pts: V3[] = [];
+      for (let k = 0; k <= 10; k++) {
+        const t = t0 + ((t1 - t0) * k) / 10;
+        const rr = R * Math.sin(t) + 0.0015;
+        pts.push(fr.point(u + Math.cos(a) * rr, v + Math.sin(a) * rr, yb + (Hh / 2) * (1 - Math.cos(t))));
+      }
+      fr.mb.tubePath('f.shadeRib', pts, 0.0016, 4);
+    }
+    const topY = yb + (Hh / 2) * (1 - Math.cos(t1));
+    fr.mb.tube('f.handle', P(y - 0.004), P(y + 0.004), 0.078, 0.078, 24);
+    fr.cyl('f.handle', u, v, 0.042, topY - 0.004, 0.03, 16);
+    fr.cyl('f.lamp', u, v, 0.045, y + 0.12, 0.08, 14);
+    fr.cyl('f.handle', u, v, 0.0025, topY + 0.026, Math.max(0.05, ceilingY - topY - 0.026), 6);
+    fr.cyl('f.handle', u, v, 0.045, ceilingY - 0.018, 0.018, 16);
+    return;
+  }
   if (kind === 'ph5') {
     // PH 5 風: 上の大きな笠（φ50）・中のリング（φ33）・下の小さな笠（φ16）を白で重ね、細いロッドで吊る
     const key = 'f.shade';
@@ -1517,6 +1602,15 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       fr.box('f.wood', 0, 0, w, d, 0.88, 0.03);
       openShelves(0.0, 0.88, d, 0.42, 3);
       break;
+    case 'shelves': {
+      // 収納の中の可動棚（図面で、収納・シューズクロークの壁沿いに木の色で塗られた帯）: 側板（両端と約 900 ごと）に棚板 5 段。扉なし・物は置かない
+      const n = Math.max(1, Math.round(w / 0.9));
+      const cw = w / n;
+      const topS = Math.min(top, 2.1);
+      for (let i = 0; i <= n; i++) fr.box('f.wood', -w / 2 + i * cw + (i === 0 ? 0.01 : i === n ? -0.01 : 0), 0, 0.02, d, 0, topS);
+      for (const y of [0.35, 0.75, 1.15, 1.55, 1.95]) if (y < topS - 0.05) fr.box('f.wood', 0, 0, w - 0.02, d - 0.01, y, 0.02);
+      break;
+    }
   }
 }
 
@@ -1606,8 +1700,11 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
   };
   /** 天吊りの箱型フード（ペニンシュラ・アイランド: W900 D500 H220 の薄い箱＋細いダクトカバー。黒） */
   const ceilingHood = (u: number, v: number) => {
-    fr.box(hoodKey, u, v - 0.25, 0.9, 0.5, 1.66, 0.22);
-    fr.box(hoodKey, u, v - 0.11, 0.22, 0.22, 1.88, Math.max(0.05, ceilingY - 1.88));
+    // 薄い板のフード（W900 D550 厚 45）の上に、ひと回り小さい箱と細いダクトカバー。
+    // 以前は厚み 220 の箱で、対面キッチンの上に重い塊が下がって見えていた（御社のご提案は、薄い板が浮いて見えるフード）
+    fr.box(hoodKey, u, v - 0.275, 0.9, 0.55, 1.62, 0.045);
+    fr.box(hoodKey, u, v - 0.2, 0.62, 0.4, 1.665, 0.1);
+    fr.box(hoodKey, u, v - 0.1, 0.2, 0.2, 1.765, Math.max(0.05, ceilingY - 1.765));
   };
   /**
    * 小物: 黒いトレーと器だけ（一輪挿しはやめた: キッチンの中から撮ると、手前の天板に緑の玉が大きく写っていた）。
@@ -1628,6 +1725,22 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
    * wallW = 使える壁の長さ。冷蔵庫は fridge の側の端
    */
   const backStorage = (wallW: number, withTall = true) => {
+    if (vocab.cupboard === 'counter') {
+      // 背面カウンター（D450 H850・扉は取っ手なし）と、壁から持ち出した棚板 2 枚（高さをずらして左右に寄せる）。吊戸・トールは付けない。
+      // 御社のご提案（大崎様邸・吉田様邸・堀様邸）の背面は、腰の高さのカウンターと、何も無い壁（棚板かタイル）。
+      // 以前は吊戸と背の高い収納を並べていて、キッチンの奥が箱で埋まって見えていた
+      const fw0 = fridge === 'none' ? 0 : 0.72;
+      const fs = fridge === 'right' ? 1 : -1;
+      const cupW = Math.max(0.9, Math.min(3.6, wallW - fw0));
+      const cu = fw0 ? -fs * (fw0 / 2) : 0;
+      const n = Math.max(2, Math.round(cupW / 0.9));
+      cabinet(cu, 0.02, cupW, 0.45, Array.from({ length: n }, () => ({ w: cupW / n, rows: 2 })), 1);
+      const sw = Math.min(1.5, cupW * 0.56);
+      fr.box('f.wood', cu - cupW / 2 + sw / 2 + 0.08, 0, sw, 0.24, 1.52, 0.03);
+      fr.box('f.wood', cu + cupW / 2 - sw / 2 - 0.08, 0, sw, 0.24, 1.3, 0.03);
+      if (fw0) fridgeBox(cu + fs * (cupW / 2 + fw0 / 2));
+      return;
+    }
     const fw = fridge === 'none' ? 0 : 0.72;
     const tallW = withTall ? 0.9 : 0;
     const cupW = Math.max(0.9, Math.min(2.74, wallW - fw - tallW));
@@ -1749,13 +1862,16 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
       fr.cyl('f.handle', du, cv + D / 2 + 0.55, 0.2, 0, 0.015, 20);
     }
   } else {
-    // ペニンシュラ: ダイニング側に腰壁（H1,050、天板をかぶせる）。コンロ側の端は壁に付く（端のパネル）
-    cabinet(0, cv - D / 2, W, D, secs, -1, 0.75, 0.05);
-    fr.box('int.wall', 0, cv + D / 2 + 0.05, W + 0.02, 0.1, 0, 1.03);
-    fr.box('f.counter', 0, cv + D / 2 + 0.02, W + 0.06, 0.2, 1.03, 0.03);
-    // 壁側の端のパネル（腰壁から壁まで続く袖）
+    // ペニンシュラ（フラット対面）: 天板は 1 枚の平らな面（D750）。ダイニング側は、扉と同じ面材の化粧パネル 3 枚（取っ手なし）。
+    // 以前はダイニング側に腰壁（H1,050）を立てて天板をかぶせていたが、御社のご提案のキッチンは、手元を隠さない平らな対面
+    const PB = 0.085;
+    cabinet(0, cv - D / 2, W, D, secs, -1, D + PB + 0.02, -0.01);
+    fr.box('int.shadowGap', 0, cv + D / 2 + 0.005, W - 0.06, PB - 0.03, 0, KICK);
+    fr.box('f.cabinet', 0, cv + D / 2, W, PB, KICK, H - KICK - TOP);
+    for (let k = 1; k < 3; k++) fr.box('f.handle', -W / 2 + (W / 3) * k, cv + D / 2 + PB - 0.003, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.02);
+    // 壁側の端のパネル
     const endU = stoveSign * (W / 2 + 0.01);
-    fr.box('f.cabinet', endU, cv - D / 2, 0.02, D + 0.15, 0, H - TOP);
+    fr.box('f.cabinet', endU, cv - D / 2, 0.02, D + PB, 0, H - TOP);
   }
   sink(sinkU, cv - D / 2 + 0.1, 0.65, cv + 0.3);
   ih(stoveU, cv - D / 2, D);
@@ -2040,6 +2156,8 @@ function desk(fr: Frame, u: number, v: number, w?: number) {
 }
 
 function layoutStudy(ctx: RoomCtx) {
+  // 図面に造作のカウンター・机が描かれていれば、それだけ（自動の机・本棚を足さない）
+  if (ctx.has.has('builtin') || ctx.has.has('desk')) return;
   const order = (['n', 's', 'e', 'w'] as Side[]).sort((a, b) => ctx.windows[b] - ctx.windows[a]);
   for (const s of order) {
     const { f, len } = sideFrame(ctx, s);
@@ -2056,6 +2174,10 @@ function layoutStudy(ctx: RoomCtx) {
 
 function layoutJapanese(ctx: RoomCtx) {
   const { R } = ctx;
+  // 小上がりの畳コーナー（床が上がった 4.5 帖以下の畳）には何も置かない: 腰掛けて庭を見る場所
+  // （御社のご提案: 大崎様邸の畳コーナーは、畳と窓だけ。以前は座卓と座布団 4 枚を置いていた）
+  if ((ctx.room.floorOffset ?? 0) > 0 && (R.maxX - R.minX) * (R.maxZ - R.minZ) <= 7.6) return;
+  if (ctx.has.has('lowTable') || ctx.has.has('builtin')) return;
   const fr = new Frame(ctx.mb, V((R.minX + R.maxX) / 2, ctx.y, (R.minZ + R.maxZ) / 2), V(1, 0, 0), V(0, 0, 1));
   place('lowTable', fr, 0, 0, ctx.env);
 }
@@ -2137,7 +2259,9 @@ function layoutToilet(ctx: RoomCtx) {
   place('toilet', f, 0, 0, ctx.env);
 }
 
-function layoutEntrance(ctx: RoomCtx) {
+function layoutEntrance(ctx: RoomCtx, f0?: Floor) {
+  // シューズクローク・土間収納のある家は、玄関に下足入れを置かない（靴はそちらにしまう。御社のご提案: 大崎様邸の玄関は何も置かない）
+  if (f0?.rooms.some((r) => r.id !== ctx.room.id && /シューズ|ｼｭｰｽﾞ|SIC|SCL|S\.?C\.?L|土間収納|下足/i.test(r.name.normalize('NFKC')))) return;
   const order = (['n', 's', 'e', 'w'] as Side[]).sort((a, b) => ctx.blocked[a].length - ctx.blocked[b].length);
   const s = order[0];
   const { f, len } = sideFrame(ctx, s);

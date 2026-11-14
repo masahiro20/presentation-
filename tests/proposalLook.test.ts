@@ -123,8 +123,9 @@ describe('腰壁の天端は壁と同じ仕上げ', () => {
 });
 
 describe('食卓のペンダントは既定では描かない', () => {
-  it('御社のテイスト（hl-）の家具の語彙は、ペンダントなしが既定', () => {
-    for (const s of INTERIOR_STYLES.filter((x) => x.id.startsWith('hl-') && x.vocab)) expect(s.vocab!.pendant, s.id).toBe('none');
+  it('御社のテイスト（hl-）の家具の語彙は、ペンダントなしが既定。白い塗り壁 × オークだけ、和紙の球を 1 灯', () => {
+    // 白い内装の明るい LDK のご提案（大崎様邸・堀様邸）は、食卓の上に和紙の球のペンダントを 1 灯下げる
+    for (const s of INTERIOR_STYLES.filter((x) => x.id.startsWith('hl-') && x.vocab)) expect(s.vocab!.pendant, s.id).toBe(s.id === 'hl-standard' ? 'paper' : 'none');
     expect(interiorFor(DEFAULT_DESIGN).vocab?.pendant).toBe('none');
   });
   it('コーディネートの「ダイニングの照明」の先頭は「ペンダントなし」。器具を選ぶと語彙が変わる', () => {

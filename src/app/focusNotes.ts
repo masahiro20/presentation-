@@ -38,7 +38,7 @@ import type { BuiltinVariant, StairBuild, StairFrame, StairLook, StairRail, Stai
 import type { DesignOptions, TimeOfDay } from '../styles/presets';
 import { resolveSpec, VOID_GUARD_SPECS, type VoidGuardSpec } from '../styles/spec';
 import { shrinkPhoto } from '../coordinate/samples';
-import { selectedProduct, STAIR_PRODUCT_OF_BUILD, stairBuildOf } from '../coordinate/catalog';
+import { selectedProduct, STAIR_PRODUCT_OF_BUILD, stairBuildOf, stairStringerOf } from '../coordinate/catalog';
 import { categoryById, decide, itemOf } from '../coordinate/decisions';
 import { getGeminiKey } from './aiFinish';
 import { getReviewModel } from './aiDesigner';
@@ -518,7 +518,7 @@ export function openFocusDialog(opts: FocusDialogOpts = {}): void {
             ...(draftBuild === 'steel'
               ? [
                   h('div', { class: 'field-label', style: 'margin-top:8px' }, '鉄骨の桁（3D に反映）'),
-                  segmented<StairStringer>(STAIR_STRINGERS.map((k) => ({ value: k, label: STAIR_STRINGER_LABEL[k] })), look().stringer ?? 'side', (v) => setLook({ stringer: v })),
+                  segmented<StairStringer>(STAIR_STRINGERS.map((k) => ({ value: k, label: STAIR_STRINGER_LABEL[k] })), look().stringer ?? stairStringerOf(state.design), (v) => setLook({ stringer: v })),
                 ]
               : []),
             h('div', { class: 'field-label', style: 'margin-top:8px' }, '手すり（3D に反映）'),

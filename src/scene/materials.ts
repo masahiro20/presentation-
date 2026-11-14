@@ -181,6 +181,8 @@ export class MaterialRegistry {
     // 既定: 室内の壁と同じ色のフラット扉（KAMIYA フルハイトドアをクロスになじませる納まり）
     set('int.door', M(vgrain(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 })));
     set('int.trim', color(i.trim, 0.5));
+    // 木の見切り（窓の額縁・室内窓の枠・腰壁の笠木）: 家具・造作と同じ木
+    set('int.woodTrim', M(i.furniture.wood));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
     // 踏板の色（こだわりの参考資料で階段ごとに選べる。指定が無ければ int.stairs = 床に合わせた木）
     set('int.stairs@oak', M({ pattern: 'wood', color: '#c2a071', color2: '#ad8c5f', roughness: 0.5 }));
@@ -188,6 +190,8 @@ export class MaterialRegistry {
     set('int.stairs@white', M({ pattern: 'wood', color: '#e9e4da', color2: '#dfd9cd', roughness: 0.55 }));
     set('int.stairs@black', M({ pattern: 'wood', color: '#2e2b29', color2: '#252321', roughness: 0.55 }));
     set('int.stairs@mortar', M({ pattern: 'plaster', color: '#9d9b95', color2: '#95938d', roughness: 0.62, normalStrength: 0.16 }));
+    // 木の塊（昇り口の木の箱・ひな壇の台）の側面: 踏板と同じ素材。キーだけ分けて、木目を部材ごとに回さず横に通す（meshBuilder の GRAIN_KEY）
+    for (const k of ['', '@oak', '@walnut', '@white', '@black', '@mortar']) set(`int.stairsMass${k}`, this.map.get(`int.stairs${k}`)!.clone());
     set('int.slab', color('#b9b5ae', 0.95));
 
     // 家具
@@ -204,7 +208,9 @@ export class MaterialRegistry {
       set(`f.fabric@${k}`, M({ ...F.fabric, color: c1 }));
       set(`f.fabric2@${k}`, M({ ...F.fabric2, color: c2 }));
     }
-    set('f.metal', color(F.metal, 0.35, 0.8));
+    // 鉄（階段の桁・手すり・家具の脚）: 黒皮鉄などの暗い色は金属の光り方、グレーなどの明るい色は塗装の鉄（焼付塗装）。
+    // 明るい色を金属のままにすると、室内の弱い映り込みでは色が沈んで、グレーの手すりが黒く見えていた
+    set('f.metal', new THREE.Color(F.metal).getHSL({ h: 0, s: 0, l: 0 }, THREE.SRGBColorSpace).l > 0.4 ? color(F.metal, 0.5, 0.2) : color(F.metal, 0.35, 0.8));
     set('f.handle', color('#262626', 0.4, 0.6));
     // 黒の塗りつぶし塗装（木製スケルトン階段の側板など。金属の光り方をさせない）
     set('f.paintBlack', color('#242424', 0.62, 0.05));
@@ -224,6 +230,10 @@ export class MaterialRegistry {
     set('f.book3', color('#a99a83', 0.85));
     // ペンダントの笠（マットな生成りの白。少し光を帯びる）
     set('f.shade', color('#f1ece3', 0.85, 0, { emissive: new THREE.Color('#ffe0b8'), emissiveIntensity: night ? 1.2 : 0.12 }));
+    // 和紙の球のペンダントの骨（細い線）
+    set('f.shadeRib', color('#cbc3b2', 0.9, 0));
+    // 丸テーブルの脚: 白い内装では白い塗装の鉄、暗い内装では家具の鉄の色
+    set('f.tableLeg', color(new THREE.Color(i.wall.color).getHSL({ h: 0, s: 0, l: 0 }).l > 0.7 ? '#e6e4df' : F.metal, 0.45, 0.35));
     set('f.carcass', color('#3b3b3b', 0.7, 0.1));
     set('int.shadowGap', color('#3a3836', 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
@@ -319,6 +329,9 @@ export class MaterialRegistry {
     set('l.retain', M({ pattern: 'plaster', color: '#b6b3ab', color2: '#a7a49c', roughness: 0.9, normalStrength: 0.25 }));
     set('l.stone', M({ pattern: 'plaster', color: '#8d877c', color2: '#7a756b', roughness: 0.95, normalStrength: 0.45, tile: 0.6 }));
     set('l.fenceWood', M({ pattern: 'wood', color: '#7a6350', color2: '#64503f', roughness: 0.75 }));
+    // 庭のウッドデッキ（ハードウッドの板。少し灰色がかった茶）と、庭の芝
+    set('l.deck', M({ pattern: 'woodFloor', color: '#8a7460', color2: '#786452', roughness: 0.8 }));
+    set('l.lawn', M({ pattern: 'grass', color: '#647648', color2: '#73855a', tile: 2 }));
     set('l.trunk', color('#5a4636', 0.9));
     set('l.leaf', color('#4d7a33', 0.75));
     set('l.leafDark', color('#3a5f2a', 0.8));

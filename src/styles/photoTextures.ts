@@ -33,7 +33,9 @@ const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   // 0.6 では古い塗装のしみのようなムラが出て、打ち放しコンクリートの壁のように見えていた
   plaster: { id: 'painted_plaster_wall', tile: 2.4, detail: 0.36 },
   concrete: { id: 'concrete_floor_02', tile: 4, detail: 0.7 },
-  woodFloor: { id: 'wood_floor', tile: 2.0 },
+  // 床のフローリング: 写真は幅 220 の板が 9 枚（2.0m で貼ると幅広で、板目の濃い筋が強く出る）。
+  // 御社のご提案パース（大崎様邸の Twinmotion）の床は、幅 150 前後・色むらの少ない淡いオーク。1.4m で貼って幅 155 に、模様は 6 割に弱める
+  woodFloor: { id: 'wood_floor', tile: 1.4, detail: 0.6, roughDetail: 0.6 },
   woodSiding: { id: 'wood_planks', tile: 2.0 },
   tileFloor: { id: 'large_floor_tiles_02', tile: 2.4 },
   marble: { id: 'marble_01', tile: 2.4 },
@@ -44,7 +46,9 @@ const PHOTO: Partial<Record<Pattern, PhotoDef>> = {
   // 布もの（ソファ・クッション・ラグ・寝具）: ヘリンボーンのウール。平均色はテイストの色に合わせる
   fabric: { id: 'poly_wool_herringbone', tile: 0.5, detail: 0.9 },
   // 家具・造作・階段の踏板・戸の木: オークの突板（板目）。手続き的な木目は近くで見るとぼやけて、木に見えなかった
-  wood: { id: 'oak_veneer_01', tile: 1.2, detail: 0.9, grainAlongV: true, roughDetail: 0.4 },
+  // 模様は 7 割に（0.9 では、階段の木の箱・カウンターのような広い面で、板目の山形が強く出て合板のように見えていた。
+  // 御社のご提案パースの木は、目の細かい静かな柾目寄り）
+  wood: { id: 'oak_veneer_01', tile: 1.2, detail: 0.7, grainAlongV: true, roughDetail: 0.4 },
 };
 
 interface Loaded {

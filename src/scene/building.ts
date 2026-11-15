@@ -2152,16 +2152,22 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     const hinge = plane.clone().addScaledVector(dir, hingeStart ? -dw / 2 : dw / 2).setY(0);
     const dmb = new MeshBuilder();
     dmb.clip = localClip(hinge, Math.atan2(-closedDir.z, closedDir.x));
-    dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
     const zOut = outN.dot(nW); // 局所 +Z = nW
     if (serviceDoor) {
-      // 勝手口ドア: 上半分が型ガラス（採光・採風）、レバーハンドル
-      const gw = Math.max(0.2, dw - 0.24);
-      dmb.box('ext.glassFrosted', V(dw / 2, sill + H * 0.45, zOut * 0.024), V(1, 0, 0), gw, H * 0.42, 0.004);
-      dmb.box('ext.glassFrosted', V(dw / 2, sill + H * 0.45, -zOut * 0.024), V(1, 0, 0), gw, H * 0.42, 0.004);
+      // 勝手口ドア: サッシと同じ色の細い框に、足もとから上まで型ガラス（採光・採風のアルミの勝手口）。レバーハンドル。
+      // 以前は板の戸に小窓 1 つで、室内から見ると黒い板が壁に立っていた（御社のご提案: 大崎様邸のキッチンの勝手口は、明るいガラスの戸）
+      const lh = H - fw;
+      const st = Math.min(0.07, dw * 0.12);
+      const rb = 0.12;
+      dmb.box('ext.frame', V(st / 2, sill, 0), V(1, 0, 0), st, lh, 0.045);
+      dmb.box('ext.frame', V(dw - st / 2, sill, 0), V(1, 0, 0), st, lh, 0.045);
+      dmb.box('ext.frame', V(dw / 2, sill, 0), V(1, 0, 0), dw - st * 2, rb, 0.045);
+      dmb.box('ext.frame', V(dw / 2, sill + lh - st, 0), V(1, 0, 0), dw - st * 2, st, 0.045);
+      dmb.box('ext.glassFrosted', V(dw / 2, sill + rb, 0), V(1, 0, 0), dw - st * 2, lh - rb - st, 0.008);
       dmb.box('f.metal', V(dw - 0.1, sill + 1.0, zOut * 0.04), V(1, 0, 0), 0.12, 0.02, 0.02);
       dmb.box('f.metal', V(dw - 0.1, sill + 1.0, -zOut * 0.04), V(1, 0, 0), 0.12, 0.02, 0.02);
     } else {
+      dmb.box('ext.door', V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, 0.045);
       // 縦長の取っ手（戸先側・外側）と採光スリット（ヒンジ側）
       dmb.box('f.metal', V(dw - 0.12, sill + 0.75, zOut * 0.05), V(1, 0, 0), 0.02, 0.8, 0.02);
       dmb.box('ext.glassFrosted', V(0.12, sill + 0.3, zOut * 0.024), V(1, 0, 0), 0.08, H - 0.6, 0.004);
@@ -2248,8 +2254,10 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     }
   };
   // LDK とホール・廊下・玄関の間の扉は、黒の細框のガラス戸（ホームランディックの定番）
+  // 木の見切りのテイスト（白い塗り壁 × オーク）では、壁と同じ色のフラット扉のまま（黒い框を室内に見せない。
+  // 御社のご提案: 大崎様邸の LDK の引戸は、白い壁になじむ白い板の戸）
   const glassEntry = (() => {
-    if (w.exterior) return false;
+    if (w.exterior || woodTrim) return false;
     const side = (sg: number) => roomAt(f, (mid.x + nW.x * sg * (t / 2 + 0.3)) / MM, (mid.z + nW.z * sg * (t / 2 + 0.3)) / MM);
     const a = side(1)?.type;
     const b = side(-1)?.type;

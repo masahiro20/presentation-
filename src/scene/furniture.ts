@@ -671,10 +671,10 @@ function emitItemBody(it: FurnitureItem, env: ItemEnv) {
         const sg = (it.legSide ?? 'right') === 'right' ? 1 : -1;
         const legL = Math.max(0.9, it.leg ?? 1.8);
         const lu = sg * (cw / 2 - 0.225);
-        fr.box('int.shadowGap', lu, 0.49, 0.37, legL - 0.53, 0, 0.1);
+        fr.box('f.kick', lu, 0.49, 0.37, legL - 0.53, 0, 0.1);
         fr.box('f.cabinet', lu, 0.45, 0.45, legL - 0.45, 0.1, 0.8);
         fr.box('f.counter', lu, 0.45, 0.47, legL - 0.44, 0.9, 0.03);
-        fr.box('f.handle', lu - sg * (0.225 + 0.003), 0.5, 0.012, legL - 0.55, 0.85, 0.022);
+        fr.box('f.joint', lu - sg * (0.225 + 0.003), 0.5, 0.012, legL - 0.55, 0.85, 0.022);
       }
       break;
     }
@@ -922,7 +922,7 @@ function washstand(fr: Frame, w: number, style: 'unit' | 'custom') {
   fr.box('f.chrome', 0, 0.05, 0.03, 0.12, 0.83, 0.15);
   if (w >= 1.2) {
     // 幅広のユニットは扉の割りと脇の棚
-    fr.box('f.handle', 0, 0.5 - 0.003, 0.004, 0.012, 0.1, 0.6);
+    fr.box('f.joint', 0, 0.5 - 0.003, 0.004, 0.012, 0.1, 0.6);
   }
 }
 
@@ -962,11 +962,11 @@ function hangerPipe(fr: Frame, w: number) {
 
 /** カップボード 1 列（床置き H900 の箱＋天板。扉の目地だけ見せる） */
 function cupboardRun(fr: Frame, u: number, v: number, cw: number, front: 1 | -1) {
-  fr.box('int.shadowGap', u, v + 0.04, cw - 0.08, 0.37, 0, 0.1);
+  fr.box('f.kick', u, v + 0.04, cw - 0.08, 0.37, 0, 0.1);
   fr.box('f.cabinet', u, v, cw, 0.45, 0.1, 0.8);
   fr.box('f.counter', u, v, cw, 0.47, 0.9, 0.03);
   const n = Math.max(2, Math.round(cw / 0.6));
-  for (let k = 1; k < n; k++) fr.box('f.handle', u - cw / 2 + (cw / n) * k, front > 0 ? v + 0.45 - 0.003 : v - 0.009, 0.004, 0.012, 0.12, 0.76);
+  for (let k = 1; k < n; k++) fr.box('f.joint', u - cw / 2 + (cw / n) * k, front > 0 ? v + 0.45 - 0.003 : v - 0.009, 0.004, 0.012, 0.12, 0.76);
 }
 
 /** ソファの寸法（m）: 奥行・台の高さ・背の台の厚み・座クッションの厚み・カウチの幅 */
@@ -1548,8 +1548,8 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       // 床から浮かせた箱（H250〜600）、上部に浮き棚 2 段、テレビ。箱の下に間接照明
       fr.box('f.cabinet', 0, 0, w, d, 0.25, 0.35);
       underGlow(fr, 0, 0, w, d, 0.25);
-      fr.box('f.handle', 0, d - 0.003, w - 0.02, 0.006, 0.57, 0.01);
-      for (let k = 1; k < 3; k++) fr.box('f.handle', -w / 2 + (w / 3) * k, d - 0.003, 0.004, 0.006, 0.27, 0.3);
+      fr.box('f.joint', 0, d - 0.003, w - 0.02, 0.006, 0.57, 0.01);
+      for (let k = 1; k < 3; k++) fr.box('f.joint', -w / 2 + (w / 3) * k, d - 0.003, 0.004, 0.006, 0.27, 0.3);
       fr.box('f.screen', 0, 0.12, Math.min(1.45, w * 0.6), 0.04, 0.85, 0.82);
       for (const y of [1.85, 2.15]) if (y < top - 0.1) {
         fr.box('f.wood', -w / 2 + 0.35, 0, 0.6, 0.22, y, 0.03);
@@ -1565,7 +1565,7 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       break;
     case 'bench':
       fr.box('f.cabinet', 0, 0, w, d, 0.06, 0.34);
-      fr.box('int.shadowGap', 0, 0.04, w - 0.08, d - 0.08, 0, 0.06);
+      fr.box('f.kick', 0, 0.04, w - 0.08, d - 0.08, 0, 0.06);
       fr.box('f.fabric', 0, 0.02, w - 0.04, d - 0.04, 0.4, 0.05);
       for (const du of [-w / 3, w / 3]) fr.box('f.fabric2', du, 0.02, 0.45, 0.14, 0.45, 0.38);
       break;
@@ -1594,8 +1594,8 @@ function builtinFurniture(fr: Frame, it: FurnitureItem, ceilingY: number) {
       const n = Math.max(2, Math.round(w / 0.6));
       fr.box('int.shadowGap', 0, 0.04, w - 0.04, d - 0.06, 0, 0.06);
       fr.box('int.door', 0, 0, w, d, 0.06, top - 0.06);
-      for (let k = 1; k < n; k++) fr.box('f.handle', -w / 2 + (w / n) * k, d - 0.002, 0.004, 0.004, 0.08, top - 0.12);
-      fr.box('f.handle', 0, d - 0.002, w - 0.01, 0.004, 0.95, 0.004);
+      for (let k = 1; k < n; k++) fr.box('int.doorJoint', -w / 2 + (w / n) * k, d - 0.002, 0.004, 0.004, 0.08, top - 0.12);
+      fr.box('int.doorJoint', 0, d - 0.002, w - 0.01, 0.004, 0.95, 0.004);
       break;
     }
     case 'lowShelf':
@@ -1624,14 +1624,14 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
   const TOP = 0.02;
   const KICK = 0.1;
   const D = 0.65;
-  /** 手掛けの影の線・扉の目地（扉面から 3mm 出した細い黒い帯） */
-  const lineH = (u: number, v: number, w: number, y: number, h: number, dir: 1 | -1) => fr.box('f.handle', u, dir > 0 ? v - 0.003 : v - 0.009, w, 0.012, y, h);
+  /** 手掛けの影の線・扉の目地（扉面から 3mm 出した細い帯。色は面材の影 = 'f.joint'。黒い線にしない） */
+  const lineH = (u: number, v: number, w: number, y: number, h: number, dir: 1 | -1) => fr.box('f.joint', u, dir > 0 ? v - 0.003 : v - 0.009, w, 0.012, y, h);
   /**
    * キャビネット本体: 台輪（奥に引く）・箱・天板・手掛けの線・扉の目地。
    * front = 扉の面がある側（+1: 室内側 v+d, -1: 壁側 v）。sections = 扉の割り（幅と引出し段数）。topD = 天板の奥行（持ち出し分を含む）
    */
   const cabinet = (u: number, v: number, w: number, d: number, sections: { w: number; rows: number }[], front: 1 | -1, topD = d, topShift = 0) => {
-    fr.box('int.shadowGap', u, v + 0.04, w - 0.08, d - 0.08, 0, KICK);
+    fr.box('f.kick', u, v + 0.04, w - 0.08, d - 0.08, 0, KICK);
     fr.box('f.cabinet', u, v, w, d, KICK, H - KICK - TOP);
     fr.box('f.counter', u, v + topShift, w, topD, H - TOP, TOP);
     const face = front > 0 ? v + d : v;
@@ -1640,7 +1640,7 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     // 扉の割り: 縦目地と引出しの段
     let x = u - w / 2 + 0.02;
     sections.forEach((sec, i) => {
-      if (i > 0) fr.box('f.handle', x, front > 0 ? face - 0.003 : face - 0.009, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.05);
+      if (i > 0) fr.box('f.joint', x, front > 0 ? face - 0.003 : face - 0.009, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.05);
       const body = H - KICK - TOP - 0.03;
       for (let r = 1; r < sec.rows; r++) {
         // 1 段目は浅い引出し（天板下 170）、残りを等分
@@ -1760,12 +1760,12 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
         // 吊戸（扉同材、取っ手なし）
         fr.box('f.cabinet', x + cupW / 2, 0.02, cupW, 0.35, 1.45, 0.6);
         lineH(x + cupW / 2, 0.37, cupW - 0.02, 1.47, 0.02, 1);
-        for (let k = 1; k < n; k++) fr.box('f.handle', x + (cupW / n) * k, 0.37 - 0.003, 0.004, 0.012, 1.5, 0.5);
+        for (let k = 1; k < n; k++) fr.box('f.joint', x + (cupW / n) * k, 0.37 - 0.003, 0.004, 0.012, 1.5, 0.5);
         x += cupW;
       } else if (part === 'tall' && tallW) {
-        fr.box('int.shadowGap', x + tallW / 2, 0.06, tallW - 0.08, 0.57, 0, KICK);
+        fr.box('f.kick', x + tallW / 2, 0.06, tallW - 0.08, 0.57, 0, KICK);
         fr.box('f.cabinet', x + tallW / 2, 0.02, tallW, 0.65, KICK, 2.05 - KICK);
-        fr.box('f.handle', x + tallW / 2, 0.67 - 0.003, 0.004, 0.012, 0.15, 1.85);
+        fr.box('f.joint', x + tallW / 2, 0.67 - 0.003, 0.004, 0.012, 0.15, 1.85);
         lineH(x + tallW / 2, 0.67, tallW - 0.02, 1.0, 0.012, 1);
         x += tallW;
       }
@@ -1808,10 +1808,10 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     fr.box('f.cabinet', mainU, 0.02, mainW, 0.35, 1.45, 0.6);
     lineH(mainU, 0.37, mainW - 0.02, 1.47, 0.02, 1);
     // 袖（角から部屋側へ）: 扉は内側（シンク側）
-    fr.box('int.shadowGap', legU, 0.06, D - 0.08, legL - 0.08, 0, KICK);
+    fr.box('f.kick', legU, 0.06, D - 0.08, legL - 0.08, 0, KICK);
     fr.box('f.cabinet', legU, 0.02, D, legL, KICK, H - KICK - TOP);
     fr.box('f.counter', legU, 0.02, D, legL, H - TOP, TOP);
-    fr.box('f.handle', legU - stoveSign * (D / 2 + 0.003), 0.04, 0.012, legL - 0.06, H - TOP - 0.05, 0.022);
+    fr.box('f.joint', legU - stoveSign * (D / 2 + 0.003), 0.04, 0.012, legL - 0.06, H - TOP - 0.05, 0.022);
     const ihV = 0.02 + Math.min(legL - 0.45, 1.05);
     fr.box('f.screen', legU, ihV - 0.375, 0.52, 0.75, H - 0.002, 0.006);
     for (const dv of [-0.2, 0.2]) fr.cyl('f.handle', legU + 0.08 * stoveSign, ihV + dv, 0.09, H + 0.004, 0.001, 20);
@@ -1866,9 +1866,9 @@ function kitchen(fr: Frame, len: number, ceilingY: number, opt: Pick<FurnitureIt
     // 以前はダイニング側に腰壁（H1,050）を立てて天板をかぶせていたが、御社のご提案のキッチンは、手元を隠さない平らな対面
     const PB = 0.085;
     cabinet(0, cv - D / 2, W, D, secs, -1, D + PB + 0.02, -0.01);
-    fr.box('int.shadowGap', 0, cv + D / 2 + 0.005, W - 0.06, PB - 0.03, 0, KICK);
+    fr.box('f.kick', 0, cv + D / 2 + 0.005, W - 0.06, PB - 0.03, 0, KICK);
     fr.box('f.cabinet', 0, cv + D / 2, W, PB, KICK, H - KICK - TOP);
-    for (let k = 1; k < 3; k++) fr.box('f.handle', -W / 2 + (W / 3) * k, cv + D / 2 + PB - 0.003, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.02);
+    for (let k = 1; k < 3; k++) fr.box('f.joint', -W / 2 + (W / 3) * k, cv + D / 2 + PB - 0.003, 0.004, 0.012, KICK + 0.01, H - KICK - TOP - 0.02);
     // 壁側の端のパネル
     const endU = stoveSign * (W / 2 + 0.01);
     fr.box('f.cabinet', endU, cv - D / 2, 0.02, D + PB, 0, H - TOP);

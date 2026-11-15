@@ -304,7 +304,7 @@ export class App {
       'button',
       {
         class: 'nav-btn',
-        title: '高精細表示（止まったときの絵を 1.5 倍の解像度・細かい影で描く。切ると等倍で軽快）\n止まったときの陰影・輪郭の仕上げはどちらでも入り、保存するパース・動画は常に高品質です',
+        title: '仕上げ表示（止まったときの絵を、画面より細かく描いて縮める・細かい影。輪郭がなめらかになります。切ると等倍で軽快）\n止まったときの陰影・輪郭の仕上げはどちらでも入り、保存するパース・動画は常に高品質です',
         onclick: () => {
           v.setViewMode(v.viewMode === 'finish' ? 'browse' : 'finish');
           finish.classList.toggle('on', v.viewMode === 'finish');
@@ -318,10 +318,13 @@ export class App {
       h('span', { class: 'ic' }, '✦'),
       '仕上げ',
     );
+    // 既定は仕上げ表示（GPU で描けるパソコン）。最初に立ち上がった絵が、なめらかな輪郭・細かい影で出る。
+    // 重いと感じて切った人は、その選択を覚えておく。スマホ・GPU の無い環境は今までどおり軽い表示が既定
     try {
-      if (localStorage.getItem('madori.viewMode') === 'finish') v.setViewMode('finish');
+      const stored = localStorage.getItem('madori.viewMode');
+      if (stored === 'finish' || (stored == null && v.finishByDefault)) v.setViewMode('finish');
     } catch {
-      /* 保存できない環境は無視 */
+      if (v.finishByDefault) v.setViewMode('finish');
     }
     finish.classList.toggle('on', v.viewMode === 'finish');
     const setMode = (m: Mode) => {

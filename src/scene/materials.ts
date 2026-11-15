@@ -52,6 +52,21 @@ function scallopTexture(): THREE.DataTexture {
 /** 照明の色を見るときの、写真の白の基準（K） */
 const LAMP_WB = 3600;
 
+/** 影の中の線の濃さ（面の色の、線形の明るさに掛ける）: 扉の目地・手掛けの溝／台輪／天井の溝 */
+const JOINT_SHADE = 0.32;
+const KICK_SHADE = 0.22;
+const GAP_SHADE = 0.3;
+
+/** 面の色の影の色（線形の明るさを k 倍）。floor を渡すと、それより暗くはしない */
+function shadeOf(hex: string, k: number, floor?: string): string {
+  const c = new THREE.Color(hex).multiplyScalar(k);
+  if (floor) {
+    const m = new THREE.Color(floor);
+    c.setRGB(Math.max(c.r, m.r), Math.max(c.g, m.g), Math.max(c.b, m.b));
+  }
+  return '#' + c.getHexString();
+}
+
 /**
  * 照明の色（色温度 K）を、写真の色に直す。電球色（2,700K）をそのまま画面に出すと橙色（255, 167, 87）で、
  * 夜の室内が一面の橙になる。建築写真はカメラの白の基準を照明に寄せて撮る（LAMP_WB）ので、暖かい白に見える
@@ -181,6 +196,8 @@ export class MaterialRegistry {
     // 既定: 室内の壁と同じ色のフラット扉（KAMIYA フルハイトドアをクロスになじませる納まり）
     set('int.door', M(vgrain(this.opts.doorColor ? (this.opts.doorColor === 'wood' ? { pattern: 'wood', color: '#b89572', color2: '#a2805d', roughness: 0.55 } : this.opts.doorColor === 'preset' ? i.door : { pattern: 'paint', color: this.opts.doorColor, roughness: 0.55 }) : { pattern: 'paint', color: i.wall.color, roughness: 0.6 })));
     set('int.trim', color(i.trim, 0.5));
+    // 壁と同じ色の収納の扉の目地: 扉の色の影（面より一段暗い線）
+    set('int.doorJoint', new THREE.MeshStandardMaterial({ color: ((this.map.get('int.door') as THREE.MeshStandardMaterial).color ?? new THREE.Color('#ffffff')).clone().multiplyScalar(JOINT_SHADE), roughness: 0.8 }));
     // 木の見切り（窓の額縁・室内窓の枠・腰壁の笠木）: 家具・造作と同じ木
     set('int.woodTrim', M(i.furniture.wood));
     set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
@@ -231,11 +248,15 @@ export class MaterialRegistry {
     // ペンダントの笠（マットな生成りの白。少し光を帯びる）
     set('f.shade', color('#f1ece3', 0.85, 0, { emissive: new THREE.Color('#ffe0b8'), emissiveIntensity: night ? 1.2 : 0.12 }));
     // 和紙の球のペンダントの骨（細い線）
-    set('f.shadeRib', color('#cbc3b2', 0.9, 0));
+    // 和紙の球のペンダントの骨: 笠と同じ生成りで、わずかに濃い線（内側の灯りを受けて少し光る）。
+    // 暗い色のままだと、明るい笠の上に黒い線が走って、提灯の骨組みだけが目立っていた
+    set('f.shadeRib', color('#ddd5c4', 0.9, 0, { emissive: new THREE.Color('#ffe0b8'), emissiveIntensity: night ? 0.5 : 0.06 }));
     // 丸テーブルの脚: 白い内装では白い塗装の鉄、暗い内装では家具の鉄の色
     set('f.tableLeg', color(new THREE.Color(i.wall.color).getHSL({ h: 0, s: 0, l: 0 }).l > 0.7 ? '#e6e4df' : F.metal, 0.45, 0.35));
     set('f.carcass', color('#3b3b3b', 0.7, 0.1));
-    set('int.shadowGap', color('#3a3836', 0.95));
+    // 天井の溝（間接照明・カーテンボックス）・壁と同じ色の収納の台輪: 天井の色の影。白い天井では黒い線にしない
+    // （上限は今までの濃いグレー。暗い内装では今までどおり）
+    set('int.shadowGap', color(shadeOf(i.ceiling.color, GAP_SHADE, '#3a3836'), 0.95));
     set('f.downlightRing', color('#f4f3f0', 0.4, 0.2));
     set('f.downlight', color('#fffaf0', 0.2, 0, { emissive: new THREE.Color('#fff1dc'), emissiveIntensity: night ? 14 : 1.2 }));
     // 間接照明の光る帯（昼も、灯っていることが分かる明るさに）
@@ -264,6 +285,10 @@ export class MaterialRegistry {
     set('f.chrome', color('#d9dadc', 0.15, 1));
     set('f.counter', M(F.counter));
     set('f.cabinet', M(F.cabinet));
+    // 扉と扉の間の目地・手掛けの溝・台輪: 面材の色の影（面材より一段暗い）。黒で描くと、白い面材の上で線だけが浮いて見える
+    // （御社のご提案: 大崎様邸のキッチンは、白い面材に細い影の目地だけ。黒い面材なら今までどおり黒い線）
+    set('f.joint', color(shadeOf(F.cabinet.color, JOINT_SHADE), 0.8));
+    set('f.kick', color(shadeOf(F.cabinet.color, KICK_SHADE), 0.9));
     set('f.rug', M(F.rug));
     set('f.white', color('#f6f6f4', 0.15, 0, { envMapIntensity: 1 }));
     set('f.fridge', color('#e8e8e6', 0.25, 0.3));
@@ -336,10 +361,14 @@ export class MaterialRegistry {
     set('l.leaf', color('#4d7a33', 0.75));
     set('l.leafDark', color('#3a5f2a', 0.8));
     set('l.leafLight', color('#6a9444', 0.75));
-    const leafMat = (c1: string, c2: string, seed: number) =>
-      new THREE.MeshStandardMaterial({ map: leafCardTexture(c1, c2, seed), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.7 });
+    // 葉は光を透かす: 影の側の葉も、葉の色でうっすら明るい（逆光の葉が黒い塊にならない）。
+    // 葉の絵そのものを弱く光らせて近似する（昼 0.22・夕 0.1・夜はほぼ 0）
+    const leafGlow = night ? 0.01 : this.opts.evening ? 0.1 : 0.22;
+    const leafOf = (map: THREE.Texture, roughness: number) =>
+      new THREE.MeshStandardMaterial({ map, alphaTest: 0.5, side: THREE.DoubleSide, roughness, emissive: new THREE.Color('#ffffff'), emissiveMap: map, emissiveIntensity: leafGlow });
+    const leafMat = (c1: string, c2: string, seed: number) => leafOf(leafCardTexture(c1, c2, seed), 0.7);
     set('l.leafCard', leafMat('#5f8a3c', '#9dbb5c', 3));
-    set('l.leafSpray', new THREE.MeshStandardMaterial({ map: leafSprayTexture('#5e8c3a', '#a9c766', 5), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.65 }));
+    set('l.leafSpray', leafOf(leafSprayTexture('#5e8c3a', '#a9c766', 5), 0.65));
     set('l.leafCardDark', leafMat('#3f6630', '#6f9448', 7));
     // 街並みの庭木（少し明るく黄味のある葉。主役の植栽より淡く）
     set('l.leafCardSoft', leafMat('#6f9450', '#a6c078', 11));

@@ -28271,15 +28271,20 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		const hinge = plane.clone().addScaledVector(dir, hingeStart ? -dw / 2 : dw / 2).setY(0);
 		const dmb = new MeshBuilder();
 		dmb.clip = localClip(hinge, Math.atan2(-closedDir.z, closedDir.x));
-		dmb.box("ext.door", V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, .045);
 		const zOut = outN.dot(nW);
 		if (serviceDoor) {
-			const gw = Math.max(.2, dw - .24);
-			dmb.box("ext.glassFrosted", V(dw / 2, sill + H * .45, zOut * .024), V(1, 0, 0), gw, H * .42, .004);
-			dmb.box("ext.glassFrosted", V(dw / 2, sill + H * .45, -zOut * .024), V(1, 0, 0), gw, H * .42, .004);
+			const lh = H - fw;
+			const st = Math.min(.07, dw * .12);
+			const rb = .12;
+			dmb.box("ext.frame", V(st / 2, sill, 0), V(1, 0, 0), st, lh, .045);
+			dmb.box("ext.frame", V(dw - st / 2, sill, 0), V(1, 0, 0), st, lh, .045);
+			dmb.box("ext.frame", V(dw / 2, sill, 0), V(1, 0, 0), dw - st * 2, rb, .045);
+			dmb.box("ext.frame", V(dw / 2, sill + lh - st, 0), V(1, 0, 0), dw - st * 2, st, .045);
+			dmb.box("ext.glassFrosted", V(dw / 2, sill + rb, 0), V(1, 0, 0), dw - st * 2, lh - rb - st, .008);
 			dmb.box("f.metal", V(dw - .1, sill + 1, zOut * .04), V(1, 0, 0), .12, .02, .02);
 			dmb.box("f.metal", V(dw - .1, sill + 1, -zOut * .04), V(1, 0, 0), .12, .02, .02);
 		} else {
+			dmb.box("ext.door", V(dw / 2, sill, 0), V(1, 0, 0), dw, H - fw, .045);
 			dmb.box("f.metal", V(dw - .12, sill + .75, zOut * .05), V(1, 0, 0), .02, .8, .02);
 			dmb.box("ext.glassFrosted", V(.12, sill + .3, zOut * .024), V(1, 0, 0), .08, H - .6, .004);
 		}
@@ -28359,7 +28364,7 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		}
 	};
 	const glassEntry = (() => {
-		if (w.exterior) return false;
+		if (w.exterior || woodTrim) return false;
 		const side = (sg) => roomAt(f, (mid.x + nW.x * sg * (t / 2 + .3)) / MM, (mid.z + nW.z * sg * (t / 2 + .3)) / MM);
 		const a = side(1)?.type;
 		const b = side(-1)?.type;
@@ -30008,10 +30013,10 @@ function emitItemBody(it, env) {
 				const sg = (it.legSide ?? "right") === "right" ? 1 : -1;
 				const legL = Math.max(.9, it.leg ?? 1.8);
 				const lu = sg * (cw / 2 - .225);
-				fr.box("int.shadowGap", lu, .49, .37, legL - .53, 0, .1);
+				fr.box("f.kick", lu, .49, .37, legL - .53, 0, .1);
 				fr.box("f.cabinet", lu, .45, .45, legL - .45, .1, .8);
 				fr.box("f.counter", lu, .45, .47, legL - .44, .9, .03);
-				fr.box("f.handle", lu - sg * .228, .5, .012, legL - .55, .85, .022);
+				fr.box("f.joint", lu - sg * .228, .5, .012, legL - .55, .85, .022);
 			}
 			break;
 		}
@@ -30270,7 +30275,7 @@ function washstand(fr, w, style) {
 	fr.box("f.white", 0, .1, Math.min(.45, w - .2), .32, .8, .06);
 	fr.box("f.mirror", 0, .005, w - .05, .01, 1.05, .85);
 	fr.box("f.chrome", 0, .05, .03, .12, .83, .15);
-	if (w >= 1.2) fr.box("f.handle", 0, .497, .004, .012, .1, .6);
+	if (w >= 1.2) fr.box("f.joint", 0, .497, .004, .012, .1, .6);
 }
 /**
 * ハンガーパイプ（WIC・ファミリークローゼット）: 壁から 300 の位置に φ32 のパイプを H1,800 で通し、
@@ -30302,11 +30307,11 @@ function hangerPipe(fr, w) {
 }
 /** カップボード 1 列（床置き H900 の箱＋天板。扉の目地だけ見せる） */
 function cupboardRun(fr, u, v, cw, front) {
-	fr.box("int.shadowGap", u, v + .04, cw - .08, .37, 0, .1);
+	fr.box("f.kick", u, v + .04, cw - .08, .37, 0, .1);
 	fr.box("f.cabinet", u, v, cw, .45, .1, .8);
 	fr.box("f.counter", u, v, cw, .47, .9, .03);
 	const n = Math.max(2, Math.round(cw / .6));
-	for (let k = 1; k < n; k++) fr.box("f.handle", u - cw / 2 + cw / n * k, front > 0 ? v + .45 - .003 : v - .009, .004, .012, .12, .76);
+	for (let k = 1; k < n; k++) fr.box("f.joint", u - cw / 2 + cw / n * k, front > 0 ? v + .45 - .003 : v - .009, .004, .012, .12, .76);
 }
 /** ソファの寸法（m）: 奥行・台の高さ・背の台の厚み・座クッションの厚み・カウチの幅 */
 var SOFA = {
@@ -31029,8 +31034,8 @@ function builtinFurniture(fr, it, ceilingY) {
 		case "floatTv":
 			fr.box("f.cabinet", 0, 0, w, d, .25, .35);
 			underGlow(fr, 0, 0, w, d, .25);
-			fr.box("f.handle", 0, d - .003, w - .02, .006, .57, .01);
-			for (let k = 1; k < 3; k++) fr.box("f.handle", -w / 2 + w / 3 * k, d - .003, .004, .006, .27, .3);
+			fr.box("f.joint", 0, d - .003, w - .02, .006, .57, .01);
+			for (let k = 1; k < 3; k++) fr.box("f.joint", -w / 2 + w / 3 * k, d - .003, .004, .006, .27, .3);
 			fr.box("f.screen", 0, .12, Math.min(1.45, w * .6), .04, .85, .82);
 			for (const y of [1.85, 2.15]) if (y < top - .1) {
 				fr.box("f.wood", -w / 2 + .35, 0, .6, .22, y, .03);
@@ -31049,7 +31054,7 @@ function builtinFurniture(fr, it, ceilingY) {
 			break;
 		case "bench":
 			fr.box("f.cabinet", 0, 0, w, d, .06, .34);
-			fr.box("int.shadowGap", 0, .04, w - .08, d - .08, 0, .06);
+			fr.box("f.kick", 0, .04, w - .08, d - .08, 0, .06);
 			fr.box("f.fabric", 0, .02, w - .04, d - .04, .4, .05);
 			for (const du of [-w / 3, w / 3]) fr.box("f.fabric2", du, .02, .45, .14, .45, .38);
 			break;
@@ -31076,8 +31081,8 @@ function builtinFurniture(fr, it, ceilingY) {
 			const n = Math.max(2, Math.round(w / .6));
 			fr.box("int.shadowGap", 0, .04, w - .04, d - .06, 0, .06);
 			fr.box("int.door", 0, 0, w, d, .06, top - .06);
-			for (let k = 1; k < n; k++) fr.box("f.handle", -w / 2 + w / n * k, d - .002, .004, .004, .08, top - .12);
-			fr.box("f.handle", 0, d - .002, w - .01, .004, .95, .004);
+			for (let k = 1; k < n; k++) fr.box("int.doorJoint", -w / 2 + w / n * k, d - .002, .004, .004, .08, top - .12);
+			fr.box("int.doorJoint", 0, d - .002, w - .01, .004, .95, .004);
 			break;
 		}
 		case "lowShelf":
@@ -31110,21 +31115,21 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 	const TOP = .02;
 	const KICK = .1;
 	const D = .65;
-	/** 手掛けの影の線・扉の目地（扉面から 3mm 出した細い黒い帯） */
-	const lineH = (u, v, w, y, h, dir) => fr.box("f.handle", u, dir > 0 ? v - .003 : v - .009, w, .012, y, h);
+	/** 手掛けの影の線・扉の目地（扉面から 3mm 出した細い帯。色は面材の影 = 'f.joint'。黒い線にしない） */
+	const lineH = (u, v, w, y, h, dir) => fr.box("f.joint", u, dir > 0 ? v - .003 : v - .009, w, .012, y, h);
 	/**
 	* キャビネット本体: 台輪（奥に引く）・箱・天板・手掛けの線・扉の目地。
 	* front = 扉の面がある側（+1: 室内側 v+d, -1: 壁側 v）。sections = 扉の割り（幅と引出し段数）。topD = 天板の奥行（持ち出し分を含む）
 	*/
 	const cabinet = (u, v, w, d, sections, front, topD = d, topShift = 0) => {
-		fr.box("int.shadowGap", u, v + .04, w - .08, d - .08, 0, KICK);
+		fr.box("f.kick", u, v + .04, w - .08, d - .08, 0, KICK);
 		fr.box("f.cabinet", u, v, w, d, KICK, .73);
 		fr.box("f.counter", u, v + topShift, w, topD, .83, TOP);
 		const face = front > 0 ? v + d : v;
 		lineH(u, face, w - .02, .83 - .03, .022, front);
 		let x = u - w / 2 + .02;
 		sections.forEach((sec, i) => {
-			if (i > 0) fr.box("f.handle", x, front > 0 ? face - .003 : face - .009, .004, .012, .11, .73 - .05);
+			if (i > 0) fr.box("f.joint", x, front > 0 ? face - .003 : face - .009, .004, .012, .11, .73 - .05);
 			for (let r = 1; r < sec.rows; r++) {
 				const y = r === 1 ? .83 - .03 - .17 : KICK + .5299999999999999 * (sec.rows - r) / (sec.rows - 1);
 				lineH(x + sec.w / 2, face, sec.w - .01, y, .006, front);
@@ -31267,12 +31272,12 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 			cabinet(x + cupW / 2, .02, cupW, .45, secs, 1);
 			fr.box("f.cabinet", x + cupW / 2, .02, cupW, .35, 1.45, .6);
 			lineH(x + cupW / 2, .37, cupW - .02, 1.47, .02, 1);
-			for (let k = 1; k < n; k++) fr.box("f.handle", x + cupW / n * k, .367, .004, .012, 1.5, .5);
+			for (let k = 1; k < n; k++) fr.box("f.joint", x + cupW / n * k, .367, .004, .012, 1.5, .5);
 			x += cupW;
 		} else if (part === "tall" && tallW) {
-			fr.box("int.shadowGap", x + tallW / 2, .06, tallW - .08, .57, 0, KICK);
+			fr.box("f.kick", x + tallW / 2, .06, tallW - .08, .57, 0, KICK);
 			fr.box("f.cabinet", x + tallW / 2, .02, tallW, .65, KICK, 1.9499999999999997);
-			fr.box("f.handle", x + tallW / 2, .667, .004, .012, .15, 1.85);
+			fr.box("f.joint", x + tallW / 2, .667, .004, .012, .15, 1.85);
 			lineH(x + tallW / 2, .67, tallW - .02, 1, .012, 1);
 			x += tallW;
 		}
@@ -31311,10 +31316,10 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 		sink(mainU - stoveSign * (mainW / 2 - .55), .02, D, .1);
 		fr.box("f.cabinet", mainU, .02, mainW, .35, 1.45, .6);
 		lineH(mainU, .37, mainW - .02, 1.47, .02, 1);
-		fr.box("int.shadowGap", legU, .06, .5700000000000001, legL - .08, 0, KICK);
+		fr.box("f.kick", legU, .06, .5700000000000001, legL - .08, 0, KICK);
 		fr.box("f.cabinet", legU, .02, D, legL, KICK, .73);
 		fr.box("f.counter", legU, .02, D, legL, .83, TOP);
-		fr.box("f.handle", legU - stoveSign * .328, .04, .012, legL - .06, .83 - .05, .022);
+		fr.box("f.joint", legU - stoveSign * .328, .04, .012, legL - .06, .83 - .05, .022);
 		const ihV = .02 + Math.min(legL - .45, 1.05);
 		fr.box("f.screen", legU, ihV - .375, .52, .75, .848, .006);
 		for (const dv of [-.2, .2]) fr.cyl("f.handle", legU + .08 * stoveSign, ihV + dv, .09, .854, .001, 20);
@@ -31381,9 +31386,9 @@ function kitchen(fr, len, ceilingY, opt = {}) {
 	} else {
 		const PB = .085;
 		cabinet(0, cv - D / 2, W, D, secs, -1, .755, -.01);
-		fr.box("int.shadowGap", 0, cv + D / 2 + .005, W - .06, .05500000000000001, 0, KICK);
+		fr.box("f.kick", 0, cv + D / 2 + .005, W - .06, .05500000000000001, 0, KICK);
 		fr.box("f.cabinet", 0, cv + D / 2, W, PB, KICK, .73);
-		for (let k = 1; k < 3; k++) fr.box("f.handle", -W / 2 + W / 3 * k, cv + D / 2 + PB - .003, .004, .012, .11, .71);
+		for (let k = 1; k < 3; k++) fr.box("f.joint", -W / 2 + W / 3 * k, cv + D / 2 + PB - .003, .004, .012, .11, .71);
 		const endU = stoveSign * (W / 2 + .01);
 		fr.box("f.cabinet", endU, cv - D / 2, .02, .735, 0, .83);
 	}
@@ -33153,6 +33158,7 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 		cars: [],
 		items: []
 	};
+	const fences = [];
 	const b = meta.bbox;
 	const ent = meta.entrance;
 	const pr = primaryRoad(siteData, ent?.outward, b);
@@ -33440,6 +33446,11 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 		const L = dir.length();
 		if (L < .3) return;
 		dir.normalize();
+		fences.push({
+			a: a.clone(),
+			b: c.clone(),
+			top: baseY + 1.74
+		});
 		const mid = a.clone().add(c).multiplyScalar(.5);
 		mb.box("l.block", mid.clone().setY(baseY), dir, L, .5, .15);
 		const pitch = .09;
@@ -33841,7 +33852,9 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 			max,
 			roadDir: road,
 			roadCenter,
-			parking
+			parking,
+			fences,
+			trees: plan.trees
 		},
 		plan
 	};

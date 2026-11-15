@@ -78,6 +78,50 @@ w.__renderShot = async (id, W, H, grade) => {
   return viewer.capture(W, H, 'image/png');
 };
 (w as unknown as { __auditScene: () => EnvelopeAudit }).__auditScene = () => auditEnvelope(viewer);
+/**
+ * 点検用: お客様に出す外観のカット（道路側・別アングル・庭側）が、塀の向こうから撮られていないか。
+ * カメラから、建物のカメラに向いた面に沿った点（高さ 0.6m・1.3m）へ光線を飛ばし、建物より手前で塀（木の縦格子）に当たる割合を返す
+ * （植栽・生垣・車は数えない: 外観の添景で、葉の板は透けている所も当たりになる。視線をふさぐ隣家は、描くときに消しているので数えない）。
+ * カメラの置き方（shots.ts の viewBlocked）とは別に、出来上がった 3D そのものに当てて数える
+ */
+(w as unknown as { __auditShots: () => { id: string; eye: number; fov: number; blocked: number }[] }).__auditShots = () => {
+  const b = (viewer as unknown as { state: { meta: { bbox: THREE.Box3 } } }).state.meta.bbox;
+  const own = (o: THREE.Object3D | null): boolean => {
+    for (let q = o; q; q = q.parent) if (/^(building|roof|door|furniture|stairs)/.test(q.name)) return true;
+    return false;
+  };
+  const rc = new THREE.Raycaster();
+  const faces: [THREE.Vector3, THREE.Vector3, number, number][] = [
+    [new THREE.Vector3(b.min.x, 0, b.min.z), new THREE.Vector3(b.max.x, 0, b.min.z), 0, -1],
+    [new THREE.Vector3(b.max.x, 0, b.min.z), new THREE.Vector3(b.max.x, 0, b.max.z), 1, 0],
+    [new THREE.Vector3(b.max.x, 0, b.max.z), new THREE.Vector3(b.min.x, 0, b.max.z), 0, 1],
+    [new THREE.Vector3(b.min.x, 0, b.max.z), new THREE.Vector3(b.min.x, 0, b.min.z), -1, 0],
+  ];
+  return viewer
+    .shots(16 / 9)
+    .filter((s) => ['ext-front', 'ext-front2', 'ext-garden'].includes(s.id))
+    .map((s) => {
+      const pos = s.view.pos;
+      let n = 0;
+      let hit = 0;
+      for (const [a, c, nx, nz] of faces) {
+        if ((pos.x - a.x) * nx + (pos.z - a.z) * nz <= 0.05) continue;
+        for (let i = 0; i < 5; i++)
+          for (const y of [0.6, 1.3]) {
+            const q = a.clone().lerp(c, (i + 0.5) / 5).setY(y);
+            const d = q.clone().sub(pos);
+            rc.set(pos, d.clone().normalize());
+            rc.far = Math.max(0.1, d.length() - 0.3);
+            const first = rc
+              .intersectObjects(viewer.scene.children, true)
+              .find((h) => h.object.visible && (h.object as THREE.Mesh).isMesh && (own(h.object) || /^l\.fence/.test(h.object.name)));
+            n++;
+            if (first && !own(first.object)) hit++;
+          }
+      }
+      return { id: s.id, eye: +pos.y.toFixed(2), fov: Math.round(s.view.fov), blocked: n ? +(hit / n).toFixed(2) : 0 };
+    });
+};
 /** 点検用: AR のデータ（体験リンクで使う）を書き出し、大きさと置き方（中心が原点・地盤面が 0）を返す */
 (w as unknown as { __checkAr: (fmt: 'glb' | 'usdz', scale: number, o?: { furniture?: boolean; tex?: number }) => Promise<{ bytes: number; box?: number[]; tris?: number; tex?: number }> }).__checkAr = async (fmt, scale, o) => {
   const data = await exportAr(viewer, fmt, scale, o);
@@ -105,11 +149,12 @@ w.__renderShot = async (id, W, H, grade) => {
 };
 (w as unknown as { __hdri: typeof loadHdri }).__hdri = loadHdri;
 (w as unknown as { __studioNow: (W: number, H: number) => Promise<string> }).__studioNow = (W, H) => renderStudio(viewer, { width: W, height: H, interior: false, exposure: 1 });
-(w as unknown as { __studioView: (pos: number[], target: number[], fov: number, W: number, H: number) => Promise<string> }).__studioView = async (pos, target, fov, W, H) => {
+/** 点検用: 好きな立ち位置を、カット集と同じ高品質描画で（interior = 室内の光の配分と露出で） */
+(w as unknown as { __studioView: (pos: number[], target: number[], fov: number, W: number, H: number, interior?: boolean, exposure?: number) => Promise<string> }).__studioView = async (pos, target, fov, W, H, interior = false, exposure) => {
   viewer.setCut(null);
   viewer.applyView({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov, architectural: false });
   await new Promise((r) => setTimeout(r, 200));
-  return renderStudio(viewer, { width: W, height: H, interior: false, exposure: 1 });
+  return renderStudio(viewer, { width: W, height: H, interior, exposure: exposure ?? (interior ? 1.6 : 1) });
 };
 (w as unknown as { THREE: typeof THREE }).THREE = THREE;
 w.__ready = true;

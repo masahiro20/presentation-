@@ -53,9 +53,14 @@ const PORTAL_MAX = 4;
  * （viewer.look を書き換えて applyLook()）
  */
 export const DEFAULT_LOOK = {
-  /** 室内（昼・仕上げ表示）の均一な光の倍率: 空の拡散光・床の照り返し・無地の環境光 */
+  /**
+   * 室内（昼・仕上げ表示）の均一な光の倍率: 空の拡散光・床の照り返し・無地の環境光。
+   * 照り返し（天井を照らす）は 0.18 → 0.28（2026-11-15）: 床を明るくした後も、天井だけが壁より暗く沈んでいた
+   * （御社スタッフの Twinmotion の仕上げは、天井が壁より明るい。同じ立ち位置で測って、天井 165 → 178・Twinmotion 197。
+   * 0.45 まで上げると数字は合うが、壁と天井の明るさの差が無くなって面が溶けるので、間を取った）
+   */
   hemi: 0.22,
-  bounce: 0.18,
+  bounce: 0.28,
   env: 0.32,
   /**
    * 窓の明るさ（面の光の輝度）・室内側へ出す距離 (m)・下へ傾ける量。
@@ -66,6 +71,15 @@ export const DEFAULT_LOOK = {
   portalTilt: 0,
   /** 昼の室内の補助光（部屋の真ん中の点の光） */
   dayFill: 0.15,
+  /**
+   * 昼の室内の、上からの拡散光（床・天板・畳・座面を照らす）。空の明るさ（昼 = 1）に掛けて足す。
+   * 室内の均一な光は「床 → 天井への照り返し」だけを強く入れていたので、壁と天井は明るいのに床だけが暗く濃く写っていた
+   * （御社スタッフの Twinmotion の仕上げは、床が壁の 8 割ほどの明るさ。ツールは 6 割だった）。
+   * 窓から入った空の光と、天井・壁からの照り返しが床に届く分を、上からの光で足す
+   */
+  floorFill: 0.95,
+  /** 天井への照り返しを、床の色でどれだけ染めるか（オークの床なら天井がわずかに暖かくなる） */
+  bounceTint: 0.3,
   /** 夕景・夜の室内: ダウンライト（下向きの光）の強さ・床からの照り返し（天井と壁の上を照らす） */
   lampSpot: 11,
   nightBounce: 0.5,
@@ -289,6 +303,10 @@ export class Viewer {
     const balanceKey = `${outside}|${portalsOn}`;
     if (!force && balanceKey === this.balanceOutside) return;
     this.balanceOutside = balanceKey;
+    if (this.hazeInside === outside) {
+      this.hazeInside = !outside;
+      this.applyHaze();
+    }
     const night = this.design.timeOfDay === 'night';
     const b = this.lightBase;
     if (outside && !night) {
@@ -303,7 +321,9 @@ export class Viewer {
       this.sun.intensity = b.sun;
       // 夕景は今までどおり: 均一な光を抑えると、照明の暖色だけが勝って橙色に寄りすぎる
       const cut = portalsOn && this.design.timeOfDay !== 'evening';
-      this.hemi.intensity = b.hemi * (cut ? this.look.hemi : 0.8);
+      // 上からの拡散光（床を照らす）: 空の明るさ（b.hemi は夜明け 0.08 〜 昼 0.2）に合わせて足す。夕景は弱く、照明の雰囲気を残す
+      const dayK = Math.min(1, Math.max(0, (b.hemi - 0.08) / 0.12));
+      this.hemi.intensity = b.hemi * (cut ? this.look.hemi : 0.8) + this.look.floorFill * dayK * (this.design.timeOfDay === 'evening' ? 0.35 : 1);
       this.bounce.intensity = b.bounce * (cut ? this.look.bounce : 0.72);
       this.scene.environmentIntensity = b.env * (cut ? this.look.env : 0.9);
     } else if (outside) {
@@ -330,6 +350,18 @@ export class Viewer {
     if (this.scene.environment !== indoorEnv) this.scene.environment = indoorEnv;
     this.hemi.color.set(outside ? '#dbe8ff' : '#efeae2');
     this._dirty = true;
+  }
+  /**
+   * 床 → 天井への照り返しの色。昼は、床の色に少し染める（オークの床の家は、天井がわずかに暖かい白になる。明るさは変えない）
+   */
+  private tintBounce() {
+    const tod = this.design.timeOfDay;
+    this.bounce.color.set(tod === 'evening' ? '#f3d9bd' : tod === 'night' ? '#f1e2cf' : '#f4efe8');
+    if (tod === 'evening' || tod === 'night' || this.look.bounceTint <= 0) return;
+    const lum = (c: THREE.Color) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    const l0 = lum(this.bounce.color);
+    this.bounce.color.lerp(new THREE.Color(interiorFor(this.design).floor.color), this.look.bounceTint);
+    this.bounce.color.multiplyScalar(l0 / Math.max(1e-4, lum(this.bounce.color)));
   }
   /**
    * 壁の明るさに合わせた露出の倍率。白い壁（明るさ 0.76）を 1 として、濃い壁ほど上げる（カメラが暗い部屋で露出を上げるのと同じ）
@@ -404,6 +436,7 @@ export class Viewer {
     gu.contrast.value = this.look.contrast;
     gu.saturation.value = this.look.saturation;
     roomProbeUniforms.roomProbeGain.value = this.look.probeGain;
+    this.tintBounce();
     this.portalKey = '';
     this.updateInteriorLights();
     this.applyLightBalance(true);
@@ -425,6 +458,12 @@ export class Viewer {
   viewMode: 'browse' | 'finish' = 'browse';
   /** 操作中に解像度を落としている（復帰時に元の解像度へ戻す） */
   private motionPR = false;
+  /** GPU を使わないソフトウェア描画か（描画がとても遅いので、仕上げ表示・細かく描いて縮める処理を既定にしない） */
+  softwareGL = false;
+  /** 仕上げ表示を既定にしてよい環境か（マウスで操作するパソコンで、GPU で描けるとき） */
+  get finishByDefault(): boolean {
+    return !this.lowPower && !this.softwareGL;
+  }
   contextLost = false;
   userData: Record<string, unknown> = {};
   /**
@@ -447,6 +486,15 @@ export class Viewer {
     (globalThis as any).__THREE = THREE;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    // GPU を使わないソフトウェア描画（リモートデスクトップ・GPU の無いサーバーなど）では、重い仕上げ表示を既定にしない
+    try {
+      const gl = this.renderer.getContext();
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const name = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+      this.softwareGL = /swiftshader|llvmpipe|software|basic render/i.test(name);
+    } catch {
+      this.softwareGL = false;
+    }
     this.renderer.shadowMap.enabled = true;
     // 影の縁をやわらかく（PCFSoft）。写真仕上げ（studio）と同じ
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -1383,6 +1431,9 @@ export class Viewer {
   resize() {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
+    // 仕上げ表示の画素比は画面の大きさで決まる（描く画素の上限）ので、大きさが変わったら決め直す
+    const want = this.fullPR();
+    if (Math.abs(this.renderer.getPixelRatio() - want) > 0.01) this.renderer.setPixelRatio(want);
     this.renderer.setSize(w, h, false);
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
@@ -1541,9 +1592,16 @@ export class Viewer {
     if (this.portalGroup.visible && this.assignPortals(this.roomAtCamera()?.ri ?? null)) this.probeDirty = true;
   }
 
-  /** 画面の解像度（仕上げは高精細ディスプレイでも 1.5 倍まで。閲覧は等倍: 画素数が 2.25 分の 1 になる） */
+  /** 画面の解像度（閲覧は等倍。仕上げは、止まった絵を画面より細かく描いて縮める） */
   private fullPR() {
-    return Math.min(window.devicePixelRatio || 1, this.viewMode === 'browse' ? 1 : 1.5);
+    const dpr = window.devicePixelRatio || 1;
+    if (this.viewMode === 'browse') return Math.min(dpr, 1);
+    if (this.lowPower || this.softwareGL) return Math.min(dpr, 1.5);
+    // 仕上げ: 止まった絵は、画面より細かく描いて縮める（スーパーサンプリング）。斜めの輪郭のギザギザ・手すりや目地の細い線のちらつき・
+    // 陰影の粒が消えて、絵がなめらかになる（書き出しの高品質描画と同じ考え方）。描く画素は 600 万まで・2 倍まで
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
+    return Math.min(2, Math.max(Math.min(dpr, 2), Math.sqrt(6e6 / (w * h))));
   }
 
   private applyPixelRatio(pr: number) {
@@ -2095,6 +2153,8 @@ export class Viewer {
       return;
     }
     this.registry.apply(this.root);
+    // 床の色が変わったら、天井への照り返しの色も合わせる
+    this.tintBounce();
     // 家具の形に関わる選択（ダイニングのペンダント・椅子・テーブル、キッチンの扉の濃淡）が変わったら、家具だけ作り直す
     // （素材の入れ替えだけでは、ペンダントの形が前のまま残る）
     const furnKey = (d: DesignOptions) => {
@@ -2184,7 +2244,7 @@ export class Viewer {
     const evening = this.design.timeOfDay === 'evening';
     // 物理的な光の単位（拡散反射で 1/π になる）なので、天井を壁と同じ明るさにするには 2 前後が要る
     this.lightBase.bounce = night ? 0.08 : evening ? 0.6 : 0.8 + 1.4 * Math.min(1, Math.max(0, elev * 3));
-    this.bounce.color.set(evening ? '#f3d9bd' : night ? '#f1e2cf' : '#f4efe8');
+    this.tintBounce();
     if (envUpdate) this.updateEnvironment();
     else this.placePhotoSky();
     this.applyLightBalance(true);
@@ -2223,6 +2283,8 @@ export class Viewer {
    * 街並みの奥と地面の端が空に溶け、地平線まで何もない地面に見えない。
    * 日照の検討（実際の街・地形を遠くまで見る）では薄いまま
    */
+  /** カメラが室内にあるときのかすみ（applyLightBalance が切り替える） */
+  private hazeInside = false;
   private applyHaze() {
     const mode = this.design.timeOfDay;
     const ps = this.photoSky && this.photoSky.mode === mode ? this.photoSky : null;
@@ -2236,6 +2298,12 @@ export class Viewer {
       if (l > cap) col.multiplyScalar(cap / l);
       d = mode === 'night' ? 0.004 : mode === 'morning' ? 0.0075 : 0.0058;
       ps.haze.material.color.copy(col);
+    }
+    if (this.hazeInside && mode !== 'night') {
+      // 室内から見る外: 室内の明るさに露出を合わせた写真では、外は明るくかすむ。窓のすぐ外の庭（8m まで）ははっきり見せ、
+      // 道路の向かい・隣家（20m より先）は空に溶かす。想定の街並みの箱が、窓の外にくっきり並ぶと作り物に見えていた
+      d = Math.max(d, 0.022);
+      col.lerp(new THREE.Color('#ffffff'), 0.35);
     }
     if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(col, d);
     else {

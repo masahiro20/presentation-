@@ -22,6 +22,17 @@ export interface SiteInfo {
   /** 道路の中心線上の点 */
   roadCenter: THREE.Vector3;
   parking: { center: THREE.Vector3; along: THREE.Vector3 } | null;
+  /** 目の高さより上まで立つ塀（敷地の際の塀・庭を囲む塀）。外観のカットは、塀の向こうから撮らない */
+  fences?: SiteFence[];
+  /** 庭木（平面の位置と樹冠の半径）。外観のカットは、すぐ手前に木が来る位置を避ける */
+  trees?: { x: number; z: number; r: number }[];
+}
+
+/** 塀の 1 区間（平面の両端と、天端の高さ） */
+export interface SiteFence {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  top: number;
 }
 
 const SIDE_WORLD: Record<PlanSide, THREE.Vector3> = { top: V(0, 0, -1), bottom: V(0, 0, 1), left: V(-1, 0, 0), right: V(1, 0, 0) };
@@ -84,6 +95,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
   const walls = new MeshBuilder();
   const trees = new MeshBuilder();
   const plan: LandscapePlan = { trees: [], shrubs: [], paving: [], cars: [], items: [] };
+  const fences: SiteFence[] = [];
   const b = meta.bbox;
   const ent = meta.entrance;
   // 道路方向: 図面から読み取った接道 → 無ければ玄関の外向き（軸に丸める）
@@ -372,6 +384,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     const L = dir.length();
     if (L < 0.3) return;
     dir.normalize();
+    fences.push({ a: a.clone(), b: c.clone(), top: baseY + 1.74 });
     const mid = a.clone().add(c).multiplyScalar(0.5);
     mb.box('l.block', mid.clone().setY(baseY), dir, L, 0.5, 0.15);
     const pitch = 0.09;
@@ -756,7 +769,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     walls,
     trees,
     town,
-    site: { min, max, roadDir: road, roadCenter, parking },
+    site: { min, max, roadDir: road, roadCenter, parking, fences, trees: plan.trees },
     plan,
   };
 }

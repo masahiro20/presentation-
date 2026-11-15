@@ -139,3 +139,60 @@ describe('吹抜が上の階の外周に接する所（天井の懐）', () => {
     expect(wallPts.filter((v) => Math.abs(v.x - 0.004) < 0.002 && v.y > 2.95 && v.y < 3.35).length).toBe(0);
   });
 });
+
+/** 1 階 8m × 6m: LDK（0〜5m）とホール（5〜8m）の間に開き戸、LDK の北の外壁に勝手口 */
+function doorModel(): BuildingModel {
+  const openings: Opening[] = [
+    { id: 'in', wallId: 'p', kind: 'door', t0: 2000, t1: 2800, sill: 0, height: 2000, hingeAtStart: true, swingSide: 1 },
+    { id: 'sv', wallId: 'n1', kind: 'door', t0: 1000, t1: 1750, sill: 0, height: 2000, hingeAtStart: true, service: true },
+  ];
+  const f1: Floor = {
+    level: 1,
+    elevation: 500,
+    height: 2900,
+    ceilingHeight: 2400,
+    outline: [rect(0, 0, 8000, 6000)],
+    rooms: [room('ldk', 'ldk', rect(0, 0, 5000, 6000)), room('hall', 'hall', rect(5000, 0, 8000, 6000))],
+    stairs: [],
+    openings,
+    walls: [...box(1, 0, 0, 8000, 6000), wall('p', P(5000, 0), P(5000, 6000), false)],
+  };
+  return { name: 't', floors: [f1], northAngleDeg: 0, report };
+}
+
+function doorParts(id: string, opts: Partial<BuildOptions> = {}): Record<string, THREE.Box3> {
+  const { meta } = buildBuilding(doorModel(), { exterior: exteriorById('hl-jolypat-grey'), ...opts });
+  const d = meta.doors.find((x) => x.id === id)!;
+  const out: Record<string, THREE.Box3> = {};
+  for (const mesh of d.mb.build(() => new THREE.MeshBasicMaterial()).children as THREE.Mesh[]) {
+    mesh.geometry.computeBoundingBox();
+    out[mesh.name] = mesh.geometry.boundingBox!.clone();
+  }
+  return out;
+}
+
+describe('戸の見え方（白い内装に黒い板・黒い框を立てない）', () => {
+  it('LDK とホールの間の戸: 既定は黒い細框のガラス戸、木の見切りのテイストは壁と同じ色のフラット扉', () => {
+    const glass = doorParts('in');
+    expect(glass['ext.glass']).toBeDefined();
+    expect(glass['ext.frame']).toBeDefined();
+    const flush = doorParts('in', { woodTrim: true });
+    expect(flush['int.door']).toBeDefined();
+    expect(flush['ext.glass']).toBeUndefined();
+    expect(flush['ext.frame']).toBeUndefined();
+  });
+
+  it('勝手口: 板の戸に小窓ではなく、サッシ色の細い框に足もとから上までの型ガラス', () => {
+    const sv = doorParts('sv');
+    expect(sv['ext.door']).toBeUndefined();
+    expect(sv['ext.frame']).toBeDefined();
+    const g = sv['ext.glassFrosted'];
+    expect(g).toBeDefined();
+    // ガラスは戸の高さのほとんど（戸の板の高さから、下框 120・上框 70 を引いた分。2m を超える）
+    const f = sv['ext.frame'];
+    expect(g.max.y - g.min.y).toBeCloseTo(f.max.y - f.min.y - 0.12 - 0.07, 2);
+    expect(g.max.y - g.min.y).toBeGreaterThan(1.7);
+    // 框は戸の幅いっぱい・ガラスはその内側
+    expect(g.max.x - g.min.x).toBeLessThan(f.max.x - f.min.x);
+  });
+});

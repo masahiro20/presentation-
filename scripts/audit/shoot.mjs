@@ -82,13 +82,22 @@ for (const f of files) {
       writeFileSync(path.join(outDir, file), Buffer.from(url.split(',')[1], 'base64'));
       imgs.push({ file, label: v.name, url });
     }
-    // 一覧（3×3）
+    // お客様に出す外観のカット（道路側・別アングル・庭側）: 塀・木の向こうから撮っていないかを数え、一覧の 4 段目に並べる
+    const extShots = await rp.evaluate(() => window.__auditShots?.() ?? []);
+    writeFileSync(path.join(outDir, `${id}.shots.json`), JSON.stringify(extShots, null, 1));
+    for (const sh of extShots) {
+      const url = await rp.evaluate(([sid]) => window.__renderShot(sid, 640, 400, false), [sh.id]);
+      const file = `${id}_${sh.id}.png`;
+      writeFileSync(path.join(outDir, file), Buffer.from(url.split(',')[1], 'base64'));
+      imgs.push({ file, label: `${sh.id}（遮り ${Math.round(sh.blocked * 100)}%・目の高さ ${sh.eye}m・画角 ${sh.fov}°）`, url });
+    }
+    // 一覧（3×3 ＋ 外観のカット 3 枚）
     const html = `<html><body style="margin:0;background:#222;font:14px sans-serif;color:#eee"><div style="padding:6px 10px">${id} — ${model.floors.length}階・${model.floors.map((fl) => `${fl.level}F 壁${fl.walls.length}/室${fl.rooms.length}`).join(' ')}</div><div style="display:grid;grid-template-columns:repeat(3,640px);gap:4px">${imgs.map((i) => `<div style="position:relative"><img src="${i.url}" width=640 height=400><span style="position:absolute;left:6px;top:4px;background:#0008;padding:1px 5px">${i.label}</span></div>`).join('')}</div></body></html>`;
-    await rp.setViewportSize({ width: 1928, height: 1250 });
+    await rp.setViewportSize({ width: 1928, height: 1660 });
     await rp.setContent(html);
     await rp.screenshot({ path: path.join(outDir, `${id}_sheet.png`), fullPage: true });
     await rp.close();
-    summary.push({ id, ok: true, toast: toastText, secs: Math.round((Date.now() - t0) / 1000), wallHoles: audit?.walls.length, wallHoleM: audit ? Math.round(audit.walls.reduce((s, x) => s + x.len, 0) * 10) / 10 : null, roofHoles: audit?.roofs.reduce((s, x) => s + x.n, 0), errors });
+    summary.push({ id, ok: true, toast: toastText, secs: Math.round((Date.now() - t0) / 1000), extBlocked: extShots.length ? Math.max(...extShots.map((x) => x.blocked)) : null, wallHoles: audit?.walls.length, wallHoleM: audit ? Math.round(audit.walls.reduce((s, x) => s + x.len, 0) * 10) / 10 : null, roofHoles: audit?.roofs.reduce((s, x) => s + x.n, 0), errors });
   } catch (e) {
     summary.push({ id, ok: false, error: e.message.slice(0, 300), errors });
     await page.close().catch(() => {});

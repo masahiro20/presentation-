@@ -25,6 +25,12 @@ export const roomProbeUniforms = {
   roomProbeMax: { value: new THREE.Vector3() },
   /** 映り込みの強さ（撮った絵の明るさに掛ける） */
   roomProbeGain: { value: 1 },
+  /**
+   * 室内の素材（内装・家具）が受ける拡散光（空の光・照り返し・環境光）の倍率。1 = そのまま。
+   * 陰影のテイスト（濃い壁の内装）の昼の室内で下げる: 空の光は全体に掛かる光なので、光そのものを絞ると窓の外まで暗くなる。
+   * 室内の素材の側で絞れば、窓の外は明るいまま、室内だけが暗く沈む（明るさは、窓からの面の光と日差しで作る）
+   */
+  roomIndirect: { value: 1 },
 };
 
 const PARS = /* glsl */ `
@@ -35,6 +41,7 @@ const PARS = /* glsl */ `
 	uniform vec3 roomProbeMin;
 	uniform vec3 roomProbeMax;
 	uniform float roomProbeGain;
+	uniform float roomIndirect;
 	varying vec3 vRoomProbeWP;
 	// 部屋の箱の中の面なら、反射の向きを箱の壁まで伸ばし、撮った位置から見た向きに直して絵を引く
 	vec3 roomProbeRadiance( vec3 fallback, vec3 reflectVec, float roughness ) {
@@ -66,10 +73,18 @@ const RADIANCE_TO = /* glsl */ `vec4 envMapColor = textureCubeUV( envMap, envMap
 
 let warned = false;
 
-/** 標準・物理マテリアルに、部屋の映り込みを足す（何度呼んでも 1 回だけ） */
-export function patchRoomProbe<T extends THREE.Material>(mat: T): T {
+/**
+ * 標準・物理マテリアルに、部屋の映り込みを足す（何度呼んでも 1 回だけ）。
+ * indoor = true: 室内の素材（内装・家具）。拡散光の倍率（roomIndirect）が掛かる
+ */
+export function patchRoomProbe<T extends THREE.Material>(mat: T, indoor = false): T {
   const m = mat as unknown as THREE.MeshStandardMaterial;
-  if (!m.isMeshStandardMaterial || m.userData.roomProbe) return mat;
+  if (!m.isMeshStandardMaterial) return mat;
+  if (indoor && !(m.defines && 'ROOM_INDIRECT' in m.defines)) {
+    m.defines = { ...(m.defines ?? {}), ROOM_INDIRECT: '' };
+    m.needsUpdate = true;
+  }
+  if (m.userData.roomProbe) return mat;
   m.userData.roomProbe = true;
   m.defines = { ...(m.defines ?? {}), ROOM_PROBE: '' };
   const prev = m.onBeforeCompile;
@@ -101,7 +116,17 @@ export function patchRoomProbe<T extends THREE.Material>(mat: T): T {
 		vRoomProbeWP = ( modelMatrix * roomProbeW ).xyz;
 	#endif`,
       );
-    shader.fragmentShader = shader.fragmentShader.replace('#include <envmap_physical_pars_fragment>', PARS + chunk.replace(RADIANCE_FROM, RADIANCE_TO));
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <envmap_physical_pars_fragment>', PARS + chunk.replace(RADIANCE_FROM, RADIANCE_TO))
+      // 室内の素材: 拡散光（空の光・照り返し・環境光）に倍率を掛ける。面の光・日差し・照明（直接光）には掛けない
+      .replace(
+        '#include <lights_fragment_end>',
+        /* glsl */ `#if defined( ROOM_PROBE ) && defined( ROOM_INDIRECT ) && defined( RE_IndirectDiffuse )
+		irradiance *= roomIndirect;
+		iblIrradiance *= roomIndirect;
+	#endif
+	#include <lights_fragment_end>`,
+      );
   };
   m.customProgramCacheKey = () => (prevKey ? prevKey.call(m) : '') + '|roomProbe';
   m.needsUpdate = true;

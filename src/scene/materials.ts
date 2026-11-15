@@ -87,6 +87,16 @@ export function lampTint(kelvin: number): THREE.Color {
   return out.multiplyScalar(1 / m);
 }
 
+/** 室内の素材（内装・家具）か。室内の拡散光の倍率（roomProbe.ts の roomIndirect）を掛ける素材 */
+export function isIndoorKey(key: string): boolean {
+  return key.startsWith('int.') || key.startsWith('f.');
+}
+
+/** 階段の踏板の木（指定が無いとき）: 木の床ならその木。タイル・石の床の内装は、家具の木（食卓・造作と同じ木）に合わせる */
+export function stairWoodSpec(i: InteriorStyle): MatSpec {
+  return i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { ...i.furniture.wood, pattern: 'wood' };
+}
+
 export class MaterialRegistry {
   private map = new Map<string, THREE.Material>();
   private fallback = new THREE.MeshStandardMaterial({ color: '#cccccc', roughness: 0.8 });
@@ -203,7 +213,9 @@ export class MaterialRegistry {
     set('int.doorJoint', new THREE.MeshStandardMaterial({ color: ((this.map.get('int.door') as THREE.MeshStandardMaterial).color ?? new THREE.Color('#ffffff')).clone().multiplyScalar(JOINT_SHADE), roughness: 0.8 }));
     // 木の見切り（窓の額縁・室内窓の枠・腰壁の笠木）: 家具・造作と同じ木
     set('int.woodTrim', M(i.furniture.wood));
-    set('int.stairs', M(i.floor.pattern === 'woodFloor' || i.floor.pattern === 'herringbone' ? { ...i.floor, pattern: 'wood' } : { pattern: 'wood', color: '#b8905f', color2: '#a07a4f' }));
+    // 踏板の木: 木の床ならその木。タイル・石の床の内装は、家具の木（食卓・造作と同じ木）に合わせる
+    // （以前は決め打ちのオーク色で、暗い色の内装に明るい橙色の階段が立っていた。吉田様邸のご提案は、暗い木の踏板）
+    set('int.stairs', M(stairWoodSpec(i)));
     // 踏板の色（こだわりの参考資料で階段ごとに選べる。指定が無ければ int.stairs = 床に合わせた木）
     set('int.stairs@oak', M({ pattern: 'wood', color: '#c2a071', color2: '#ad8c5f', roughness: 0.5 }));
     set('int.stairs@walnut', M({ pattern: 'wood', color: '#5e4634', color2: '#4e3a2b', roughness: 0.5 }));
@@ -457,7 +469,8 @@ export class MaterialRegistry {
       }
     }
     // 部屋の映り込み（床・天板・ガラスに、窓と照明が映る）を、標準・物理マテリアルすべてに足す
-    for (const m of this.map.values()) patchRoomProbe(m);
+    // 内装・家具の素材には、室内の拡散光の倍率も掛かるようにする（白模型は、内外で同じ素材を使うので掛けない）
+    for (const [k, m] of this.map) patchRoomProbe(m, !this.opts.clay && isIndoorKey(k));
     patchRoomProbe(this.fallback);
   }
 }

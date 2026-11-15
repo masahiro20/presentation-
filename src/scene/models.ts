@@ -41,7 +41,7 @@ function loadModel(id: string): Promise<THREE.Object3D | null> {
           if (m.isMesh) {
             m.castShadow = true;
             m.receiveShadow = true;
-            for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (mat) patchRoomProbe(mat);
+            for (const mat of Array.isArray(m.material) ? m.material : [m.material]) if (mat) patchRoomProbe(mat, true);
           }
         });
         return root;

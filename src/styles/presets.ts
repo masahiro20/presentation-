@@ -80,6 +80,12 @@ export interface InteriorStyle {
    * - table: 'round' = 4 人なら丸テーブル／'plank' = 一枚板
    */
   vocab?: { pendant?: 'ph5' | 'dome' | 'globes' | 'paper' | 'none'; chair?: 'y' | 'light'; table?: 'round' | 'plank'; cupboard?: 'counter' | 'mix'; stair?: 'side' | 'zigzag'; woodTrim?: boolean };
+  /**
+   * 陰影のテイスト: 昼の室内を暗く沈ませ、窓からの光の明暗を主役にする（御社スタッフの Twinmotion: 吉田様邸の内観は、
+   * 濃いグレージュの壁と天井が暗く沈み、窓の外と日差しの当たる床だけが明るい）。
+   * 付けないテイストは、壁の明るさに合わせて露出を上げ、部屋全体を均一に明るく見せる
+   */
+  lowKey?: boolean;
 }
 
 const ext = (s: ExteriorStyle) => s;
@@ -790,6 +796,7 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   int({
     id: 'hl-dark-stone',
     vocab: { pendant: 'none', chair: 'y', table: 'plank' },
+    lowKey: true,
     name: 'グレーの塗り壁 × 大判タイル（陰影）',
     catch: '深いグレーの壁と天井、大判のグレーのタイルの床',
     description: '深いグレーの壁と天井に、大判の石目調タイルの床。細い黒サッシの大開口と、床・天井の間接光だけで見せる、陰影の強い上質な空間。',
@@ -994,6 +1001,9 @@ export const INTERIOR_STYLES: InteriorStyle[] = [
   }),
   int({
     id: 'hl-dark-mortar',
+    // 食卓は四角い天板・ペンダントなし（吉田様邸: キッチンにつながる暗い色の四角いテーブル。照明器具を見せない）
+    vocab: { pendant: 'none', table: 'plank' },
+    lowKey: true,
     name: 'モルタル・陰影',
     catch: '深いトープのモルタル × 大判タイル',
     description: '壁と天井を深いトープのモルタル調で包み、窓から差し込む光と影を主役にした、ギャラリーのように静かな空間。黒のキッチンと大判の石目タイルで引き締めます。',

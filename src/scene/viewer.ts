@@ -127,6 +127,15 @@ export const DEFAULT_LOOK = {
    * 透明のままだと、室内が外と同じ明るさで丸見えになり、窓が「穴」に見えていた（御社スタッフの外観パース: 窓は暗く、室内がうっすら見える）
    */
   glassOutside: 0.5,
+  /**
+   * 陰影のテイスト（InteriorStyle.lowKey）の昼の室内: 露出・窓からの面の光の倍率・室内の素材が受ける拡散光の倍率。
+   * 光そのものは屋外と同じ配分にしておく（窓の外は外観と同じ明るさで見える）。室内は、拡散光を素材の側で絞り、
+   * 窓からの面の光と日差しだけで明暗を作る。閲覧表示（面の光なし）は、拡散光を少し多めに残す
+   */
+  lowKeyExposure: 1.0,
+  lowKeyPortal: 0.25,
+  lowKeyIndirect: 0.18,
+  lowKeyIndirectBrowse: 0.3,
 };
 
 /** 仕上げの階調（画面に出す直前の色に掛ける）: 周辺減光・中間の明暗・彩度 */
@@ -341,7 +350,10 @@ export class Viewer {
     this.tuneGlass(outside);
     // 窓からの面の光が点いているか（仕上げ表示の室内）。閲覧表示では点けないので、均一な光を今までどおりにする
     const portalsOn = !outside && this.portalGroup.visible;
-    const balanceKey = `${outside}|${portalsOn}`;
+    // 陰影のテイストの昼の室内か（夕景・夜は照明の絵なので、ほかのテイストと同じ）
+    const tod0 = this.design.timeOfDay;
+    const lowKey = !outside && this.lowKey() && (tod0 === 'day' || tod0 === 'morning');
+    const balanceKey = `${outside}|${portalsOn}|${lowKey}`;
     if (!force && balanceKey === this.balanceOutside) return;
     this.balanceOutside = balanceKey;
     if (this.hazeInside === outside) {
@@ -350,7 +362,9 @@ export class Viewer {
     }
     const night = this.design.timeOfDay === 'night';
     const b = this.lightBase;
-    if (outside && !night) {
+    roomProbeUniforms.roomIndirect.value = lowKey ? (portalsOn ? this.look.lowKeyIndirect : this.look.lowKeyIndirectBrowse) : 1;
+    if ((outside && !night) || lowKey) {
+      // 屋外の昼。陰影のテイストの室内も、光は屋外と同じ配分（窓の外が外観と同じ明るさで見える。室内は素材の側で拡散光を絞る）
       this.sun.intensity = b.sun * this.look.extSun;
       this.hemi.intensity = b.hemi * this.look.extHemi;
       this.bounce.intensity = b.bounce * this.look.extBounce;
@@ -389,8 +403,12 @@ export class Viewer {
     // 室内の視点では空（青）の環境光をやめ、暖かい無彩色の環境光にする（グレーの壁・白い布が青くかぶらない）
     const indoorEnv = !outside && this.envIndoorRT ? this.envIndoorRT.texture : this.envRT?.texture ?? null;
     if (this.scene.environment !== indoorEnv) this.scene.environment = indoorEnv;
-    this.hemi.color.set(outside ? '#dbe8ff' : '#efeae2');
+    this.hemi.color.set(outside || lowKey ? '#dbe8ff' : '#efeae2');
     this._dirty = true;
+  }
+  /** 陰影のテイストか（白模型では使わない） */
+  private lowKey(): boolean {
+    return !!interiorFor(this.design).lowKey && !this.design.clay;
   }
   /**
    * 床 → 天井への照り返しの色。昼は、床の色に少し染める（オークの床の家は、天井がわずかに暖かい白になる。明るさは変えない）
@@ -408,6 +426,8 @@ export class Viewer {
    * 壁の明るさに合わせた露出の倍率。白い壁（明るさ 0.76）を 1 として、濃い壁ほど上げる（カメラが暗い部屋で露出を上げるのと同じ）
    */
   wallExposureGain(): number {
+    // 陰影のテイスト: 壁の暗さに合わせて露出を上げない（暗い壁は暗いまま。窓の外が白く飛ばない）
+    if (this.lowKey()) return this.look.lowKeyExposure;
     if (this.look.autoExposure <= 0) return this.look.interiorBoost;
     const wc = new THREE.Color(interiorFor(this.design).wall.color);
     const lum = 0.2126 * wc.r + 0.7152 * wc.g + 0.0722 * wc.b;
@@ -1818,7 +1838,7 @@ export class Viewer {
   private assignPortals(ri: SceneState['meta']['rooms'][number] | null): boolean {
     if (!this.state) return false;
     const tod = this.design.timeOfDay;
-    const key = `${ri?.room.id ?? ''}|${tod}|${this.portalLights.length}`;
+    const key = `${ri?.room.id ?? ''}|${tod}|${this.portalLights.length}|${this.lowKey()}`;
     if (key === this.portalKey) return false;
     this.portalKey = key;
     let list: WindowPortal[] = [];
@@ -1831,7 +1851,7 @@ export class Viewer {
         .sort((a, b) => b.width * b.height - a.width * a.height)
         .slice(0, PORTAL_MAX);
     }
-    const L = this.look.portalL * (tod === 'evening' ? 0.4 : tod === 'morning' ? 0.75 : 1);
+    const L = this.look.portalL * (tod === 'evening' ? 0.4 : tod === 'morning' ? 0.75 : 1) * (this.lowKey() && tod !== 'evening' ? this.look.lowKeyPortal : 1);
     const col = tod === 'evening' ? '#ffd9b0' : tod === 'morning' ? '#f6eef0' : '#eef3ff';
     this.portalLights.forEach((l, i) => {
       const p = list[i];
@@ -2803,7 +2823,7 @@ export class Viewer {
       for (const l of this.state.lights) {
         if (l.kind !== 'ceiling' || used.has(l.roomId)) continue;
         used.add(l.roomId);
-        const p = new THREE.PointLight('#fff6ea', this.portalLights.length ? this.look.dayFill : 2.2, 7, 1.0);
+        const p = new THREE.PointLight('#fff6ea', (this.portalLights.length ? this.look.dayFill : 2.2) * (this.lowKey() ? 0.25 : 1), 7, 1.0);
         p.position.copy(l.pos);
         p.position.y -= 1.2;
         inner.add(p);

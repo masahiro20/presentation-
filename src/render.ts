@@ -114,7 +114,7 @@ w.__renderShot = async (id, W, H, grade) => {
             rc.far = Math.max(0.1, d.length() - 0.3);
             const first = rc
               .intersectObjects(viewer.scene.children, true)
-              .find((h) => h.object.visible && (h.object as THREE.Mesh).isMesh && (own(h.object) || /^l\.fence/.test(h.object.name)));
+              .find((h) => h.object.visible && (h.object as THREE.Mesh).isMesh && (own(h.object) || /^l\.(fence|gardenWall)/.test(h.object.name)));
             n++;
             if (first && !own(first.object)) hit++;
           }
@@ -150,9 +150,9 @@ w.__renderShot = async (id, W, H, grade) => {
 (w as unknown as { __hdri: typeof loadHdri }).__hdri = loadHdri;
 (w as unknown as { __studioNow: (W: number, H: number) => Promise<string> }).__studioNow = (W, H) => renderStudio(viewer, { width: W, height: H, interior: false, exposure: 1 });
 /** 点検用: 好きな立ち位置を、カット集と同じ高品質描画で（interior = 室内の光の配分と露出で） */
-(w as unknown as { __studioView: (pos: number[], target: number[], fov: number, W: number, H: number, interior?: boolean, exposure?: number) => Promise<string> }).__studioView = async (pos, target, fov, W, H, interior = false, exposure) => {
+(w as unknown as { __studioView: (pos: number[], target: number[], fov: number, W: number, H: number, interior?: boolean, exposure?: number, architectural?: boolean) => Promise<string> }).__studioView = async (pos, target, fov, W, H, interior = false, exposure, architectural = false) => {
   viewer.setCut(null);
-  viewer.applyView({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov, architectural: false });
+  viewer.applyView({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov, architectural });
   await new Promise((r) => setTimeout(r, 200));
   return renderStudio(viewer, { width: W, height: H, interior, exposure: exposure ?? (interior ? 1.6 : 1) });
 };

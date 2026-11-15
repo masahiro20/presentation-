@@ -147,7 +147,7 @@ export const EXTERIOR_STYLES: ExteriorStyle[] = [
     description: 'ジョリパットの中間グレーの塗り壁を一色で回したホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。アクセント（SOLIDO・木板）はコーディネートで玄関まわりに足せます。',
     wall: '#8f8e8a',
     wall2: '#86857f',
-    fence: 'wood',
+    // 敷地の際の塀は既定では立てない（御社スタッフの外観パースは、隣地との境に塀を描かない。居間の窓の前の庭だけ白い塀で囲う）
   }),
   plasterBox({
     id: 'hl-jolypat-greige',
@@ -1191,6 +1191,8 @@ export interface DesignOptions {
   eaves?: number;
   /** 白模型（スタディ模型）表示: 仕上げを白いクレイにする */
   clay?: boolean;
+  /** 想定の街並み（隣家）の見せ方: 省略 = 淡い量塊（主役の家だけに色と素材）、'color' = 色付きの家並み */
+  townLook?: 'color';
   /** コーディネート: 部位ごとに選んだ商品（部位 id → 商品 id）。テイストの既定に重ねる */
   finishes?: Record<string, string>;
   /** コーディネート: 部位ごとの品番・メモ（カタログに無い正確な品番を書く。資料・図面の仕上げ表に出る） */

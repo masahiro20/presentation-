@@ -108,11 +108,62 @@ describe('外観のカットは、塀の向こうから撮らない', () => {
   });
 });
 
+describe('外観のカットの構図: 家を画面いっぱいに近く写す', () => {
+  /** 建物の外形（余白 0.6m 込み）が、画面の横・縦に占める割合と、左右の片寄り（rad） */
+  const fill = (v: { pos: THREE.Vector3; target: THREE.Vector3; fov?: number }, b: THREE.Box3, topY: number) => {
+    const fwd = v.target.clone().sub(v.pos).setY(0).normalize();
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    let lo = Infinity;
+    let hi = -Infinity;
+    let yLo = Infinity;
+    let yHi = -Infinity;
+    for (const x of [b.min.x - 0.6, b.max.x + 0.6])
+      for (const z of [b.min.z - 0.6, b.max.z + 0.6])
+        for (const y of [0, topY]) {
+          const r = new THREE.Vector3(x, y, z).sub(v.pos);
+          const a = Math.atan2(r.dot(right), r.dot(fwd));
+          lo = Math.min(lo, a);
+          hi = Math.max(hi, a);
+          yLo = Math.min(yLo, r.y / r.dot(fwd));
+          yHi = Math.max(yHi, r.y / r.dot(fwd));
+        }
+    const tanV = Math.tan((v.fov! * Math.PI) / 360);
+    return { skew: Math.abs(lo + hi), h: Math.tan(hi) / (tanV * (16 / 9)), v: (yHi - yLo) / (2 * tanV) };
+  };
+
+  it('建物の見かけの左右の真ん中を見る（左右の余白がそろう）', () => {
+    // 以前は建物の中心を見たままで、斜めから見ると手前の角の側だけ余白が詰まり、そのぶん遠くから撮っていた
+    const s = site(-20, -14, 30, 14, false);
+    for (const id of ['ext-front', 'ext-front2', 'ext-garden']) expect(fill(shot(s, id).view, meta().bbox, 6.7).skew).toBeLessThan(0.01);
+  });
+
+  it('横に長い平屋は、画面の幅の 8 割強（横の余白 2 割）。総 2 階は、高さが画面の 77%（縦の余白 3 割）で決まる', () => {
+    const s = site(-30, -24, 40, 24, false);
+    // 20 × 8 m・高さ 3.6 m の平屋
+    const low: BuildingMeta = { ...meta(), bbox: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(20, 3.6, 8)), topY: 3.6 };
+    const fl = fill(exteriorShots(low, s, { maxY: 3.6, eaveY: 3.3 }).find((x) => x.id === 'ext-front')!.view, low.bbox, 3.8);
+    expect(fl.h).toBeGreaterThan(0.81);
+    expect(fl.h).toBeLessThan(0.845);
+    expect(fl.v).toBeLessThan(0.77);
+    // 10 × 8 m・高さ 6.5 m の総 2 階
+    const f2 = fill(shot(s, 'ext-front').view, meta().bbox, 6.7);
+    expect(f2.v).toBeGreaterThan(0.75);
+    expect(f2.v).toBeLessThan(0.78);
+    expect(f2.h).toBeLessThan(0.84);
+  });
+});
+
 describe('外構は、目の高さより高い塀を敷地の情報に残す', () => {
-  it('木の縦格子の塀（基壇 0.5 + 格子 1.2）: 区間ごとに天端 1.74m。庭木の位置も渡す', () => {
-    const r = buildLandscape(meta(), exteriorById('hl-jolypat-grey'), { roads: [{ side: 'bottom', source: 'manual', widthMm: 4000 }], bounds: {} });
+  it('木の縦格子の塀（外観テイストで選んだとき。基壇 0.5 + 格子 1.2）: 区間ごとに天端 1.74m。庭木の位置も渡す', () => {
+    const base = exteriorById('hl-jolypat-grey');
+    const r = buildLandscape(meta(), { ...base, landscape: { ...base.landscape, fence: 'wood' } }, { roads: [{ side: 'bottom', source: 'manual', widthMm: 4000 }], bounds: {} });
     expect(r.site.fences!.length).toBeGreaterThan(0);
     for (const f of r.site.fences!) expect(f.top).toBeCloseTo(1.74, 2);
     expect(r.site.trees).toBe(r.plan.trees);
+  });
+
+  it('既定の外観（ジョリパット グレー）は、敷地の際に木の塀を立てない（御社スタッフの外観パースは、隣地との境に塀を描かない）', () => {
+    const r = buildLandscape(meta(), exteriorById('hl-jolypat-grey'), { roads: [{ side: 'bottom', source: 'manual', widthMm: 4000 }], bounds: {} });
+    expect(r.site.fences!.length).toBe(0);
   });
 });

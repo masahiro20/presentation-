@@ -100,6 +100,33 @@ export const DEFAULT_LOOK = {
   saturation: 1.03,
   /** 部屋の映り込みの強さ */
   probeGain: 1,
+  /**
+   * 屋外（昼・朝）の光の配分: 日差し・空の拡散光・地面からの照り返し・環境光の倍率と、露出の倍率。
+   * 2026-11-15: 日差し 1.25 → 0.85、空の拡散光 0.5 → 2.2、環境光 0.7 → 1.0、露出 1 → 0.92。
+   * 以前は日なたと日陰の差が 4.5 倍あり、日の当たる地面と外壁が白く飛び、空だけが濃い青に沈む「真夏の正午」の絵だった。
+   * 御社スタッフの Twinmotion の外観は、薄曇りのやわらかい光（日なたと日陰の差が小さく、空は明るく、地面は中間のグレー）
+   */
+  extSun: 0.85,
+  extHemi: 2.2,
+  extBounce: 0.3,
+  extEnv: 1.0,
+  extExposure: 0.92,
+  /** 昼の実写の空の明るさの倍率（空の中央値を合わせる目標に掛ける） */
+  skyGain: 1.45,
+  /** 昼の実写の空の色の倍率（赤・緑・青）。青い所ほど強く掛かる（雲の白は白のまま、空の濃い青だけ水色へ） */
+  skyTint: [0.64, 0.94, 1.03] as [number, number, number],
+  /**
+   * 昼の空のかすみ: 空の写真を、明るい水色へこの割合だけ寄せる（濃い青は明るい水色に、雲の白はやわらかく）。
+   * 御社スタッフの外観パースの空は、薄くかすんだ明るい水色で、雲の輪郭がやわらかい
+   */
+  skyWash: 0.4,
+  /** かすみの色（空の地の明るさに掛ける。階調を通すと青は紫へ寄るので、赤を抑えた水色にしておく） */
+  skyWashTint: [0.5, 1.02, 1.4] as [number, number, number],
+  /**
+   * 昼に外から見る窓ガラスの濃さ（不透明度）。昼の室内は外よりずっと暗く、ガラスは空を映す暗い面に見える。
+   * 透明のままだと、室内が外と同じ明るさで丸見えになり、窓が「穴」に見えていた（御社スタッフの外観パース: 窓は暗く、室内がうっすら見える）
+   */
+  glassOutside: 0.5,
 };
 
 /** 仕上げの階調（画面に出す直前の色に掛ける）: 周辺減光・中間の明暗・彩度 */
@@ -283,13 +310,27 @@ export class Viewer {
   private tuneGlass(outside: boolean) {
     const g = this.registry.get('ext.glass') as THREE.MeshPhysicalMaterial;
     if (!g?.userData?.isGlass) return;
-    const night = this.design.timeOfDay === 'night';
-    const env = outside ? 1.1 : 0.15;
-    const op = night ? 0.08 : outside ? 0.13 : 0.05;
-    if (g.envMapIntensity !== env || g.opacity !== op) {
+    const tod = this.design.timeOfDay;
+    const night = tod === 'night';
+    // 昼・朝に外から見る窓: 空を映す暗いガラス（夕景・夜は、室内の明かりを見せるので透明のまま）
+    const dark = outside && (tod === 'day' || tod === 'morning') && !this.design.clay;
+    const env = outside ? (dark ? 1.5 : 1.1) : 0.15;
+    const op = night ? 0.08 : outside ? (dark ? this.look.glassOutside : 0.13) : 0.05;
+    const col = dark ? 0x46535b : 0xf2f6f7;
+    if (g.envMapIntensity !== env || g.opacity !== op || g.color.getHex() !== col) {
       g.envMapIntensity = env;
       g.opacity = op;
+      g.color.setHex(col);
       this._dirty = true;
+    }
+    // 型板ガラス（浴室・トイレの窓）: 昼に外から見ると、白く光る札ではなく、透明ガラスより少し明るいグレーの面
+    const fr = this.registry.get('ext.glassFrosted') as THREE.MeshPhysicalMaterial | undefined;
+    if (fr?.userData?.isGlass) {
+      const fc = dark ? 0x8f999f : night ? 0xfff1d6 : 0xeef2f4;
+      if (fr.color.getHex() !== fc) {
+        fr.color.setHex(fc);
+        this._dirty = true;
+      }
     }
   }
   private balanceOutside: string | null = null;
@@ -310,10 +351,10 @@ export class Viewer {
     const night = this.design.timeOfDay === 'night';
     const b = this.lightBase;
     if (outside && !night) {
-      this.sun.intensity = b.sun * 1.25;
-      this.hemi.intensity = b.hemi * 0.5;
-      this.bounce.intensity = b.bounce * 0.3;
-      this.scene.environmentIntensity = b.env * 0.7;
+      this.sun.intensity = b.sun * this.look.extSun;
+      this.hemi.intensity = b.hemi * this.look.extHemi;
+      this.bounce.intensity = b.bounce * this.look.extBounce;
+      this.scene.environmentIntensity = b.env * this.look.extEnv;
     } else if (!outside && !night) {
       // 室内（昼）: 全体を均一に照らす光（空の拡散光・床の照り返し・環境光）を少し抑えて、窓から入る日差しとの明暗を残す。
       // 御社の提案パースは、白い壁でも面ごとに明るさが違い、奥は暗く沈む。以前の値では白い壁が白飛びして平板だった
@@ -340,7 +381,7 @@ export class Viewer {
       this.scene.environmentIntensity = b.env;
     }
     // 露出: 室内（面の光あり）は壁の明るさに合わせる
-    this.renderer.toneMappingExposure = this.exposureBase * (portalsOn && this.design.timeOfDay !== 'evening' ? this.wallExposureGain() : 1);
+    this.renderer.toneMappingExposure = this.exposureBase * (portalsOn && this.design.timeOfDay !== 'evening' ? this.wallExposureGain() : this.exteriorExposureGain(outside));
     // 光のにじみ: 屋外の昼は弱く（日なたの白い壁や隣家の箱まで光って見える）。室内と夕景・夜景は、窓・照明がにじむ
     const dusk = this.design.timeOfDay === 'evening' || night;
     this.bloom.strength = this.lowPower ? 0 : this.look.bloom * (outside && !dusk ? 0.35 : 1);
@@ -371,6 +412,11 @@ export class Viewer {
     const wc = new THREE.Color(interiorFor(this.design).wall.color);
     const lum = 0.2126 * wc.r + 0.7152 * wc.g + 0.0722 * wc.b;
     return Math.min(2.6, this.look.interiorBoost * Math.max(1, Math.pow(0.76 / Math.max(0.06, lum), this.look.autoExposure)));
+  }
+  /** 屋外（昼・朝）の露出の倍率（書き出しでも同じ値を掛ける）。室内・夕景・夜景は 1 */
+  exteriorExposureGain(outside = !this.cameraInside()): number {
+    const tod = this.design.timeOfDay;
+    return outside && (tod === 'day' || tod === 'morning') ? this.look.extExposure : 1;
   }
   /** 内観の露出の倍率（昼・朝で、窓からの面の光が使えるときだけ壁の明るさに合わせる。夕景・夜景・スマホは 0 = 今までどおり） */
   interiorExposureGain(): number {
@@ -440,6 +486,8 @@ export class Viewer {
     this.portalKey = '';
     this.updateInteriorLights();
     this.applyLightBalance(true);
+    this.placePhotoSky();
+    this.applyHaze();
     this.dirty = true;
   }
   /** 室内の灯りの 2 組（室内から見るとき／外から見るとき）。updateInteriorLights が作る */
@@ -741,7 +789,7 @@ export class Viewer {
     this.bounce.position.set(0, -1, 0);
     this.scene.add(this.sun, this.sun.target, this.hemi, this.bounce);
 
-    this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', evening: design.timeOfDay === 'evening', clay: design.clay });
+    this.registry = new MaterialRegistry(exteriorFor(design), interiorFor(design), { night: design.timeOfDay === 'night', evening: design.timeOfDay === 'evening', clay: design.clay, townLook: design.townLook });
     // 実写の空は、図面を読んでいる間に先に読み込んでおく（外観が立ち上がった最初のコマから雲のある空にする）
     void loadHdri(design.timeOfDay);
     // 実写テクスチャを読み込んだら、マテリアルを作り直して差し替える
@@ -2140,6 +2188,7 @@ export class Viewer {
       night: design.timeOfDay === 'night',
       evening: design.timeOfDay === 'evening',
       clay: design.clay,
+      townLook: design.townLook,
     });
     if (!this.state) return;
     const ext = exteriorFor(design);
@@ -2318,7 +2367,7 @@ export class Viewer {
    */
   private photoSkyIntensity(h: Hdri): number {
     const tod = this.design.timeOfDay;
-    const target = tod === 'night' ? 0.03 : tod === 'evening' ? 0.24 : tod === 'morning' ? 0.4 : 0.34;
+    const target = tod === 'night' ? 0.03 : tod === 'evening' ? 0.24 : tod === 'morning' ? 0.4 : 0.34 * this.look.skyGain;
     return Math.min(6, target / Math.max(0.002, h.skyMedian));
   }
 
@@ -2391,6 +2440,30 @@ export class Viewer {
     const tex = hdriScreenTexture(h);
     const dome = new THREE.Mesh(new THREE.SphereGeometry(860, 64, 32), new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
     dome.name = 'photoSky';
+    // 空のかすみ（placePhotoSky が色と割合を入れる）: 写真の色 × 明るさ のあとで、明るい水色へ寄せる
+    // 色の寄せ（uSkyTint）は、青い所ほど強く掛ける: 雲の白はそのまま、空の青だけ水色へ
+    const wash = { value: new THREE.Vector4(0, 0, 0, 0) };
+    const tint = { value: new THREE.Vector3(1, 1, 1) };
+    dome.userData.wash = wash;
+    dome.userData.tint = tint;
+    dome.material.onBeforeCompile = (sh) => {
+      sh.uniforms.uSkyWash = wash;
+      sh.uniforms.uSkyTint = tint;
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec4 uSkyWash;\nuniform vec3 uSkyTint;')
+        .replace(
+          '#include <map_fragment>',
+          `#include <map_fragment>
+	{
+		vec3 skyC = diffuseColor.rgb;
+		float skyMx = max( skyC.r, max( skyC.g, skyC.b ) );
+		float skyMn = min( skyC.r, min( skyC.g, skyC.b ) );
+		float skySat = ( skyMx - skyMn ) / max( skyMx, 1e-4 );
+		skyC = mix( skyC, skyC * uSkyTint, smoothstep( 0.04, 0.4, skySat ) );
+		diffuseColor.rgb = mix( skyC, uSkyWash.rgb, uSkyWash.a * mix( 0.35, 1.0, smoothstep( 0.0, 0.3, skySat ) ) );
+	}`,
+        );
+    };
     // 地平線のかすみ: 地平線より下は空の地平線の色で塗り、上へ向かって透ける（仰角 9° で消える）
     const R = 840;
     const lo = R * Math.tan((7 * Math.PI) / 180);
@@ -2442,7 +2515,17 @@ export class Viewer {
     if (!ps) return;
     const sd = this.sunDir;
     ps.dome.rotation.y = ps.hdri.sunAzimuth - (this.design.timeOfDay === 'night' ? 0 : Math.atan2(sd.z, sd.x));
-    ps.dome.material.color.setScalar(this.photoSkyIntensity(ps.hdri));
+    const si = this.photoSkyIntensity(ps.hdri);
+    // 昼の空: 写真の濃い青は、階調（ACES）を通すと紫がかって暗く沈む。赤みを少し引いて、明るい水色の空に
+    ps.dome.material.color.setScalar(si);
+    const tint = (ps.dome.userData.tint as { value: THREE.Vector3 }).value;
+    if (this.design.timeOfDay === 'day') tint.set(this.look.skyTint[0], this.look.skyTint[1], this.look.skyTint[2]);
+    else tint.set(1, 1, 1);
+    // かすみの色: 空の地の明るさ（中央値をそろえた目標）の、少し明るい水色
+    const wash = (ps.dome.userData.wash as { value: THREE.Vector4 }).value;
+    const sky = 0.34 * this.look.skyGain;
+    if (this.design.timeOfDay === 'day') wash.set(sky * this.look.skyWashTint[0], sky * this.look.skyWashTint[1], sky * this.look.skyWashTint[2], this.look.skyWash);
+    else wash.set(0, 0, 0, 0);
     ps.dome.position.copy(this.camera.position);
     ps.haze.position.copy(this.camera.position);
   }

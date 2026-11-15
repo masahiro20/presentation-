@@ -103,7 +103,7 @@ export async function renderStudio(viewer: Viewer, opts: StudioOptions): Promise
     // 内観の露出: 壁の明るさに合わせた倍率（濃い壁の家は上げる）に、呼び出し側の指定（内観の標準 1.6 を 1 とする）を掛ける
     // （夕景・夜景・スマホは今までどおり: 指定 × 0.75）
     const wallGain = viewer.interiorExposureGain();
-    renderer.toneMappingExposure = !opts.interior ? (opts.exposure ?? 1) * 0.95 : wallGain > 0 ? wallGain * ((opts.exposure ?? INTERIOR_EXPOSURE) / INTERIOR_EXPOSURE) : (opts.exposure ?? 1) * 0.75;
+    renderer.toneMappingExposure = !opts.interior ? (opts.exposure ?? 1) * 0.95 * viewer.exteriorExposureGain(true) : wallGain > 0 ? wallGain * ((opts.exposure ?? INTERIOR_EXPOSURE) / INTERIOR_EXPOSURE) : (opts.exposure ?? 1) * 0.75;
     const url = await viewer.capture(W, H, 'image/png');
     // 縮小して写真の仕上げ
     const img = new Image();

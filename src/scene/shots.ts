@@ -112,12 +112,45 @@ function sunForInterior(pos: THREE.Vector3, target: THREE.Vector3, wins: WinInfo
 }
 
 /** 建物の点群が収まる距離を探す（水平視線 + シフト前提） */
-function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vector3, eye: number, vfov: number, aspect: number, margin = 1.12): number {
+/** カメラ（pos・水平の向き dir）から見た点群の、左右の見かけの角度の範囲（rad。右が正）。後ろに回る点は数えない */
+function hSpan(pts: THREE.Vector3[], pos: THREE.Vector3, dir: THREE.Vector3): { pan: number; half: number } | null {
+  const fwd = dir.clone().setY(0).normalize();
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of pts) {
+    const r = p.clone().sub(pos);
+    const z = r.dot(fwd);
+    if (z < 0.5) continue;
+    const a = Math.atan2(r.dot(right), z);
+    lo = Math.min(lo, a);
+    hi = Math.max(hi, a);
+  }
+  return Number.isFinite(lo) ? { pan: (lo + hi) / 2, half: (hi - lo) / 2 } : null;
+}
+
+/** 水平の向き dir を、pan（rad。右が正）だけ振った向き */
+function panDir(dir: THREE.Vector3, pan: number): THREE.Vector3 {
+  const fwd = dir.clone().setY(0).normalize();
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  return fwd.multiplyScalar(Math.cos(pan)).addScaledVector(right, Math.sin(pan));
+}
+
+/**
+ * 点群が画面に収まる距離（center から dir の逆へ引く）。
+ * pan = true: 建物の見かけの左右の真ん中へ視線を振る前提で測る。斜めから見ると、手前の角は奥の角より大きく振れるので、
+ * 中心を見たままでは片側に余白が残り、そのぶん遠くから撮ることになる（家が画面の 4 割にしか写らなかった）
+ */
+function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vector3, eye: number, vfov: number, aspect: number, margin = 1.12, pan = false, marginV = margin): number {
   const tanV = Math.tan((vfov * Math.PI) / 360);
   const tanH = tanV * aspect;
   const fits = (dist: number) => {
     const cam = center.clone().addScaledVector(dir, -dist).setY(eye);
-    const fwd = dir.clone().setY(0).normalize();
+    let fwd = dir.clone().setY(0).normalize();
+    if (pan) {
+      for (const p of pts) if (p.clone().sub(cam).dot(fwd) < 0.5) return false;
+      fwd = panDir(fwd, hSpan(pts, cam, fwd)!.pan);
+    }
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     let minY = Infinity;
     let maxY = -Infinity;
@@ -132,7 +165,7 @@ function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vec
       maxY = Math.max(maxY, y);
     }
     // シフトで上下を合わせたときに収まるか
-    return (maxY - minY) * margin <= 2 * tanV;
+    return (maxY - minY) * marginV <= 2 * tanV;
   };
   let lo = 2;
   let hi = 200;
@@ -145,8 +178,12 @@ function fitDistance(pts: THREE.Vector3[], center: THREE.Vector3, dir: THREE.Vec
 }
 
 /** その位置・向きで、建物の点群が収まる縦の画角（度。水平視線 + シフト前提）。カメラの後ろに回る点は数えない */
-function fitFov(pts: THREE.Vector3[], pos: THREE.Vector3, dir: THREE.Vector3, aspect: number, margin = 1.12): number {
-  const fwd = dir.clone().setY(0).normalize();
+function fitFov(pts: THREE.Vector3[], pos: THREE.Vector3, dir: THREE.Vector3, aspect: number, margin = 1.12, pan = false): number {
+  let fwd = dir.clone().setY(0).normalize();
+  if (pan) {
+    const sp = hSpan(pts, pos, fwd);
+    if (sp) fwd = panDir(fwd, sp.pan);
+  }
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
   let maxX = 0;
   let minY = Infinity;
@@ -223,13 +260,18 @@ export interface FacadeWindow {
   center: THREE.Vector3;
   normal: THREE.Vector3;
   area: number;
+  /** その階の外形の辺（m。[ax, az, bx, bz]）。その向きから見たとき、建物のほかの部分に隠れる窓を数えないのに使う */
+  segs?: number[][];
 }
 
 export function facadeWindows(model: BuildingModel): FacadeWindow[] {
   const out: FacadeWindow[] = [];
   for (const f of model.floors) {
+    const segs: number[][] = [];
+    for (const l of f.outline) for (let i = 0; i < l.length; i++) segs.push([l[i].x * MM, l[i].y * MM, l[(i + 1) % l.length].x * MM, l[(i + 1) % l.length].y * MM]);
     for (const op of f.openings) {
-      if (op.kind !== 'window' && op.kind !== 'sliding' && op.kind !== 'entrance') continue;
+      // ガレージの扉も、正面の表情（道路側の面のいちばん大きな要素）として数える
+      if (op.kind !== 'window' && op.kind !== 'sliding' && op.kind !== 'entrance' && op.kind !== 'shutter') continue;
       const w = f.walls.find((x) => x.id === op.wallId);
       if (!w || !w.exterior) continue;
       const L = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1;
@@ -252,18 +294,31 @@ export function facadeWindows(model: BuildingModel): FacadeWindow[] {
       const min = probe(-1);
       if (pin !== min) sgn = pin ? -1 : 1;
       const area = ((op.t1 - op.t0) * Math.max(600, op.height)) / 1e6;
-      out.push({ center: new THREE.Vector3(cx * MM, (f.elevation + op.sill + op.height / 2) * MM, cy * MM), normal: new THREE.Vector3(-uy * sgn, 0, ux * sgn), area: area * (op.kind === 'entrance' ? 1.5 : 1) });
+      out.push({ center: new THREE.Vector3(cx * MM, (f.elevation + op.sill + op.height / 2) * MM, cy * MM), normal: new THREE.Vector3(-uy * sgn, 0, ux * sgn), area: area * (op.kind === 'entrance' ? 1.5 : 1), segs });
     }
   }
   return out;
 }
 
-/** その方向（建物から見たカメラの方向）から見える窓の量 */
+/**
+ * その方向（建物から見たカメラの方向）から見える窓の量。
+ * 建物のほかの部分（張り出した棟・中庭の向かいの壁）に隠れる窓は数えない: 吉田様邸は、中庭に面した居間の大きな窓を数えて
+ * 南東の斜めから撮り、車庫の窓の無い側壁が画面の半分を占めていた（その向きからは、車庫の棟に隠れて窓は見えない）
+ */
 function facadeScore(wins: FacadeWindow[], fromDir: THREE.Vector3): number {
   let s = 0;
   for (const w of wins) {
     const c = w.normal.dot(fromDir);
-    if (c > 0.15) s += w.area * c;
+    if (c <= 0.15) continue;
+    if (w.segs) {
+      // 窓の少し外から、カメラの方向へ 40m。同じ階の外形の辺を横切れば隠れている
+      const px = w.center.x + w.normal.x * 0.25;
+      const pz = w.center.z + w.normal.z * 0.25;
+      const qx = px + fromDir.x * 40;
+      const qz = pz + fromDir.z * 40;
+      if (w.segs.some(([ax, az, bx, bz]) => segCrossAt(px, pz, qx, qz, ax, az, bx, bz) >= 0)) continue;
+    }
+    s += w.area * c;
   }
   return s;
 }
@@ -300,10 +355,10 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
   const half = new THREE.Vector3((b.max.x - b.min.x) / 2, 0, (b.max.z - b.min.z) / 2);
   const maxFov = portrait ? 70 : 62;
   const fovMargin = portrait ? 1.06 : 1.14;
-  const place = (fromDir0: THREE.Vector3, margin: number) => {
+  const place = (fromDir0: THREE.Vector3, margin: number, marginV: number) => {
     const at = (fd: THREE.Vector3, ey: number) => {
       const dir = fd.clone().negate().normalize();
-      return { fd, dir, dist: fitDistance(pts, center, dir, ey, vfov, aspect, margin) };
+      return { fd, dir, dist: fitDistance(pts, center, dir, ey, vfov, aspect, margin, true, marginV) };
     };
     const base = at(fromDir0, eye);
     let best = { ...base, d: base.dist, eye, score: -Infinity };
@@ -316,7 +371,7 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
       for (let d = c.dist; d >= minD; d -= 0.5) {
         const p = center.clone().addScaledVector(c.dir, -d).setY(eye);
         // 画角を広げても建物が収まらない近さまでは寄らない（足もとや屋根が切れる）
-        if (d < c.dist && fitFov(pts, p, c.dir, aspect, fovMargin) > maxFov) break;
+        if (d < c.dist && fitFov(pts, p, c.dir, aspect, fovMargin, true) > maxFov) break;
         const clear = 1 - viewBlocked(p, b, fences, nearTrees);
         const score = clear - 0.5 * (1 - d / c.dist) - 0.08 * Math.abs(k);
         if (score > best.score + 1e-6) best = { ...c, d, eye, score };
@@ -337,17 +392,22 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
     return best;
   };
   const mk = (id: string, title: string, caption: string, fromDir0: THREE.Vector3, tod: Shot['timeOfDay'] = 'day', sideSign = -1): Shot => {
-    const margin = portrait ? 1.08 : 1.3;
-    const placed = place(fromDir0, margin);
+    // 余白: 横は建物の幅の 2 割（御社スタッフの外観パースは、家が画面の幅の 7〜8 割を占める。以前は 3 割で、
+    // さらに建物の中心を見たままだったので、家が画面の 4 割ほどにしか写らなかった）。縦は 3 割のまま（空と地面を残す）
+    const margin = portrait ? 1.08 : 1.2;
+    const marginV = portrait ? 1.08 : 1.3;
+    const placed = place(fromDir0, margin, marginV);
     const fromDir = placed.fd;
-    const dir = placed.dir; // カメラの視線方向
+    const dir = placed.dir; // 建物の中心へ向かう方向（カメラの位置を決める）
     const dist = placed.d;
     const ey = placed.eye;
     const pos = center.clone().addScaledVector(dir, -dist).setY(ey);
     // 寄ったときは、建物が収まる画角へ広げる（余白は少し詰める）
-    const fov = dist < placed.dist - 0.01 ? Math.min(maxFov, Math.max(vfov, fitFov(pts, pos, dir, aspect, fovMargin))) : vfov;
+    const fov = dist < placed.dist - 0.01 ? Math.min(maxFov, Math.max(vfov, fitFov(pts, pos, dir, aspect, fovMargin, true))) : vfov;
+    // 視線は、建物の見かけの左右の真ん中へ振る（左右の余白をそろえる）
+    const span = hSpan(pts, pos, dir);
+    const fwd = span ? panDir(dir, span.pan) : dir.clone().setY(0).normalize();
     // シフト量は、建物の上端と下端の見かけの高さの真ん中に合わせる（以前は高さの 4 割に固定で、3 階建てでは屋根が切れていた）
-    const fwd = dir.clone().setY(0).normalize();
     let lo = Infinity;
     let hi = -Infinity;
     for (const p of pts) {
@@ -358,7 +418,7 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
       hi = Math.max(hi, r.y / z);
     }
     const midTan = Number.isFinite(lo) ? (lo + hi) / 2 : (topY * 0.4 - ey) / dist;
-    const target = center.clone().setY(ey + midTan * dist);
+    const target = pos.clone().addScaledVector(fwd, dist).setY(ey + midTan * dist);
     // 時間帯ごとの太陽: 昼は高く（38°）、朝は低く横から（長い影と靄）、夕景はさらに低く逆光気味
     const elev = tod === 'morning' ? 16 : tod === 'evening' ? 9 : 38;
     let side = tod === 'morning' ? 88 : tod === 'evening' ? 112 : 55;

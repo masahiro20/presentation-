@@ -228,9 +228,18 @@ export function generatePattern(spec: MatSpec, size = 512, seed = 7): Buffers {
           break;
         }
         case 'slat': {
-          // シャッターのスラット: 75mm ピッチの横の板。板ごとにゆるく膨らみ、継ぎ目は細い影（黒い線ではなく、同じ色の陰影）
-          const band = my / 0.075;
+          // シャッターのスラット: 75mm ピッチの横の板。板ごとにゆるく膨らみ、継ぎ目は細い影（黒い線ではなく、同じ色の陰影）。
+          // size を 0.2m 以上にすると、平らな大きい板を横に重ねた扉（オーバースライダー）: 板は平らで、継ぎ目だけ細い影
+          const pitch = spec.size ?? 0.075;
+          const band = my / pitch;
           const f = band - Math.floor(band);
+          if (pitch >= 0.2) {
+            const jw = 0.012 / pitch;
+            const joint = f < jw ? 1 - f / jw : f > 1 - jw ? (f - (1 - jw)) / jw : 0;
+            const k = (0.985 + 0.02 * n2) * (1 - 0.35 * joint);
+            set(i, tint(base, k), 0.6 * (1 - joint), baseRough + 0.1 * joint);
+            break;
+          }
           const bulge = Math.sin(f * Math.PI);
           const joint = f < 0.1 ? 1 - f / 0.1 : f > 0.94 ? (f - 0.94) / 0.06 : 0;
           const k = (0.975 + 0.03 * n2) * (1 - 0.2 * joint);

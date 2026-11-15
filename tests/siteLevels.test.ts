@@ -153,8 +153,12 @@ describe('外構の 3D（buildLandscape）', () => {
     const wall = yRange(r.walls, 'l.retain')!;
     expect(wall.min).toBeCloseTo(-0.42, 3);
     expect(wall.max).toBeCloseTo(0.55, 3);
-    // 高い隣地側のフェンス（ブロック）は擁壁の上（y = 0.5 から）
-    const block = yRange(r.mb, 'l.block')!;
+    // 既定の外観は、敷地の際に塀を立てない（2026-11-15）
+    expect(yRange(r.mb, 'l.block')).toBeNull();
+    // 木の塀を選んだテイスト: 高い隣地側の塀（ブロックの基壇）は擁壁の上（y = 0.5 から）
+    const m = model({ neighborMm: { top: 500, left: -400 } });
+    const fenced = buildLandscape(meta(), { ...style, landscape: { ...style.landscape, fence: 'wood' } }, m.site, undefined, m.siteLevels);
+    const block = yRange(fenced.mb, 'l.block')!;
     expect(block.max).toBeGreaterThan(0.5 + 0.4 - 0.01);
   });
 });

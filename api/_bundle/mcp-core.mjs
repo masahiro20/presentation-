@@ -26947,7 +26947,7 @@ function buildAnnexRoof(mb, f, r) {
 			const head = Math.min(H - .45, 2.5);
 			mb.box("ext.shutter", mid.clone().setY(.02), dir, L, head - .02, .05);
 			mb.box("ext.wall", mid.clone().setY(head), dir, L, H - .12 - head, t * 2);
-			for (let y = .25; y < head - .1; y += .25) mb.box("ext.frame", mid.clone().setY(y), dir, L - .04, .008, .056);
+			for (let y = .5; y < head - .1; y += .5) mb.box("ext.frame", mid.clone().setY(y), dir, L - .04, .008, .056);
 		}
 		return;
 	}
@@ -28256,7 +28256,7 @@ function buildOpening(mb, f, w, o, fl, meta, spec, upperOutlines) {
 		});
 		mb.box("ext.frame", plane.clone().addScaledVector(dir, -width / 2 + .025).setY(sill), dir, .05, H, .1);
 		mb.box("ext.frame", plane.clone().addScaledVector(dir, width / 2 - .025).setY(sill), dir, .05, H, .1);
-		mb.box("ext.frame", plane.clone().addScaledVector(outN, -.05).setY(head - .3), dir, width, .3, .2);
+		mb.box("ext.frame", plane.clone().setY(head - .05), dir, width, .05, .1);
 		return;
 	}
 	if (o.kind === "entrance" || serviceDoor) {
@@ -33100,6 +33100,8 @@ function buildTown(f, seed = 7) {
 * 外構・敷地の自動生成
 * 玄関の向きを「道路側」とし、駐車スペース・アプローチ・植栽・フェンスを配置する。
 */
+/** 庭を囲む白い塀の高さ (m) */
+var GARDEN_WALL_H = 1.9;
 var SIDE_WORLD = {
 	top: V(0, 0, -1),
 	bottom: V(0, 0, 1),
@@ -33463,6 +33465,21 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 		mb.box("l.fenceWood", mid.clone().setY(baseY + 1.7), dir, L, .04, .09);
 		mb.box("l.fenceWood", mid.clone().setY(baseY + 1.06), dir, L, .045, .03);
 	}
+	/** 庭の目隠しの白い塗り壁の塀（高さ 1.9m・厚さ 150）。天端に薄い笠木 */
+	function gardenWall(a, c) {
+		const dir = c.clone().sub(a);
+		const L = dir.length();
+		if (L < .3) return;
+		dir.normalize();
+		const mid = a.clone().add(c).multiplyScalar(.5);
+		mb.box("l.gardenWall", mid.clone().setY(0), dir, L + .15, GARDEN_WALL_H, .15);
+		mb.box("l.gardenWallCap", mid.clone().setY(GARDEN_WALL_H), dir, L + .19, .03, .19);
+		fences.push({
+			a: a.clone(),
+			b: c.clone(),
+			top: 1.93
+		});
+	}
 	const rnd = mulberry32(42);
 	const fenceType = style.landscape.fence;
 	const neighborEdges = (siteData?.edges ?? []).filter((e) => e.kind === "neighbor");
@@ -33549,7 +33566,8 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 			z: p.z,
 			r: h * (kind === "modern" ? .26 : .3)
 		});
-		const leafKey = kind === "japanese" ? "l.leafCardDark" : "l.leafSpray";
+		const airy = kind !== "japanese";
+		const leafKey = airy ? "l.leafSpray" : "l.leafCardDark";
 		const up = V(0, 1, 0);
 		const turn = (d, minA, maxA) => {
 			const ax = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < .95 ? up : V(1, 0, 0)).normalize();
@@ -33557,14 +33575,14 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 			return d.clone().applyAxisAngle(ax, minA + rnd() * (maxA - minA)).lerp(up, .15).normalize();
 		};
 		const leaves = (a, b, sz) => {
-			const n = 4;
+			const n = airy ? 2 : 4;
 			for (let i = 0; i < n; i++) {
 				const q = a.clone().lerp(b, .35 + .65 * rnd()).add(V((rnd() - .5) * .12, (rnd() - .5) * .08, (rnd() - .5) * .12));
 				if (clip && !insideInset(q, clip, .15 + sz * .45)) continue;
 				trees.card(leafKey, q, sz * (.75 + rnd() * .5), new THREE.Euler((rnd() - .5) * 1.6, rnd() * Math.PI * 2, (rnd() - .5) * 1.6));
 			}
 		};
-		const leafSize = Math.max(.36, h * .125);
+		const leafSize = Math.max(.34, h * (airy ? .1 : .125));
 		const grow = (a, dir, len, r, level) => {
 			const b = a.clone().addScaledVector(dir, len);
 			if (clip && !insideInset(b, clip, .15)) return;
@@ -33573,12 +33591,12 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 				leaves(a, b, leafSize);
 				return;
 			}
-			const nChild = level === 0 ? 3 : 2;
+			const nChild = airy ? level <= 1 ? 2 : 1 : level === 0 ? 3 : 2;
 			for (let i = 0; i < nChild; i++) {
-				const t = .5 + .45 * (i + rnd() * .6) / nChild;
-				grow(a.clone().lerp(b, t), turn(dir, .45, .85), len * (.5 + rnd() * .15), r * .55, level + 1);
+				const t = (airy ? .42 : .5) + (airy ? .5 : .45) * (i + rnd() * .6) / nChild;
+				grow(a.clone().lerp(b, t), turn(dir, airy ? .38 : .45, airy ? .75 : .85), len * ((airy ? .58 : .5) + rnd() * .15), r * .55, level + 1);
 			}
-			grow(b, turn(dir, .05, .25), len * (.55 + rnd() * .1), r * .7, level + 1);
+			grow(b, turn(dir, .05, .25), len * ((airy ? .6 : .55) + rnd() * .1), r * .7, level + 1);
 			if (level >= 2) leaves(a, b, leafSize * .9);
 		};
 		const stems = kind === "modern" ? 4 : kind === "natural" ? 3 : 1;
@@ -33587,7 +33605,7 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 			const lean = stems > 1 ? .14 + rnd() * .16 : .04;
 			const d0 = V(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
 			const base = p.clone().setY(0).add(V(Math.cos(az) * .06, 0, Math.sin(az) * .06));
-			const r0 = (stems > 1 ? .04 : .08) * (h / 4);
+			const r0 = (stems > 1 ? .032 : .08) * (h / 4);
 			grow(base, d0, h * (.42 + rnd() * .08), r0, 0);
 		}
 	};
@@ -33719,7 +33737,8 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 					key: "l.deck",
 					pts: rect(.02, deckD, u0, u1, 0)
 				});
-				const lawnD = Math.min(3.2, room - deckD - .4);
+				const lawnRest = room - deckD - .4;
+				const lawnD = lawnRest <= 5.5 ? lawnRest : 3.2;
 				if (lawnD >= 1.2) {
 					const l0 = u0 - .8;
 					const l1 = u1 + .8;
@@ -33748,16 +33767,28 @@ function buildLandscape(meta, style, siteData, planExt, levels, opts = {}) {
 							]
 						]) shrub(at(u0 + span * fu, deckD + lawnD * fv, 0), sz);
 					}
-					const far = deckD + lawnD + .25;
-					if (fenceType === "wood" && room - far >= 2.5) {
-						const f0 = at(u0 - 1.6, far, 0);
-						const f1 = at(u1 + 1.6, far, 0);
-						if (free([
+					const flanked = [-1, 1].some((sd) => [
+						1,
+						2,
+						3
+					].some((du) => [
+						1,
+						2,
+						3
+					].some((v) => !!lv1?.polys.some((pl) => insideInset(at(sd < 0 ? u0 - du : u1 + du, v, 0), pl, 0)))));
+					const near = deckD + lawnD + .25;
+					const atNear = !flanked && room - near >= 2.5;
+					const far = atNear ? near : room - .2;
+					if (atNear || fenceType !== "wood" && fenceType !== "hedge" && room <= 12) {
+						const clampSite = (q) => q.set(Math.min(max.x - .1, Math.max(min.x + .1, q.x)), q.y, Math.min(max.y - .1, Math.max(min.y + .1, q.z)));
+						const f0 = clampSite(at(u0 - 1.6, far, 0));
+						const f1 = clampSite(at(u1 + 1.6, far, 0));
+						if (f0.distanceTo(f1) >= 2 && free([
 							f0,
 							f1,
 							f1.clone().addScaledVector(n, .2),
 							f0.clone().addScaledVector(n, .2)
-						])) woodFence(f0, f1, 0);
+						])) gardenWall(f0, f1);
 					}
 				}
 			}
@@ -34012,8 +34043,7 @@ var EXTERIOR_STYLES = [
 		catch: "中間グレーの塗り壁の箱",
 		description: "ジョリパットの中間グレーの塗り壁を一色で回したホームランディックの定番。低い片流れで屋根を見せず、薄い黒の鼻隠しで箱を引き締めます。アクセント（SOLIDO・木板）はコーディネートで玄関まわりに足せます。",
 		wall: "#8f8e8a",
-		wall2: "#86857f",
-		fence: "wood"
+		wall2: "#86857f"
 	}),
 	plasterBox({
 		id: "hl-jolypat-greige",

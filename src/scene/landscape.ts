@@ -35,6 +35,9 @@ export interface SiteFence {
   top: number;
 }
 
+/** 庭を囲む白い塀の高さ (m) */
+const GARDEN_WALL_H = 1.9;
+
 const SIDE_WORLD: Record<PlanSide, THREE.Vector3> = { top: V(0, 0, -1), bottom: V(0, 0, 1), left: V(-1, 0, 0), right: V(1, 0, 0) };
 
 /** 主な接道（複数あれば玄関に近い向き → 駐車場の奥行が取れる側 → 広い道路） */
@@ -398,6 +401,17 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     mb.box('l.fenceWood', mid.clone().setY(baseY + 1.7), dir, L, 0.04, 0.09);
     mb.box('l.fenceWood', mid.clone().setY(baseY + 1.06), dir, L, 0.045, 0.03);
   }
+  /** 庭の目隠しの白い塗り壁の塀（高さ 1.9m・厚さ 150）。天端に薄い笠木 */
+  function gardenWall(a: THREE.Vector3, c: THREE.Vector3) {
+    const dir = c.clone().sub(a);
+    const L = dir.length();
+    if (L < 0.3) return;
+    dir.normalize();
+    const mid = a.clone().add(c).multiplyScalar(0.5);
+    mb.box('l.gardenWall', mid.clone().setY(0), dir, L + 0.15, GARDEN_WALL_H, 0.15);
+    mb.box('l.gardenWallCap', mid.clone().setY(GARDEN_WALL_H), dir, L + 0.19, 0.03, 0.19);
+    fences.push({ a: a.clone(), b: c.clone(), top: GARDEN_WALL_H + 0.03 });
+  }
   // フェンス・生垣（道路側以外の3辺）
   const rnd = mulberry32(42);
   const fenceType = style.landscape.fence;
@@ -496,7 +510,8 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
     if (!p) return;
     plan.trees.push({ x: p.x, z: p.z, r: h * (kind === 'modern' ? 0.26 : 0.3) });
     // 株立ち（アオダモ・ヤマボウシ風）: 幹 → 枝 → 小枝の分岐構造に、枝先だけ葉を付けて軽やかな樹冠にする
-    const leafKey = kind === 'japanese' ? 'l.leafCardDark' : 'l.leafSpray';
+    const airy = kind !== 'japanese';
+    const leafKey = airy ? 'l.leafSpray' : 'l.leafCardDark';
     const up = V(0, 1, 0);
     const turn = (d: THREE.Vector3, minA: number, maxA: number) => {
       // d を、ランダムな直交軸まわりに minA〜maxA 回し、少し上向きに寄せる
@@ -506,14 +521,16 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       return out.lerp(up, 0.15).normalize();
     };
     const leaves = (a: THREE.Vector3, b: THREE.Vector3, sz: number) => {
-      const n = 4; // 枝先の葉カード。少ないとパストレーサーで枝だけの木に見える
+      // 枝先の葉カード。株立ち（modern・natural）は 2 枚: 枝ぶりが透けて見える軽い樹冠
+      // （御社スタッフの外観パースの木は、葉の少ない細い株立ち。葉が多いと緑の塊になって、幹と枝が隠れる）
+      const n = airy ? 2 : 4;
       for (let i = 0; i < n; i++) {
         const q = a.clone().lerp(b, 0.35 + 0.65 * rnd()).add(V((rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.12));
         if (clip && !insideInset(q, clip, 0.15 + sz * 0.45)) continue;
         trees.card(leafKey, q, sz * (0.75 + rnd() * 0.5), new THREE.Euler((rnd() - 0.5) * 1.6, rnd() * Math.PI * 2, (rnd() - 0.5) * 1.6));
       }
     };
-    const leafSize = Math.max(0.36, h * 0.125);
+    const leafSize = Math.max(0.34, h * (airy ? 0.1 : 0.125));
     const grow = (a: THREE.Vector3, dir: THREE.Vector3, len: number, r: number, level: number) => {
       const b = a.clone().addScaledVector(dir, len);
       if (clip && !insideInset(b, clip, 0.15)) return;
@@ -522,13 +539,14 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
         leaves(a, b, leafSize);
         return;
       }
-      const nChild = level === 0 ? 3 : 2;
+      // 株立ちは、枝数を絞って（幹から 2 本・その先も 2 本・小枝は 1 本）長く伸ばす: 枝の間に空が透ける
+      const nChild = airy ? (level <= 1 ? 2 : 1) : level === 0 ? 3 : 2;
       for (let i = 0; i < nChild; i++) {
-        const t = 0.5 + (0.45 * (i + rnd() * 0.6)) / nChild;
-        grow(a.clone().lerp(b, t), turn(dir, 0.45, 0.85), len * (0.5 + rnd() * 0.15), r * 0.55, level + 1);
+        const t = (airy ? 0.42 : 0.5) + ((airy ? 0.5 : 0.45) * (i + rnd() * 0.6)) / nChild;
+        grow(a.clone().lerp(b, t), turn(dir, airy ? 0.38 : 0.45, airy ? 0.75 : 0.85), len * ((airy ? 0.58 : 0.5) + rnd() * 0.15), r * 0.55, level + 1);
       }
       // 先端の延長
-      grow(b, turn(dir, 0.05, 0.25), len * (0.55 + rnd() * 0.1), r * 0.7, level + 1);
+      grow(b, turn(dir, 0.05, 0.25), len * ((airy ? 0.6 : 0.55) + rnd() * 0.1), r * 0.7, level + 1);
       if (level >= 2) leaves(a, b, leafSize * 0.9);
     };
     const stems = kind === 'modern' ? 4 : kind === 'natural' ? 3 : 1;
@@ -537,7 +555,7 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
       const lean = stems > 1 ? 0.14 + rnd() * 0.16 : 0.04;
       const d0 = V(Math.cos(az) * lean, 1, Math.sin(az) * lean).normalize();
       const base = p.clone().setY(0).add(V(Math.cos(az) * 0.06, 0, Math.sin(az) * 0.06));
-      const r0 = (stems > 1 ? 0.04 : 0.08) * (h / 4);
+      const r0 = (stems > 1 ? 0.032 : 0.08) * (h / 4);
       grow(base, d0, h * (0.42 + rnd() * 0.08), r0, 0);
     }
   };
@@ -668,8 +686,9 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
         const top = fy - 0.03;
         mb.box('l.deck', at((u0 + u1) / 2, 0.02 + deckD / 2, 0), uAx, u1 - u0, top, deckD - 0.02);
         plan.paving.push({ key: 'l.deck', pts: rect(0.02, deckD, u0, u1, 0) });
-        // 芝と株立ち: デッキの先に奥行 3.2m まで（敷地の際の 0.4m 手前まで）
-        const lawnD = Math.min(3.2, room - deckD - 0.4);
+        // 芝と株立ち: デッキの先に奥行 3.2m。敷地の際まで 5.5m 以内なら際（0.4m 手前）まで芝にする（塀の手前に半端な砂利の帯を残さない）
+        const lawnRest = room - deckD - 0.4;
+        const lawnD = lawnRest <= 5.5 ? lawnRest : 3.2;
         if (lawnD >= 1.2) {
           const l0 = u0 - 0.8;
           const l1 = u1 + 0.8;
@@ -686,12 +705,25 @@ export function buildLandscape(meta: BuildingMeta, style: ExteriorStyle, siteDat
             if (span >= 4) addTree(at(u0 + span * 0.8, deckD + Math.min(2.2, lawnD * 0.75), 0), 3.2, kind, true);
             for (const [fu, fv, sz] of [[0.42, 0.5, 0.32], [0.6, 0.85, 0.4], [0.08, 0.7, 0.3]] as const) shrub(at(u0 + span * fu, deckD + lawnD * fv, 0), sz);
           }
-          // 目隠しの塀: 敷地の際が遠い（塀まで 7.5m 以上）とき、芝の先に塀を立てて庭を囲む（隣家・道路が丸見えにならないように）
-          const far = deckD + lawnD + 0.25;
-          if (fenceType === 'wood' && room - far >= 2.5) {
-            const f0 = at(u0 - 1.6, far, 0);
-            const f1 = at(u1 + 1.6, far, 0);
-            if (free([f0, f1, f1.clone().addScaledVector(n, 0.2), f0.clone().addScaledVector(n, 0.2)])) woodFence(f0, f1, 0);
+          // 庭の目隠しの塀（白い塗り壁。窓の幅 + 両側 1.6m の 1 枚の壁）。立てる場所は、庭の形で変える:
+          //  - 平らな面の前の開けた庭で、芝の先に 2.5m 以上残る広い敷地: 芝の先（窓から約 5m）。
+          //    御社のご提案（大崎様邸）は、居間の窓の外が白い塀: 隣家が丸見えにならず、木が白い面に映える
+          //  - 建物の棟に挟まれた庭（中庭・入隅）: 庭の途中には立てない。敷地の際（12m 以内のとき）だけ。
+          //    吉田様邸の中庭は、スタッフの外観パースでは 7〜8m 引いて撮っても塀が無い（棟そのものが庭を囲っている）。
+          //    途中に立てると庭が狭くなり、外観（庭側）のカットも塀の手前の狭い所からしか撮れない
+          //  - 芝の先の残りが少ない敷地: 敷地の際（塀の裏に半端な空きを残さない）
+          // 敷地の際に木の塀・生垣（外観テイストの指定）があるときは、際には重ねない
+          const flanked = [-1, 1].some((sd) => [1, 2, 3].some((du) => [1, 2, 3].some((v) => !!lv1?.polys.some((pl) => insideInset(at(sd < 0 ? u0 - du : u1 + du, v, 0), pl, 0)))));
+          const near = deckD + lawnD + 0.25;
+          const atNear = !flanked && room - near >= 2.5;
+          const far = atNear ? near : room - 0.2;
+          if (atNear || (fenceType !== 'wood' && fenceType !== 'hedge' && room <= 12)) {
+            // 両端は敷地の中に収める
+            const clampSite = (q: THREE.Vector3) => q.set(Math.min(max.x - 0.1, Math.max(min.x + 0.1, q.x)), q.y, Math.min(max.y - 0.1, Math.max(min.y + 0.1, q.z)));
+            const f0 = clampSite(at(u0 - 1.6, far, 0));
+            const f1 = clampSite(at(u1 + 1.6, far, 0));
+            // 1 枚の壁として立てる（両端を建物の側へ折り返すと、外から見て白い箱が庭に置いてあるように見える）
+            if (f0.distanceTo(f1) >= 2 && free([f0, f1, f1.clone().addScaledVector(n, 0.2), f0.clone().addScaledVector(n, 0.2)])) gardenWall(f0, f1);
           }
         }
       }

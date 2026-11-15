@@ -990,8 +990,8 @@ function buildAnnexRoof(mb: MeshBuilder, f: Floor, r: Room) {
       mb.box('ext.shutter', mid.clone().setY(0.02), dir, L, head - 0.02, 0.05);
       // シャッターボックス（まぐさ）
       mb.box('ext.wall', mid.clone().setY(head), dir, L, H - 0.12 - head, t * 2);
-      // スラット（横の目地）: 細い溝を数本
-      for (let y = 0.25; y < head - 0.1; y += 0.25) mb.box('ext.frame', mid.clone().setY(y), dir, L - 0.04, 0.008, 0.056);
+      // 板の継ぎ目（横の目地）: 0.5m ごとの細い溝
+      for (let y = 0.5; y < head - 0.1; y += 0.5) mb.box('ext.frame', mid.clone().setY(y), dir, L - 0.04, 0.008, 0.056);
     }
     return;
   }
@@ -2108,7 +2108,7 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
   }
 
   if (o.kind === 'shutter') {
-    // ガレージのシャッター（閉）: 開口いっぱいのスラット付きパネル、両脇のガイドレール、上のシャッターボックス
+    // ガレージの扉（閉）: 開口いっぱいの、平らな大きい板を横に重ねた扉（オーバースライダー。色はサッシと同じ）と、両脇の枠
     const plane = mid.clone().addScaledVector(outN, t / 2 - 0.06);
     // スラット付きのパネルは独立した部品（上端が原点）。クリックで巻き取り式に上のボックスへ巻き上がる
     const panelH = H - 0.08;
@@ -2135,7 +2135,8 @@ function buildOpening(mb: MeshBuilder, f: Floor, w: Wall, o: Opening, fl: number
     });
     mb.box('ext.frame', plane.clone().addScaledVector(dir, -width / 2 + 0.025).setY(sill), dir, 0.05, H, 0.1);
     mb.box('ext.frame', plane.clone().addScaledVector(dir, width / 2 - 0.025).setY(sill), dir, 0.05, H, 0.1);
-    mb.box('ext.frame', plane.clone().addScaledVector(outN, -0.05).setY(head - 0.3), dir, width, 0.3, 0.2);
+    // 上枠は細く（巻き上げシャッターの箱は付けない: 平らな扉が外壁の面に納まる）
+    mb.box('ext.frame', plane.clone().setY(head - 0.05), dir, width, 0.05, 0.1);
     return;
   }
 

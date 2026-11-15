@@ -94,7 +94,7 @@ export class MaterialRegistry {
   constructor(
     public ext: ExteriorStyle,
     public int: InteriorStyle,
-    public opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean } = {},
+    public opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean; townLook?: 'color' } = {},
   ) {
     this.rebuild();
   }
@@ -103,7 +103,7 @@ export class MaterialRegistry {
     return this.map.get(key) ?? this.map.get(key.split(':')[0]) ?? this.fallback;
   }
 
-  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean } = {}) {
+  update(ext: ExteriorStyle, int: InteriorStyle, opts: { wallColor?: string; doorColor?: string; night?: boolean; evening?: boolean; clay?: boolean; townLook?: 'color' } = {}) {
     this.ext = ext;
     this.int = int;
     this.opts = opts;
@@ -150,7 +150,10 @@ export class MaterialRegistry {
     set('ext.concrete', color('#b8b5ae', 0.92));
     set('ext.terrace', M(i.entranceFloor));
     // シャッター: スラットの陰影は模様で出す（細い黒い線を形で並べると、離れたときに破線にちらつく）
-    set('ext.shutter', M({ pattern: 'slat', color: '#8e9195', roughness: 0.6, metalness: 0.25, normalStrength: 0.28 }));
+    // ガレージの扉: サッシと同じ色の、平らな大きい板を横に重ねた扉（オーバースライダー）。
+    // 以前は銀色の巻き上げシャッター（細いスラット＋箱）で、外観の正面でそこだけ安く見えていた
+    // （御社のご提案: 吉田様邸の正面は、黒い平らな扉が外壁の暗い枠に納まる）
+    set('ext.shutter', M({ pattern: 'slat', color: e.frame.color, size: 0.5, tile: 1.0, roughness: 0.5, metalness: 0.3, normalStrength: 0.12 }));
     // 透明ガラス（Low-E クリア）: ほぼ無色で、映り込みは控えめに。色付き・濃い不透明度だとスモークガラスのように外が曇って見える
     const glass = new THREE.MeshPhysicalMaterial({
       color: '#f2f6f7',
@@ -309,44 +312,82 @@ export class MaterialRegistry {
 
     // 外構
     const L = e.landscape;
-    set('l.ground', M(L.ground));
+    // 地面の色は、テイストの指定より一段落として寒色へ少し寄せる（御社スタッフの外観パース: 地面は中間〜濃いグレーの一様な面。
+    // 日なたの明るいコンクリート・砂利が画面の下 1/3 を白く占めると、建物が浮いて見える）
+    const calm = (hex: string, k: number) => {
+      const c = new THREE.Color(hex);
+      const hsl = { h: 0, s: 0, l: 0 };
+      c.getHSL(hsl, THREE.SRGBColorSpace);
+      // 明るい色ほど大きく落とす（もともと濃い石・タイルはほぼそのまま）。彩度は 6 割に。
+      // 上を向いた面は、空の光を壁の倍ほど受ける。壁と同じ明るさの色では、地面のほうがずっと明るく写る
+      const l = hsl.l > 0.36 ? 0.36 + (hsl.l - 0.36) * k : hsl.l;
+      c.setHSL(hsl.h, hsl.s * 0.6, l, THREE.SRGBColorSpace);
+      return '#' + c.getHexString();
+    };
+    const calmSpec = (m: MatSpec, k: number): MatSpec => ({ ...m, color: calm(m.color, k), ...(m.color2 ? { color2: calm(m.color2, k) } : {}) });
+    set('l.ground', M(L.ground.pattern === 'grass' ? L.ground : calmSpec(L.ground, 0.28)));
     // 敷地の外は落ち着いた緑の地面（一面の舗装は駐車場のように見えるので避ける）。彩度を抑えて建物を主役に
     set('l.far', M({ pattern: 'grass', color: '#727a60', color2: '#838a70', tile: 3 }));
     // 想定の街並み（town.ts）: 主役を引き立てる淡い色（彩度・明暗差を抑える）。壁 5 色・屋根 3 色をばらつかせる
-    set('l.nbWallA', color('#cdc9c0', 0.95));
-    set('l.nbWallB', color('#bfbab0', 0.95));
-    set('l.nbWallC', color('#b3b0aa', 0.95));
-    set('l.nbWallD', color('#c6bfb1', 0.95));
-    set('l.nbWallE', color('#9a9995', 0.95));
-    set('l.nbRoofA', color('#4b4d50', 0.7));
-    set('l.nbRoofB', color('#5d564f', 0.75));
-    set('l.nbRoofC', color('#6d7073', 0.5, 0.25));
-    set('l.nbRoof', color('#45474a', 0.75));
-    // 窓は空を映す暗いガラス、枠は白、玄関戸は濃い茶、基礎は明るいコンクリート色
-    // （つやを強くしすぎると、太陽の映り込みが白い点になって、室内から見た隣家の窓に明かりの粒が並ぶ）
-    set('l.nbGlass', color('#56636e', 0.26, 0.2, { envMapIntensity: 1.3 }));
-    set('l.nbFrame', color('#d9d7d1', 0.6));
+    // 街並み（想定の隣家）の見せ方。既定は「淡い量塊」: 壁・屋根・窓を、ほぼ同じ淡い色の塊で見せる
+    // （御社スタッフの Twinmotion の外観: 隣家は白い箱。主役の家だけに色と素材がある。
+    //  窓・玄関戸・屋根の色まで描き分けると、想定の家並みが主役と同じ濃さで並び、絵がうるさくなる）。
+    // townLook = 'color' で、今までの色付きの家並み
+    const massing = this.opts.townLook !== 'color';
+    if (massing) {
+      // 空より少し明るい程度の、青みのある淡いグレー（白すぎると、画面の端で主役より目立つ）
+      set('l.nbWallA', color('#d3d7da', 0.95));
+      set('l.nbWallB', color('#cdd2d6', 0.95));
+      set('l.nbWallC', color('#c7ccd1', 0.95));
+      set('l.nbWallD', color('#d1d4d5', 0.95));
+      set('l.nbWallE', color('#c1c7cc', 0.95));
+      set('l.nbRoofA', color('#b6bcc2', 0.85));
+      set('l.nbRoofB', color('#bbc0c4', 0.85));
+      set('l.nbRoofC', color('#b2b9c0', 0.8));
+      set('l.nbRoof', color('#b4bac0', 0.85));
+      // 窓は、壁よりわずかに沈んだ淡い青み（穴が開いていることだけ分かる）。枠・玄関戸・基礎は壁の色
+      set('l.nbGlass', color('#b6c1cb', 0.5, 0, { envMapIntensity: 0.6 }));
+      set('l.nbFrame', color('#cdd2d6', 0.8));
+    } else {
+      set('l.nbWallA', color('#cdc9c0', 0.95));
+      set('l.nbWallB', color('#bfbab0', 0.95));
+      set('l.nbWallC', color('#b3b0aa', 0.95));
+      set('l.nbWallD', color('#c6bfb1', 0.95));
+      set('l.nbWallE', color('#9a9995', 0.95));
+      set('l.nbRoofA', color('#4b4d50', 0.7));
+      set('l.nbRoofB', color('#5d564f', 0.75));
+      set('l.nbRoofC', color('#6d7073', 0.5, 0.25));
+      set('l.nbRoof', color('#45474a', 0.75));
+      // 窓は空を映す暗いガラス、枠は白、玄関戸は濃い茶、基礎は明るいコンクリート色
+      // （つやを強くしすぎると、太陽の映り込みが白い点になって、室内から見た隣家の窓に明かりの粒が並ぶ）
+      set('l.nbGlass', color('#56636e', 0.26, 0.2, { envMapIntensity: 1.3 }));
+      set('l.nbFrame', color('#d9d7d1', 0.6));
+    }
     // 夕景・夜景では、街並みの窓の一部に明かりが点く（昼は普通のガラス）
-    set('l.nbGlassLit', dusk ? color('#f1d7a6', 0.4, 0, { emissive: new THREE.Color('#ffcf8a'), emissiveIntensity: night ? 0.9 : 0.6 }) : color('#56636e', 0.26, 0.2, { envMapIntensity: 1.3 }));
+    set('l.nbGlassLit', dusk ? color('#f1d7a6', 0.4, 0, { emissive: new THREE.Color('#ffcf8a'), emissiveIntensity: night ? 0.9 : 0.6 }) : (this.map.get('l.nbGlass') as THREE.MeshStandardMaterial).clone());
     // 生垣の芯（葉のカードの奥に見える濃い緑のかたまり）
-    set('l.hedge', M({ pattern: 'grass', color: '#34482c', color2: '#3f5634', tile: 1.2, roughness: 0.95 }));
-    set('l.nbDoor', color('#4a4038', 0.6));
-    set('l.nbBase', color('#b9b6af', 0.92));
+    // （淡い量塊の街並みでも、芯は葉より暗く: 芯だけ淡いと、淡い箱に濃い葉が点々と貼り付いた斑模様に見える）
+    set('l.hedge', M({ pattern: 'grass', color: massing ? '#4c5f42' : '#34482c', color2: massing ? '#586c4d' : '#3f5634', tile: 1.2, roughness: 0.95 }));
+    set('l.nbDoor', color(massing ? '#c0c5c9' : '#4a4038', 0.6));
+    set('l.nbBase', color(massing ? '#c5cace' : '#b9b6af', 0.92));
     // 区画の地面（砂利・土間・芝）と駐車場の舗装、道路の側溝
-    set('l.nbLotA', M({ pattern: 'gravel', color: '#aba69c', color2: '#98948b' }));
-    set('l.nbLotB', M({ pattern: 'gravel', color: '#a39f95', color2: '#918d84' }));
-    set('l.nbLotC', M({ pattern: 'grass', color: '#7d8767', color2: '#8c9474', tile: 3 }));
-    set('l.nbPave', M({ pattern: 'concrete', color: '#b0ada7', roughness: 0.9 }));
-    set('l.gutter', color('#bdbab3', 0.9));
-    set('l.nbCarLight', color('#e9e9e6', 0.3, 0.3));
-    set('l.nbCarDark', color('#2c2e31', 0.3, 0.4));
-    set('l.nbCarGrey', color('#8c8f93', 0.3, 0.5));
-    set('l.road', M({ pattern: 'asphalt', color: '#4a4b4d', tile: 6 }));
-    set('l.curb', color('#b8b6b0', 0.9));
+    // 淡い量塊の街並みでは、隣の区画の地面も、主役の敷地の地面と同じ中間のグレーにそろえる（区画ごとの明るい斑を作らない）
+    set('l.nbLotA', M({ pattern: 'gravel', color: massing ? '#8f9193' : '#aba69c', color2: massing ? '#858789' : '#98948b' }));
+    set('l.nbLotB', M({ pattern: 'gravel', color: massing ? '#898b8d' : '#a39f95', color2: massing ? '#808284' : '#918d84' }));
+    set('l.nbLotC', M({ pattern: 'grass', color: massing ? '#8f987f' : '#7d8767', color2: massing ? '#99a189' : '#8c9474', tile: 3 }));
+    set('l.nbPave', M({ pattern: 'plaster', color: massing ? '#868889' : '#b0ada7', roughness: 0.9, tile: 5 }));
+    set('l.gutter', color(massing ? '#9a9b9a' : '#bdbab3', 0.9));
+    set('l.nbCarLight', color(massing ? '#dfe1e3' : '#e9e9e6', 0.3, massing ? 0.1 : 0.3));
+    set('l.nbCarDark', color(massing ? '#b4b8bc' : '#2c2e31', 0.3, massing ? 0.1 : 0.4));
+    set('l.nbCarGrey', color(massing ? '#c9ccd0' : '#8c8f93', 0.3, massing ? 0.1 : 0.5));
+    // 道路: 淡い量塊の街並みでは、アスファルトを一段明るく・線を控えめに（画面の下 1/3 を濃い帯と白い線が占めない）
+    set('l.road', M({ pattern: 'asphalt', color: massing ? '#6a6c6f' : '#4a4b4d', tile: 6 }));
+    set('l.curb', color(massing ? '#9b9c9b' : '#b8b6b0', 0.9));
     // 道路の白線（OpenStreetMap の街路用）
-    set('l.roadLine', color('#e8e6e0', 0.8));
-    set('l.driveway', M(L.driveway));
-    set('l.approach', M(L.approach));
+    set('l.roadLine', color(massing ? '#b9babb' : '#e8e6e0', 0.8));
+    // 駐車場の土間コンクリート: 金ごて仕上げの一様な面（型枠の割り・セパ穴は壁のもの。床には出ない）
+    set('l.driveway', M(L.driveway.pattern === 'concrete' ? { ...calmSpec(L.driveway, 0.28), pattern: 'plaster', tile: 5, normalStrength: 0.12 } : calmSpec(L.driveway, 0.28)));
+    set('l.approach', M(calmSpec(L.approach, 0.5)));
     set('l.porch', M(L.approach));
     // 塀のブロックはグレーに塗る（施工写真）。木ルーバーは黄味を抑えた落ち着いた茶（ウリンや塗装のアコヤ）
     set('l.block', M({ pattern: 'plaster', color: '#a9a6a0', color2: '#9e9b95', roughness: 0.92, normalStrength: 0.2 }));
@@ -354,10 +395,14 @@ export class MaterialRegistry {
     set('l.retain', M({ pattern: 'plaster', color: '#b6b3ab', color2: '#a7a49c', roughness: 0.9, normalStrength: 0.25 }));
     set('l.stone', M({ pattern: 'plaster', color: '#8d877c', color2: '#7a756b', roughness: 0.95, normalStrength: 0.45, tile: 0.6 }));
     set('l.fenceWood', M({ pattern: 'wood', color: '#7a6350', color2: '#64503f', roughness: 0.75 }));
+    // 庭を囲む白い塗り壁の塀と、その笠木（薄いグレーの金物）
+    set('l.gardenWall', M({ pattern: 'plaster', color: '#e7e5e0', color2: '#deddd7', roughness: 0.94, normalStrength: 0.18 }));
+    set('l.gardenWallCap', color('#b9b8b4', 0.6, 0.2));
     // 庭のウッドデッキ（ハードウッドの板。少し灰色がかった茶）と、庭の芝
     set('l.deck', M({ pattern: 'woodFloor', color: '#8a7460', color2: '#786452', roughness: 0.8 }));
     set('l.lawn', M({ pattern: 'grass', color: '#647648', color2: '#73855a', tile: 2 }));
-    set('l.trunk', color('#5a4636', 0.9));
+    // 幹・枝: 灰色がかった樹皮（アオダモ・ヤマボウシの株立ち。赤茶色だと枝が太く重く見える）
+    set('l.trunk', color('#6f675d', 0.9));
     set('l.leaf', color('#4d7a33', 0.75));
     set('l.leafDark', color('#3a5f2a', 0.8));
     set('l.leafLight', color('#6a9444', 0.75));

@@ -55,6 +55,32 @@ export interface RoofGrid {
  */
 export function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[][] = [], open: Vec2[][] = []): RoofGrid {
   const all = [...polys, ...higher.flat(), ...exclude, ...open].flat();
+  // 45° ではない斜めの長い辺（振れた棟）: 辺の上に 455mm ごとの点を足して、辺に沿う升目を細かくする。
+  // 頂点だけで升目を切ると、振れた棟は大きな升目 2〜3 個になり、「9 点のうち 3 点以上が中」の決まりで
+  // 棟の角の三角が丸ごと屋根なしになったり、外へ大きくはみ出した升目を切り落とせなかったりする（寺川様邸の 28.5° 振れた LDK の棟）。
+  // 45° の辺（隅切り・吉田様邸の LDK）は升目がちょうど半分に切れるので、今までどおり頂点だけ
+  /** 45° ではない斜めの長い辺（a → b。n は外向きの法線） */
+  const skew: { a: Vec2; ux: number; uy: number; nx: number; ny: number; L: number }[] = [];
+  if (!(globalThis as { __NO_ROOF_DIAG_SPLIT?: boolean }).__NO_ROOF_DIAG_SPLIT)
+    for (const l of polys)
+      for (let i = 0; i < l.length; i++) {
+        const a = l[i];
+        const b = l[(i + 1) % l.length];
+        const dx = Math.abs(b.x - a.x);
+        const dy = Math.abs(b.y - a.y);
+        const L = Math.hypot(dx, dy);
+        if (L < 1800 || dx < 300 || dy < 300) continue;
+        const deg = (Math.atan2(Math.min(dx, dy), Math.max(dx, dy)) * 180) / Math.PI;
+        if (deg > 42) continue;
+        const n = Math.round(L / 455);
+        for (let k = 1; k < n; k++) all.push({ x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n });
+        const ux = (b.x - a.x) / L;
+        const uy = (b.y - a.y) / L;
+        let nx = -uy;
+        let ny = ux;
+        if (insideLoops({ x: (a.x + b.x) / 2 + nx * 80, y: (a.y + b.y) / 2 + ny * 80 }, polys)) [nx, ny] = [-nx, -ny];
+        skew.push({ a, ux, uy, nx, ny, L });
+      }
   const uniq = (vals: number[]) => {
     const s = vals.slice().sort((a, b) => a - b);
     const out: number[] = [];
@@ -83,6 +109,28 @@ export function gridOfLoops(polys: Vec2[][], higher: Vec2[][][], exclude: Vec2[]
       mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
       maskUpper[j * nx + i] = inUpper ? 1 : 0;
     }
+  // 振れた棟の辺の外 70cm までの升目にも屋根を掛ける（3D では、辺から軒の出だけ外の線で切り落とす）。
+  // 升目の「3 点以上が中」だけで決めると、屋根の端が升目の階段になり、軒先がのこぎりの歯になる
+  if (skew.length)
+    for (let j = 0; j < nz; j++)
+      for (let i = 0; i < nx; i++) {
+        if (mask[j * nx + i] || maskUpper[j * nx + i]) continue;
+        let near = false;
+        for (const fx of [0.2, 0.5, 0.8]) {
+          for (const fy of [0.2, 0.5, 0.8]) {
+            const px = xs[i] + (xs[i + 1] - xs[i]) * fx;
+            const py = zs[j] + (zs[j + 1] - zs[j]) * fy;
+            if (skew.some((e) => {
+              const t = (px - e.a.x) * e.ux + (py - e.a.y) * e.uy;
+              const d = (px - e.a.x) * e.nx + (py - e.a.y) * e.ny;
+              return t >= -300 && t <= e.L + 300 && d > -150 && d <= 700;
+            })) near = true;
+          }
+        }
+        if (!near) continue;
+        if ((exclude.length && inside(exclude, i, j) >= 5) || (open.length && inside(open, i, j) >= 3) || higher.some((h) => inside(h, i, j) >= 5)) continue;
+        mask[j * nx + i] = 1;
+      }
   return { polys, xs, zs, nx, nz, mask, maskUpper };
 }
 

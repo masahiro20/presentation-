@@ -24,6 +24,7 @@ import { Grid, WALL, OUTSIDE, FREE, dilateMask, erodeMask, traceMask } from './r
 import { classifyRoomName, parseAreaLabel, parseFloorTitle, parseStairMark, normalizeText, parseSashCode, parseFlOffset, parseStepCount, isOpenMark, parseSashKind } from './labels';
 import { cornerSquares, detectStairs, stairEntryFromArrow, stairSideOf, stairMarkDist, stairMarkReach, STAIR_MARK_RANGE, wrapShape } from './stairs';
 import { inferNamelessRoom, doorSwingFor, isCirculation, mustSeparate, ROOM_KNOWLEDGE } from './roomKnowledge';
+import { guessScanRooms, roomPaint, type ScanColor } from './scanColors';
 import { splitEntranceFloor } from './entranceFloor';
 import { detectSite, translateSite, nearestSide, SIDES } from './site';
 import { detectSymbols, dashedOutlines, dashedCarSymbols, symbolsToItems, detectNotes } from './symbols';
@@ -53,6 +54,8 @@ export interface PageMm {
   colorFills: { poly: Vec2[]; color: string }[];
   /** スキャン図面の「太い線（壁）」の画像（mm 座標） */
   rasterMask?: BinaryImage;
+  /** スキャン図面を縮小した色の画像（mm 座標）。着色した図面の部屋の色を読む */
+  scanColor?: ScanColor;
 }
 
 export function pageToMm(p: PageVectors, k: number): PageMm {
@@ -76,7 +79,8 @@ export function pageToMm(p: PageVectors, k: number): PageMm {
     colorFills: p.fills
       .filter((f) => f.polygon.length >= 3 && !/^#f[a-f0-9]f[a-f0-9]f[a-f0-9]$/i.test(f.color) && f.color.toLowerCase() !== '#000000')
       .map((f) => ({ poly: f.polygon.map(sc), color: f.color.toLowerCase() })),
-    rasterMask: p.raster ? { data: p.raster.mask, w: p.raster.w, h: p.raster.h, res: k / p.raster.scale, ox: 0, oy: 0 } : undefined,
+    rasterMask: p.raster ? { data: p.raster.mask, ...(p.raster.solid ? { solid: p.raster.solid } : {}), w: p.raster.w, h: p.raster.h, res: k / p.raster.scale, ox: 0, oy: 0 } : undefined,
+    ...(p.raster?.color ? { scanColor: { data: p.raster.color.data, w: p.raster.color.w, h: p.raster.color.h, res: (k / p.raster.scale) * p.raster.color.f, ox: 0, oy: 0 } } : {}),
   };
 }
 
@@ -269,7 +273,7 @@ function joinWalls(walls: WWall[]) {
   });
 }
 
-function wallBBox(w: WWall): BBox {
+function wallBBox(w: Pick<WWall, 'a' | 'b' | 'd'>): BBox {
   return {
     minX: Math.min(w.a.x, w.b.x) - w.d / 2,
     minY: Math.min(w.a.y, w.b.y) - w.d / 2,
@@ -382,6 +386,33 @@ function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500
   return groups;
 }
 
+/**
+ * スキャン図面: どの壁にもつながらない短い壁（つながった塊の合計が 3m 未満）は、壁ではない太い線として捨てる。
+ * 画像から太い線を壁として拾うので、図面の枠・面積表の罫線・太い文字・寸法の印・樹木の塊も「短い壁」になる。
+ * 窓で途切れた壁は、同じ軸上の壁片と開口をつないだ 1 本の壁になっているので消えない。
+ * （寺川様邸: 図面の下の面積表・表題欄から 0.4〜1.1 帖の「部屋」が 4 つできていた）
+ */
+export function dropScanDebris<T extends Pick<WWall, 'a' | 'b' | 'd'>>(walls: T[], minTotal = 3000, nearTol = 60): T[] {
+  const parent = walls.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < walls.length; i++)
+    for (let j = i + 1; j < walls.length; j++) {
+      const A = walls[i];
+      const B = walls[j];
+      if (bboxGap(wallBBox(A), wallBBox(B)) > nearTol) continue;
+      if (
+        distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol ||
+        distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol
+      )
+        parent[find(i)] = find(j);
+    }
+  const total = new Map<number, number>();
+  walls.forEach((w, i) => total.set(find(i), (total.get(find(i)) ?? 0) + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)));
+  return walls.filter((_, i) => total.get(find(i))! >= minTotal);
+}
+
 export interface PlanData {
   pageIndex: number;
   bbox: BBox;
@@ -408,6 +439,8 @@ export interface PlanData {
   loose?: boolean;
   /** スキャン画像の図面 */
   scan?: boolean;
+  /** スキャン図面を縮小した色の画像（着色した図面の部屋の色から用途を読む。parser/scanColors.ts） */
+  scanColor?: ScanColor;
   /** 開口を白抜きで描く図面で、壁の上の白抜きがすべて開口として読めた（壁の塗りが続いていて白抜きの無い所に、窓・戸は無い） */
   maskDrawn?: boolean;
   /**
@@ -2370,6 +2403,33 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     }
   }
 
+  // 室名の読めないスキャン図面: 部屋の塗りの色（木の色 = フローリング・緑 = 畳・灰 = 土間）と広さから、仮の用途を置く。
+  // 名前が 1 つも無いままだと、LDK の庭側の窓が腰窓になり、家具も置かれず、外観も内観も家に見えない（寺川様邸）
+  if (plan.scan && rooms.length && rooms.every((rm, i) => autoNamed.has(i) || rm.inferred || rm.type === 'hall') && !(globalThis as { __NO_SCAN_GUESS?: boolean }).__NO_SCAN_GUESS) {
+    const cand = [...autoNamed].filter((i) => rooms[i].name === '室');
+    const guess = guessScanRooms(cand.map((i) => ({ area: rooms[i].area, polygon: rooms[i].polygon, ...(plan.scanColor ? { paint: roomPaint(plan.scanColor, rooms[i].polygon) } : {}) })));
+    const made: string[] = [];
+    cand.forEach((i, k) => {
+      const gq = guess[k];
+      if (plan.scanColor) {
+        const pt = roomPaint(plan.scanColor, rooms[i].polygon);
+        (globalThis as { __scanPaintTrace?: string[] }).__scanPaintTrace?.push(`${rooms[i].id} ${(rooms[i].area / 1.62).toFixed(1)}帖 n=${pt.n} 木${pt.wood.toFixed(2)} 緑${pt.green.toFixed(2)} 灰${pt.gray.toFixed(2)} 白${pt.white.toFixed(2)} 青${pt.blue.toFixed(2)} → ${gq ? gq.name : '-'}`);
+      }
+      if (!gq) return;
+      rooms[i].name = gq.name;
+      rooms[i].type = gq.type;
+      rooms[i].inferred = true;
+      autoNamed.delete(i);
+      made.push(gq.name);
+    });
+    if (made.length) {
+      const count = new Map<string, number>();
+      const order = ['LDK', '洋室', '和室', '玄関', '土間'];
+      for (const nm of made.sort((p, q) => order.indexOf(p) - order.indexOf(q))) count.set(nm, (count.get(nm) ?? 0) + 1);
+      warnings.push(`${level}階: 室名が読めないので、${plan.scanColor ? '部屋の塗りの色と広さ' : '広さ'}から用途を仮に置きました（${[...count.entries()].map(([nm, c]) => (c > 1 ? `${nm} ${c}` : nm)).join('・')}）。違う部屋は下の一覧で直してください`);
+    }
+  }
+
   // 室名の無い区画の名前を、隣の部屋から推定する（玄関の隣 → シューズクローク、キッチンの隣 → パントリー、寝室の隣 → WIC …）
   for (const idx of autoNamed) {
     const rm = rooms[idx];
@@ -2387,6 +2447,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       continue;
     }
     const guess = inferNamelessRoom(neighbors, rm.area, { level, width: Math.min(bw, bh), length: Math.max(bw, bh) });
+    // スキャン図面で用途を仮に置いた部屋の隣: 2 帖以上の区画は「室」のままにする（色を塗っていない水まわり・脱衣室が、
+    // 洋室の隣というだけで WIC になる。細い通路と 2 帖未満の収納だけ名前を付ける）
+    if (guess && plan.scan && guess.type !== 'hall' && guess.name !== '' && rm.area / 1.62 >= 2) continue;
     if (guess) {
       rm.name = guess.name;
       rm.type = guess.type;
@@ -2652,7 +2715,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
       const noteKind = notes.map((q) => parseSashKind(q.t.str)).find((v) => v != null) ?? null;
       // 開口ごとの内外: 壁全体は内壁扱いでも、この窓の片側だけが屋外（入隅・坪庭）なら外壁の窓として扱う
       let opOut: 1 | -1 | undefined = exterior ? outsideSign : undefined;
-      if (!exterior && op.kind === 'window') {
+      // スキャン図面の開口は、窓か戸か分からないまま（'open'）来る。長い壁の一部だけが外に面している所（渡り廊下の中庭側など）の
+      // 開口が「建具なしの開口」になり、外壁に穴が開いていた（寺川様邸の渡り廊下の窓）→ 窓と同じく、開口ごとに内外を見る
+      if (!exterior && (op.kind === 'window' || (plan.scan && op.kind === 'open'))) {
         const offS = w.d / 2 + res * 3;
         const sp = sideState({ x: center.x + w.n.x * offS, y: center.y + w.n.y * offS });
         const sm = sideState({ x: center.x - w.n.x * offS, y: center.y - w.n.y * offS });
@@ -4135,8 +4200,9 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       // 細い線は画像の段階で消してあるので、残った帯はすべて壁（最小の厚みは画素数で決める）
       const det2 = detectWallsRasterAuto(page.rasterMask, { closeRadius: 1, minThickness: page.rasterMask.res * 2.5, maxThickness: 400 });
       if (det2) {
-        const w2 = makeWalls(det2);
-        joinWalls(w2);
+        const w2all = makeWalls(det2);
+        joinWalls(w2all);
+        const w2 = (globalThis as { __NO_SCAN_DEBRIS?: boolean }).__NO_SCAN_DEBRIS ? w2all : dropScanDebris(w2all);
         const g2 = clusterPlans(w2, pageExt, 1200, 600);
         if (g2.length) {
           ww = w2;
@@ -4292,7 +4358,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
       // 開口を白抜きで描く図面で、この図の範囲の白抜きがすべて開口として読めた（窓の無い部屋は図面どおり、と言える）
       const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}), ...(joineryFills.length ? { joineryFills } : {}) });
+      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(scan && page.scanColor ? { scanColor: { ...page.scanColor } } : {}), ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}), ...(joineryFills.length ? { joineryFills } : {}) });
     }
   }
   assignFloorTitles(plans, pages);
@@ -5297,6 +5363,7 @@ export function translatePlan(p: PlanData, d: Vec2) {
   p.roomFills = p.roomFills.map((poly) => poly.map(tr));
   if (p.joineryFills) p.joineryFills = p.joineryFills.map((r) => ({ minX: r.minX + d.x, minY: r.minY + d.y, maxX: r.maxX + d.x, maxY: r.maxY + d.y }));
   if (p.trimBands) p.trimBands = p.trimBands.map((poly) => poly.map(tr));
+  if (p.scanColor) p.scanColor = { ...p.scanColor, ox: p.scanColor.ox + d.x, oy: p.scanColor.oy + d.y };
   if (p.sketchLines) p.sketchLines = p.sketchLines.map((sg) => ({ ...sg, a: tr(sg.a), b: tr(sg.b) }));
   p.bbox = { minX: p.bbox.minX + d.x, maxX: p.bbox.maxX + d.x, minY: p.bbox.minY + d.y, maxY: p.bbox.maxY + d.y };
 }

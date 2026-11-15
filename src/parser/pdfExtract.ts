@@ -56,7 +56,16 @@ export interface PageVectors {
   /** 画像の置かれた範囲（ページの pt 座標、y は下向き） */
   images?: { x0: number; y0: number; x1: number; y1: number }[];
   /** スキャン図面: ページを画像にして作った「太い線（壁）」の2値画像。1画素 = 1/scale pt */
-  raster?: { mask: Uint8Array; w: number; h: number; scale: number };
+  raster?: {
+    mask: Uint8Array;
+    /** 太い実線だけの画像（窓の細い線は消えている）。parser/index.ts renderThickMask */
+    solid?: Uint8Array;
+    /** f 画素ずつ平均して縮小した色の画像（RGB）。着色した図面の部屋の色を読む（parser/scanColors.ts） */
+    color?: { data: Uint8Array; w: number; h: number; f: number };
+    w: number;
+    h: number;
+    scale: number;
+  };
 }
 
 type Mat = [number, number, number, number, number, number];

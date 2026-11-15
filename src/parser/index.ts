@@ -123,7 +123,31 @@ async function renderThickMask(page: PdfPageLike, factory: any, wPt: number, hPt
     }
     for (let i = 0; i < gray.length; i++) if (!keep[i]) gray[i] = 255;
   }
-  return { mask: thickStrokeMask(gray, w, h, k, undefined, k), w, h, scale };
+  // 着色した図面の部屋の色（parser/scanColors.ts）: 4 画素ずつ平均して縮小した色の画像
+  const cf = 4;
+  const cw = Math.floor(w / cf);
+  const ch = Math.floor(h / cf);
+  const color = new Uint8Array(cw * ch * 3);
+  for (let y = 0; y < ch; y++)
+    for (let x = 0; x < cw; x++) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let dy = 0; dy < cf; dy++)
+        for (let dx = 0; dx < cf; dx++) {
+          const i = ((y * cf + dy) * w + x * cf + dx) * 4;
+          r += rgba[i];
+          g += rgba[i + 1];
+          b += rgba[i + 2];
+        }
+      const o = (y * cw + x) * 3;
+      color[o] = r / (cf * cf);
+      color[o + 1] = g / (cf * cf);
+      color[o + 2] = b / (cf * cf);
+    }
+  // mask: 2 本の細い線の間を先に埋めてから細い線を消したもの（細い線 2 本で描いた壁も帯になる。窓の 2 本線も帯になる）
+  // solid: 埋めずに細い線を消したもの（太い実線・黒い塗りで描いた壁だけが残る。窓の細い線は消える）
+  return { mask: thickStrokeMask(gray, w, h, k, undefined, k), solid: thickStrokeMask(gray, w, h, k), color: { data: color, w: cw, h: ch, f: cf }, w, h, scale };
 }
 
 /**

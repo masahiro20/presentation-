@@ -2188,6 +2188,38 @@ function gridOfLoops(polys, higher, exclude = [], open = []) {
 		...exclude,
 		...open
 	].flat();
+	/** 45° ではない斜めの長い辺（a → b。n は外向きの法線） */
+	const skew = [];
+	if (!globalThis.__NO_ROOF_DIAG_SPLIT) for (const l of polys) for (let i = 0; i < l.length; i++) {
+		const a = l[i];
+		const b = l[(i + 1) % l.length];
+		const dx = Math.abs(b.x - a.x);
+		const dy = Math.abs(b.y - a.y);
+		const L = Math.hypot(dx, dy);
+		if (L < 1800 || dx < 300 || dy < 300) continue;
+		if (Math.atan2(Math.min(dx, dy), Math.max(dx, dy)) * 180 / Math.PI > 42) continue;
+		const n = Math.round(L / 455);
+		for (let k = 1; k < n; k++) all.push({
+			x: a.x + (b.x - a.x) * k / n,
+			y: a.y + (b.y - a.y) * k / n
+		});
+		const ux = (b.x - a.x) / L;
+		const uy = (b.y - a.y) / L;
+		let nx = -uy;
+		let ny = ux;
+		if (insideLoops({
+			x: (a.x + b.x) / 2 + nx * 80,
+			y: (a.y + b.y) / 2 + ny * 80
+		}, polys)) [nx, ny] = [-nx, -ny];
+		skew.push({
+			a,
+			ux,
+			uy,
+			nx,
+			ny,
+			L
+		});
+	}
 	const uniq = (vals) => {
 		const s = vals.slice().sort((a, b) => a - b);
 		const out = [];
@@ -2223,6 +2255,30 @@ function gridOfLoops(polys, higher, exclude = [], open = []) {
 		const inUpper = higher.some((h) => inside(h, i, j) >= 5);
 		mask[j * nx + i] = inThis && !inUpper ? 1 : 0;
 		maskUpper[j * nx + i] = inUpper ? 1 : 0;
+	}
+	if (skew.length) for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+		if (mask[j * nx + i] || maskUpper[j * nx + i]) continue;
+		let near = false;
+		for (const fx of [
+			.2,
+			.5,
+			.8
+		]) for (const fy of [
+			.2,
+			.5,
+			.8
+		]) {
+			const px = xs[i] + (xs[i + 1] - xs[i]) * fx;
+			const py = zs[j] + (zs[j + 1] - zs[j]) * fy;
+			if (skew.some((e) => {
+				const t = (px - e.a.x) * e.ux + (py - e.a.y) * e.uy;
+				const d = (px - e.a.x) * e.nx + (py - e.a.y) * e.ny;
+				return t >= -300 && t <= e.L + 300 && d > -150 && d <= 700;
+			})) near = true;
+		}
+		if (!near) continue;
+		if (exclude.length && inside(exclude, i, j) >= 5 || open.length && inside(open, i, j) >= 3 || higher.some((h) => inside(h, i, j) >= 5)) continue;
+		mask[j * nx + i] = 1;
 	}
 	return {
 		polys,
@@ -9183,6 +9239,19 @@ function detectWallsRaster(img, anglesDeg, opts = {}) {
 			}
 		}
 	});
+	openings.push(...gapOpenings(pieces));
+	return {
+		groups,
+		pieces,
+		openings,
+		thicknessPeaks: [...new Set(pieces.map((p) => Math.round(p.d / 10) * 10))],
+		heavyThreshold: null,
+		heavyPairedFrac: 1
+	};
+}
+/** 同じ軸上の壁片の間（2.6m 以下）は開口（窓・出入口） */
+function gapOpenings(pieces) {
+	const openings = [];
 	const byAxis = /* @__PURE__ */ new Map();
 	for (const p of pieces) {
 		const k = `${p.g}:${Math.round(p.o / 60)}`;
@@ -9204,14 +9273,7 @@ function detectWallsRaster(img, anglesDeg, opts = {}) {
 			});
 		}
 	}
-	return {
-		groups,
-		pieces,
-		openings,
-		thicknessPeaks: [...new Set(pieces.map((p) => Math.round(p.d / 10) * 10))],
-		heavyThreshold: null,
-		heavyPairedFrac: 1
-	};
+	return openings;
 }
 /**
 * スキャン画像（グレー）から太い線（壁）だけの2値画像を作る。
@@ -9249,8 +9311,13 @@ function thickStrokeMask(gray, w, h, k, threshold, closeFirst = 0) {
 	for (let i = 0; i < bin.length; i++) bin[i] = gray[i] < th ? 1 : 0;
 	return dilateMask(erodeMask(closeFirst > 0 ? erodeMask(dilateMask(bin, w, h, closeFirst), w, h, closeFirst) : bin, w, h, k), w, h, k);
 }
-/** 2値画像の主な線の向き（度）。投影の鋭さで評価（縮小した点で粗く→細かく） */
-function dominantAnglesFromMask(mask, w, h, maxPeaks = 3) {
+/**
+* 2値画像の主な線の向き（度）。投影の鋭さで評価（縮小した点で粗く→細かく）
+* @param exclude すでに拾った向き。その ±5° は候補から外し、残りの向きの中で山を探す
+*   （縦横の壁を消した残りから斜めの棟を探すとき。消し残った図面の枠線などの長い縦横の線が
+*    いちばん強い山になり、斜めの棟の山が「いちばん強い山の 35% 未満」として捨てられていた = 寺川様邸の 30° 振れた LDK の棟）
+*/
+function dominantAnglesFromMask(mask, w, h, maxPeaks = 3, exclude = []) {
 	const pts = [];
 	const step = Math.max(1, Math.round(Math.sqrt(w * h / 4e5)));
 	for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) if (mask[y * w + x]) pts.push({
@@ -9271,12 +9338,14 @@ function dominantAnglesFromMask(mask, w, h, maxPeaks = 3) {
 		for (const v of bins.values()) s += v * v;
 		return s;
 	};
+	const apart = (a, b) => Math.min(Math.abs(a - b), 180 - Math.abs(a - b));
 	const coarse = [];
-	for (let d = 0; d < 180; d += 1) coarse.push({
+	for (let d = 0; d < 180; d += 1) if (exclude.every((e) => apart(e, d) > 5)) coarse.push({
 		d,
 		s: score(d)
 	});
-	const base = coarse.reduce((a, c) => a + c.s, 0) / coarse.length;
+	if (!coarse.length) return [];
+	const base = exclude.length ? coarse.map((c) => c.s).sort((a, b) => a - b)[coarse.length >> 1] : coarse.reduce((a, c) => a + c.s, 0) / coarse.length;
 	const peaks = [];
 	const sorted = coarse.slice().sort((a, b) => b.s - a.s);
 	for (const c of sorted) {
@@ -9297,11 +9366,223 @@ function dominantAnglesFromMask(mask, w, h, maxPeaks = 3) {
 	return peaks;
 }
 /**
+* 縦横の壁を消した残りの画像から、斜めに振れた棟の壁の向き（度）を探す。
+*
+* 評価は「その向きに、切れずに長く続く画素の総量」。残りの画像には文字・樹木・家具の点がたくさん残るが、
+* どの向きにも長くは続かないので数に入らない（点の並びの鋭さで見る dominantAnglesFromMask は、この点に埋もれて
+* 30° 振れた棟を見つけられなかった = 寺川様邸の LDK の棟。山の高さが平らな所の 1.4 倍しか無い）。
+* 半分の解像度で 1° 刻みに粗く探し、山の ±1.5° を、その向きに長く続く画素だけの並びの鋭さで 0.1° まで詰める。
+*
+* @param exclude すでに拾った向き（±5° は探さない）
+* @param res 1 画素の大きさ (mm)
+* @returns 強い順に最大 2 つ（直交する組）。斜めの壁が合わせて約 8m に満たないときは空
+*/
+function obliqueAnglesFromMask(mask, w, h, exclude, res) {
+	const W = w >> 1;
+	const H = h >> 1;
+	if (W < 40 || H < 40) return [];
+	const half = new Uint8Array(W * H);
+	let any = 0;
+	for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+		const i = 2 * y * w + 2 * x;
+		if (mask[i] | mask[i + 1] | mask[i + w] | mask[i + w + 1]) {
+			half[y * W + x] = 1;
+			any++;
+		}
+	}
+	if (any < 200) return [];
+	const r2 = res * 2;
+	const minRun = Math.max(12, Math.round(1200 / r2));
+	const apart = (a, b) => Math.min(Math.abs(a - b), 180 - Math.abs(a - b));
+	const cx = W / 2;
+	const cy = H / 2;
+	const R = Math.ceil(Math.hypot(W, H) / 2);
+	/** その向きに minRun 以上続く画素を数える。each を渡すと、その画素ごとに呼ぶ（半分の解像度の座標） */
+	const runScore = (deg, each) => {
+		const th = deg * Math.PI / 180;
+		const ux = Math.cos(th);
+		const uy = Math.sin(th);
+		let total = 0;
+		for (let o = -R; o <= R; o++) {
+			let x = cx - uy * o - ux * R;
+			let y = cy + ux * o - uy * R;
+			let run = 0;
+			let gap = 0;
+			for (let t = -R; t <= R + 1; t++, x += ux, y += uy) {
+				const xi = x | 0;
+				const yi = y | 0;
+				if (t <= R && x >= 0 && y >= 0 && xi < W && yi < H ? half[yi * W + xi] : 0) {
+					run += 1 + gap;
+					gap = 0;
+				} else if (run) {
+					if (++gap > 1 || t > R) {
+						if (run >= minRun) {
+							total += run;
+							if (each) for (let k = 0; k < run; k++) each(x - ux * (gap + k), y - uy * (gap + k));
+						}
+						run = 0;
+						gap = 0;
+					}
+				}
+			}
+		}
+		return total;
+	};
+	for (const e of exclude) {
+		const hit = [];
+		runScore(e, (x, y) => hit.push((y | 0) * W + (x | 0)));
+		for (const i of hit) {
+			const x = i % W;
+			const y = i / W | 0;
+			for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (x + dx >= 0 && y + dy >= 0 && x + dx < W && y + dy < H) half[(y + dy) * W + x + dx] = 0;
+		}
+	}
+	const coarse = [];
+	for (let d = 0; d < 180; d++) if (exclude.every((e) => apart(e, d) > 5)) coarse.push({
+		d,
+		s: runScore(d)
+	});
+	if (!coarse.length) return [];
+	const sorted = coarse.slice().sort((a, b) => b.s - a.s);
+	const median = coarse.map((c) => c.s).sort((a, b) => a - b)[coarse.length >> 1];
+	const need = 8e3 / r2 * Math.max(2, 120 / r2);
+	/** 山の近くを、その向きに長く続く画素だけの並びの鋭さで詰める */
+	const refine = (d0) => {
+		const pts = [];
+		let n = 0;
+		runScore(d0, (x, y) => {
+			if (n++ % 2 === 0) pts.push({
+				x,
+				y
+			});
+		});
+		if (pts.length < 30) return d0;
+		let bd = d0;
+		let bs = -1;
+		for (let d = d0 - 1.5; d <= d0 + 1.5001; d += .1) {
+			const th = d * Math.PI / 180;
+			const nx = -Math.sin(th);
+			const ny = Math.cos(th);
+			const bins = /* @__PURE__ */ new Map();
+			for (const p of pts) {
+				const k = Math.round(p.x * nx + p.y * ny);
+				bins.set(k, (bins.get(k) ?? 0) + 1);
+			}
+			let sc = 0;
+			for (const v of bins.values()) sc += v * v;
+			if (sc > bs) {
+				bs = sc;
+				bd = d;
+			}
+		}
+		return (bd % 180 + 180) % 180;
+	};
+	const strong = (c) => c.s >= need && c.s >= median * 3 + need * .5;
+	if (!strong(sorted[0])) return [];
+	const a1 = refine(sorted[0].d);
+	const out = [a1];
+	const perp = coarse.filter((c) => apart(c.d, a1 + 90) <= 2).sort((a, b) => b.s - a.s)[0];
+	if (perp && perp.s >= need * .4) out.push(refine(perp.d));
+	else {
+		const c2 = sorted.find((c) => apart(c.d, a1) >= 15 && strong(c));
+		if (c2) out.push(refine(c2.d));
+	}
+	return out;
+}
+/**
+* 太い実線で壁を描いたスキャン図面: 壁の帯のうち、実線の無い区間（細い 2 本線だけ = 窓・ガラス戸・引戸）を開口にする。
+*
+* 壁の帯は「細い線の間を埋めた画像」から拾うので、窓の 2 本線も壁と同じ帯になり、窓の無い家に読めていた
+* （寺川様邸: LDK のデッキ側の全面のガラス戸が、切れ目のない壁になっていた）。
+* 太い実線だけを残した画像（img.solid）と突き合わせ、帯の中で実線が途切れる 35cm 以上の区間を開口として切り出す。
+* 壁を細い 2 本線で描く図面（実線の画像に壁がほとんど残らない）では何もしない。
+*/
+function splitPiecesBySolid(det, img) {
+	const solid = img.solid;
+	if (!solid || !det.pieces.length || globalThis.__NO_SCAN_SOLID) return;
+	const step = img.res * .5;
+	const runsOf = (q) => {
+		const g = det.groups[q.g];
+		const n = Math.max(1, Math.round((q.t1 - q.t0) / step));
+		const m = Math.max(1, Math.ceil(q.d / 2 / step));
+		const flags = [];
+		for (let i = 0; i <= n; i++) {
+			const t = q.t0 + (q.t1 - q.t0) * i / n;
+			let hit = 0;
+			for (let j = -m; j <= m; j++) {
+				const o = q.o + j * step;
+				const x = Math.floor((g.u.x * t + g.n.x * o - img.ox) / img.res);
+				const y = Math.floor((g.u.y * t + g.n.y * o - img.oy) / img.res);
+				if (x >= 0 && y >= 0 && x < img.w && y < img.h && solid[y * img.w + x]) hit++;
+			}
+			flags.push(hit >= (2 * m + 1) * .35);
+		}
+		const runs = [];
+		let s = 0;
+		for (let i = 1; i <= flags.length; i++) if (i === flags.length || flags[i] !== flags[s]) {
+			runs.push({
+				t0: q.t0 + (q.t1 - q.t0) * s / (n + 1),
+				t1: q.t0 + (q.t1 - q.t0) * i / (n + 1),
+				solid: flags[s]
+			});
+			s = i;
+		}
+		const merge = (isSolid, maxLen) => {
+			for (let i = 0; i < runs.length; i++) {
+				const r = runs[i];
+				if (r.solid !== isSolid || r.t1 - r.t0 >= maxLen) continue;
+				if (i > 0 && i < runs.length - 1) r.solid = !isSolid;
+			}
+			for (let i = runs.length - 1; i > 0; i--) if (runs[i].solid === runs[i - 1].solid) {
+				runs[i - 1].t1 = runs[i].t1;
+				runs.splice(i, 1);
+			}
+		};
+		merge(false, 350);
+		merge(true, 220);
+		return runs;
+	};
+	const all = det.pieces.map((q) => ({
+		q,
+		runs: runsOf(q)
+	}));
+	const total = all.reduce((a, r) => a + (r.q.t1 - r.q.t0), 0);
+	const solidLen = all.reduce((a, r) => a + r.runs.filter((x) => x.solid).reduce((b, x) => b + (x.t1 - x.t0), 0), 0);
+	globalThis.__scanTrace?.push(`壁の帯 ${Math.round(total)}mm のうち実線 ${Math.round(solidLen)}mm`);
+	if (solidLen < 2e4 || solidLen < total * .25) return;
+	const pieces = [];
+	const drawn = [];
+	for (const { q, runs } of all) {
+		if (!runs.some((r) => r.solid)) continue;
+		runs.forEach((r, i) => {
+			if (r.solid) pieces.push({
+				...q,
+				t0: r.t0,
+				t1: r.t1
+			});
+			else if (i > 0 && i < runs.length - 1 && r.t1 - r.t0 <= 9e3) drawn.push({
+				g: q.g,
+				o: q.o,
+				d: q.d,
+				t0: r.t0,
+				t1: r.t1,
+				kind: "open",
+				confidence: .5
+			});
+		});
+	}
+	const gaps = gapOpenings(pieces).filter((o) => !drawn.some((e) => e.g === o.g && Math.abs(e.o - o.o) < 60 && Math.min(e.t1, o.t1) - Math.max(e.t0, o.t0) > .5 * Math.min(e.t1 - e.t0, o.t1 - o.t0)));
+	det.pieces = pieces;
+	det.openings = [...drawn, ...gaps];
+}
+/**
 * 向きを自動で求めて壁を検出する。主な向き（縦横）の壁を取り除いた残りから、斜めの壁など別の向きも探す
 */
 function detectWallsRasterAuto(img, opts = {}) {
-	const ang = dominantAnglesFromMask(img.data, img.w, img.h);
-	if (!ang.length) return null;
+	const found = dominantAnglesFromMask(img.data, img.w, img.h);
+	if (!found.length) return null;
+	const apart = (a, b) => Math.min(Math.abs(a - b), 180 - Math.abs(a - b));
+	const ang = [found[0], found.find((a) => Math.abs(apart(a, found[0]) - 90) < 3) ?? (found[0] + 90) % 180];
 	const det = detectWallsRaster(img, ang, opts);
 	const rest = img.data.slice();
 	const clearPiece = (g, q, pad) => {
@@ -9320,23 +9601,39 @@ function detectWallsRasterAuto(img, opts = {}) {
 		}
 	};
 	for (const q of det.pieces) clearPiece(det.groups[q.g], q, img.res * 2);
-	const ang2 = dominantAnglesFromMask(rest, img.w, img.h, 2).filter((a) => ang.every((b) => Math.min(Math.abs(a - b), 180 - Math.abs(a - b)) > 5));
+	const ang2 = globalThis.__NO_SCAN_OBLIQUE ? [] : obliqueAnglesFromMask(rest, img.w, img.h, ang, img.res);
 	if (ang2.length) {
-		const det2 = detectWallsRaster({
-			...img,
-			data: rest
-		}, ang2, opts);
+		const det2 = detectWallsRaster(img, ang2, {
+			...opts,
+			minLength: Math.max(opts.minLength ?? 0, 900)
+		});
+		const inOblique = (x, y) => det2.pieces.some((q) => {
+			const gq = det2.groups[q.g];
+			const t = x * gq.u.x + y * gq.u.y;
+			const o = x * gq.n.x + y * gq.n.y;
+			return t >= q.t0 - img.res * 2 && t <= q.t1 + img.res * 2 && Math.abs(o - q.o) <= q.d / 2 + img.res * 1.5;
+		});
+		const keep = det.pieces.filter((q) => {
+			const L = q.t1 - q.t0;
+			if (L > 1500) return true;
+			const gq = det.groups[q.g];
+			let hit = 0;
+			const n = Math.max(4, Math.round(L / img.res));
+			for (let i = 0; i <= n; i++) {
+				const t = q.t0 + L * i / n;
+				if (inOblique(gq.u.x * t + gq.n.x * q.o, gq.u.y * t + gq.n.y * q.o)) hit++;
+			}
+			return hit < (n + 1) * .7;
+		});
 		const off = det.groups.length;
 		det.groups.push(...det2.groups);
-		det.pieces.push(...det2.pieces.map((q) => ({
+		det.pieces = [...keep, ...det2.pieces.map((q) => ({
 			...q,
 			g: q.g + off
-		})));
-		det.openings.push(...det2.openings.map((q) => ({
-			...q,
-			g: q.g + off
-		})));
+		}))];
+		det.openings = gapOpenings(det.pieces);
 	}
+	splitPiecesBySolid(det, img);
 	return det;
 }
 //#endregion
@@ -10168,6 +10465,116 @@ function stairEntryFromArrow(r, segs, marks) {
 		};
 	}
 	return best ? sideOf(best.tail) : null;
+}
+//#endregion
+//#region src/parser/scanColors.ts
+/** 1 画素の色の種類 */
+function paintClassOf(r, g, b) {
+	const mx = Math.max(r, g, b);
+	const mn = Math.min(r, g, b);
+	if (mn >= 225) return "white";
+	if (mx < 90) return "ink";
+	const sat = (mx - mn) / mx;
+	if (sat < .1) return "gray";
+	let h;
+	if (mx === r) h = (g - b) / (mx - mn) % 6;
+	else if (mx === g) h = (b - r) / (mx - mn) + 2;
+	else h = (r - g) / (mx - mn) + 4;
+	h = (h * 60 + 360) % 360;
+	if (h >= 65 && h <= 170 && sat >= .18) return "green";
+	if (h >= 15 && h <= 55 && sat >= .12) return "wood";
+	if (h >= 180 && h <= 260 && sat >= .15) return "blue";
+	return "other";
+}
+/** 部屋の区画の中の色の割合（0〜1。黒い線・文字は除く） */
+function roomPaint(img, polygon) {
+	const xs = polygon.map((p) => p.x);
+	const ys = polygon.map((p) => p.y);
+	const x0 = Math.max(0, Math.floor((Math.min(...xs) - img.ox) / img.res));
+	const x1 = Math.min(img.w - 1, Math.ceil((Math.max(...xs) - img.ox) / img.res));
+	const y0 = Math.max(0, Math.floor((Math.min(...ys) - img.oy) / img.res));
+	const y1 = Math.min(img.h - 1, Math.ceil((Math.max(...ys) - img.oy) / img.res));
+	const c = {
+		white: 0,
+		ink: 0,
+		gray: 0,
+		green: 0,
+		wood: 0,
+		blue: 0,
+		other: 0
+	};
+	for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+		if (!pointInPolygon({
+			x: img.ox + (x + .5) * img.res,
+			y: img.oy + (y + .5) * img.res
+		}, polygon)) continue;
+		const i = (y * img.w + x) * 3;
+		c[paintClassOf(img.data[i], img.data[i + 1], img.data[i + 2])]++;
+	}
+	const n = c.white + c.gray + c.green + c.wood + c.blue + c.other;
+	const f = (v) => n ? v / n : 0;
+	return {
+		n,
+		wood: f(c.wood),
+		green: f(c.green),
+		gray: f(c.gray),
+		blue: f(c.blue),
+		white: f(c.white)
+	};
+}
+/**
+* 室名の読めない図面の部屋に、仮の用途を置く。
+* @param rooms 用途の決まっていない部屋（area は ㎡）。paint は色の割合（色の画像が無ければ省略）
+* @returns 部屋ごとの仮の用途（決められない部屋は null）
+*
+* 決まり:
+*  - 緑が半分以上                         → 和室
+*  - 灰が半分以上で 1.5 帖以上            → 玄関（いちばん広い 1 つだけ。残りは土間）
+*  - いちばん広い部屋（13 帖以上。色があるなら木の色の部屋から） → LDK
+*  - 木の色で 4.5〜12 帖、細長くない      → 洋室
+* 色の無い図面では LDK だけ（洋室は決めない）。
+*/
+function guessScanRooms(rooms) {
+	const out = rooms.map(() => null);
+	const tatami = (i) => rooms[i].area / 1.62;
+	const colored = rooms.some((r) => r.paint && r.paint.n >= 20 && r.paint.wood + r.paint.green + r.paint.gray >= .3);
+	const isWood = (i) => !!rooms[i].paint && rooms[i].paint.wood >= .3 && rooms[i].paint.wood > rooms[i].paint.gray;
+	rooms.forEach((r, i) => {
+		if (r.paint && r.paint.n >= 12 && r.paint.green >= .5 && tatami(i) >= 2.5) out[i] = {
+			name: "和室",
+			type: "japanese"
+		};
+	});
+	const doma = rooms.map((r, i) => i).filter((i) => !out[i] && rooms[i].paint && rooms[i].paint.n >= 12 && rooms[i].paint.gray >= .5 && tatami(i) >= 1.5 && tatami(i) <= 12);
+	doma.sort((a, b) => rooms[b].area - rooms[a].area);
+	doma.forEach((i, k) => out[i] = k === 0 ? {
+		name: "玄関",
+		type: "entrance"
+	} : {
+		name: "土間",
+		type: "porch"
+	});
+	const ldkCand = rooms.map((_, i) => i).filter((i) => !out[i] && tatami(i) >= 13 && (!colored || isWood(i)));
+	ldkCand.sort((a, b) => rooms[b].area - rooms[a].area);
+	if (ldkCand.length) out[ldkCand[0]] = {
+		name: "LDK",
+		type: "ldk"
+	};
+	if (colored) rooms.forEach((r, i) => {
+		if (out[i] || !isWood(i)) return;
+		const t = tatami(i);
+		if (t < 4.5 || t > 12) return;
+		const xs = r.polygon.map((p) => p.x);
+		const ys = r.polygon.map((p) => p.y);
+		const bw = Math.max(...xs) - Math.min(...xs);
+		const bh = Math.max(...ys) - Math.min(...ys);
+		if (Math.min(bw, bh) < 1900 || r.area * 1e6 / (bw * bh) < .45) return;
+		out[i] = {
+			name: "洋室",
+			type: "bedroom"
+		};
+	});
+	return out;
 }
 //#endregion
 //#region src/parser/entranceFloor.ts
@@ -14733,12 +15140,21 @@ function pageToMm(p, k) {
 		})),
 		rasterMask: p.raster ? {
 			data: p.raster.mask,
+			...p.raster.solid ? { solid: p.raster.solid } : {},
 			w: p.raster.w,
 			h: p.raster.h,
 			res: k / p.raster.scale,
 			ox: 0,
 			oy: 0
-		} : void 0
+		} : void 0,
+		...p.raster?.color ? { scanColor: {
+			data: p.raster.color.data,
+			w: p.raster.color.w,
+			h: p.raster.color.h,
+			res: k / p.raster.scale * p.raster.color.f,
+			ox: 0,
+			oy: 0
+		} } : {}
 	};
 }
 /**
@@ -15060,6 +15476,25 @@ function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs, ne
 	}
 	groups = groups.filter((g) => lenOf(g) >= 8e3);
 	return groups;
+}
+/**
+* スキャン図面: どの壁にもつながらない短い壁（つながった塊の合計が 3m 未満）は、壁ではない太い線として捨てる。
+* 画像から太い線を壁として拾うので、図面の枠・面積表の罫線・太い文字・寸法の印・樹木の塊も「短い壁」になる。
+* 窓で途切れた壁は、同じ軸上の壁片と開口をつないだ 1 本の壁になっているので消えない。
+* （寺川様邸: 図面の下の面積表・表題欄から 0.4〜1.1 帖の「部屋」が 4 つできていた）
+*/
+function dropScanDebris(walls, minTotal = 3e3, nearTol = 60) {
+	const parent = walls.map((_, i) => i);
+	const find = (i) => parent[i] === i ? i : parent[i] = find(parent[i]);
+	for (let i = 0; i < walls.length; i++) for (let j = i + 1; j < walls.length; j++) {
+		const A = walls[i];
+		const B = walls[j];
+		if (bboxGap(wallBBox(A), wallBBox(B)) > nearTol) continue;
+		if (distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol || distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol) parent[find(i)] = find(j);
+	}
+	const total = /* @__PURE__ */ new Map();
+	walls.forEach((w, i) => total.set(find(i), (total.get(find(i)) ?? 0) + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)));
+	return walls.filter((_, i) => total.get(find(i)) >= minTotal);
 }
 /** 室内窓（ガラス）・建具なしの開口があり得る部屋（収納・水まわりの前の白抜きは、印が無くても戸のまま） */
 var INTERIOR_WINDOW_SIDES = [
@@ -17202,6 +17637,40 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 		rm.inferred = true;
 		courtLabels.add(l);
 	}
+	if (plan.scan && rooms.length && rooms.every((rm, i) => autoNamed.has(i) || rm.inferred || rm.type === "hall") && !globalThis.__NO_SCAN_GUESS) {
+		const cand = [...autoNamed].filter((i) => rooms[i].name === "室");
+		const guess = guessScanRooms(cand.map((i) => ({
+			area: rooms[i].area,
+			polygon: rooms[i].polygon,
+			...plan.scanColor ? { paint: roomPaint(plan.scanColor, rooms[i].polygon) } : {}
+		})));
+		const made = [];
+		cand.forEach((i, k) => {
+			const gq = guess[k];
+			if (plan.scanColor) {
+				const pt = roomPaint(plan.scanColor, rooms[i].polygon);
+				globalThis.__scanPaintTrace?.push(`${rooms[i].id} ${(rooms[i].area / 1.62).toFixed(1)}帖 n=${pt.n} 木${pt.wood.toFixed(2)} 緑${pt.green.toFixed(2)} 灰${pt.gray.toFixed(2)} 白${pt.white.toFixed(2)} 青${pt.blue.toFixed(2)} → ${gq ? gq.name : "-"}`);
+			}
+			if (!gq) return;
+			rooms[i].name = gq.name;
+			rooms[i].type = gq.type;
+			rooms[i].inferred = true;
+			autoNamed.delete(i);
+			made.push(gq.name);
+		});
+		if (made.length) {
+			const count = /* @__PURE__ */ new Map();
+			const order = [
+				"LDK",
+				"洋室",
+				"和室",
+				"玄関",
+				"土間"
+			];
+			for (const nm of made.sort((p, q) => order.indexOf(p) - order.indexOf(q))) count.set(nm, (count.get(nm) ?? 0) + 1);
+			warnings.push(`${level}階: 室名が読めないので、${plan.scanColor ? "部屋の塗りの色と広さ" : "広さ"}から用途を仮に置きました（${[...count.entries()].map(([nm, c]) => c > 1 ? `${nm} ${c}` : nm).join("・")}）。違う部屋は下の一覧で直してください`);
+		}
+	}
 	for (const idx of autoNamed) {
 		const rm = rooms[idx];
 		if (rm.name !== "室" && rm.name !== "収納") continue;
@@ -17220,6 +17689,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			width: Math.min(bw, bh),
 			length: Math.max(bw, bh)
 		});
+		if (guess && plan.scan && guess.type !== "hall" && guess.name !== "" && rm.area / 1.62 >= 2) continue;
 		if (guess) {
 			rm.name = guess.name;
 			rm.type = guess.type;
@@ -17513,7 +17983,7 @@ function buildFloor(plan, level, northAngleDeg, warnings, expectedArea, hints) {
 			const noteOpen = notes.some((q) => isOpenMark(q.t.str));
 			const noteKind = notes.map((q) => parseSashKind(q.t.str)).find((v) => v != null) ?? null;
 			let opOut = exterior ? outsideSign : void 0;
-			if (!exterior && op.kind === "window") {
+			if (!exterior && (op.kind === "window" || plan.scan && op.kind === "open")) {
 				const offS = w.d / 2 + 60;
 				const sp = sideState({
 					x: center.x + w.n.x * offS,
@@ -19170,8 +19640,9 @@ function detectPlans(pages, warnings) {
 				maxThickness: 400
 			});
 			if (det2) {
-				const w2 = makeWalls(det2);
-				joinWalls(w2);
+				const w2all = makeWalls(det2);
+				joinWalls(w2all);
+				const w2 = globalThis.__NO_SCAN_DEBRIS ? w2all : dropScanDebris(w2all);
 				const g2 = clusterPlans(w2, pageExt, 1200, 600);
 				if (g2.length) {
 					ww = w2;
@@ -19337,6 +19808,7 @@ function detectPlans(pages, warnings) {
 				sketchLines,
 				loose,
 				scan,
+				...scan && page.scanColor ? { scanColor: { ...page.scanColor } } : {},
 				...maskDrawn ? { maskDrawn } : {},
 				...trimBands.length ? { trimBands } : {},
 				...joineryFills.length ? { joineryFills } : {}
@@ -20447,6 +20919,11 @@ function translatePlan(p, d) {
 		maxY: r.maxY + d.y
 	}));
 	if (p.trimBands) p.trimBands = p.trimBands.map((poly) => poly.map(tr));
+	if (p.scanColor) p.scanColor = {
+		...p.scanColor,
+		ox: p.scanColor.ox + d.x,
+		oy: p.scanColor.oy + d.y
+	};
 	if (p.sketchLines) p.sketchLines = p.sketchLines.map((sg) => ({
 		...sg,
 		a: tr(sg.a),
@@ -21808,8 +22285,34 @@ async function renderThickMask(page, factory, wPt, hPt, only, images) {
 		}
 		for (let i = 0; i < gray.length; i++) if (!keep[i]) gray[i] = 255;
 	}
+	const cf = 4;
+	const cw = Math.floor(w / cf);
+	const ch = Math.floor(h / cf);
+	const color = new Uint8Array(cw * ch * 3);
+	for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+		let r = 0;
+		let g = 0;
+		let b = 0;
+		for (let dy = 0; dy < cf; dy++) for (let dx = 0; dx < cf; dx++) {
+			const i = ((y * cf + dy) * w + x * cf + dx) * 4;
+			r += rgba[i];
+			g += rgba[i + 1];
+			b += rgba[i + 2];
+		}
+		const o = (y * cw + x) * 3;
+		color[o] = r / 16;
+		color[o + 1] = g / 16;
+		color[o + 2] = b / 16;
+	}
 	return {
 		mask: thickStrokeMask(gray, w, h, k, void 0, k),
+		solid: thickStrokeMask(gray, w, h, k),
+		color: {
+			data: color,
+			w: cw,
+			h: ch,
+			f: cf
+		},
 		w,
 		h,
 		scale

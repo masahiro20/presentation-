@@ -208,6 +208,33 @@ function head(_no: number, en: string, ja: string) {
 }
 
 /**
+ * 建築概要の値が長いとき（長い住所など）に、勝手に折り返さず 1 行に収める。
+ * 欄の幅は約 24.5（many のときは 23.5）cqw。全角 1 字 = 文字の大きさ × 1.06（字間込み）、半角は 0.55 字ぶん。
+ *  1. まず括弧の内側の空き（全角の空白）を詰める（文字の大きさはそのまま）
+ *  2. それでも入らなければ、文字を 8 割まで小さく・字間を詰める
+ *  3. それでも入らない長さだけ 2 行にする（2 行目は括弧の内側にそろえる）
+ */
+export function ovFit(v: string, many = false): { style: string; text: string } | null {
+  const width = (t: string) => [...t].reduce((a, c) => a + (c.charCodeAt(0) < 0x2000 ? 0.55 : 1), 0);
+  const base = many ? 1.1 : 1.25;
+  const room = many ? 23.5 : 24.5;
+  if (width(`［　${v}　］`) * base * 1.06 <= room) return null;
+  const text = `［ ${v} ］`;
+  const len = width(text);
+  const keep = 'overflow:visible;text-overflow:clip;align-self:center';
+  if (len * base * 1.06 <= room) return { text, style: `white-space:nowrap;${keep}` };
+  const min = base * 0.8;
+  const size = Math.min(base, room / (len * 1.02));
+  if (size >= min) return { text, style: `font-size:${size.toFixed(3)}cqw;letter-spacing:0.02em;white-space:nowrap;${keep}` };
+  return { text, style: `font-size:${min.toFixed(3)}cqw;letter-spacing:0.02em;line-height:1.5;white-space:normal;padding-left:1.4em;text-indent:-1.4em;${keep}` };
+}
+
+function ovDd(v: string, many: boolean): HTMLElement {
+  const f = ovFit(v, many);
+  return h('dd', f ? { style: f.style } : null, f ? f.text : `［　${v}　］`);
+}
+
+/**
  * 建築概要の自動の行（読み取った間取りから: 敷地所在地・建築面積・延床面積（階ごと）・構造・規模・主要用途）。
  * 右のメモの上書きはこの上に当てる。敷地所在地は住所を入れる欄なので、座標で決めた地点や（仮）は「—」にする
  */
@@ -341,7 +368,7 @@ export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): 
     '建築概要',
     slide(
       'hl hl-overview',
-      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: `ov ${ov.length > 9 ? 'many' : ov.length <= 6 ? 'few' : ''}` }, ...ov.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, `［　${v}　］`)]))),
+      h('div', null, head(0, 'Project Overview', '建築概要'), h('dl', { class: `ov ${ov.length > 9 ? 'many' : ov.length <= 6 ? 'few' : ''}` }, ...ov.flatMap(([k, v]) => [h('dt', null, k), ovDd(v, ov.length > 9)]))),
       h('div', { class: 'ph' }, photo(exts[0] ?? hero)),
     ),
   );

@@ -359,9 +359,17 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .slide.hl-close .motto { font-family: 'Shippori Mincho', 'Noto Serif JP', serif; font-size: 2.6cqw; letter-spacing: 0.12em; color: var(--ink-2); margin: 1.2cqw 0; }
 .slide.hl-close .contact { font-size: 1.1cqw; line-height: 2.1; color: var(--ink-2); text-align: left; }
 .slide.hl-close .contact span { display: inline-block; width: 7.5cqw; }
-.slide.hl-text { padding: 9cqw 10cqw; }
+/* 表紙・締め以外の文字のページ（理念・アプローチ・建築概要…）の置き方は、御社の提案書と同じ:
+   左に 12.7% の余白を取って左寄せ、文字の塊は上下の中央（以前は左上に寄っていて、下と右が大きく空いていた）。
+   スライドの中の文字の大きさ（cqw）は「スライドの幅 − 左右の余白」を基準に決まるので、左右の余白の合計は変えない
+   （理念・アプローチは 20、建築概要は 7。合計を変えると文字の大きさまで変わる） */
+.slide.hl-text { padding: 0 7.3cqw 0 12.7cqw; display: flex; flex-direction: column; justify-content: center; }
 .slide.hl-text .body p { font-size: 1.45cqw; line-height: 2.4; color: var(--ink); margin: 0 0 1.2cqw; letter-spacing: 0.04em; }
+/* 本文は 3 行ぶんの高さを取る: 理念（2 行）とアプローチ（3 行）で、見出しの高さがページをめくってもそろう */
+.slide.hl-text .body { min-height: 14cqw; }
 .slide.hl-overview { display: grid; grid-template-columns: 1fr 1.25fr; gap: 5cqw; padding: 7cqw 0 7cqw 7cqw; }
+/* 左の文字の塊: 左の余白を 12.7% に（7 ＋ 6.13 × 0.93）、上下は中央に（上下の余白を自動に。中身が入りきらないほど多いときは上詰めのまま下へ伸びる） */
+.slide.hl-overview > div:first-child { margin-block: auto; min-width: 0; padding-left: 6.13cqw; }
 .slide.hl-overview .ov { display: grid; grid-template-columns: 11cqw 1fr; row-gap: 1.5cqw; margin: 0; font-size: 1.25cqw; letter-spacing: 0.06em; }
 .slide.hl-overview .ov dt { color: var(--ink-2); }
 .slide.hl-overview .ov dd { margin: 0; }

@@ -1,5 +1,6 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
 import { h, clear, toast } from './dom';
+import { createWalkHud } from './walkHud';
 import { state, on, emit } from './state';
 import { estimateSummary } from './steps/estimateStep';
 import { yenMan } from '../core/planDiff';
@@ -298,7 +299,7 @@ export class App {
     type Mode = 'orbit' | 'pan' | 'walk';
     const orbit = h('button', { class: 'nav-btn', title: '回転（ドラッグで建物の周りを回る。クリックした物を中心に回ります）', onclick: () => setMode('orbit') }, h('span', { class: 'ic' }, '⟲'), '回転');
     const pan = h('button', { class: 'nav-btn', title: '移動（画面を掴んで上下左右にずらす）\nスペースキーを押している間も移動になります', onclick: () => setMode('pan') }, h('span', { class: 'ic' }, '✋'), '移動');
-    const walk = h('button', { class: 'nav-btn', title: '目線（人の目の高さで歩く）\nドラッグで見回し、ホイールまたは W/S で前後、A/D で左右。階段も上れます', onclick: () => setMode('walk') }, h('span', { class: 'ic' }, '👁'), '目線');
+    const walk = h('button', { class: 'nav-btn', title: '目線（身長 170cm の人の目の高さで歩く）\nドラッグで見回し、ホイールまたは W/S・↑/↓ で前後、←/→ で向きを変える、A/D で横歩き。階段も上れます\n床をクリックするとそこへ歩き、戸はクリックで開閉。V で広角、右下の地図を押すとその場所へ移動します', onclick: () => setMode('walk') }, h('span', { class: 'ic' }, '👁'), '目線');
     // 表示の重さ: 閲覧（軽快）が既定。仕上げ表示は止まったときだけ GTAO・SMAA 込みで描く。保存・書き出しは常に高品質
     const finish = h(
       'button',
@@ -333,6 +334,8 @@ export class App {
       pan.classList.toggle('on', m === 'pan');
       walk.classList.toggle('on', m === 'walk');
     };
+    // 歩く体験の部品（現在地の地図・広角・揺れ・戸の札）。目線モードのあいだだけ出る
+    createWalkHud(v, this.viewerHost);
     setMode('orbit');
     // 家具・造作の置き直し（3D 画面のまま）。家具だけ作り直すので、建物の作り直しは起こさない
     this.furnTool = createFurnitureTool(

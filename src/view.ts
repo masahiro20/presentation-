@@ -15,6 +15,7 @@ import type { ProjectFile } from './app/project';
 import { siteLatLon } from './sun/geo';
 import { sunPosition, localDate, sunDirectionWorld } from './sun/solar';
 import { h, clear } from './app/dom';
+import { createWalkHud } from './app/walkHud';
 import { upload } from '@vercel/blob/client';
 import { FINISH_CATEGORIES, selectedProduct } from './coordinate/catalog';
 import { ROUNDS, shotFor, deltaText, type CustomerPicks, type CustomerInbox } from './coordinate/decisions';
@@ -61,6 +62,8 @@ async function main() {
 
   const design: DesignOptions = { ...proj.design };
   const viewer = new Viewer(stage, design);
+  // 歩く体験の部品（現在地の地図・広角・戸の札）。歩いているあいだだけ、左上（やめるボタンの下）に出る
+  createWalkHud(viewer, stage, { place: 'top-left' });
   // 検証用（E2E）
   (window as unknown as { __view?: unknown }).__view = { viewer, proj, THREE };
   viewer.setModel(proj.model);
@@ -203,18 +206,27 @@ async function main() {
     pad?.remove();
     exitBtn?.remove();
     pad = exitBtn = null;
-    for (const k of ['w', 'a', 's', 'd'] as const) viewer.pressKey(k, false);
+    for (const k of ['w', 's', 'arrowleft', 'arrowright'] as const) viewer.pressKey(k, false);
     if (viewer.navMode === 'walk') viewer.setNavMode('orbit');
   };
-  const enterWalk = () => {
-    const ent = shots().find((x) => x.kind === 'interior' && /玄関|ホール/.test(x.title)) ?? shots().find((x) => x.kind === 'interior');
-    if (ent) viewer.applyShot(ent, false);
-    viewer.setNavMode('walk');
+  const enterWalk = (from: 'entrance' | 'outside' = 'entrance') => {
+    exitWalk();
+    if (from === 'outside') {
+      // 道路側の外観から降りると、玄関の正面（アプローチ）に立つ。そのまま歩くと玄関の戸が開いて中へ入れる
+      const ext = shots().find((x) => x.kind === 'exterior' || x.kind === 'aerial');
+      if (ext) viewer.applyShot(ext, false);
+      viewer.walkFromOutside();
+    } else {
+      const ent = shots().find((x) => x.kind === 'interior' && /玄関|ホール/.test(x.title)) ?? shots().find((x) => x.kind === 'interior');
+      if (ent) viewer.applyShot(ent, false);
+      // 玄関の戸を入った所から、家の奥を向いて歩き始める（玄関が読めていない家は、玄関・ホールの構図から）
+      if (!viewer.walkFromEntrance()) viewer.setNavMode('walk');
+    }
     tag.textContent = '';
     curShot = null;
     paintLike();
     pad = h('div', { class: 'vw-pad' });
-    const key = (k: 'w' | 'a' | 's' | 'd', cls: string, label: string) => {
+    const key = (k: 'w' | 's' | 'arrowleft' | 'arrowright', cls: string, label: string) => {
       const b = h('button', { class: cls }, label);
       const on = (e: Event) => {
         e.preventDefault();
@@ -227,13 +239,15 @@ async function main() {
       b.addEventListener('pointerleave', off);
       return b;
     };
-    pad.append(key('w', 'up', '▲'), key('a', 'left', '◀'), key('s', 'down', '▼'), key('d', 'right', '▶'));
+    // ▲▼ で前後に歩き、◀▶ でその場で向きを変える（指 1 本でも家の中を回れる）
+    pad.append(key('w', 'up', '▲'), key('arrowleft', 'left', '↶'), key('s', 'down', '▼'), key('arrowright', 'right', '↷'));
     exitBtn = h('button', { class: 'vw-exit', onclick: () => show('int') }, '歩くのをやめる');
     stage.append(pad, exitBtn);
   };
   addTab('walk', '歩く', (pane) => {
-    pane.appendChild(h('button', { class: 'vw-chip primary', onclick: enterWalk }, '玄関から歩いてみる'));
-    pane.appendChild(h('div', { class: 'vw-hint' }, '右下のボタンで進み、画面をドラッグして見回します。階段も上れます。'));
+    pane.appendChild(h('button', { class: 'vw-chip primary', onclick: () => enterWalk('entrance') }, '玄関から歩いてみる'));
+    pane.appendChild(h('button', { class: 'vw-chip', onclick: () => enterWalk('outside') }, '外から歩いてみる'));
+    pane.appendChild(h('div', { class: 'vw-hint' }, '右下のボタンで歩き、画面をドラッグして見回します。床をタップするとそこへ歩き、戸はタップで開きます。左上の地図を押すと、その場所へ移動します。'));
   });
   // 光（時刻）
   addTab('sun', '光', (pane) => {

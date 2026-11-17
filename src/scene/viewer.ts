@@ -11,7 +11,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import type { BuildingModel, Room } from '../core/types';
-import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo } from './building';
+import { buildBuilding, CUT_HEIGHT, MM, type BuildingMeta, type DoorInfo, type RoomInfo } from './building';
 import { MeshBuilder, topClip, verticalClip } from './meshBuilder';
 import { buildRoofs, type RoofInfo } from './roof';
 import { buildFurniture, setKitchenFinish, setFurnitureLighting, setFurnitureVocab, type LightPoint, type Footprint } from './furniture';
@@ -284,8 +284,27 @@ export class Viewer {
   /** 目線モードの見回し: 指の位置（2 本指のつまみで前後） */
   private walkPtrs = new Map<number, { x: number; y: number }>();
   private walkPinch: number | null = null;
-  /** 目線モードの目の高さ（床から） */
-  eyeHeight = 1.5;
+  /** 目線モードの目の高さ（床から）。身長 170cm の人の目の高さ ≒ 1.6m */
+  eyeHeight = 1.6;
+  /** 歩くときの揺れ（歩幅に合わせた小さな上下・左右）。酔う人のために切れる */
+  walkBob = true;
+  /** いまカメラに足している揺れのずれ（歩行の計算の前に引き、後で足し直す） */
+  private bob = new THREE.Vector3();
+  private bobAmp = 0;
+  /** 歩いた距離（歩幅の位相） */
+  private stride = 0;
+  /** 体の向き（視線より少し遅れて付いてくる。null = 視線と同じ） */
+  private bodyYaw: number | null = null;
+  /** ←/→ キーで向きを変える速さ（ラジアン/秒。慣性付き） */
+  private turnVel = 0;
+  /** 目線モードの画角: 通常（人が注視して見ている範囲）と広角（視野の端まで入る引きの目線） */
+  static readonly WALK_FOV = 62;
+  static readonly WALK_FOV_WIDE = 84;
+  walkWide = false;
+  private fovTo: number | null = null;
+  private fovBeforeWalk: number | null = null;
+  /** 目線モードの状態が変わった（現在地・向き・階・広角）ときに呼ばれる（現在地の地図が使う） */
+  onWalkChange: (() => void) | null = null;
   /** ホイールのズームで残っている移動量（数フレームかけてなめらかに消化する） */
   private zoomRemain = new THREE.Vector3();
   /** 操作中の 1 コマにかかった時間の平均（重い環境では操作中だけ解像度を下げる） */
@@ -636,6 +655,8 @@ export class Viewer {
       }
       // 扉の開閉は通常表示だけ（模型では扉を少し開けた形で作り直している）
       if (!this.cut && this.toggleDoorAt(ndc)) return;
+      // 歩いているとき: 床をクリックすると、そこまで歩いていく（キーに慣れていない人も、行きたい所を押すだけで進める）
+      if (this.navMode === 'walk' && !this.cut && this.walkToClick(ndc)) return;
       // 道具を開いていなければ、クリックした物を選んで直す（歩くモードでは扉の開閉だけ）
       if (this.onPickIdle && this.navMode !== 'walk') {
         const hit = this.pickHit(ndc);
@@ -698,12 +719,23 @@ export class Viewer {
         this.camera.updateProjectionMatrix();
         this._dirty = true;
       }
-      if (this.navMode === 'walk' || e.buttons !== 0) return;
+      if (e.buttons !== 0) return;
       const now = performance.now();
       if (now - hoverAt < 100) return;
       hoverAt = now;
       const r = el.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      if (this.navMode === 'walk') {
+        // 歩いているとき: クリックで動く物（戸・シャッター）の上では手の形にして、「押せる」と分かるようにする
+        const d = this.cut ? null : this.doorAt(ndc);
+        const want = d ? 'pointer' : 'grab';
+        if (el.style.cursor !== want) el.style.cursor = want;
+        if (this.hoverDoor !== (d?.info.id ?? null)) {
+          this.hoverDoor = d?.info.id ?? null;
+          this.onWalkHover?.(d ? { kind: d.info.kind, open: ((d.group.userData.frac as number | undefined) ?? d.info.staticOpen) > 0.5 } : null);
+        }
+        return;
+      }
       // ハンドルの上は常に「掴める」
       if (this.handles.length && this.pickHandle(ndc)) {
         if (el.style.cursor !== 'pointer') el.style.cursor = 'pointer';
@@ -862,7 +894,14 @@ export class Viewer {
   setNavMode(mode: 'orbit' | 'pan' | 'walk') {
     const prev = this.navMode;
     this.navMode = mode;
-    if (prev === 'walk' && mode !== 'walk') this.closeAutoDoors();
+    if (prev === 'walk' && mode !== 'walk') {
+      this.closeAutoDoors();
+      this.clearBob();
+      this.turnVel = 0;
+      this.bodyYaw = null;
+      if (this.fovBeforeWalk != null) this.fovTo = this.fovBeforeWalk;
+      this.fovBeforeWalk = null;
+    }
     const M = THREE.MOUSE;
     const T = THREE.TOUCH;
     this.walkPtrs.clear();
@@ -875,7 +914,14 @@ export class Viewer {
         this.camera.updateProjectionMatrix();
       }
       this.enterEyeLevel();
+      if (prev !== 'walk') {
+        this.fovBeforeWalk = this.fovTo ?? this.camera.fov;
+        this.fovTo = this.walkWide ? Viewer.WALK_FOV_WIDE : Viewer.WALK_FOV;
+      }
       this.renderer.domElement.style.cursor = 'grab';
+      // 立った所のすぐ前に閉じた戸があれば開ける（歩き始めが戸の板のどアップにならないように）
+      this.autoDoors();
+      this.onWalkChange?.();
       return;
     }
     this.controls.enabled = true;
@@ -893,6 +939,93 @@ export class Viewer {
       this.controls.touches = { ONE: T.ROTATE, TWO: T.DOLLY_PAN };
     }
     this.renderer.domElement.style.cursor = mode === 'pan' ? 'grab' : '';
+    if (prev === 'walk') this.onWalkChange?.();
+  }
+
+  /** 目線モードの画角を切り替える（通常 ⇄ 引きの広角）。歩いている途中でも、なめらかに切り替わる */
+  setWalkWide(on: boolean) {
+    this.walkWide = on;
+    if (this.navMode === 'walk') this.fovTo = on ? Viewer.WALK_FOV_WIDE : Viewer.WALK_FOV;
+    this.dirty = true;
+    this.onWalkChange?.();
+  }
+
+  /** 歩くときの揺れを足している分を戻す（別の構図へ飛ぶ・目線モードを抜けるとき） */
+  private clearBob(restore = true) {
+    if (restore) this.camera.position.sub(this.bob);
+    this.bob.set(0, 0, 0);
+    this.bobAmp = 0;
+  }
+
+  /** 画角の切り替えを数コマかけて消化する（約 0.25 秒） */
+  private stepFov(dt: number) {
+    if (this.fovTo == null) return;
+    if (this.anim) return;
+    const d = this.fovTo - this.camera.fov;
+    if (Math.abs(d) < 0.05) {
+      this.camera.fov = this.fovTo;
+      this.fovTo = null;
+    } else this.camera.fov += d * (1 - Math.exp(-dt / 0.09));
+    this.camera.updateProjectionMatrix();
+    this.camMoved();
+  }
+
+  /** 目線モードの現在地（地図用）: 位置・向き（+x を 0、+z へ向かって増える角度）・いる階・部屋名 */
+  walkPose(): { x: number; z: number; dirX: number; dirZ: number; level: number; room: string | null; inside: boolean } | null {
+    if (!this.state) return null;
+    const p = this.camera.position;
+    const f = this.forwardFlat();
+    const at = this.roomAtCamera();
+    let level = at?.ri.floor.level ?? 0;
+    if (!at) {
+      // 部屋の外（屋外・階段の途中）: 目の高さから、いちばん近い階
+      let best = Infinity;
+      for (const ri of this.state.meta.rooms) {
+        const d = Math.abs(p.y - this.eyeHeight - ri.floorY);
+        if (d < best) {
+          best = d;
+          level = ri.floor.level;
+        }
+      }
+    }
+    return { x: p.x - this.bob.x, z: p.z - this.bob.z, dirX: f.x, dirZ: f.z, level, room: at ? at.ri.room.name || null : null, inside: !!at };
+  }
+
+  /**
+   * 目線モードで、地図の点へ移動する（その場所に立って、その目線になる）。
+   * @param level 階（部屋の中の点なら、その階の床に立つ。屋外は地面）
+   * 向きは、部屋の中ならその部屋の広いほう（部屋の中心）へ、屋外なら建物のほうへ向ける
+   */
+  walkGoto(x: number, z: number, level: number) {
+    const st = this.state;
+    if (!st) return;
+    if (this.navMode !== 'walk') return;
+    this.clearBob();
+    let floorY = 0;
+    let look: THREE.Vector3 | null = null;
+    let hit: RoomInfo | null = null;
+    for (const ri of st.meta.rooms) {
+      if (ri.floor.level !== level || ri.room.type === 'void' || ri.poly.length < 3) continue;
+      if (!pointInPolygon({ x, y: z }, ri.poly)) continue;
+      if (!hit || ri.room.area < hit.room.area) hit = ri;
+    }
+    if (hit) {
+      floorY = hit.floorY;
+      if (Math.hypot(hit.center.x - x, hit.center.z - z) > 0.7) look = new THREE.Vector3(hit.center.x, 0, hit.center.z);
+    } else {
+      const c = st.meta.bbox.getCenter(new THREE.Vector3());
+      look = new THREE.Vector3(c.x, 0, c.z);
+    }
+    const pos = new THREE.Vector3(x, floorY + this.eyeHeight, z);
+    const dir = look ? look.setY(pos.y).sub(pos) : this.forwardFlat();
+    if (dir.lengthSq() < 1e-6) dir.copy(this.forwardFlat());
+    dir.normalize();
+    this.walkVel.set(0, 0, 0);
+    this.walkImpulse.set(0, 0, 0);
+    this.bodyYaw = null;
+    this.closeAutoDoors();
+    this.fovTo = null;
+    this.flyTo({ pos, target: pos.clone().addScaledVector(dir, 3), fov: this.walkWide ? Viewer.WALK_FOV_WIDE : Viewer.WALK_FOV }, 700);
   }
 
   /** ボタンでのズーム（k < 1 で近づく） */
@@ -1454,6 +1587,132 @@ export class Viewer {
     return this.camera.position.y < 4 ? 0 : null;
   }
 
+  /**
+   * 玄関の正面で、玄関の戸までまっすぐ歩ける立ち位置（目の高さ）。なるべく遠く（want m）から。
+   * 玄関が建物の奥まった所にある家（ポーチの袖壁・目隠し壁の内側）では、壁の手前から歩くと壁で止まってしまうので、
+   * 目とひざの高さで戸まで見通せる距離まで近づける
+   */
+  private entranceApproach(want: number): THREE.Vector3 {
+    const ent = this.state!.meta.entrance!;
+    const occ = this.occluder();
+    const ray = new THREE.Ray();
+    const at = (d: number) => new THREE.Vector3(ent.pos.x + ent.outward.x * d, this.eyeHeight, ent.pos.z + ent.outward.z * d);
+    for (const d of [want, want * 0.75, want * 0.55, 2.4, 1.8, 1.3]) {
+      if (d > want) continue;
+      const p = at(d);
+      if (!occ) return p;
+      let clear = true;
+      for (const dy of [0, -0.9]) {
+        ray.origin.copy(p).setY(p.y + dy);
+        ray.direction.set(-ent.outward.x, 0, -ent.outward.z).normalize();
+        const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
+        // 戸の板は当たり判定に入っていない。戸の少し先（0.5m）までに壁があれば、まっすぐ歩けない
+        if (hit && hit.distance < d + 0.5) clear = false;
+      }
+      if (clear) return p;
+    }
+    return at(1.3);
+  }
+
+  /**
+   * 目線モード: クリックした床の場所まで歩く（視線の向きはそのまま）。床に当たらなければ false。
+   * 家具の上・壁・遠すぎる所（15m 超）・階が違う高さは動かない。壁ぎわは 0.4m 手前で止まる
+   */
+  private walkToClick(ndc: THREE.Vector2): boolean {
+    const occ = this.occluder();
+    if (!occ) return false;
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const hit = occ.bvh.raycastFirst(rc.ray, THREE.DoubleSide);
+    let point: THREE.Vector3 | null = null;
+    if (hit && hit.face) {
+      if (Math.abs(hit.face.normal.y) < 0.7) return false;
+      point = hit.point.clone();
+    } else {
+      // 屋外の地面
+      const p = new THREE.Vector3();
+      if (rc.ray.direction.y < -0.02 && rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p)) point = p;
+    }
+    if (!point) return false;
+    const eye = this.camera.position.clone().sub(this.bob);
+    const dist = Math.hypot(point.x - eye.x, point.z - eye.z);
+    if (dist < 0.4 || dist > 15) return false;
+    // 床は足もとより下にある面だけ（天井・見上げた面は除く）。階段の数段ぶん（1.6m）までは上り下りできる
+    const footY = eye.y - this.eyeHeight;
+    if (point.y > eye.y - 0.3 || Math.abs(point.y - footY) > 1.6) return false;
+    // 手前に家具があれば、その家具を指している（床ではない）
+    const fur = rc.intersectObjects([this.groups.furniture], true).find((x) => (x.object as THREE.Mesh).visible && x.distance > 0.05);
+    const toPoint = point.distanceTo(this.camera.position);
+    if (fur && fur.distance < toPoint - 0.05) return false;
+    const pos = new THREE.Vector3(point.x, point.y + this.eyeHeight, point.z);
+    // 壁ぎわは手前で止まる
+    const dir = new THREE.Vector3(point.x - eye.x, 0, point.z - eye.z).normalize();
+    const wall = occ.bvh.raycastFirst(new THREE.Ray(pos.clone(), dir), THREE.DoubleSide);
+    if (wall && wall.distance < 0.4) pos.addScaledVector(dir, -(0.4 - wall.distance));
+    const look = new THREE.Vector3();
+    this.camera.getWorldDirection(look);
+    this.clearBob();
+    this.walkVel.set(0, 0, 0);
+    this.walkImpulse.set(0, 0, 0);
+    this.bodyYaw = null;
+    this.fovTo = null;
+    this.flyTo({ pos, target: pos.clone().addScaledVector(look, 3), fov: this.walkWide ? Viewer.WALK_FOV_WIDE : Viewer.WALK_FOV }, Math.max(450, Math.min(2600, (dist / 2.2) * 1000)));
+    return true;
+  }
+
+  /** 玄関を入った所（戸の内側 1m）に立ち、家の奥を向いて歩き始める。玄関が読めていない家は false（呼び出し側で別の始め方をする） */
+  walkFromEntrance(): boolean {
+    const ent = this.state?.meta.entrance;
+    if (!ent) return false;
+    const pos = this.camera.position;
+    pos.set(ent.pos.x - ent.outward.x * 1.0, ent.pos.y + this.eyeHeight, ent.pos.z - ent.outward.z * 1.0);
+    // 正面（家の奥）が 2.5m 以上あいていれば正面、壁が近ければ、いちばん奥まで見通せる向き（戸のほうへは向かない）
+    const inward = new THREE.Vector3(-ent.outward.x, 0, -ent.outward.z).normalize();
+    const occ = this.occluder();
+    let dir = inward;
+    if (occ) {
+      const reach = (d: THREE.Vector3) => occ.bvh.raycastFirst(new THREE.Ray(pos.clone(), d), THREE.DoubleSide)?.distance ?? 30;
+      if (reach(inward) < 2.5) {
+        let best = reach(inward);
+        for (let k = 1; k < 16; k++) {
+          const d = inward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), (k * Math.PI) / 8);
+          if (d.dot(inward) < -0.5) continue;
+          const r = Math.min(12, reach(d));
+          if (r > best + 0.3) {
+            best = r;
+            dir = d;
+          }
+        }
+      }
+    }
+    this.camera.lookAt(pos.clone().addScaledVector(dir, 3));
+    this.clearBob(false);
+    this.setNavMode('walk');
+    return true;
+  }
+
+  /** 屋外（玄関の正面・アプローチ側）に立って、目線モードで歩き始める。そのまま進むと玄関の戸が開いて中へ入れる */
+  walkFromOutside() {
+    const st = this.state;
+    if (st) {
+      const ent = st.meta.entrance;
+      const b = st.meta.bbox;
+      const pos = this.camera.position;
+      if (ent) {
+        pos.copy(this.entranceApproach(6));
+        this.camera.lookAt(new THREE.Vector3(ent.pos.x, pos.y, ent.pos.z));
+      } else {
+        const c = b.getCenter(new THREE.Vector3());
+        const dir = pos.clone().setY(0).sub(c.clone().setY(0));
+        if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+        dir.normalize();
+        pos.set(c.x + dir.x * ((b.max.x - b.min.x) / 2 + 6), this.eyeHeight, c.z + dir.z * ((b.max.z - b.min.z) / 2 + 6));
+        this.camera.lookAt(c.setY(this.eyeHeight));
+      }
+    }
+    this.setNavMode('walk');
+  }
+
   /** 目線の高さに降りる（上空から切り替えたときは建物の前に立つ） */
   private enterEyeLevel() {
     const b = this.state?.meta.bbox;
@@ -1461,7 +1720,7 @@ export class Viewer {
     if (b && pos.y > 6) {
       // 上空からは、玄関があれば玄関の正面、無ければ今いる方角の建物の外に立つ
       const ent = this.state!.meta.entrance;
-      if (ent) pos.copy(ent.pos).addScaledVector(ent.outward, 4);
+      if (ent) pos.copy(this.entranceApproach(4));
       else {
         const c = new THREE.Vector3((b.min.x + b.max.x) / 2, 0, (b.min.z + b.max.z) / 2);
         const dir = pos.clone().setY(0).sub(c);
@@ -1538,10 +1797,15 @@ export class Viewer {
       const t = Math.min(1, (now - this.anim.t0) / this.anim.dur);
       const k = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       this.applyView(lerpView(this.anim.from, this.anim.to, k));
-      if (t >= 1) this.anim = null;
+      if (t >= 1) {
+        this.anim = null;
+        if (this.navMode === 'walk') this.autoDoors();
+      }
       this.camMoved();
+      if (this.navMode === 'walk') this.onWalkChange?.();
     }
-    if (this.keys.size || this.walkVel.lengthSq() > 1e-6 || this.walkImpulse.lengthSq() > 1e-6) this.walk(dt);
+    if (this.keys.size || this.walkVel.lengthSq() > 1e-6 || this.walkImpulse.lengthSq() > 1e-6 || this.bobAmp > 1e-3 || Math.abs(this.turnVel) > 1e-3) this.walk(dt);
+    this.stepFov(dt);
     this.stepDoors(dt);
     if (this.drift && !this.anim && this.navMode !== 'walk') {
       // ゆっくり回り込む（高品質描画のまま: 操作扱いにしない）
@@ -1680,23 +1944,42 @@ export class Viewer {
 
   /** 歩く: W/S・↑/↓ 前後、A/D・←/→ 左右、Q/E 下/上、Shift で速く。慣性を付けてなめらかに動き、壁は通り抜けない */
   private walk(dt: number) {
+    const walkMode = this.navMode === 'walk';
+    const k = this.keys;
+    // 揺れのずれを引いて「体の位置」に戻してから計算する（当たり判定・床の高さが揺れで狂わないように）
+    this.camera.position.sub(this.bob);
+    this.bob.set(0, 0, 0);
+    if (walkMode) {
+      // ←/→ は向きを変える（人が首と体を回すように、回り始めと止まりぎわをなめらかに）。A/D は横歩き
+      const turn = (k.has('arrowleft') ? 1 : 0) - (k.has('arrowright') ? 1 : 0);
+      this.turnVel += (turn * 1.5 - this.turnVel) * (1 - Math.exp(-dt / 0.12));
+      if (!turn && Math.abs(this.turnVel) < 0.01) this.turnVel = 0;
+      if (this.turnVel) this.lookBy(this.turnVel * dt, 0);
+    }
     const f = this.forwardFlat();
+    if (walkMode) {
+      // 体の向きは、視線より少し遅れて付いてくる（見回しながら歩くと、先に視線が向いてから進む向きが変わる）
+      const yaw = Math.atan2(f.x, f.z);
+      if (this.bodyYaw == null) this.bodyYaw = yaw;
+      let d = yaw - this.bodyYaw;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      this.bodyYaw += d * (1 - Math.exp(-dt / 0.16));
+      f.set(Math.sin(this.bodyYaw), 0, Math.cos(this.bodyYaw));
+    }
     const r = new THREE.Vector3(-f.z, 0, f.x);
     const want = new THREE.Vector3();
-    const k = this.keys;
     if (k.has('w') || k.has('arrowup')) want.add(f);
     if (k.has('s') || k.has('arrowdown')) want.sub(f);
-    if (k.has('d') || k.has('arrowright')) want.add(r);
-    if (k.has('a') || k.has('arrowleft')) want.sub(r);
+    if (k.has('d') || (!walkMode && k.has('arrowright'))) want.add(r);
+    if (k.has('a') || (!walkMode && k.has('arrowleft'))) want.sub(r);
     if (k.has('e')) want.y += 1;
     if (k.has('q')) want.y -= 1;
-    const walkMode = this.navMode === 'walk';
-    // 室内・目線は歩く速さ、外観は建物の大きさに合わせて速く
+    // 目線は人の歩く速さ（毎秒 1.3m。Shift で早足）、室内の回転表示は少し速く、外観は建物の大きさに合わせて速く
     const indoor = walkMode || this.camera.position.y < 8;
-    const speed = (indoor ? 1.6 : 9) * (k.has('shift') ? 2.5 : 1);
+    const speed = (walkMode ? 1.3 : indoor ? 1.6 : 9) * (k.has('shift') ? (walkMode ? 2 : 2.5) : 1);
     if (want.lengthSq() > 0) want.normalize().multiplyScalar(speed);
-    // 慣性: 加速 0.18 秒、減速 0.25 秒程度
-    const tau = want.lengthSq() > 0 ? 0.18 : 0.25;
+    // 慣性: 歩き出しは 0.25 秒ほどかけて速さに乗り、止まるときは 0.22 秒ほどで止まる
+    const tau = want.lengthSq() > 0 ? (walkMode ? 0.25 : 0.18) : walkMode ? 0.22 : 0.25;
     const a = 1 - Math.exp(-dt / tau);
     this.walkVel.lerp(want, a);
     if (this.walkVel.lengthSq() < 1e-5 && want.lengthSq() === 0) this.walkVel.set(0, 0, 0);
@@ -1723,7 +2006,7 @@ export class Viewer {
           const hit = occ.bvh.raycastFirst(ray, THREE.DoubleSide);
           if (hit && hit.distance < len + 0.3) return true;
         }
-        return false;
+        return walkMode && this.furnitureBlocks(d);
       };
       const dx = new THREE.Vector3(mv.x, 0, 0);
       const dz = new THREE.Vector3(0, 0, mv.z);
@@ -1738,6 +2021,7 @@ export class Viewer {
         this.walkImpulse.z = 0;
       }
     }
+    const walked = Math.hypot(mv.x, mv.z);
     if (mv.lengthSq() > 0) {
       this.anim = null;
       this.camera.position.add(mv);
@@ -1759,10 +2043,53 @@ export class Viewer {
         }
       }
     }
+    if (walkMode) {
+      // 歩幅に合わせた揺れ: 1 歩（約 0.7m）ごとに頭が 2cm ほど上下し、2 歩で左右に 1cm ほど揺れる。歩く速さで強さが決まり、止まると消える
+      const v = dt > 0 ? walked / dt : 0;
+      const amp = this.walkBob ? Math.min(1.25, v / 1.3) : 0;
+      this.bobAmp += (amp - this.bobAmp) * (1 - Math.exp(-dt / 0.18));
+      if (this.bobAmp < 1e-3 && amp === 0) this.bobAmp = 0;
+      this.stride += walked;
+      if (this.bobAmp > 0) {
+        const ph = (this.stride / 0.7) * Math.PI;
+        const side = Math.sin(ph) * 0.011 * this.bobAmp;
+        const fw = this.forwardFlat();
+        this.bob.set(-fw.z * side, -Math.abs(Math.sin(ph)) * 0.022 * this.bobAmp, fw.x * side);
+        this.camera.position.add(this.bob);
+        this.camMoved();
+      }
+      this.syncWalkTarget();
+      if (walked > 0 || this.turnVel) this.onWalkChange?.();
+    }
+  }
+
+  /**
+   * 目線モード: 進む先に家具（床に置いた、ひざより高い物）があるか。敷物・吊戸棚・照明はまたげる／くぐれるので除く。
+   * いま家具の中にいる（構図から歩き始めた位置がソファの上など）ときは止めない（抜け出せるように）
+   */
+  private furnitureBlocks(d: THREE.Vector3): boolean {
+    const st = this.state;
+    if (!st || !this.design.furniture) return false;
+    const at = this.roomAtCamera();
+    if (!at) return false;
+    const fps = st.occupancy.get(at.ri.room.id);
+    if (!fps?.length) return false;
+    const p = this.camera.position;
+    const floor = at.ri.floorY;
+    const R = 0.22;
+    const nx = p.x + d.x + Math.sign(d.x) * R;
+    const nz = p.z + d.z + Math.sign(d.z) * R;
+    for (const fp of fps) {
+      if (fp.maxY - floor < 0.3 || (fp.baseY ?? floor) - floor > 0.9) continue;
+      const inNow = p.x > fp.minX && p.x < fp.maxX && p.z > fp.minZ && p.z < fp.maxZ;
+      if (inNow) continue;
+      if (nx > fp.minX && nx < fp.maxX && nz > fp.minZ && nz < fp.maxZ) return true;
+    }
+    return false;
   }
 
   /** 画面上のボタン（スマホ）から歩く操作を入れる: 'w' 'a' 's' 'd' を押した／離した */
-  pressKey(key: 'w' | 'a' | 's' | 'd' | 'shift', on: boolean) {
+  pressKey(key: 'w' | 'a' | 's' | 'd' | 'shift' | 'arrowleft' | 'arrowright', on: boolean) {
     if (on) this.keys.add(key);
     else this.keys.delete(key);
     this.dirty = true;
@@ -2052,7 +2379,22 @@ export class Viewer {
   private doorAnim = new Map<string, number>();
   /** 画面上の点にある扉を開閉する。扉に当たれば true */
   toggleDoorAt(ndc: THREE.Vector2): boolean {
-    if (!this.doors.length) return false;
+    const d = this.doorAt(ndc);
+    if (!d) return false;
+    const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
+    this.doorAnim.set(d.info.id, cur > 0.5 ? 0 : 1);
+    this.doorAuto.delete(d.info.id);
+    this.dirty = true;
+    return true;
+  }
+
+  /** 歩いているときに、カーソルの下にある「クリックで動く物」（null = 無い）。画面に「クリックで開く」の札を出すのに使う */
+  onWalkHover: ((hit: { kind: DoorInfo['kind']; open: boolean } | null) => void) | null = null;
+  private hoverDoor: string | null = null;
+
+  /** 画面上の点にある扉（手前に壁・家具があれば null） */
+  private doorAt(ndc: THREE.Vector2) {
+    if (!this.doors.length) return null;
     const rc = new THREE.Raycaster();
     rc.setFromCamera(ndc, this.camera);
     // 見えている面（Mesh）だけを対象にする（稜線の線や非表示の物に当たらないように）
@@ -2062,22 +2404,16 @@ export class Viewer {
     };
     const vis = this.doors.filter((d) => shown(d.group) || d.group.visible);
     const hits = rc.intersectObjects(vis.map((d) => d.group), true).filter((x) => shown(x.object));
-    if (!hits.length) return false;
+    if (!hits.length) return null;
     // 扉より手前に壁・家具・外構の物があれば無視（車の向こうのシャッターが開かないように）
     const wall = rc
       .intersectObjects([this.groups.building, this.groups.furniture, this.groups.landscape], true)
       .filter((x) => shown(x.object) && !String(x.object.userData.matKey ?? '').startsWith('ext.glass') && !x.object.userData.noShadow)
       .find((x) => !this.doors.some((d) => d.group === x.object.parent?.parent || d.group === x.object.parent));
-    if (wall && wall.distance < hits[0].distance - 0.05) return false;
+    if (wall && wall.distance < hits[0].distance - 0.05) return null;
     let o: THREE.Object3D | null = hits[0].object;
     while (o && !this.doors.some((d) => d.group === o)) o = o.parent;
-    const d = this.doors.find((x) => x.group === o);
-    if (!d) return false;
-    const cur = (d.group.userData.frac as number | undefined) ?? d.info.staticOpen;
-    this.doorAnim.set(d.info.id, cur > 0.5 ? 0 : 1);
-    this.doorAuto.delete(d.info.id);
-    this.dirty = true;
-    return true;
+    return this.doors.find((x) => x.group === o) ?? null;
   }
 
   private stepDoors(dt: number) {
@@ -2882,6 +3218,9 @@ export class Viewer {
 
   applyView(v: CameraView) {
     if (this.doorAuto.size) this.closeAutoDoors(true);
+    this.clearBob(false);
+    // 構図を当てるときは、その構図の画角が正（目線モードの画角の切り替え途中でも、書き出す絵の画角を動かさない）
+    if (!this.anim) this.fovTo = null;
     this.camera.fov = v.fov;
     if (v.architectural) {
       // 水平視線 + シフト

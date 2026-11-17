@@ -1,3 +1,4 @@
+import { applyBuildFixes, buildCheck, type BuildIssue } from '../../core/buildCheck';
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
 import { FEATURES } from '../features';
 import { focusChips, focusNotes, onFocusChange, openFocusDialog, pendingMemoIntents } from '../focusNotes';
@@ -1686,6 +1687,27 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
           }
         : { label: '方眼で確認', fn: openEditor },
       action2: it.marks?.length ? { label: '図面で見る', fn: () => showMarks(it) } : undefined,
+    });
+  }
+
+  // 建築として成り立つか（建具と壁の位置・戸の可動範囲・階段の寸法と上下階の接続・階の高さ・壁の重なり）。形は直さず、根拠つきで示す
+  const SEV: Record<BuildIssue['severity'], string> = { critical: '重大', confirm: '要確認', note: '参考' };
+  for (const it of buildCheck(model).filter((i) => i.severity !== 'note').slice(0, 6)) {
+    const mark: WoodIssue | null = it.at ? { id: it.id, level: it.level, severity: 'warn', title: it.title, detail: it.reason, marks: [{ level: it.level, rects: [{ minX: it.at.x - 400, minY: it.at.y - 400, maxX: it.at.x + 400, maxY: it.at.y + 400 }], label: SEV[it.severity] }] } : null;
+    rows.push({
+      ok: it.severity === 'critical' ? false : null,
+      label: '建築',
+      detail: `【${SEV[it.severity]}】${it.title} — ${it.reason} ${it.advice}（基準: ${it.basis.ref}／確からしさ ${Math.round(it.confidence * 100)}%）`,
+      action: it.fix
+        ? {
+            label: it.fix.label,
+            fn: () => {
+              applyBuildFixes(model, [it]);
+              onFix();
+            },
+          }
+        : { label: '方眼で確認', fn: () => openLevel(it.level) },
+      action2: mark ? { label: '図面で見る', fn: () => showMarks(mark) } : undefined,
     });
   }
 

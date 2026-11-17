@@ -1,4 +1,5 @@
 import { h, clear, toast, progressModal, section, field, segmented, fold, download, modal } from '../dom';
+import { FEATURES } from '../features';
 import { focusChips, focusNotes, onFocusChange, openFocusDialog, pendingMemoIntents } from '../focusNotes';
 import { zoomPane } from '../zoomPane';
 import { readDesignIntents } from '../../core/designIntent';
@@ -1488,7 +1489,7 @@ function sourcesCard(model: BuildingModel, act: { addElevation: () => void; add3
   if (rep.scaleSource === 'elevation') done.push(`立面図で直した: 平面図の縮尺（1/${rep.scaleDenominator ?? Math.round(rep.mmPerPt / 0.3528)}）`);
   if (rep.finishTable?.length) {
     const ft = finishesFromTable(rep.finishTable);
-    if (ft.applied.length) done.push(h('span', null, `外部仕上表: ${ft.applied.join('・')}をコーディネートに反映 `, h('button', { class: 'btn sm ghost', onclick: act.openCoord }, 'コーデで見る')));
+    if (ft.applied.length) done.push(h('span', null, `外部仕上表: ${ft.applied.join('・')}を仕上げに反映 `, FEATURES.coordStep ? h('button', { class: 'btn sm ghost', onclick: act.openCoord }, 'コーデで見る') : null));
   }
   // 次の一手
   const next: HTMLElement[] = [];

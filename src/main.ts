@@ -7,11 +7,12 @@ import { sunStep } from './app/steps/sunStep';
 import { presentStep } from './app/steps/presentStep';
 import { estimateStep } from './app/steps/estimateStep';
 import { coordStep } from './app/steps/coordStep';
+import { FEATURES } from './app/features';
 import { state, emit } from './app/state';
 import { restoreOffice } from './app/office';
 import { parsePdfInBrowser } from './parser/browser';
 
-const app = new App(document.getElementById('app')!, [importStep, designStep, coordStep, elevationStep, sunStep, estimateStep, presentStep]);
+const app = new App(document.getElementById('app')!, [importStep, designStep, ...(FEATURES.coordStep ? [coordStep] : []), elevationStep, sunStep, estimateStep, presentStep]);
 (window as unknown as { app: App }).app = app;
 
 async function boot() {

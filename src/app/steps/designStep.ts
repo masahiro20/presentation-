@@ -9,6 +9,7 @@ function clearFinishes(part: '外部' | '内部'): Record<string, string> | unde
   return Object.keys(f).length ? f : undefined;
 }
 import { h, clear, toast, progressModal, section, segmented, modal, download } from '../dom';
+import { FEATURES } from '../features';
 import { state, uid, emit, type GalleryItem } from '../state';
 import type { Step, StepCtx } from '../app';
 import { EXTERIOR_STYLES, INTERIOR_STYLES, MAIN_EXTERIOR_IDS, MAIN_INTERIOR_IDS, exteriorById, type DesignOptions, type RoofType, type TimeOfDay } from '../../styles/presets';
@@ -346,7 +347,10 @@ export const designStep: Step = {
             ),
           ),
         ),
-        section(
+        // 「コーデ」のステップを外している間は、その入口も出さない（features.ts）
+        ...(FEATURES.coordStep
+          ? [
+              section(
           'コーディネート',
           (() => {
             const pr = progress(state.coord);
@@ -360,6 +364,8 @@ export const designStep: Step = {
             );
           })(),
         ),
+            ]
+          : []),
         section(
           '外観のテイスト',
           h('div', { class: 'style-grid' }, MAIN_EXTERIOR_IDS.map((id) => EXTERIOR_STYLES.find((s) => s.id === id)!).filter(Boolean).map(extCard)),

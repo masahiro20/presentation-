@@ -57,6 +57,7 @@ let cleanupKey: (() => void) | null = null;
 
 /** 最後に使った日照ステップの周辺環境（プレゼン資料の注記用。日照ステップを開いていなければ null） */
 let activeSc: SunContext | null = null;
+let activeViewer: { setRealTown(on: boolean): void } | null = null;
 export function activeSunContext(): SunContext | null {
   return activeSc;
 }
@@ -550,6 +551,7 @@ export const sunStep: Step = {
     cleanupEarth?.();
     cleanupEarth = null;
     if (activeSc) activeSc.onTerrainChange = null;
+    activeViewer?.setRealTown(false);
   },
   async mount(ctx) {
     const v = ctx.app.viewer;
@@ -561,6 +563,9 @@ export const sunStep: Step = {
     // パース用の想像の隣家（景観）は日照には使わない。実在の周辺建物だけで影を見る
     v.setTownVisible(false);
     v.groups.context.visible = true;
+    // 実在の街は色付き・薄いかすみで見せる（建物が航空写真に溶けない・遠くまで見える）
+    v.setRealTown(true);
+    activeViewer = v;
     const sc = getCtx(ctx);
     // 隣家からの視線（周辺建物を取得したときに計算し、資料のページにも載せる）
     const sightBox = h('div', { class: 'check-rows sight' });
@@ -1368,7 +1373,7 @@ export const sunStep: Step = {
         const r = await sc.loadTerrain({ signal: ac.signal, onProgress: (m) => renderTerrainNote(m) });
         invalidateResults();
         apply(true);
-        if (hasRelief(r.stats)) toast(`地形を読み込みました: ${terrainMetaText(r.stats)}（${terrainStatusText(r.stats).replace(/^地形: /, '')}）`, 'info', 9000);
+        // 地形の読み込み結果は右の「周辺環境」の欄に出る（お知らせは出さない: 建設地を決めるたびに長い文が重なっていた）
       } catch (e) {
         if (ac.signal.aborted || isAbortError(e)) return;
         console.warn('地形の取得に失敗', e);
@@ -1418,7 +1423,7 @@ export const sunStep: Step = {
       try {
         const c = await sc.loadStreets();
         apply(true);
-        if (c.roads + c.greens + c.trees > 0) toast(`道路 ${c.roads}${c.greens || c.trees ? `・緑地 ${c.greens}・樹木 ${c.trees}` : ''} を読み込みました（${c.sources.join('・')}）`, 'info', 5000);
+        // 道路・緑地が読めたことは画面に出るので、お知らせは出さない
       } catch (e) {
         if (isAbortError(e)) return;
         console.warn('街路の取得に失敗', e);

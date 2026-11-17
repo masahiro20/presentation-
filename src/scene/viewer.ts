@@ -2544,7 +2544,7 @@ export class Viewer {
       night: design.timeOfDay === 'night',
       evening: design.timeOfDay === 'evening',
       clay: design.clay,
-      townLook: design.townLook,
+      townLook: this.realTown ? 'color' : design.townLook,
     });
     if (!this.state) return;
     const ext = exteriorFor(design);
@@ -2688,6 +2688,20 @@ export class Viewer {
    * 街並みの奥と地面の端が空に溶け、地平線まで何もない地面に見えない。
    * 日照の検討（実際の街・地形を遠くまで見る）では薄いまま
    */
+  /**
+   * 実在の街（日照の周辺建物）を見ているあいだ: 周辺の建物を色付き（壁はベージュ〜グレー、屋根は濃い色）で描き、かすみを薄くする。
+   * パースの想定の隣家は「淡い量塊」（主役を引き立てる白い箱）だが、同じ見せ方を実在の街に使うと、白い箱が航空写真に溶け、
+   * 遠くはかすみで消えて「建物があまり建っていない」ように見えていた
+   */
+  private realTown = false;
+  setRealTown(on: boolean) {
+    if (this.realTown === on) return;
+    this.realTown = on;
+    this.setDesign({ ...this.design });
+    this.applyHaze();
+    this.dirty = true;
+  }
+
   /** カメラが室内にあるときのかすみ（applyLightBalance が切り替える） */
   private hazeInside = false;
   private applyHaze() {
@@ -2704,6 +2718,8 @@ export class Viewer {
       d = mode === 'night' ? 0.004 : mode === 'morning' ? 0.0075 : 0.0058;
       ps.haze.material.color.copy(col);
     }
+    // 実在の街は遠く（300m 先の高台の建物）まで見せる: 100m で 2%、300m で 2 割だけ空に溶かす
+    if (this.realTown) d = Math.min(d, 0.0016);
     if (this.hazeInside && mode !== 'night') {
       // 室内から見る外: 室内の明るさに露出を合わせた写真では、外は明るくかすむ。窓のすぐ外の庭（8m まで）ははっきり見せ、
       // 道路の向かい・隣家（20m より先）は空に溶かす。想定の街並みの箱が、窓の外にくっきり並ぶと作り物に見えていた

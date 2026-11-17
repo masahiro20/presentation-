@@ -31,16 +31,62 @@ export function clear(el: Element) {
   el.replaceChildren();
 }
 
+/** お知らせの履歴（新しい順に 8 件。下の 1 行をクリックすると読み返せる） */
+const noticeLog: { msg: string; kind: 'info' | 'ok'; at: number }[] = [];
+let noticeTimer = 0;
+
+/**
+ * お知らせを出す。出し方の決まり:
+ *  - 失敗・やり直しが要るもの（error）だけ、画面の上にバナーで出す（押すと消える。同じ文は 1 つにまとめる）
+ *  - それ以外（進み具合・できたこと・操作の案内）は、画面の上（見出しのすぐ下）の決まった 1 か所に 1 行で控えめに出す。
+ *    新しいお知らせが来たら置き換える（積み重ねない）。数秒で消え、消えたあとも、次のお知らせを押すと履歴を読み返せる
+ */
 export function toast(msg: string, kind: 'info' | 'error' | 'ok' = 'info', ms = 3500) {
-  let box = document.getElementById('toasts');
-  if (!box) {
-    box = h('div', { id: 'toasts' });
-    document.body.appendChild(box);
+  if (kind === 'error') {
+    let box = document.getElementById('toasts');
+    if (!box) {
+      box = h('div', { id: 'toasts' });
+      document.body.appendChild(box);
+    }
+    // 同じ失敗が続けて起きても 1 つだけ
+    for (const c of [...box.children]) if (c.textContent === msg) c.remove();
+    const t = h('div', { class: 'toast error', title: '押すと消えます' }, msg);
+    t.addEventListener('click', () => t.remove());
+    box.appendChild(t);
+    setTimeout(() => t.classList.add('hide'), ms);
+    setTimeout(() => t.remove(), ms + 400);
+    return;
   }
-  const t = h('div', { class: `toast ${kind}` }, msg);
-  box.appendChild(t);
-  setTimeout(() => t.classList.add('hide'), ms);
-  setTimeout(() => t.remove(), ms + 400);
+  noticeLog.unshift({ msg, kind, at: Date.now() });
+  if (noticeLog.length > 8) noticeLog.length = 8;
+  let bar = document.getElementById('statusline');
+  if (!bar) {
+    bar = h('div', { id: 'statusline' });
+    document.body.appendChild(bar);
+  }
+  const line = h('div', { class: `toast quiet ${kind}`, title: 'これまでのお知らせを見る' }, h('span', { class: 'dot' }), h('span', { class: 'msg' }, msg));
+  line.addEventListener('click', () => {
+    const open = bar!.querySelector('.notice-log');
+    if (open) return open.remove();
+    const list = h(
+      'div',
+      { class: 'notice-log' },
+      noticeLog.map((n) => h('div', { class: `row ${n.kind}` }, h('span', { class: 'at' }, new Date(n.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })), h('span', null, n.msg))),
+    );
+    bar!.prepend(list);
+    // 読み返している間は消さない
+    clearTimeout(noticeTimer);
+  });
+  bar.replaceChildren(line);
+  clearTimeout(noticeTimer);
+  // 長い案内文でも 6 秒まで（読み返しは履歴で）
+  const show = Math.max(2500, Math.min(ms, 6000));
+  noticeTimer = window.setTimeout(() => {
+    line.classList.add('hide');
+    window.setTimeout(() => {
+      if (line.isConnected && !bar!.querySelector('.notice-log')) line.remove();
+    }, 400);
+  }, show);
 }
 
 export interface ProgressHandle {

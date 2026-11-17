@@ -7,6 +7,7 @@
 window.addEventListener('error', () => ((window as unknown as { __failed: boolean }).__failed = true));
 window.addEventListener('unhandledrejection', () => ((window as unknown as { __failed: boolean }).__failed = true));
 import * as THREE from 'three';
+import { buildRenderJob } from './scene/renderJob';
 import { Viewer } from './scene/viewer';
 import { auditEnvelope, type EnvelopeAudit } from './scene/selfCheck';
 import { DEFAULT_DESIGN, type DesignOptions } from './styles/presets';
@@ -155,6 +156,17 @@ w.__renderShot = async (id, W, H, grade) => {
   viewer.applyView({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov, architectural });
   await new Promise((r) => setTimeout(r, 200));
   return renderStudio(viewer, { width: W, height: H, interior, exposure: exposure ?? (interior ? 1.6 : 1) });
+};
+/** 高品質パース（Blender）へ渡す依頼を作る: カット id（省略時は今の視点）→ GLB（base64）と job.json */
+(w as unknown as { __renderJob: (id: string | null, aspect?: number) => Promise<{ glb: string; job: unknown }> }).__renderJob = async (id, aspect = 16 / 9) => {
+  const s = id ? viewer.shots(aspect).find((x) => x.id === id) : null;
+  if (id && !s) throw new Error(`カット ${id} がありません`);
+  if (s) viewer.applyShot(s);
+  const { glb, job } = await buildRenderJob(viewer, s ? s.view : viewer.currentView(), aspect);
+  const bytes = new Uint8Array(glb);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { glb: btoa(bin), job };
 };
 (w as unknown as { THREE: typeof THREE }).THREE = THREE;
 w.__ready = true;

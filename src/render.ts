@@ -157,6 +157,26 @@ w.__renderShot = async (id, W, H, grade) => {
   await new Promise((r) => setTimeout(r, 200));
   return renderStudio(viewer, { width: W, height: H, interior, exposure: exposure ?? (interior ? 1.6 : 1) });
 };
+/**
+ * 【検証用】ブラウザの中のパストレーシングで 1 カット。失敗したら（GPU のリセット・シェーダーの失敗・真っ黒）今の高品質描画に戻して、その理由を返す。
+ * 本体の画面からは呼ばない
+ */
+(w as unknown as { __pathTrace: (id: string, W: number, H: number, samples: number, timeLimit?: number) => Promise<{ url: string; engine: string; ms: number; error?: string }> }).__pathTrace = async (id, W, H, samples, timeLimit = 120000) => {
+  const s = viewer.shots(W / H).find((x) => x.id === id);
+  if (!s) throw new Error(`カット ${id} がありません`);
+  viewer.applyShot(s);
+  await new Promise((r) => setTimeout(r, 300));
+  const interior = s.kind === 'interior';
+  const t0 = performance.now();
+  try {
+    const { renderPhotoreal } = await import('./lab/photoreal');
+    const url = await renderPhotoreal(viewer, { width: W, height: H, samples, timeLimit, interior, denoise: false, safe: true, textureSize: 512 });
+    return { url, engine: 'pathtracer', ms: Math.round(performance.now() - t0) };
+  } catch (e) {
+    const url = await renderStudio(viewer, { width: W, height: H, interior });
+    return { url, engine: 'studio (fallback)', ms: Math.round(performance.now() - t0), error: `${(e as Error).name}: ${(e as Error).message}` };
+  }
+};
 /** 高品質パース（Blender）へ渡す依頼を作る: カット id（省略時は今の視点）→ GLB（base64）と job.json */
 (w as unknown as { __renderJob: (id: string | null, aspect?: number) => Promise<{ glb: string; job: unknown }> }).__renderJob = async (id, aspect = 16 / 9) => {
   const s = id ? viewer.shots(aspect).find((x) => x.id === id) : null;

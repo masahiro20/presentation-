@@ -466,7 +466,8 @@ const main = async () => {
     await sweepSide(steps[i].replace(/\s+/g, '').replace(/^\d/, ''));
   }
   // ステップを往復して壊れないか
-  for (const i of [0, 1, 0, 4, 1, 6, 2]) {
+  // ステップの数は変わることがある（コーデを外すと 6 つ）。無い番号は最後のステップに読み替える
+  for (const i of [0, 1, 0, 4, 1, 6, 2].map((n) => Math.min(n, steps.length - 1))) {
     cur = `nav-${i}`;
     await settleProgress('往復の前の進行モーダル');
     await closeModals();

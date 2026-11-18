@@ -16189,7 +16189,7 @@ function readAreaTable(pages) {
 	for (const p of pages) for (const t of p.texts) {
 		const s = normalizeText(t.str).replace(/\s/g, "");
 		const m = /^([1-9])階$/.exec(s);
-		const key = m ? +m[1] : /^建築面積$/.test(s) ? "build" : /^延床面積$|^延べ床面積$/.test(s) ? "total" : null;
+		const key = m ? +m[1] : /^建築面積$/.test(s) ? "build" : /^延床面積$|^延べ床面積$/.test(s) ? "total" : /^施工(床)?面積$/.test(s) ? "const" : null;
 		if (key == null) continue;
 		const cands = followingOnLine(t, p.texts, 20).map((q) => ({
 			q,
@@ -25275,10 +25275,14 @@ function takeoff(model, opts) {
 	const ov = overlay(floors);
 	const pilotis = ov.exposedBelow[1] ?? 0;
 	const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0);
-	const extraArea = r2$1(porchRooms + pilotis + garageArea);
 	const loftArea = 0;
+	const table = model.report?.areaTable;
+	const base = totalArea + balconyArea + loftArea + voidArea;
+	const tableConst = table?.const != null && table.const >= base - .5 && table.const <= base * 1.8 ? table.const : null;
+	const extraArea = tableConst != null ? r2$1(Math.max(0, tableConst - base)) : r2$1(porchRooms + pilotis + garageArea);
 	const constArea = r2$1(totalArea + extraArea + balconyArea + loftArea + voidArea);
-	const buildArea = r2$1(Math.max(ov.union, floor1));
+	const autoBuild = Math.max(ov.union, floor1);
+	const buildArea = r2$1(table?.build != null && table.build >= autoBuild * .9 && table.build <= autoBuild * 1.5 ? table.build : autoBuild);
 	let extWall = 0;
 	let corners = 0;
 	for (const f of floors) {
@@ -25406,7 +25410,7 @@ function takeoff(model, opts) {
 		deepFound300: 0,
 		deepFound400: 0,
 		fireZone: false,
-		evoltz: false,
+		evoltz: opts.grade === "S",
 		soffitWood: false,
 		addInsul: false,
 		pocketKey: false,
@@ -25417,7 +25421,7 @@ function takeoff(model, opts) {
 		kanta: false,
 		slopSink: false,
 		septic: false,
-		structCalc: false,
+		structCalc: opts.grade === "S",
 		evOutlet: false,
 		elevator: floors.some((f) => f.rooms.some((r) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, "")))),
 		soundArea: 0,
@@ -39048,10 +39052,10 @@ var CATEGORIES = [
 				desc: "天井・壁 ビニールクロス貼り（AA級・普及品）・耐震パテ",
 				unit: "坪",
 				cost: 29e3,
-				qty: (a) => a.constTsubo + a.voidArea * T,
+				qty: (a) => (a.grade === "S" ? a.totalTsubo : a.constTsubo) + a.voidArea * T,
 				qtyNote: "施工坪＋吹抜坪",
 				group: "cloth",
-				on: ["P"]
+				on: "both"
 			},
 			{
 				id: "it.clothA",
@@ -39062,7 +39066,7 @@ var CATEGORIES = [
 				qty: (a) => a.totalTsubo + a.voidArea * T,
 				qtyNote: "延床坪＋吹抜坪",
 				group: "cloth",
-				on: ["S"]
+				on: "none"
 			},
 			{
 				id: "it.floorTile",

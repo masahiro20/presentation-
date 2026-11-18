@@ -16,6 +16,8 @@ export interface ShareNeighbor {
   planned?: boolean;
   manual?: boolean;
   label?: string;
+  /** 屋根の色（航空写真から拾った色 #rrggbb）。無ければ決まった色のばらつき */
+  roof?: string;
 }
 
 /** 街路・緑地・樹木（OpenStreetMap）の 1 かたまり: 三角形の頂点（ワールド）と色。leaf は葉のカード（表裏を描く・影を落とす） */
@@ -88,8 +90,8 @@ export function facadeMaterial(color: string): THREE.MeshStandardMaterial {
   return m;
 }
 
-/** 周辺建物の外壁の色: 主役（計画建物）を引き立てる淡い色。白・ベージュ・グレージュ・明るいグレーをばらつかせる */
-export const WALL_COLORS = ['#e8e6e1', '#ddd8cf', '#e4e0da', '#d2cec6', '#e9e4d6', '#cfc9bd', '#cbced1'];
+/** 周辺建物の外壁の色: 主役（計画建物）を引き立てる淡い色。白・ベージュ・グレージュ・明るいグレーに、少し濃いベージュ・グレーを混ぜてばらつかせる（どの家も白いと模型に見える） */
+export const WALL_COLORS = ['#e8e6e1', '#ddd8cf', '#e4e0da', '#d2cec6', '#e9e4d6', '#cfc9bd', '#cbced1', '#c6bca9', '#b3b7b9', '#dccfb9', '#a9a59c'];
 /** 周辺建物の屋根の色（航空写真を貼らないとき）: 濃いグレー・グレー・青みのスレート・茶 */
 export const ROOF_COLORS = ['#6a6d72', '#8d8f93', '#6f7a84', '#7d7067'];
 
@@ -100,6 +102,7 @@ export function buildShareContextGroup(c: ShareContext): THREE.Group {
   const walls = WALL_COLORS.map((col) => facadeMaterial(col));
   const roofs = ROOF_COLORS.map((col) => new THREE.MeshStandardMaterial({ color: col, roughness: 0.8 }));
   const manual = new THREE.MeshStandardMaterial({ color: '#d9c7a8', roughness: 0.9 });
+  const photoRoofs = new Map<string, THREE.MeshStandardMaterial>();
   const planned = [new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.roof, roughness: 0.75 }), new THREE.MeshStandardMaterial({ color: PLANNED_COLORS.wall, roughness: 0.85 })];
   c.neighbors.forEach((n, i) => {
     const geo = new THREE.BufferGeometry();
@@ -107,7 +110,12 @@ export function buildShareContextGroup(c: ShareContext): THREE.Group {
     for (const gr of n.groups) geo.addGroup(gr.start, gr.count, gr.materialIndex);
     if (!n.groups.length) geo.addGroup(0, n.pos.length / 3, 1);
     geo.computeVertexNormals();
-    const mats = n.planned ? planned : [roofs[(i * 7 + 3) % roofs.length], n.manual ? manual : walls[i % walls.length]];
+    let roof = roofs[(i * 7 + 3) % roofs.length];
+    if (n.roof && /^#[0-9a-f]{6}$/i.test(n.roof)) {
+      roof = photoRoofs.get(n.roof) ?? new THREE.MeshStandardMaterial({ color: n.roof, roughness: 0.8 });
+      photoRoofs.set(n.roof, roof);
+    }
+    const mats = n.planned ? planned : [roof, n.manual ? manual : walls[i % walls.length]];
     const mesh = new THREE.Mesh(geo, mats);
     mesh.castShadow = true;
     mesh.receiveShadow = true;

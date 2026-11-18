@@ -2,6 +2,7 @@
  * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
  * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
+import { sampleRoofColor, type PixelGrid } from './roofColor';
 import { facadeMaterial, ROOF_COLORS, WALL_COLORS, type ShareContext, type ShareNeighbor, type ShareStreet } from './shareContext';
 import { SunDiagram } from './sunDiagram';
 import { buildStreets, fetchGsiRoads, fetchOsmStreets, parseOsmStreets, type StreetData } from './streets';
@@ -604,7 +605,7 @@ export class SunContext {
   private sunMarker = new THREE.Group();
   /** 太陽の通り道の図（弧・時刻・方位の輪・いまの太陽） */
   private diagram = new SunDiagram(this.pathG, this.sunMarker);
-  private aerialInfo: { west: number; east: number; south: number; north: number; tex: THREE.Texture } | null = null;
+  private aerialInfo: { west: number; east: number; south: number; north: number; tex: THREE.Texture; px?: PixelGrid | null } | null = null;
   state: ContextState;
   year = new Date().getFullYear();
   /** 隠す・高さの記録（取り直し・建設地の微調整の後も同じ建物に当て直す。「周辺建物をすべて消す」で消える） */
@@ -1331,6 +1332,14 @@ export class SunContext {
   /** 航空写真の出典（loadAerial で入る。体験リンクに添える） */
   private aerialAttribution = '';
 
+  /** 体験リンクへ渡す屋根の色（航空写真から拾った色。決まった色のばらつきのときは渡さない） */
+  private shareRoofColor(mesh: THREE.Mesh): string | undefined {
+    if (mesh.userData.planned) return undefined;
+    const base = mesh.userData.baseMaterial as THREE.Material[] | undefined;
+    const m = base?.[0] as THREE.MeshStandardMaterial | undefined;
+    return m?.userData.photoRoof ? `#${m.color.getHexString()}` : undefined;
+  }
+
   /**
    * 体験リンクに持っていく周辺環境: 今見えている周辺建物（隠した建物は除く。想定の家は含む）の三角形と、航空写真。
    * 周辺建物も航空写真も無ければ null
@@ -1350,7 +1359,7 @@ export class SunContext {
         arr[i * 3 + 1] = r2(pos.getY(i));
         arr[i * 3 + 2] = r2(pos.getZ(i));
       }
-      neighbors.push({ pos: arr, groups: geo.groups.map((g) => ({ start: g.start, count: g.count === Infinity ? pos.count - g.start : g.count, materialIndex: g.materialIndex ?? 1 })), planned: !!mesh.userData.planned || undefined, manual: this.findByKey(mesh.userData.neighborKey as string)?.source === 'manual' || undefined, label: mesh.name || undefined });
+      neighbors.push({ pos: arr, groups: geo.groups.map((g) => ({ start: g.start, count: g.count === Infinity ? pos.count - g.start : g.count, materialIndex: g.materialIndex ?? 1 })), planned: !!mesh.userData.planned || undefined, manual: this.findByKey(mesh.userData.neighborKey as string)?.source === 'manual' || undefined, label: mesh.name || undefined , roof: this.shareRoofColor(mesh) });
     }
     let aerial: ShareContext['aerial'];
     const am = this.aerial.children[0] as THREE.Mesh | undefined;
@@ -1808,7 +1817,29 @@ export class SunContext {
     // 航空写真があれば屋上に貼る（Google Earth のような見え方）
     const ai = this.aerialInfo;
     // 航空写真が無いときの屋根は、建物ごとに色をばらつかせる（どの屋根も同じグレーだと模型に見える）
-    const roofMats = ai ? [new THREE.MeshStandardMaterial({ map: ai.tex, roughness: 0.85 })] : ROOF_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8 }));
+    const roofMats = ROOF_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8 }));
+    // 航空写真があれば、建物ごとに屋根の色を写真から拾う（写真をそのまま貼ると、斜めから近くで見たときに粗くぼける）
+    if (ai && ai.px === undefined) {
+      try {
+        const cv = ai.tex.image as HTMLCanvasElement;
+        const d = cv.getContext('2d')!.getImageData(0, 0, cv.width, cv.height);
+        ai.px = { data: d.data, width: d.width, height: d.height };
+      } catch {
+        ai.px = null; // 画素を読めない環境では、決まった色のばらつきにする
+      }
+    }
+    const photoRoofs = new Map<string, THREE.MeshStandardMaterial>();
+    const roofMatOf = (b: NeighborBuilding, seq: number): THREE.MeshStandardMaterial => {
+      const hex = ai?.px ? sampleRoofColor(ai.px, ai, b.ring) : null;
+      if (!hex) return roofMats[(seq * 7 + 3) % roofMats.length];
+      let m = photoRoofs.get(hex);
+      if (!m) {
+        m = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.8 });
+        m.userData.photoRoof = true;
+        photoRoofs.set(hex, m);
+      }
+      return m;
+    };
     const st = this.viewer.state!;
     const c0 = st.meta.bbox.getCenter(new THREE.Vector3());
     const a0 = (st.model.northAngleDeg * Math.PI) / 180;
@@ -1921,7 +1952,7 @@ export class SunContext {
         uv.needsUpdate = true;
       }
       // グループ: 0 = 屋根（ExtrudeGeometry は上下面、PLATEAU の実形状は上向きの面）, 1 = 壁（側面）
-      const base = [roofMats[(wallSeq * 7 + 3) % roofMats.length], b.source === 'manual' ? manualMat : wallMats[wallSeq++ % wallMats.length]];
+      const base = [roofMatOf(b, wallSeq), b.source === 'manual' ? manualMat : wallMats[wallSeq++ % wallMats.length]];
       const mesh = new THREE.Mesh(geo, base);
       mesh.castShadow = true;
       mesh.receiveShadow = true;

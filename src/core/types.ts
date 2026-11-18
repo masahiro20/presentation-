@@ -306,7 +306,8 @@ export interface ParseReport {
   /** 方位記号が読み取れたか（false = 図面の上を北とみなした） */
   northDetected?: boolean;
   /** 図面の面積表（階 → ㎡。build = 建築面積、total = 延床面積）。読み取りの点数で階の広さ・上下階の重なりの検算に使う */
-  areaTable?: Record<number, number> & { build?: number; total?: number };
+  /** 図面の面積表（階ごとの床面積・延床・建築面積・施工床面積）。書かれていた値だけ */
+  areaTable?: Record<number, number> & { build?: number; total?: number; const?: number };
   /** PDF の各ページの中身（kind: plan・elevation・section・site・area など。parser/pageMap の PageKind）と、読み取りに使ったこと */
   pageMap?: { page: number; kind: string; title: string; used?: string }[];
   /** 立面図のページの外部仕上表（欄の名前・中の文言・色）。読み込み時にコーディネートの初期値にする */

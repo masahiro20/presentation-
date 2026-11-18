@@ -242,8 +242,9 @@ export const CATEGORIES: CategoryDef[] = [
     no: 11,
     name: '内装工事',
     lines: [
-      { id: 'it.clothAA', spec: 'ビニールクロス', desc: '天井・壁 ビニールクロス貼り（AA級・普及品）・耐震パテ', unit: '坪', cost: 29000, qty: (a) => a.constTsubo + a.voidArea * T, qtyNote: '施工坪＋吹抜坪', group: 'cloth', on: ['P'] },
-      { id: 'it.clothA', spec: 'ビニールクロス', desc: '天井・壁 ビニールクロス貼り（A級・普及品）', unit: '坪', cost: 26000, qty: (a) => a.totalTsubo + a.voidArea * T, qtyNote: '延床坪＋吹抜坪', group: 'cloth', on: ['S'] },
+      // クロスは P・S とも AA 級が既定（積算 10 邸すべて AA 級。S は延床坪、P は施工坪で数える）
+      { id: 'it.clothAA', spec: 'ビニールクロス', desc: '天井・壁 ビニールクロス貼り（AA級・普及品）・耐震パテ', unit: '坪', cost: 29000, qty: (a) => (a.grade === 'S' ? a.totalTsubo : a.constTsubo) + a.voidArea * T, qtyNote: '施工坪＋吹抜坪', group: 'cloth', on: 'both' },
+      { id: 'it.clothA', spec: 'ビニールクロス', desc: '天井・壁 ビニールクロス貼り（A級・普及品）', unit: '坪', cost: 26000, qty: (a) => a.totalTsubo + a.voidArea * T, qtyNote: '延床坪＋吹抜坪', group: 'cloth', on: 'none' },
       { id: 'it.floorTile', spec: 'フロアタイル', desc: '床フロアタイル貼り', unit: '㎡', cost: 8000, qty: (a) => a.floorTileArea, qtyNote: 'フロアタイル面積', on: 'both' },
       { id: 'it.floorTileWc', spec: 'フロアタイル', desc: '床フロアタイル貼り トイレ', unit: '式', cost: 20000, qty: (a) => a.toilets, qtyNote: 'トイレ数', on: 'both' },
       { id: 'it.doorCloth', spec: '建具クロス張り', desc: '神谷コーポレーション 建具クロス張り', unit: '箇所', cost: 5000, qty: (a) => a.doorCloth, optional: true, on: 'both' },

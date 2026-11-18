@@ -447,11 +447,19 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
   const pilotis = ov.exposedBelow[1] ?? 0; // 2 階の下の屋外（ポーチ・ビルトインガレージ・張り出し）
   const exposedFloors = ov.exposedBelow.reduce((s, v) => s + v, 0); // 外気に接する床（2 階以上の張り出しの床下）
   // 施工面積の追加分: ポーチの区画＋上の階の下に入る屋外（有元様邸: 1 階の外の 2 階の下 34.6㎡ ≒ 社内の 34.09㎡）＋ビルトインガレージ
-  const extraArea = r2(porchRooms + pilotis + garageArea);
   const loftArea = 0;
+  // 図面の面積表に設計者の値（施工床面積・建築面積）が書かれていれば、それを使う。
+  // 自動の拾いは外形の重ね合わせなので、ポーチの柱・深い軒・袖壁で囲まれた部分の扱いが設計者と合わないことがある
+  // （大崎様邸のセカンドプラン: 建築面積 91.91 に対して外形の重ね合わせは 81.6。御社の積算は図面の値で基礎・防蟻を数えている）。
+  // 読み違いの数字を拾わないよう、自動の値から大きく外れるものは使わない。
+  const table = model.report?.areaTable;
+  const base = totalArea + balconyArea + loftArea + voidArea;
+  const tableConst = table?.const != null && table.const >= base - 0.5 && table.const <= base * 1.8 ? table.const : null;
+  const extraArea = tableConst != null ? r2(Math.max(0, tableConst - base)) : r2(porchRooms + pilotis + garageArea);
   const constArea = r2(totalArea + extraArea + balconyArea + loftArea + voidArea);
   // 建築面積: 各階の外形を真上から重ねた面積（2 階の張り出しも入る）
-  const buildArea = r2(Math.max(ov.union, floor1));
+  const autoBuild = Math.max(ov.union, floor1);
+  const buildArea = r2(table?.build != null && table.build >= autoBuild * 0.9 && table.build <= autoBuild * 1.5 ? table.build : autoBuild);
   // 外壁面積（社内の拾い方: 開口は引かない）: 各階の外周 × 階高。1 階は基礎の立ち上がり（GL+500）から。
   // 陸屋根・片流れの箱はパラペット（約 900）を、最上階の外周と下屋の縁（上の階が載っていない外周）に回す
   let extWall = 0;
@@ -613,7 +621,8 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     deepFound300: 0,
     deepFound400: 0,
     fireZone: false,
-    evoltz: false,
+    // S 仕様（金物工法）は制振ダンパーと許容応力度計算を入れる（御社の積算 S: 大崎様・吉田様・林様の 3 邸とも計上。P 仕様の SE 構法では別途）
+    evoltz: opts.grade === 'S',
     soffitWood: false,
     addInsul: false,
     pocketKey: false,
@@ -624,7 +633,7 @@ export function takeoff(model: BuildingModel, opts: TakeoffOptions): Areas {
     kanta: false,
     slopSink: false,
     septic: false,
-    structCalc: false,
+    structCalc: opts.grade === 'S',
     evOutlet: false,
     // 図面に EV（エレベーター）の区画があれば家庭用エレベーターを入れる（有元様邸: 3 階建てで各階に ＥＶ）
     elevator: floors.some((f) => f.rooms.some((r) => /^(EV|ＥＶ|ELV|ＥＬＶ|エレベーター|エレベータ)$/i.test(r.name.replace(/\s/g, '')))),

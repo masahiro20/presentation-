@@ -1037,14 +1037,15 @@ function followingOnLine(t: MmText, texts: MmText[], maxSizes: number): MmText[]
 }
 
 /** 面積表（「1階 100.20」「2階 34.15」）を読む。階 → ㎡ */
-export function readAreaTable(pages: PageMm[]): Record<number, number> & { build?: number; total?: number } {
-  const out: Record<number, number> & { build?: number; total?: number } = {};
+export function readAreaTable(pages: PageMm[]): Record<number, number> & { build?: number; total?: number; const?: number } {
+  const out: Record<number, number> & { build?: number; total?: number; const?: number } = {};
   for (const p of pages) {
     for (const t of p.texts) {
       const s = normalizeText(t.str).replace(/\s/g, '');
       const m = /^([1-9])階$/.exec(s);
       // 建築面積・延床面積も拾う（上下階の重ね位置の検算に使う）
-      const key: number | 'build' | 'total' | null = m ? +m[1] : /^建築面積$/.test(s) ? 'build' : /^延床面積$|^延べ床面積$/.test(s) ? 'total' : null;
+      // 施工床面積（ポーチ・吹抜などを足した、見積の坪数のもと）も拾う（大崎様邸のセカンドプラン: 延床 117.58・施工床面積 128.58・建築面積 91.91）
+      const key: number | 'build' | 'total' | 'const' | null = m ? +m[1] : /^建築面積$/.test(s) ? 'build' : /^延床面積$|^延べ床面積$/.test(s) ? 'total' : /^施工(床)?面積$/.test(s) ? 'const' : null;
       if (key == null) continue;
       const cands = followingOnLine(t, p.texts, 20)
         .map((q) => ({ q, v: /^(\d{1,3}\.\d{1,2})(㎡|m2|m²)?$/.exec(normalizeText(q.str).replace(/\s/g, '')) }))

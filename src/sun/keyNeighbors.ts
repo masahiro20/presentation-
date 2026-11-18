@@ -51,6 +51,31 @@ export function accuracyOf(n: Pick<KeyCandidate, 'confirmed' | 'heightKind' | 's
   return 'measured';
 }
 
+/** 高さの出どころの 4 区分（商談で「どの建物まで確かか」を言うための大きな分け方） */
+export type HeightBasis = 'measured' | 'levels' | 'estimated' | 'verified';
+export const BASIS_LABEL: Readonly<Record<HeightBasis, string>> = { measured: '実測', levels: '階数の情報あり', estimated: '推定', verified: '現地確認済み' };
+
+/**
+ * 実測 = PLATEAU（屋根まで実測・最高高さだけ実測の両方）／階数の情報あり = OpenStreetMap の階数・高さのタグ／
+ * 推定 = 建物の種別と足元の面積から／現地確認済み = 手で直した・点群で確かめた
+ */
+export function basisOf(n: Pick<KeyCandidate, 'confirmed' | 'heightKind' | 'source' | 'plateau' | 'mesh'> & { height?: number }): HeightBasis {
+  if (n.confirmed || n.heightKind === 'manual' || n.source === 'manual') return 'verified';
+  if (n.plateau) return 'measured';
+  // OpenStreetMap: 階数・高さのタグから決めた高さ（タグが無いときの既定 6.8 m は推定）
+  if (n.source === 'osm' && n.heightKind !== 'estimated' && (n.heightKind === 'measured' || (n.height != null && n.height !== 6.8))) return 'levels';
+  return 'estimated';
+}
+
+/** 「影を落とす建物 5 棟のうち、実測 2 棟・推定 3 棟」の一文（0 棟の区分は書かない） */
+export function basisSummary(list: (Pick<KeyCandidate, 'confirmed' | 'heightKind' | 'source' | 'plateau' | 'mesh'> & { height?: number })[]): string {
+  if (!list.length) return '';
+  const count: Record<HeightBasis, number> = { verified: 0, measured: 0, levels: 0, estimated: 0 };
+  for (const n of list) count[basisOf(n)]++;
+  const parts = (['verified', 'measured', 'levels', 'estimated'] as const).filter((k) => count[k]).map((k) => `${BASIS_LABEL[k]} ${count[k]} 棟`);
+  return `影を落とす建物 ${list.length} 棟のうち、${parts.join('・')}`;
+}
+
 /** 冬至の 8〜16 時の太陽（方位は真北から時計回り・高度は度）。lat/lon が無ければ空 */
 export function winterSamples(lat: number, lon: number, year: number): { azimuth: number; elevation: number }[] {
   const ws = winterSolstice(year);

@@ -1,6 +1,7 @@
 /**
  * 地理情報: 住所検索（国土地理院）、航空写真タイル、周辺建物（国土地理院ベクトルタイル / OpenStreetMap）
  */
+import { estimateGsiHeight, ringArea } from './heightEstimate';
 import type { RoofSpec } from './plateau/roofSpec';
 import { decodeMvt } from './mvt';
 import type { PlannedHouse } from './plannedHouse';
@@ -503,7 +504,8 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120, 
         const code = Number(f.props['vt_code'] ?? 0);
         // 3101/3111 普通建物, 3102/3112 堅ろう建物, 3103/3113 高層建物
         const kind = code % 10;
-        const height = kind === 3 ? 30 : kind === 2 ? 12 : 6.8;
+        // 無壁舎（カーポート・駐輪場の屋根）: 3111 普通 2.8 m・3112 堅ろう 4 m。壁のある建物は種別と足元の面積から（heightEstimate.ts）
+        const shed = code === 3111 ? 2.8 : code === 3112 ? 4 : null;
         for (const ring of f.rings) {
           if (ring.length < 4) continue;
           // MVT の外周リングはタイル座標（y 下向き）で時計回り = 面積が正
@@ -520,7 +522,7 @@ export async function fetchGsiBuildings(lat: number, lon: number, radius = 120, 
           });
           const c = pts.reduce((s, p) => ({ e: s.e + p.e / pts.length, n: s.n + p.n / pts.length }), { e: 0, n: 0 });
           if (Math.hypot(c.e, c.n) > radius) continue;
-          out.push({ ring: pts, height, source: 'gsi' });
+          out.push({ ring: pts, height: shed ?? estimateGsiHeight(kind === 3 ? 3 : kind === 2 ? 2 : 1, ringArea(pts)), source: 'gsi' });
         }
       }
     }

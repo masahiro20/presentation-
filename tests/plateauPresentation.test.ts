@@ -730,13 +730,15 @@ describe('開示・文言', () => {
     expect(d.sources).toEqual([
       '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）2 棟（箱形 1 棟・屋根形状あり 1 棟）・国土地理院（推定）1 棟',
       `周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。${LOD1_BOX_NOTE}年度以降の新築・解体は反映されていない場合があります。`,
+      '影を落とす建物 2 棟のうち、実測 1 棟・推定 1 棟（冬至の 8〜16 時に敷地へ影が届く建物）',
     ]);
     for (const t of ['rooms', 'heatmap', 'deck', 'diagram'] as const) {
       const lines = disclosureLines(d, t);
       expect(lines[1]).toBe(d.sources![0]);
       expect(lines[2]).toBe(d.sources![1]);
       // 敷地の中の 1 棟は自動で除外しているので、注記に出る
-      expect(lines[3]).toBe('計算から除外した周辺建物 1 棟（敷地内の既存建物 1）');
+      expect(lines[3]).toBe(d.sources![2]);
+      expect(lines[4]).toBe('計算から除外した周辺建物 1 棟（敷地内の既存建物 1）');
     }
     // 除外した建物は出典の行に数えない（内訳も残った建物で数える）。箱形の A を除くと屋根形状の B だけ → 但し書きは消える
     sc.setHidden(['plateau:bldg_A'], true, { mode: 'exclude', reason: 'demolish' });
@@ -744,6 +746,7 @@ describe('開示・文言', () => {
     expect(d.sources).toEqual([
       '周辺建物の出典: PLATEAU（世田谷区・2025年度・LOD2）1 棟（箱形 0 棟・屋根形状あり 1 棟）・国土地理院（推定）1 棟',
       '周辺建物の形状・高さ: 国土交通省 PLATEAU 3D都市モデル（世田谷区・2025年度・LOD2）。年度以降の新築・解体は反映されていない場合があります。',
+      '影を落とす建物 1 棟のうち、推定 1 棟（冬至の 8〜16 時に敷地へ影が届く建物）',
     ]);
     // LOD1 のデータセット（建物の _lod 無し）でも但し書き
     const lod1 = sourceLines([{ source: 'plateau', heightKind: 'measured', plateau: { ...boxA().attrs, lod: null, datasetLod: 1 } }]);

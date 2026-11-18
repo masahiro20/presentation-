@@ -2,6 +2,7 @@
  * 日照検討用の周辺環境（航空写真・周辺建物・太陽軌道・方位）。
  * 周辺建物は PLATEAU（国土交通省 3D都市モデル。実測の高さ・実形状）を既定に、無い地域は国土地理院（高さは建物の種類から推定）→ OpenStreetMap
  */
+import { HEIGHT_ESTIMATE_NOTE } from './heightEstimate';
 import { sampleRoofColor, type PixelGrid } from './roofColor';
 import { facadeMaterial, ROOF_COLORS, WALL_COLORS, type ShareContext, type ShareNeighbor, type ShareStreet } from './shareContext';
 import { SunDiagram } from './sunDiagram';
@@ -102,7 +103,7 @@ export interface PlateauShapeCounts {
 }
 
 /** PLATEAU が未整備の地域の注記（§4 のフォールバック表） */
-export const NOTE_PLATEAU_MISSING = 'この地域は PLATEAU（3D都市モデル）が未整備のため、周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。';
+export const NOTE_PLATEAU_MISSING = `この地域は PLATEAU（3D都市モデル）が未整備のため、周辺建物の高さは国土地理院の建物種類と足元の面積から推定しています（${HEIGHT_ESTIMATE_NOTE}・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。`;
 /** PLATEAU を取得できなかった（逆ジオコーダ・索引・tileset・全タイル・復号の失敗）ときの注記 */
 export const NOTE_PLATEAU_ERROR = 'PLATEAU のデータを取得できなかったため（通信エラー）、周辺建物の高さは国土地理院の建物種類から推定しています。「🏘 周辺建物（PLATEAU）」でやり直せます。';
 

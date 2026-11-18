@@ -241,7 +241,7 @@ describe('SunContext: 想定の家', () => {
     expect(d.included).toBe(2);
     expect(d.excluded).toEqual([]);
     expect(d.planned).toEqual({ count: 1, enabled: false });
-    expect(disclosureLines(d, 'rooms')).toEqual(['※部屋の日当たりは周辺建物 2 棟の影を含めて計算しています', '周辺建物の出典: 国土地理院（推定）2 棟', '計算から除外した周辺建物 なし', '想定で置いた建物 1 棟（未建築・仮の形状。今は含めていません）']);
+    expect(disclosureLines(d, 'rooms')).toEqual(['※部屋の日当たりは周辺建物 2 棟の影を含めて計算しています', '周辺建物の出典: 国土地理院（推定）2 棟', '影を落とす建物 1 棟のうち、推定 1 棟（冬至の 8〜16 時に敷地へ影が届く建物）', '計算から除外した周辺建物 なし', '想定で置いた建物 1 棟（未建築・仮の形状。今は含めていません）']);
     // 周辺建物を読み込まず、想定の家だけ（含めていない）
     sc.clearNeighbors();
     d = collectDisclosure(sc);

@@ -8,6 +8,7 @@
  * 周辺建物の出典（PLATEAU のデータセット・国土地理院（推定）の棟数）と、PLATEAU の共通の開示文（形状・高さの根拠・年度）も sources の行として同じ所に出す。
  * 数字は解析した時点の扱い（collectDisclosure の写し）で書く（state.sun.disclosure）。
  */
+import { basisSummary } from '../sun/keyNeighbors';
 import { HIDE_MODE_SHORT, HIDE_REASONS, HIDE_REASON_LABEL, countPlateauShapes, hideReasonText, ringCentroid, type HideMode, type HideReason, type HideRecord, type PlateauShapeCounts } from '../sun/context';
 import type { NeighborBuilding } from '../sun/geo';
 import type { PlateauAttrs } from '../sun/plateau';
@@ -170,6 +171,8 @@ export interface DisclosureSource {
   edits: { heights: Map<string, number> };
   /** 利用者の編集（直した高さ・屋根・確定）を重ねた建物。無ければ元の建物（テストの偽物用） */
   effective?(b: NeighborBuilding): NeighborBuilding & { confirmed?: boolean };
+  /** 敷地に影を落とす建物（影の長い順。SunContext.keyNeighbors。無ければ内訳の行を出さない） */
+  keyNeighbors?(): { b: NeighborBuilding; hours: number }[];
   /** 想定の家を影・解析に含めるか（SunContext.plannedEnabled。無ければ含める） */
   plannedEnabled?: boolean;
   /** 地形の行（SunContext.terrainLine。読み込んでいなければ null） */
@@ -214,6 +217,9 @@ export function collectDisclosure(sc: DisclosureSource | null | undefined): SunD
   }
   if (planned) out.planned = { count: planned, enabled: plannedOn };
   const sources = sourceLines(included);
+  // 影を落とす建物（冬至 8〜16 時）の高さの出どころの内訳（「実測 2 棟・推定 3 棟」。資料の日照のページにも同じ行）
+  const key = sc.keyNeighbors?.().slice(0, 12) ?? [];
+  if (key.length && sources.length) sources.push(`${basisSummary(key.map((r) => sc.effective?.(r.b) ?? r.b))}（冬至の 8〜16 時に敷地へ影が届く建物）`);
   if (sources.length) out.sources = sources;
   const terrain = sc.terrainLine?.();
   if (terrain) out.terrain = terrain;

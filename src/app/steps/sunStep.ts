@@ -18,7 +18,7 @@ import { externalController, externalSampleY } from '../externalBuilding';
 import { createExternalPanel, twoPointBlock, isClick, type ExternalPanel } from './sunExternal';
 import { pointInPolygon } from '../../core/geometry';
 import { NEIGHBOR_SOURCE_LABEL, appendSvgFootnote, collectDisclosure, disclosureLines, heightKindOf, neighborTitle, neighborWhere, plateauYearLod, type SunDisclosure } from '../sunDisclosure';
-import { ACCURACY_LABEL, accuracyOf } from '../../sun/keyNeighbors';
+import { ACCURACY_LABEL, accuracyOf, basisSummary } from '../../sun/keyNeighbors';
 import { createRoofEditor } from '../roofEditor';
 import { DEFAULT_PLANNED_PRESET, PITCH_MAX_SUN, PLANNED_DEFAULT_LABEL, PLANNED_LABEL_MAX, PLANNED_PRESETS, ROOF_LABEL, ROOF_TYPES, houseFromPreset, houseInLot, isPlannedPresetId, isRoofType, pitchSun, plannedAxes, plannedPreset, ridgeFromPitch, type PlannedHouse, type PlannedPresetId, type RoofType } from '../../sun/plannedHouse';
 import type { EN } from '../../sun/align';
@@ -2596,6 +2596,8 @@ export const sunStep: Step = {
       }
       const open = rows.filter((r) => !sc.isConfirmed(r.b)).length;
       keyList.appendChild(h('div', { class: 'hint' }, `影を落とす建物 ${rows.length} 棟（未確定 ${open}）`));
+      // 高さの出どころの内訳（推定が残っていれば、現地で確かめる建物が分かる）
+      keyList.appendChild(h('div', { class: 'hint basis-line' }, `${basisSummary(rows.map((r) => sc.effective(r.b)))}。推定の建物は、クリックして階数・高さを現地で確かめると確かな影になります`));
       for (const r of rows) {
         const eff = sc.effective(r.b);
         const key = sc.keyOf(r.b);

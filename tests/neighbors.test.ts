@@ -71,7 +71,8 @@ describe('国土地理院タイルの読み込み', () => {
   const list = parseGsiTile(gsiBytes, TILE.x, TILE.y, TILE.z, PIN.lat, PIN.lon);
   it('建物種類から高さを推定する', () => {
     expect(list.length).toBeGreaterThan(0);
-    const allowed = [7, 12, 30, 2.8, 4];
+    // 壁のある建物は種別と足元の面積から（heightEstimate.ts）、無壁舎は 2.8／4 m
+    const allowed = [3.5, 5.5, 6.8, 10, 12.5, 30, 2.8, 4];
     for (const b of list) {
       expect(allowed).toContain(b.height);
       expect(b.source).toBe('gsi');
@@ -396,7 +397,7 @@ describe('fetchNeighbors（fetch をモック: PLATEAU 3D Tiles ＋ 国土地理
     // 前提: その建物は 1 棟に解釈され、150 m より十分遠く低い（距離ルールで落ちる）
     const parsed = parseGsiTile(bytes, tx, ty, 16, PIN_MORIYAMA.lat, PIN_MORIYAMA.lon);
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].height).toBe(7);
+    expect([3.5, 5.5, 6.8]).toContain(parsed[0].height);
     const c = ringCenter(parsed[0].ring);
     expect(Math.hypot(c.e, c.n)).toBeGreaterThan(300);
     expect(applyDistanceRule(parsed)).toHaveLength(0);

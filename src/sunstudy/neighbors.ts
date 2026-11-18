@@ -12,6 +12,7 @@
  * タイルには周囲 80 単位ほどの「のりしろ」が入っているので、タイルの範囲でポリゴンを切り取ってから使う
  * （隣のタイルと同じ建物が二重に出ないように。境界をまたぐ建物は 2 片に分かれるが、合わせると元の形になる）。
  */
+import { estimateGsiHeight, ringArea as areaOfRing, HEIGHT_ESTIMATE_NOTE } from '../sun/heightEstimate';
 import * as THREE from 'three';
 import { bboxOf, cleanRing, coverageRatio, fillGapsWith, pointInRing, ringArea, ringCenter, ringsOverlap, samplePoints, type BBoxEN } from '../sun/footprint';
 import { fetchOsmBuildings, lonLatToTile, metersPerDegree, tileToLonLat, toLocal } from '../sun/geo';
@@ -194,9 +195,13 @@ export function parseGsiTile(bytes: Uint8Array, tx: number, ty: number, z: numbe
   const out: Neighbor[] = [];
   for (const f of layer.features) {
     if (f.type !== 3) continue;
-    const kind = gsiBuildingKind(Number(f.props['vt_code'] ?? 0));
+    const code = Number(f.props['vt_code'] ?? 0);
+    const kind = gsiBuildingKind(code);
     for (const poly of featurePolygons(f.rings, tx, ty, z, layer.extent, pinLat, pinLon)) {
-      const nb: Neighbor = { id: neighborId('gsi', poly.outer, pinLat, pinLon), ring: poly.outer, height: kind.height, source: 'gsi', heightKind: 'estimated' };
+      // 壁のある建物（普通・堅ろう・高層）は、種別と足元の面積から（小さな建物を 2 階建ての高さにしない。heightEstimate.ts）
+      const walled = code === 3101 ? 1 : code === 3102 ? 2 : code === 3103 ? 3 : null;
+      const height = walled ? estimateGsiHeight(walled, areaOfRing(poly.outer)) : kind.height;
+      const nb: Neighbor = { id: neighborId('gsi', poly.outer, pinLat, pinLon), ring: poly.outer, height, source: 'gsi', heightKind: 'estimated' };
       if (kind.label) nb.label = kind.label;
       out.push(nb);
     }
@@ -390,7 +395,7 @@ export async function fetchNeighbors(
     // 国土地理院のタイルは取得できた（建物が 0 棟でも「データはある」として扱う）
     list = gsi;
     sourcesUsed.push('gsi');
-    const hint = '周辺建物の高さは国土地理院の建物種類から推定しています（普通建物 約7m・堅ろう建物 12m・高層 30m・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。';
+    const hint = `周辺建物の高さは国土地理院の建物種類と足元の面積から推定しています（${HEIGHT_ESTIMATE_NOTE}・無壁舎 2.8m）。実際の高さが分かる建物は、建物をクリックして修正してください。`;
     if (!gsi.length) {
       notes.push('この範囲には国土地理院の地図データに建物がありません（田畑・空き地など）。隣家があれば手動で追加してください。');
       // 建物が 0 棟でも PLATEAU を試みて無かった理由は残す（山村など: 開示・E2E で「未整備」か「通信エラー」かが分かるように）

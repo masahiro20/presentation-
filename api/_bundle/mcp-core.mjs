@@ -7926,7 +7926,14 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 	const pockets = [];
 	{
 		let fillPairLen = 0;
+		let fillLong = 0;
+		let fillLen = 0;
+		let strokeHeavyLen = 0;
 		lines.forEach((ls) => {
+			for (const l of ls) if (l.fill) {
+				fillLen += l.t1 - l.t0;
+				if (l.t1 - l.t0 >= 400) fillLong++;
+			} else if (l.heavy) strokeHeavyLen += l.t1 - l.t0;
 			const fl = ls.filter((l) => l.fill && l.t1 - l.t0 >= 400);
 			for (let i = 0; i < fl.length; i++) for (let j = i + 1; j < fl.length; j++) {
 				const d = fl[j].o - fl[i].o;
@@ -7935,7 +7942,9 @@ function detectWalls(allSegs, arcs, opts = {}, masks = []) {
 				fillPairLen += Math.max(0, Math.min(fl[i].t1, fl[j].t1) - Math.max(fl[i].t0, fl[j].t0));
 			}
 		});
-		if (fillPairLen > 8e3) for (const ls of lines) for (const l of ls) l.eligible = l.fill;
+		const fillDrawn = fillPairLen > 8e3 && (fillLong >= 25 || fillLen >= strokeHeavyLen * .5);
+		if (globalThis.__DBG_PLANS) console.log("fillPairLen", Math.round(fillPairLen), "fillLong", fillLong, "fillLenM", Math.round(fillLen / 1e3), "strokeHeavyLenM", Math.round(strokeHeavyLen / 1e3), "fillDrawn", fillDrawn);
+		if (fillDrawn) for (const ls of lines) for (const l of ls) l.eligible = l.fill;
 	}
 	const pairs = [];
 	const binSize = 5;
@@ -15444,6 +15453,40 @@ function clusterPlans(walls, ext, mergeGap = 600, minPart = 2500, windowSegs, ne
 		comps.get(r).push(w);
 	});
 	const lenOf = (ws) => ws.reduce((s, w) => s + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
+	if (ext) {
+		const W = ext.maxX - ext.minX;
+		const H = ext.maxY - ext.minY;
+		const m = Math.min(W, H) * .03;
+		const touch = (A, B) => bboxGap(wallBBox(A), wallBBox(B)) <= nearTol && (distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol || distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol || distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol);
+		const isFrame = (w) => {
+			const b = wallBBox(w);
+			return b.maxX - b.minX >= b.maxY - b.minY ? b.maxX - b.minX > W * .5 && (Math.abs(b.minY - ext.minY) < m || Math.abs(b.maxY - ext.maxY) < m) : b.maxY - b.minY > H * .5 && (Math.abs(b.minX - ext.minX) < m || Math.abs(b.maxX - ext.maxX) < m);
+		};
+		let nextKey = -1;
+		for (const [key, c] of [...comps]) {
+			if (c.length < 8) continue;
+			const b = c.map(wallBBox).reduce((a, q) => ({
+				minX: Math.min(a.minX, q.minX),
+				minY: Math.min(a.minY, q.minY),
+				maxX: Math.max(a.maxX, q.maxX),
+				maxY: Math.max(a.maxY, q.maxY)
+			}));
+			if (!(b.maxX - b.minX > W * .8 && b.maxY - b.minY > H * .8)) continue;
+			const frame = new Set(c.filter(isFrame));
+			if (frame.size < 2) continue;
+			const bridges = new Set(c.filter((w) => !frame.has(w) && [...frame].some((f) => touch(w, f))));
+			if (bridges.size > 5) continue;
+			const rest = c.filter((w) => !frame.has(w) && !bridges.has(w));
+			if (rest.length < 4) continue;
+			comps.set(key, [...frame, ...bridges]);
+			const par = rest.map((_, i) => i);
+			const fnd = (i) => par[i] === i ? i : par[i] = fnd(par[i]);
+			for (let i = 0; i < rest.length; i++) for (let j = i + 1; j < rest.length; j++) if (touch(rest[i], rest[j])) par[fnd(i)] = fnd(j);
+			const sub = /* @__PURE__ */ new Map();
+			rest.forEach((w, i) => (sub.get(fnd(i)) ?? sub.set(fnd(i), []).get(fnd(i))).push(w));
+			for (const g of sub.values()) comps.set(nextKey--, g);
+		}
+	}
 	let groups = [...comps.values()].filter((c) => lenOf(c) >= minPart);
 	if (ext) {
 		const W = ext.maxX - ext.minX;

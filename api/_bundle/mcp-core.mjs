@@ -25472,8 +25472,24 @@ function floorCategory(r) {
 	return "none";
 }
 /** 室内の建具（片開き戸・引戸。外壁の戸は玄関ドア・勝手口なので数えない） */
+/**
+* 室内建具（見積の「建具個数」）として数える戸。
+* 御社の積算では、ユニットバスの扉（浴室に付いてくる）とホームエレベーターの扉（エレベーター本体に含まれる）は建具に入れない
+* （舟橋様邸・吉田様邸・堀様邸・有元様邸の積算と突き合わせて、数えすぎが 1 邸あたり 1〜4 か所あった）。
+* 戸の両側が同じ部屋になるもの（読み違い）も数えない
+*/
 function interiorDoors(f) {
-	return f.openings.filter((o) => (o.kind === "door" || o.kind === "sliding") && !f.walls.find((w) => w.id === o.wallId)?.exterior);
+	const isUnit = (r) => !!r && (r.type === "bath" || /^(ＵＢ|UB|浴室|バス|ＥＶ|EV|エレベーター|ホームエレベーター)$/.test(r.name.trim()));
+	return f.openings.filter((o) => {
+		if (o.kind !== "door" && o.kind !== "sliding") return false;
+		const w = f.walls.find((x) => x.id === o.wallId);
+		if (!w) return true;
+		if (w.exterior) return false;
+		const s = openingSides(f, w, o);
+		if (isUnit(s.a) || isUnit(s.b)) return false;
+		if (s.a && s.b && s.a === s.b) return false;
+		return true;
+	});
 }
 function bboxOf(pts) {
 	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -37714,8 +37730,8 @@ function modelToDxf(model) {
 }
 //#endregion
 //#region src/estimate/catalog.ts
-/** サッシの概算の式数: 御社の見積で 延床 42 坪 → 1.5 式（堀様邸）、33 坪 → 1 式（吉田様邸）。28 坪で 1 式、0.5 式刻み */
-var sashQty = (a) => Math.max(1, Math.round(a.totalTsubo / 28 * 2) / 2);
+/** サッシの概算の式数: 40 坪で 1 式、0.5 式刻み（最小 1 式） */
+var sashQty = (a) => Math.max(1, Math.round(a.totalTsubo / 40 * 2) / 2);
 var T = .3025;
 var CATEGORIES = [
 	{
@@ -38283,7 +38299,7 @@ var CATEGORIES = [
 				cost: 8e5,
 				round: -2,
 				qty: sashQty,
-				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
+				qtyNote: "延床 40 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: ["S"]
 			},
@@ -38295,7 +38311,7 @@ var CATEGORIES = [
 				cost: 95e4,
 				round: -2,
 				qty: sashQty,
-				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
+				qtyNote: "延床 40 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: ["P"]
 			},
@@ -38307,7 +38323,7 @@ var CATEGORIES = [
 				cost: 12e5,
 				round: -2,
 				qty: sashQty,
-				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
+				qtyNote: "延床 40 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: "none"
 			},
@@ -38319,7 +38335,7 @@ var CATEGORIES = [
 				cost: 14e5,
 				round: -2,
 				qty: sashQty,
-				qtyNote: "延床 28 坪で 1 式（0.5 式刻み）",
+				qtyNote: "延床 40 坪で 1 式（0.5 式刻み）",
 				group: "sash",
 				on: "none"
 			},
@@ -38867,7 +38883,7 @@ var CATEGORIES = [
 			{
 				id: "ib.doorKamiya",
 				spec: "建具",
-				desc: "【神谷コーポレーション】キューブ",
+				desc: "【神谷コーポレーション】キューブ 高さ 2.7m",
 				unit: "箇所",
 				cost: 7e4,
 				round: -2,
@@ -38875,6 +38891,18 @@ var CATEGORIES = [
 				qtyNote: "建具個数",
 				group: "door",
 				on: "both"
+			},
+			{
+				id: "ib.doorKamiya25",
+				spec: "建具",
+				desc: "【神谷コーポレーション】キューブ 高さ 2.5m",
+				unit: "箇所",
+				cost: 51300,
+				round: -2,
+				qty: (a) => a.doors,
+				qtyNote: "建具個数",
+				group: "door",
+				on: "none"
 			},
 			{
 				id: "ib.doorLixil",

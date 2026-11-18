@@ -7,6 +7,7 @@ import { pointInPolygon, polygonArea } from '../core/geometry';
 import { isOpenSkyBalcony } from '../core/balcony';
 import { isStairwellVoid } from '../core/floorArea';
 import type { Grade } from './catalog';
+import { openingSides } from '../parser/livingCheck';
 
 export interface Areas {
   grade: Grade;
@@ -677,8 +678,24 @@ export function floorCategory(r: Room): FloorCategory {
 }
 
 /** 室内の建具（片開き戸・引戸。外壁の戸は玄関ドア・勝手口なので数えない） */
+/**
+ * 室内建具（見積の「建具個数」）として数える戸。
+ * 御社の積算では、ユニットバスの扉（浴室に付いてくる）とホームエレベーターの扉（エレベーター本体に含まれる）は建具に入れない
+ * （舟橋様邸・吉田様邸・堀様邸・有元様邸の積算と突き合わせて、数えすぎが 1 邸あたり 1〜4 か所あった）。
+ * 戸の両側が同じ部屋になるもの（読み違い）も数えない
+ */
 export function interiorDoors(f: Floor) {
-  return f.openings.filter((o) => (o.kind === 'door' || o.kind === 'sliding') && !f.walls.find((w) => w.id === o.wallId)?.exterior);
+  const isUnit = (r: Room | null | undefined) => !!r && (r.type === 'bath' || /^(ＵＢ|UB|浴室|バス|ＥＶ|EV|エレベーター|ホームエレベーター)$/.test(r.name.trim()));
+  return f.openings.filter((o) => {
+    if (o.kind !== 'door' && o.kind !== 'sliding') return false;
+    const w = f.walls.find((x) => x.id === o.wallId);
+    if (!w) return true;
+    if (w.exterior) return false;
+    const s = openingSides(f, w, o);
+    if (isUnit(s.a) || isUnit(s.b)) return false;
+    if (s.a && s.b && s.a === s.b) return false;
+    return true;
+  });
 }
 
 export function bboxOf(pts: Vec2[]) {

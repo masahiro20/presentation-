@@ -34,6 +34,13 @@ export function readSekisanItems(file: string): SekisanItem[] {
     if (/見積もり書|^面$/.test(name)) continue;
     const rows = new Map<number, Record<string, Cell>>();
     for (const [ref, v] of Object.entries(cells)) (rows.get(rowNo(ref)) ?? rows.set(rowNo(ref), {}).get(rowNo(ref))!)[col(ref)] = v;
+    // 列の並びはブックの書式で違う（積算: E 合計・F 単価・G 数量・H 呼称／お見積書: E 単価・F 数量・G 呼称・H 合計）。見出し行で決める
+    const head1 = rows.get(1) ?? {};
+    const colOf = (re: RegExp, fallback: string) => Object.entries(head1).filter(([c]) => c >= 'E' && c <= 'J').find(([, v]) => re.test(String(v)))?.[0] ?? fallback;
+    const cAmount = colOf(/^合計/, 'E');
+    const cPrice = colOf(/^単価/, 'F');
+    const cQty = colOf(/^数量/, 'G');
+    const cUnit = colOf(/^呼称|^単位/, 'H');
     let cat = 0;
     let last = '';
     for (const r of [...rows.keys()].sort((a, b) => a - b)) {
@@ -47,9 +54,9 @@ export function readSekisanItems(file: string): SekisanItem[] {
       if (!cat) continue;
       if (c.C != null && String(c.C).trim()) last = clean(c.C);
       if (/小計/.test(String(c.C ?? ''))) continue;
-      const amount = typeof c.E === 'number' ? c.E : 0;
+      const amount = typeof c[cAmount] === 'number' ? (c[cAmount] as number) : 0;
       if (!amount) continue;
-      out.push({ cat, name: last, spec: clean(c.D), amount, price: typeof c.F === 'number' ? c.F : undefined, qty: typeof c.G === 'number' ? c.G : undefined, unit: clean(c.H) || undefined });
+      out.push({ cat, name: last, spec: clean(c.D), amount, price: typeof c[cPrice] === 'number' ? (c[cPrice] as number) : undefined, qty: typeof c[cQty] === 'number' ? (c[cQty] as number) : undefined, unit: clean(c[cUnit]) || undefined });
     }
   }
   return out;

@@ -9,8 +9,10 @@ import type { Areas } from './areas';
 export type Grade = 'P' | 'S';
 export type Unit = '式' | '㎡' | 'm' | '坪' | '箇所' | '人工' | '日' | '枚' | '組' | '㎥' | 'km';
 
-/** サッシの概算の式数: 御社の見積で 延床 42 坪 → 1.5 式（堀様邸）、33 坪 → 1 式（吉田様邸）。28 坪で 1 式、0.5 式刻み */
-const sashQty = (a: Areas) => Math.max(1, Math.round((a.totalTsubo / 28) * 2) / 2);
+/** サッシの概算の式数: 40 坪で 1 式、0.5 式刻み（最小 1 式） */
+// サッシの概算: 御社の積算では 35〜47 坪の 4 邸のうち 3 邸が「1 式」（吉田様邸 34.8 坪・舟橋様邸 36.2 坪・林様邸 47.2 坪）、
+// 78 坪の玉山様邸が 2 式相当（堀様邸 42 坪の 1.5 式だけ合わない）。以前の「28 坪で 1 式」は 36 坪で 1.5 式になり、サッシだけで 57 万円高く出ていた
+const sashQty = (a: Areas) => Math.max(1, Math.round((a.totalTsubo / 40) * 2) / 2);
 
 export interface LineDef {
   id: string;
@@ -130,10 +132,10 @@ export const CATEGORIES: CategoryDef[] = [
     no: 5,
     name: '金属建具工事',
     lines: [
-      { id: 'sash.thermos', spec: 'LIXIL', desc: '【LIXIL】サーモス2H ※概算', unit: '式', cost: 800000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['S'] },
-      { id: 'sash.tw', spec: 'LIXIL', desc: '【LIXIL】TW ※概算', unit: '式', cost: 950000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['P'] },
-      { id: 'sash.thermosFire', spec: 'LIXIL', desc: '【LIXIL】サーモス2H 防火 ※概算', unit: '式', cost: 1200000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
-      { id: 'sash.twFire', spec: 'LIXIL', desc: '【LIXIL】TW 防火 ※概算', unit: '式', cost: 1400000, round: -2, qty: sashQty, qtyNote: '延床 28 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
+      { id: 'sash.thermos', spec: 'LIXIL', desc: '【LIXIL】サーモス2H ※概算', unit: '式', cost: 800000, round: -2, qty: sashQty, qtyNote: '延床 40 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['S'] },
+      { id: 'sash.tw', spec: 'LIXIL', desc: '【LIXIL】TW ※概算', unit: '式', cost: 950000, round: -2, qty: sashQty, qtyNote: '延床 40 坪で 1 式（0.5 式刻み）', group: 'sash', on: ['P'] },
+      { id: 'sash.thermosFire', spec: 'LIXIL', desc: '【LIXIL】サーモス2H 防火 ※概算', unit: '式', cost: 1200000, round: -2, qty: sashQty, qtyNote: '延床 40 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
+      { id: 'sash.twFire', spec: 'LIXIL', desc: '【LIXIL】TW 防火 ※概算', unit: '式', cost: 1400000, round: -2, qty: sashQty, qtyNote: '延床 40 坪で 1 式（0.5 式刻み）', group: 'sash', on: 'none' },
       { id: 'sash.doorVenato', spec: 'YKK', desc: '玄関開き戸 ヴェナートD30 ストレートハンドル', unit: '式', cost: 120000, round: -2, group: 'entDoor', on: 'both' },
       { id: 'sash.doorVenatoFire', spec: 'YKK', desc: '玄関開き戸 ヴェナートD30 ストレートハンドル ※防火', unit: '式', cost: 240000, round: -2, group: 'entDoor', on: 'none' },
       { id: 'sash.doorConcord', spec: 'YKK', desc: '玄関引き戸 コンコード', unit: '式', cost: 280000, round: -2, group: 'entDoor', on: 'none' },
@@ -210,7 +212,8 @@ export const CATEGORIES: CategoryDef[] = [
       { id: 'ib.floorIemonMocha', spec: '床材', desc: '【イエモン】挽板 t15 w158 ジャイロオーク モカ', unit: '㎡', cost: 7000, round: -2, qty: (a) => a.flooringArea, qtyNote: 'フローリング面積', group: 'floor', on: 'none' },
       { id: 'ib.floorChannel', spec: '床材', desc: '【チャネルオリジナル】挽板 t15 オーク W150', unit: '㎡', cost: 7000, round: -2, qty: (a) => a.flooringArea, qtyNote: 'フローリング面積', group: 'floor', on: 'both' },
       { id: 'ib.floorIoc', spec: '床材', desc: '【IOC】無垢床', unit: '㎡', cost: 18000, round: -2, qty: (a) => a.flooringArea, qtyNote: 'フローリング面積', group: 'floor', on: 'none' },
-      { id: 'ib.doorKamiya', spec: '建具', desc: '【神谷コーポレーション】キューブ', unit: '箇所', cost: 70000, round: -2, qty: (a) => a.doors, qtyNote: '建具個数', group: 'door', on: 'both' },
+      { id: 'ib.doorKamiya', spec: '建具', desc: '【神谷コーポレーション】キューブ 高さ 2.7m', unit: '箇所', cost: 70000, round: -2, qty: (a) => a.doors, qtyNote: '建具個数', group: 'door', on: 'both' },
+      { id: 'ib.doorKamiya25', spec: '建具', desc: '【神谷コーポレーション】キューブ 高さ 2.5m', unit: '箇所', cost: 51300, round: -2, qty: (a) => a.doors, qtyNote: '建具個数', group: 'door', on: 'none' },
       { id: 'ib.doorLixil', spec: '建具', desc: '【LIXIL】ラシッサ', unit: '箇所', cost: 28000, round: -2, qty: (a) => a.doors, qtyNote: '建具個数', group: 'door', on: 'none' },
       { id: 'ib.sill', spec: '窓枠', desc: '【イエモン】木製下台 or クロス巻込み', unit: '坪', cost: 1700, round: -2, qty: (a) => a.totalTsubo, qtyNote: '延床坪', on: 'both' },
       { id: 'ib.skirting', spec: '巾木', desc: '【神谷コーポレーション】スリム巾木', unit: '坪', cost: 1100, round: -2, qty: (a) => a.totalTsubo, qtyNote: '延床坪', on: 'both' },

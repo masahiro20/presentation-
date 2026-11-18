@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { takeoff } from '../src/estimate/areas';
 import { newChoice } from '../src/estimate/calc';
+import { CATEGORIES } from '../src/estimate/catalog';
 import type { BuildingModel, Floor, Room, Vec2 } from '../src/core/types';
 
 const rect = (x0: number, y0: number, x1: number, y1: number): Vec2[] => [
@@ -72,5 +73,29 @@ describe('見積の拾い（吉田様邸の積算と合わせた規則）', () =
     expect(gp.pv).toBe('eq.pv43');
     expect(gp.water).toBe('eq.ecocute360');
     expect(gp.ac).toBe('eq.acFloor');
+  });
+});
+
+describe('見積の拾い（舟橋様邸・吉田様邸・堀様邸・有元様邸の積算と合わせた規則）', () => {
+  it('建具個数: ユニットバスの扉・エレベーターの扉は数えない（浴室・エレベーターに付いてくる）', () => {
+    const m = model();
+    const f = m.floors[0];
+    // 1 階を作り直す: LDK（上）｜脱衣・ＵＢ・ＥＶ（下の帯）。帯の中の間仕切りと、LDK との境の壁に戸を置く
+    f.outline = [rect(0, 0, 10000, 8000)];
+    f.rooms = [room('ＬＤＫ', 'ldk', rect(0, 0, 10000, 6000)), room('脱衣室', 'washroom', rect(0, 6000, 4000, 8000)), room('ＵＢ', 'bath', rect(4000, 6000, 7000, 8000)), room('ＥＶ', 'other', rect(7000, 6000, 10000, 8000))];
+    const wall = (id: string, a: Vec2, b: Vec2) => ({ id, a, b, thickness: 120, exterior: false });
+    f.walls = [wall('w1', { x: 0, y: 6000 }, { x: 10000, y: 6000 }), wall('w2', { x: 4000, y: 6000 }, { x: 4000, y: 8000 })];
+    const door = (id: string, wallId: string, t0: number) => ({ id, wallId, kind: 'door' as const, t0, t1: t0 + 800, sill: 0, height: 2000 });
+    f.openings = [door('d1', 'w1', 1000), door('d2', 'w2', 600), door('d3', 'w1', 8000)]; // LDK⇔脱衣室／脱衣室⇔ＵＢ／LDK⇔ＥＶ
+    const a = takeoff(m, opts);
+    expect(a.doors).toBe(1); // LDK⇔脱衣室 だけ
+  });
+  it('サッシの概算: 36 坪・47 坪は 1 式、78 坪は 2 式（40 坪で 1 式・0.5 式刻み）', () => {
+    const line = CATEGORIES.flatMap((c) => c.lines).find((l) => l.id === 'sash.thermos')!;
+    const q = (tsubo: number) => line.qty!({ totalTsubo: tsubo } as never);
+    expect(q(34.8)).toBe(1);
+    expect(q(36.2)).toBe(1);
+    expect(q(47.2)).toBe(1);
+    expect(q(77.7)).toBe(2);
   });
 });

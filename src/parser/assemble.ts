@@ -350,6 +350,47 @@ function clusterPlans(walls: WWall[], ext?: BBox, mergeGap = 600, minPart = 2500
     comps.get(r)!.push(w);
   });
   const lenOf = (ws: WWall[]) => ws.reduce((s, w) => s + Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y), 0);
+  // 図面枠とつながってしまった図を切り離す: 実施図（平面詳細図）では、通り芯・寸法の線の対が「壁」として枠から建物まで伸び、
+  // 建物ごと 1 つの塊になって下の「図面枠」の判定で捨てられていた（岡﨑様邸 2 階: 枠 3 本＋橋渡し 2 本＋建物 26 本）。
+  // ページ全体に広がる塊のうち、枠の線（紙の縁に沿う長い線）と、枠に触れている線（橋渡し。5 本まで）を外し、残りをつながりで分け直す。
+  // 建物の外壁が紙の縁に来る図面（枠なし）では、外壁に触れる間仕切りが 6 本以上あるので、ここには入らない
+  if (ext) {
+    const W = ext.maxX - ext.minX;
+    const H = ext.maxY - ext.minY;
+    const m = Math.min(W, H) * 0.03;
+    const touch = (A: WWall, B: WWall) =>
+      bboxGap(wallBBox(A), wallBBox(B)) <= nearTol &&
+      (distPointSegment(A.a, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(A.b, B.a, B.b) <= B.d / 2 + nearTol ||
+        distPointSegment(B.a, A.a, A.b) <= A.d / 2 + nearTol ||
+        distPointSegment(B.b, A.a, A.b) <= A.d / 2 + nearTol);
+    const isFrame = (w: WWall) => {
+      const b = wallBBox(w);
+      const horiz = b.maxX - b.minX >= b.maxY - b.minY;
+      return horiz
+        ? b.maxX - b.minX > W * 0.5 && (Math.abs(b.minY - ext.minY) < m || Math.abs(b.maxY - ext.maxY) < m)
+        : b.maxY - b.minY > H * 0.5 && (Math.abs(b.minX - ext.minX) < m || Math.abs(b.maxX - ext.maxX) < m);
+    };
+    let nextKey = -1;
+    for (const [key, c] of [...comps]) {
+      if (c.length < 8) continue;
+      const b = c.map(wallBBox).reduce((a, q) => ({ minX: Math.min(a.minX, q.minX), minY: Math.min(a.minY, q.minY), maxX: Math.max(a.maxX, q.maxX), maxY: Math.max(a.maxY, q.maxY) }));
+      if (!(b.maxX - b.minX > W * 0.8 && b.maxY - b.minY > H * 0.8)) continue;
+      const frame = new Set(c.filter(isFrame));
+      if (frame.size < 2) continue;
+      const bridges = new Set(c.filter((w) => !frame.has(w) && [...frame].some((f) => touch(w, f))));
+      if (bridges.size > 5) continue;
+      const rest = c.filter((w) => !frame.has(w) && !bridges.has(w));
+      if (rest.length < 4) continue;
+      comps.set(key, [...frame, ...bridges]);
+      const par = rest.map((_, i) => i);
+      const fnd = (i: number): number => (par[i] === i ? i : (par[i] = fnd(par[i])));
+      for (let i = 0; i < rest.length; i++) for (let j = i + 1; j < rest.length; j++) if (touch(rest[i], rest[j])) par[fnd(i)] = fnd(j);
+      const sub = new Map<number, WWall[]>();
+      rest.forEach((w, i) => (sub.get(fnd(i)) ?? sub.set(fnd(i), []).get(fnd(i))!).push(w));
+      for (const g of sub.values()) comps.set(nextKey--, g);
+    }
+  }
   let groups = [...comps.values()].filter((c) => lenOf(c) >= minPart);
   // 図面枠（ページ全体を囲む二重線）は、他の図と bbox が重なってまとめられてしまうので先に除く
   if (ext) {

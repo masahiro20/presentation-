@@ -556,7 +556,16 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
   // 壁が塗りつぶしで描かれている図面では、塗りの輪郭だけを壁候補にする（家具・サッシ等の線を除外できる）
   {
     let fillPairLen = 0;
+    let fillLong = 0;
+    let fillLen = 0;
+    let strokeHeavyLen = 0;
     lines.forEach((ls) => {
+      for (const l of ls) {
+        if (l.fill) {
+          fillLen += l.t1 - l.t0;
+          if (l.t1 - l.t0 >= 400) fillLong++;
+        } else if (l.heavy) strokeHeavyLen += l.t1 - l.t0;
+      }
       // 柱の塗り（105〜120mm の正方形）は壁の塗りではないので、40cm 以上の辺だけを見る
       const fl = ls.filter((l) => l.fill && l.t1 - l.t0 >= 400);
       for (let i = 0; i < fl.length; i++)
@@ -567,7 +576,12 @@ export function detectWalls(allSegs: Seg[], arcs: Arc[], opts: Partial<WallDetec
           fillPairLen += Math.max(0, Math.min(fl[i].t1, fl[j].t1) - Math.max(fl[i].t0, fl[j].t0));
         }
     });
-    if (fillPairLen > 8000) for (const ls of lines) for (const l of ls) l.eligible = l.fill;
+    // 壁は線で描き、造作・家具だけを塗りで描く図面（ご契約後の平面詳細図: 靴箱・カウンターの灰色の塗りが十数本）は「塗りの壁」ではない。
+    // 塗りの壁の図面は、40cm 以上の塗りの辺が 63〜268 本・塗りの輪郭が太線の 3 割以上ある（手元の 12 邸）。
+    // 平面詳細図は 8〜17 本・1 割前後（岡﨑様邸・中田様邸）で、ここを塗りの壁と判断すると線の壁がすべて候補から外れて階が読めなかった
+    const fillDrawn = fillPairLen > 8000 && (fillLong >= 25 || fillLen >= strokeHeavyLen * 0.5);
+    if ((globalThis as { __DBG_PLANS?: boolean }).__DBG_PLANS) console.log('fillPairLen', Math.round(fillPairLen), 'fillLong', fillLong, 'fillLenM', Math.round(fillLen / 1000), 'strokeHeavyLenM', Math.round(strokeHeavyLen / 1000), 'fillDrawn', fillDrawn);
+    if (fillDrawn) for (const ls of lines) for (const l of ls) l.eligible = l.fill;
   }
 
   // ---- ペア候補とヒストグラム ----

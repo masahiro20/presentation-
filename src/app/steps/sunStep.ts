@@ -1,3 +1,4 @@
+import { FEATURES } from '../features';
 import * as THREE from 'three';
 import { h, clear, toast, progressModal, section, field, fold, modal, download, svgToDataUrl, svgToPng, type ProgressHandle } from '../dom';
 import { state, emit, type ProjectState } from '../state';
@@ -2934,7 +2935,7 @@ export const sunStep: Step = {
         nbNotes,
         toggles,
         terrainNote,
-        earthBlock,
+        FEATURES.googleEarth && earthBlock,
         h(
           'details',
           { class: 'sub-fold' },
@@ -2961,6 +2962,7 @@ export const sunStep: Step = {
           ),
           h('p', { class: 'hint' }, NEIGHBORS_HINT),
         ),
+        FEATURES.pointCloud &&
         h(
           'details',
           { class: 'sub-fold' },

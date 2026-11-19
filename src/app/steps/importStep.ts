@@ -1903,7 +1903,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       ),
     ),
   );
-  return h('details', { class: `check-card ${ng || rd.verdict === 'fix' ? 'has-ng' : ''}`, open: ng > 0 || rd.verdict !== 'ready' }, head, h('div', { class: 'score-box' }, scoreEl, parts), readyPanel, fixList, list, aiDesignerSection(model, issues, openEditor));
+  return h('details', { class: `check-card ${ng || rd.verdict === 'fix' ? 'has-ng' : ''}`, open: ng > 0 || rd.verdict !== 'ready' }, head, h('div', { class: 'score-box' }, scoreEl, parts), readyPanel, fixList, list, FEATURES.aiDesigner && aiDesignerSection(model, issues, openEditor));
 }
 
 // ---- AI 設計士（Gemini）: 図面の画像と読み取りの要約を設計の目で見てもらう（docs/AI_DESIGNER.md） ----

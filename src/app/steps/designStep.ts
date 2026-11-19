@@ -564,7 +564,7 @@ export const designStep: Step = {
       void renderRefs();
       side.append(
         // 写真の仕上げをツールの中で（Google AI Studio のキー。外部で仕上げる流れ①〜③はそのまま残す）
-        aiFinishSection(ctx, { shots: () => shots, currentAsShot, onDone: () => renderGallery() }),
+        ...(FEATURES.aiFinish ? [aiFinishSection(ctx, { shots: () => shots, currentAsShot, onDone: () => renderGallery() })] : []),
         // こだわりの参考資料（この物件の、部位ごとの形・素材）。写るカットの説明文に足し、参考画像も一緒に渡す
         (() => {
           const box = h('div');

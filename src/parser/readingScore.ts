@@ -34,7 +34,7 @@ export interface ReadingScore {
   score: number;
   parts: ScorePart[];
   fixes: ScoreFix[];
-  /** 点数の見方（80 以上: そのまま提案に使える、60〜79: 直してから、60 未満: 読み直し） */
+  /** 読み取りの出来（80 以上: 良好、60〜79: 直す所あり、60 未満: 不十分）。提案に使えるかは core/readiness で判断する */
   grade: 'good' | 'fair' | 'poor';
 }
 
@@ -252,4 +252,5 @@ export function readingScore(model: BuildingModel, issuesIn?: WoodIssue[]): Read
   return { score, parts, fixes: uniq, grade: score >= 80 ? 'good' : score >= 60 ? 'fair' : 'poor' };
 }
 
-export const GRADE_LABEL: Record<ReadingScore['grade'], string> = { good: 'そのまま提案に使えます', fair: '「まず直す」を直してから提案へ', poor: '読み直し（縮尺・PDF の種類）をおすすめします' };
+/** 読み取りの出来だけの言葉（提案に使えるかは core/readiness が、建築の整合性・未確定の情報も合わせて判断する） */
+export const GRADE_LABEL: Record<ReadingScore['grade'], string> = { good: '読み取りは良好', fair: '読み取りに直す所あり', poor: '読み取りが不十分（読み直し・縮尺・PDF の種類を確認）' };

@@ -295,6 +295,22 @@ export interface Post {
 
 export const POST_KIND_LABEL: Record<PostKind, string> = { kuda: '管柱', toshi: '通し柱', free: '独立柱' };
 
+/** 読み取り後に自動で直した内容（修正前の形を持つので、いつでも取り消せる） */
+export interface AutoFix {
+  id: string;
+  kind: 'stair';
+  level: number;
+  targetId: string;
+  label: string;
+  evidence: string[];
+  /** 変更前・変更後の要点（画面に出す） */
+  before: string;
+  after: string;
+  /** 変更前の各階の階段（取り消しに使う） */
+  undo: { level: number; stairs: Stair[] }[];
+  undone?: boolean;
+}
+
 export interface ParseReport {
   pages: number;
   scaleDenominator: number | null;
@@ -318,6 +334,12 @@ export interface ParseReport {
   elevationWindows?: { views: number; facades: string[]; matched: number; changed: number; added: number; total: number };
   /** 立面図の屋根の線から読めた掛け方（屋根の塊の数と、人に見せる要約） */
   elevationRoof?: { masses: number; summary: string };
+  /** 階高・床の高さを何で決めたか（立面図・3DS で読んだときは model.heights）。hl-reference = 御社の実例の中央値に合わせた */
+  heightBasis?: 'hl-reference';
+  /** 実施図の壁の読み方: thick-only = 薄い線の対を壁にしない読み方を採った／all = 今までの読み方のまま。reasons は比べた結果 */
+  detailWalls?: { adopted: 'thick-only' | 'all'; reasons: string[] };
+  /** 読み取り後に根拠が十分で自動で直した内容（A）。取り消せる */
+  autoFixes?: AutoFix[];
   /**
    * 開口を白抜きで描く図面（壁の塗りの上に白い長方形を重ねて窓・戸を描く）から読み、白抜きがすべて開口として読めた階。
    * その階では、窓の無い部屋は読み落としではなく「図面に窓が描かれていない」
@@ -596,6 +618,8 @@ export interface BuildingModel {
   site?: SiteData;
   /** 高さの出どころ（立面図の寸法・設計の 3D データ）。無ければ標準値の推定 */
   heights?: { source: 'elevation' | '3d'; floor1?: number; storyHeights?: number[]; maxHeight?: number; maxEave?: number; roofPitch?: number };
+  /** 担当者が「確認した」推定の項目（core/readiness のキー → 確認した日時 ISO）。高さ・屋根など平面図に無い値 */
+  confirmed?: Record<string, string>;
   report: ParseReport;
 }
 

@@ -456,6 +456,8 @@ export function dropScanDebris<T extends Pick<WWall, 'a' | 'b' | 'd'>>(walls: T[
 
 export interface PlanData {
   pageIndex: number;
+  /** 実施図（平面詳細図）を「薄い線の対を壁にしない」読み方で読んだ区画 */
+  detail?: boolean;
   bbox: BBox;
   floorHint: number | null;
   walls: WWall[];
@@ -2848,6 +2850,10 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
         // タイルの目地）。区切りは残して建具なしの開口にする。室名の無い区画（造作の棚・土間の奥）との間でも同じ:
         // 池本様邸 1 階の土間収納の中に 1.7m、パントリーの冷蔵庫置場の前に 1.3m、服部様邸のペット室の棚の前に 2.2m の「引戸」ができていた
         if (kind === 'sliding' && unmarkedSet.has(op) && inRoom && otherRoom) kind = 'open';
+        // 実施図（平面詳細図）: 壁の途切れの中には床の見切り・敷居・額縁・下地の線が何本も通るので、
+        // 帯の中の平行線だけが根拠（確信度 0.7 以下）で幅 1.1m 以上の途切れは引戸にしない（建具なしの開口にする。室内の引戸は 1 枚 650〜910 が大半）。
+        // 中田様邸の実施図 1 階で幅 1m を超える「引戸」が 24 か所できていた
+        if (kind === 'sliding' && plan.detail && op.kind === 'window' && op.confidence <= 0.7 && width >= 1100 && !(globalThis as { __NO_DETAIL_SLIDE?: boolean }).__NO_DETAIL_SLIDE) kind = 'open';
         // 室内窓・建具なしの開口（印を使い、開口を白抜きで描く図面）: 通り口の印が無い白抜きの開口は、人が通る建具ではない。
         //  - 中に建具の線が 1〜2 本（FIX の芯の線・引違いの 2 本）→ 室内窓（ガラス）
         //  - 中に線が無い（白抜きだけ）→ 建具なしの開口（玄関と LDK の間の式台の所など）
@@ -3225,7 +3231,9 @@ export function buildFloor(plan: PlanData, level: number, northAngleDeg: number,
     const runLen = c.treadOrient === 'h' ? c.maxY - c.minY : c.maxX - c.minX;
     // 左右の列にそれぞれ歩行線があれば、段の線が中央でつながって見えても折り返し階段（サンプル図面）
     const fullWidth = c.flights === 1 && !c.mixed && c.walk !== 'columns' && (c.treadLen ?? 0) >= across * 0.8 && !((c.treadLen ?? 0) >= 1600 && runLen > 1500);
-    const kind: Stair['kind'] = !fullWidth && (c.flights >= 2 || Math.max(w, h) / Math.min(w, h) < 1.5) ? 'u' : 'straight';
+    // 左右の列にそれぞれ歩行線（矢印）がある＝昇る列と降りる列が並ぶ折り返し階段。範囲が短く読めて縦横比が 1.5 を超えても折り返し
+    // （サンプル住宅: 段の線の範囲だけが範囲になり 1,820×1,047 → 直階段と読んで踏面 81mm の重大警告になっていた）
+    const kind: Stair['kind'] = !fullWidth && (c.flights >= 2 || c.walk === 'columns' || Math.max(w, h) / Math.min(w, h) < 1.5) ? 'u' : 'straight';
     // 階段のそばの UP／DN の文字（矢印の始点の横。昇り口の 1 段手前に置かれるので矩形から 900mm まで見る）
     const nearMark = (dir: 'up' | 'down') =>
       plan.texts
@@ -4200,7 +4208,14 @@ function nearestTitleIsElevation(bbox: BBox, texts: MmText[]): boolean {
   return !!best?.elev;
 }
 
-export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
+export interface DetectPlansOptions {
+  /** 実施図（平面詳細図）で 90mm 未満の線の対を壁にしない（既定 true）。false で今までの読み方 */
+  detailMin?: boolean;
+  /** 実施図のページがあったか（呼び出し側が読み方を比べるため） */
+  seen?: { detail: boolean };
+}
+
+export function detectPlans(pages: PageMm[], warnings: string[], dopts: DetectPlansOptions = {}): PlanData[] {
   const plans: PlanData[] = [];
   const isRoomText = (t: MmText) => classifyRoomName(t.str) != null || parseAreaLabel(t.str) != null;
   const docHasRooms = pages.some((pg) => pg.texts.some(isRoomText));
@@ -4228,7 +4243,12 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       page.segs.length >= 50 || !page.rasterMask
         ? bboxOf(page.segs.flatMap((sg) => [sg.a, sg.b]))
         : { minX: 0, minY: 0, maxX: page.rasterMask.w * page.rasterMask.res, maxY: page.rasterMask.h * page.rasterMask.res };
-    const det0 = detectWalls(page.segs, page.arcs, (globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}, page.masks);
+    // ご契約後の実施図（平面詳細図 1/50）: 壁は「仕上げ・下地（約 50mm）・柱」の多重の線で描かれ、50mm の板の対まで壁と読むと
+    // 壁が二重・三重になり、間に細い区画と偽の戸ができる（岡﨑様邸・中田様邸・大河内様邸・金田様邸）。この図面では 90mm 未満の対を壁にしない
+    const detailPage = page.texts.some((t) => /平面詳細図|詳細平面図/.test(t.str.replace(/\s/g, '')));
+    if (detailPage && dopts.seen) dopts.seen.detail = true;
+    const detailPlan = detailPage && dopts.detailMin !== false && !(globalThis as { __NO_DETAIL_MIN?: boolean }).__NO_DETAIL_MIN;
+    const det0 = detectWalls(page.segs, page.arcs, { ...((globalThis as { __wallBands?: boolean }).__wallBands ? { bands: true } : {}), ...(detailPlan ? { minThickness: 90 } : {}) }, page.masks);
     let ww = makeWalls(det0);
     // 開口を白抜きで描く図面か（読めなかった白抜きの位置つき）。壁を読み直したら、その結果のものに替える
     let maskInfo: { style: boolean; missed: Vec2[] } = { style: !!det0.maskStyle, missed: det0.maskMissed ?? [] };
@@ -4400,7 +4420,7 @@ export function detectPlans(pages: PageMm[], warnings: string[]): PlanData[] {
       const sketchLines = sketchHeavy ? sketchHeavy.filter((sg) => inBox(sg.a.x, sg.a.y, margin) && inBox(sg.b.x, sg.b.y, margin)) : undefined;
       // 開口を白抜きで描く図面で、この図の範囲の白抜きがすべて開口として読めた（窓の無い部屋は図面どおり、と言える）
       const maskDrawn = maskInfo.style && !loose && !scan && !maskInfo.missed.some((q) => q.x > bbox.minX - 300 && q.x < bbox.maxX + 300 && q.y > bbox.minY - 300 && q.y < bbox.maxY + 300);
-      plans.push({ pageIndex: page.pageIndex, bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(scan && page.scanColor ? { scanColor: { ...page.scanColor } } : {}), ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}), ...(joineryFills.length ? { joineryFills } : {}) });
+      plans.push({ pageIndex: page.pageIndex, ...(detailPlan ? { detail: true } : {}), bbox, floorHint: null, walls: g, texts, segs, arcs: page.arcs, siteTexts, siteSegs, wallPolys, sashPolys, roomFills, sketchLines, loose, scan, ...(scan && page.scanColor ? { scanColor: { ...page.scanColor } } : {}), ...(maskDrawn ? { maskDrawn } : {}), ...(trimBands.length ? { trimBands } : {}), ...(joineryFills.length ? { joineryFills } : {}) });
     }
   }
   assignFloorTitles(plans, pages);
@@ -5802,10 +5822,13 @@ export function trimEndsThroughDiagonals(f: Floor): number {
 export interface AssembleOptions {
   /** 木造のモジュール: auto = 図面から判定（尺／メーター）, shaku = 910, meter = 1000, none = 寄せない */
   module?: ModuleMode;
+  /** 実施図の壁の読み方（detectPlans へ渡す） */
+  detailMin?: boolean;
+  seen?: { detail: boolean };
 }
 
 export function assembleModel(pages: PageMm[], name: string, warnings: string[], opts: AssembleOptions = {}): Omit<BuildingModel, 'report'> & { thicknesses: number[]; northDetected: boolean; areaTable: Record<number, number>; floorPages: Record<number, number>; maskLevels: number[] } {
-  let plans = detectPlans(pages, warnings);
+  let plans = detectPlans(pages, warnings, { detailMin: opts.detailMin, seen: opts.seen });
   // 見出しの読めないスキャン図面が複数ページにある場合は、別案（打合せ用の比較案など）の可能性が高いので1ページ目だけを使う
   if (plans.length && plans.every((p) => p.scan && p.floorHint == null)) {
     const first = Math.min(...plans.map((p) => p.pageIndex));

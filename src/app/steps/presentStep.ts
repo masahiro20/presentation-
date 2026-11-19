@@ -1,3 +1,4 @@
+import { confirmBeforeExport } from '../exportCheck';
 import * as THREE from 'three';
 import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
 import { h, clear, toast, progressModal, section, download, setPrintPage } from '../dom';
@@ -772,8 +773,8 @@ export const presentStep: Step = {
         'div',
         { class: 'deck-tools' },
         h('button', { class: 'btn primary', onclick: () => present(buildDeck(deckOpts())) }, '▶ プレゼンを開始（全画面）'),
-        h('button', { class: 'btn', onclick: () => window.print() }, 'PDF で保存（印刷）'),
-        h('button', { class: 'btn', onclick: () => exportHtml(buildDeck(deckOpts())) }, 'HTML で保存（お客様へ送付用）'),
+        h('button', { class: 'btn', onclick: () => confirmBeforeExport(state.model, 'PDF の保存', () => window.print()) }, 'PDF で保存（印刷）'),
+        h('button', { class: 'btn', onclick: () => confirmBeforeExport(state.model, 'お客様へ送る HTML の保存', () => exportHtml(buildDeck(deckOpts()))) }, 'HTML で保存（お客様へ送付用）'),
       ),
     );
     // 解析結果に写しが無いときは、今の周辺建物の扱いで注記する

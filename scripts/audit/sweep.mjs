@@ -365,6 +365,14 @@ const sweep3dTool = async () => {
     return;
   }
   await page.waitForTimeout(500);
+  // 道具を開いた直後は 3D の描き直しで画面が数秒ずつ固まる（GPU の無い点検の環境で 6〜10 秒。有本様邸・林様邸）。
+  // 固まっている間に押すと 10 秒で時間切れになるので、画面の応答が 2 回続けて 300ms 未満になるまで待つ（最長 60 秒）
+  for (let k = 0, calm = 0, t0 = Date.now(); calm < 2 && Date.now() - t0 < 60000; k++) {
+    const t = Date.now();
+    await page.evaluate(() => 1);
+    calm = Date.now() - t < 300 ? calm + 1 : 0;
+    await page.waitForTimeout(500);
+  }
   const tool = page.locator('.furn-tool.edit3d');
   // モードのボタン列（見出しのすぐ下: 窓・戸／天井高／シャッター／屋根）
   const modes = tool.locator('.furn-head + div > button');

@@ -17,7 +17,7 @@ import { rebuildFloor, type RoomLabel } from '../parser/assemble';
 import { pointInPolygon } from '../core/geometry';
 import { furnitureGaps, openingGaps, mmText } from '../core/dims';
 import { loadSymbolDict, saveSymbolDict, learnSymbol, signatureOf } from '../parser/symbolDict';
-import { h, clear, toast, useSelect } from './dom';
+import { h, clear, toast, useSelect, modal } from './dom';
 import { useValueOf, applyUseValue } from '../core/roomUse';
 import { chooseModule } from '../parser/module';
 import { SHUTTER_LAYOUTS, applyShutterLayout, shutterLayoutOf, autoShutterLayout } from '../core/shutter';
@@ -149,7 +149,14 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
 
   const W = () => works[fi];
   const snapshot = () => JSON.stringify({ floor: W().floor, labels: W().labels, removed: W().removed, furn: furn.get(W().floor.level) ?? null, site: model.site ?? null, roof: model.roofPatches ?? null });
+  // 修正にかかった操作の回数と時間（正解データに添えて、手直しの手間を測る。操作の間が 2 分を超えたら休みとして数えない）
+  const edits = { ops: 0, activeMs: 0, firstAt: '', lastAt: 0 };
   const pushUndo = () => {
+    const now = Date.now();
+    edits.ops++;
+    if (!edits.firstAt) edits.firstAt = new Date(now).toISOString();
+    if (edits.lastAt) edits.activeMs += Math.min(120000, now - edits.lastAt);
+    edits.lastAt = now;
     undo.push(`${fi}|${snapshot()}`);
     if (undo.length > 60) undo.shift();
     redo.length = 0;
@@ -3020,8 +3027,44 @@ export function openPlanEditor(host: HTMLElement, model: BuildingModel, onDone: 
         return { kind: o.kind, width: Math.round(o.t1 - o.t0), center: w ? { x: Math.round(w.a.x + (w.b.x - w.a.x) * t), y: Math.round(w.a.y + (w.b.y - w.a.y) * t) } : null };
       }),
       rooms: f.rooms.map((r) => ({ name: r.name, type: r.type, area: +r.area.toFixed(2), polygon: r.polygon.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) })),
+      stairs: f.stairs.map((s) => ({ kind: s.kind, goesUp: s.goesUp, minX: Math.round(s.minX), minY: Math.round(s.minY), maxX: Math.round(s.maxX), maxY: Math.round(s.maxY), entry: s.entry })),
     });
-    const data = { format: 'madori-truth-v1', pdf: pdfName, savedAt: new Date().toISOString(), scale: model.report.scaleDenominator, auto: autoFloors.map(strip), truth: works.map((w) => strip(w.floor)) };
+    // 図面全体を見て直したもの（設計担当者の確認済み）か、途中まで直したものかを分けて残す（途中のものは精度の測定で「一部」として扱う）
+    modal(
+      '正解データとして保存',
+      h('p', null, 'この間取りは、図面全体（壁・窓・戸・階段・部屋名）を見比べて直し終わっていますか？ 途中まで直したものは「一部の正解」として保存し、測定のときに分けて扱います。'),
+      [
+        { label: '途中まで（一部の正解）', onClick: () => doSave(true) },
+        { label: '全体を確認した（確認済みの正解）', primary: true, onClick: () => doSave(false) },
+      ],
+    );
+    void strip;
+  };
+  const doSave = (partial: boolean) => {
+    const strip = (f: Floor) => ({
+      level: f.level,
+      walls: f.walls.map((w) => ({ a: w.a, b: w.b, thickness: w.thickness, exterior: w.exterior })),
+      openings: f.openings.map((o) => {
+        const w = f.walls.find((x) => x.id === o.wallId);
+        const L = w ? Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) || 1 : 1;
+        const t = (o.t0 + o.t1) / 2 / L;
+        return { kind: o.kind, width: Math.round(o.t1 - o.t0), center: w ? { x: Math.round(w.a.x + (w.b.x - w.a.x) * t), y: Math.round(w.a.y + (w.b.y - w.a.y) * t) } : null };
+      }),
+      rooms: f.rooms.map((r) => ({ name: r.name, type: r.type, area: +r.area.toFixed(2), polygon: r.polygon.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) })),
+      stairs: f.stairs.map((s) => ({ kind: s.kind, goesUp: s.goesUp, minX: Math.round(s.minX), minY: Math.round(s.minY), maxX: Math.round(s.maxX), maxY: Math.round(s.maxY), entry: s.entry })),
+    });
+    const data = {
+      format: 'madori-truth-v2',
+      pdf: pdfName,
+      savedAt: new Date().toISOString(),
+      scale: model.report.scaleDenominator,
+      partial,
+      edits: { ops: edits.ops, activeSec: Math.round(edits.activeMs / 1000), firstAt: edits.firstAt || null },
+      autoFixes: (model.report.autoFixes ?? []).map((f) => ({ label: f.label, undone: !!f.undone })),
+      auto: autoFloors.map(strip),
+      truth: works.map((w) => strip(w.floor)),
+      floors: works.map((w) => strip(w.floor)),
+    };
     const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;

@@ -25,6 +25,12 @@ import { clearSiteLines, siteAroundBuilding, siteSize } from '../../parser/site'
 import { openProjectFile, isProjectFile, saveProjectFile } from '../project';
 import { woodCheck, type WoodIssue } from '../../parser/woodCheck';
 import { GRADE_LABEL, readingScore } from '../../parser/readingScore';
+import { assessReadiness, applyHlHeightReference, HL_HEIGHT_REFERENCE } from '../../core/readiness';
+import { applyStairCandidate, diagnoseStair } from '../../core/stairDiagnosis';
+import { undoAutoFix } from '../../core/autoFix';
+
+/** 直前に当てた階段の修正案の取り消し（モデルごと） */
+const lastStairUndo = new WeakMap<BuildingModel, () => void>();
 import { isSpecialRoomName } from '../../parser/labels';
 import { ENTRANCE_VIA_LABEL, entranceDoorOf } from '../../core/entrance';
 import { parseWishes, checkWishes, WISH_STATUS_LABEL, type WishResult } from '../../core/wishes';
@@ -1692,7 +1698,53 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
 
   // 建築として成り立つか（建具と壁の位置・戸の可動範囲・階段の寸法と上下階の接続・階の高さ・壁の重なり）。形は直さず、根拠つきで示す
   const SEV: Record<BuildIssue['severity'], string> = { critical: '重大', confirm: '要確認', note: '参考' };
+  // 自動で直した所（修正方式 A）: 変更前→変更後と根拠を見せ、取り消せるようにする
+  for (const fx of (model.report.autoFixes ?? []).filter((f) => !f.undone)) {
+    rows.push({
+      ok: null,
+      label: '自動で直した所',
+      detail: `${fx.label}（${fx.before} → ${fx.after}）。根拠: ${fx.evidence.join('／')}`,
+      action: {
+        label: '取り消す',
+        fn: () => {
+          undoAutoFix(model, fx.id);
+          onFix();
+        },
+      },
+      action2: { label: '方眼で確認', fn: () => openLevel(fx.level) },
+    });
+  }
   for (const it of buildCheck(model).filter((i) => i.severity !== 'note').slice(0, 6)) {
+    // 階段の重大警告は原因を切り分けて、修正案（B: 候補から選ぶ／C: 図面で確認）を出す
+    const diag = it.target?.type === 'stair' && it.severity === 'critical' ? diagnoseStair(model, it.level, it.target.id) : null;
+    const candEl = diag
+      ? h(
+          'div',
+          { class: 'diag' },
+          h('div', { class: 'diag-head' }, diag.fixClass === 'C' ? `修正案なし（C: 図面での確認が必要）: ${diag.needs ?? ''}` : `修正案（${diag.fixClass === 'A' ? 'A: 根拠が十分' : 'B: 候補から選んでください'}）。考えられる原因: ${diag.causes.join('／')}`),
+          ...diag.candidates.map((c) =>
+            h(
+              'div',
+              { class: 'diag-cand' },
+              h('b', null, c.label),
+              h('span', null, ` 踏面 ${c.before.tread} → ${c.after.tread} mm・蹴上 ${c.after.riser} mm・${c.after.w}×${c.after.d} mm`),
+              h('div', { class: 'ready-how' }, c.evidence.join('／')),
+              h(
+                'button',
+                {
+                  class: 'btn sm',
+                  onclick: () => {
+                    const undo = applyStairCandidate(model, it.level, it.target.id, c);
+                    lastStairUndo.set(model, undo);
+                    onFix();
+                  },
+                },
+                'この案で直す',
+              ),
+            ),
+          ),
+        )
+      : null;
     const mark: WoodIssue | null = it.at ? { id: it.id, level: it.level, severity: 'warn', title: it.title, detail: it.reason, marks: [{ level: it.level, rects: [{ minX: it.at.x - 400, minY: it.at.y - 400, maxX: it.at.x + 400, maxY: it.at.y + 400 }], label: SEV[it.severity] }] } : null;
     rows.push({
       ok: it.severity === 'critical' ? false : null,
@@ -1708,18 +1760,107 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
           }
         : { label: '方眼で確認', fn: () => openLevel(it.level) },
       action2: mark ? { label: '図面で見る', fn: () => showMarks(mark) } : undefined,
+      extra: candEl ?? undefined,
     });
   }
+  // 直前に選んだ修正案を取り消す
+  const undoLast = lastStairUndo.get(model);
+  if (undoLast)
+    rows.push({
+      ok: null,
+      label: '直前の修正',
+      detail: '階段の修正案を当てました。違っていたら取り消せます',
+      action: {
+        label: '取り消す',
+        fn: () => {
+          undoLast();
+          lastStairUndo.delete(model);
+          onFix();
+        },
+      },
+    });
 
   const ng = rows.filter((r) => r.ok === false).length;
   // 読み取りの点数（帖数・面積表・上下階・戸と窓・壁・階と部屋名）と「まず直す 3 つ」
   const rs = readingScore(model, issues);
+  // 点数（読み取りの出来）と「提案に使えるか」は別に出す: 重大な警告・外観に効く未確認の推定があれば、点数が高くても「使えます」と出さない
+  const rd = assessReadiness(model);
+  const VERDICT_CLASS = { ready: 'good', check: 'fair', fix: 'poor' } as const;
   const scoreEl = h(
     'div',
-    { class: `score-line ${rs.grade}` },
+    { class: `score-line ${VERDICT_CLASS[rd.verdict]}` },
     h('b', { class: 'score-num' }, `${rs.score}`, h('small', null, ' 点')),
     h('div', { class: 'score-bar' }, h('i', { style: `width:${rs.score}%` })),
-    h('span', { class: 'score-grade' }, GRADE_LABEL[rs.grade]),
+    h('span', { class: 'score-grade' }, rd.verdictLabel),
+  );
+  const confirmNow = (key: string, on: boolean) => {
+    model.confirmed = { ...(model.confirmed ?? {}) };
+    if (on) model.confirmed[key] = new Date().toISOString();
+    else delete model.confirmed[key];
+    onFix();
+  };
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const IMPACT = { high: '外観に大きく効く', mid: '効く', low: '小さい' } as const;
+  const readyPanel = h(
+    'div',
+    { class: 'ready-panel' },
+    h('div', { class: 'ready-row' }, h('span', { class: 'ready-k' }, '認識の確からしさ'), h('span', { class: 'ready-v' }, `読み取り ${rs.score} 点（${GRADE_LABEL[rs.grade]}）`)),
+    h(
+      'div',
+      { class: `ready-row ${rd.integrity.critical.length ? 'ng' : ''}` },
+      h('span', { class: 'ready-k' }, '建築の整合性'),
+      h('span', { class: 'ready-v' }, rd.integrity.critical.length || rd.integrity.confirm.length ? `重大 ${rd.integrity.critical.length} 件・要確認 ${rd.integrity.confirm.length} 件（下の「建築」の行）` : '重大・要確認なし'),
+    ),
+    h(
+      'div',
+      { class: 'ready-row' },
+      h('span', { class: 'ready-k' }, '未確定の情報'),
+      h(
+        'div',
+        { class: 'ready-v' },
+        rd.pending.length
+          ? h(
+              'ul',
+              { class: 'ready-list' },
+              ...rd.pending.map((u) =>
+                h(
+                  'li',
+                  null,
+                  h('b', null, u.label),
+                  h('div', null, u.value),
+                  h('div', { class: 'ready-how' }, `${u.basis}（確からしさ ${pct(u.confidence)}・${IMPACT[u.impact]}: ${u.affects}）`),
+                  h('button', { class: 'btn sm', title: `図面どおりにするには: ${u.howToFix}`, onclick: () => confirmNow(u.key, true) }, '確認した'),
+                  u.key === 'heights' && model.report.heightBasis !== 'hl-reference'
+                    ? h(
+                        'button',
+                        {
+                          class: 'btn sm ghost',
+                          title: `立面図から高さが読めた御社の実例 ${HL_HEIGHT_REFERENCE.cases} 件の中央値（1 階床 GL+${HL_HEIGHT_REFERENCE.floor1}・階高 ${HL_HEIGHT_REFERENCE.story[0]} / ${HL_HEIGHT_REFERENCE.story[1]}・1 階天井 ${HL_HEIGHT_REFERENCE.ceiling1}）に合わせます`,
+                          onclick: () => {
+                            applyHlHeightReference(model);
+                            onFix();
+                          },
+                        },
+                        '御社の実例の中央値にする',
+                      )
+                    : null,
+                ),
+              ),
+            )
+          : '推定のまま残っている項目はありません',
+      ),
+    ),
+    h(
+      'div',
+      { class: 'ready-row' },
+      h('span', { class: 'ready-k' }, '確認の状況'),
+      h(
+        'div',
+        { class: 'ready-v' },
+        rd.unknowns.length ? `確認済み ${rd.confirmed.length} / ${rd.unknowns.length}` : '確認の要る推定はありません',
+        ...rd.confirmed.map((u) => h('span', { class: 'ready-done' }, `✓ ${u.label}`, h('button', { class: 'btn sm ghost', title: '確認済みを取り消す', onclick: () => confirmNow(u.key, false) }, '取り消す'))),
+      ),
+    ),
   );
   const parts = h('div', { class: 'score-parts' }, ...rs.parts.map((p) => h('span', { class: p.got >= p.max - 0.01 ? 'full' : p.got < p.max * 0.5 ? 'low' : '', title: p.note }, `${p.label} ${Math.round(p.got)}/${p.max}`)));
   const top = rs.fixes.slice(0, 3);
@@ -1739,7 +1880,12 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       )
     : null;
   // 問題が無ければ 1 行に畳む（開くと項目ごとの結果）
-  const head = h('summary', { class: 'check-head' }, h('b', null, `読み取り ${rs.score} 点`, ng ? `　確認してください（${ng} 件）` : '　読み取りチェック: 問題なし'), h('span', null, ng ? '⚠ の項目はパースの出来に影響します' : '階・玄関・階段・部屋・窓が揃っています（開くと詳細）'));
+  const head = h(
+    'summary',
+    { class: 'check-head' },
+    h('b', null, `読み取り ${rs.score} 点`, rd.verdict === 'fix' ? '　直すか確認が必要です' : rd.verdict === 'check' ? `　提案前に確認（${rd.integrity.confirm.length + rd.pending.filter((u) => u.impact === 'high').length + ng} 件）` : ng ? `　確認してください（${ng} 件）` : '　提案に使えます'),
+    h('span', null, rd.verdictLabel),
+  );
   const list = h(
     'div',
     { class: 'check-rows' },
@@ -1757,7 +1903,7 @@ function checkCard(model: BuildingModel, openEditor: () => void, focusNorth: () 
       ),
     ),
   );
-  return h('details', { class: `check-card ${ng ? 'has-ng' : ''}`, open: ng > 0 || rs.score < 80 }, head, h('div', { class: 'score-box' }, scoreEl, parts), fixList, list, aiDesignerSection(model, issues, openEditor));
+  return h('details', { class: `check-card ${ng || rd.verdict === 'fix' ? 'has-ng' : ''}`, open: ng > 0 || rd.verdict !== 'ready' }, head, h('div', { class: 'score-box' }, scoreEl, parts), readyPanel, fixList, list, aiDesignerSection(model, issues, openEditor));
 }
 
 // ---- AI 設計士（Gemini）: 図面の画像と読み取りの要約を設計の目で見てもらう（docs/AI_DESIGNER.md） ----

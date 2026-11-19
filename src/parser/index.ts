@@ -1,6 +1,8 @@
 /**
  * 平面図 PDF → 建物モデル
  */
+import { autoFixModel } from '../core/autoFix';
+import { compareReadings } from './readingGate';
 import { autoOverhangPosts } from '../core/posts';
 import { repairEnvelope, mergeStackedWalls } from './envelope';
 import { clearStairWalls } from './stairWalls';
@@ -185,6 +187,21 @@ export function isDrawingLike(rgba: Uint8ClampedArray, w: number, h: number, rec
 }
 
 export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}): BuildingModel {
+  // 実施図（平面詳細図）は、今までの読み方と新しい読み方（薄い線の対を壁にしない）の両方で読み、
+  // 読み取りの数字（階・名前の付いた部屋・帖数の一致・重大な警告・戸の数）のどれも悪くならないときだけ新しい方を採る
+  const seen = { detail: false };
+  const base = modelFromVectorsOnce(pages, opts, { detailMin: false, seen });
+  if (!seen.detail || (globalThis as { __NO_DETAIL_MIN?: boolean }).__NO_DETAIL_MIN) return base;
+  const cand = modelFromVectorsOnce(pages, opts, { detailMin: true });
+  // 点検用: 新しい読み方を比べずに採る（scripts の調査だけで使う）
+  if ((globalThis as { __DETAIL_FORCE?: boolean }).__DETAIL_FORCE) return cand;
+  const verdict = compareReadings(base, cand);
+  const chosen = verdict.adopt ? cand : base;
+  chosen.report.detailWalls = { adopted: verdict.adopt ? 'thick-only' : 'all', reasons: verdict.reasons };
+  return chosen;
+}
+
+function modelFromVectorsOnce(pages: PageVectors[], opts: ParseOptions, detail: { detailMin: boolean; seen?: { detail: boolean } }): BuildingModel {
   const t0 = performance.now();
   const warnings: string[] = [];
   let sc = detectScale(pages);
@@ -215,7 +232,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   let mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
   // 読み直すときは、前の読み取りのメモ（帖数の食い違いなど）を捨てる
   let wAsm = warnings.length;
-  let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
+  let res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module, ...detail });
   if (scanned && res.floors.length) {
     warnings.push('スキャン画像の図面のため、画像から壁を読み取りました。室名は読み取れないため、下の一覧で部屋名と用途を指定してください');
     // 文字の読めないスキャン図面は、壁の芯が 910mm モジュールにそろう性質から縮尺を補正する
@@ -233,7 +250,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
         warnings.splice(wAsm);
         warnings.push(...keep);
         wAsm = warnings.length;
-        res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
+        res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module, ...detail });
       }
     }
   }
@@ -270,7 +287,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       warnings.splice(wAsm);
       warnings.push(note);
       wAsm = warnings.length;
-      res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
+      res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module, ...detail });
     } else if (Math.abs(med - 1) > 0.15) {
       warnings.push('図面の帖数と解析した面積に差があります。縮尺をご確認ください');
     }
@@ -295,7 +312,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
           warnings.push(`立面図の建物の幅（${chk.n} 面）が平面図の ${chk.k.toFixed(2)} 倍だったため、平面図の縮尺を 約1/${Math.round(den0)} → 1/${Math.round(snap)} に直しました`);
           wAsm = warnings.length;
           mmPages = straighten(pages.map((p) => pageToMm(p, sc.mmPerPt)));
-          res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module });
+          res = assembleModel(mmPages, opts.name ?? '新築計画', warnings, { module: opts.module, ...detail });
         }
       }
     } catch {
@@ -420,7 +437,7 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
   }
 
   const { thicknesses, areaTable, floorPages: _fp, maskLevels, ...model } = res;
-  return {
+  const built: BuildingModel = {
     ...model,
     ...(heights ? { heights } : {}),
     ...(roofHolder.roofPatches?.length ? { roofPatches: roofHolder.roofPatches } : {}),
@@ -442,6 +459,16 @@ export function modelFromVectors(pages: PageVectors[], opts: ParseOptions = {}):
       ...(maskLevels.length ? { openingsByMask: maskLevels } : {}),
     },
   };
+  // 根拠が十分な誤認識だけを自動で直す（修正方式 A。修正前の形を report.autoFixes に残すので取り消せる）
+  if (!(globalThis as { __NO_AUTOFIX?: boolean }).__NO_AUTOFIX) {
+    try {
+      const fixed = autoFixModel(built);
+      for (const f of fixed) built.report.warnings.push(`自動で直しました: ${f.label}（${f.before} → ${f.after}）。読み込み結果の「自動で直した所」で取り消せます`);
+    } catch {
+      // 自動修正に失敗しても読み取りはそのまま
+    }
+  }
+  return built;
 }
 
 /** 上下階の階段の重なり（いちばん重なる組の IoU）。どちらかに階段が無ければ null */

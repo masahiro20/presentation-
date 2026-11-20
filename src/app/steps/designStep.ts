@@ -614,7 +614,7 @@ export const designStep: Step = {
         ),
         section(
           '仕上げ（外部）③ 仕上がりを取り込む',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '仕上げた写真・動画を取り込むと、プレゼン資料と「お客様に渡す」リンクに入ります。写真はファイル名の末尾の「__c-…」を残すと、どのカットか自動で分かります（名前が変わっても一覧で選び直せます）。'),
+          h('p', { class: 'hint', style: 'margin-top:0' }, `仕上げた写真・動画を取り込むと、${FEATURES.shareLink ? 'プレゼン資料と「お客様に渡す」リンク' : 'プレゼン資料'}に入ります。写真はファイル名の末尾の「__c-…」を残すと、どのカットか自動で分かります（名前が変わっても一覧で選び直せます）。`),
           h('button', { class: 'btn dark block', onclick: () => void importFinishedImages(ctx, shots) }, '仕上げた写真を取り込む（複数可）'),
           h('button', { class: 'btn dark block', style: 'margin-top:8px', onclick: () => void importFinishedVideos(() => renderGallery()) }, '仕上げた動画を取り込む（MP4・MOV・WebM）'),
         ),

@@ -1,4 +1,5 @@
 /** アプリ本体（ステップ切り替えと共有ビューア） */
+import { FEATURES } from './features';
 import { confirmBeforeExport } from './exportCheck';
 import { h, clear, toast } from './dom';
 import { createWalkHud } from './walkHud';
@@ -273,7 +274,7 @@ export class App {
       h('button', { class: 'btn sm ghost', title: '保存したプロジェクト（.madori.json）を開く', onclick: () => input.click() }, '開く'),
       hintsToggle(),
       textToggle(),
-      h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => confirmBeforeExport(state.model, '体験リンクの作成', () => void shareDialog(this)) }, 'お客様に渡す'),
+      FEATURES.shareLink && h('button', { class: 'btn sm primary', title: 'お客様がスマホで開ける体験リンクを作る（歩く・光・テイスト・AR・動画）', onclick: () => confirmBeforeExport(state.model, '体験リンクの作成', () => void shareDialog(this)) }, 'お客様に渡す'),
       input,
     );
   }

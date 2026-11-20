@@ -1,3 +1,4 @@
+import { FEATURES } from '../features';
 import { h, clear, section, segmented, field, download, svgToDataUrl, svgToPng, toast } from '../dom';
 import { zoomPane } from '../zoomPane';
 import { state } from '../state';
@@ -218,11 +219,15 @@ export const elevationStep: Step = {
       ),
       section('平面図の配置', layoutPanel),
       section('ダウンロード（A3 シート）', dlPanel),
-      section(
-        '社内確認',
-        h('p', { class: 'hint', style: 'margin-top:0' }, '面積・木造チェックの全件・読み取りの注意・ご要望との照合を 1 枚にした、上司・社内承認者向けのレビュー用紙です（新しいタブに開きます）。'),
-        h('button', { class: 'btn block', onclick: () => openDesignReview() }, '設計レビュー（社内確認用）を開く'),
-      ),
+      ...(FEATURES.meetingDocs
+        ? [
+            section(
+              '社内確認',
+              h('p', { class: 'hint', style: 'margin-top:0' }, '面積・木造チェックの全件・読み取りの注意・ご要望との照合を 1 枚にした、上司・社内承認者向けのレビュー用紙です（新しいタブに開きます）。'),
+              h('button', { class: 'btn block', onclick: () => openDesignReview() }, '設計レビュー（社内確認用）を開く'),
+            ),
+          ]
+        : []),
       section(
         'CAD へ戻す（DXF）',
         h('p', { class: 'hint' }, '読み取った壁・建具・部屋名・階段・外形を階ごとのレイヤに分けた DXF（R12）で書き出します。JW_CAD・AutoCAD・ARCHITREND などで下図として開けます（単位 mm）。'),

@@ -2,6 +2,7 @@
  * 見積・資金計画: 読み込んだ間取りから数量を拾い、社内の積算（価格表）で見積を出し、資金計画書まで一気に作る。
  * 画面の左（ステージ）に御見積書・内訳書・資金計画書の清書、右（パネル）に数量・仕様の選択・資金計画の入力。
  */
+import { FEATURES } from '../features';
 import { h, clear, section, fold, field, segmented, toast, download, setPrintPage } from '../dom';
 import { zoomPane } from '../zoomPane';
 import { state, emit } from '../state';
@@ -1010,8 +1011,9 @@ export const estimateStep: Step = {
         fold('仕様の選択', { open: true, meta: `${Object.keys(GROUP_LABEL).length} 項目` }, groupBody),
         fold('任意の項目', { open: false }, optBody),
         fold('資金計画書の入力', { open: which === 'funding', meta: `総合計 ¥${yen(computeFunding(funding).grand)}` }, fundBody),
-        fold('契約前チェック（社内用）', { open: pcSum.warn > 0 && which === 'funding', meta: pcSum.text }, pcBody),
-        fold('月々の支払い試算（スタッフ用）', { open: false, meta: `月々 ¥${yen(plan.monthly)}` }, loanBody),
+        ...(FEATURES.meetingDocs
+          ? [fold('契約前チェック（社内用）', { open: pcSum.warn > 0 && which === 'funding', meta: pcSum.text }, pcBody), fold('月々の支払い試算（スタッフ用）', { open: false, meta: `月々 ¥${yen(plan.monthly)}` }, loanBody)]
+          : []),
       );
     };
     ctx.side.appendChild(panel);

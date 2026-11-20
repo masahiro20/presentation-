@@ -1,3 +1,4 @@
+import { FEATURES } from '../features';
 import { confirmBeforeExport } from '../exportCheck';
 import * as THREE from 'three';
 import { stylesFor, FINISH_CATEGORIES, selectedProduct } from '../../coordinate/catalog';
@@ -516,7 +517,7 @@ export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): 
   }
   // 前回からの変更: 図面を読み直したときだけ（部屋・帖数・窓・延床・概算）
   const prev = state.revisions?.[state.revisions.length - 1];
-  if (prev) {
+  if (prev && FEATURES.meetingDocs) {
     const changes = diffPlans(prev, planSummary(model, state.pdfName ?? '今回', estimateSummary()?.grand));
     if (changes.length) {
       chapters.push({ en: 'Changes', ja: '前回からの変更' });
@@ -954,11 +955,15 @@ export const presentStep: Step = {
       pagesBox,
       ovBox,
       contentsBox,
-      section(
-        '打合せの書類',
-        h('p', { class: 'hint', style: 'margin-top:0' }, '前回からの変更・ご要望との照合の △✖・決まった仕上げ・概算を並べた議事録の下書きです。打合せ中に書き足して印刷できます（新しいタブに開きます）。'),
-        h('button', { class: 'btn block', onclick: () => openMeetingMemo() }, '打合せメモ（議事録の下書き）を開く'),
-      ),
+      ...(FEATURES.meetingDocs
+        ? [
+            section(
+              '打合せの書類',
+              h('p', { class: 'hint', style: 'margin-top:0' }, '前回からの変更・ご要望との照合の △✖・決まった仕上げ・概算を並べた議事録の下書きです。打合せ中に書き足して印刷できます（新しいタブに開きます）。'),
+              h('button', { class: 'btn block', onclick: () => openMeetingMemo() }, '打合せメモ（議事録の下書き）を開く'),
+            ),
+          ]
+        : []),
     );
   },
 };

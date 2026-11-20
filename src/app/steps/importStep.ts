@@ -336,7 +336,7 @@ const FLOW: [string, string][] = [
   ['図面', '平面図・立面図・断面図を御社の書き方で A3 に。'],
   ['日照', '建設地の航空写真と周辺建物で、季節・時刻ごとの日当たりと日影図。'],
   ['見積・資金計画', '間取りから積算し、見積書と資金計画書まで。'],
-  ['お客様に渡す', '提案資料と、スマホで歩ける体験リンク。'],
+  FEATURES.shareLink ? ['お客様に渡す', '提案資料と、スマホで歩ける体験リンク。'] : ['資料', '提案資料（PDF・HTML）にまとめます。'],
 ];
 
 function dropScreen(ctx: StepCtx) {
@@ -1317,7 +1317,7 @@ function renderResult(ctx: StepCtx) {
 
   // 接道・敷地
   side.append(roadSection(model, redrawPlans));
-  const diffBox = revisionFold(model);
+  const diffBox = FEATURES.meetingDocs ? revisionFold(model) : null;
   if (diffBox) side.append(diffBox);
   const studyBox = siteStudyFold(model);
   if (studyBox) side.append(studyBox);

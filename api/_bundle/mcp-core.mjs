@@ -1775,6 +1775,31 @@ function checkFloors(model, out) {
 		});
 	});
 }
+/** 立面図と照らし合わせて分かる読み違いの疑い（形は変えずに知らせる） */
+function checkElevationAgreement(model, out) {
+	const unmatched = model.report?.elevationWindows?.unmatched ?? 0;
+	if (unmatched > 0) out.push({
+		id: "bc-elev-win",
+		kind: "elevation-window-missing",
+		severity: "confirm",
+		level: Math.min(...model.floors.map((f) => f.level)),
+		target: {
+			type: "floor",
+			id: "all",
+			label: "窓"
+		},
+		at: null,
+		title: `立面図に見当たらない窓が ${unmatched} か所あります`,
+		reason: "立面図と窓の並びが合っている面で、平面図にだけある窓です。平面図の線（壁の中の線・庇・手すり）を窓と読んだ疑いがあります。",
+		basis: {
+			type: "geometry",
+			ref: REF.geometry
+		},
+		confidence: .6,
+		advice: "読み込み結果の注意書きに場所が出ています。方眼で確かめ、無い窓なら消してください（自動では消していません）。",
+		values: { windows: unmatched }
+	});
+}
 function checkWallOverlap(f, out) {
 	const seen = /* @__PURE__ */ new Set();
 	for (let i = 0; i < f.walls.length; i++) {
@@ -1847,6 +1872,7 @@ function buildCheck(model) {
 		checkWallOverlap(f, out);
 	}
 	checkFloors(model, out);
+	checkElevationAgreement(model, out);
 	const order = {
 		critical: 0,
 		confirm: 1,
@@ -26983,7 +27009,8 @@ function modelFromVectorsOnce(pages, opts, detail) {
 				matched: r.matched,
 				changed: r.changed,
 				added: r.added,
-				total: r.total
+				total: r.total,
+				...r.unmatched.length ? { unmatched: r.unmatched.length } : {}
 			};
 		}
 	} catch (e) {
@@ -27038,6 +27065,7 @@ function modelFromVectorsOnce(pages, opts, detail) {
 			...Object.keys(areaTable).length ? { areaTable } : {},
 			...pageMap.length ? { pageMap } : {},
 			...elevationWindows ? { elevationWindows } : {},
+			...views.length ? { elevationSizes: elevationSizesOf(views) } : {},
 			...elevationRoof ? { elevationRoof } : {},
 			...finishTable ? { finishTable } : {},
 			...floorShifted.length ? { floorShifts: floorShifted } : {},
@@ -27049,6 +27077,15 @@ function modelFromVectorsOnce(pages, opts, detail) {
 		for (const f of fixed) built.report.warnings.push(`自動で直しました: ${f.label}（${f.before} → ${f.after}）。読み込み結果の「自動で直した所」で取り消せます`);
 	} catch {}
 	return built;
+}
+/** 立面図の面ごとの外形の幅（同じ向きが 2 つあれば広い方） */
+function elevationSizesOf(views) {
+	const best = /* @__PURE__ */ new Map();
+	for (const v of views) best.set(v.facing, Math.max(best.get(v.facing) ?? 0, v.width));
+	return [...best].map(([facing, width]) => ({
+		facing,
+		width
+	}));
 }
 /** 上下階の階段の重なり（いちばん重なる組の IoU）。どちらかに階段が無ければ null */
 function bestStairOverlap(lo, up) {

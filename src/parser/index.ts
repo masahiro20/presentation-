@@ -400,7 +400,7 @@ function modelFromVectorsOnce(pages: PageVectors[], opts: ParseOptions, detail: 
     if (views.length) {
       const r = applyElevationWindows(res.floors, views, res.northAngleDeg);
       warnings.push(...r.notes);
-      elevationWindows = { views: views.length, facades: r.facades, matched: r.matched, changed: r.changed, added: r.added, total: r.total };
+      elevationWindows = { views: views.length, facades: r.facades, matched: r.matched, changed: r.changed, added: r.added, total: r.total, ...(r.unmatched.length ? { unmatched: r.unmatched.length } : {}) };
     }
   } catch (e) {
     warnings.push(`立面図の窓を読めませんでした（${(e as Error).message}）`);
@@ -453,6 +453,7 @@ function modelFromVectorsOnce(pages: PageVectors[], opts: ParseOptions, detail: 
       ...(Object.keys(areaTable).length ? { areaTable } : {}),
       ...(pageMap.length ? { pageMap } : {}),
       ...(elevationWindows ? { elevationWindows } : {}),
+      ...(views.length ? { elevationSizes: elevationSizesOf(views) } : {}),
       ...(elevationRoof ? { elevationRoof } : {}),
       ...(finishTable ? { finishTable } : {}),
       ...(floorShifted.length ? { floorShifts: floorShifted } : {}),
@@ -469,6 +470,13 @@ function modelFromVectorsOnce(pages: PageVectors[], opts: ParseOptions, detail: 
     }
   }
   return built;
+}
+
+/** 立面図の面ごとの外形の幅（同じ向きが 2 つあれば広い方） */
+function elevationSizesOf(views: ElevationView[]): { facing: 'N' | 'S' | 'E' | 'W'; width: number }[] {
+  const best = new Map<'N' | 'S' | 'E' | 'W', number>();
+  for (const v of views) best.set(v.facing as 'N' | 'S' | 'E' | 'W', Math.max(best.get(v.facing as 'N' | 'S' | 'E' | 'W') ?? 0, v.width));
+  return [...best].map(([facing, width]) => ({ facing, width }));
 }
 
 /** 上下階の階段の重なり（いちばん重なる組の IoU）。どちらかに階段が無ければ null */

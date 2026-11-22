@@ -331,7 +331,9 @@ export interface ParseReport {
   /** 立面図で直した上下階の重ね位置（mm。図面の右・下が +） */
   floorShifts?: { level: number; dx: number; dy: number }[];
   /** 立面図の窓の線から窓の高さを当てた結果（当てた面・確かめた窓・腰高と高さを直した窓・足した窓・面の外壁の窓） */
-  elevationWindows?: { views: number; facades: string[]; matched: number; changed: number; added: number; total: number };
+  elevationWindows?: { views: number; facades: string[]; matched: number; changed: number; added: number; total: number; unmatched?: number };
+  /** 立面図の各面の外形の幅（mm）。平面図の外形と大きさが合うかの照合に使う（読み違いの発見） */
+  elevationSizes?: { facing: 'N' | 'S' | 'E' | 'W'; width: number }[];
   /** 立面図の屋根の線から読めた掛け方（屋根の塊の数と、人に見せる要約） */
   elevationRoof?: { masses: number; summary: string };
   /** 階高・床の高さを何で決めたか（立面図・3DS で読んだときは model.heights）。hl-reference = 御社の実例の中央値に合わせた */

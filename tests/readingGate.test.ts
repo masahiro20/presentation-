@@ -49,3 +49,22 @@ describe('階段の修正案の寸法の常識（plausibleStair）', () => {
     expect(plausibleStair({ kind: 'straight', w: 3640, d: 910, tread: 240, riser: 240 })).toBe(false);
   });
 });
+
+describe('立面図と照らし合わせて分かる読み違いの疑い', () => {
+  it('立面図に見当たらない窓があれば「要確認」に出す（形は変えない）', async () => {
+    const { buildCheck } = await import('../src/core/buildCheck');
+    const m = await parseSample('sample_house_A3.pdf');
+    const before = m.floors.reduce((s, f) => s + f.openings.length, 0);
+    m.report.elevationWindows = { views: 4, facades: [], matched: 10, changed: 2, added: 0, total: 12, unmatched: 2 };
+    const is = buildCheck(m).filter((i) => i.kind === 'elevation-window-missing');
+    expect(is).toHaveLength(1);
+    expect(is[0].severity).toBe('confirm');
+    expect(is[0].title).toContain('2 か所');
+    expect(m.floors.reduce((s, f) => s + f.openings.length, 0)).toBe(before);
+  });
+  it('立面図が無い・見当たらない窓が無いときは出さない', async () => {
+    const { buildCheck } = await import('../src/core/buildCheck');
+    const m = await parseSample('sample_house_A3.pdf');
+    expect(buildCheck(m).some((i) => i.kind.startsWith('elevation-'))).toBe(false);
+  });
+});

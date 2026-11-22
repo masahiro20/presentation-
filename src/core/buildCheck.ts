@@ -332,6 +332,30 @@ function checkFloors(model: BuildingModel, out: BuildIssue[]) {
   });
 }
 
+// ---------------------------------------------------------------- 4b. 立面図との照合
+/** 立面図と照らし合わせて分かる読み違いの疑い（形は変えずに知らせる） */
+function checkElevationAgreement(model: BuildingModel, out: BuildIssue[]) {
+  // 立面図に見当たらない窓（立面図との並びが確かに合っている面・階で、相手の無い平面図の窓）
+  const unmatched = model.report?.elevationWindows?.unmatched ?? 0;
+  if (unmatched > 0)
+    out.push({
+      id: 'bc-elev-win',
+      kind: 'elevation-window-missing',
+      severity: 'confirm',
+      level: Math.min(...model.floors.map((f) => f.level)),
+      target: { type: 'floor', id: 'all', label: '窓' },
+      at: null,
+      title: `立面図に見当たらない窓が ${unmatched} か所あります`,
+      reason: '立面図と窓の並びが合っている面で、平面図にだけある窓です。平面図の線（壁の中の線・庇・手すり）を窓と読んだ疑いがあります。',
+      basis: { type: 'geometry', ref: REF.geometry },
+      confidence: 0.6,
+      advice: '読み込み結果の注意書きに場所が出ています。方眼で確かめ、無い窓なら消してください（自動では消していません）。',
+      values: { windows: unmatched },
+    });
+  // 立面図と平面図の建物の幅の照合（report.elevationSizes）は、読み取りの良い図面でも塀・下屋・車庫の扱いで食い違うことがあり、
+  // まだ誤って知らせる。正解データで精度を確かめてから入れる（2026-11-22）
+}
+
 // ---------------------------------------------------------------- 5. 壁の重なり
 function checkWallOverlap(f: Floor, out: BuildIssue[]) {
   const seen = new Set<string>();
@@ -383,6 +407,7 @@ export function buildCheck(model: BuildingModel): BuildIssue[] {
     checkWallOverlap(f, out);
   }
   checkFloors(model, out);
+  checkElevationAgreement(model, out);
   const order: Record<BuildSeverity, number> = { critical: 0, confirm: 1, note: 2 };
   return out.sort((a, b) => order[a.severity] - order[b.severity] || a.level - b.level || b.confidence - a.confidence);
 }

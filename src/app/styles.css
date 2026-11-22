@@ -42,6 +42,8 @@ input, select, textarea { font: inherit; }
 .brand .wordmark { font-family: var(--latin); letter-spacing: 0.3em; text-transform: uppercase; font-size: 17px; line-height: 1; color: var(--ink); }
 /* 御社のロゴ（黄金比のマーク + Home Landick）。高さ 22px で表題欄の文字と同じ存在感に */
 .brand .logo { height: 22px; width: auto; display: block; }
+.brand .studio { font-size: 12.5px; letter-spacing: 0.18em; color: var(--ink); padding-left: 10px; border-left: 1px solid rgba(0, 0, 0, 0.25); line-height: 1; }
+@media (max-width: 600px) { .brand .studio { display: none; } }
 .brand small { display: none; }
 .office { display: flex; align-items: center; font-family: var(--serif); color: var(--ink); font-size: 14.5px; letter-spacing: 0.1em; white-space: nowrap; flex: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .office:empty { display: none; }

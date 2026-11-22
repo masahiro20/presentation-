@@ -244,6 +244,9 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 /* 2026-11-22: シンプルなトップ（写真を低くして、最初の画面に「置く場所」と「できること」が収まる） */
 .lp-hero.short { height: 40vh; min-height: 260px; }
 .lp-hero.short + .lp-sec { padding-top: 36px; }
+.lp-subacts { display: flex; gap: 10px; margin-top: 14px; }
+.lp-subacts .lp-btn { flex: 1; justify-content: center; text-align: center; white-space: nowrap; gap: 14px; }
+@media (max-width: 480px) { .lp-subacts .lp-btn { letter-spacing: 0.04em; gap: 8px; font-size: 13px; } }
 .lp-chips { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px 0 0; padding: 0; }
 .lp-chips li { font-size: 13px; letter-spacing: 0.1em; color: #444; padding: 6px 14px; border: 1px solid #d3d6db; border-radius: 999px; background: #fff; }
 .lp-chips li + li::before { content: none; }

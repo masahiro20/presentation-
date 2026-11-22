@@ -5,6 +5,7 @@
  * 高解像度に一括保存し、画像生成 AI に渡すための説明文（部屋・素材・光）を付けて ZIP にまとめる。
  * 構図・間取り・家具の位置はこの画像のとおりに、質感だけを写真らしく仕上げてもらう使い方を想定。
  */
+import { FINISH_GUIDE_LINES } from './finishGuide';
 import { renderPass, segmentLegend, type PassKind } from '../scene/passes';
 import type { StepCtx } from './app';
 import { state } from './state';
@@ -320,6 +321,32 @@ export function focusForCut(shot: Shot): { hits: FocusNote[]; images: { url: str
 }
 
 /**
+ * 仕上げた写真 1 枚を動画にするときの指示文（画像から動画: Kling・Runway・Veo などの「最初のフレーム」に仕上げた写真を入れる）。
+ * 建築の動画で崩れやすいのは「頼んでいない動き」と「壁・窓・家具のゆがみ」。カメラの動きを 1 つだけ・ゆっくり・5 秒に絞り、
+ * 建物は動かさない・人を出さないと明記する。動かしてよいのは木の葉・雲・光のうつろいだけ
+ */
+export function cutVideoPrompt(shot: Shot): { ja: string; en: string } {
+  const keepJa = '建物・家具・窓とドアの数と形は一切変えず、ゆがませない。縦の線は垂直のまま。人・動物・車の出入り・文字は出さない。動くのは木の葉と雲、光のわずかなうつろいだけ。';
+  const keepEn = 'The building, furniture and the number and shape of windows and doors stay exactly the same, with no morphing or warping; vertical lines stay vertical. No people, animals, moving cars or text. Only the leaves, clouds and the light move subtly.';
+  let moveJa: string;
+  let moveEn: string;
+  if (shot.kind === 'interior') {
+    moveJa = 'カメラは目線の高さのまま、部屋の奥へ 1m ほどゆっくり前進（ドリーイン）。パン・ズーム・回転はしない。窓からの光が少しだけ揺らぐ。';
+    moveEn = 'Camera stays at eye level and makes one very slow dolly-in of about 1 meter into the room. No pan, no zoom, no rotation. Daylight through the windows shifts very slightly.';
+  } else if (shot.kind === 'aerial') {
+    moveJa = 'カメラは高さを保ったまま、建物を中心に右へ 15° ほどゆっくり回り込む（オービット）。ズームはしない。';
+    moveEn = 'Camera keeps its height and makes one very slow orbit of about 15 degrees to the right around the house. No zoom.';
+  } else {
+    moveJa = 'カメラは人の目線の高さのまま、玄関に向かってゆっくり前進（ドリーイン）。横移動・回転はしない。';
+    moveEn = 'Camera stays at human eye level and makes one very slow dolly-in toward the entrance. No sideways move, no rotation.';
+  }
+  return {
+    ja: `5 秒・ワンカット。${moveJa}${keepJa}建築写真がそのまま動き出したような、落ち着いた映像にする。`,
+    en: `5-second single continuous shot. ${moveEn} ${keepEn} Calm, photorealistic architectural film, as if the photograph came to life.`,
+  };
+}
+
+/**
  * カットの説明文（日本語・英語）。こだわり指定（参考資料）のうち、このカットに写る部位のものを最後に足す。
  * @param focusImages 参考画像を一緒に渡すか（カット集・AI 仕上げは渡す）
  */
@@ -358,7 +385,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     `${state.name}　カット集（Nano Banana Pro で仕上げる下絵）`,
     `作成: ${new Date().toLocaleString('ja-JP')}`,
     '',
-    '使い方: 各画像を Nano Banana Pro に渡し、「00_素材ボード.jpg」（あれば「00_お手本_…」も）を一緒に参考画像として添えて、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚（LDK・外観）を次のカットから参考画像に加えると、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。',
+    '使い方（詳しくは「00_手引き_写真と動画の仕上げ.txt」）: 各画像を Nano Banana Pro に渡し、「00_素材ボード.jpg」（あれば「00_お手本_…」も）を一緒に参考画像として添えて、下の説明文をプロンプトとして貼り付けてください。構図と間取りはそのまま、質感と光だけを写真に仕上げる指示になっています。最初に仕上げた 1 枚（LDK・外観）を次のカットから参考画像に加えると、素材と色が全カットでそろいます。仕上がった画像は、パース →「仕上げ（外部）」→「仕上げた写真を取り込む」で資料に入ります（ファイル名の末尾の __c-… を残して保存すると、どのカットか自動で分かります）。',
     '',
   );
   let n = 0;
@@ -429,7 +456,8 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
           for (const k of ['depth', 'normal', 'lines', 'segment'] as PassKind[]) entries.push({ name: `パス/${base}_${k}.png`, data: dataUrlToBytes(renderPass(v, k, opts.width, opts.height)) });
         }
         const p = cutPrompt(shot, i);
-        lines.push(`■ ${name}`, shot.caption ? `（${shot.caption}）` : '', '【日本語】', p.ja, '', '【English】', p.en, '');
+        const vp = cutVideoPrompt(shot);
+        lines.push(`■ ${name}`, shot.caption ? `（${shot.caption}）` : '', '【日本語】', p.ja, '', '【English】', p.en, '', '【動画にするとき（仕上げた写真を最初のフレームに）】', vp.en, `（${vp.ja}）`, '');
         n++;
       } catch (e) {
         lines.push(`■ ${shot.title}: 描画に失敗（${(e as Error).message}）`, '');
@@ -441,6 +469,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     }
     if (opts.passes) entries.push({ name: 'パス/素材IDの色凡例.txt', data: new TextEncoder().encode(`素材ID画像の塗り分け（色コード → 意味）\n\n${segmentLegend()}\n\n使い方: depth=ControlNet の Depth、normal=Normal、lines=Lineart／Canny の代わり、segment=領域ごとの素材指定（Segmentation）。同じファイル名の .jpg（白模型または仕上げ済みの下絵）と組で使います。`) });
     entries.push({ name: 'カット一覧と説明文.txt', data: new TextEncoder().encode(lines.join('\n')) });
+    entries.push({ name: '00_手引き_写真と動画の仕上げ.txt', data: new TextEncoder().encode(FINISH_GUIDE_LINES.join('\n')) });
     saveCutManifest(manifest);
     const zip = makeZip(entries);
     const url = URL.createObjectURL(zip);

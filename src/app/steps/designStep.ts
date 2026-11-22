@@ -586,7 +586,7 @@ export const designStep: Step = {
         })(),
         section(
           '仕上げ（外部）① パースのカット集',
-          h('p', { class: 'hint', style: 'margin-top:0' }, '見どころの構図を高解像度の下絵にして、Nano Banana Pro に貼る説明文（部屋・素材・品番の色・光）と一緒に ZIP で保存します。仕上げた写真は ③ で取り込むと、プレゼン資料の同じカットの下絵と入れ替わります。'),
+          h('p', { class: 'hint', style: 'margin-top:0' }, '見どころの構図を高解像度の下絵にして、Nano Banana Pro に貼る説明文（部屋・素材・品番の色・光）と、仕上げた写真を動画にするときの指示文（Kling・Runway・Veo 向け）、手順の手引きと一緒に ZIP で保存します。おすすめの流れ: 外観 1 枚を Nano Banana Pro で仕上げる → それを参考に他のカットも → 決めのカットを Kling か Runway で 5 秒の動画に → ③ で取り込む。'),
           h('button', { class: 'btn primary block', onclick: () => void exportCuts(ctx, shots, size()) }, `カット集を保存（${shots.length}枚・ZIP）`),
           h(
             'div',

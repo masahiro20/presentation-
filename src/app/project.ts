@@ -139,7 +139,7 @@ export function publicProject(p: ProjectFile): ProjectFile {
 }
 
 export function applyProject(p: ProjectFile) {
-  if (p.format !== PROJECT_FORMAT) throw new Error('このファイルは間取りプレゼンのプロジェクトではありません');
+  if (p.format !== PROJECT_FORMAT) throw new Error('このファイルは Home Landick Studio のプロジェクトではありません');
   if (!p.model) throw new Error('プロジェクトに図面の読み取り結果が入っていません');
   state.name = p.name ?? state.name;
   state.customer = p.customer ?? state.customer;

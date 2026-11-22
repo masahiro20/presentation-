@@ -56,7 +56,7 @@ export class StudyShell {
       this.stepBar,
       h('div', { class: 'spacer' }),
       nameInput,
-      h('a', { class: 'top-link', href: './index.html', title: '平面図 PDF から立面・パース・動画・資料を作る間取りプレゼンへ' }, '間取りプレゼン →'),
+      h('a', { class: 'top-link', href: './index.html', title: '平面図 PDF から立面・パース・動画・資料を作る Home Landick Studio へ' }, 'Home Landick Studio →'),
     );
     this.viewerHost = h('div', { id: 'viewer3d', class: 'view' });
     this.navBar = h('div', { class: 'nav-tools' });

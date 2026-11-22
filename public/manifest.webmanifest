@@ -1,6 +1,6 @@
 {
-  "name": "間取りプレゼン（Home Landick）",
-  "short_name": "間取りプレゼン",
+  "name": "Home Landick Studio",
+  "short_name": "HL Studio",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#ffffff",

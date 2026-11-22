@@ -239,6 +239,12 @@ body.cover.cover-settings .side { border-left: 1px solid var(--line); }
 .lp-hero-tx p { margin: 10px 0 0; font-size: 13px; letter-spacing: 0.1em; line-height: 2; opacity: 0.95; }
 .lp-sec { padding: 64px 40px 8px; opacity: 0; transform: translateY(24px); transition: opacity 0.9s ease, transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1); }
 .lp-sec.in { opacity: 1; transform: none; }
+/* 2026-11-22: シンプルなトップ（写真を低くして、最初の画面に「置く場所」と「できること」が収まる） */
+.lp-hero.short { height: 40vh; min-height: 260px; }
+.lp-hero.short + .lp-sec { padding-top: 36px; }
+.lp-chips { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px 0 0; padding: 0; }
+.lp-chips li { font-size: 13px; letter-spacing: 0.1em; color: #444; padding: 6px 14px; border: 1px solid #d3d6db; border-radius: 999px; background: #fff; }
+.lp-chips li + li::before { content: none; }
 .lp-sec h2 { font-family: var(--lp-serif); font-weight: 400; font-size: 24px; letter-spacing: 0.04em; color: #333; margin: 0 0 6px; padding-bottom: 16px; border-bottom: 1px solid #c9ced6; display: flex; align-items: baseline; gap: 14px; }
 .lp-sec h2 small { font-size: 12.5px; letter-spacing: 0.16em; color: #777; }
 .lp-lead { font-size: 13.5px; line-height: 2.2; letter-spacing: 0.08em; color: #444; margin: 22px 0 22px; }

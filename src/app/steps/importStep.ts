@@ -401,99 +401,49 @@ function dropScreen(ctx: StepCtx) {
     { class: 'lp-left' },
     h('div', { class: 'lp-brand' }, 'HOME LANDICK'),
     h('p', { class: 'lp-catch' }, '強く、賢く、そして美しく。'),
-    h('p', { class: 'lp-catch-en' }, 'Home Landick Architectural Design Office'),
-    h('div', { class: 'lp-tool' }, 'Proposal Studio — 図面から、ご提案まで'),
-    h(
-      'div',
-      { class: 'lp-specs' },
-      h('div', { class: 'lp-spec' }, h('small', null, 'Ua値'), h('b', null, '0.46 以下')),
-      h('div', { class: 'lp-spec' }, h('small', null, 'C値'), h('b', null, '0.5 以下')),
-      h('div', { class: 'lp-spec' }, h('small', null, '耐震等級'), h('b', { class: 's' }, '最高等級3', h('br'), '認定取得')),
-    ),
+    h('div', { class: 'lp-tool' }, 'Home Landick Studio'),
   );
 
-  // こだわりの参考資料（階段・キッチンなど）は、図面を読む前に登録しておける（読み込んだら階段の 3D に反映する）
-  const focusLabel = () => (focusNotes().length ? `こだわりの参考資料（${focusNotes().length} 件）` : 'こだわりの参考資料を添える（階段・キッチンなど）');
+  // こだわりの参考資料（階段・キッチンなど）は、図面を読む前に登録しておける（読み込んだら階段の 3D に反映する。パースの画面からも開ける）
+  const focusLabel = () => (focusNotes().length ? `こだわりの参考資料（${focusNotes().length} 件）` : 'こだわりの参考資料を添える');
   const focusLink: HTMLButtonElement = h('button', { class: 'lnk', title: '「この仕様・この写真のような階段で提案したい」を、参考画像と一緒に登録します。3D とパースの仕上げに反映します', onclick: () => openFocusDialog({ onClose: () => { focusLink.textContent = focusLabel(); } }) }, focusLabel());
   const drop = h(
     'div',
     { class: 'lp-drop', role: 'button', tabindex: '0', onclick: pick, onkeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } } },
     h('b', null, '平面図の PDF をここに置く'),
-    h('span', null, '立面図が同じ PDF にあれば、床の高さ・窓の高さ・屋根の形・外部仕上げまで読み、上下階のずれや縮尺の間違いも立面図で直します（別ファイルなら後から足せます）。DXF・保存したプロジェクト（.madori.json）も開けます。ARCHITREND の 3DS を一緒に置くと、込み入った屋根まで 3D のとおりに'),
+    h('span', null, '立面図も同じ PDF に入れると、高さ・屋根・窓まで図面どおりになります'),
     h('span', { class: 'lp-btn solid' }, 'ファイルを選ぶ'),
     input,
   );
-  const fig = (c: { src: string; title: string; wide?: boolean; plan?: boolean }, onclick?: () => void) =>
-    h('figure', { class: `${c.wide ? 'w' : ''}${c.plan ? ' plan' : ''}`, onclick, style: onclick ? 'cursor:pointer' : '' }, h('img', { src: c.src, alt: c.title, loading: 'lazy' }), h('figcaption', null, c.title));
-
+  // 2026-11-22: トップは「平面図を置く → 何ができるか」だけに絞った（施工事例・作れるもの・間取り・流れの説明は外した）
   const col = h(
     'div',
     { class: 'lp-col' },
     h(
       'div',
-      { class: 'lp-hero' },
+      { class: 'lp-hero short' },
       h('img', { src: './brand/works-tower.jpg', alt: '' }),
-      h('div', { class: 'lp-hero-tx' }, h('h1', null, '妥協を知らない', h('br'), 'あなたへの「最適解」を、', h('br'), 'その場でかたちに。'), h('p', null, '間取りの図面から、パース・コーディネート・図面・日照・見積まで。')),
+      h('div', { class: 'lp-hero-tx' }, h('h1', null, '平面図を置くだけで、', h('br'), '家が立ち上がる。'), h('p', null, '3D パース・図面・日照・見積・資料まで、この画面ひとつで。')),
     ),
     h(
       'section',
-      { class: 'lp-sec' },
-      h('h2', null, 'Start', h('small', null, 'はじめる')),
-      h('p', { class: 'lp-lead' }, 'CAD（ARCHITREND・Walk in home・JW-CAD など）から書き出した平面図の PDF を置くと、木造として立ち上げ、ご提案に必要なものがこの画面の中で揃います。'),
+      { class: 'lp-sec in' },
       drop,
-      h(
-        'div',
-        { class: 'lp-samples' },
-        h('span', null, 'サンプルで試す'),
-        h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'A3・1 階 2 階'),
-        h('button', { class: 'lnk', onclick: () => sample('sample_house_pages.pdf') }, '階ごと・方位回転'),
-        h('button', { class: 'lnk', onclick: () => sample('sample_house_site.pdf') }, '敷地・道路あり'),
-        h('span', { class: 'sep' }, '｜'),
-        h('button', { class: 'lnk', onclick: () => openSiteStudy() }, state.siteStudy ? '敷地から先に検討（控えあり）' : '図面がまだ無い: 敷地から先に検討'),
-        h('span', { class: 'sep' }, '｜'),
-        focusLink,
-      ),
-    ),
-    h(
-      'section',
-      { class: 'lp-sec' },
-      h('h2', null, 'Works', h('small', null, '施工事例')),
-      h('p', { class: 'lp-lead' }, '設計事務所の洗練されたデザイン力と、高性能工務店の確かな技術力・施工力。パースのテイストも、この家々を基準に整えています。'),
-      h('div', { class: 'lp-works' }, ...WORKS.map((c) => fig(c))),
-      h('div', { class: 'lp-more' }, h('a', { class: 'lp-btn', href: 'https://www.homelandick.com/works/', target: '_blank', rel: 'noopener' }, '施工事例を見る')),
-    ),
-    h(
-      'section',
-      { class: 'lp-sec' },
-      h('h2', null, 'Proposal', h('small', null, '図面からつくるもの')),
-      h('p', { class: 'lp-lead' }, 'サンプル邸の平面図 1 枚から、このツールが自動でつくったものです。写真をクリックするとサンプルを開きます。'),
-      h('div', { class: 'lp-works' }, ...PROPOSAL.map((c) => fig(c, () => sample('sample_house_A3.pdf')))),
-    ),
-    h(
-      'section',
-      { class: 'lp-sec' },
-      h('h2', null, 'Plan', h('small', null, '間取り')),
-      h('p', { class: 'lp-lead' }, '読み取った間取りは、尺モジュールの方眼の上でそのまま直せます。平面図は柱・建具記号・帖数まで御社の書き方で。'),
-      h('div', { class: 'lp-works' }, fig({ src: './showcase/sheet-plan.jpg', title: '平面図（木造の表記）', wide: true, plan: true }, () => sample('sample_house_A3.pdf'))),
-    ),
-    h(
-      'section',
-      { class: 'lp-sec' },
-      h('h2', null, 'Flow', h('small', null, '流れ')),
-      h('ol', { class: 'lp-flow' }, ...FLOW.map(([t, d]) => h('li', null, h('div', null, h('b', null, t), d)))),
+      h('ul', { class: 'lp-chips' }, ...['3D パース', '図面', '日照', '見積', '資料'].map((t) => h('li', null, t))),
+      h('div', { class: 'lp-samples' }, h('span', null, '図面が手元に無いとき'), h('button', { class: 'lnk', onclick: () => sample('sample_house_A3.pdf') }, 'サンプルで試す')),
     ),
     h(
       'footer',
       { class: 'lp-foot' },
-      h('button', { class: 'lnk', onclick: () => document.body.classList.toggle('cover-settings') }, '事務所の設定・読み取りの辞書・MCP'),
+      h('button', { class: 'lnk', onclick: () => openSiteStudy() }, state.siteStudy ? '敷地から先に検討（控えあり）' : '敷地から先に検討'),
+      focusLink,
       h('a', { class: 'lnk', href: './sun.html' }, '3D データで日照だけ検討'),
-      h('a', { class: 'lnk', href: 'https://www.homelandick.com/', target: '_blank', rel: 'noopener' }, 'homelandick.com'),
+      h('button', { class: 'lnk', onclick: () => document.body.classList.toggle('cover-settings') }, '事務所の設定'),
       h('div', { class: 'copy' }, `© ${company}`),
     ),
   );
-  const fab = h('div', { class: 'lp-fab' }, h('button', { class: 'main', onclick: pick }, '図面を読み込む'), h('button', { onclick: () => sample('sample_house_A3.pdf') }, 'サンプルで試す'));
   const scroll = h('div', { class: 'lp-scroll' }, left, col);
-  const root = h('div', { class: 'landing' }, bg, scroll, fab);
+  const root = h('div', { class: 'landing' }, bg, scroll);
 
   // 欄の小見出しごとに、見えたらふわっと出す
   const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && e.target.classList.add('in')), { root: scroll, threshold: 0.12 });

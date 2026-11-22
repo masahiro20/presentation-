@@ -131,7 +131,7 @@ export class App {
     const top = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'brand', title: 'Home Landick' }, h('img', { class: 'logo', src: './brand/logo-hl.png', alt: 'Home Landick' })),
+      h('div', { class: 'brand', title: 'Home Landick Studio' }, h('img', { class: 'logo', src: './brand/logo-hl.png', alt: 'Home Landick' }), h('span', { class: 'studio' }, 'Studio')),
       office,
       nameInput,
       h('div', { class: 'spacer' }),

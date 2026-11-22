@@ -23,6 +23,7 @@ import { exportRoomTour, exportTourVideo, previewRoomTour } from '../roomTour';
 import { startCinema } from '../cinema';
 import { progress, reconcileDecided } from '../../coordinate/decisions';
 import { harmonyCheck } from '../../coordinate/harmony';
+import { renderPromptLibrary } from '../promptLibrary';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -594,6 +595,12 @@ export const designStep: Step = {
             h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind !== 'interior'), size()) }, '外観だけ'),
             h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, shots.filter((s) => s.kind === 'interior'), size()) }, '内観だけ'),
             h('button', { class: 'btn sm', onclick: () => void exportCuts(ctx, [currentAsShot()], size()) }, 'この構図だけ'),
+          ),
+          h(
+            'div',
+            { class: 'btn-row' },
+            h('button', { class: 'btn sm', onclick: () => modal('プロンプト集（コピーして Gemini・動画 AI に貼る）', renderPromptLibrary(), [{ label: '閉じる' }], true) }, 'プロンプト集（いつでもコピー）'),
+            h('a', { class: 'btn sm ghost', href: './prompts.html', target: '_blank', rel: 'noopener', title: 'スマホでも開けるページ。ブックマークしておくと Gemini を開きながら使えます' }, '別ページで開く'),
           ),
           h('label', { class: 'field', style: 'margin-top:8px' }, h('span', { class: 'field-label' }, '下絵のサイズ'), sizeSel),
           h('p', { class: 'hint' }, 'こつ: 最初に仕上げた 1 枚（LDK など）を、次のカットから「参考画像」として一緒に渡すと、床・壁・光の色が全カットでそろいます。'),

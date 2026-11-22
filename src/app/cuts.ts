@@ -6,6 +6,7 @@
  * 構図・間取り・家具の位置はこの画像のとおりに、質感だけを写真らしく仕上げてもらう使い方を想定。
  */
 import { FINISH_GUIDE_LINES } from './finishGuide';
+import { promptLibraryText } from './promptLibrary';
 import { renderPass, segmentLegend, type PassKind } from '../scene/passes';
 import type { StepCtx } from './app';
 import { state } from './state';
@@ -470,6 +471,7 @@ export async function exportCuts(ctx: StepCtx, shotsIn: Shot[], opts: { width: n
     if (opts.passes) entries.push({ name: 'パス/素材IDの色凡例.txt', data: new TextEncoder().encode(`素材ID画像の塗り分け（色コード → 意味）\n\n${segmentLegend()}\n\n使い方: depth=ControlNet の Depth、normal=Normal、lines=Lineart／Canny の代わり、segment=領域ごとの素材指定（Segmentation）。同じファイル名の .jpg（白模型または仕上げ済みの下絵）と組で使います。`) });
     entries.push({ name: 'カット一覧と説明文.txt', data: new TextEncoder().encode(lines.join('\n')) });
     entries.push({ name: '00_手引き_写真と動画の仕上げ.txt', data: new TextEncoder().encode(FINISH_GUIDE_LINES.join('\n')) });
+    entries.push({ name: '00_プロンプト集.txt', data: new TextEncoder().encode(promptLibraryText()) });
     saveCutManifest(manifest);
     const zip = makeZip(entries);
     const url = URL.createObjectURL(zip);

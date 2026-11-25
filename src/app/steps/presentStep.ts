@@ -69,6 +69,8 @@ export async function autoGenerate(ctx: StepCtx) {
     const pick = [
       ...all.filter((s) => ['ext-front', 'ext-garden', 'ext-evening', 'aerial'].includes(s.id)),
       ...interiors.filter((s, i) => i < 2 || roomRank(s.title) < 3).slice(0, 4),
+      // 3D 間取り図（階ごと）: 間取りのページの次に載せる
+      ...all.filter((s) => s.plan),
     ].filter((s) => !hasFinished(s.id) && !state.gallery.some((g) => g.shotId === s.id));
     for (let i = 0; i < pick.length; i++) {
       if (pm.signal.aborted) return;
@@ -179,6 +181,12 @@ function storageLine(f: Floor): HTMLElement | null {
 
 function slide(cls: string, ...children: (Node | null | false | undefined)[]) {
   return h('div', { class: `slide ${cls}` }, ...(children.filter(Boolean) as Node[]));
+}
+
+/** 3D 間取り図の素材（その階の、仕上げた写真 ＞ 下絵） */
+function pickPlan3d(level: number): GalleryItem | undefined {
+  const list = state.gallery.filter((g) => g.shotId?.replace(/-ai$/, '') === `plan3d-${level}`);
+  return list.find((g) => g.shotId?.endsWith('-ai')) ?? list.find((g) => g.quality === 'photoreal') ?? list[0];
 }
 
 function pick(kind: GalleryItem['kind']) {
@@ -430,6 +438,9 @@ export function buildDeckAll(opts: { disclosure?: SunDisclosure | null } = {}): 
           h('div', { class: 'sheet one' }, h('div', { class: 'svgbox', html: floorPlanSvg(model, f, { showLandscape: false, showRoad: false }) })),
         ),
       );
+      // 3D 間取り図（周りを消して真上に近い角度から見た立体の間取り）。下絵・仕上げのどちらかがあれば、平面図の次に 1 枚
+      const p3 = pickPlan3d(f.level);
+      if (p3) add(`plan3d-${f.level}`, `${f.level}階 3D間取り図`, slide('hl full', photo(p3)));
     });
   }
   // 暮らしの動線: 朝・帰宅・洗濯・買い物の経路を平面図の矢印と歩数で（要望の「近さ」と結び付ける）

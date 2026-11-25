@@ -32,6 +32,8 @@ export interface Shot {
   cutaway?: number;
   /** 断面: 鉛直の切断面（n の側を取り除く） */
   section?: { nx: number; nz: number; d: number };
+  /** 3D 間取り図: 輪切りの階だけを、敷地・街並み・空を消した無地の台の上で、真上に近い角度から見せる */
+  plan?: boolean;
 }
 
 /** 斜め上から見下ろすカメラで、点群が収まる距離を探す */
@@ -513,6 +515,38 @@ export function exteriorShots(meta: BuildingMeta, site: SiteInfo, roof: RoofInfo
       timeOfDay: 'day',
       level: o.level,
       cutaway: o.level,
+    });
+  }
+  // 3D 間取り図（階ごと）: 海外の 3D フロアプランの見せ方。真上に近い角度・狭い画角（遠近の歪みが少なく図面のように読める）で、
+  // 建物の向きは壁に揃える（道路側に最も近い軸から見る）。周りは消して無地の台の上に置く（Viewer.setPlanLook）
+  const axis = (() => {
+    const f = frontDir.clone().setY(0).normalize();
+    const cands = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1)];
+    return cands.reduce((a, b) => (b.dot(f) > a.dot(f) ? b : a));
+  })();
+  for (const o of meta.outlines) {
+    const bb = new THREE.Box2();
+    for (const poly of o.polys) for (const p of poly) bb.expandByPoint(p);
+    if (bb.isEmpty()) continue;
+    const ppts: THREE.Vector3[] = [];
+    for (const x of [bb.min.x - 0.25, bb.max.x + 0.25]) for (const z of [bb.min.y - 0.25, bb.max.y + 0.25]) for (const y of [o.y, o.y + 1.2]) ppts.push(new THREE.Vector3(x, y, z));
+    const tgt = new THREE.Vector3((bb.min.x + bb.max.x) / 2, o.y + 0.4, (bb.min.y + bb.max.y) / 2);
+    const elev = (62 * Math.PI) / 180;
+    const pfov = 24;
+    // 上の道具の帯・下の構図の帯に隠れない余白を取る（図面は端まで見えてこそ）
+    const d = fitOblique(ppts, tgt, axis, elev, pfov, aspect, 1.3);
+    const ppos = tgt.clone().addScaledVector(axis, d * Math.cos(elev)).add(new THREE.Vector3(0, d * Math.sin(elev), 0));
+    shots.push({
+      id: `plan3d-${o.level}`,
+      kind: 'cutaway',
+      title: `${o.level}階 3D間取り図`,
+      caption: `${o.level}階を真上に近い角度から見た立体の間取り図。周りを消して、部屋の広さ・つながり・家具の置き方だけを見せます。`,
+      view: { pos: ppos, target: tgt, fov: pfov },
+      sunDir: sunForView(ppos, tgt, -1, 64),
+      timeOfDay: 'day',
+      level: o.level,
+      cutaway: o.level,
+      plan: true,
     });
   }
   return shots;

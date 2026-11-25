@@ -177,7 +177,7 @@ export const designStep: Step = {
     toggle.classList.toggle('on', !!ud.shotDockOpen);
     const thumbs = (v.userData.shotThumbs ??= new Map<string, string>()) as Map<string, string>;
     let thumbGen = 0;
-    const kindLabel = (s: Shot) => (s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? '模型' : s.kind === 'section' ? '断面' : '外観');
+    const kindLabel = (s: Shot) => (s.kind === 'interior' ? '内観' : s.kind === 'aerial' ? '鳥瞰' : s.kind === 'cutaway' ? (s.plan ? '間取図' : '模型') : s.kind === 'section' ? '断面' : '外観');
     const renderStrip = () => {
       clear(strip);
       for (const s of shots) {

@@ -109,6 +109,11 @@ export class MaterialRegistry {
     this.rebuild();
   }
 
+  /** その鍵の材料があるか（get は無いとき代わりの材料を返すので、材料を書き換える前に確かめる） */
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+
   get(key: string): THREE.Material {
     return this.map.get(key) ?? this.map.get(key.split(':')[0]) ?? this.fallback;
   }

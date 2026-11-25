@@ -2726,6 +2726,7 @@ export class Viewer {
       d = Math.max(d, 0.022);
       col.lerp(new THREE.Color('#ffffff'), 0.35);
     }
+    if (this.planLook) d = 0;
     if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(col, d);
     else {
       (this.scene.fog as THREE.FogExp2).color.copy(col);
@@ -2916,6 +2917,7 @@ export class Viewer {
   }
   /** 隣家（想定の街並み）の表示。日照では実際の周辺建物を使うので消す */
   setTownVisible(on: boolean) {
+    if (this.planLook) this.setPlanLook(false);
     this.townVisible = on;
     // 「地面だけ」は日照の画面の間だけの表示。どの画面も入るときにここを通るので、ここで戻す
     this.townGroundOnly = false;
@@ -2932,6 +2934,74 @@ export class Viewer {
     if (this.townGroundOnly === on) return;
     this.townGroundOnly = on;
     this.cullTown();
+    this.dirty = true;
+  }
+  /**
+   * 3D 間取り図の見せ方（海外の 3D フロアプランの見せ方）: 敷地・庭・街並み・空を消し、
+   * 明るい無地の台の上に、輪切りにした階だけを置く。部屋のつながりと広さだけが目に入る。
+   * 構図（Shot.plan）を当てたときだけ入り、ほかの構図・輪切りの解除・街並みの切り替えで元に戻す
+   */
+  private planLook = false;
+  private planSaved: { town: boolean; landscape: boolean; context: boolean } | null = null;
+  private planStage: THREE.Group | null = null;
+  private planCapColor: number | null = null;
+  /** 3D 間取り図では部屋名の札を小さく（図面の文字のように。札が壁や家具を隠さない） */
+  private scalePlanLabels(k: number) {
+    this.groups.cut.traverse((o) => {
+      if ((o as THREE.Sprite).isSprite && o.userData.labelPriority != null) o.scale.multiplyScalar(k);
+      if (o.userData.note) o.visible = this.roomLabels && !this.planLook;
+    });
+  }
+  planLookOn(): boolean {
+    return this.planLook;
+  }
+  setPlanLook(on: boolean) {
+    if (on === this.planLook) return;
+    this.planLook = on;
+    if (on) {
+      this.planSaved = { town: this.townVisible, landscape: this.groups.landscape.visible, context: this.groups.context.visible };
+      this.townVisible = false;
+      this.groups.landscape.visible = false;
+      this.groups.context.visible = false;
+      if (!this.planStage) {
+        const g = new THREE.Group();
+        g.name = 'plan-stage';
+        // 背景: 空・遠くの物を隠す無地の球（霞の円筒より内側）
+        const back = new THREE.Mesh(new THREE.SphereGeometry(260, 32, 16), new THREE.MeshBasicMaterial({ color: '#f4f3f0', side: THREE.BackSide, fog: false, toneMapped: false }));
+        back.userData.noShadow = true;
+        back.renderOrder = -900;
+        // 台: 影を受ける明るい床（建物の影が柔らかく落ちて、模型が浮かない）
+        const floor = new THREE.Mesh(new THREE.CircleGeometry(240, 64), new THREE.MeshStandardMaterial({ color: '#ecebe7', roughness: 1, metalness: 0 }));
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -0.02;
+        floor.receiveShadow = true;
+        g.add(back, floor);
+        this.planStage = g;
+      }
+      this.scene.add(this.planStage);
+      this.scalePlanLabels(PLAN_LABEL_SCALE);
+      // 壁の切り口（天端）を濃い色で締める: 海外の 3D 間取り図のように、壁の線が図面の線として読める
+      const cap = this.registry.has('cut.face') ? (this.registry.get('cut.face') as THREE.MeshStandardMaterial) : undefined;
+      if (cap?.color) {
+        this.planCapColor = cap.color.getHex();
+        cap.color.set(PLAN_CAP_COLOR);
+      }
+    } else {
+      this.scalePlanLabels(1 / PLAN_LABEL_SCALE);
+      const cap = this.registry.has('cut.face') ? (this.registry.get('cut.face') as THREE.MeshStandardMaterial) : undefined;
+      if (cap?.color && this.planCapColor != null) cap.color.setHex(this.planCapColor);
+      this.planCapColor = null;
+      if (this.planStage) this.scene.remove(this.planStage);
+      const sv = this.planSaved;
+      if (sv) {
+        this.townVisible = sv.town;
+        this.groups.landscape.visible = sv.landscape;
+        this.groups.context.visible = sv.context;
+      }
+      this.planSaved = null;
+    }
+    this.cullTown();
+    this.applyHaze();
     this.dirty = true;
   }
   /** カメラと建物の間に入る隣家、カメラに近すぎる隣家は隠す（視界を塞がない） */
@@ -3224,6 +3294,7 @@ export class Viewer {
     if (tod !== this.design.timeOfDay) this.setDesign({ ...this.design, timeOfDay: tod });
     if (shot.sunDir) this.setSunDirection(shot.sunDir);
     this.setCut(shot.cutaway != null ? { level: shot.cutaway } : shot.section ? { section: shot.section } : null);
+    this.setPlanLook(!!shot.plan);
     if (animate) this.flyTo(shot.view);
     else this.applyView(shot.view);
   }
@@ -3286,7 +3357,7 @@ export class Viewer {
   setRoomLabels(on: boolean) {
     this.roomLabels = on;
     this.groups.cut.traverse((o) => {
-      if (o.userData.roomLabel) o.visible = on;
+      if (o.userData.roomLabel) o.visible = on && !(this.planLook && o.userData.note);
     });
     this.declutterLabels();
     this.dirty = true;
@@ -3307,6 +3378,11 @@ export class Viewer {
     const v = new THREE.Vector3();
     labels.sort((a, b) => (b.userData.labelPriority ?? 0) - (a.userData.labelPriority ?? 0));
     for (const sp of labels) {
+      // 3D 間取り図（お客様に見せる絵）には設計士のメモの札を出さない
+      if (this.planLook && sp.userData.note) {
+        sp.visible = false;
+        continue;
+      }
       v.setFromMatrixPosition(sp.matrixWorld).project(this.camera);
       if (v.z > 1) {
         sp.visible = false;
@@ -3348,6 +3424,7 @@ export class Viewer {
     const f = level != null && model ? model.floors.find((x) => x.level === level) : undefined;
     const sec = spec && 'section' in spec ? spec.section : null;
     const on = !!model && (!!f || !!sec);
+    if (!on || sec) this.setPlanLook(false);
     this.cut = on ? spec : null;
     this.revealToken++;
     this.renderer.clippingPlanes = [];
@@ -3375,6 +3452,7 @@ export class Viewer {
         this.groups.cut.add(mb.build(resolve, { name: 'cut-building' }));
         // 切断面より低い屋根（下屋・ポーチ屋根）／断面では切った屋根を残す
         const cutRoof = buildRoofs(model, ext, this.design.roofOverride, this.design.roofPitch, clip);
+        // 下の階の屋根（下屋）は 3D 間取り図でも残す（消すと、上の階より張り出した下の階の部屋が上から透けて見える）
         this.groups.cut.add(cutRoof.mb.build(resolve, { name: 'cut-roof' }));
         // 扉は少し開いた状態で固定（間取りのつながりが見える）
         for (const info of meta.doors) {
@@ -3397,6 +3475,7 @@ export class Viewer {
             const sp = roomLabelSprite(r);
             if (!sp) continue;
             sp.position.set(r.labelPos.x * MM, cutY + 0.22, r.labelPos.y * MM);
+            if (this.planLook) sp.scale.multiplyScalar(PLAN_LABEL_SCALE);
             sp.visible = this.roomLabels;
             this.groups.cut.add(sp);
           }
@@ -3407,7 +3486,9 @@ export class Viewer {
             if (!sp) continue;
             sp.position.set(n.x * MM, cutY + 0.3, n.y * MM);
             sp.userData.labelPriority = 1e9;
-            sp.visible = this.roomLabels;
+            sp.userData.note = true;
+            if (this.planLook) sp.scale.multiplyScalar(PLAN_LABEL_SCALE);
+            sp.visible = this.roomLabels && !this.planLook;
             this.groups.cut.add(sp);
           }
           this.groups.cut.updateMatrixWorld(true);
@@ -3689,6 +3770,11 @@ function northMarker(bbox: THREE.Box3, northAngleDeg: number, resolve: (k: strin
   }
   return g;
 }
+
+/** 3D 間取り図での部屋名の札の大きさ（通常の札に対する倍率） */
+const PLAN_LABEL_SCALE = 0.72;
+/** 3D 間取り図での壁の切り口（天端）の色 */
+const PLAN_CAP_COLOR = '#3d3f44';
 
 /** 部屋名と帖数を書いた札（スプライト）。模型に置く名札のように、常にカメラを向く */
 function roomLabelSprite(r: Room): THREE.Sprite | null {

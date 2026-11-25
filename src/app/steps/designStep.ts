@@ -24,6 +24,7 @@ import { startCinema } from '../cinema';
 import { progress, reconcileDecided } from '../../coordinate/decisions';
 import { harmonyCheck } from '../../coordinate/harmony';
 import { renderPromptLibrary } from '../promptLibrary';
+import { exportRoomPanoramas, exportPanoramaHere } from '../panoramaExport';
 
 function styleCard(s: { id: string; name: string; catch: string; swatch: string[] }, on: boolean, onClick: () => void) {
   return h(
@@ -606,6 +607,12 @@ export const designStep: Step = {
           h('p', { class: 'hint' }, 'こつ: 最初に仕上げた 1 枚（LDK など）を、次のカットから「参考画像」として一緒に渡すと、床・壁・光の色が全カットでそろいます。'),
         ),
         section(
+          '360° ビュー（部屋を見回す画像）',
+          h('p', { class: 'hint', style: 'margin-top:0' }, '部屋の真ん中・目線の高さから、ぐるっと見回せる 360° の画像を作ります（海外の住宅プレゼンの定番）。その場で見回して確かめ、ZIP で保存できます。保存した画像は Google フォト・Windows のフォトなどで見回せます。'),
+          h('button', { class: 'btn primary block', onclick: () => void exportRoomPanoramas(ctx, shots) }, '部屋ごとの 360° ビューを作る'),
+          h('div', { class: 'btn-row' }, h('button', { class: 'btn sm', title: '目線モードで立っている位置から 1 枚', onclick: () => void exportPanoramaHere(ctx) }, 'いまの位置で 360°')),
+        ),
+        section(
           'お手本の写真（御社の仕上げパース）',
           h('p', { class: 'hint', style: 'margin-top:0' }, '御社の仕上げパースが「事務所の既定」として最初から入っています（カット集に「この写りで」と同梱され、色味・光・植栽の雰囲気が御社らしくそろいます）。このパソコンで別の写真を登録すると、そちらが優先して使われます（外観・内観それぞれ 3 枚まで）。'),
           refsBox,
@@ -673,7 +680,7 @@ export const designStep: Step = {
         { id: 'taste', label: 'テイスト', match: /テイスト|細かく調整/ },
         { id: 'coord', label: 'コーディネート', match: /コーディネート/ },
         { id: 'spec', label: '納まり', match: /標準仕様/ },
-        { id: 'export', label: '仕上げ', match: /仕上げ（外部）|写真に仕上げる|お手本の写真|こだわりの参考資料/ },
+        { id: 'export', label: '仕上げ', match: /仕上げ（外部）|写真に仕上げる|お手本の写真|こだわりの参考資料|360° ビュー/ },
       ];
       const secs = [...side.querySelectorAll(':scope > .panel-section')] as HTMLElement[];
       const panes = new Map(TABS.map((t) => [t.id, h('div', { class: 'tab-pane', 'data-tab': t.id })]));

@@ -2,6 +2,7 @@
  * 3D ビューア（リアルタイム PBR + 影 + アンビエントオクルージョン）
  */
 import * as THREE from 'three';
+import { CUBE_FACES } from './panorama';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -3581,6 +3582,64 @@ export class Viewer {
     this.renderer.setPixelRatio(prev.pr);
     this.resize();
     return url;
+  }
+
+  /**
+   * 360° ビュー用: pos から立方体の 6 面（画角 90°・正方形 size）を、通常の高品質の描画（陰影・トーン）で撮る。
+   * 面の順と向きは panorama.ts の CUBE_FACES。6 面は途中で描画の巡回を挟まずに続けて撮る（操作のカメラに向きを戻されない）
+   */
+  captureCubeFaces(pos: THREE.Vector3, size: number): Uint8ClampedArray[] {
+    const cam = this.camera;
+    const saved = { pos: cam.position.clone(), quat: cam.quaternion.clone(), up: cam.up.clone(), fov: cam.fov, aspect: cam.aspect, shift: cam.shiftY, pr: this.renderer.getPixelRatio() };
+    const qPrev = this.quality;
+    const selVis = this.selGroup.visible;
+    this.selGroup.visible = false;
+    this.handleGroup.visible = false;
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(size, size, false);
+    this.composer.setPixelRatio(1);
+    this.composer.setSize(size, size);
+    this.quality = 'high';
+    cam.position.copy(pos);
+    cam.fov = 90;
+    cam.aspect = 1;
+    cam.shiftY = 0;
+    cam.updateProjectionMatrix();
+    // 室内の明るさ・窓の外のかすみを、撮る位置に合わせる
+    this.applyLightBalance(true);
+    const tmp = document.createElement('canvas');
+    tmp.width = size;
+    tmp.height = size;
+    const g = tmp.getContext('2d', { willReadFrequently: true })!;
+    const faces: Uint8ClampedArray[] = [];
+    try {
+      for (const F of CUBE_FACES) {
+        cam.up.set(F.u[0], F.u[1], F.u[2]);
+        cam.lookAt(pos.x + F.f[0], pos.y + F.f[1], pos.z + F.f[2]);
+        cam.updateMatrixWorld(true);
+        this.dirty = true;
+        this.renderFrame(true);
+        g.clearRect(0, 0, size, size);
+        g.drawImage(this.renderer.domElement, 0, 0, size, size);
+        faces.push(g.getImageData(0, 0, size, size).data);
+      }
+    } finally {
+      cam.up.copy(saved.up);
+      cam.position.copy(saved.pos);
+      cam.quaternion.copy(saved.quat);
+      cam.fov = saved.fov;
+      cam.aspect = saved.aspect;
+      cam.shiftY = saved.shift;
+      cam.updateProjectionMatrix();
+      this.selGroup.visible = selVis;
+      this.handleGroup.visible = selVis;
+      this.quality = qPrev;
+      this.renderer.setPixelRatio(saved.pr);
+      this.resize();
+      this.applyLightBalance(true);
+      this.dirty = true;
+    }
+    return faces;
   }
 }
 
